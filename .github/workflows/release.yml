@@ -14,10 +14,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
+          package-manager-cache: false
       - run: npm ci || npm install
       - run: npm run typecheck
       - run: npm run build
@@ -31,13 +32,16 @@ jobs:
       contents: read
       id-token: write # required for npm Trusted Publishing (OIDC)
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-      - name: Upgrade npm (>=11.5.1 required for Trusted Publishing)
-        run: npm install -g npm@latest
+          # setup-node v6 is OIDC-aware: with id-token:write and NO token it does
+          # NOT inject a placeholder `_authToken` into .npmrc. v4 DID, and that
+          # bogus token shadowed Trusted Publishing -> `npm publish` 404'd. Disable
+          # the package-manager cache so no stale auth/lockfile state interferes.
+          package-manager-cache: false
       - name: Stamp version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -45,8 +49,7 @@ jobs:
       - run: npm ci || npm install
       - name: Build dist (the published artifact)
         run: npm run build
-      # NOTE: the FIRST publish of a brand-new package cannot use OIDC — bootstrap
-      # @lacneu/atrium once manually (npm publish --access public), then
-      # enable Trusted Publishing for it. See deploy runbook (DEPLOY.md, Stage 0).
-      - name: Publish to npm
+      # Trusted Publishing (OIDC): npm >=11.5.1 ships with Node 24 and auto-detects
+      # the OIDC environment from id-token:write — NO NODE_AUTH_TOKEN needed.
+      - name: Publish to npm (OIDC)
         run: npm publish --access public
