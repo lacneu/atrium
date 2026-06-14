@@ -1,0 +1,85 @@
+{{- /*
+All ClusterIP Services. The convex-backend Service doubles as the StatefulSet
+governing Service (serviceName) and the in-cluster DNS target the bridge,
+dashboard and bootstrap Job reach (replicas=1, so a normal ClusterIP is fine).
+The frontend Service is the Ingress backend. NONE of these are public except via
+the optional frontend Ingress; the dashboard is intentionally cluster-internal.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atrium.convexBackendService" . }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-backend
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "atrium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-backend
+  ports:
+    - name: cloud
+      port: {{ .Values.convexBackend.cloudPort }}
+      targetPort: cloud
+    - name: site
+      port: {{ .Values.convexBackend.sitePort }}
+      targetPort: site
+{{- if .Values.convexDashboard.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "convex-dashboard") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-dashboard
+spec:
+  # ClusterIP ONLY — admin-key-gated, never publicly exposed. Reach via
+  # `kubectl port-forward svc/<name> 6791:6791` or a private proxy.
+  type: ClusterIP
+  selector:
+    {{- include "atrium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-dashboard
+  ports:
+    - name: http
+      port: {{ .Values.convexDashboard.port }}
+      targetPort: http
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "frontend") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "atrium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: {{ .Values.webchat.servicePort }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "bridge") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "atrium.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+  ports:
+    - name: http
+      port: {{ .Values.bridge.port }}
+      targetPort: http

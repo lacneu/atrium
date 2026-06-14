@@ -1,0 +1,112 @@
+# Atrium — full self-contained stack (one company / tenant).
+#
+# Four services on ONE Docker network, so internal links use SERVICE NAMES (no
+# host IPs to configure):
+#   stateful  : convex-backend (self-hosted Convex + SQLite) + convex-dashboard
+#   stateless : frontend (static) + bridge (talks to your OpenClaw gateway)
+#
+# Bring your own OpenClaw gateway (set OPENCLAW_GATEWAY_URL). Public HTTPS routing
+# (browser → frontend, OAuth callbacks, the Convex public origins) is handled by
+# YOUR reverse proxy / ingress — this compose only publishes host ports.
+#
+# The convex-backend image is a GENERIC, EMPTY backend — it ships none of this
+# app's code. `bootstrap-env.sh` (run from a full repo checkout) makes it usable:
+# it pushes the Convex deployment env AND deploys this repo's Convex functions.
+#
+# Quick start:
+#   1. cp .env.example .env   &&   edit .env   (fill every required value)
+#   2. docker compose up -d                    (brings up all four services)
+#   3. ./bootstrap-env.sh                       (push Convex env + deploy the
+#                                                Convex functions — see the script)
+#   4. open the app; the FIRST sign-in (from an allowed domain) becomes admin.
+#
+# Lifecycle (stateful vs stateless): the Convex data lives in the named volume
+# `convex-data` and SURVIVES container recreation. To redeploy ONLY the
+# stateless tier (app/bridge) without touching the backend, target the services
+# by name (no profiles needed — `docker compose up -d` brings up ALL four):
+#   docker compose up -d --no-deps --force-recreate frontend bridge
+# NEVER `docker compose down -v` unless you intend to WIPE the database.
+
+services:
+  # --- stateful tier (holds the DB; rarely recreated) ----------------------
+  convex-backend:
+    image: ghcr.io/get-convex/convex-backend:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-atrium}-convex-backend
+    restart: unless-stopped
+    ports:
+      - "${CONVEX_CLOUD_PORT:-3210}:3210" # cloud origin (queries/mutations)
+      - "${CONVEX_SITE_PORT:-3211}:3211"  # site origin (HTTP actions / .site)
+    environment:
+      - INSTANCE_NAME=${CONVEX_INSTANCE_NAME:?set in .env}
+      - INSTANCE_SECRET=${CONVEX_INSTANCE_SECRET:?generate + back up; mints admin keys}
+      # PUBLIC HTTPS origins as reached by the BROWSER (via your proxy/ingress).
+      - CONVEX_CLOUD_ORIGIN=${CONVEX_CLOUD_ORIGIN:?public https URL for the cloud origin}
+      - CONVEX_SITE_ORIGIN=${CONVEX_SITE_ORIGIN:?public https URL for the site origin}
+      - DISABLE_BEACON=true
+      - RUST_LOG=${CONVEX_RUST_LOG:-info}
+    volumes:
+      - convex-data:/convex/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3210/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  convex-dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-atrium}-convex-dashboard
+    restart: unless-stopped
+    ports:
+      # Admin-key-gated. Bind to 127.0.0.1 (default) and reach via SSH tunnel, or
+      # publish behind a LAN-only proxy. Do NOT expose publicly.
+      - "${CONVEX_DASHBOARD_BIND:-127.0.0.1}:${CONVEX_DASHBOARD_PORT:-6791}:6791"
+    environment:
+      - NEXT_PUBLIC_DEPLOYMENT_URL=${CONVEX_CLOUD_ORIGIN:?public https URL for the cloud origin}
+    depends_on:
+      convex-backend:
+        condition: service_healthy
+
+  # --- stateless tier (prebuilt images; retagged often) --------------------
+  frontend:
+    image: ${WEBCHAT_IMAGE:-ghcr.io/lacneu/atrium}:${WEBCHAT_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-atrium}-frontend
+    restart: unless-stopped
+    ports:
+      - "${WEBCHAT_PORT:-8788}:80"
+    environment:
+      # Public Convex cloud origin the BROWSER reaches; written into /config.json
+      # at boot (the image is origin-agnostic).
+      - CONVEX_URL=${CONVEX_CLOUD_ORIGIN:?public https URL for the cloud origin}
+
+  bridge:
+    image: ${BRIDGE_IMAGE:-ghcr.io/lacneu/atrium-bridge}:${BRIDGE_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-atrium}-bridge
+    restart: unless-stopped
+    ports:
+      - "${BRIDGE_PORT:-8787}:8787"
+    environment:
+      # YOUR OpenClaw gateway (external to this stack).
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:?ws[s]:// URL of your OpenClaw gateway}
+      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:?operator token for the gateway}
+      - OPENCLAW_DEVICE_IDENTITY=${OPENCLAW_DEVICE_IDENTITY:?Ed25519 device identity JSON}
+      - OPENCLAW_INSTANCE_NAME=${OPENCLAW_INSTANCE_NAME:?the instance name this bridge serves}
+      # Convex .site origin — SERVICE NAME (same network), no host IP needed.
+      - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
+      - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET:?shared with the Convex deployment env}
+      - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET:?shared with the Convex deployment env}
+      - OPENCLAW_MEDIA_OUTBOUND_DIR=/home/node/.openclaw/media/outbound
+      - OPENCLAW_MEDIA_MAX_MB=${OPENCLAW_MEDIA_MAX_MB:-1024}
+      - BRIDGE_PORT=8787
+    volumes:
+      # READ-ONLY bind of your gateway's outbound media dir (set the host path).
+      - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to your gateway's media/outbound dir}:/home/node/.openclaw/media/outbound:ro
+    # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
+    # Convex (it reaches convex-backend by service DNS only on ingest, with
+    # retry), so a hard depends_on would needlessly couple their lifecycles and
+    # block a stateless-only redeploy (`up -d --no-deps frontend bridge`) on
+    # backend health. The bridge tolerates Convex coming up after it.
+
+volumes:
+  # Convex SQLite data. Back up via `npx convex export`, not just a volume snapshot.
+  convex-data:

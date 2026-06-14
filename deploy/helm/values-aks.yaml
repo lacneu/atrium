@@ -1,0 +1,116 @@
+# Azure Kubernetes Service (AKS) EXAMPLE values for atrium.
+#
+# This is an OVERLAY on values.yaml showing the provider-specific knobs. The
+# base chart carries NO AKS assumptions; everything here is portable values you
+# override per provider. Use with:
+#   helm install demo deploy/helm -f deploy/helm/values-aks.yaml
+#
+# All hosts/domains below are NEUTRAL PLACEHOLDERS — replace with your own.
+
+# -----------------------------------------------------------------------------
+# Public origins (the https URLs your browser reaches via the AKS ingress).
+# -----------------------------------------------------------------------------
+convex:
+  cloudOrigin: "https://convex.example.com"
+  siteOrigin: "https://convex-site.example.com"
+
+app:
+  siteUrl: "https://webchat.example.com"
+
+openclaw:
+  # Your EXTERNAL OpenClaw gateway (reachable from the cluster).
+  gatewayUrl: "wss://gateway.example.com"
+
+# -----------------------------------------------------------------------------
+# Storage — AKS managed CSI disk for the Convex SQLite data (ReadWriteOnce).
+#   `managed-csi`         : Standard SSD (LRS)
+#   `managed-csi-premium` : Premium SSD — recommended for the DB in production.
+# -----------------------------------------------------------------------------
+convexBackend:
+  persistence:
+    storageClassName: "managed-csi"
+    size: 20Gi
+  # Pin a digest in production instead of "latest".
+  # tag: "<digest-or-tag>"
+
+# -----------------------------------------------------------------------------
+# Ingress — frontend only. Two common AKS options (pick one):
+#
+#   (a) Application Routing add-on (managed nginx):
+#         className: webapprouting.kubernetes.azure.com
+#   (b) Self-managed ingress-nginx:
+#         className: nginx
+#
+# TLS is typically issued by cert-manager (annotation below) or by the
+# Application Routing add-on with a Key Vault certificate.
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: "webapprouting.kubernetes.azure.com"
+  annotations:
+    # cert-manager example (install cert-manager + a ClusterIssuer first):
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: webchat.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - webchat.example.com
+      secretName: webchat-tls
+
+# -----------------------------------------------------------------------------
+# Secrets on AKS — DO NOT keep plaintext in values for production.
+#
+# Recommended: provision the Secret OUT OF BAND and reference it here:
+#   secrets:
+#     existingSecret: "atrium-secrets"
+#
+# Populate that Secret with one of:
+#   * Azure Key Vault Provider for Secrets Store CSI Driver
+#     (SecretProviderClass with secretObjects -> syncs a K8s Secret), or
+#   * external-secrets.io with an Azure Key Vault SecretStore, or
+#   * sealed-secrets.
+# The Secret MUST contain the keys listed under secrets.values in values.yaml
+# (CONVEX_INSTANCE_NAME, CONVEX_INSTANCE_SECRET, BRIDGE_*, OPENCLAW_*, AUTH_*,
+# JWT_PRIVATE_KEY, JWKS, optional LANGFUSE_*/OPIK_*).
+#
+# For a quick non-prod trial you may let the chart render the Secret from values
+# (leave existingSecret empty and fill secrets.values). The placeholders below
+# only exist so `helm template -f values-aks.yaml` renders cleanly; REPLACE them.
+# -----------------------------------------------------------------------------
+secrets:
+  # existingSecret: "atrium-secrets"   # <-- recommended for production
+  values:
+    CONVEX_INSTANCE_NAME: "atrium"
+    # openssl rand -hex 32 — BACK IT UP (mints the admin key).
+    CONVEX_INSTANCE_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
+    BRIDGE_INGEST_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
+    BRIDGE_SHARED_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
+    OPENCLAW_TOKEN: "REPLACE_WITH_GATEWAY_OPERATOR_TOKEN"
+    OPENCLAW_DEVICE_IDENTITY: '{"id":"REPLACE","publicKey":"REPLACE","privateKey":"REPLACE"}'
+    AUTH_ALLOWED_EMAIL_DOMAINS: "example.com"
+    AUTH_GOOGLE_ID: ""
+    AUTH_GOOGLE_SECRET: ""
+    # ISSUER = full URL https://login.microsoftonline.com/<tenant>/v2.0 (not a bare id).
+    AUTH_MICROSOFT_ENTRA_ID_ID: ""
+    AUTH_MICROSOFT_ENTRA_ID_SECRET: ""
+    AUTH_MICROSOFT_ENTRA_ID_ISSUER: ""
+    JWT_PRIVATE_KEY: ""
+    JWKS: ""
+    LANGFUSE_PUBLIC_KEY: ""
+    LANGFUSE_SECRET_KEY: ""
+    LANGFUSE_HOST: ""
+    OPIK_API_KEY: ""
+    OPIK_WORKSPACE: ""
+    OPIK_BASE_URL: ""
+
+# -----------------------------------------------------------------------------
+# Bridge media (optional). On AKS, share the gateway's outbound dir via an RWX
+# PVC (e.g. azurefile-csi) rather than a hostPath.
+# -----------------------------------------------------------------------------
+# bridge:
+#   media:
+#     enabled: true
+#     existingClaim: "openclaw-gateway-media"   # azurefile-csi RWX PVC

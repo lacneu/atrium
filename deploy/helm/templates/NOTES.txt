@@ -1,0 +1,59 @@
+Atrium ({{ .Chart.Name }}-{{ .Chart.Version }}) is deploying.
+
+Release : {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+COMPONENTS
+  * convex-backend  StatefulSet (1 replica + PVC, STATEFUL, not scalable)
+                    svc: {{ include "atrium.convexBackendService" . }} :{{ .Values.convexBackend.cloudPort }}/{{ .Values.convexBackend.sitePort }}
+{{- if .Values.convexDashboard.enabled }}
+  * convex-dashboard Deployment (ClusterIP only — admin-key-gated, NOT public)
+{{- end }}
+  * frontend         Deployment + Service{{ if .Values.ingress.enabled }} + Ingress{{ end }}
+  * bridge           Deployment (ClusterIP; talks to your EXTERNAL OpenClaw gateway)
+{{- if .Values.bootstrap.enabled }}
+  * bootstrap-env    Job (post-install/post-upgrade hook — reconciles Convex env)
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.values.CONVEX_INSTANCE_SECRET }}
+
+⚠  CONVEX_INSTANCE_SECRET is EMPTY. The backend will self-generate a random
+   secret on first boot AND the bootstrap Job will derive a MISMATCHING admin
+   key (env-set will 401). Set secrets.values.CONVEX_INSTANCE_SECRET
+   (openssl rand -hex 32) and BACK IT UP — it mints the admin key.
+{{- end }}
+{{- end }}
+
+NEXT STEPS
+
+1. The post-install Job pushes the Convex DEPLOYMENT env (auth gate first).
+   It runs the Convex CLI via `npx`, so the cluster needs egress to the npm
+   registry (or pin bootstrap.convexCliVersion + a registry mirror). Watch it:
+     kubectl -n {{ .Release.Namespace }} logs job/{{ include "atrium.componentName" (dict "ctx" . "component" "bootstrap-env") }} -f
+
+2. Public HTTPS routing (browser -> frontend, OAuth callbacks, the Convex public
+   origins) is handled by YOUR ingress / proxy. These PUBLIC origins are values:
+     convex.cloudOrigin = {{ .Values.convex.cloudOrigin }}
+     convex.siteOrigin  = {{ .Values.convex.siteOrigin }}
+     app.siteUrl        = {{ .Values.app.siteUrl }}
+{{- if .Values.ingress.enabled }}
+   Frontend Ingress host(s):
+     {{- range .Values.ingress.hosts }}
+     - {{ .host }}
+     {{- end }}
+{{- else }}
+   (ingress.enabled=false — wire your own router to the frontend Service.)
+{{- end }}
+
+3. Reach the Convex dashboard privately (never expose it):
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "atrium.componentName" (dict "ctx" . "component" "convex-dashboard") }} {{ .Values.convexDashboard.port }}:{{ .Values.convexDashboard.port }}
+
+4. Open the app. The FIRST sign-in from an allowed email domain becomes ADMIN.
+   Make sure AUTH_ALLOWED_EMAIL_DOMAINS is correct BEFORE anyone signs in.
+
+LIFECYCLE — Convex is STATEFUL
+   Its SQLite data lives on the PVC and survives pod recreation. Back up with
+   `npx convex export` (a volume snapshot is not a substitute). Redeploy the
+   stateless tier (frontend/bridge) freely; NEVER delete the PVC unless you
+   intend to wipe the database.

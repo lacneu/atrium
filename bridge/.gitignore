@@ -1,0 +1,29 @@
+# Node
+node_modules/
+dist/
+
+# Env / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.bak
+
+# IntelliJ IDEA — NOT committed
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Diagnostics
+*.log
+*.ndjson
+
+# Local OpenClaw harness runtime state (also covered by local-openclaw/.gitignore)
+local-openclaw/.token
+local-openclaw/local.env
+local-openclaw/media-outbound/

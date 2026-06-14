@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%20fill%3D%22none%22%3E%3Cstyle%3E*%7Bstroke%3A%231c1c1c%7D%40media(prefers-color-scheme%3Adark)%7B*%7Bstroke%3A%23fff%7D%7D%3C%2Fstyle%3E%3Cpath%20d%3D%22M24%2015H14V49H24%22%20stroke-width%3D%227.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Cpath%20d%3D%22M40%2015H50V49H40%22%20stroke-width%3D%227.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3Cpolyline%20points%3D%2222%2033%2027%2033%2030%2027%2034%2039%2038%2031%2042%2033%22%20stroke-width%3D%224.4%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E"
+    />
+    <title>Atrium</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a flash, by toggling
+      // the `.dark` class (shadcn convention). "system" (or unset) resolves to
+      // the OS preference. Same approach as claude-monitor.
+      (function () {
+        var t = localStorage.getItem("oc.theme") || "system";
+        var dark =
+          t === "dark" ||
+          (t === "system" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+      // Reflect the saved UI locale on <html lang> before first paint (a11y),
+      // mirror of the theme script above. Paraglide's localStorage strategy
+      // persists the locale under PARAGLIDE_LOCALE; useApplyLocale then keeps it
+      // in sync with the Convex-resolved value after hydration.
+      (function () {
+        var l = localStorage.getItem("PARAGLIDE_LOCALE");
+        if (l === "fr" || l === "en") document.documentElement.lang = l;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

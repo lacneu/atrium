@@ -1,0 +1,29 @@
+{
+  "instances": {
+    "alice": {
+      "url": "ws://openclaw-gateway-alice.example.local:18789",
+      "tokenEnv": "OPENCLAW_ALICE_GATEWAY_TOKEN",
+      "deviceIdentityEnv": "OPENCLAW_ALICE_DEVICE_IDENTITY"
+    },
+    "bob": {
+      "url": "ws://openclaw-gateway-bob.example.local:18790",
+      "tokenEnv": "OPENCLAW_BOB_GATEWAY_TOKEN",
+      "deviceIdentityEnv": "OPENCLAW_BOB_DEVICE_IDENTITY"
+    }
+  },
+  "users": {
+    "alice@example.com": {
+      "instance": "alice",
+      "agentId": "alice",
+      "canonical": "alice",
+      "displayName": "Alice",
+      "allowedChatPrefixes": []
+    },
+    "bob@example.com": {
+      "instance": "bob",
+      "agentId": "bob",
+      "canonical": "bob",
+      "displayName": "Bob"
+    }
+  }
+}

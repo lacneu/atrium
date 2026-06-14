@@ -1,0 +1,115 @@
+{{- /*
+Convex backend — STATEFUL. A single-replica StatefulSet with a PVC via
+volumeClaimTemplates. It is NOT horizontally scalable: replicas is hard-pinned
+to 1. The SQLite data at /convex/data survives pod recreation; that is the
+disposability contract for this stack. Back up with `npx convex export`, not a
+volume snapshot.
+*/ -}}
+{{- $svc := include "atrium.convexBackendService" . -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "convex-backend") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-backend
+spec:
+  # NOT horizontally scalable — single replica only.
+  replicas: 1
+  serviceName: {{ $svc }}
+  selector:
+    matchLabels:
+      {{- include "atrium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: convex-backend
+  template:
+    metadata:
+      labels:
+        {{- include "atrium.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: convex-backend
+      {{- with .Values.convexBackend.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: convex-backend
+          image: {{ include "atrium.image" (dict "repository" .Values.convexBackend.image "tag" .Values.convexBackend.tag "defaultTag" "latest") }}
+          imagePullPolicy: {{ .Values.convexBackend.pullPolicy }}
+          ports:
+            - name: cloud
+              containerPort: {{ .Values.convexBackend.cloudPort }}
+            - name: site
+              containerPort: {{ .Values.convexBackend.sitePort }}
+          env:
+            # Identity that mints the admin key (from the Secret).
+            - name: INSTANCE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: CONVEX_INSTANCE_NAME
+            - name: INSTANCE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: CONVEX_INSTANCE_SECRET
+            # PUBLIC https origins the BROWSER reaches (values, not service DNS).
+            - name: CONVEX_CLOUD_ORIGIN
+              value: {{ .Values.convex.cloudOrigin | quote }}
+            - name: CONVEX_SITE_ORIGIN
+              value: {{ .Values.convex.siteOrigin | quote }}
+            - name: DISABLE_BEACON
+              value: "true"
+            - name: RUST_LOG
+              value: {{ .Values.convexBackend.rustLog | quote }}
+          readinessProbe:
+            httpGet:
+              path: /version
+              port: cloud
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /version
+              port: cloud
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: data
+              mountPath: /convex/data
+          resources:
+            {{- toYaml .Values.convexBackend.resources | nindent 12 }}
+      {{- with .Values.convexBackend.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.convexBackend.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.convexBackend.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "atrium.labels" . | nindent 10 }}
+          app.kubernetes.io/component: convex-backend
+      spec:
+        accessModes:
+          {{- toYaml .Values.convexBackend.persistence.accessModes | nindent 10 }}
+        {{- if .Values.convexBackend.persistence.storageClassName }}
+        storageClassName: {{ .Values.convexBackend.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.convexBackend.persistence.size | quote }}

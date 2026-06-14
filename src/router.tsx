@@ -1,0 +1,767 @@
+// Code-based TanStack Router route tree (the single reviewable source of truth
+// AND the artifact agents read for the URL contract). See
+// docs/ROUTING_RESEARCH.md §3 for the full decision.
+//
+// Structure:
+//   __root  = the AUTH BOUNDARY + persistent chrome (RootShell). <Outlet/> only
+//             renders for Authenticated + active-role users (§3.2 — the #1 risk:
+//             an Outlet that mounts before auth resolves fires unauthenticated
+//             useQuery and requireUserId() throws).
+//   /                       chat home (empty pane)
+//   /chat/$chatId           a specific chat (deep-linkable)
+//   /settings               RBAC-guarded layout (per-tab permissions + Toast):
+//                           a user with no allowed tab → "/"; a tab they can't
+//                           see → in-app access-denied panel
+//     /settings (index)     → redirect to the user's FIRST allowed tab
+//     /settings/<filtered>  one STATIC route per filtered tab, each with its own
+//                           typed validateSearch (the only way to give a tab its
+//                           own search schema — validateSearch sees only search,
+//                           never the path param)
+//     /settings/$tab        shared route for the 4 PARAMLESS tabs
+//                           (roles/integrations/instances/theme)
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Authenticated,
+  AuthLoading,
+  Unauthenticated,
+  useMutation,
+  useQuery,
+} from "convex/react";
+import { useAuthActions } from "@convex-dev/auth/react";
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  redirect,
+  Outlet,
+  useNavigate,
+  useParams,
+  useLocation,
+  type ErrorComponentProps,
+} from "@tanstack/react-router";
+import { z } from "zod";
+import {
+  Eye,
+  PanelLeftClose,
+  PanelLeftOpen,
+  AlertTriangle,
+  Compass,
+} from "lucide-react";
+import { api } from "./chat/convexApi";
+import type { Id } from "./chat/convexApi";
+import type { ConvexId } from "./chat/convexTypes";
+import { ConvexChat } from "./chat/ConvexChat";
+import { ChatSidebar } from "./chat/ChatSidebar";
+import { DevUserSwitcher } from "./chat/DevUserSwitcher";
+import { UserMenu } from "./chat/UserMenu";
+import { NotificationBell } from "./chat/NotificationBell";
+import { GlobalSearch } from "./chat/GlobalSearch";
+import {
+  PARAMLESS_TABS,
+  SETTINGS_TAB_REDIRECTS,
+  UsersTab,
+  InstancesTab,
+  AuditTab,
+  visibleTabs,
+  tabFromPathname,
+  pathForTab,
+  type Tab,
+  type ParamlessTab,
+} from "./chat/AdminSettings";
+import { ServiceAccountsTab } from "./chat/admin/ServiceAccountsTab";
+import { RolesTab } from "./chat/admin/RolesTab";
+import { GroupsTab } from "./chat/admin/GroupsTab";
+import { TracesTab } from "./chat/admin/TracesTab";
+import { KpiTab } from "./chat/admin/KpiTab";
+import { AnomaliesTab } from "./chat/admin/AnomaliesTab";
+import { IntegrationsTab } from "./chat/admin/IntegrationsTab";
+import { FeedbacksTab } from "./chat/admin/FeedbacksTab";
+import { FilesTab } from "./chat/admin/FilesTab";
+import { AgentFilesTab } from "./chat/admin/AgentFilesTab";
+import { PreferencesTab } from "./chat/admin/PreferencesTab";
+import { ChatDefaultsTab } from "./chat/admin/ChatDefaultsTab";
+import { AccessTab } from "./chat/admin/AccessTab";
+import { BridgeTab } from "./chat/admin/BridgeTab";
+import { SettingsNav, SettingsTabBar } from "./chat/admin/SettingsNav";
+import { ThemeShowroom } from "./chat/ThemeShowroom";
+import {
+  tracesSearchSchema,
+  auditSearchSchema,
+  anomaliesSearchSchema,
+  kpiSearchSchema,
+  serviceAccountsSearchSchema,
+  usersSearchSchema,
+} from "./lib/routing/searchSchemas";
+import { Button } from "@/components/ui/button";
+import { ToastProvider } from "@/components/ui/toast";
+import { m } from "@/paraglide/messages.js";
+import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
+import { useApplyChart, useResolvedMode } from "@/lib/useChart";
+import { useApplyLocale, type Locale } from "@/lib/useLocale";
+import type { ChartTokens } from "../convex/lib/charts";
+import { useSidebarLayout } from "@/lib/useSidebarLayout";
+import { Link, useMatchRoute } from "@tanstack/react-router";
+
+// What getMe returns (the bits the shell needs). `userId` is the EFFECTIVE id
+// (impersonation-aware) — used as a remount key so switching identity resets
+// transient UI (e.g. the selected chat) cleanly.
+type Me = {
+  userId: string;
+  role: "pending" | "user" | "admin";
+  email: string | null;
+  name: string | null;
+  hasProfile: boolean;
+  themeMode: ThemeMode | null;
+  resolvedThemeMode: ThemeMode;
+  defaultThemeMode: ThemeMode | null;
+  // Charte graphique (P3): the user's raw pick + the server-resolved effective
+  // key (user pick if still available, else admin default, else null = native).
+  chartKey: string | null;
+  resolvedChartKey: string | null;
+  // P4: the resolved chart's TOKENS (builtin from the registry OR custom from the
+  // DB, resolved server-side). null = native look. Fed straight to useApplyChart.
+  resolvedChartTokens: ChartTokens | null;
+  locale: Locale | null;
+  resolvedLocale: Locale;
+  defaultLocale: Locale | null;
+  // EFFECTIVE permissions (role ∪ extraPermissions; admins = full superset).
+  // Drives which Settings tabs the user may open (per-tab RBAC); server queries
+  // enforce the same permissions independently.
+  permissions: string[];
+};
+
+// ===========================================================================
+// ROOT SHELL — the auth boundary (§3.2). <Outlet/> renders ONLY inside
+// <Authenticated> AND when role !== "pending".
+// ===========================================================================
+
+function RootShell() {
+  return (
+    <>
+      <AuthLoading>
+        <div className="oc-boot">{m.app_loading()}</div>
+      </AuthLoading>
+      <Unauthenticated>
+        <SignIn />
+      </Unauthenticated>
+      <Authenticated>
+        {/* App-wide toast surface: chat actions (message delete, …) report
+            failures through the same toasts Settings always had. ONE provider
+            for the whole authenticated tree — the settings layout no longer
+            mounts its own (a nested provider would shadow this one). */}
+        <ToastProvider>
+          <RoleGate />
+        </ToastProvider>
+      </Authenticated>
+    </>
+  );
+}
+
+function SignIn() {
+  const { signIn } = useAuthActions();
+  // Which providers the deployment enabled (env-driven, server-resolved). Pre-auth
+  // query → no identity required.
+  const providers = useQuery(api.me.authProviders);
+  const [error, setError] = useState<string | null>(null);
+  // OAuth sign-in, restricted server-side to the allowed email domains
+  // (convex/lib/authDomains). On a disallowed account the OAuth flow is rejected
+  // server-side; surface a clear message instead of a silent failure.
+  async function oauth(provider: string) {
+    setError(null);
+    try {
+      await signIn(provider);
+    } catch {
+      setError(m.app_signin_refused());
+    }
+  }
+  const noneEnabled =
+    providers !== undefined &&
+    !providers.google &&
+    !providers.microsoft &&
+    !providers.anonymous;
+  return (
+    <div className="oc-signin">
+      {providers?.google ? (
+        <button type="button" className="oc-signin__btn" onClick={() => void oauth("google")}>
+          {m.app_signin_google()}
+        </button>
+      ) : null}
+      {providers?.microsoft ? (
+        <button
+          type="button"
+          className="oc-signin__btn"
+          onClick={() => void oauth("microsoft-entra-id")}
+        >
+          {m.app_signin_microsoft()}
+        </button>
+      ) : null}
+      {error ? <p className="oc-signin__error">{error}</p> : null}
+      {noneEnabled ? (
+        <p className="oc-signin__error">{m.app_signin_none_enabled()}</p>
+      ) : null}
+      {providers?.anonymous ? (
+        <button
+          type="button"
+          className="oc-signin__btn oc-signin__btn--dev"
+          onClick={() => void signIn("anonymous")}
+        >
+          {m.app_signin_anonymous()}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// After authentication, provision the profile once (me.bootstrap — the only
+// mutation a pending user may call) and route by role. RoleGate does NOT remount
+// on navigation (only the inner chrome wrapper is keyed), so the impersonation
+// effect below lives here.
+function RoleGate() {
+  const me = useQuery(api.me.getMe) as Me | undefined;
+  const bootstrap = useMutation(api.me.bootstrap);
+  const navigate = useNavigate();
+
+  // Create the profile on first sight (idempotent). me.getMe then reflects the
+  // assigned role reactively.
+  useEffect(() => {
+    if (me && !me.hasProfile) {
+      void bootstrap();
+    }
+  }, [me, bootstrap]);
+
+  // Apply the Convex-resolved theme (source of truth). undefined until getMe
+  // loads -> the hook falls back to the localStorage cache (no flash).
+  useApplyTheme(me?.resolvedThemeMode);
+
+  // Apply the Convex-resolved charte graphique on top of the theme mode. The
+  // chart's COLOR tokens are mode-scoped, so we first resolve the (possibly
+  // "system") mode down to a concrete light/dark — state-backed so an OS flip
+  // re-applies — then feed the SERVER-RESOLVED tokens (P4 moved key->tokens
+  // resolution server-side; builtin or custom). Coordinated with useApplyTheme,
+  // which owns the `.dark` class for the SAME resolved mode.
+  const effectiveMode = useResolvedMode(me?.resolvedThemeMode);
+  useApplyChart(me?.resolvedChartTokens, effectiveMode);
+
+  // Apply the Convex-resolved UI language (source of truth). undefined until
+  // getMe loads -> Paraglide's localStorage strategy already owns first-paint.
+  // On a real cross-device mismatch the hook reloads ONCE (loop-safe).
+  useApplyLocale(me?.resolvedLocale);
+
+  // Impersonation safety (§3.2 option 1): on a REAL change of effective identity
+  // (start/stop impersonation), send the URL back to "/" so it can't point at a
+  // chat the new effective identity can't read. Detect a genuine CHANGE, not the
+  // first authenticated mount — otherwise a deep-linked /chat/x is clobbered on
+  // initial load (breaking "deep-link survives login"). Declared ABOVE the early
+  // returns so the hook order is stable.
+  const prevUserId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!me) return;
+    if (prevUserId.current !== null && prevUserId.current !== me.userId) {
+      void navigate({ to: "/" });
+    }
+    prevUserId.current = me.userId;
+  }, [me, navigate]);
+
+  if (me === undefined) return <div className="oc-boot">{m.app_loading()}</div>;
+
+  const userLabel = me.name || me.email || m.app_account_fallback();
+
+  if (me.role === "pending") {
+    return (
+      <div className="oc-shell">
+        <ImpersonationBanner />
+        <DevUserSwitcher />
+        <header className="oc-topbar">
+          <span className="oc-topbar__brand">OpenClaw</span>
+          <div className="oc-topbar__actions">
+            <UserMenu label={userLabel} mode={me.themeMode} minimal />
+          </div>
+        </header>
+        <div className="oc-pending">
+          <h1 className="oc-pending__title">{m.app_pending_title()}</h1>
+          <p className="oc-pending__body">{m.app_pending_body()}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <AuthenticatedChrome
+      // Remount on identity change (start/stop impersonation) so transient UI
+      // (sidebar local state etc.) hard-resets cleanly, mirroring the previous
+      // key on ChatWorkspace. The navigate("/") effect above closes the
+      // URL-points-at-foreign-chat hole that routing would otherwise open.
+      key={me.userId}
+      canOpenSettings={visibleTabs(me.permissions ?? []).length > 0}
+      userLabel={userLabel}
+      themeMode={me.themeMode}
+    />
+  );
+}
+
+// Persistent warning strip shown whenever the admin is impersonating a user.
+// Driven by me.getImpersonation (REAL-identity query, so it survives the
+// effective-identity flip it reports on). Rendered on EVERY authenticated
+// surface (incl. the pending screen) so "Quitter" is always reachable.
+function ImpersonationBanner() {
+  const imp = useQuery(api.me.getImpersonation) as
+    | { impersonating: false }
+    | {
+        impersonating: true;
+        targetLabel: string;
+        targetRole: string;
+        realLabel: string;
+      }
+    | undefined;
+  const stop = useMutation(api.admin.stopImpersonation);
+  if (!imp || !imp.impersonating) return null;
+  return (
+    <div className="oc-imp" role="alert">
+      <Eye className="size-4 shrink-0" />
+      <span className="oc-imp__text">
+        {m.app_imp_prefix()}{" "}
+        <strong>{imp.targetLabel}</strong>
+        {m.app_imp_middle()}
+        <strong>{imp.realLabel}</strong>
+        {m.app_imp_suffix()}
+      </span>
+      <Button
+        size="sm"
+        variant="outline"
+        className="oc-imp__exit"
+        onClick={() => void stop()}
+      >
+        {m.app_imp_exit()}
+      </Button>
+    </div>
+  );
+}
+
+// Global top bar: sidebar toggle (left) + brand + single user menu (right).
+function AppTopBar({
+  userLabel,
+  themeMode,
+  collapsed,
+  onToggleSidebar,
+}: {
+  userLabel: string;
+  themeMode: ThemeMode | null;
+  collapsed: boolean;
+  onToggleSidebar: () => void;
+}) {
+  return (
+    <header className="oc-topbar">
+      <div className="oc-topbar__left">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={collapsed ? m.app_sidebar_show() : m.app_sidebar_hide()}
+          onClick={onToggleSidebar}
+        >
+          {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+        </Button>
+        {/* Brand returns to the chat surface (leaving Settings). */}
+        <Link to="/" className="oc-topbar__brand">
+          OpenClaw
+        </Link>
+      </div>
+      {/* Center zone: global conversation search (⌘K palette). */}
+      <div className="oc-topbar__search">
+        <GlobalSearch />
+      </div>
+      <div className="oc-topbar__actions">
+        <NotificationBell />
+        <UserMenu label={userLabel} mode={themeMode} />
+      </div>
+    </header>
+  );
+}
+
+// The authenticated, active-role chrome: impersonation banner + top bar +
+// persistent sidebar, with the matched route rendered via <Outlet/>. This is
+// the PERSISTENT CHROME — it does not unmount on navigation, so the sidebar
+// layout + scroll position survive route changes (§3.5).
+function AuthenticatedChrome({
+  canOpenSettings,
+  userLabel,
+  themeMode,
+}: {
+  canOpenSettings: boolean;
+  userLabel: string;
+  themeMode: ThemeMode | null;
+}) {
+  const { width, collapsed, toggleCollapsed, startResize } = useSidebarLayout();
+  const matchRoute = useMatchRoute();
+  // Active-chat highlight: read the chatId param without requiring a match on a
+  // specific route (strict:false → undefined off the chat route).
+  const params = useParams({ strict: false }) as { chatId?: string };
+  const navigate = useNavigate();
+  // Settings is active when any /settings/* route matches (fuzzy).
+  const settingsActive = Boolean(matchRoute({ to: "/settings", fuzzy: true }));
+
+  return (
+    <div className="oc-shell">
+      <ImpersonationBanner />
+      <DevUserSwitcher />
+      <AppTopBar
+        userLabel={userLabel}
+        themeMode={themeMode}
+        collapsed={collapsed}
+        onToggleSidebar={toggleCollapsed}
+      />
+      <div className="oc-workspace">
+        {!collapsed ? (
+          <div
+            className="oc-sidebar-col"
+            style={{ width, flex: `0 0 ${width}px` }}
+          >
+            {/* In Settings, the chat list is replaced by a VERTICAL settings nav
+                (the chat "disappears"); a top-bar / back link returns to chat. */}
+            {settingsActive ? (
+              <SettingsNav />
+            ) : (
+              <>
+                <ChatSidebar
+                  activeChatId={(params.chatId ?? null) as Id<"chats"> | null}
+                  onSelect={(id) =>
+                    void navigate({ to: "/chat/$chatId", params: { chatId: id } })
+                  }
+                />
+                {canOpenSettings ? (
+                  <Button variant="ghost" className="m-2 justify-start" asChild>
+                    {/* Land on the settings index, which redirects to the user's
+                        FIRST allowed tab (not a hardcoded admin-only tab). */}
+                    <Link to="/settings">{m.app_settings()}</Link>
+                  </Button>
+                ) : null}
+              </>
+            )}
+            {/* Resize handle on the right edge. */}
+            <div
+              className="oc-sidebar-resizer"
+              onPointerDown={startResize}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={m.app_sidebar_resize()}
+            />
+          </div>
+        ) : null}
+        <main className="oc-main">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// SETTINGS LAYOUT — admin guard + tab nav, with the matched tab route rendered
+// via <Outlet/>. useToast() resolves through the APP-WIDE ToastProvider in
+// RootShell (one provider, one toast surface — chat actions use it too).
+// ===========================================================================
+
+// TabLink, the FilteredTabPath union, and the (now drag-and-drop, per-user
+// persisted) vertical SettingsNav moved to ./chat/admin/SettingsNav.tsx.
+
+function SettingsLayout() {
+  // Per-tab RBAC guard (the server enforces requirePermission/requireAdmin on
+  // every tab query independently — this is the UX layer). A user with NO
+  // visible tab is bounced to "/"; a user landing on a tab they can't see gets a
+  // clean "access denied" panel instead of an empty/broken view. The active tab
+  // is read from the pathname (URL is always /settings/<tab>), which works for
+  // both the static (filtered) and the shared $tab routes.
+  const me = useQuery(api.me.getMe) as Me | undefined;
+  const navigate = useNavigate();
+  const pathname = useLocation({ select: (l) => l.pathname });
+  const visible = useMemo(
+    () => (me ? visibleTabs(me.permissions ?? []) : []),
+    [me],
+  );
+  const noAccess = me !== undefined && visible.length === 0;
+  useEffect(() => {
+    if (noAccess) void navigate({ to: "/" });
+  }, [noAccess, navigate]);
+
+  if (me === undefined) {
+    return <div className="oc-admin__hint" style={{ padding: 16 }}>{m.app_loading()}</div>;
+  }
+  if (noAccess) return null; // redirecting (no settings access at all)
+
+  const activeTab = tabFromPathname(pathname);
+  const denied = activeTab !== undefined && !visible.includes(activeTab);
+
+  // The GROUP nav lives in the VERTICAL SettingsNav (left column, rendered by
+  // AuthenticatedChrome). This layout adds the active group's horizontal tab
+  // bar above the content: either the active tab (via <Outlet/>) or the
+  // access-denied panel when the tab isn't allowed.
+  return (
+    <div className="oc-admin">
+      <SettingsTabBar />
+      <div className="oc-admin__body">
+        {denied ? <SettingsAccessDenied /> : <Outlet />}
+      </div>
+    </div>
+  );
+}
+
+// Clean in-app "you can't see this tab" panel (a non-admin reached a tab their
+// permissions don't grant — e.g. by typing the URL). No raw error; the server
+// query would also refuse to return data.
+function SettingsAccessDenied() {
+  return (
+    <div className="oc-route-error" role="alert">
+      <div className="oc-route-error__icon" aria-hidden>
+        <AlertTriangle size={28} />
+      </div>
+      <h2 className="oc-route-error__title">{m.app_access_denied_title()}</h2>
+      <p className="oc-route-error__body">{m.app_access_denied_body()}</p>
+    </div>
+  );
+}
+
+// Settings index: redirect to the user's FIRST allowed tab (admins → users; a
+// traces-only user → traces). No allowed tab → back to chat. This replaces the
+// old hardcoded /settings/users redirect, which would have dropped a non-admin
+// straight onto an access-denied panel.
+function SettingsIndexRedirect() {
+  const me = useQuery(api.me.getMe) as Me | undefined;
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (me === undefined) return;
+    const visible = visibleTabs(me.permissions ?? []);
+    const dest = visible.length > 0 ? pathForTab(visible[0]) : "/";
+    // pathForTab returns a valid /settings/<tab> path; cast to satisfy the typed
+    // navigate `to` (runtime resolves the string against the route tree).
+    void navigate({ to: dest as "/settings/users", replace: true });
+  }, [me, navigate]);
+  return <div className="oc-admin__hint" style={{ padding: 16 }}>{m.app_loading()}</div>;
+}
+
+// Paramless tab dispatcher: the four tabs that carry no search params share one
+// `$tab` route. The param is validated to the closed set (catch → "roles").
+function SettingsParamlessScreen() {
+  const { tab } = useParams({ from: "/settings/$tab" });
+  switch (tab) {
+    case "groups":
+      return <GroupsTab />;
+    case "integrations":
+      return <IntegrationsTab />;
+    case "instances":
+      return <InstancesTab />;
+    case "bridge":
+      return <BridgeTab />;
+    case "theme":
+      return <ThemeShowroom />;
+    case "feedbacks":
+      return <FeedbacksTab />;
+    case "files":
+      return <FilesTab />;
+    case "agentFiles":
+      return <AgentFilesTab />;
+    case "preferences":
+      return <PreferencesTab />;
+    case "chatDefaults":
+      return <ChatDefaultsTab />;
+    case "access":
+      return <AccessTab />;
+    case "roles":
+    default:
+      return <RolesTab />;
+  }
+}
+
+// Chat route screen: reads the chatId path param and feeds the chat surface.
+function ChatScreen() {
+  const { chatId } = useParams({ from: "/chat/$chatId" });
+  return <ConvexChat chatId={chatId as ConvexId<"chats">} />;
+}
+
+// Chat home: no chat selected (the empty pane).
+function ChatHome() {
+  return <ConvexChat chatId={null} />;
+}
+
+// ===========================================================================
+// ROUTE TREE
+// ===========================================================================
+
+const rootRoute = createRootRoute({ component: RootShell });
+
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: ChatHome,
+});
+
+const chatRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "chat/$chatId",
+  component: ChatScreen,
+});
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "settings",
+  component: SettingsLayout,
+});
+
+const settingsIndexRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "/",
+  // Dynamic landing: the component reads getMe and redirects to the user's first
+  // allowed tab (was a hardcoded beforeLoad redirect to /settings/users, which
+  // would dead-end a non-admin on access-denied).
+  component: SettingsIndexRedirect,
+});
+
+// One STATIC route per FILTERED tab → one typed validateSearch each.
+const tracesRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "traces",
+  validateSearch: tracesSearchSchema,
+  component: TracesTab,
+});
+const auditRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "audit",
+  validateSearch: auditSearchSchema,
+  component: AuditTab,
+});
+const anomaliesRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "anomalies",
+  validateSearch: anomaliesSearchSchema,
+  component: AnomaliesTab,
+});
+const kpiRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "kpi",
+  validateSearch: kpiSearchSchema,
+  component: KpiTab,
+});
+const serviceAccountsRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "serviceAccounts",
+  validateSearch: serviceAccountsSearchSchema,
+  component: ServiceAccountsTab,
+});
+const usersRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "users",
+  validateSearch: usersSearchSchema,
+  component: UsersTab,
+});
+// Legacy tab URL: the retired `uiprefs` admin tab merged into Preferences.
+// A STATIC route (static beats the $tab param route) that hard-redirects, so
+// old bookmarks land on the absorbing tab instead of a 404 / wrong tab. The
+// source→target table lives in AdminSettings (SETTINGS_TAB_REDIRECTS, pinned
+// by tabAccess.test.ts).
+const uiprefsRedirectRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "uiprefs",
+  beforeLoad: () => {
+    throw redirect({
+      to: "/settings/$tab",
+      params: { tab: SETTINGS_TAB_REDIRECTS.uiprefs },
+      replace: true,
+    });
+  },
+});
+// Paramless tabs (roles | integrations | instances | theme): one shared route.
+const settingsTabRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "$tab",
+  parseParams: (p) => ({
+    tab: z.enum([...PARAMLESS_TABS]).catch("roles").parse(p.tab),
+  }),
+  component: SettingsParamlessScreen,
+});
+
+// Router-wide error fallback (the safety net). TanStack renders this IN the
+// nearest parent route boundary — i.e. inside RootShell's <Outlet> — so the app
+// shell (sidebar + top bar) survives and the user never sees the raw
+// "Something went wrong" screen with a thrown stack. We deliberately do NOT
+// render `error.message` (it can carry "Forbidden: chat not owned by user" or
+// other internal detail) — the message stays generic; details live in logs.
+function RouteError({ reset }: ErrorComponentProps) {
+  const navigate = useNavigate();
+  return (
+    <div className="oc-route-error" role="alert">
+      <div className="oc-route-error__icon" aria-hidden>
+        <AlertTriangle size={28} />
+      </div>
+      <h2 className="oc-route-error__title">{m.app_route_error_title()}</h2>
+      <p className="oc-route-error__body">{m.app_route_error_body()}</p>
+      <div className="oc-route-error__actions">
+        <button type="button" className="oc-route-error__cta" onClick={() => reset()}>
+          {m.app_retry()}
+        </button>
+        <button
+          type="button"
+          className="oc-route-error__cta oc-route-error__cta--ghost"
+          onClick={() => void navigate({ to: "/" })}
+        >
+          {m.app_home()}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Unknown URL fallback (also rendered inside the shell). Same friendly, in-app
+// treatment as a not-found chat rather than a bare router default.
+function RouteNotFound() {
+  const navigate = useNavigate();
+  return (
+    <div className="oc-route-error" role="status">
+      <div className="oc-route-error__icon" aria-hidden>
+        <Compass size={28} />
+      </div>
+      <h2 className="oc-route-error__title">{m.app_not_found_title()}</h2>
+      <p className="oc-route-error__body">{m.app_not_found_body()}</p>
+      <div className="oc-route-error__actions">
+        <button
+          type="button"
+          className="oc-route-error__cta"
+          onClick={() => void navigate({ to: "/" })}
+        >
+          {m.app_home()}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  chatRoute,
+  settingsRoute.addChildren([
+    settingsIndexRoute,
+    tracesRoute,
+    auditRoute,
+    anomaliesRoute,
+    kpiRoute,
+    serviceAccountsRoute,
+    usersRoute,
+    uiprefsRedirectRoute,
+    settingsTabRoute,
+  ]),
+]);
+
+export const router = createRouter({
+  routeTree,
+  defaultPreload: "intent",
+  // App-shell-preserving fallbacks (see RouteError / RouteNotFound). Without
+  // these, an unexpected throw in any route surfaces TanStack's raw default
+  // error screen outside the application chrome.
+  defaultErrorComponent: RouteError,
+  defaultNotFoundComponent: RouteNotFound,
+});
+
+// Global type registration — makes the whole app type-safe against the tree.
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}

@@ -1,0 +1,104 @@
+# Ephemeral LOCAL OpenClaw gateway — live-test + media-share bench.
+#
+# VOLATILE by design: `reset.sh` wipes all state so every run starts PRISTINE
+# (previous tests can't leak into the next). Version-pinned via OPENCLAW_VERSION
+# (mount any tag on the fly). Uses the published OpenClaw gateway image
+# (override the repository with OPENCLAW_IMAGE if you build your own). NOT for
+# production — this is a throwaway bench an agent starts/stops itself.
+#
+# Auth: a LAN-bound gateway in a container (required for docker port-forward)
+# refuses `--auth none`, so we use TOKEN auth + automatic device pairing
+# (up.sh approves the bridge's Ed25519 device via the `devices` CLI). The token
+# is generated fresh by up.sh and written to ./.token (gitignored).
+name: oc-local
+services:
+  # Optional one-shot seed of a minimal openclaw.json (agent + model) into the
+  # fresh state volume BEFORE the gateway reads it. DISABLED by default: a minimal
+  # hand-written config was rejected ("<root>: Invalid input" — the real schema is
+  # large, ~18 top-level sections on a real instance). The
+  # gateway boots fine WITHOUT it (unconfigured) and the bridge still pairs +
+  # operates; an agent/model needs a valid config (run `onboard`, or refine
+  # seed/openclaw.json.example to pass the schema) + OPENROUTER_API_KEY. Enable by
+  # uncommenting below + the `depends_on` on `openclaw`, with a VALID seed.
+  # oc-seed:
+  #   image: ${OPENCLAW_IMAGE:-your-registry/openclaw-docker}:openclaw-${OPENCLAW_VERSION:-2026.5.19}
+  #   user: root
+  #   volumes:
+  #     - oc-state:/home/node/.openclaw
+  #     - ./seed:/seed:ro
+  #   entrypoint:
+  #     - sh
+  #     - -c
+  #     - 'cp /seed/openclaw.json /home/node/.openclaw/openclaw.json && chown node:node /home/node/.openclaw/openclaw.json && echo seeded'
+  #   restart: "no"
+
+  openclaw:
+    image: ${OPENCLAW_IMAGE:-your-registry/openclaw-docker}:openclaw-${OPENCLAW_VERSION:-2026.5.19}
+    container_name: oc-local-gateway
+    restart: "no"
+    # depends_on:
+    #   oc-seed:
+    #     condition: service_completed_successfully
+    ports:
+      - "${OPENCLAW_LOCAL_PORT:-18789}:18789"
+      # Loopback-forward port for the host bridge (#61) — published on THIS netns
+      # owner so the oc-loopback sidecar (which shares this netns) is reachable.
+      - "${OPENCLAW_LOOPBACK_PORT:-18790}:18790"
+    environment:
+      HOME: /home/node
+      TZ: America/Toronto
+      OPENCLAW_GATEWAY_BIND: lan
+      # Token auth (required for a port-forwarded LAN bind). up.sh sets this.
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?run via up.sh (generates the token)}
+      # CODEX HARNESS MODE: OpenClaw spawns the local codex app-server (reusing
+      # your ~/.codex login = ChatGPT subscription, NO OpenAI API auth / no
+      # pay-per-token). Points at our reorder wrapper (see codex-yolo-wrapper.sh)
+      # that fixes OpenClaw 2026.5.19's flag-ordering bug. up.sh injects the seed
+      # config + your codex auth into the volume.
+      OPENCLAW_CODEX_APP_SERVER_BIN: /usr/local/bin/codex-yolo-wrapper.sh
+    # Model keys / agent overrides the user provides for a WORKING agent
+    # (OPENROUTER_API_KEY, etc.). Empty file is fine — without a model the
+    # gateway still boots + the bridge pairs + the media share is testable.
+    env_file:
+      - ./local.env
+    tmpfs:
+      - /tmp:size=1g
+    volumes:
+      # Ephemeral gateway state — pristine each run (reset.sh removes the volume).
+      - oc-state:/home/node/.openclaw
+      # SHARED outbound media: host bind so a bridge running on the host
+      # (OPENCLAW_MEDIA_OUTBOUND_DIR=./local-openclaw/media-outbound) reads the
+      # SAME files the gateway writes. A production deployment typically uses a
+      # shared NAMED volume instead — same mechanism, different backing.
+      - ./media-outbound:/home/node/.openclaw/media/outbound
+      # Reorder wrapper over the image's buggy one (codex harness flag fix).
+      - ./codex-yolo-wrapper.sh:/usr/local/bin/codex-yolo-wrapper.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:18789/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  # LOOPBACK FORWARDER (#61). The local bridge runs on the HOST and reaches
+  # the gateway over plain ws://, so the containerised gateway sees a NON-loopback
+  # peer (172.x) and rejects the connect as an UNTRUSTED transport
+  # (`AUTH_TOKEN_MISMATCH` — device-token auth is gated to trusted transports:
+  # loopback or wss-with-pinned-fingerprint; see docs.openclaw.ai/gateway/protocol).
+  # This socat sidecar SHARES the gateway's network namespace and forwards
+  # :18790 → 127.0.0.1:18789, so the gateway sees the bridge's connection as
+  # LOOPBACK (trusted) and the shared token authenticates. The host bridge sets
+  # OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18790. (Production gateways use wss
+  # instead — also a trusted transport — so they do NOT need this sidecar.)
+  oc-loopback:
+    image: alpine/socat:latest
+    container_name: oc-local-loopback
+    restart: "no"
+    network_mode: "service:openclaw"
+    command: ["TCP-LISTEN:18790,fork,reuseaddr", "TCP:127.0.0.1:18789"]
+    depends_on:
+      openclaw:
+        condition: service_healthy
+
+volumes:
+  oc-state:

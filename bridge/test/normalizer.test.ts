@@ -1,0 +1,428 @@
+/**
+ * Regression tests for the streaming normalizer (TypeScript port).
+ *
+ * Mirror of backend/tests/test_normalizer.py. Each test replays real OpenClaw
+ * frame shapes through the normalizer with an INJECTED clock and asserts the
+ * stable events a correct bridge must emit. The fixtures are REUSED VERBATIM
+ * from backend/tests/fixtures/openclaw_frames.json (read relatively), so the
+ * same 12 real-frame scenarios that guard the Python normalizer guard this one.
+ *
+ * Two assertions are adapted for the Convex media shape (filtering + no path
+ * leak preserved); the other 10 scenarios assert identical behavior.
+ */
+
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+import {
+  BASE_RECV_TIMEOUT,
+  EMPTY_FINAL_GRACE,
+  LIFECYCLE_END_GRACE,
+  PRIVATE_ACK_GRACE,
+  Normalizer,
+  type BridgeEvent,
+} from "../src/providers/openclaw/normalizer.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// CANONICAL frame fixtures (real OpenClaw frames) — the single source of truth
+// for the normalizer spec, vendored into this repo at test/fixtures/. (Originally
+// mirrored from the now-removed Python backend's test_normalizer.py.)
+const FIXTURES_PATH = resolve(
+  __dirname,
+  "./fixtures/openclaw_frames.json",
+);
+const FIXTURES = JSON.parse(readFileSync(FIXTURES_PATH, "utf-8")) as {
+  session_key: string;
+  run_id: string;
+  scenarios: Record<string, { description: string; frames: unknown[] }>;
+};
+
+const SESSION_KEY = FIXTURES.session_key;
+const OWN_RUN = FIXTURES.run_id;
+
+function newNormalizer(): Normalizer {
+  return new Normalizer(SESSION_KEY);
+}
+
+function frames(scenario: string): unknown[] {
+  const s = FIXTURES.scenarios[scenario];
+  if (!s) {
+    throw new Error(`unknown scenario: ${scenario}`);
+  }
+  return s.frames;
+}
+
+class Clock {
+  now = 1000.0;
+  tick(seconds = 0.01): number {
+    this.now += seconds;
+    return this.now;
+  }
+}
+
+function drive(
+  scenario: string,
+  opts: { seedRun?: string | null; advanceToFinalize?: boolean } = {},
+): { events: BridgeEvent[]; normalizer: Normalizer; clock: Clock } {
+  const seedRun = opts.seedRun === undefined ? OWN_RUN : opts.seedRun;
+  const advanceToFinalize = opts.advanceToFinalize ?? false;
+  const normalizer = newNormalizer();
+  const clock = new Clock();
+  const events: BridgeEvent[] = [];
+  normalizer.beginTurn(clock.now);
+  if (seedRun) {
+    normalizer.noteRunStarted(seedRun, clock.now);
+  }
+  for (const frame of frames(scenario)) {
+    events.push(...normalizer.feed(frame, clock.tick()));
+  }
+  if (advanceToFinalize && !normalizer.finalized) {
+    // Jump past every armed grace so any pending turn finalizes.
+    clock.tick(BASE_RECV_TIMEOUT + 1);
+    events.push(...normalizer.tick(clock.now));
+  }
+  return { events, normalizer, clock };
+}
+
+function visibleText(events: BridgeEvent[]): string {
+  let text = "";
+  for (const event of events) {
+    const kind = event.type;
+    if (kind === "message.delta") {
+      text += String(event.text);
+    } else if (kind === "message.snapshot" || kind === "message.final") {
+      text = String(event.text);
+    } else if (kind === "run.status" && event.status === "compacting") {
+      text = "";
+    }
+  }
+  return text;
+}
+
+function finalText(events: BridgeEvent[]): string | null {
+  const finals = events.filter((e) => e.type === "message.final");
+  return finals.length ? String(finals[finals.length - 1]!.text) : null;
+}
+
+function statuses(events: BridgeEvent[]): unknown[] {
+  return events.filter((e) => e.type === "run.status").map((e) => e.status);
+}
+
+function mediaItems(events: BridgeEvent[]): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [];
+  for (const event of events) {
+    if (event.type === "media") {
+      items.push(...(event.items as Array<Record<string, unknown>>));
+    }
+  }
+  return items;
+}
+
+// --- core text scenarios -----------------------------------------------------
+
+describe("core text scenarios", () => {
+  it("chat final content list parts", () => {
+    const { events } = drive("chat-final-content");
+    expect(finalText(events)).toBe("Bonjour !");
+    expect(visibleText(events)).toBe("Bonjour !");
+  });
+
+  it("chat final content string", () => {
+    const { events } = drive("chat-final-content-string");
+    expect(finalText(events)).toBe("Réponse en texte simple.");
+  });
+
+  it("empty final then content is not lost", () => {
+    const { events, normalizer } = drive("chat-final-empty-then-content");
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("Réponse arrivée après final vide.");
+    // The sessionless 'health' broadcast must never reach the browser.
+    const leaked = events.some(
+      (e) =>
+        e.type === "openclaw.frame" &&
+        (e.frame as Record<string, unknown> | undefined)?.event === "health",
+    );
+    expect(leaked).toBe(false);
+  });
+
+  it("duplicate final is deduped", () => {
+    const { events } = drive("duplicate-final");
+    const deltas = events.filter((e) => e.type === "message.delta").map((e) => e.text);
+    expect(deltas).toEqual(["Hello ", "Hello ", "world!"]); // exact re-broadcast dropped
+    expect(finalText(events)).toBe("Hello Hello world!");
+  });
+
+  it("chat deltaText preserves spaces", () => {
+    const { events } = drive("chat-deltatext-spaces");
+    expect(finalText(events)).toBe("Voici l'image générée !");
+    expect(visibleText(events)).toBe("Voici l'image générée !");
+  });
+
+  it("agent assistant delta legacy accumulates", () => {
+    const { events, normalizer } = drive("agent-assistant-delta-legacy", {
+      advanceToFinalize: true,
+    });
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("Hello world");
+  });
+
+  it("duplicate empty final finalizes gracefully", () => {
+    const { events, normalizer } = drive("duplicate-empty-final", {
+      advanceToFinalize: true,
+    });
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("");
+    // The duplicate empty final emitted no normalized message event.
+    const msgs = events.filter(
+      (e) => e.type === "message.delta" || e.type === "message.snapshot",
+    );
+    expect(msgs).toEqual([]);
+  });
+});
+
+// --- multi-run / lifecycle ---------------------------------------------------
+
+describe("multi-run / lifecycle", () => {
+  it("lifecycle end then follow-on run", () => {
+    const { events, normalizer } = drive("lifecycle-end-then-followon-run");
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("Réponse de suivi.");
+    expect(statuses(events)).toContain("working");
+    expect(statuses(events)).toContain("running");
+  });
+
+  it("compaction abandoned resets buffer", () => {
+    const { events } = drive("compaction-abandoned-replay", {
+      advanceToFinalize: true,
+    });
+    expect(statuses(events)).toContain("compacting");
+    // part1 was invalidated by the abandoned marker; only part2 survives.
+    expect(finalText(events)).toBe("part2");
+    expect(visibleText(events)).toBe("part2");
+    // P2 (Codex): the abandon must emit an EMPTY SNAPSHOT so the real sink clears
+    // the already-persisted liveText (turn-sink drops the intermediate
+    // "compacting" run.status — only a snapshot/delta/final mutates the writer).
+    // Without it, a replay yielding no text would finalize on the stale prefix.
+    const emptySnapshotBeforePart2 = events.some(
+      (e, i) =>
+        e.type === "message.snapshot" &&
+        String(e.text) === "" &&
+        events.slice(i + 1).some((later) => String((later as { text?: unknown }).text ?? "").includes("part2")),
+    );
+    expect(emptySnapshotBeforePart2).toBe(true);
+  });
+
+  it("normal end working replayInvalid does not reset", () => {
+    const { events } = drive("normal-end-working-replayinvalid", {
+      advanceToFinalize: true,
+    });
+    expect(statuses(events)).not.toContain("compacting");
+    expect(finalText(events)).toBe("complete answer");
+  });
+});
+
+// --- private acks ------------------------------------------------------------
+
+describe("private acks", () => {
+  it("private ack then visible message wins", () => {
+    const { events, normalizer } = drive("private-ack-then-visible");
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("L'identifiant visible.");
+    // The ack was never emitted as a message.
+    expect(visibleText(events)).not.toContain("Envoyé.");
+  });
+
+  it("private ack only finalizes gracefully", () => {
+    // No follow-on ever arrives; after the grace the turn must finalize.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    for (const frame of frames("private-ack-only")) {
+      events.push(...normalizer.feed(frame, clock.tick()));
+    }
+    expect(normalizer.finalized).toBe(false); // still waiting for the visible message
+    // Nearest deadline is the private-ack grace.
+    const t = normalizer.nextTimeout(clock.now);
+    expect(t).not.toBeNull();
+    expect(t as number).toBeLessThanOrEqual(PRIVATE_ACK_GRACE);
+    clock.tick(PRIVATE_ACK_GRACE + 1);
+    events.push(...normalizer.tick(clock.now));
+    expect(normalizer.finalized).toBe(true);
+    expect(finalText(events)).toBe("Envoyé."); // best-effort fallback, never blank hang
+  });
+});
+
+// --- tool message delivery ---------------------------------------------------
+
+describe("tool message delivery", () => {
+  it("message tool visible beats private ack", () => {
+    const { events } = drive("tool-message-visible");
+    expect(finalText(events)).toBe("Réponse visible complète.");
+    expect(
+      events.some((e) => e.type === "tool.status" && e.name === "message"),
+    ).toBe(true);
+  });
+
+  it("message tool external target is ignored", () => {
+    const { events } = drive("tool-message-external-target-ignored");
+    expect(finalText(events)).toBe("Réponse réelle.");
+  });
+});
+
+// --- media (adapted to the Convex {filename, path} shape) ---------------------
+
+describe("media", () => {
+  it("mediaUrls list is filtered (Convex shape: filename + path, no signed url)", () => {
+    const { events } = drive("mediaurls-list", { advanceToFinalize: true });
+    const items = mediaItems(events);
+    // Same filtering as Python: dup collapsed, empty/int/https/../inbound rejected.
+    expect(items.map((i) => i.filename)).toEqual(["a.pdf", "c.pdf"]);
+    // ADAPTATION: no signed url. Instead each item carries the outbound
+    // absolute path the bridge fetches later. No path leak to a query/scheme.
+    for (const i of items) {
+      expect(typeof i.path).toBe("string");
+      expect(i.path as string).toMatch(/^\/home\/node\/\.openclaw\/media\/outbound\//);
+      expect(i).not.toHaveProperty("url");
+    }
+    expect(items.map((i) => i.path)).toEqual([
+      "/home/node/.openclaw/media/outbound/a.pdf",
+      "/home/node/.openclaw/media/outbound/c.pdf",
+    ]);
+  });
+
+  it("media directive: emits a media part + drops the directive line (no dead link)", () => {
+    const { events } = drive("media-directive", { advanceToFinalize: true });
+    const text = finalText(events);
+    expect(text).not.toBeNull();
+    // The raw /home/node path must never reach the browser.
+    expect(text!).not.toContain("/home/node/.openclaw");
+    // The MEDIA: directive line is DROPPED (no dead `./media/` markdown link —
+    // the attachment is the canonical media part); surrounding prose is kept.
+    expect(text!).not.toContain("MEDIA:");
+    expect(text!).not.toContain("](./media/");
+    expect(text!).toContain("voir");
+    expect(text!).toContain("fin");
+    // It IS surfaced as a real downloadable attachment.
+    expect(mediaItems(events).map((i) => i.filename)).toContain("r.pdf");
+  });
+
+  it("exec tool result: outbound path embedded in multi-line stdout emits a media item", () => {
+    // The write-md-file skill (and any `exec`-produced file) surfaces its path
+    // ONLY as a "MEDIA:/home/node/.../outbound/<f>" line inside the tool RESULT
+    // -- never as a `mediaUrls` array nor in the visible reply. Before the fix,
+    // collectMedia required each candidate to BE a bare path, so a path buried in
+    // multi-line stdout was dropped and the attachment never reached the webchat.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const result =
+      "+ ./write.sh fruits\nwrote 3 lines\n" +
+      "MEDIA:/home/node/.openclaw/media/outbound/fruits---f998f47f.md\n" +
+      // A traversal path and an inbound path in the same transcript must NOT leak:
+      "note /home/node/.openclaw/media/outbound/../secret.pdf\n" +
+      "src /home/node/.openclaw/media/inbound/x.pdf\nexit 0";
+    events.push(
+      ...normalizer.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: { name: "exec", phase: "result", toolCallId: "tc-exec-1", result },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    events.push(
+      ...normalizer.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "lifecycle",
+            data: { phase: "end" },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    // Only the valid outbound path is emitted; traversal + inbound are rejected.
+    expect(mediaItems(events)).toEqual([
+      {
+        filename: "fruits---f998f47f.md",
+        path: "/home/node/.openclaw/media/outbound/fruits---f998f47f.md",
+      },
+    ]);
+  });
+});
+
+// --- upstream error ----------------------------------------------------------
+
+describe("upstream error", () => {
+  it("lifecycle error finalizes as error with partial", () => {
+    const { events, normalizer } = drive("lifecycle-error");
+    expect(normalizer.finalized).toBe(true);
+    expect(statuses(events)).toContain("error");
+    expect(finalText(events)).toBe("moitié"); // partial content preserved
+    const finals = events.filter((e) => e.type === "message.final");
+    const final = finals[finals.length - 1]!;
+    expect(String(final.error ?? "")).toContain("Context overflow");
+  });
+});
+
+// --- isolation ---------------------------------------------------------------
+
+describe("isolation", () => {
+  it("foreign session frame is dropped", () => {
+    const { events } = drive("isolation-foreign-session");
+    expect(events).toEqual([]);
+  });
+
+  it("same session foreign run is dropped", () => {
+    const { events } = drive("isolation-same-session-foreign-run");
+    expect(events).toEqual([]); // sessionKey match alone is not enough
+  });
+
+  it("sessionless frame is dropped", () => {
+    const { events } = drive("isolation-sessionless");
+    expect(events).toEqual([]);
+  });
+
+  it("passthrough openclaw.frame emitted for own frames", () => {
+    const { events } = drive("chat-final-content");
+    const passthroughs = events.filter((e) => e.type === "openclaw.frame");
+    expect(passthroughs.length).toBeGreaterThan(0);
+  });
+});
+
+// --- timing model ------------------------------------------------------------
+
+describe("timing model", () => {
+  it("next timeout is null when idle", () => {
+    const normalizer = newNormalizer();
+    expect(normalizer.nextTimeout(1000.0)).toBeNull(); // no turn -> wait forever
+  });
+
+  it("recv budget armed during active turn", () => {
+    const normalizer = newNormalizer();
+    normalizer.beginTurn(1000.0);
+    const timeout = normalizer.nextTimeout(1000.0);
+    expect(timeout).not.toBeNull();
+    expect(timeout as number).toBeLessThanOrEqual(BASE_RECV_TIMEOUT);
+  });
+});
+
+// Silence unused-import lint when EMPTY_FINAL_GRACE / LIFECYCLE_END_GRACE are
+// only referenced for documentation parity with the Python suite.
+void EMPTY_FINAL_GRACE;
+void LIFECYCLE_END_GRACE;

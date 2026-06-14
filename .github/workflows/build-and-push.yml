@@ -1,0 +1,134 @@
+name: Build and Push
+
+# Two images from ONE repo, LOCKSTEP-versioned:
+#   - <user>/atrium          (front + Convex, built from docker/Dockerfile)
+#   - <user>/atrium-bridge   (built from bridge/Dockerfile)
+#
+# Triggers:
+#   - tag v*          -> BOTH images build at the tag version (lockstep release)
+#   - push to main    -> only the image whose paths changed -> :latest (dev speed)
+#   - workflow_dispatch -> both (manual)
+# Each image is only pushed AFTER its own test suite passes.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      webchat: ${{ steps.filter.outputs.webchat }}
+      bridge: ${{ steps.filter.outputs.bridge }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # The webchat image-rebuild trigger is an EXCLUDE-list, NOT an allowlist.
+          # An allowlist fails toward a FALSE NEGATIVE: a forgotten build input ->
+          # a STALE published :latest, silently. That bit us three times (messages,
+          # project.inlang, tsconfig). An exclude-list fails toward a harmless
+          # OVER-build, and any future build input (public/, .npmrc, tsconfig*,
+          # vite.config, ...) matches `**` automatically — we only maintain the
+          # small, stable set of NON-inputs. `predicate-quantifier: every` makes a
+          # filter match a file only when ALL its patterns match, so each `!...`
+          # acts as an AND-condition ("changed AND not under bridge/deploy/...").
+          # The leading `**` guarantees one positive pattern. `.github/**` is
+          # deliberately NOT excluded: a workflow build-step change alters the
+          # image and MUST rebuild it. The bridge filter is a single pattern, so
+          # every-of-one == some-of-one (unchanged).
+          predicate-quantifier: 'every'
+          filters: |
+            webchat:
+              - '**'
+              - '!bridge/**'
+              - '!deploy/**'
+              - '!docs/**'
+              - '!compliance/**'
+              - '!**/*.md'
+            bridge:
+              - 'bridge/**'
+
+  webchat:
+    needs: changes
+    # Tag push (lockstep) OR manual OR the webchat paths changed on main.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.webchat == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm ci || npm install
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/login-action@v3
+        with: { username: "${{ secrets.DOCKERHUB_USERNAME }}", password: "${{ secrets.DOCKERHUB_TOKEN }}" }
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/atrium
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          # No VITE_CONVEX_URL build-arg: the image is origin-agnostic; the URL
+          # is injected at run time via /config.json.
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  bridge:
+    needs: changes
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.bridge == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    defaults: { run: { working-directory: bridge } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm ci || npm install
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/login-action@v3
+        with: { username: "${{ secrets.DOCKERHUB_USERNAME }}", password: "${{ secrets.DOCKERHUB_TOKEN }}" }
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/atrium-bridge
+            ghcr.io/${{ github.repository }}-bridge
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v5
+        with:
+          context: bridge
+          file: bridge/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

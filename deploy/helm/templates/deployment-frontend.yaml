@@ -1,0 +1,68 @@
+{{- /*
+Frontend — static SPA served by Caddy. Origin-agnostic image: CONVEX_URL is the
+PUBLIC Convex cloud origin (browser-reached), written into /config.json at boot.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "frontend") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.webchat.replicas }}
+  selector:
+    matchLabels:
+      {{- include "atrium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "atrium.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+      {{- with .Values.webchat.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frontend
+          image: {{ include "atrium.image" (dict "repository" .Values.webchat.image "tag" .Values.webchat.tag "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.webchat.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.webchat.containerPort }}
+          env:
+            # PUBLIC Convex cloud origin the BROWSER reaches (== convex.cloudOrigin).
+            - name: CONVEX_URL
+              value: {{ .Values.convex.cloudOrigin | quote }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.webchat.resources | nindent 12 }}
+      {{- with .Values.webchat.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webchat.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webchat.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

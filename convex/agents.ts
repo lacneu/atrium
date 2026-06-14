@@ -1,0 +1,766 @@
+// Agent discovery cache + the M:N user↔agent join (userAgents). See
+// docs/MULTI_AGENT_REDESIGN.md. The bridge `/agents` is the source of truth; this
+// module caches it RESILIENTLY (a failed poll never empties the cache nor flips
+// per-agent presence) and is the authorization whitelist for chat binding +
+// dispatch. NO secrets — non-secret instance/agent NAMES only.
+
+import { v } from "convex/values";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
+import { Doc, Id } from "./_generated/dataModel";
+import { requireActive, requireAdmin } from "./lib/access";
+
+// Normalized agent descriptor the bridge `/agents` returns (and the poller relays
+// into the cache). Matches bridge `NormalizedAgent` (server.ts).
+const agentDescriptor = v.object({
+  agentId: v.string(),
+  displayName: v.union(v.string(), v.null()),
+  emoji: v.union(v.string(), v.null()),
+  model: v.union(v.string(), v.null()),
+  isDefaultOnInstance: v.boolean(),
+});
+
+// ===========================================================================
+// DISCOVERY CACHE (resilient — red-team B2 / blind-spot-1)
+// ===========================================================================
+
+async function upsertInstanceDiscovery(
+  ctx: MutationCtx,
+  instanceName: string,
+  patch:
+    | { ok: true; now: number }
+    | { ok: false; error: string; now: number },
+): Promise<void> {
+  const existing = await ctx.db
+    .query("instanceDiscovery")
+    .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+    .first();
+  if (patch.ok) {
+    // IDEMPOTENT WRITE: the ONLY consumer-read field is the `lastPollOk` BOOLEAN
+    // (enrichUserAgents / groups state = "stale" iff !lastPollOk; there is NO
+    // time-based staleness on the timestamps — verified). So a steady-state
+    // success (already ok, no error) changes only `lastPollAt`/`lastOkAt`, which
+    // nothing reads to decide behavior. Skipping that no-op write keeps
+    // instanceDiscovery — read by enrichUserAgents per grant — cache-stable across
+    // polls, avoiding a per-interval invalidation of the chat queries.
+    if (existing && existing.lastPollOk === true && existing.error === undefined) {
+      return; // nothing a consumer reads changed
+    }
+    const fields = {
+      instanceName,
+      lastPollAt: patch.now,
+      lastPollOk: true,
+      lastOkAt: patch.now,
+      error: undefined,
+    };
+    if (existing) await ctx.db.patch(existing._id, fields);
+    else await ctx.db.insert("instanceDiscovery", fields);
+  } else {
+    // FAILURE: preserve lastOkAt (the staleness window); never erase last-good.
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        lastPollAt: patch.now,
+        lastPollOk: false,
+        error: patch.error,
+      });
+    } else {
+      await ctx.db.insert("instanceDiscovery", {
+        instanceName,
+        lastPollAt: patch.now,
+        lastPollOk: false,
+        error: patch.error,
+      });
+    }
+  }
+}
+
+/** Apply a SUCCESSFUL discovery: upsert seen agents (presentInLastOk=true) and
+ *  flip absent DISCOVERED rows to presentInLastOk=false (deleted on the gateway).
+ *  NEVER deletes rows (a binding must still resolve to surface the re-bind). */
+export const applyDiscovery = internalMutation({
+  args: {
+    instanceName: v.string(),
+    agents: v.array(agentDescriptor),
+    // Set ONLY when the poller has CONFIRMED (via the bridge `count`) that the
+    // gateway genuinely returned zero agents — so an empty list flips absent rows
+    // to deleted instead of being ignored. Default false keeps the belt-and-
+    // suspenders guard for every other path (a shape-drifted [] never mass-deletes).
+    allowEmpty: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { instanceName, agents, allowEmpty }) => {
+    const now = Date.now();
+    await upsertInstanceDiscovery(ctx, instanceName, { ok: true, now });
+
+    const existing = await ctx.db
+      .query("agents")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .collect();
+    const byId = new Map(existing.map((e) => [e.agentId, e]));
+    const seen = new Set<string>();
+
+    for (const a of agents) {
+      seen.add(a.agentId);
+      const cur = byId.get(a.agentId);
+      // The fields any CONSUMER reads (enrichUserAgents / the picker). `lastSeenAt`
+      // is a heartbeat NOTHING reads, so it is DELIBERATELY excluded from the
+      // change check below.
+      const next = {
+        displayName: a.displayName ?? undefined,
+        emoji: a.emoji ?? undefined,
+        model: a.model ?? undefined,
+        isDefaultOnInstance: a.isDefaultOnInstance,
+        source: "discovered" as const,
+        presentInLastOk: true,
+      };
+      if (cur) {
+        // IDEMPOTENT WRITE: only patch when a consumer-visible field actually
+        // CHANGED. A steady-state poll that re-sees identical agents must NOT
+        // rewrite the row — that would invalidate every reactive query reading
+        // `agents` (enrichUserAgents -> chat sidebar/header chip, new-chat picker)
+        // on EVERY poll interval, forcing a re-execution storm that a constrained
+        // backend can't keep up with. Bumping `lastSeenAt` alone never justifies a
+        // write (no one reads it). `presentInLastOk` IS in the check, so a
+        // deleted->returned recovery still writes (routing-critical).
+        const changed =
+          cur.displayName !== next.displayName ||
+          cur.emoji !== next.emoji ||
+          cur.model !== next.model ||
+          cur.isDefaultOnInstance !== next.isDefaultOnInstance ||
+          cur.source !== next.source ||
+          cur.presentInLastOk !== next.presentInLastOk;
+        if (changed) await ctx.db.patch(cur._id, { ...next, lastSeenAt: now });
+      } else {
+        await ctx.db.insert("agents", {
+          instanceName,
+          agentId: a.agentId,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          ...next,
+        });
+      }
+    }
+    // Discovered rows absent from this successful poll => deleted on the gateway.
+    // GUARD (red-team MAJOR 1): flip presence when the poll returned agents, OR
+    // when `allowEmpty` confirms a GENUINELY empty gateway (Codex P2 — a real
+    // "last agent deleted" must mark them deleted, not be ignored). A shape-drifted
+    // [] (allowEmpty unset) still NEVER mass-deletes.
+    if (agents.length > 0 || allowEmpty) {
+      for (const e of existing) {
+        if (e.source === "discovered" && e.presentInLastOk && !seen.has(e.agentId)) {
+          await ctx.db.patch(e._id, { presentInLastOk: false });
+        }
+      }
+    }
+  },
+});
+
+/** Record a FAILED discovery: serve last-good, never empty / never flip presence. */
+export const recordDiscoveryFailure = internalMutation({
+  args: { instanceName: v.string(), error: v.string() },
+  handler: async (ctx, { instanceName, error }) => {
+    await upsertInstanceDiscovery(ctx, instanceName, {
+      ok: false,
+      error,
+      now: Date.now(),
+    });
+  },
+});
+
+/** Cron: poll the bridge `/agents` (+ `/capabilities`) for every instance and
+ *  cache the result resiliently. Mono-tenant Phase 1: the bridge ignores
+ *  `?instance` and returns its single gateway's agents; the loop still works for
+ *  one or many instances. */
+export const pollAgentDiscovery = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const bridgeUrl = process.env.BRIDGE_URL;
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    if (!bridgeUrl || !sharedSecret) return; // not configured — nothing to poll
+    const base = bridgeUrl.replace(/\/$/, "");
+
+    // Phase 1 is MONO-tenant: there is ONE bridge serving ONE gateway, but the
+    // `instances` table may hold several rows (the NAS has 4). Polling every row
+    // against the single BRIDGE_URL would cache the SAME gateway's agents under
+    // every instance name (cache corruption — red-team MINOR). So poll ONLY the
+    // instance this bridge serves: `BRIDGE_INSTANCE_NAME` when set, else the sole
+    // instance when exactly one exists, else NOTHING (fail safe, never corrupt).
+    const all = await ctx.runQuery(internal.agents.listInstanceNames, {});
+    const served = process.env.BRIDGE_INSTANCE_NAME;
+    const targets = served ? [served] : all.length === 1 ? all : [];
+
+    for (const instanceName of targets) {
+      try {
+        const res = await fetch(
+          `${base}/agents?instance=${encodeURIComponent(instanceName)}`,
+          { method: "GET", headers: { Authorization: sharedSecret } },
+        );
+        if (!res.ok) {
+          await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+            instanceName,
+            error: `http_${res.status}`,
+          });
+          continue;
+        }
+        const body = (await res.json()) as {
+          agents?: Array<Record<string, unknown>>;
+          count?: number;
+        };
+        const list = Array.isArray(body.agents) ? body.agents : [];
+        // Raw gateway agent count (pre-normalization) from a NEW bridge; null when
+        // the bridge is old (no `count`) — then we can't disambiguate, fail closed.
+        const rawCount = typeof body.count === "number" ? body.count : null;
+        const agents = list
+          .map((a) => ({
+            agentId: String(a.agentId ?? ""),
+            displayName: typeof a.displayName === "string" ? a.displayName : null,
+            emoji: typeof a.emoji === "string" ? a.emoji : null,
+            model: typeof a.model === "string" ? a.model : null,
+            isDefaultOnInstance: a.isDefaultOnInstance === true,
+          }))
+          .filter((a) => a.agentId.length > 0);
+        if (agents.length === 0) {
+          // GENUINELY empty gateway (new bridge confirms rawCount===0): apply the
+          // empty discovery so deleted agents flip to presentInLastOk=false —
+          // otherwise we keep routing to a deleted agent (Codex P2). Otherwise fail
+          // CLOSED (serve last-good): rawCount===null = old bridge (can't tell);
+          // rawCount>0 = shape-drift (gateway had agents, all dropped — MAJOR 1).
+          if (rawCount === 0) {
+            await ctx.runMutation(internal.agents.applyDiscovery, {
+              instanceName,
+              agents: [],
+              allowEmpty: true,
+            });
+          } else {
+            await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+              instanceName,
+              error: rawCount === null ? "empty_discovery" : "shape_drift",
+            });
+          }
+          continue;
+        }
+        await ctx.runMutation(internal.agents.applyDiscovery, {
+          instanceName,
+          agents,
+        });
+      } catch {
+        await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+          instanceName,
+          error: "unreachable",
+        });
+      }
+    }
+  },
+});
+
+/** Internal: the configured instance names (for the poller loop). */
+export const listInstanceNames = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<string[]> => {
+    const rows = await ctx.db.query("instances").collect();
+    return rows.map((r) => r.name);
+  },
+});
+
+// ===========================================================================
+// READ — discovered agents (admin) + the user's agents (picker / editor)
+// ===========================================================================
+
+/** Admin: discovered agents for one instance + the poll outcome (Instances tab). */
+export const listAgentsForInstance = query({
+  args: { instanceName: v.string() },
+  handler: async (ctx, { instanceName }) => {
+    await requireAdmin(ctx);
+    const agents = await ctx.db
+      .query("agents")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .collect();
+    const discovery = await ctx.db
+      .query("instanceDiscovery")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .first();
+    return {
+      agents: agents.map((a) => ({
+        agentId: a.agentId,
+        displayName: a.displayName ?? null,
+        emoji: a.emoji ?? null,
+        model: a.model ?? null,
+        isDefaultOnInstance: a.isDefaultOnInstance ?? false,
+        source: a.source,
+        presentInLastOk: a.presentInLastOk,
+      })),
+      discovery: discovery
+        ? {
+            lastPollAt: discovery.lastPollAt,
+            lastPollOk: discovery.lastPollOk,
+            lastOkAt: discovery.lastOkAt ?? null,
+            error: discovery.error ?? null,
+          }
+        : null,
+    };
+  },
+});
+
+// Provenance of an agent in the effective (unioned) set: a DIRECT userAgents
+// grant ("user"), or shared via a group the user belongs to ({ group: <key> }).
+// Direct WINS on dedup, so a direct grant always reports "user". Foundation for
+// the P5 "who has what" introspection screen (spec §6).
+export type AgentVia = "user" | { group: string };
+
+// The raw user↔agent union BEFORE enrichment/state classification: direct
+// userAgents ∪ the agents of the user's groups, deduped by (instanceName,
+// agentId) with DIRECT membership winning. `isDefault` is the EFFECTIVE default
+// per the precedence (direct default > group default > instance native > code),
+// computed WITHOUT regard to deletion (resolve-time skips deleted, exactly as
+// pre-P2). Shared by enrichUserAgents (adds `state` + UI fields) AND
+// routing.resolveTargetForChat (keeps its own `isDeleted` loop) so the union
+// lives in ONE place and the no-group path stays byte-identical.
+type EffectiveGrant = {
+  instanceName: string;
+  agentId: string;
+  isDefault: boolean;
+  // Carried through for direct grants so enrichment can preserve the existing
+  // `source` field verbatim; group-only grants have no userAgents.source.
+  source: "manual" | "auto" | null;
+  via: AgentVia;
+};
+
+type EnrichedUserAgent = {
+  instanceName: string;
+  agentId: string;
+  isDefault: boolean;
+  source: "manual" | "auto";
+  displayName: string | null;
+  emoji: string | null;
+  model: string | null;
+  kind: "openclaw" | "hermes";
+  // Resolution health for the UI (red-team B2): deleted vs stale vs ok.
+  state: "ok" | "deleted" | "stale" | "unknown";
+  // Provenance for introspection (P2 §6): direct grant vs which group shares it.
+  via: AgentVia;
+};
+
+const grantKey = (instanceName: string, agentId: string): string =>
+  `${instanceName.length}:${instanceName}/${agentId}`;
+
+/** THE union resolver (P2 §4). Computes the effective set of agents a user may
+ *  use — direct `userAgents` ∪ agents shared by the user's groups — deduped by
+ *  (instanceName, agentId) with DIRECT membership winning, and assigns ONE
+ *  effective default by precedence:
+ *    direct userAgents.isDefault > group default (lowest groupId, then agentId)
+ *    > instance native default (isDefaultOnInstance) > code (first deterministic).
+ *  The "exactly one isDefault per user" invariant stays on DIRECT userAgents
+ *  (the mutations enforce it); group agents are never materialized. With NO
+ *  groups the output is the user's direct rows in by_user order with `via:"user"`
+ *  and `isDefault` === the row's own — i.e. byte-identical to the pre-P2 set the
+ *  callers consume. Deletion is IGNORED here (resolve-time skips deleted). */
+export async function getEffectiveGrants(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<EffectiveGrant[]> {
+  const direct = await ctx.db
+    .query("userAgents")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+
+  // Direct grants first (they WIN on dedup). Preserve by_user order and each
+  // row's own isDefault so the no-group path is identical to pre-P2.
+  const out: EffectiveGrant[] = direct.map((r) => ({
+    instanceName: r.instanceName,
+    agentId: r.agentId,
+    isDefault: r.isDefault,
+    source: r.source,
+    via: "user" as const,
+  }));
+  const seen = new Set(out.map((g) => grantKey(g.instanceName, g.agentId)));
+
+  // Group agents: read the user's memberships, then each group's shared agents.
+  const memberships = await ctx.db
+    .query("groupMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  // Deterministic group order (by groupId) so the group-default tiebreak is
+  // stable across calls (spec: lowest groupId, then agentId).
+  const groupIds = memberships
+    .map((m) => m.groupId)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  // Per-group shared rows (sorted by agentId), cached so the default election
+  // below reuses them instead of re-reading. Ordered by groupId asc to match the
+  // deterministic "lowest groupId, then agentId" tiebreak.
+  const sharedByGroup: Array<{ groupId: Id<"groups">; rows: Doc<"groupAgents">[] }> = [];
+  for (const groupId of groupIds) {
+    const group = await ctx.db.get(groupId);
+    if (group === null) continue; // tolerate a dangling membership
+    const shared = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    // Within a group, order by agentId for a stable group-default tiebreak.
+    shared.sort((a, b) =>
+      a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
+    );
+    sharedByGroup.push({ groupId, rows: shared });
+    for (const ga of shared) {
+      const key = grantKey(ga.instanceName, ga.agentId);
+      if (seen.has(key)) continue; // direct (or an earlier group) already covers it
+      seen.add(key);
+      out.push({
+        instanceName: ga.instanceName,
+        agentId: ga.agentId,
+        // Group `isDefault` is provisional here; the effective default is
+        // re-derived below across the WHOLE set so precedence holds.
+        isDefault: false,
+        source: null,
+        via: { group: group.key },
+      });
+    }
+  }
+
+  // Effective default. Direct default wins and is ALREADY set verbatim above
+  // (and the invariant guarantees at most one direct default). Only when there
+  // is NO direct default do we elect ONE default among the GROUP-ONLY candidates
+  // by precedence (a direct-covered agent keeps `via:"user"` and is never the
+  // group/native default — direct provenance with no direct default means the
+  // user simply has no default among direct agents).
+  const hasDirectDefault = out.some((g) => g.via === "user" && g.isDefault);
+  if (!hasDirectDefault) {
+    const groupCandidates = out.filter((g) => g.via !== "user");
+    if (groupCandidates.length > 0) {
+      let chosen: EffectiveGrant | null = null;
+      // Tier 1: the first group (lowest groupId) that marked one of its shared
+      // agents as its default AND that agent is a group-only candidate here.
+      for (const { rows } of sharedByGroup) {
+        const def = rows.find((ga) => ga.isDefault === true);
+        if (!def) continue;
+        const cand = groupCandidates.find(
+          (g) =>
+            g.instanceName === def.instanceName && g.agentId === def.agentId,
+        );
+        if (cand) {
+          chosen = cand;
+          break;
+        }
+      }
+      // Tier 2: instance native default (isDefaultOnInstance) among candidates.
+      if (chosen === null) {
+        for (const g of groupCandidates) {
+          const agent = await ctx.db
+            .query("agents")
+            .withIndex("by_instance_agent", (q) =>
+              q.eq("instanceName", g.instanceName).eq("agentId", g.agentId),
+            )
+            .first();
+          if (agent?.isDefaultOnInstance) {
+            chosen = g;
+            break;
+          }
+        }
+      }
+      // Tier 3: code default — the first candidate in deterministic order.
+      if (chosen === null) chosen = groupCandidates[0];
+      if (chosen) chosen.isDefault = true;
+    }
+  }
+
+  return out;
+}
+
+/** SINGLE resolver for "which agent does this chat route to" — used by BOTH the
+ *  header chip (getChatAgent) AND the sidebar bridge badge (messages.listChats),
+ *  so they can never drift from each other or from dispatch. Mirrors dispatch's
+ *  resolveTargetForChat EXACTLY: honor the chat's binding unless that agent is
+ *  DELETED, else fall back to the default (skipping a deleted default) → first
+ *  non-deleted assignment. `null` only when every assigned agent is deleted.
+ *  Pure (operates on already-enriched agents); batch `enrichUserAgents` ONCE and
+ *  map many chats through this — never call it per-chat with its own reads. */
+export function resolveAgentForChat(
+  agents: EnrichedUserAgent[],
+  chat: { instanceName?: string; agentId?: string },
+): EnrichedUserAgent | null {
+  const bound =
+    chat.instanceName && chat.agentId
+      ? agents.find(
+          (a) =>
+            a.instanceName === chat.instanceName &&
+            a.agentId === chat.agentId &&
+            a.state !== "deleted",
+        )
+      : undefined;
+  const fallback =
+    [...agents]
+      .sort((a, b) => (a.isDefault === b.isDefault ? 0 : a.isDefault ? -1 : 1))
+      .find((a) => a.state !== "deleted") ?? null;
+  return bound ?? fallback;
+}
+
+export async function enrichUserAgents(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<EnrichedUserAgent[]> {
+  // Consume the shared union (P2): with NO groups this is the user's direct rows
+  // in by_user order with the same isDefault, so the loop below — and therefore
+  // the whole output (agents, default, states) — is identical to pre-P2.
+  const grants = await getEffectiveGrants(ctx, userId);
+  const out: EnrichedUserAgent[] = [];
+  for (const r of grants) {
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", r.instanceName).eq("agentId", r.agentId),
+      )
+      .first();
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", r.instanceName))
+      .first();
+    const discovery = await ctx.db
+      .query("instanceDiscovery")
+      .withIndex("by_instance", (q) => q.eq("instanceName", r.instanceName))
+      .first();
+    // state priority (mirrors routing.isDeleted — Codex P2): a KNOWN deletion
+    // (agent.presentInLastOk === false, set ONLY by a successful poll and never
+    // erased by a failed one) wins over "stale", so a discovery blip can NOT
+    // re-offer a known-deleted agent in the picker / single-agent auto-bind.
+    // Then: never polled => unknown; last poll failed (but not known-deleted) =>
+    // stale; successful poll with no row => deleted; else present => ok.
+    let state: EnrichedUserAgent["state"] = "ok";
+    if (agent && agent.presentInLastOk === false) state = "deleted";
+    else if (!discovery) state = "unknown";
+    else if (!discovery.lastPollOk) state = "stale";
+    else if (!agent) state = "deleted";
+    out.push({
+      instanceName: r.instanceName,
+      agentId: r.agentId,
+      isDefault: r.isDefault,
+      // A group-only grant has no userAgents.source; surface it as "auto" (it is
+      // not a manual per-user assignment). Direct grants keep their own source.
+      source: r.source ?? "auto",
+      displayName: agent?.displayName ?? null,
+      emoji: agent?.emoji ?? null,
+      model: agent?.model ?? null,
+      kind: instance?.kind ?? "openclaw",
+      state,
+      via: r.via,
+    });
+  }
+  return out;
+}
+
+/** The EFFECTIVE user's agents (impersonation-aware — red-team M3). Feeds the
+ *  new-chat picker + the chat-creation gate. */
+export const listMyAgents = query({
+  args: {},
+  handler: async (ctx) => {
+    const { userId } = await requireActive(ctx);
+    return enrichUserAgents(ctx, userId);
+  },
+});
+
+/** The agent a chat is (or will be) routed to + whether the user has a CHOICE.
+ *  Powers the chat-header agent chip, which the frontend shows ONLY when
+ *  `multiAgent` (the user's explicit requirement: surface "which agent" only
+ *  when more than one is associated — a single-agent user never sees clutter).
+ *
+ *  `agent` mirrors dispatch's resolveTargetForChat default fallback: the chat's
+ *  bound agent when set AND still in the user's list, else the user's default —
+ *  so the chip names the agent the NEXT turn actually dispatches to (a legacy/
+ *  unbound chat shows the default, not "none"). Owner-scoped; impersonation-aware
+ *  (effective user, like listMyAgents); tolerant of a malformed/deleted chatId
+ *  (returns null, never throws — same contract as messages.getSessionMeta). */
+export const getChatAgent = query({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    const { userId } = await requireActive(ctx);
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return null;
+    const chat = await ctx.db.get(id);
+    if (chat === null) return null;
+    if (chat.userId !== userId) {
+      throw new Error("Forbidden: chat not owned by user");
+    }
+
+    const agents = await enrichUserAgents(ctx, userId);
+    // The chip exists ONLY to disambiguate between several agents. With 0 or 1
+    // agent there is nothing to disambiguate -> never surface it.
+    if (agents.length <= 1) {
+      return { multiAgent: false as const, agent: null };
+    }
+
+    // The agent the NEXT turn will actually dispatch to (shared with the sidebar
+    // badge — see resolveAgentForChat: honors a non-deleted binding, else the
+    // default, skipping any deleted agent).
+    const resolved = resolveAgentForChat(agents, chat);
+    // Inherited when the resolved agent is NOT the chat's own (live) binding — a
+    // legacy/unbound chat, or a chat whose binding was deleted and re-bound.
+    const inheritedDefault = !(
+      resolved &&
+      chat.instanceName === resolved.instanceName &&
+      chat.agentId === resolved.agentId
+    );
+    return {
+      multiAgent: true as const,
+      agent: resolved
+        ? {
+            instanceName: resolved.instanceName,
+            agentId: resolved.agentId,
+            displayName: resolved.displayName,
+            emoji: resolved.emoji,
+            state: resolved.state,
+            isDefault: resolved.isDefault,
+            inheritedDefault,
+          }
+        : null,
+    };
+  },
+});
+
+/** Admin: one user's agents (the Users Access editor). */
+export const listUserAgents = query({
+  args: { profileId: v.id("profiles") },
+  handler: async (ctx, { profileId }) => {
+    await requireAdmin(ctx);
+    const profile = await ctx.db.get(profileId);
+    if (profile === null) throw new Error("Not found: profile");
+    // DIRECT grants ONLY (via "user"). This editor MUTATES the userAgents table
+    // (assign/remove/setDefaultAgent all key on a direct row), so it must show
+    // exactly what those mutations can act on -- a group-INHERITED agent has no
+    // userAgents row, so removeAgent would no-op and setDefaultAgent would throw.
+    // The full union WITH provenance is the read-only Accès (introspection) tab.
+    // Direct entries keep their own isDefault verbatim (getEffectiveGrants only
+    // elects a default among via!="user" candidates), so the star stays correct.
+    const enriched = await enrichUserAgents(ctx, profile.userId);
+    return enriched.filter((a) => a.via === "user");
+  },
+});
+
+// ===========================================================================
+// WRITE — userAgents (admin). Invariants: assign only DISCOVERED+present agents;
+// exactly one default whenever >=1 row (by_user RANGE READ — red-team H3); remove
+// re-elects a default (red-team H2).
+// ===========================================================================
+
+async function userIdOfProfile(
+  ctx: MutationCtx,
+  profileId: Id<"profiles">,
+): Promise<Id<"users">> {
+  const profile = await ctx.db.get(profileId);
+  if (profile === null) throw new Error("Not found: profile");
+  return profile.userId;
+}
+
+async function agentRow(
+  ctx: MutationCtx,
+  instanceName: string,
+  agentId: string,
+): Promise<Doc<"agents"> | null> {
+  return await ctx.db
+    .query("agents")
+    .withIndex("by_instance_agent", (q) =>
+      q.eq("instanceName", instanceName).eq("agentId", agentId),
+    )
+    .first();
+}
+
+/** Admin: grant a user access to a DISCOVERED agent. First agent becomes default. */
+export const assignAgent = mutation({
+  args: {
+    profileId: v.id("profiles"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { profileId, instanceName, agentId }) => {
+    await requireAdmin(ctx);
+    // Only DISCOVERED + currently-present agents are assignable. This is what
+    // makes "Agent X no longer exists" structurally impossible for the admin
+    // (red-team M1: manual/unverified is a separate, later path).
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null || agent.source !== "discovered" || !agent.presentInLastOk) {
+      throw new Error(
+        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present agent`,
+      );
+    }
+    const userId = await userIdOfProfile(ctx, profileId);
+    // RANGE READ over by_user (H3) — also serves as the dedupe + first-agent check.
+    const existing = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (existing.some((r) => r.instanceName === instanceName && r.agentId === agentId)) {
+      return; // idempotent — already assigned
+    }
+    const isFirst = existing.length === 0;
+    await ctx.db.insert("userAgents", {
+      userId,
+      instanceName,
+      agentId,
+      isDefault: isFirst, // first agent is the default; else admin sets it
+      source: "manual",
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** Admin: revoke an agent. If it was the default and others remain, RE-ELECT
+ *  one (red-team H2 — never leave a user with agents but no default). */
+export const removeAgent = mutation({
+  args: {
+    profileId: v.id("profiles"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { profileId, instanceName, agentId }) => {
+    await requireAdmin(ctx);
+    const userId = await userIdOfProfile(ctx, profileId);
+    const rows = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const target = rows.find(
+      (r) => r.instanceName === instanceName && r.agentId === agentId,
+    );
+    if (!target) return; // idempotent
+    await ctx.db.delete(target._id);
+    if (target.isDefault) {
+      const remaining = rows.filter((r) => r._id !== target._id);
+      if (remaining.length > 0) {
+        await ctx.db.patch(remaining[0]._id, { isDefault: true });
+      }
+    }
+  },
+});
+
+/** Admin: set a user's default agent. Clears the previous default in the SAME
+ *  mutation (range read over by_user — H3: OCC serializes concurrent writes). */
+export const setDefaultAgent = mutation({
+  args: {
+    profileId: v.id("profiles"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { profileId, instanceName, agentId }) => {
+    await requireAdmin(ctx);
+    const userId = await userIdOfProfile(ctx, profileId);
+    const rows = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const target = rows.find(
+      (r) => r.instanceName === instanceName && r.agentId === agentId,
+    );
+    if (!target) throw new Error("Not found: userAgent (assign it first)");
+    for (const r of rows) {
+      const shouldBeDefault = r._id === target._id;
+      if (r.isDefault !== shouldBeDefault) {
+        await ctx.db.patch(r._id, { isDefault: shouldBeDefault });
+      }
+    }
+  },
+});

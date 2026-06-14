@@ -1,0 +1,161 @@
+{
+  "_about": "Real OpenClaw Gateway frame shapes, extracted from the battle-tested Open WebUI pipe test suite (openclaw-notes/open-webui/openclaw_gateway_pipe_test.py) and production frame probes (HANDOFF-OPENWEBUI-2026-05-17.md). Each scenario protects a regression the bridge has hit before. Media paths use the real /home/node/.openclaw/media/outbound/ shape so the sanitizer exercises real conversion. sessionKey is the bridge 'webchat' namespace. These fixtures are replayed by tests/test_normalizer.py; do not edit shapes without a matching test update.",
+  "session_key": "agent:main:webchat:chat:u-testuser01:own-chat",
+  "run_id": "run-own",
+  "scenarios": {
+    "chat-final-content": {
+      "description": "5.19 official path: full payload.message snapshot, list content, state delta then final. Snapshot replaces; final closes with 'Bonjour !'.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 1, "state": "delta", "message": {"role": "assistant", "content": [{"type": "text", "text": "Bon"}]}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Bonjour !"}]}}}
+      ]
+    },
+    "chat-final-content-string": {
+      "description": "Same path but message.content is a plain string, not a list of parts.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 1, "state": "final", "message": {"role": "assistant", "content": "Réponse en texte simple."}}}
+      ]
+    },
+    "chat-final-empty-then-content": {
+      "description": "Empty final (no message, no deltaText) is NOT turn-end. A foreign 'health' broadcast is dropped; the real assistant text arrives after and wins.",
+      "frames": [
+        {"event": "health", "payload": {"ok": true}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "seq": 1}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"text": "Réponse arrivée après final vide."}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "seq": 2, "message": {"role": "assistant", "content": [{"type": "text", "text": "Réponse arrivée après final vide."}]}}}
+      ]
+    },
+    "duplicate-final": {
+      "description": "Exact re-broadcast (same runId/seq/state/deltaText/content) is deduped; distinct seq passes. Result 'Hello Hello world!'.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "delta", "deltaText": "Hello ", "seq": 10}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "delta", "deltaText": "Hello ", "seq": 10}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "delta", "deltaText": "Hello ", "seq": 11}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "deltaText": "world!", "seq": 12}}
+      ]
+    },
+    "lifecycle-end-then-followon-run": {
+      "description": "Empty final + lifecycle:end (working) on run-own, then a follow-on run run-follow with real text. Follow-on is admitted during the lifecycle-end grace.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "seq": 1}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end", "livenessState": "working"}, "seq": 2}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-follow", "stream": "lifecycle", "data": {"phase": "start"}, "seq": 1}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-follow", "stream": "assistant", "data": {"text": "Réponse de suivi."}, "seq": 2}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-follow", "state": "final", "seq": 3, "message": {"role": "assistant", "content": [{"type": "text", "text": "Réponse de suivi."}]}}}
+      ]
+    },
+    "compaction-abandoned-replay": {
+      "description": "livenessState=='abandoned' resets buffers; restart deltas replace. Result 'part2', not 'part1part2'.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "part1"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end", "livenessState": "abandoned", "replayInvalid": true}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "start"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "part2"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end", "livenessState": "working"}}}
+      ]
+    },
+    "normal-end-working-replayinvalid": {
+      "description": "livenessState=='working' with replayInvalid is a NORMAL end (cache invalidated, no restart). Must NOT reset buffers.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "complete answer"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end", "livenessState": "working", "replayInvalid": true}}}
+      ]
+    },
+    "agent-assistant-delta-legacy": {
+      "description": "Legacy 5.7: agent stream=assistant data.delta chunks accumulated, terminated by lifecycle:end. Result 'Hello world'.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "Hello "}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "world"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end"}}}
+      ]
+    },
+    "chat-deltatext-spaces": {
+      "description": "deltaText chunks accumulate with leading/trailing spaces preserved verbatim.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "delta", "deltaText": "Voici l'image", "seq": 1}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "deltaText": " générée !", "seq": 2}}
+      ]
+    },
+    "tool-message-visible": {
+      "description": "message tool (action send, current channel) carries the visible reply; a following private-ack chat:final must NOT overwrite it.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "tool", "data": {"phase": "start", "name": "message", "toolCallId": "msg-send", "args": {"action": "send", "message": "Réponse visible complète."}}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Envoyé."}]}}}
+      ]
+    },
+    "tool-message-external-target-ignored": {
+      "description": "message tool to an external target (Telegram) is NOT the current-chat reply and must be ignored.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "tool", "data": {"phase": "start", "name": "message", "args": {"action": "send", "to": "telegram:123", "message": "Pour quelqu'un d'autre."}}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Réponse réelle."}]}}}
+      ]
+    },
+    "mediaurls-list": {
+      "description": "data.mediaUrls list on the assistant frame; only safe outbound paths survive (dup collapsed, empty/int/https/../inbound rejected).",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "done", "mediaUrls": ["/home/node/.openclaw/media/outbound/a.pdf", "/home/node/.openclaw/media/outbound/a.pdf", "", 123, "https://evil.example/b.pdf", "/home/node/.openclaw/media/outbound/../secret.pdf", "/home/node/.openclaw/media/inbound/b.pdf", "/home/node/.openclaw/media/outbound/c.pdf"]}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end"}}}
+      ]
+    },
+    "media-directive": {
+      "description": "MEDIA: line inside the assistant text is converted to a signed link by the sanitizer; the raw /home/node path never reaches the browser.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"text": "voir:\nMEDIA:/home/node/.openclaw/media/outbound/r.pdf\nfin"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "end"}}}
+      ]
+    },
+    "private-ack-then-visible": {
+      "description": "Private ack ('Envoyé.') then the real visible message with same state but different content. The ack is suppressed; the second final wins (content fingerprint differs so it is not deduped).",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"text": "Envoyé."}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Envoyé."}]}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "L'identifiant visible."}]}}}
+      ]
+    },
+    "private-ack-only": {
+      "description": "Only a private ack arrives and nothing follows. After the grace, the turn must finalize gracefully (best-effort = the ack), never hang.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Envoyé."}]}}}
+      ]
+    },
+    "message-tool-item-then-private-ack": {
+      "description": "6.5 (bench-verified shape per normalizer.ts handleStream stream:item): the gateway-run message-tool surfaces as an ITEM frame (stream:item, data.kind:tool, data.name:message) carrying NO visible text, then the turn holds a private-ack final. Arms wantsHistoryRecovery (sawMessageToolItem + no real content + private_ack) -> the session loop must run sessions.get recovery (reviews #11/#14 P1). The delivered reply lives in the transcript alone.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "item", "data": {"itemId": "item-msg-1", "phase": "end", "kind": "tool", "name": "message", "title": "message", "status": "ok"}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "message": {"role": "assistant", "content": [{"type": "text", "text": "Envoyé."}]}}}
+      ]
+    },
+    "duplicate-empty-final": {
+      "description": "Two identical empty finals (same runId/seq, no content). The dedup key collapses them; the turn must finalize gracefully after the grace, never double-arm or hang.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "seq": 1}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "state": "final", "seq": 1}}
+      ]
+    },
+    "lifecycle-error": {
+      "description": "lifecycle phase=error with a structured error finalizes the turn as error and surfaces a concise message.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "assistant", "data": {"delta": "moitié"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "lifecycle", "data": {"phase": "error", "error": "Context overflow: prompt too large.", "livenessState": "blocked"}}}
+      ]
+    },
+    "isolation-foreign-session": {
+      "description": "A frame for a DIFFERENT session must be dropped entirely.",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:other-chat", "runId": "run-foreign", "stream": "assistant", "data": {"delta": "LEAK"}}}
+      ]
+    },
+    "isolation-same-session-foreign-run": {
+      "description": "Same sessionKey but a background run id NOT in own_run_ids must be dropped (sessionKey match alone is insufficient).",
+      "frames": [
+        {"event": "agent", "payload": {"sessionKey": "agent:main:webchat:chat:u-testuser01:own-chat", "runId": "image_generate:bg:ok", "stream": "assistant", "data": {"text": "background run output"}}}
+      ]
+    },
+    "isolation-sessionless": {
+      "description": "A frame with no sessionKey is unattributable and must be dropped (no legitimate content-bearing frame lacks sessionKey in real captures).",
+      "frames": [
+        {"event": "agent", "payload": {"stream": "assistant", "data": {"delta": "NO-SESSION-LEAK"}}}
+      ]
+    }
+  }
+}

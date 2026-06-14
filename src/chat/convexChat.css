@@ -1,0 +1,3589 @@
+/* Styles for the Convex + assistant-ui chat surface (new components only).
+   Import once from main.tsx (or your entry) alongside styles.css. */
+
+.oc-boot,
+.oc-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted-foreground);
+}
+
+/* In-application empty/error states (not-found chat, unknown route, route error).
+   Centered inside the chat pane / shell outlet — the app chrome stays intact. */
+.oc-notfound,
+.oc-route-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100%;
+  min-height: 60vh;
+  padding: 2rem;
+  text-align: center;
+}
+.oc-notfound__icon,
+.oc-route-error__icon {
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.oc-notfound__title,
+.oc-route-error__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-notfound__body,
+.oc-route-error__body {
+  margin: 0;
+  max-width: 32rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.oc-route-error__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.oc-notfound__cta,
+.oc-route-error__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius, 0.5rem);
+  border: 1px solid transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.oc-notfound__cta:hover,
+.oc-route-error__cta:hover {
+  background: color-mix(in srgb, var(--primary) 88%, black);
+}
+.oc-route-error__cta--ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--foreground);
+}
+.oc-route-error__cta--ghost:hover {
+  background: var(--muted);
+}
+
+/* Visually hidden but exposed to assistive tech (the standard SR-only clip). */
+.oc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.oc-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 100vh;
+  padding: 2rem;
+}
+.oc-signin__btn {
+  padding: 0.6rem 1.2rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  cursor: pointer;
+}
+.oc-signin__btn--dev {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+.oc-signin__hint {
+  margin: -0.4rem 0 0;
+  max-width: 22rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+}
+.oc-signin__error {
+  margin: 0;
+  max-width: 22rem;
+  text-align: center;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--destructive, #e5484d) 14%, var(--background));
+  border: 1px solid color-mix(in oklch, var(--destructive, #e5484d) 45%, var(--border));
+  color: var(--foreground);
+}
+
+/* App shell: global top bar + workspace (sidebar | main). All colors come from
+   shadcn tokens so light/dark stay coherent — no hardcoded hex. */
+.oc-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.oc-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+.oc-topbar__brand {
+  font-weight: 600;
+}
+.oc-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+/* Flex row (NOT a fixed grid): the sidebar column owns its width via
+   `flex: 0 0 <width>px` (resizable, see useSidebarLayout) and the main area
+   takes the rest. A fixed grid track here would clip/overlap the main content
+   whenever the sidebar width differs from the track. */
+.oc-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.oc-sidebar {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  overflow-y: auto;
+  background: var(--sidebar);
+}
+.oc-sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin-top: 0.5rem;
+}
+
+.oc-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.oc-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.oc-thread {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative; /* anchor for the absolute scroll-to-bottom pill */
+}
+/* Conversation column. Messages are centered in a readable column whose width
+   tracks the workspace (the cap keeps line length comfortable; collapsing the
+   sidebar widens the workspace and the column re-centers, gaining space on the
+   left). --oc-thread-w is the single knob for that width. */
+.oc-thread {
+  --oc-thread-w: 48rem;
+}
+.oc-thread__viewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem 1rem 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.75rem;
+}
+
+/* ── Chat-header "spotted strip" (CHAT_UX_DESIGN Part 3) ───────────────────
+   A thin, low-emphasis bar above the transcript. Left: chat title (meaning
+   first). Right: OpenClaw session knobs surfaced as features — model chip,
+   reasoning (thinking) chip with inheritance hint, and the always-visible
+   context-usage meter (the deliberate "spotted" target, color escalates). */
+.oc-chathead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.75rem;
+  padding: 0.45rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+.oc-chathead__title {
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-chathead__meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.oc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+.oc-chip__icon {
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+.oc-chip__hint {
+  margin-left: 0.3rem;
+  padding: 0.02rem 0.32rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+/* Clickable chip variant (the "Avancé" write-back trigger). */
+.oc-chip--btn {
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.oc-chip--btn:hover {
+  color: var(--foreground);
+  background: var(--accent);
+  border-color: var(--ring);
+}
+.oc-chip--btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oc-chip__chev {
+  opacity: 0.55;
+}
+/* Agent-identity chip (the "which agent is this conversation on" indicator,
+   shown only when the user has more than one agent). Visually IDENTICAL to the
+   neutral capability chips (model/reasoning) — the info just needs to be present,
+   not emphasized. Only a genuinely problematic agent state (deleted/stale) gets a
+   subtle warning tint. */
+.oc-chip--agent.is-warn {
+  background: color-mix(in srgb, var(--destructive) 12%, var(--muted));
+  border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
+}
+.oc-chip__emoji {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+/* "défaut" marker inside the reasoning radio list. */
+.oc-menu__hint {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+/* Muted footnote (e.g. the deliberate verbosity exclusion). */
+.oc-menu__note {
+  padding: 0.3rem 0.5rem 0.15rem;
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+.oc-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+.oc-meter__track {
+  width: 3.5rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted-foreground) 22%, transparent);
+  overflow: hidden;
+}
+.oc-meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 200ms ease;
+}
+.oc-meter__label {
+  font-weight: 500;
+}
+/* Calm → escalating usage colors (universal meter language, theme-stable). */
+.oc-meter.is-ok .oc-meter__fill {
+  background: oklch(0.62 0.15 150);
+}
+.oc-meter.is-warn .oc-meter__fill {
+  background: oklch(0.74 0.16 75);
+}
+.oc-meter.is-critical .oc-meter__fill {
+  background: var(--destructive);
+}
+.oc-meter.is-warn .oc-meter__label {
+  color: oklch(0.56 0.13 75);
+}
+.oc-meter.is-critical .oc-meter__label {
+  color: var(--destructive);
+}
+@media (max-width: 560px) {
+  .oc-meter__label {
+    display: none;
+  }
+}
+
+/* ── Empty state: capability transparency + suggested prompts ─────────────── */
+.oc-emptystate {
+  margin: auto 0;
+  width: 100%;
+  max-width: var(--oc-thread-w);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.4rem;
+  padding: 2rem 0;
+}
+.oc-emptystate__avatar {
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  place-items: center;
+  margin-bottom: 0.5rem;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.oc-emptystate__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* ── Scroll-to-bottom pill (auto-hidden when already at the bottom) ───────── */
+.oc-scrolldown {
+  position: absolute;
+  left: 50%;
+  bottom: 5.5rem;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--foreground);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.12);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+.oc-scrolldown:hover {
+  background: var(--muted);
+}
+/* assistant-ui DISABLES (does not unmount) this pill when the viewport is at the
+   bottom — so hide the disabled state. It is already position:absolute (out of
+   flow), so showing/hiding it never shifts the transcript. Net effect: the pill
+   appears ONLY when the user has scrolled up (by design). */
+.oc-scrolldown:disabled {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ── Per-message action bar (copy / regenerate), hover-revealed ──────────────
+   Positioned ABSOLUTELY into the column's reserved padding-bottom so toggling it
+   on hover never reflows the transcript (the hover-shift fix). */
+.oc-msg__actions {
+  position: absolute;
+  bottom: 0;
+  left: -0.35rem;
+  display: flex;
+  gap: 0.15rem;
+}
+.oc-iconbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.oc-iconbtn:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-iconbtn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+/* Destructive variant (message delete): neutral at rest, red on hover/focus. */
+.oc-iconbtn--danger:hover {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+}
+/* Active toggle (e.g. the "Source" view is showing). */
+.oc-iconbtn.is-on {
+  color: var(--foreground);
+  background: var(--muted);
+}
+/* In-flight state (e.g. delete awaiting its mutation): spinner + no pointer. */
+.oc-iconbtn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.oc-iconbtn__spin {
+  animation: oc-spin 1s linear infinite;
+}
+
+/* ── Report Feedback dialog (UI-9) — category + comment, then the server's
+   browser-fidelity verdict. */
+.oc-feedback__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.oc-feedback__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--foreground);
+  margin-top: 0.35rem;
+}
+.oc-feedback__textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 0.55rem 0.7rem;
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.oc-feedback__textarea:focus-visible {
+  outline: none;
+  border-color: var(--ring, var(--foreground));
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, var(--foreground)) 24%, transparent);
+}
+.oc-feedback__count {
+  align-self: flex-end;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-feedback__result {
+  padding: 0.2rem 0;
+}
+.oc-feedback__fidelity {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+.oc-feedback__fidelity.is-ok {
+  background: color-mix(in oklch, var(--primary, green) 12%, var(--background));
+  border-color: color-mix(in oklch, var(--primary, green) 40%, var(--border));
+}
+.oc-feedback__fidelity.is-warn {
+  background: color-mix(in oklch, var(--destructive, orange) 14%, var(--background));
+  border-color: color-mix(in oklch, var(--destructive, orange) 45%, var(--border));
+}
+
+/* ── Admin feedback detail (Settings › Feedbacks, increment B) */
+.oc-fbadmin__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.4rem 0.2rem 0.6rem;
+}
+.oc-fbadmin__detail section { display: flex; flex-direction: column; gap: 0.3rem; }
+.oc-fbadmin__h {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.oc-fbadmin__row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.oc-fbadmin__meta { font-size: 0.82rem; color: var(--muted-foreground); }
+.oc-fbadmin__comment {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--muted);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+}
+.oc-fbadmin__pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+.oc-fbadmin__pill.is-ok {
+  background: color-mix(in oklch, var(--primary, green) 14%, var(--background));
+  color: var(--foreground);
+  border-color: color-mix(in oklch, var(--primary, green) 45%, var(--border));
+}
+.oc-fbadmin__pill.is-warn {
+  background: color-mix(in oklch, var(--destructive, orange) 16%, var(--background));
+  color: var(--foreground);
+  border-color: color-mix(in oklch, var(--destructive, orange) 50%, var(--border));
+}
+.oc-fbadmin__ctx { display: flex; flex-direction: column; gap: 0.3rem; }
+.oc-fbadmin__ctx-turn {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.4rem;
+  border-left: 2px solid var(--border);
+}
+.oc-fbadmin__ctx-role { color: var(--muted-foreground); font-weight: 600; }
+.oc-fbadmin__ctx-text { white-space: pre-wrap; word-break: break-word; }
+.oc-fbadmin__env { margin: 0; font-size: 0.78rem; color: var(--muted-foreground); display: flex; flex-direction: column; gap: 0.2rem; }
+.oc-fbadmin__ua { font-family: var(--font-mono); font-size: 0.72rem; opacity: 0.75; }
+.oc-fbadmin__plugins { font-size: 0.78rem; }
+.oc-fbadmin__note { opacity: 0.7; font-style: italic; }
+.oc-fbadmin__thread { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.5rem; }
+
+/* ── Notification bell + per-user notification zone (UI-9 increment C) */
+.oc-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.oc-bell:hover { background: var(--muted); }
+.oc-bell__badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--destructive, #e5484d);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.oc-notif {
+  width: 360px;
+  max-width: 92vw;
+  padding: 0;
+  max-height: 70vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.oc-notif__head {
+  padding: 0.6rem 0.8rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+}
+.oc-notif__head--sub {
+  font-size: 0.74rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--muted-foreground);
+  border-top: 1px solid var(--border);
+}
+.oc-notif__bulk { display: flex; gap: 0.35rem; }
+.oc-notif__act {
+  font-size: 0.72rem; color: var(--muted-foreground); cursor: pointer;
+  background: none; border: none; padding: 0.1rem 0.2rem; border-radius: 0.3rem;
+}
+.oc-notif__act:hover:not(:disabled) { color: var(--foreground); background: var(--muted); }
+.oc-notif__act:disabled { opacity: 0.4; cursor: default; }
+.oc-notif__item.is-link { cursor: pointer; }
+.oc-notif__item.is-link:hover { background: var(--muted); }
+.oc-notif__title { font-weight: 600; font-size: 0.82rem; flex: 1 1 auto; min-width: 0; }
+.oc-notif__body { margin: 0; font-size: 0.82rem; color: var(--muted-foreground); }
+.oc-notif__row-actions { display: flex; gap: 0.15rem; flex: 0 0 auto; }
+.oc-notif__row-actions button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.4rem; height: 1.4rem; border: none; background: none; cursor: pointer;
+  color: var(--muted-foreground); border-radius: 0.3rem;
+}
+.oc-notif__row-actions button:hover { color: var(--foreground); background: var(--background); }
+.oc-notif__kind { flex: 0 0 auto; }
+.oc-notif__kind--anomaly_open { color: oklch(0.7 0.17 50); }
+.oc-notif__kind--anomaly_resolved { color: oklch(0.7 0.16 150); }
+.oc-notif__kind--feedback_reply { color: var(--muted-foreground); }
+.oc-notif__empty { padding: 1rem 0.8rem; color: var(--muted-foreground); font-size: 0.85rem; }
+.oc-notif__list { overflow-y: auto; }
+.oc-notif__item {
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.oc-notif__item.is-unread { background: color-mix(in oklch, var(--primary, blue) 7%, var(--background)); }
+.oc-notif__item-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.oc-notif__cat { font-weight: 600; font-size: 0.82rem; }
+.oc-notif__status {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+.oc-notif__status.is-answered {
+  background: color-mix(in oklch, var(--primary, green) 14%, var(--background));
+  color: var(--foreground);
+  border-color: color-mix(in oklch, var(--primary, green) 45%, var(--border));
+}
+.oc-notif__when { font-size: 0.72rem; color: var(--muted-foreground); }
+.oc-notif__comment { margin: 0; font-size: 0.82rem; font-style: italic; color: var(--muted-foreground); }
+.oc-notif__thread { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.15rem; }
+.oc-notif__msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-md);
+  font-size: 0.83rem;
+}
+.oc-notif__msg--admin { background: var(--muted); }
+.oc-notif__msg--user { background: color-mix(in oklch, var(--primary, blue) 9%, var(--background)); }
+.oc-notif__msg-who { font-size: 0.68rem; font-weight: 700; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: 0.03em; }
+.oc-notif__msg-text { white-space: pre-wrap; word-break: break-word; }
+.oc-notif__link { font-size: 0.74rem; color: var(--primary, #3b82f6); text-decoration: none; align-self: flex-start; }
+.oc-notif__link:hover { text-decoration: underline; }
+
+/* ── User UI-preferences panel (interface-config module) */
+/* Single root so the panel always occupies ONE cell of the settings grid
+   (a fragment used to split filter/list across the 220px|1fr columns).
+   Width is capped to a reading measure (~65-75 chars, CONF_RESEARCH). */
+.oc-prefs-panel { min-width: 0; max-width: 42rem; }
+.oc-prefs { display: flex; flex-direction: column; }
+.oc-prefs__empty { padding: 1rem; color: var(--muted-foreground); }
+/* Layer-cake group headers: scannable section anchors (CONF grammar) with
+   asymmetric spacing — more air before a group than after its header. */
+.oc-prefs__cat {
+  margin: 1.4rem 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+.oc-prefs__group:first-child .oc-prefs__cat { margin-top: 0.4rem; }
+.oc-prefs__row {
+  /* Table-like grid: the text wraps INSIDE its cell while the control stays
+     pinned right (a wrapping flex row dropped the checkbox below long
+     descriptions); the governance sub-line spans the full width below. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  padding: 0.6rem 0.1rem 0.6rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  /* provenance gutter (VS Code pattern): transparent until overridden */
+  border-left: 2px solid transparent;
+}
+.oc-prefs__row:last-child { border-bottom: none; }
+/* Grey the USER side only (info + control) — the governance sub-line of a
+   locked row must stay fully legible: its gate checkbox is the unlock. */
+.oc-prefs__row.is-locked > .oc-prefs__info,
+.oc-prefs__row.is-locked > .oc-prefs__ctl { opacity: 0.6; }
+.oc-prefs__row.is-overridden { border-left-color: var(--primary); }
+.oc-prefs__info { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.oc-prefs__label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 500; }
+.oc-prefs__help { font-size: 0.78rem; color: var(--muted-foreground); }
+.oc-prefs__lock {
+  font-size: 0.64rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--destructive, orange) 16%, var(--background));
+  color: var(--foreground);
+  border: 1px solid color-mix(in oklch, var(--destructive, orange) 45%, var(--border));
+}
+.oc-prefs__def {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+.oc-prefs__ctl { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
+.oc-prefs__reset {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.oc-prefs__reset:hover { color: var(--foreground); }
+
+/* ── Per-row governance zone (admin "manage defaults & locks" mode, merged from
+   the former Préférences UI tab). Compact muted sub-line under the user row —
+   it must not degrade the everyday (non-governing) row, which simply omits it. */
+.oc-prefs__gov-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.oc-prefs__gov-head {
+  margin: 0 0 0.8rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+}
+.oc-prefs__gov-head p {
+  margin: 0 0 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-prefs__gov-head p:last-child { margin-bottom: 0; }
+.oc-prefs__gov {
+  grid-column: 1 / -1; /* full-width sub-line under the info|control grid row */
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+}
+.oc-prefs__gov-row { display: flex; align-items: center; gap: 0.6rem; }
+.oc-prefs__gov-label {
+  font-size: 0.64rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted-foreground);
+}
+.oc-prefs__gov-gate {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--foreground);
+}
+.oc-prefs__gov-help { font-size: 0.72rem; color: var(--muted-foreground); }
+
+/* ── Admin "Préférences UI" tab (RETIRED) — classes kept: IntegrationsTab still
+   uses .oc-uipa__h / .oc-uipa__note for its section headers. */
+.oc-uipa__section { margin-bottom: 1.5rem; }
+.oc-uipa__h { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.25rem; }
+.oc-uipa__note { font-size: 0.8rem; color: var(--muted-foreground); margin: 0 0 0.6rem; }
+
+/* ── Admin "Intégrations" tab — config sections */
+.oc-int__section {
+  margin-bottom: 1.4rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-int__section-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.2rem; }
+.oc-int__fields { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.6rem; max-width: 480px; }
+.oc-int__field { display: flex; flex-direction: column; gap: 0.25rem; }
+.oc-int__field-label { font-size: 0.78rem; font-weight: 600; color: var(--foreground); }
+.oc-int__toggle { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; }
+.oc-int__toggle code, .oc-uipa__note code { font-family: var(--font-mono); font-size: 0.85em; }
+
+/* ── Raw "Source" view of a message — verbatim, convention-free (no markdown,
+   no autocorrect): exactly the stored text, monospace + wrapping + selectable.
+   The trust guarantee a user can rely on to confirm what was sent/received. */
+.oc-msg__source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+.oc-msg__source-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.oc-msg__source-pre {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  /* CRITICAL for a source-of-truth view: disable font ligatures / contextual
+     alternates so glyphs map 1:1 to code points — the font must never make "->"
+     look like an arrow or "!=" like "≠". The displayed glyph == the stored char. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "dlig" 0;
+}
+/* Inside the user bubble (already a muted surface), drop the box — the bubble
+   is the container; keep just the verbatim monospace text. */
+.oc-msg--user .oc-msg__source-pre {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.oc-msg {
+  display: flex;
+  width: 100%;
+  max-width: var(--oc-thread-w);
+}
+/* Micro-interaction: ONLY the last message fades + rises in. Scoping to
+   :last-child means opening/switching to a populated chat shows it SETTLED (the
+   prior turns are at rest) — only the newest turn animates, and each new arrival
+   becomes :last-child so it animates once on mount. The message id is the stable
+   Convex _id (unchanged streaming->complete), so a finalize never remounts the
+   node and the animation never re-fires mid-turn. Disabled under
+   prefers-reduced-motion (see the global guard at the end of the file). */
+.oc-thread__viewport > .oc-msg:last-child {
+  animation: oc-msg-in 0.22s ease-out both;
+}
+@keyframes oc-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* User turn: subtle low-contrast bubble, right-aligned (Open WebUI style). */
+.oc-msg--user {
+  justify-content: flex-end;
+}
+.oc-msg__bubble {
+  max-width: 85%;
+  padding: 0.625rem 0.95rem;
+  border-radius: 1.25rem;
+  background: var(--muted);
+  color: var(--foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+/* Assistant turn: avatar + name header, content on the page background (no
+   bubble) filling the column. */
+.oc-msg--assistant {
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+.oc-msg__avatar {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-top: 0.1rem;
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  display: grid;
+  place-items: center;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+.oc-msg__col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  /* Reserve the per-message action-bar row so REVEALING it on hover never pushes
+     the rest of the conversation down (the bar itself is positioned absolutely
+     into this reserved space — see .oc-msg__actions). */
+  position: relative;
+  padding-bottom: 1.9rem;
+}
+.oc-msg__name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+/* User-turn column: sized to the bubble + right-aligned (the bubble + its delete
+   action sit on the right). Reuses .oc-msg__col's reserved action-bar space. */
+.oc-msg__col--user {
+  flex: 0 1 auto;
+  align-items: flex-end;
+  max-width: 85%;
+}
+.oc-msg__col--user .oc-msg__bubble {
+  max-width: 100%;
+}
+.oc-msg__actions--user {
+  left: auto;
+  right: -0.35rem;
+}
+.oc-msg__body {
+  min-width: 0;
+  color: var(--foreground);
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+/* System turn: discreet centered note (plain text -> keep newlines). */
+.oc-msg--system {
+  justify-content: center;
+}
+.oc-msg--system .oc-msg__body {
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+}
+
+/* Markdown (assistant turns) — GitHub-flavored, themed via shadcn tokens.
+   Scoped to the MarkdownTextPrimitive wrapper so only assistant content is
+   affected; user/system stay plain. Matches the Open WebUI reading rhythm. */
+.oc-md {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--foreground);
+}
+.oc-md > :first-child {
+  margin-top: 0;
+}
+.oc-md > :last-child {
+  margin-bottom: 0;
+}
+.oc-md p {
+  margin: 0.7em 0;
+}
+.oc-md strong {
+  font-weight: 600;
+}
+.oc-md em {
+  font-style: italic;
+}
+.oc-md a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.oc-md a:hover {
+  text-decoration-color: currentColor;
+}
+/* Headings */
+.oc-md h1,
+.oc-md h2,
+.oc-md h3,
+.oc-md h4,
+.oc-md h5,
+.oc-md h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.5em;
+}
+.oc-md h1 { font-size: 1.4em; }
+.oc-md h2 { font-size: 1.25em; }
+.oc-md h3 { font-size: 1.1em; }
+.oc-md h4,
+.oc-md h5,
+.oc-md h6 { font-size: 1em; }
+/* Lists */
+.oc-md ul,
+.oc-md ol {
+  margin: 0.7em 0;
+  padding-left: 1.5rem;
+}
+.oc-md ul { list-style: disc; }
+.oc-md ol { list-style: decimal; }
+.oc-md li { margin: 0.25em 0; }
+.oc-md li::marker { color: var(--muted-foreground); }
+.oc-md li > ul,
+.oc-md li > ol { margin: 0.25em 0; }
+/* Inline code chip */
+.oc-md :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.12em 0.36em;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  white-space: break-spaces;
+}
+/* Code block */
+.oc-md pre {
+  margin: 0.8em 0;
+  padding: 0.85rem 1rem;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.oc-md pre code {
+  font-family: var(--font-mono);
+  background: none;
+  border: 0;
+  padding: 0;
+  white-space: pre;
+}
+/* Blockquote */
+.oc-md blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 0 0.1em 1rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+/* Tables (GFM) */
+.oc-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.9em;
+}
+.oc-md th,
+.oc-md td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.oc-md th {
+  background: var(--muted);
+  font-weight: 600;
+}
+/* Misc */
+.oc-md hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+.oc-md img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+}
+.oc-md input[type="checkbox"] {
+  margin-right: 0.4em;
+}
+
+/* ── Run status (calm state chips, CHAT_UX_DESIGN Part 3 "streaming/processing")
+   thinking = animated dots (the typing indicator while no text has arrived);
+   generating = a soft pulse + "Génération…"; error/aborted = Lucide icon +
+   legible French label. Driven by the pure `runStatusView` mapping. ─────────── */
+.oc-run-status {
+  display: inline-flex;
+  align-items: flex-start;
+  flex-wrap: wrap; /* a long error message wraps to a new line instead of
+                      squeezing the "Erreur" label into "Erre/ur" */
+  gap: 0.25rem 0.45rem;
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+.oc-run-status > svg {
+  flex-shrink: 0; /* never crush the status icon */
+  margin-top: 0.05rem;
+}
+.oc-run-status__label {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; /* the short label is atomic — never break it mid-word */
+  flex-shrink: 0;
+}
+.oc-run-status__error {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+/* "Réflexion…" — three dots bouncing in sequence (the typing indicator). */
+.oc-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.oc-dots > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: oc-bounce 1.2s ease-in-out infinite;
+}
+.oc-dots > span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.oc-dots > span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+/* "Génération…" — a single soft pulse (text is already flowing). */
+.oc-run-status__pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: oc-pulse 1.1s ease-in-out infinite;
+}
+.oc-run-status--error {
+  color: var(--destructive);
+}
+.oc-run-status--aborted {
+  color: color-mix(in srgb, var(--destructive) 55%, #d97706);
+}
+.oc-run-status__error {
+  color: var(--destructive);
+  font-size: 0.78rem;
+}
+@keyframes oc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+@keyframes oc-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* Tool card */
+/* Grouped tool activity (ToolActivity.tsx): a discreet, always-visible summary
+   line at the top of an assistant message + a collapsible detail holding the
+   ToolCards. The showTools pref only decides whether the detail STARTS
+   expanded (the old `.oc-hide-tools` display:none rule is gone — hiding the
+   cards entirely left zero feedback during long tool-heavy turns). Muted by
+   default, foreground on hover; charte tokens only (light + dark). */
+.oc-toolact {
+  margin: 0.15rem 0 0.5rem;
+}
+.oc-toolact__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.oc-toolact__summary:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+}
+.oc-toolact__summary:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+.oc-toolact__icon {
+  flex: 0 0 auto;
+}
+.oc-toolact__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+}
+.oc-toolact__spin {
+  animation: oc-spin 1s linear infinite;
+}
+/* Sober animated chevron: points right when collapsed, down when open. */
+.oc-toolact__chevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 150ms ease;
+}
+.oc-toolact.is-open .oc-toolact__chevron {
+  transform: rotate(90deg);
+}
+.oc-toolact__detail {
+  margin-top: 0.25rem;
+}
+/* The in-chat show/hide toggle, in the composer row. */
+.oc-composer__toolstoggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.oc-composer__toolstoggle.is-on {
+  color: var(--foreground);
+  border-color: var(--ring, var(--border));
+}
+.oc-composer__toolstoggle:hover {
+  color: var(--foreground);
+}
+.oc-composer__toolstoggle:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+
+.oc-tool {
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--card-foreground);
+  font-size: 0.85rem;
+}
+/* The tool header is the <summary> of the outer <details> (the whole tool
+   collapses to this single row). Hide the native marker; a chevron carries the
+   affordance. The divider shows ONLY when open, so a collapsed tool is a clean
+   single row. */
+.oc-tool__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.oc-tool__header::-webkit-details-marker {
+  display: none;
+}
+.oc-tool__header:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 6%, transparent);
+}
+.oc-tool[open] > .oc-tool__header {
+  border-bottom: 1px solid var(--border);
+}
+.oc-tool__chevron {
+  flex: 0 0 auto;
+  margin-left: 0.1rem;
+  color: var(--muted-foreground);
+  transition: transform 150ms ease;
+}
+.oc-tool[open] > .oc-tool__header .oc-tool__chevron {
+  transform: rotate(90deg);
+}
+.oc-tool__body {
+  padding-top: 0.15rem;
+}
+.oc-tool__name {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+/* One-line command/args preview in the collapsed header — takes the middle
+   space and ellipsizes, so a tool-heavy turn is legible without expanding each
+   card (the full input stays in the expandable block). */
+.oc-tool__preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-tool__phase {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+/* Neutral status glyph (lucide). NO green check — the "completed" text already
+   carries the state. Muted by default; only error gets a meaningful colour.
+   running = a spinning loader (the agent-plan "task" vocabulary, kept quiet). */
+.oc-tool__status {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+.oc-tool--error .oc-tool__status {
+  color: var(--destructive);
+}
+.oc-tool__status--spin {
+  animation: oc-spin 1s linear infinite;
+}
+@keyframes oc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.oc-tool__io {
+  padding: 0.3rem 0.6rem 0.55rem;
+}
+/* Disclosure label ("input"/"output"): a quiet, small uppercase tag — present
+   but not shouting. */
+.oc-tool__io > summary {
+  cursor: pointer;
+  width: fit-content;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+/* Tool input/output content: a SOFT recessed surface — same gentle token as the
+   markdown code blocks (var(--muted) + border), NOT an inverted high-contrast
+   block. Theme-adaptive: a light grey well in light mode, a softly-elevated dark
+   well in dark mode — clearly demarcated from the rest of the message, never a
+   bright/black slab that fatigues the eye. */
+.oc-tool__pre {
+  margin: 0.35rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+/* Copy affordance for a tool input/output block: hover-revealed in the top-right
+   corner of the block (the standard code-copy pattern), gentle. */
+.oc-tool__prewrap {
+  position: relative;
+}
+.oc-copybtn {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  display: inline-grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 150ms ease,
+    color 150ms ease,
+    background 150ms ease;
+}
+.oc-tool__prewrap:hover .oc-copybtn,
+.oc-copybtn:focus-visible {
+  opacity: 1;
+}
+.oc-copybtn:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.oc-copybtn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Media */
+.oc-media {
+  display: block;
+  margin: 0.5rem 0;
+}
+.oc-media__audio {
+  width: 100%;
+}
+.oc-media__img,
+.oc-media__video {
+  max-width: 100%;
+  border-radius: 8px;
+}
+.oc-media__name {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-top: 0.25rem;
+}
+.oc-media--file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: var(--foreground);
+}
+
+/* ── Unified composer card (design reference) ──────────────────────────────
+   ONE rounded surface centered on the readable column: the input sits on top, a
+   single action bar below it (+ / Outils on the left, circular Send on the
+   right). The CARD owns the border + focus ring (:focus-within) so focusing the
+   textarea never reflows anything. */
+.oc-composer {
+  align-self: center;
+  width: calc(100% - 2rem);
+  max-width: var(--oc-thread-w);
+  margin: 0 auto 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.65rem 0.5rem;
+  border: 1px solid var(--input);
+  border-radius: 1.5rem;
+  background: var(--card);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.06);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+/* The card's "active" ring lights ONLY when the TEXTAREA is focused — not when a
+   config control (Outils / + / mic / send) inside the card takes focus. Those
+   are settings placed in the chat zone, not "being in the chat"; clicking them
+   must not imply composing. (:has > :focus-within for exactly this reason.) */
+.oc-composer:has(.oc-composer__input:focus) {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
+}
+.oc-composer__input {
+  width: 100%;
+  resize: none;
+  min-height: 1.5rem;
+  max-height: 12rem;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  padding: 0.4rem 0.55rem 0;
+  font: inherit;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.oc-composer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.oc-composer__group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+/* Round icon button (the "+" attach). */
+.oc-composer__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.oc-composer__icon:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-composer__icon:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+/* Pill toggle (Outils). */
+.oc-composer__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.oc-composer__tools:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+/* Active (tools shown): a SOFT-TINTED pill — clearly "on" (the thin border read
+   as off) without the heaviness of a solid fill. A light foreground tint + a
+   marked border + slightly bolder text; theme-stable (works in dark mode). */
+.oc-composer__tools.is-on {
+  color: var(--foreground);
+  /* Visual uniformity: the SAME surface token as the tool-message content
+     (.oc-tool__pre = var(--muted)) — identical contrast against the card, in both
+     themes. The marked border + bolder text carry the "active" signal. */
+  background: var(--muted);
+  border-color: color-mix(in srgb, var(--foreground) 42%, transparent);
+  font-weight: 600;
+}
+.oc-composer__tools.is-on:hover {
+  background: color-mix(in srgb, var(--foreground) 8%, var(--muted));
+  color: var(--foreground);
+}
+.oc-composer__tools:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+/* Circular send / stop. */
+.oc-composer__send,
+.oc-composer__stop {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    opacity 150ms ease;
+}
+.oc-composer__send {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.oc-composer__send:hover {
+  background: color-mix(in srgb, var(--primary) 88%, var(--foreground));
+}
+.oc-composer__send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.oc-composer__stop {
+  background: var(--foreground);
+  color: var(--background);
+}
+.oc-composer__send:focus-visible,
+.oc-composer__stop:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* --- Pending screen ----------------------------------------------------- */
+.oc-pending {
+  display: flex; flex-direction: column; gap: 12px;
+  align-items: center; justify-content: center;
+  min-height: 100vh; padding: 24px; text-align: center;
+}
+.oc-pending__title { font-size: 1.3rem; font-weight: 600; }
+.oc-pending__body { color: var(--muted-foreground); max-width: 28rem; }
+
+.oc-admin { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.oc-admin__header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.oc-admin__header h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; }
+.oc-admin__body { padding: 16px 20px; overflow: auto; }
+/* The health bar now sits at the top of the content (the old settings header is
+   gone — the tab nav moved to the vertical SettingsNav in the left column). */
+.oc-admin > .oc-bridgebar { margin: 16px 20px 0; }
+
+/* Vertical settings navigation (left column — replaces the chat list while in
+   Settings; the brand + a back link return to chat). */
+.oc-settings-nav {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 8px;
+  gap: 2px;
+  overflow-y: auto;
+}
+/* Back link + title share the tabs' LEFT GUTTER: their text starts at the same x
+   as a tab label (grip width 1.25rem + 0.25rem gap), so the whole text column —
+   back, title, tab labels — is aligned, with the drag grips living in the gutter. */
+.oc-settings-nav__back {
+  display: block;
+  padding: 6px 10px 6px 1.5rem;
+  margin-bottom: 4px;
+  font-size: 0.85rem;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+.oc-settings-nav__back:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.oc-settings-nav__title {
+  padding: 6px 10px 6px 1.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-settings-nav__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* The sidebar lists the 4 GROUPS (the tabs themselves moved to the horizontal
+   .oc-settings-tabs bar atop the right panel). Group buttons share the back/
+   title left gutter (1.5rem) so the whole text column stays aligned. */
+.oc-settings-nav__group {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.5rem 0.45rem 1.5rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.oc-settings-nav__group:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.oc-settings-nav__group.is-active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-weight: 600;
+}
+
+/* Horizontal tab bar (top of the Settings right panel): the active group's
+   allowed tabs, underline on the active one. Scrolls horizontally on narrow
+   viewports (no wrap). Each item keeps the hover-revealed drag grip — the #91
+   per-user order now reorders WITHIN the group. */
+.oc-settings-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.oc-settings-tabs__item {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.oc-settings-tabs__grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: grab;
+  opacity: 0;
+  touch-action: none;
+}
+.oc-settings-tabs__item:hover .oc-settings-tabs__grip,
+.oc-settings-tabs__item:focus-within .oc-settings-tabs__grip {
+  opacity: 1;
+}
+.oc-settings-tabs__tab {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.6rem;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+.oc-settings-tabs__tab:hover {
+  color: var(--foreground);
+}
+.oc-settings-tabs__tab.is-active {
+  color: var(--foreground);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+.oc-settings-tabs__label {
+  white-space: nowrap;
+}
+.oc-admin__hint { color: var(--muted-foreground); font-size: 0.9rem; margin-bottom: 12px; }
+.oc-admin__form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.oc-admin__form input, .oc-admin__form select,
+.oc-table select, .oc-table input {
+  padding: 6px 8px; border: 1px solid var(--input); border-radius: var(--radius-sm);
+  background: var(--background); color: var(--foreground); font: inherit;
+}
+.oc-admin__form button, .oc-table button {
+  padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--primary); color: var(--primary-foreground); border: 0;
+}
+.oc-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.oc-table th, .oc-table td {
+  text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.oc-table th { color: var(--muted-foreground); font-weight: 500; }
+
+/* --- Theme showroom ----------------------------------------------------- */
+.oc-show { display: flex; flex-direction: column; gap: 2rem; max-width: 64rem; }
+.oc-show__section {
+  display: grid; grid-template-columns: 220px 1fr; gap: 1.5rem;
+  padding-bottom: 1.5rem; border-bottom: 1px solid var(--border);
+}
+.oc-show__title { font-size: 0.95rem; font-weight: 600; }
+.oc-show__desc { font-size: 0.8rem; color: var(--muted-foreground); margin-top: 0.25rem; }
+.oc-show__demo { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.oc-show__row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.oc-show__row--col { flex-direction: column; align-items: stretch; }
+.oc-show__check { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; }
+@media (max-width: 720px) {
+  .oc-show__section { grid-template-columns: 1fr; gap: 0.75rem; }
+}
+
+/* --- Apparence: charte graphique (P3) ----------------------------------- */
+.oc-appearance { display: flex; flex-direction: column; gap: 2rem; }
+.oc-appearance-admin {
+  display: flex; flex-direction: column; gap: 1.5rem;
+  padding-top: 1.5rem; border-top: 1px solid var(--border);
+}
+
+/* Per-user chart picker: a responsive grid of selectable palette cards. */
+.oc-chart-grid {
+  display: grid; gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.oc-chart-card {
+  display: flex; flex-direction: column; gap: 0.625rem;
+  padding: 0.75rem; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); color: var(--card-foreground);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.oc-chart-card:hover { border-color: var(--ring); }
+.oc-chart-card--selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.oc-chart-card__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; min-height: 1.25rem;
+}
+.oc-chart-card__title { font-size: 0.9rem; font-weight: 600; }
+.oc-chart-card__meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem;
+}
+.oc-chart-card__subtitle { font-size: 0.75rem; color: var(--muted-foreground); }
+
+.oc-chart-swatches {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 0.25rem; height: 1.5rem;
+}
+.oc-chart-swatch {
+  border-radius: 0.25rem; border: 1px solid var(--border);
+  background: var(--muted);
+}
+.oc-chart-swatches--native {
+  border: 1px dashed var(--border); border-radius: 0.25rem;
+  background:
+    repeating-linear-gradient(
+      45deg, var(--muted), var(--muted) 4px,
+      transparent 4px, transparent 8px
+    );
+}
+
+/* Admin availability matrix: one row per builtin. */
+.oc-chart-avail-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.oc-chart-avail {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.oc-chart-avail__head {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+}
+.oc-chart-avail__name { font-size: 0.9rem; font-weight: 600; }
+.oc-chart-avail__groups {
+  display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap;
+}
+.oc-chart-avail__chip {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+}
+.oc-chart-avail__chip-x {
+  display: inline-flex; align-items: center; cursor: pointer;
+  color: var(--muted-foreground);
+}
+.oc-chart-avail__chip-x:hover { color: var(--foreground); }
+
+/* Import a chart (P4): name + JSON textarea + .json file picker. */
+.oc-chart-import {
+  display: flex; flex-direction: column; gap: 0.75rem;
+  max-width: 640px;
+}
+.oc-chart-import__field {
+  display: flex; flex-direction: column; gap: 0.375rem;
+}
+.oc-chart-import__label {
+  font-size: 0.8rem; font-weight: 600; color: var(--muted-foreground);
+}
+.oc-chart-import__textarea {
+  width: 100%; min-height: 8rem; resize: vertical;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--background); color: var(--foreground);
+}
+.oc-chart-import__textarea:focus-visible {
+  outline: none; border-color: var(--ring);
+  box-shadow: 0 0 0 1px var(--ring);
+}
+.oc-chart-import__file {
+  display: inline-flex; align-items: center; gap: 0.375rem; cursor: pointer;
+}
+.oc-chart-import__file-input { display: none; }
+.oc-chart-import__error { font-size: 0.8rem; color: var(--destructive); }
+.oc-chart-import__ok { font-size: 0.8rem; color: var(--primary); }
+
+/* My charts (P4): per-chart edit/delete + group association. */
+.oc-chart-mine-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.oc-chart-mine__row {
+  display: flex; flex-direction: column; gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.oc-chart-mine__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; flex-wrap: wrap;
+}
+.oc-chart-mine__name { font-size: 0.9rem; font-weight: 600; }
+.oc-chart-mine__editor {
+  display: flex; flex-direction: column; gap: 0.625rem;
+  max-width: 640px;
+}
+.oc-chart-mine__groups-label {
+  font-size: 0.8rem; font-weight: 600; color: var(--muted-foreground);
+  margin-right: 0.25rem;
+}
+
+/* --- Data table shell + sheet form -------------------------------------- */
+.oc-dt { display: flex; flex-direction: column; gap: 0.75rem; }
+.oc-dt__bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+}
+.oc-dt__title { font-size: 1rem; font-weight: 600; }
+.oc-dt__bar-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* Inline row expansion (DataTableShell): the detail card sits directly under
+   its row, full-width, with no hover highlight. */
+.oc-dt__expansion:hover { background: transparent; }
+.oc-dt__expansion-cell { padding: 0 0.5rem 0.75rem; }
+.oc-dt__expansion-cell .oc-sa__keys { margin: 0; }
+
+.oc-form { display: flex; flex-direction: column; gap: 1rem; max-width: 32rem; }
+.oc-field { display: flex; flex-direction: column; gap: 0.375rem; }
+.oc-field__label { font-size: 0.8rem; font-weight: 500; color: var(--muted-foreground); }
+
+/* --- Chat sidebar (projects, items, DnD, color) ------------------------- */
+.oc-sidebar-col {
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--border); background: var(--sidebar);
+}
+.oc-sidebar { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 0.5rem; }
+.oc-sidebar__top { display: flex; gap: 0.375rem; }
+.oc-sidebar__scroll { flex: 1; overflow-y: auto; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.oc-sidebar__group { display: flex; flex-direction: column; gap: 0.125rem; }
+.oc-sidebar__group-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 0.375rem; height: 1.5rem;
+}
+.oc-sidebar__group-label {
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted-foreground);
+}
+.oc-sidebar__group-del { opacity: 0; color: var(--muted-foreground); cursor: pointer; background: transparent; }
+.oc-sidebar__group-head:hover .oc-sidebar__group-del { opacity: 1; }
+
+.oc-chatitem {
+  display: flex; align-items: center; gap: 0.25rem;
+  border-radius: var(--radius-md); padding: 0.125rem 0.25rem 0.125rem 0;
+}
+.oc-chatitem:hover { background: var(--sidebar-accent); }
+.oc-chatitem--active { background: var(--sidebar-accent); }
+.oc-chatitem__grip {
+  display: flex; align-items: center; justify-content: center;
+  width: 1.25rem; height: 1.75rem; cursor: grab; color: var(--muted-foreground);
+  opacity: 0; background: transparent; touch-action: none;
+}
+.oc-chatitem:hover .oc-chatitem__grip,
+.oc-chatitem:focus-within .oc-chatitem__grip { opacity: 1; }
+.oc-chatitem__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.oc-chatitem__dot--empty { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.oc-chatitem__label {
+  flex: 1; min-width: 0; text-align: left; background: transparent; cursor: pointer;
+  padding: 0.375rem 0.25rem; font-size: 0.875rem; color: var(--sidebar-foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Compact relative age (OpenWebUI-style), right-aligned, muted; fades out on row
+   hover/focus so the kebab menu reads cleanly in its place. */
+.oc-chatitem__age {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  padding-right: 0.125rem;
+  transition: opacity 0.12s ease;
+}
+/* Bridge badge — only rendered when conversations span >1 provider. A small,
+   low-key pill; a subtle per-bridge tint helps tell them apart at a glance
+   without shouting. */
+.oc-chatitem__bridge {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.12rem 0.32rem;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  transition: opacity 0.12s ease;
+}
+.oc-chatitem__bridge--openclaw {
+  color: color-mix(in srgb, var(--primary) 75%, var(--foreground));
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+}
+.oc-chatitem__bridge--hermes {
+  color: color-mix(in srgb, var(--chart-4, var(--primary)) 75%, var(--foreground));
+  border-color: color-mix(in srgb, var(--chart-4, var(--primary)) 30%, var(--border));
+}
+
+.oc-colorgrid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.375rem;
+  padding: 0.375rem 0.5rem;
+}
+.oc-colorgrid__dot, .oc-colorgrid__none {
+  width: 1.25rem; height: 1.25rem; border-radius: 50%; cursor: pointer;
+  border: 0; display: flex; align-items: center; justify-content: center;
+}
+.oc-colorgrid__dot.is-selected { box-shadow: 0 0 0 2px var(--ring); }
+.oc-colorgrid__none {
+  background: var(--muted); color: var(--muted-foreground); font-size: 0.7rem;
+}
+
+/* DnD: drop-target highlight, empty section, collapsible head, drag overlay */
+.oc-sidebar__group--over {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  border-radius: var(--radius-md); outline: 1px dashed var(--ring);
+}
+.oc-sidebar__empty {
+  padding: 0.5rem; margin: 0 0.25rem; font-size: 0.8rem;
+  color: var(--muted-foreground); border: 1px dashed var(--border);
+  border-radius: var(--radius-md); text-align: center;
+}
+.oc-sidebar__group-head--btn {
+  width: 100%; background: transparent; cursor: pointer; gap: 0.25rem;
+}
+.oc-sidebar__group-head--btn:hover { color: var(--foreground); }
+.oc-chatitem--overlay {
+  background: var(--sidebar-accent); box-shadow: var(--shadow, 0 4px 12px rgb(0 0 0 / 0.2));
+  border-radius: var(--radius-md);
+}
+
+/* Sidebar resize handle + collapse */
+.oc-sidebar-col { position: relative; }
+.oc-sidebar-resizer {
+  position: absolute; top: 0; right: -2px; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 5; touch-action: none;
+}
+.oc-sidebar-resizer:hover { background: color-mix(in srgb, var(--ring) 40%, transparent); }
+.oc-topbar__left { display: flex; align-items: center; gap: 0.5rem; }
+
+/* Center zone of the top bar: the global search trigger, centered between the
+   brand (left) and the user menu (right). flex:1 so it owns the slack; the
+   trigger inside is capped so it stays a tidy search box, not a full-width bar. */
+.oc-topbar__search {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 0.75rem;
+}
+
+/* The search trigger: looks like a search field, behaves like a button (opens
+   the ⌘K palette). Muted, subtle, theme-aware. */
+.oc-search-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 26rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.oc-search-trigger:hover {
+  border-color: var(--ring, var(--border));
+  background: var(--accent);
+}
+.oc-search-trigger__icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.oc-search-trigger__label {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-search-trigger__kbd {
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--background);
+  color: var(--muted-foreground);
+}
+
+/* ---- Command palette (Dialog content) ------------------------------------ */
+.oc-search-palette {
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+.oc-search-palette__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-search-palette__head-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+.oc-search-palette__field {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 0.95rem;
+}
+.oc-search-palette__field::placeholder {
+  color: var(--muted-foreground);
+}
+.oc-search-palette__results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.375rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.oc-search-palette__hint {
+  padding: 1.25rem 0.75rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+.oc-search-result {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius-md, 0.5rem);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  color: inherit;
+}
+.oc-search-result.is-active {
+  background: var(--accent);
+}
+.oc-search-result__icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--muted-foreground);
+}
+.oc-search-result__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.oc-search-result__title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-search-result__snippet {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-search-result__tag {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted-foreground);
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+}
+.oc-search-palette__footer {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0.875rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-search-palette__footer kbd {
+  font-family: inherit;
+  padding: 0.1rem 0.3rem;
+  margin-right: 0.15rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--muted);
+}
+
+/* Narrow screens: hide the trigger's label/kbd, keep just the icon button. */
+@media (max-width: 640px) {
+  .oc-search-trigger__label,
+  .oc-search-trigger__kbd {
+    display: none;
+  }
+  .oc-search-trigger {
+    width: auto;
+    padding: 0 0.5rem;
+  }
+}
+
+/* Impersonation banner: a fixed amber strip (reads in both themes), first child
+   of the shell so it pushes content down without overlap. Unmistakable so the
+   admin always knows they are acting as someone else. */
+.oc-imp {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: oklch(0.82 0.14 85);
+  color: oklch(0.27 0.03 85);
+}
+.oc-imp__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.oc-imp__exit {
+  flex-shrink: 0;
+}
+
+/* --- Service accounts: per-account key lists + mint show-once dialog ----- */
+.oc-sa__keycount { font-size: 0.85rem; color: var(--muted-foreground); }
+.oc-sa__keys {
+  margin: 0.25rem 0 1rem; padding: 0.75rem 1rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+}
+.oc-sa__keys-head { font-size: 0.85rem; margin-bottom: 0.5rem; }
+.oc-sa__keytable { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.oc-sa__keytable th, .oc-sa__keytable td {
+  text-align: left; padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border); vertical-align: middle;
+}
+.oc-sa__keytable th { color: var(--muted-foreground); font-weight: 500; }
+.oc-sa__keytable td.text-right, .oc-sa__keytable th.text-right { text-align: right; }
+.oc-sa__keyid {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  padding: 0.1rem 0.4rem; border-radius: var(--radius-sm); background: var(--muted);
+}
+.oc-sa__stale { color: var(--destructive); }
+
+.oc-sa__minted-warning {
+  font-size: 0.85rem; line-height: 1.4; padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  color: var(--foreground);
+}
+.oc-sa__minted-box {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.6rem; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--muted);
+}
+.oc-sa__minted-plain {
+  flex: 1; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85rem; word-break: break-all; user-select: all;
+}
+
+/* --- RBAC permission matrix --------------------------------------------- */
+.oc-matrix__scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.oc-matrix { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.oc-matrix th, .oc-matrix td {
+  padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border); text-align: center; white-space: nowrap;
+}
+.oc-matrix thead th { background: var(--muted); color: var(--muted-foreground); font-weight: 500; position: sticky; z-index: 2; }
+/* Two-row sticky header: group row pins at top:0; the per-permission row pins
+   just below it (offset by the group row's height) so they never overlap. */
+.oc-matrix thead tr:first-child th { top: 0; }
+.oc-matrix thead tr:nth-child(2) th { top: 2.05rem; }
+.oc-matrix__group { text-align: center; }
+.oc-matrix__perm { font-weight: 500; }
+.oc-matrix__phi { color: var(--destructive); }
+.oc-matrix__corner, .oc-matrix__rolecell {
+  position: sticky; left: 0; z-index: 1; background: var(--background);
+  text-align: left; min-width: 11rem; max-width: 22rem;
+}
+.oc-matrix thead .oc-matrix__corner { z-index: 3; background: var(--muted); }
+.oc-matrix__rolename { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
+/* The key is a small inline identifier chip next to the name — NOT a second
+   title line (that read as a duplicate of the name for built-in roles). */
+.oc-matrix__rolekey {
+  font-size: 0.7rem; color: var(--muted-foreground);
+  background: var(--muted); border-radius: 0.25rem; padding: 0.05rem 0.3rem;
+}
+.oc-matrix__roledesc {
+  font-size: 0.75rem; line-height: 1.35; color: var(--muted-foreground);
+  margin-top: 0.3rem; white-space: normal; font-weight: 400;
+}
+.oc-matrix__unseeded { display: block; font-size: 0.7rem; color: var(--destructive); margin-top: 0.1rem; }
+.oc-matrix__cell { vertical-align: middle; }
+.oc-matrix__cell .peer { margin: 0 auto; }
+
+/* --- Traces tab (recent observability events) -------------------------- */
+/* Filter row sits above DataTableShell's own titled bar. */
+.oc-traces__toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+.oc-traces__filters { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+/* The correlationId "follow" chip now sits on its own slim line above the table
+   (kind + row-limit selects moved into the FilterBar for one coherent toolbar). */
+.oc-traces__followline { display: flex; margin-bottom: 0.6rem; }
+.oc-traces__muted { color: var(--muted-foreground); }
+.oc-traces__time { white-space: nowrap; font-size: 0.85rem; }
+.oc-traces__mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem; color: var(--muted-foreground);
+}
+.oc-traces__principal { display: inline-flex; align-items: center; gap: 0.4rem; }
+.oc-traces__route { display: inline-flex; align-items: center; gap: 0.35rem; }
+.oc-traces__method {
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.02em; color: var(--muted-foreground);
+}
+/* correlationId follow trigger — looks like the monospace id, acts as a link. */
+.oc-traces__corr {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem; color: var(--primary);
+  background: none; border: none; padding: 0; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.oc-traces__corr:hover { opacity: 0.8; }
+/* Active "follow a turn" chip with a clear ✕ to clear the filter. */
+.oc-traces__chip {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.8rem; padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--accent); color: var(--accent-foreground); cursor: pointer;
+}
+.oc-traces__chip code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.oc-traces__chip-x { width: 0.85rem; height: 0.85rem; }
+/* status code coloring — the one place hex literals are allowed (per task). */
+.oc-traces__status { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.8rem; font-weight: 600; }
+.oc-traces__status--2xx { color: #16a34a; }
+.oc-traces__status--4xx { color: #d97706; }
+.oc-traces__status--5xx { color: #dc2626; }
+.oc-traces__status--other { color: var(--muted-foreground); }
+/* Cross-kind failure marker in the "Résultat" column — a red pill so error rows
+   jump out at a glance; OK rows get a quiet green check. */
+.oc-traces__fail {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+  color: var(--destructive);
+  border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+}
+.oc-traces__ok {
+  color: color-mix(in srgb, #16a34a 80%, var(--muted-foreground));
+  font-size: 0.85rem;
+}
+.oc-traces__meta-title { display: inline-flex; align-items: center; gap: 0.5rem; }
+.oc-traces__meta-title code {
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85rem;
+}
+.oc-traces__meta-json {
+  margin-top: 0.25rem; max-height: 60vh; overflow: auto;
+  padding: 0.75rem; border-radius: var(--radius-md);
+  background: var(--muted); border: 1px solid var(--border);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+
+/* KPI dashboard (increment 4). Metric cards + hand-rolled SVG bar charts over
+   the hourly rollups. Status-red reuses the trace status hex literals (the one
+   constraint-allowed exception); everything else stays on design tokens. */
+.oc-kpi__toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
+.oc-kpi__group { margin-bottom: 1.25rem; }
+.oc-kpi__group-title {
+  font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted-foreground); margin-bottom: 0.5rem;
+}
+.oc-kpi__grid {
+  display: grid; gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+.oc-kpi__card-title { font-size: 0.9rem; }
+.oc-kpi__card-metric code {
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.72rem;
+}
+.oc-kpi__card-body { display: flex; flex-direction: column; gap: 0.5rem; }
+.oc-kpi__value-row { display: flex; align-items: baseline; gap: 0.35rem; }
+.oc-kpi__value {
+  font-size: 1.85rem; font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.oc-kpi__value--error { color: #dc2626; }
+.oc-kpi__unit { font-size: 0.8rem; color: var(--muted-foreground); }
+.oc-kpi__chart {
+  width: 100%; height: 48px; display: block; overflow: visible;
+}
+.oc-kpi__chart--empty {
+  border-radius: var(--radius-sm); background: var(--muted); opacity: 0.5;
+}
+.oc-kpi__bar { fill: var(--primary); }
+.oc-kpi__bar:hover { fill: var(--accent-foreground); }
+.oc-kpi__bar--error { fill: #dc2626; }
+.oc-kpi__bar--error:hover { fill: #b91c1c; }
+.oc-kpi__axis {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.72rem; color: var(--muted-foreground);
+}
+.oc-kpi__axis-latest { font-variant-numeric: tabular-nums; }
+.oc-kpi__muted { color: var(--muted-foreground); }
+
+/* --- Anomalies tab (D-3) ---------------------------------------------------
+   Severity coloring via a class (hex literals allowed here, mirroring the
+   trace-status block). Message column wraps; everything else stays on tokens. */
+.oc-anomaly__sev {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.oc-anomaly__sev--critical { color: #dc2626; }
+.oc-anomaly__sev--warn { color: #d97706; }
+.oc-anomaly__sev--info { color: var(--muted-foreground); }
+.oc-anomaly__msg {
+  font-size: 0.85rem; line-height: 1.4;
+  display: inline-block; max-width: 28rem;
+  overflow-wrap: anywhere;
+}
+
+/* Root cause + actionable fix hint + drill-down (dispatch_failures anomalies). */
+.oc-anomaly__cause {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-width: 30rem;
+}
+.oc-anomaly__cause-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.oc-anomaly__cause-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-anomaly__cause-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.oc-anomaly__drill {
+  align-self: flex-start;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.4rem);
+  background: transparent;
+  color: var(--primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.oc-anomaly__drill:hover {
+  background: var(--muted);
+}
+
+/* Chat availability banner (bridge down) + greyed composer (anti-persist). */
+.oc-chat-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 auto 0.5rem;
+  max-width: 48rem;
+  width: 100%;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius, 0.5rem);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.oc-chat-banner > svg {
+  flex-shrink: 0;
+}
+.oc-chat-banner--error {
+  background: color-mix(in srgb, var(--destructive) 12%, var(--background));
+  color: var(--destructive);
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+.oc-composer--disabled {
+  opacity: 0.65;
+}
+.oc-composer--disabled .oc-composer__input {
+  cursor: not-allowed;
+}
+.oc-composer__send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Settings bridge-health bar (always visible across settings tabs). */
+.oc-bridgebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius, 0.5rem);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.oc-bridgebar > svg {
+  flex-shrink: 0;
+}
+.oc-bridgebar--ok {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  color: #16a34a;
+  background: color-mix(in srgb, #16a34a 8%, var(--background));
+  border-color: color-mix(in srgb, #16a34a 30%, transparent);
+}
+.oc-bridgebar--idle {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted-foreground);
+}
+.oc-bridgebar--error {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 10%, var(--background));
+  border-color: color-mix(in srgb, var(--destructive) 38%, transparent);
+}
+.oc-bridgebar__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.oc-bridgebar__when {
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+.oc-bridgebar__drill {
+  margin-left: auto;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius, 0.4rem);
+  background: transparent;
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.oc-bridgebar__targets {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.oc-bridgebar__hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+}
+.oc-bridgebar__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+  display: inline-block;
+}
+
+/* Standardized assistant error presentation (alert card, not an inline chip). */
+.oc-error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  max-width: 48rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius, 0.5rem);
+  background: color-mix(in srgb, var(--destructive) 9%, var(--background));
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+.oc-error-card__icon {
+  color: var(--destructive);
+  flex-shrink: 0;
+  margin-top: 0.05rem;
+}
+.oc-error-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.oc-error-card__title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--destructive);
+}
+.oc-error-card__msg {
+  font-size: 0.83rem;
+  line-height: 1.45;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+/* Bridge tab — health dot on the tab label + detailed health view. */
+.oc-bridge-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.oc-bridge-dot--ok {
+  background: #16a34a;
+}
+.oc-bridge-dot--error {
+  background: var(--destructive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destructive) 22%, transparent);
+}
+.oc-bridge-dot--idle {
+  background: var(--muted-foreground);
+}
+.oc-bridge {
+  display: flex;
+  flex-direction: column;
+}
+.oc-bridge__section {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.oc-bridge-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius, 0.5rem);
+  border: 1px solid var(--border);
+}
+.oc-bridge-card--ok {
+  border-color: color-mix(in srgb, #16a34a 35%, transparent);
+  background: color-mix(in srgb, #16a34a 7%, var(--background));
+}
+.oc-bridge-card--error {
+  border-color: color-mix(in srgb, var(--destructive) 38%, transparent);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--background));
+}
+.oc-bridge-card--idle {
+  color: var(--muted-foreground);
+}
+.oc-bridge-card--ok .oc-bridge-card__icon {
+  color: #16a34a;
+}
+.oc-bridge-card--error .oc-bridge-card__icon {
+  color: var(--destructive);
+}
+.oc-bridge-card__icon {
+  flex-shrink: 0;
+}
+.oc-bridge-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.oc-bridge-card__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.oc-bridge-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+/* Each meta segment lays out icon + text on ONE baseline. inline-flex is
+   load-bearing: the Tailwind preflight sets svg { display: block }, which
+   otherwise pushes the icon onto its own line inside the span. */
+.oc-bridge-card__meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.oc-bridge-card__hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+}
+.oc-bridge-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.oc-bridge-target {
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius, 0.5rem);
+  border: 1px solid var(--border);
+}
+.oc-bridge-target--error {
+  border-color: color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+.oc-bridge-target__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.oc-bridge-target__host {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-bridge-target__stats {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-bridge-target__error {
+  margin-top: 0.4rem;
+  font-size: 0.83rem;
+}
+
+/* --- Bridge compatibility (VCOMPAT-C) -------------------------------------
+   Settings > Bridge "Compatibilite" section + the unsupported-tab banner.
+   `.oc-compat` is a self-contained namespace (GC-P5 lesson: container classes
+   must be unique — grep before scoping). */
+.oc-compat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.oc-compat__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: var(--muted-foreground);
+}
+.oc-compat__support {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.oc-compat__label {
+  font-weight: 600;
+}
+/* Validated-versions disclosure: one O(1) count chip; the unbounded list lives
+   in a bounded, scrollable popover (the app outlives many gateway releases). */
+.oc-compat__versions-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.oc-compat__versions-btn:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 70%, var(--border));
+}
+.oc-compat__versions-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oc-compat__versions-pop {
+  width: auto;
+  max-width: 22rem;
+  padding: 0.75rem;
+}
+.oc-compat__versions-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.oc-compat__versions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 13rem; /* ~6 badge rows; the popover scrolls beyond that */
+  overflow-y: auto;
+}
+.oc-compat__targets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.oc-compat__target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.5rem);
+  font-size: 0.85rem;
+}
+.oc-compat__provider {
+  color: var(--muted-foreground);
+}
+/* Whole-tab "unsupported by this instance" banner (AgentFiles / ChatDefaults). */
+.oc-compat__blocked {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
+  border-radius: var(--radius, 0.5rem);
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+.oc-compat__blocked svg {
+  flex-shrink: 0;
+  color: var(--destructive);
+}
+
+/* --- Integrations tab (D-3) ------------------------------------------------ */
+.oc-int__vendors {
+  display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;
+}
+.oc-int__vendor {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--card);
+}
+.oc-int__vendor-name { font-size: 0.9rem; font-weight: 500; }
+
+/* --- Toast (M5 error surfacing) --------------------------------------------
+   Fixed bottom-right stack of non-blocking notifications. Auto-dismiss + manual
+   close. On tokens, except the destructive accent stripe (hex, like statuses). */
+.oc-toast__viewport {
+  position: fixed; bottom: 1rem; right: 1rem; z-index: 100;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  max-width: min(24rem, calc(100vw - 2rem)); pointer-events: none;
+}
+.oc-toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--popover); color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg, 0 10px 25px rgba(0, 0, 0, 0.12));
+  animation: oc-toast-in 0.15s ease-out;
+}
+.oc-toast--error { border-left-color: #dc2626; }
+.oc-toast--success { border-left-color: #16a34a; }
+.oc-toast--info { border-left-color: var(--primary); }
+.oc-toast__body { flex: 1 1 auto; min-width: 0; }
+.oc-toast__title { font-size: 0.85rem; font-weight: 600; }
+.oc-toast__desc {
+  margin-top: 0.15rem; font-size: 0.8rem; color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.oc-toast__close {
+  flex: 0 0 auto; background: none; border: none; cursor: pointer;
+  color: var(--muted-foreground); padding: 0.1rem; line-height: 0;
+}
+.oc-toast__close:hover { color: var(--foreground); }
+.oc-toast__close svg { width: 0.9rem; height: 0.9rem; }
+@keyframes oc-toast-in {
+  from { opacity: 0; transform: translateY(0.4rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Reusable filter primitives (src/chat/admin/filters/) --------------- */
+/* FilterBar: a row above the table — search + quick selects + time picker +
+   reset. Wraps gracefully on narrow widths. Tokens only. */
+.oc-filterbar {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.oc-filterbar__search {
+  position: relative; flex: 1 1 16rem; min-width: 12rem; max-width: 24rem;
+}
+.oc-filterbar__search-icon {
+  position: absolute; left: 0.55rem; top: 50%; transform: translateY(-50%);
+  width: 0.9rem; height: 0.9rem; color: var(--muted-foreground);
+  pointer-events: none;
+}
+.oc-filterbar__search input { padding-left: 1.75rem; }
+.oc-filterbar__quick {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+}
+/* Quick-filter selects size to their label (with a sensible floor) so long
+   options ("Toutes directions", "Toutes sévérités", "Usurpation : toutes"…)
+   aren't truncated/cramped against the chevron. Overrides the fixed Tailwind
+   w-32/w-36 widths (unlayered CSS beats layered utilities). */
+.oc-filterbar__quick [data-slot="select-trigger"] {
+  width: auto;
+  min-width: 7.5rem;
+}
+.oc-filterbar__reset { margin-left: auto; }
+
+/* Bounded-window caveat hint (inline, muted, slightly emphasized). */
+.oc-filter__window { color: var(--muted-foreground); font-style: italic; }
+
+/* TimeRangePicker: Grafana-style popover. Trigger shows the human label; the
+   panel mirrors SelectContent's popover styling (already token-styled inline). */
+.oc-timerange__trigger { font-weight: 500; }
+.oc-timerange__panel { padding: 0.75rem; width: min(34rem, 92vw); }
+.oc-timerange__cols {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem;
+}
+@media (max-width: 30rem) {
+  .oc-timerange__cols { grid-template-columns: 1fr; }
+}
+.oc-timerange__absolute { display: flex; flex-direction: column; gap: 0.5rem; }
+.oc-timerange__section-title {
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted-foreground); margin-bottom: 0.1rem;
+}
+.oc-timerange__apply { align-self: flex-start; margin-top: 0.15rem; }
+.oc-timerange__relative {
+  display: flex; flex-direction: column; gap: 0.45rem;
+  border-left: 1px solid var(--border); padding-left: 0.9rem;
+}
+@media (max-width: 30rem) {
+  .oc-timerange__relative {
+    border-left: none; border-top: 1px solid var(--border);
+    padding-left: 0; padding-top: 0.7rem;
+  }
+}
+.oc-timerange__search { position: relative; }
+.oc-timerange__search-icon {
+  position: absolute; left: 0.55rem; top: 50%; transform: translateY(-50%);
+  width: 0.9rem; height: 0.9rem; color: var(--muted-foreground);
+  pointer-events: none;
+}
+.oc-timerange__search input { padding-left: 1.75rem; }
+.oc-timerange__list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 14rem; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.1rem;
+}
+.oc-timerange__option {
+  display: block; width: 100%; text-align: left;
+  padding: 0.35rem 0.5rem; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--foreground); font: inherit;
+  font-size: 0.85rem; cursor: pointer;
+}
+.oc-timerange__option:hover { background: var(--accent); color: var(--accent-foreground); }
+.oc-timerange__option.is-active {
+  background: var(--primary); color: var(--primary-foreground); font-weight: 500;
+}
+.oc-timerange__empty {
+  padding: 0.35rem 0.5rem; font-size: 0.85rem; color: var(--muted-foreground);
+}
+
+/* AdvancedFilter: collapsible predicate builder (Traces + Audit). */
+.oc-advfilter { margin-bottom: 0.6rem; }
+.oc-advfilter__toggle {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  background: none; border: none; padding: 0.1rem 0; cursor: pointer;
+  font: inherit; font-size: 0.85rem; color: var(--muted-foreground);
+}
+.oc-advfilter__toggle:hover { color: var(--foreground); }
+.oc-advfilter__chevron {
+  width: 0.9rem; height: 0.9rem; transition: transform 0.15s ease;
+}
+.oc-advfilter__chevron.is-open { transform: rotate(180deg); }
+.oc-advfilter__count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.1rem; height: 1.1rem; padding: 0 0.3rem;
+  border-radius: 999px; font-size: 0.7rem; font-weight: 600;
+  background: var(--primary); color: var(--primary-foreground);
+}
+.oc-advfilter__body {
+  margin-top: 0.5rem; padding: 0.7rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--muted);
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.oc-advfilter__rows {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.4rem;
+}
+.oc-advfilter__row {
+  display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+}
+.oc-advfilter__value { flex: 1 1 10rem; min-width: 8rem; max-width: 18rem; }
+.oc-advfilter__add { align-self: flex-start; }
+
+/* ── Accessibility: honor prefers-reduced-motion (CHAT_UX_DESIGN Part 1) ───────
+   Disable the decorative chat motion (message enter, thinking dots, pulse) for
+   users who request reduced motion. The states stay LEGIBLE (the dots/pulse are
+   simply static, the message appears at rest) — only the animation is removed. */
+@media (prefers-reduced-motion: reduce) {
+  .oc-thread__viewport > .oc-msg:last-child {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .oc-dots > span,
+  .oc-run-status__pulse,
+  .oc-tool__status--spin,
+  .oc-toolact__spin {
+    animation: none;
+  }
+}
+
+/* ── Agent picker (new chat) + Access editor + Instances agents (multi-agent) ── */
+.oc-agentpicker__hint,
+.oc-access__hint {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  padding: 0.75rem 0.25rem;
+}
+.oc-agentpicker__search { margin-bottom: 0.5rem; }
+.oc-agentpicker__list,
+.oc-access__list {
+  display: flex; flex-direction: column; gap: 0.35rem;
+  max-height: 22rem; overflow-y: auto;
+}
+.oc-agentpicker__group,
+.oc-access__group { display: flex; flex-direction: column; gap: 0.2rem; }
+.oc-agentpicker__instance,
+.oc-access__instance {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  padding: 0.5rem 0.25rem 0.15rem;
+}
+.oc-agentpicker__kind, .oc-access__kind { font-size: 0.65rem; }
+.oc-agentpicker__item {
+  display: flex; align-items: center; gap: 0.55rem;
+  width: 100%; text-align: left;
+  padding: 0.5rem 0.6rem; border-radius: 0.5rem;
+  border: 1px solid var(--border); background: var(--card);
+  color: var(--card-foreground); cursor: pointer;
+  transition: background-color 150ms, border-color 150ms;
+}
+.oc-agentpicker__item:hover:not(:disabled) {
+  background: var(--accent); border-color: var(--accent);
+}
+.oc-agentpicker__item:disabled { opacity: 0.5; cursor: not-allowed; }
+.oc-agentpicker__icon { color: var(--muted-foreground); flex: 0 0 auto; }
+.oc-agentpicker__label, .oc-access__label { flex: 1 1 auto; font-weight: 500; }
+.oc-agentpicker__model, .oc-access__model {
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted-foreground);
+}
+.oc-agentpicker__default { color: oklch(0.8 0.15 85); flex: 0 0 auto; }
+.oc-access__row {
+  display: flex; align-items: center; gap: 0.55rem;
+  padding: 0.35rem 0.25rem;
+}
+/* Default agent = the only visible star (filled gold), boxed to icon-sm so its
+   glyph lines up with the hover star of the other rows. */
+.oc-access__fav {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 1.75rem; height: 1.75rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: oklch(0.8 0.15 85);
+}
+/* Non-default agents: no star at rest; revealed on row hover / keyboard focus
+   to offer "make default". Reserved in flow (opacity, not display) → no shift. */
+.oc-access__setdefault {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.oc-access__row:hover .oc-access__setdefault,
+.oc-access__row:focus-within .oc-access__setdefault,
+.oc-access__setdefault:focus-visible { opacity: 1; color: oklch(0.8 0.15 85); }
+@media (prefers-reduced-motion: reduce) {
+  .oc-access__setdefault { transition: none; }
+}
+.oc-access__warn {
+  display: flex; align-items: center; gap: 0.45rem;
+  font-size: 0.8rem; color: var(--foreground);
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--destructive) 35%, transparent);
+  border-radius: 0.5rem; padding: 0.5rem 0.65rem; margin-bottom: 0.5rem;
+}
+.oc-access__poll { font-size: 0.78rem; color: var(--muted-foreground); padding: 0 0.25rem 0.4rem; }
+.oc-access__gone { color: var(--destructive); border-color: var(--destructive); }
+.oc-access__stale { color: var(--muted-foreground); }
+
+/* ── Introspection screen (Settings ▸ Accès, P5) ────────────────────────────
+   Read-only "who has access to what". Its OWN `.oc-introspect` namespace, fully
+   self-contained: it deliberately does NOT reuse the `.oc-access__list / __row`
+   classes — those are shared by the Users-Access agent editor + GroupsTab and
+   carry a 22rem scroll cap meant for the long agent picker. Keeping a separate
+   namespace guarantees zero cross-leak into those editors. */
+.oc-introspect {
+  display: flex; flex-direction: column; gap: 1.25rem;
+  margin-top: 0.75rem;
+}
+.oc-introspect__section { display: flex; flex-direction: column; gap: 0.5rem; }
+.oc-introspect__title {
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted-foreground); margin: 0;
+}
+.oc-introspect__id { display: flex; align-items: center; gap: 0.6rem; }
+.oc-introspect__chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+/* Short, owner-scoped fact lists: flex column, no scroll cap, no bullets. */
+.oc-introspect__list {
+  display: flex; flex-direction: column; gap: 0.35rem;
+  list-style: none; margin: 0; padding: 0;
+}
+.oc-introspect__row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.45rem;
+  padding: 0.35rem 0.25rem;
+}
+.oc-introspect__name { font-weight: 500; }
+
+.oc-admin__toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+
+/* ── DEV user switcher (dev-only floating affordance) ───────────────────────── */
+.oc-devfab {
+  /* Sits ABOVE the TanStack Router devtools toggle (also fixed bottom-right in dev). */
+  position: fixed; right: 0.85rem; bottom: 2.9rem; z-index: 60;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.3rem 0.55rem; border-radius: 999px; cursor: pointer;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
+  color: oklch(0.28 0.07 70);
+  background: oklch(0.82 0.16 85); border: 1px solid oklch(0.7 0.16 75);
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.25); opacity: 0.7;
+  transition: opacity 150ms, transform 150ms;
+}
+.oc-devfab:hover { opacity: 1; transform: translateY(-1px); }
+.oc-devsw__me {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.5rem; padding: 0.5rem 0.65rem; border-radius: 0.5rem;
+  background: var(--muted); border: 1px solid var(--border);
+}
+.oc-devsw__melabel { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+.oc-devsw__roles { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.oc-devsw__imp {
+  display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem;
+  padding: 0.4rem 0.6rem; border-radius: 0.5rem;
+  background: color-mix(in oklch, oklch(0.82 0.16 85) 18%, transparent);
+  border: 1px solid color-mix(in oklch, oklch(0.7 0.16 75) 45%, transparent);
+}
+.oc-devsw__list { display: flex; flex-direction: column; gap: 0.3rem; max-height: 22rem; overflow-y: auto; }
+.oc-devsw__empty { color: var(--muted-foreground); font-size: 0.82rem; padding: 0.5rem 0.25rem; }
+.oc-devsw__row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.25rem; }
+.oc-devsw__label { flex: 1 1 auto; font-weight: 500; font-size: 0.85rem; }
+.oc-devsw__select {
+  font-size: 0.75rem; padding: 0.15rem 0.3rem; border-radius: 0.4rem;
+  background: var(--background); color: var(--foreground); border: 1px solid var(--border);
+}
+
+/* ── CONF-4 session panel */
+/* Shared knob rows (KnobRow / SessionKnobsGroup) for the composer "Advanced"
+   popover AND the session-settings Sheet. Provenance gutter mirrors
+   .oc-prefs__row (VS Code pattern): accent border-left = overridden here. */
+/* Width/padding are passed as utilities at the call site (w-80 p-2) so they
+   deterministically replace the popover component's own w-72/p-4 via tw-merge. */
+.oc-spanel-pop {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 1rem);
+}
+.oc-spanel-pop__all {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--foreground);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+.oc-spanel-pop__all:hover { background: var(--muted); }
+.oc-spanel-pop__all > svg:last-child { margin-left: auto; color: var(--muted-foreground); }
+
+.oc-spanel__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.1rem 0.55rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  /* provenance gutter: transparent until overridden at the session level */
+  border-left: 2px solid transparent;
+}
+.oc-spanel__row:last-child { border-bottom: none; }
+.oc-spanel__row.is-overridden { border-left-color: var(--primary); }
+.oc-spanel__rowhead { display: flex; align-items: center; gap: 0.45rem; }
+.oc-spanel__label {
+  flex: 1 1 auto;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--foreground);
+}
+.oc-spanel__badge {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+.oc-spanel__reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-spanel__reset:hover { color: var(--foreground); background: var(--muted); }
+.oc-spanel__spin { color: var(--muted-foreground); animation: oc-spin 1s linear infinite; }
+.oc-spanel__ctl { display: flex; }
+.oc-spanel__help {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
+.oc-spanel__error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--destructive);
+}
+.oc-spanel__retry {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.74rem;
+  color: var(--foreground);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Segmented control (≤ 6 named ordered options — widget rules + A5). */
+.oc-spanel__seg {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  overflow: hidden;
+}
+.oc-spanel__seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.32rem 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.oc-spanel__seg-btn + .oc-spanel__seg-btn { border-left: 1px solid var(--border); }
+.oc-spanel__seg-btn.is-active {
+  background: var(--background);
+  color: var(--foreground);
+  font-weight: 600;
+}
+.oc-spanel__seg-btn:disabled { opacity: 0.6; cursor: default; }
+.oc-spanel__select {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.32rem 0.4rem;
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+}
+
+/* The Sheet itself: 26rem on desktop, full width on small screens (A11).
+   !important needed to beat the sheet primitive's width utilities (same
+   specificity, earlier in the cascade is not guaranteed). */
+.oc-spanel[data-slot="sheet-content"] {
+  width: min(26rem, 100vw) !important;
+  max-width: 100vw !important;
+}
+.oc-spanel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 1rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+}
+.oc-spanel__loading { color: var(--muted-foreground); font-size: 0.85rem; }
+/* Layer-cake section headers (mirrors .oc-prefs__cat). */
+.oc-spanel__cat {
+  margin: 1.1rem 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+.oc-spanel__body section:first-child .oc-spanel__cat { margin-top: 0.2rem; }
+/* Read-only meta rows (SESSION / AGENT sections). */
+.oc-spanel__static {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.1rem 0.55rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid transparent;
+}
+.oc-spanel__static:last-child { border-bottom: none; }
+.oc-spanel__value { font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+/* Context meter: reuse the chip meter language, stretched to the row width. */
+.oc-spanel__meter { display: flex; width: 100%; }
+.oc-spanel__meter .oc-meter__track { flex: 1 1 auto; }
+/* ACTIONS zone: separated from the settings (grammar §1.5 — actions ≠ settings). */
+.oc-spanel__actions {
+  border-top: 1px solid var(--border);
+  gap: 0.5rem;
+}
+.oc-spanel__actions .oc-spanel__cat { margin: 0; }
+.oc-spanel__action { display: flex; flex-direction: column; gap: 0.3rem; }
+.oc-spanel__action-note {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
+
+/* ── Sources (provenance/v1) — what memory/document plugins fed the LLM this
+   turn. Same UX grammar as ToolActivity: compact summary line, expandable
+   detail. Namespaced .oc-sources (container uniqueness — GC-P5 lesson). */
+.oc-sources {
+  margin-top: 0.35rem;
+}
+.oc-sources__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.oc-sources__summary:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-sources__summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oc-sources__label {
+  font-weight: 600;
+}
+.oc-sources__detail {
+  margin: 0.35rem 0 0 1.4rem;
+  display: grid;
+  gap: 0.6rem;
+}
+.oc-sources__group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.oc-sources__plugin {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+.oc-sources__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+}
+.oc-sources__item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+}
+.oc-sources__item-title {
+  font-weight: 500;
+}
+.oc-sources__chip {
+  padding: 0.05rem 0.45rem;
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.oc-sources__excerpt {
+  margin: 0.25rem 0 0;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  border-left: 2px solid var(--border);
+}
+
+/* ── Composer attachment chip (BUG-2): selecting a file used to render nothing
+   (empty components map → no Attachment component). This chip restores the
+   feedback — icon, filename, live upload status, remove — for all types. */
+.oc-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 18rem;
+  margin: 0.35rem 0.35rem 0 0.35rem;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.oc-attach--error {
+  color: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+}
+.oc-attach__icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted-foreground);
+}
+.oc-attach--error .oc-attach__icon {
+  color: var(--destructive);
+}
+.oc-attach__spin {
+  animation: oc-spin 1s linear infinite;
+}
+.oc-attach__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-attach__state {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-attach--error .oc-attach__state {
+  color: var(--destructive);
+}
+.oc-attach__remove {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin-left: 0.1rem;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.oc-attach__remove:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 60%, var(--border));
+}

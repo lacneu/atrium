@@ -1,0 +1,11 @@
+{
+  "name": "provenance-probe",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Deterministic provenance/v1 emitter for the OpenClaw bench and CI",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}

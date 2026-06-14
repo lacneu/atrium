@@ -1,0 +1,222 @@
+import { useMemo, useState } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "./convexApi";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { m } from "@/paraglide/messages.js";
+import { PREF_META, groupAndFilterPrefs } from "./prefsMeta";
+import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
+import {
+  canGovernPrefs,
+  govDefaultPatch,
+  govDefaultValue,
+  govGateKey,
+} from "./prefsGovernance";
+
+// User UI-preferences form (the interface-config toggles). Extracted from the
+// former PreferencesDialog so it can live inside the Settings > Preferences tab
+// (the modal was removed when these prefs moved out of the account menu).
+//
+// Renders the toggles the SERVER returns (getMe.ui.effective keys), grouped by
+// category with an accent-insensitive filter (prefsMeta.groupAndFilterPrefs); a
+// key with no display metadata still appears (in the "other" group). The server
+// is the real gate (setUiPref rejects a locked feature); here locked rows are
+// greyed with a "locked" note.
+//
+// GOVERNANCE (merged from the former admin "Préférences UI" tab): an admin gets
+// a "manage defaults & locks" switch (OFF by default — disclosure of the rare).
+// When on, each row reveals ITS key's governance controls — the admin default
+// (on/off/inherit -> admin.setUiPrefDefault) and, for system-gated prefs, the
+// feature gate (admin.setFeatureEnabled). Same pattern as the Apparence tab
+// (user pick + admin defaults on one surface, gated on me.role === "admin");
+// the server independently enforces admin on both mutations.
+
+type UiState = {
+  effective: Record<string, boolean>;
+  locked: Record<string, boolean>;
+  userOverrides: Record<string, boolean | undefined>;
+  defaults: Record<string, boolean | undefined>;
+  featuresEnabled: Record<string, boolean | undefined>;
+};
+
+// Gate-specific help per system-gated pref (migrated from the former UiPrefsTab
+// GATED_FEATURES list — the label reuses the pref's own i18n label).
+const GATE_HELP: Record<string, () => string> = {
+  voiceInput: () => m.uiprefs_gate_voiceInput_help(),
+};
+
+// Per-row governance zone (rendered only in governance mode): the admin default
+// select + the system-gate checkbox when the key is gated.
+function PrefGovernance({ prefKey, ui }: { prefKey: string; ui: UiState }) {
+  const setDefault = useMutation(api.admin.setUiPrefDefault);
+  const setFeature = useMutation(api.admin.setFeatureEnabled);
+  const gateKey = govGateKey(prefKey);
+  const gateHelp = gateKey ? GATE_HELP[prefKey]?.() : undefined;
+  return (
+    <div className="oc-prefs__gov">
+      <div className="oc-prefs__gov-row">
+        <span className="oc-prefs__gov-label">{m.prefs_gov_default_label()}</span>
+        <Select
+          value={govDefaultValue(ui.defaults[prefKey])}
+          onValueChange={(v) =>
+            void setDefault({ key: prefKey, value: govDefaultPatch(v) })
+          }
+        >
+          <SelectTrigger size="sm" className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="on">{m.uiprefs_value_on()}</SelectItem>
+            <SelectItem value="off">{m.uiprefs_value_off()}</SelectItem>
+            <SelectItem value="inherit">{m.uiprefs_value_inherit()}</SelectItem>
+          </SelectContent>
+        </Select>
+        {gateKey ? (
+          <span className="oc-prefs__gov-gate">
+            <Checkbox
+              checked={ui.featuresEnabled[gateKey] === true}
+              onCheckedChange={(v) =>
+                void setFeature({ key: gateKey, enabled: v === true })
+              }
+              aria-label={m.prefs_gov_gate_label()}
+            />
+            {m.prefs_gov_gate_label()}
+          </span>
+        ) : null}
+      </div>
+      {gateHelp ? <span className="oc-prefs__gov-help">{gateHelp}</span> : null}
+    </div>
+  );
+}
+
+export function PreferencesPanel() {
+  const [query, setQuery] = useState("");
+  // Governance mode (admins only): hidden behind an explicit switch so the
+  // everyday user view stays uncluttered.
+  const [govMode, setGovMode] = useState(false);
+  const me = useQuery(api.me.getMe, {});
+  const ui = me?.ui as UiState | undefined;
+  const governing = canGovernPrefs(me?.role) && govMode;
+  // OPTIMISTIC (shared updater): each checkbox flips instantly; the write + its
+  // getMe-invalidation cascade run in the background. Convex rolls the patch back
+  // if the server rejects (e.g. a gated feature), so the box snaps back.
+  const setPref = useMutation(api.me.setUiPref).withOptimisticUpdate(
+    uiPrefOptimisticUpdate,
+  );
+
+  const groups = useMemo(
+    () => (ui ? groupAndFilterPrefs(Object.keys(ui.effective), query) : []),
+    [ui, query],
+  );
+
+  if (!ui) {
+    return <div className="oc-prefs__empty">{m.common_loading()}</div>;
+  }
+
+  return (
+    // Single wrapper (NOT a fragment): the Settings sections are a
+    // `220px | 1fr` grid, and a fragment's children become separate grid
+    // cells — the list then lands in the 220px heading column (the crushed
+    // layout caught on 2026-06-11). One root keeps the panel in the 1fr cell.
+    <div className="oc-prefs-panel">
+      {canGovernPrefs(me?.role) ? (
+        <label className="oc-prefs__gov-toggle">
+          <Checkbox
+            checked={govMode}
+            onCheckedChange={(v) => setGovMode(v === true)}
+            aria-label={m.prefs_admin_mode_toggle()}
+          />
+          {m.prefs_admin_mode_toggle()}
+        </label>
+      ) : null}
+      {governing ? (
+        // Governance-mode header: the general notes that are not per-key
+        // (migrated from the former UiPrefsTab intro / gates / defaults notes).
+        <div className="oc-prefs__gov-head">
+          <p>{m.uiprefs_intro()}</p>
+          <p>{m.uiprefs_gates_note()}</p>
+          <p>{m.uiprefs_defaults_note()}</p>
+        </div>
+      ) : null}
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={m.prefs_filter_placeholder()}
+        aria-label={m.prefs_filter_placeholder()}
+        className="mb-2"
+      />
+      {groups.length === 0 ? (
+        <div className="oc-prefs__empty">{m.prefs_no_match()}</div>
+      ) : (
+        <div className="oc-prefs">
+          {groups.map((group) => (
+            <div key={group.id} className="oc-prefs__group">
+              <h4 className="oc-prefs__cat">{group.label}</h4>
+              {group.keys.map((key) => {
+                const meta = PREF_META[key];
+                const label = meta ? meta.label() : key;
+                const help = meta?.help?.();
+                const locked = ui.locked[key];
+                const checked = ui.effective[key];
+                const overridden = ui.userOverrides[key] !== undefined;
+                return (
+                  <div
+                    key={key}
+                    className={`oc-prefs__row${locked ? " is-locked" : ""}${
+                      overridden && !locked ? " is-overridden" : ""
+                    }`}
+                  >
+                    <div className="oc-prefs__info">
+                      <span className="oc-prefs__label">
+                        {label}
+                        {locked ? (
+                          <span className="oc-prefs__lock">
+                            {m.prefs_badge_locked()}
+                          </span>
+                        ) : !overridden ? (
+                          <span className="oc-prefs__def">
+                            {m.prefs_badge_default()}
+                          </span>
+                        ) : null}
+                      </span>
+                      {help ? (
+                        <span className="oc-prefs__help">{help}</span>
+                      ) : null}
+                    </div>
+                    <div className="oc-prefs__ctl">
+                      {!locked && overridden ? (
+                        <button
+                          type="button"
+                          className="oc-prefs__reset"
+                          onClick={() => void setPref({ key, value: null })}
+                        >
+                          {m.prefs_reset()}
+                        </button>
+                      ) : null}
+                      <Checkbox
+                        checked={checked}
+                        disabled={locked}
+                        onCheckedChange={(v) =>
+                          void setPref({ key, value: v === true })
+                        }
+                        aria-label={label}
+                      />
+                    </div>
+                    {governing ? <PrefGovernance prefKey={key} ui={ui} /> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

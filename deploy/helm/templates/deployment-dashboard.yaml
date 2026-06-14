@@ -1,0 +1,59 @@
+{{- /*
+Convex dashboard — INTERNAL ONLY. Deployment + ClusterIP Service (see
+services.yaml). It is admin-key-gated and must NEVER get a public Ingress.
+NEXT_PUBLIC_DEPLOYMENT_URL is the PUBLIC cloud origin (the dashboard talks to
+the deployment from the operator's browser, not from inside the cluster).
+*/ -}}
+{{- if .Values.convexDashboard.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "convex-dashboard") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: convex-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "atrium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: convex-dashboard
+  template:
+    metadata:
+      labels:
+        {{- include "atrium.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: convex-dashboard
+      {{- with .Values.convexDashboard.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: convex-dashboard
+          image: {{ include "atrium.image" (dict "repository" .Values.convexDashboard.image "tag" .Values.convexDashboard.tag "defaultTag" "latest") }}
+          imagePullPolicy: {{ .Values.convexDashboard.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.convexDashboard.port }}
+          env:
+            - name: NEXT_PUBLIC_DEPLOYMENT_URL
+              value: {{ .Values.convex.cloudOrigin | quote }}
+          resources:
+            {{- toYaml .Values.convexDashboard.resources | nindent 12 }}
+      {{- with .Values.convexDashboard.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.convexDashboard.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.convexDashboard.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

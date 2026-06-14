@@ -1,0 +1,226 @@
+/* CONF-4c/4d Settings tabs — "Fichiers d'agent" (.oc-afiles) and "Défauts de
+   chat" (.oc-cdefaults). Self-contained namespaces (grep-verified unique) on
+   the shadcn chart tokens, mirroring the .oc-introspect precedent. */
+
+/* ===== Fichiers d'agent ================================================== */
+
+.oc-afiles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.oc-afiles__picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.oc-afiles__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.oc-afiles__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.oc-afiles__row:last-child {
+  border-bottom: none;
+}
+
+.oc-afiles__name {
+  flex: 0 0 10rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-afiles__size {
+  flex: 0 0 4.5rem;
+  text-align: right;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Per-file bootstrap gauge (% of bootstrapMaxChars). */
+.oc-afiles__gauge {
+  flex: 1 1 6rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.oc-afiles__gauge-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+}
+.oc-afiles__gauge.is-warn .oc-afiles__gauge-fill {
+  background: var(--destructive);
+}
+
+.oc-afiles__pct {
+  flex: 0 0 3rem;
+  text-align: right;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-afiles__warn {
+  color: var(--destructive);
+  flex: 0 0 auto;
+}
+/* Keeps the action column aligned on rows without the warn icon. */
+.oc-afiles__warn-slot {
+  width: 14px;
+  flex: 0 0 auto;
+}
+
+.oc-afiles__open {
+  margin-left: auto;
+}
+
+.oc-afiles__budget {
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+
+.oc-afiles__error,
+.oc-cdefaults__error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--destructive);
+}
+
+/* Full-screen editor dialog (overrides the dialog's default max-w-md card). */
+[data-slot="dialog-content"].oc-afiles__editor {
+  display: flex;
+  flex-direction: column;
+  width: calc(100vw - 2rem);
+  max-width: 72rem;
+  height: calc(100vh - 2rem);
+  max-height: none;
+}
+
+.oc-afiles__source {
+  flex: 1 1 auto;
+  min-height: 0;
+  resize: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--foreground);
+}
+.oc-afiles__source:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.oc-afiles__hint {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.oc-afiles__editor-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.oc-afiles__count {
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.oc-afiles__count.is-over {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+/* Confirm mini-diff (A4): counts + a few sample lines, deliberately simple. */
+.oc-afiles__diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.oc-afiles__diff-counts {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.oc-afiles__diff-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.oc-afiles__diff-label {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.oc-afiles__diff-line {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: calc(var(--radius) / 2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.oc-afiles__diff-line.is-add {
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+}
+.oc-afiles__diff-line.is-del {
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+  text-decoration: line-through;
+}
+
+/* ===== Défauts de chat ==================================================== */
+
+.oc-cdefaults {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 36rem;
+}
+
+.oc-cdefaults__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.oc-cdefaults__label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.oc-cdefaults__help,
+.oc-cdefaults__note {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin: 0;
+}
+
+.oc-cdefaults__actions {
+  display: flex;
+  justify-content: flex-end;
+}

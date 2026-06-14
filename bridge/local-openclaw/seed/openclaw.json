@@ -1,0 +1,302 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.5.19",
+    "lastTouchedAt": "2026-06-02T16:29:33.336Z"
+  },
+  "gateway": {
+    "controlUi": {
+      "allowedOrigins": [
+        "http://localhost:18789",
+        "http://127.0.0.1:18789"
+      ],
+      "allowInsecureAuth": false
+    },
+    "auth": {
+      "rateLimit": {
+        "maxAttempts": 10,
+        "windowMs": 60000,
+        "lockoutMs": 300000
+      }
+    },
+    "trustedProxies": [
+      "172.16.0.0/12",
+      "192.168.0.0/16"
+    ],
+    "mode": "local"
+  },
+  "agents": {
+    "defaults": {
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "model": {
+        "primary": "openai/gpt-5.5"
+      },
+      "sandbox": {
+        "mode": "off",
+        "browser": {
+          "autoStart": true,
+          "autoStartTimeoutMs": 60000
+        }
+      },
+      "contextPruning": {
+        "mode": "cache-ttl",
+        "ttl": "1h"
+      },
+      "heartbeat": {
+        "every": "55m",
+        "model": "openai/gpt-5.4-mini",
+        "lightContext": true,
+        "isolatedSession": true
+      },
+      "imageGenerationModel": {
+        "primary": "openai/gpt-image-2"
+      },
+      "models": {
+        "openai/gpt-5.5": {
+          "params": {
+            "max_output_tokens": 16384
+          }
+        },
+        "openai/gpt-5.4-mini": {
+          "params": {
+            "max_output_tokens": 8192
+          }
+        },
+        "openai-codex/gpt-5.4-mini": {
+          "params": {
+            "max_output_tokens": 8192
+          }
+        },
+        "openai-codex/gpt-5.5": {
+          "params": {
+            "max_output_tokens": 16384
+          }
+        }
+      },
+      "thinkingDefault": "high",
+      "contextInjection": "continuation-skip"
+    },
+    "list": [
+      {
+        "id": "alice",
+        "workspace": "/home/node/.openclaw/workspace-alice",
+        "identity": {
+          "name": "Alice"
+        },
+        "heartbeat": {}
+      },
+      {
+        "id": "bob",
+        "workspace": "/home/node/.openclaw/workspace-bob",
+        "identity": {
+          "name": "Bob",
+          "emoji": "\u2694\ufe0f"
+        },
+        "heartbeat": {}
+      }
+    ]
+  },
+  "auth": {
+    "profiles": {
+      "openai-codex:user@example.com": {
+        "provider": "openai-codex",
+        "mode": "oauth"
+      }
+    }
+  },
+  "tools": {
+    "fs": {
+      "workspaceOnly": true
+    },
+    "exec": {
+      "security": "full",
+      "ask": "off",
+      "host": "gateway"
+    },
+    "web": {
+      "search": {
+        "enabled": true,
+        "provider": "searxng"
+      },
+      "fetch": {
+        "enabled": true
+      }
+    }
+  },
+  "env": {
+    "vars": {}
+  },
+  "skills": {
+    "entries": {
+      "1password": {
+        "enabled": false
+      },
+      "apple-notes": {
+        "enabled": false
+      },
+      "apple-reminders": {
+        "enabled": false
+      },
+      "weather": {
+        "enabled": false
+      },
+      "bear-notes": {
+        "enabled": false
+      },
+      "blogwatcher": {
+        "enabled": false
+      },
+      "blucli": {
+        "enabled": false
+      },
+      "bluebubbles": {
+        "enabled": false
+      },
+      "camsnap": {
+        "enabled": false
+      },
+      "clawhub": {
+        "enabled": false
+      },
+      "coding-agent": {
+        "enabled": false
+      },
+      "discord": {
+        "enabled": false
+      },
+      "eightctl": {
+        "enabled": false
+      },
+      "gemini": {
+        "enabled": false
+      },
+      "gh-issues": {
+        "enabled": false
+      },
+      "gifgrep": {
+        "enabled": false
+      },
+      "github": {
+        "enabled": false
+      },
+      "himalaya": {
+        "enabled": false
+      },
+      "imsg": {
+        "enabled": false
+      },
+      "mcporter": {
+        "enabled": false
+      },
+      "model-usage": {
+        "enabled": false
+      },
+      "nano-pdf": {
+        "enabled": false
+      },
+      "notion": {
+        "enabled": false
+      },
+      "obsidian": {
+        "enabled": false
+      },
+      "openai-whisper": {
+        "enabled": false
+      },
+      "openhue": {
+        "enabled": false
+      },
+      "oracle": {
+        "enabled": false
+      },
+      "ordercli": {
+        "enabled": false
+      },
+      "peekaboo": {
+        "enabled": false
+      },
+      "sag": {
+        "enabled": false
+      },
+      "session-logs": {
+        "enabled": false
+      },
+      "sherpa-onnx-tts": {
+        "enabled": false
+      },
+      "slack": {
+        "enabled": false
+      },
+      "songsee": {
+        "enabled": false
+      },
+      "sonoscli": {
+        "enabled": false
+      },
+      "spotify-player": {
+        "enabled": false
+      },
+      "summarize": {
+        "enabled": false
+      },
+      "system-status": {
+        "enabled": false
+      },
+      "things-mac": {
+        "enabled": false
+      },
+      "tmux": {
+        "enabled": false
+      },
+      "trello": {
+        "enabled": false
+      },
+      "video-frames": {
+        "enabled": false
+      },
+      "voice-call": {
+        "enabled": false
+      },
+      "wacli": {
+        "enabled": false
+      },
+      "xurl": {
+        "enabled": false
+      }
+    }
+  },
+  "logging": {
+    "redactSensitive": "tools"
+  },
+  "session": {
+    "dmScope": "per-peer",
+    "maintenance": {
+      "mode": "enforce",
+      "pruneAfter": "30d",
+      "maxEntries": 500
+    },
+    "reset": {
+      "mode": "idle"
+    }
+  },
+  "approvals": {
+    "exec": {
+      "enabled": false
+    }
+  },
+  "wizard": {
+    "lastRunAt": "2026-05-21T02:31:55.815Z",
+    "lastRunVersion": "2026.5.19",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "browser": {
+    "enabled": true,
+    "ssrfPolicy": {},
+    "profiles": {},
+    "headless": true,
+    "noSandbox": true,
+    "executablePath": "/opt/playwright-browsers/chromium-current/chrome-linux64/chrome"
+  }
+}

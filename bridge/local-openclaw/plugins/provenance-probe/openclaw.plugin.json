@@ -1,0 +1,16 @@
+{
+  "id": "provenance-probe",
+  "name": "Provenance Contract Probe",
+  "description": "Deterministic provenance/v1 emitter for the live-protocol bench and CI. Emits one 'memory' and one 'documents' report per agent turn through api.emitAgentEvent — the EXACT contract real plugins (hindsight/knowledge) implement. Never deployed to production.",
+  "version": "1.0.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "description": "Enable/disable emission" }
+    }
+  }
+}

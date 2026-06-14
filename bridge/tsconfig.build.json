@@ -1,0 +1,11 @@
+{
+  // Build config: emit ONLY src/ (tests run via vitest, never compiled into
+  // dist). rootDir "src" makes the entry land at dist/index.js — the main
+  // tsconfig.json keeps rootDir "." + test/ included for `npm run typecheck`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts"]
+}

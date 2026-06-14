@@ -1,0 +1,114 @@
+{{- /*
+Bridge — connects to your EXTERNAL OpenClaw gateway (values) and POSTs ingest
+events to Convex. It reaches the Convex .site endpoint by SERVICE DNS
+(CONVEX_HTTP_ACTIONS_URL = http://<release>-convex-backend:3211) — never a host
+IP. Optional read-only media mount (existingClaim or hostPath) for outbound
+media streamed from the gateway.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "bridge") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bridge
+spec:
+  replicas: {{ .Values.bridge.replicas }}
+  selector:
+    matchLabels:
+      {{- include "atrium.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: bridge
+  template:
+    metadata:
+      labels:
+        {{- include "atrium.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: bridge
+      {{- with .Values.bridge.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bridge
+          image: {{ include "atrium.image" (dict "repository" .Values.bridge.image "tag" .Values.bridge.tag "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.bridge.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.bridge.port }}
+          env:
+            # --- your EXTERNAL OpenClaw gateway (values) ---
+            - name: OPENCLAW_GATEWAY_URL
+              value: {{ .Values.openclaw.gatewayUrl | quote }}
+            - name: OPENCLAW_INSTANCE_NAME
+              value: {{ .Values.bridge.instanceName | quote }}
+            - name: OPENCLAW_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: OPENCLAW_TOKEN
+            - name: OPENCLAW_DEVICE_IDENTITY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: OPENCLAW_DEVICE_IDENTITY
+            # --- Convex .site endpoint by SERVICE DNS (no host IP) ---
+            - name: CONVEX_HTTP_ACTIONS_URL
+              value: {{ include "atrium.convexSiteInClusterUrl" . | quote }}
+            # --- shared bridge <-> Convex secrets ---
+            - name: BRIDGE_INGEST_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: BRIDGE_INGEST_SECRET
+            - name: BRIDGE_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: BRIDGE_SHARED_SECRET
+            - name: BRIDGE_PORT
+              value: {{ .Values.bridge.port | quote }}
+            {{- if .Values.bridge.media.enabled }}
+            - name: OPENCLAW_MEDIA_OUTBOUND_DIR
+              value: {{ .Values.bridge.media.mountPath | quote }}
+            - name: OPENCLAW_MEDIA_MAX_MB
+              value: {{ .Values.bridge.media.maxMb | quote }}
+            {{- end }}
+          {{- if .Values.bridge.media.enabled }}
+          volumeMounts:
+            - name: media-outbound
+              mountPath: {{ .Values.bridge.media.mountPath }}
+              readOnly: true
+          {{- end }}
+          resources:
+            {{- toYaml .Values.bridge.resources | nindent 12 }}
+      {{- if .Values.bridge.media.enabled }}
+      volumes:
+        - name: media-outbound
+          {{- if .Values.bridge.media.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.bridge.media.existingClaim }}
+            readOnly: true
+          {{- else if .Values.bridge.media.hostPath }}
+          hostPath:
+            path: {{ .Values.bridge.media.hostPath }}
+            type: Directory
+          {{- else }}
+          {{- fail "bridge.media.enabled is true but neither bridge.media.existingClaim nor bridge.media.hostPath is set" }}
+          {{- end }}
+      {{- end }}
+      {{- with .Values.bridge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bridge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bridge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,273 @@
+# Default values for atrium (provider-PORTABLE base chart).
+#
+# This file carries NO provider-specific assumptions. For a concrete cloud
+# example see values-aks.yaml. The two URL classes are kept strictly separate:
+#
+#   * PUBLIC https origins (reached by the BROWSER, via your ingress / proxy):
+#     supplied as values below (convex.cloudOrigin / siteOrigin, app.siteUrl).
+#   * IN-CLUSTER service DNS (derived from the release name in templates, NEVER
+#     a value): the bridge -> convex-backend, the bootstrap Job -> convex-backend,
+#     and Convex -> bridge. You do not configure these.
+
+# -- Override the chart name (rarely needed).
+nameOverride: ""
+# -- Override the full release-derived name (rarely needed).
+fullnameOverride: ""
+
+# Image pull secrets applied to every workload (e.g. for a private registry).
+imagePullSecrets: []
+#  - name: my-registry-cred
+
+serviceAccount:
+  # -- Create a ServiceAccount for the bootstrap Job. The Job does NOT call the
+  #    Kubernetes API (no kubectl exec) — it derives the admin key locally and
+  #    talks to Convex over the network — so no RBAC is needed.
+  create: true
+  name: ""
+  annotations: {}
+
+# =============================================================================
+# PUBLIC origins — the https URLs the BROWSER reaches via your ingress/proxy.
+# These are the SAME values the frontend's CONVEX_URL and the backend's
+# CONVEX_CLOUD_ORIGIN / CONVEX_SITE_ORIGIN use. Set them to YOUR public hosts.
+# =============================================================================
+convex:
+  # -- Public https origin for the Convex CLOUD endpoint (queries/mutations).
+  #    Frontend CONVEX_URL == backend CONVEX_CLOUD_ORIGIN == this value.
+  cloudOrigin: "https://convex.example.com"
+  # -- Public https origin for the Convex SITE endpoint (HTTP actions / .site).
+  siteOrigin: "https://convex-site.example.com"
+
+app:
+  # -- Public site URL used for OAuth callbacks (usually the frontend origin).
+  #    Pushed into the Convex deployment env as SITE_URL by the bootstrap Job.
+  siteUrl: "https://webchat.example.com"
+
+# =============================================================================
+# Convex backend — STATEFUL. Single-replica StatefulSet + PVC (NOT horizontally
+# scalable). SQLite data at /convex/data survives pod recreation. This is the #1
+# disposability constraint of the stack.
+# =============================================================================
+convexBackend:
+  image: ghcr.io/get-convex/convex-backend
+  # -- Pin a digest/tag in production; "latest" shown for the community base.
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  # Convex cloud (queries/mutations + admin/env API) and site (HTTP actions).
+  cloudPort: 3210
+  sitePort: 3211
+  rustLog: info
+  persistence:
+    # -- Size of the SQLite data PVC (volumeClaimTemplates). Grow, never shrink.
+    size: 10Gi
+    # -- StorageClass for the data PVC. Empty => cluster default StorageClass.
+    #    Provider-specific (see values-aks.yaml).
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# =============================================================================
+# Convex dashboard — INTERNAL ONLY (admin-key-gated). ClusterIP Service, NEVER
+# a public Ingress. Reach it via `kubectl port-forward` or a private proxy.
+# =============================================================================
+convexDashboard:
+  enabled: true
+  image: ghcr.io/get-convex/convex-dashboard
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  port: 6791
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# =============================================================================
+# Frontend — static SPA (Caddy). Deployment + Service + optional Ingress.
+# CONVEX_URL is injected at runtime from convex.cloudOrigin (image is
+# origin-agnostic; the entrypoint writes /config.json).
+# =============================================================================
+webchat:
+  # Published image (GHCR). CI publishes ghcr.io/lacneu/atrium; a fork
+  # repoints this at its own owner.
+  image: ghcr.io/lacneu/atrium
+  # -- Frontend image tag. LOCKSTEP with the bridge tag (same release version).
+  #    Defaults to the chart appVersion when left empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+  replicas: 1
+  # Container listens on 80 (Caddy); Service maps servicePort -> 80.
+  containerPort: 80
+  servicePort: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# =============================================================================
+# Bridge — connects to your EXTERNAL OpenClaw gateway and POSTs to Convex.
+# Reaches convex-backend by SERVICE DNS (no host IP). ClusterIP Service.
+# =============================================================================
+bridge:
+  # Published image (GHCR) — see webchat.image above; a fork repoints it.
+  image: ghcr.io/lacneu/atrium-bridge
+  # -- Bridge image tag. LOCKSTEP with the frontend tag. Defaults to chart
+  #    appVersion when left empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8787
+  # -- The instance name THIS bridge serves (must match a Convex instances.name
+  #    and the BRIDGE_INSTANCE_NAME pushed into Convex env).
+  instanceName: "primary"
+  # Outbound media: optional read-only mount of your gateway's media/outbound
+  # dir. Leave enabled=false unless the gateway shares a volume with this pod.
+  media:
+    enabled: false
+    maxMb: 1024
+    mountPath: /home/node/.openclaw/media/outbound
+    # Provide EITHER an existingClaim (a pre-bound RWX PVC shared with the
+    # gateway) OR a hostPath. existingClaim wins if both are set.
+    existingClaim: ""
+    hostPath: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# -- Your EXTERNAL OpenClaw gateway (NOT deployed by this chart).
+openclaw:
+  # -- ws[s]:// URL of your OpenClaw gateway.
+  gatewayUrl: "wss://gateway.example.com"
+
+# =============================================================================
+# Service / Ingress (PUBLIC routing for the frontend only).
+# =============================================================================
+service:
+  type: ClusterIP
+  annotations: {}
+
+ingress:
+  # -- Enable a public Ingress for the FRONTEND. The dashboard is NEVER exposed.
+  enabled: false
+  # -- IngressClass (provider-portable: nginx, traefik, AKS app routing, ...).
+  className: ""
+  annotations: {}
+  hosts:
+    - host: webchat.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS config. With cert-manager set the annotation on .annotations and the
+  #    secretName here.
+  tls: []
+  #  - hosts:
+  #      - webchat.example.com
+  #    secretName: webchat-tls
+
+# =============================================================================
+# Bootstrap Job — reconciles the CONVEX DEPLOYMENT env (read by Convex
+# FUNCTIONS via process.env). Runs as an ordered post-install/post-upgrade hook.
+# It (1) derives the admin key locally from INSTANCE_SECRET (no live server
+# needed for the derivation), (2) waits for the backend /version to be healthy,
+# then (3) idempotently `convex env set`s each var — AUTH_ALLOWED_EMAIL_DOMAINS
+# FIRST (the authoritative sign-in gate).
+# =============================================================================
+bootstrap:
+  enabled: true
+  # -- Node image used to run the Convex CLI (npx convex env set).
+  nodeImage: node:22-alpine
+  # -- Optional pin of the convex package the CLI runs (npx convex@<version>).
+  #    Empty => latest. Pin in production for reproducibility.
+  convexCliVersion: ""
+  # Hook ordering: the env-set Job is the LAST resource to run.
+  hookWeight: "5"
+  backoffLimit: 6
+  # -- Seconds the readiness poll waits for the backend before giving up.
+  readinessTimeoutSeconds: 180
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# =============================================================================
+# Secrets — sourced from a Kubernetes Secret (NEVER a ConfigMap). Either point
+# at an existing Secret (recommended for prod: Azure Key Vault CSI,
+# external-secrets, sealed-secrets) OR let the chart render one from the values
+# under secrets.values. The bootstrap Job, bridge and backend read from it.
+# =============================================================================
+secrets:
+  # -- Name of a pre-existing Secret holding ALL keys below. When set, the chart
+  #    renders NO Secret and reads from this one. Keys MUST match secrets.values.
+  existingSecret: ""
+  # Plaintext values used ONLY when existingSecret is empty (the chart then
+  # renders a Secret). For production prefer existingSecret + an external store.
+  values:
+    # --- Convex backend identity (mints the admin key — back it up!) ---
+    CONVEX_INSTANCE_NAME: "atrium"
+    CONVEX_INSTANCE_SECRET: ""
+    # --- shared bridge <-> Convex secrets (same value in both scopes) ---
+    BRIDGE_INGEST_SECRET: ""
+    BRIDGE_SHARED_SECRET: ""
+    # --- bridge -> OpenClaw gateway credentials ---
+    OPENCLAW_TOKEN: ""
+    # Ed25519 device identity JSON (single line).
+    OPENCLAW_DEVICE_IDENTITY: ""
+    # --- Convex DEPLOYMENT env (pushed by the bootstrap Job) ---
+    # Authoritative sign-in gate — comma-separated allowed email domains. The
+    # FIRST sign-in from an allowed domain becomes admin. MUST be set before
+    # anyone signs in (the Job sets it FIRST).
+    AUTH_ALLOWED_EMAIL_DOMAINS: "example.com"
+    # Google OAuth.
+    AUTH_GOOGLE_ID: ""
+    AUTH_GOOGLE_SECRET: ""
+    # Microsoft Entra OAuth (optional; leave blank to disable). Names match what
+    # @auth/core + convex/auth.ts read; the ISSUER is the FULL issuer URL
+    # (https://login.microsoftonline.com/<tenant>/v2.0), NOT a bare tenant id.
+    AUTH_MICROSOFT_ENTRA_ID_ID: ""
+    AUTH_MICROSOFT_ENTRA_ID_SECRET: ""
+    AUTH_MICROSOFT_ENTRA_ID_ISSUER: ""
+    # @convex-dev/auth keys. JWT_PRIVATE_KEY = PEM with REAL newlines; JWKS = raw JSON.
+    JWT_PRIVATE_KEY: ""
+    JWKS: ""
+    # Optional trace shipping (leave blank to disable). Langfuse host = LANGFUSE_HOST.
+    LANGFUSE_PUBLIC_KEY: ""
+    LANGFUSE_SECRET_KEY: ""
+    LANGFUSE_HOST: ""
+    OPIK_API_KEY: ""
+    OPIK_WORKSPACE: ""
+    OPIK_BASE_URL: ""

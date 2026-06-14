@@ -1,0 +1,6 @@
+# Volatile runtime state — never commit.
+.token
+local.env
+media-outbound/
+# Local seed override (personal agents/auth profile) — never commit.
+seed/openclaw.local.json

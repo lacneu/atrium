@@ -1,0 +1,12 @@
+# Keep secrets and build artifacts OUT of the image build context.
+.env
+.env.*
+*.env
+dist
+node_modules
+test
+*.test.ts
+dev-probe-*.mjs
+dev-prove-*.mjs
+.DS_Store
+npm-debug.log*

@@ -1,0 +1,41 @@
+# Build context for docker/Dockerfile (the static frontend image). Keep it to
+# what `vite build` needs: src/, convex/ (committed _generated), index.html, the
+# vite/ts/tailwind configs, package*.json. Everything else is excluded.
+
+.git
+.DS_Store
+
+# Reinstalled / rebuilt inside the image
+node_modules
+dist
+**/node_modules
+**/dist
+
+# Other workspaces & tooling not needed to build the frontend
+bridge
+mcp
+local-openclaw
+docs
+deploy
+backend
+frontend
+nanobanana-output
+.convex
+.idea
+.vscode
+.claude
+.agents
+
+# Secrets / env / runtime config (never bake)
+secrets
+config.local.json
+*.local.json
+*.env
+.env
+.env.*
+public/config.json
+
+# Diagnostics
+openclaw-frame-captures
+*.ndjson
+*.log

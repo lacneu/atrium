@@ -1,0 +1,322 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* P4: typed registration of the runtime chart tokens (defense in depth). A custom
+ * chart's tokens are validated server-side (convex/lib/chartValidation: oklch-only
+ * colors, bounded radius, allowlisted font stacks) and applied via
+ * documentElement.style.setProperty; @property makes the browser ALSO reject a
+ * value that does not match `syntax`, so a malformed token can never reach the
+ * cascade. `inherits: true` is MANDATORY here — these vars are set on :root/.dark
+ * and read by descendants; a non-inheriting (or invalid/dropped) rule would send
+ * descendants to `initial-value` and break the look app-wide. The `initial-value`
+ * mirrors the :root (light) value, but it only applies when NO rule sets the var;
+ * since index.css :root/.dark always define them, removeProperty (an unset chart
+ * token) still falls back to the native index.css look, NOT to initial-value.
+ * Fonts use syntax "*" (a font stack has no strict grammar; no initial-value). */
+@property --background {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(1 0 0);
+}
+@property --foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.145 0 0);
+}
+@property --card {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(1 0 0);
+}
+@property --card-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.145 0 0);
+}
+@property --popover {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(1 0 0);
+}
+@property --popover-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.145 0 0);
+}
+@property --primary {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
+@property --primary-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.985 0 0);
+}
+@property --secondary {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.97 0 0);
+}
+@property --secondary-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
+@property --muted {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.97 0 0);
+}
+@property --muted-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.556 0 0);
+}
+@property --accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.97 0 0);
+}
+@property --accent-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
+@property --destructive {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.577 0.245 27.325);
+}
+@property --destructive-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.985 0 0);
+}
+@property --border {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.922 0 0);
+}
+@property --input {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.922 0 0);
+}
+@property --ring {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.708 0 0);
+}
+@property --chart-1 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.646 0.222 41.116);
+}
+@property --chart-2 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.6 0.118 184.704);
+}
+@property --chart-3 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.398 0.07 227.392);
+}
+@property --chart-4 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.828 0.189 84.429);
+}
+@property --chart-5 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.769 0.188 70.08);
+}
+@property --sidebar {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.985 0 0);
+}
+@property --sidebar-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.145 0 0);
+}
+@property --sidebar-primary {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
+@property --sidebar-primary-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.985 0 0);
+}
+@property --sidebar-accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.97 0 0);
+}
+@property --sidebar-accent-foreground {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
+@property --sidebar-border {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.922 0 0);
+}
+@property --sidebar-ring {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.708 0 0);
+}
+@property --radius {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0.625rem;
+}
+@property --ui-font-sans {
+  syntax: "*";
+  inherits: true;
+}
+@property --ui-font-mono {
+  syntax: "*";
+  inherits: true;
+}
+
+@theme inline {
+  /* Reference the base font vars (defined in :root) instead of literal values, so
+     a chart can override --ui-font-sans/--ui-font-mono at runtime and have it
+     propagate — exactly like the color tokens (--color-*: var(--*)). A literal
+     value here would be inlined by Tailwind v4 and a runtime override would no-op. */
+  --font-sans: var(--ui-font-sans);
+  --font-mono: var(--ui-font-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* Unified on the `.dark` class (toggled by useTheme): :root is LIGHT, .dark is
+ * DARK. This is the DEFAULT shadcn/ui palette (neutral base, oklch) — the exact
+ * look of ui.shadcn.com. "system" handled in JS (matchMedia). */
+:root {
+  color-scheme: light;
+  /* Base font tokens — overridable at runtime by a chart (the @theme inline font
+     utilities reference these via var()). Mode-independent (not redefined in .dark). */
+  --ui-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ui-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
