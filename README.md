@@ -98,6 +98,30 @@ two-environment-scope gotcha and the stateful/stateless lifecycle.
 
 For local development (no Docker), see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
+## Frontend distribution (npm / CDN)
+
+Besides the Docker image, the frontend is published to npm as a **prebuilt static
+bundle** ([`@lacneu/atrium`](https://www.npmjs.com/package/@lacneu/atrium)) so you
+can deploy the UI to any static host or CDN without building it yourself. It is
+**origin-agnostic**: the Convex URL is read at runtime from a `/config.json` served
+next to the bundle, so one artifact serves any deployment.
+
+> The bundle is only the UI — you still run the Convex backend and the bridge (see
+> [Quickstart](#quickstart)). Serve a `config.json` next to `index.html`:
+>
+> ```json
+> { "convexUrl": "https://convex.example.com" }
+> ```
+
+- **npm** — `npm install @lacneu/atrium`, then copy the package's `dist/` to your
+  static host / bucket / CDN and drop your `config.json` beside `index.html`.
+- **Pin a version straight from a CDN** (e.g. in a deploy script) — no install:
+  - `https://unpkg.com/@lacneu/atrium@<version>/dist/`
+  - `https://cdn.jsdelivr.net/npm/@lacneu/atrium@<version>/dist/`
+- **Docker** — the published frontend image serves the same `dist/` and writes
+  `/config.json` from the `CONVEX_URL` env at startup (this is what the Quickstart
+  uses).
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — components, data flow, auth.
