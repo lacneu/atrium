@@ -8,6 +8,14 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.1.1] — npm packaging fix
+
+The `0.1.0` npm publish (a manual bootstrap of a brand-new scope) shipped without
+the built `dist/` bundle. This release publishes `@lacneu/atrium` correctly — the
+static `dist/` is included — via the automated, OIDC-based pipeline. No
+application or Docker image changes: the `ghcr.io/lacneu/atrium` and
+`atrium-bridge` images were already correct in `0.1.0`.
+
 ## [0.1.0] — Initial public release
 
 First public, self-hostable release of Atrium: a multi-user web chat UI for AI
