@@ -22,8 +22,8 @@ jobs:
       webchat: ${{ steps.filter.outputs.webchat }}
       bridge: ${{ steps.filter.outputs.bridge }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           # The webchat image-rebuild trigger is an EXCLUDE-list, NOT an allowlist.
@@ -61,8 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: write }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 24 }
       # Lockstep version from the tag (the SINGLE source of truth). Runs BEFORE
       # npm ci so package.json + lock stay in sync at the stamped version (no ci
@@ -75,10 +75,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ github.repository }}
@@ -87,7 +87,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -107,8 +107,8 @@ jobs:
     permissions: { contents: read, packages: write }
     defaults: { run: { working-directory: bridge } }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 24 }
       # Lockstep version from the tag. BEFORE npm ci (in-sync package.json + lock).
       # The job default working-directory is `bridge`, so run the stamp from the
@@ -123,10 +123,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ghcr.io/${{ github.repository }}-bridge
@@ -135,7 +135,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v7
         with:
           context: bridge
           file: bridge/Dockerfile
