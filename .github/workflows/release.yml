@@ -33,15 +33,7 @@ jobs:
       id-token: write # required for npm Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v6
-      # setup-node@v4 here is DELIBERATE (the rest of the repo is on v6). This exact
-      # shape — v4 + registry-url + `npm install -g npm@latest` — is the config PROVEN
-      # to publish via OIDC trusted publishing in the sibling repo
-      # openclaw-knowledge-plugin. setup-node@v6 with registry-url injects a bogus
-      # `NODE_AUTH_TOKEN` placeholder into .npmrc that SHADOWS the OIDC handshake →
-      # `npm publish` 404'd (v0.1.1 and the first two v0.1.2 attempts; npm was already
-      # 11.17, so the version was NOT the cause — the placeholder was). v4 does not do
-      # this and still runs fine on Node 24.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
@@ -56,11 +48,16 @@ jobs:
       - run: npm ci || npm install
       - name: Build dist (the published artifact)
         run: npm run build
-      # Trusted Publishing (OIDC): with id-token:write + the npmjs.com Trusted
-      # Publisher (this repo + release.yml) + npm >= 11.5.1, npm auto-detects the
-      # OIDC environment and mints a short-lived token — NO NODE_AUTH_TOKEN needed.
-      - name: Publish to npm (OIDC)
-        run: npm publish --access public
+      # Trusted Publishing (OIDC): id-token:write + the npmjs.com Trusted Publisher
+      # + npm >= 11.5.1 → npm mints a short-lived token (no NODE_AUTH_TOKEN). The
+      # OIDC/provenance match keys on package.json `repository.url` (MUST point at
+      # this GitHub repo — it was missing, which 404'd the OIDC token exchange and
+      # fell back to an anonymous PUT → "404 not found"; see npm/cli#8730, #8678).
+      # `--provenance` is REQUIRED the first time a package is published via OIDC
+      # when its earlier versions were published WITHOUT provenance (here 0.1.0/0.1.1
+      # were manual); it can stay on afterwards (harmless). See RELEASE.md.
+      - name: Publish to npm (OIDC + provenance)
+        run: npm publish --access public --provenance
 
   # ---- GitHub Release with AUTO-GENERATED notes (additive; never blocks publish)-
   # Runs only AFTER npm publish succeeds. `generate_release_notes` lets GitHub

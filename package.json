@@ -4,6 +4,14 @@
   "description": "Atrium — public, self-hostable, Convex-backed web chat UI for AI agent gateways (OpenClaw today, Hermes next). Ships an origin-agnostic static bundle (Convex URL injected at runtime via /config.json).",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lacneu/atrium.git"
+  },
+  "homepage": "https://github.com/lacneu/atrium#readme",
+  "bugs": {
+    "url": "https://github.com/lacneu/atrium/issues"
+  },
   "files": [
     "dist",
     "README.md"

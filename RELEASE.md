@@ -74,20 +74,25 @@ secret. It works only when ALL of these hold:
 
 - the job has `permissions: id-token: write` (it does);
 - npmjs.com has a **Trusted Publisher** for `@lacneu/atrium` matching this repo +
-  `release.yml` + (empty environment) — configured in the package's Settings;
-- the runner's **npm CLI is >= 11.5.1** (the workflow upgrades it explicitly with
-  `npm install -g npm@latest`);
-- the publish job uses **`actions/setup-node@v4`, NOT @v6**. This is the subtle one:
-  `setup-node@v6` with `registry-url` injects a bogus `NODE_AUTH_TOKEN` placeholder
-  (`XXXXX-XXXXX-XXXXX-XXXXX`) into `.npmrc`, and npm uses THAT token instead of doing
-  the OIDC handshake → the registry rejects it → a misleading **`404 Not Found` on
-  PUT**. `@v4` does not inject the placeholder (this is the exact config proven to
-  work in the sibling repo `openclaw-knowledge-plugin`). So the `publish-npm` job
-  intentionally stays on `setup-node@v4` while the rest of the repo is on v6.
+  `release.yml` + (empty environment);
+- the runner's **npm CLI is >= 11.5.1** (the workflow upgrades it with `npm install -g
+  npm@latest`);
+- **`package.json` has a `repository.url` pointing at THIS repo** (`git+https://github.com/lacneu/atrium.git`,
+  owner casing exact). npm's OIDC/provenance match keys on this — **its absence is what
+  404'd the first attempts** (the OIDC token exchange returned "package not found", npm
+  fell back to an anonymous PUT → the misleading `404 Not Found`);
+- the publish passes **`--provenance`** — required the FIRST time a package is published
+  via OIDC if earlier versions were published WITHOUT provenance (atrium's 0.1.0/0.1.1
+  were manual). It can stay on afterwards.
 
-If you ever see that 404 with the Trusted Publisher correctly set, the cause is the
-`NODE_AUTH_TOKEN` placeholder from `setup-node@v6 + registry-url` — not the npm-side
-config and not (usually) the npm version.
+**Debugging a `404 Not Found` on PUT** (the misleading "not found / no permission" — npm
+emits this when it falls back to anonymous; see npm/cli#9088): run `npm publish --verbose`
+to see the real error — the `POST /-/npm/v1/oidc/token/exchange/package/<pkg>` line reveals
+the actual OIDC failure. Things that are NOT the cause (proven by diffing the working sibling
+`openclaw-knowledge-plugin`): the `NODE_AUTH_TOKEN: XXXXX-...` placeholder, the `always-auth`
+warning, `setup-node@v4` vs `v6`, the npm version, and the "disallow tokens" radio — the
+SUCCESSFUL sibling runs show all the same. The real causes were the missing `repository.url`
++ first-publish `--provenance` (npm/cli#8730, #8678).
 
 ## If a job fails mid-release (recovery)
 
