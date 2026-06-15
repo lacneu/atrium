@@ -53,3 +53,54 @@ jobs:
       # the OIDC environment from id-token:write — NO NODE_AUTH_TOKEN needed.
       - name: Publish to npm (OIDC)
         run: npm publish --access public
+
+  # ---- GitHub Release with AUTO-GENERATED notes (additive; never blocks publish)-
+  # Runs only AFTER npm publish succeeds. `generate_release_notes` lets GitHub
+  # build the changelog from merged PRs/commits since the previous tag; the
+  # chore(release) bot commits are filtered out by .github/release.yml so the
+  # machinery never pollutes its own changelog.
+  github-release:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release for the pushed tag
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create GitHub Release (auto notes)
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
+  # ---- Commit the lockstep version back to main (additive; never blocks publish)-
+  # The git TAG is the single source of truth; this job makes the repo FILES match
+  # it (real numbers, no 0.0.0 placeholder) without anyone hand-editing 6 files.
+  # main is unprotected (verified), so the default GITHUB_TOKEN can push; such a
+  # push does NOT retrigger workflows (loop-safe) and `[skip ci]` is belt-and-
+  # suspenders. The tag itself points at the pre-bump commit — artifacts are stamped
+  # from the tag NAME at build, so they are correct regardless (see RELEASE.md).
+  version-commit-back:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version-bump commit to main
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Stamp committed version to the tag (lockstep)
+        run: node scripts/set-version.mjs "${GITHUB_REF#refs/tags/v}"
+      - name: Commit version bump back to main (only if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Files already at ${GITHUB_REF#refs/tags/v}; nothing to commit."
+          else
+            git add -A
+            git commit -m "chore(release): ${GITHUB_REF#refs/tags/v} [skip ci]"
+            git push origin main
+          fi

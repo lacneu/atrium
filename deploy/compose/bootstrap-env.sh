@@ -45,7 +45,7 @@ resolve() {
   local key="$1" file
   file="$(dotenv_get "${key}_FILE")"
   if [[ -n "$file" ]]; then
-    [[ -f "$file" ]] || { echo "FATAL: ${key}_FILE points to a missing file: $file"; exit 1; }
+    [[ -f "$file" ]] || { echo "FATAL: ${key}_FILE points to a missing file: $file" >&2; exit 1; }
     cat "$file"
   else
     dotenv_get "$key"
@@ -57,6 +57,9 @@ INSTANCE_SECRET="$(dotenv_get CONVEX_INSTANCE_SECRET)"
 PROJECT="$(dotenv_get COMPOSE_PROJECT_NAME)"; PROJECT="${PROJECT:-atrium}"
 CLOUD_PORT="$(dotenv_get CONVEX_CLOUD_PORT)"; CLOUD_PORT="${CLOUD_PORT:-3210}"
 BACKEND="${PROJECT}-convex-backend"
+# The convex CLI must run from the repo ROOT (package.json + convex/), NOT from
+# deploy/compose — every `npx convex …` below runs inside ( cd "$REPO_ROOT" && … ).
+REPO_ROOT="$(cd ../.. && pwd)"
 
 # 1) Wait for the backend to be healthy (the env API is unavailable otherwise).
 echo "▶ waiting for ${BACKEND} to be healthy …"
@@ -80,11 +83,11 @@ set_env() {
   local name="$1" value="$2"
   [[ -z "$value" ]] && { echo "  · ${name}: (blank, skipped)"; return; }
   local current
-  current="$(npx convex env get "$name" 2>/dev/null || true)"
+  current="$( (cd "$REPO_ROOT" && npx convex env get "$name") 2>/dev/null || true)"
   if [[ "$current" == "$value" ]]; then
     echo "  = ${name}: unchanged"
   else
-    npx convex env set "$name" -- "$value" >/dev/null
+    ( cd "$REPO_ROOT" && npx convex env set "$name" -- "$value" ) >/dev/null
     echo "  + ${name}: set"
   fi
 }
@@ -93,7 +96,11 @@ set_env() {
 #    MUST be in place before anyone can reach the sign-in screen (else sign-in
 #    breaks, or a wrong domain could seed the admin).
 echo "▶ setting Convex deployment env (auth gate first) …"
-set_env AUTH_ALLOWED_EMAIL_DOMAINS "$(resolve AUTH_ALLOWED_EMAIL_DOMAINS)"
+# Capture resolve() into a var FIRST so a failed resolve (missing <KEY>_FILE)
+# ABORTS — `set -e` does NOT catch a command-substitution failure used directly as
+# an argument, which once stored the literal "FATAL …" message as JWT_PRIVATE_KEY.
+push() { local name="$1" val; val="$(resolve "$name")" || exit 1; set_env "$name" "$val"; }
+push AUTH_ALLOWED_EMAIL_DOMAINS
 
 # 5) The rest. JWT_PRIVATE_KEY / JWKS support the `<KEY>_FILE` form (recommended
 #    for the PEM key + JWKS JSON) via `resolve`.
@@ -104,7 +111,7 @@ for v in \
   BRIDGE_URL BRIDGE_INSTANCE_NAME BRIDGE_SHARED_SECRET BRIDGE_INGEST_SECRET \
   LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_HOST \
   OPIK_API_KEY OPIK_WORKSPACE OPIK_BASE_URL ; do
-  set_env "$v" "$(resolve "$v")"
+  push "$v"
 done
 
 echo "▶ Convex deployment env reconciled."
@@ -112,7 +119,6 @@ echo "▶ Convex deployment env reconciled."
 # 6) Deploy this repo's Convex functions / HTTP routes to the (now env-configured)
 #    backend. `convex deploy` bundles from convex/ at the repo root and pushes via
 #    the self-hosted URL + admin key already exported above (kept out of argv).
-REPO_ROOT="$(cd ../.. && pwd)"
 [[ -f "$REPO_ROOT/convex/schema.ts" ]] || {
   echo "FATAL: convex/ source not found at ${REPO_ROOT}. Run bootstrap-env.sh from"
   echo "       a FULL repo checkout — it deploys the backend's functions, not just env."
@@ -120,7 +126,9 @@ REPO_ROOT="$(cd ../.. && pwd)"
 }
 if [[ ! -d "$REPO_ROOT/node_modules/convex" ]]; then
   echo "▶ installing repo deps (one-time, needed to bundle functions) …"
-  ( cd "$REPO_ROOT" && npm ci )
+  # `npm ci` fails when the committed lockfile was generated for a different
+  # platform (e.g. alpine/musl) than this host — fall back to `npm install`.
+  ( cd "$REPO_ROOT" && { npm ci || npm install; } )
 fi
 echo "▶ deploying Convex functions from ${REPO_ROOT} …"
 ( cd "$REPO_ROOT" && npx convex deploy )

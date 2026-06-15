@@ -129,6 +129,8 @@ next to the bundle, so one artifact serves any deployment.
 - [Configuration](docs/CONFIGURATION.md) — environment variable reference.
 - [Bridge protocol](docs/BRIDGE_PROTOCOL.md) — bridge ↔ Convex ↔ gateway contract.
 - [Deployment](docs/DEPLOYMENT.md) → points to [`deploy/`](deploy/).
+- [Deployment troubleshooting](deploy/TROUBLESHOOTING.md) — first-deploy problems
+  with diagnosis + fix (private images, sign-in/JWT, agent discovery, …).
 - [OpenClaw version compatibility](docs/OPENCLAW_VERSION_COMPAT.md).
 - [Compliance / Trust Center](compliance/) — SOC 2 control mapping (incl. the
   metadata-only `/api/v1` surface) + the software-vs-operator

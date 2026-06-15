@@ -71,6 +71,86 @@ describe("listChats providerKind (sidebar bridge badge)", () => {
     expect([...distinct][0]).toBe("openclaw");
   });
 
+  // REGRESSION TEST for the bound (NOT a reproduction of the prod error —
+  // convex-test does not enforce production's per-function op/byte budget, so
+  // "too many system operations" is unreproducible in-harness). What this LOCKS:
+  // listChats returns the most-recent CHAT_WINDOW (200) by updatedAt UNIONed with
+  // every pinned chat of any age. It FAILS against the old unbounded `.collect()`
+  // (which returned all 225 loose rows) — that unbounded read is what contributed
+  // to the incident, and this prevents its return.
+  test("bounded to CHAT_WINDOW recent + an OLD pinned chat is never dropped", async () => {
+    const CHAT_WINDOW = 200;
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user" as const, canonical: "u" });
+      // One pinned chat with the OLDEST timestamp — outside any recency window.
+      await ctx.db.insert("chats", {
+        userId: uid, updatedAt: 0, pinned: true, title: "PINNED-OLD",
+      });
+      // More loose (non-pinned) chats than the window, newest = highest updatedAt.
+      for (let i = 1; i <= CHAT_WINDOW + 25; i++) {
+        await ctx.db.insert("chats", { userId: uid, updatedAt: i, title: `loose-${i}` });
+      }
+      return uid;
+    });
+
+    const rows = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listChats, {});
+
+    // Loose chats are capped at the window; the pinned old chat is ADDED on top.
+    const loose = rows.filter((r) => !r.pinned);
+    expect(loose.length).toBe(CHAT_WINDOW);
+    // The old pinned chat survived the recency cut (the load-bearing guarantee).
+    const pinned = rows.filter((r) => r.pinned);
+    expect(pinned.map((r) => r.title)).toEqual(["PINNED-OLD"]);
+    // Newest loose chat is present; the oldest loose ones fell off the window.
+    const titles = new Set(rows.map((r) => r.title));
+    expect(titles.has(`loose-${CHAT_WINDOW + 25}`)).toBe(true);
+    expect(titles.has("loose-1")).toBe(false);
+  });
+
+  // REGRESSION TEST for Codex P2: archived chats must NOT consume the recency
+  // window. The recency index (by_user_updated) is shared by archived rows, so the
+  // old `take(CHAT_WINDOW)` + post-filter would return [] for a user whose CHAT_WINDOW
+  // most-recent chats are ALL archived — evicting every active chat from the sidebar.
+  // The bounded scan skips archived in-flight, so active chats still surface.
+  test("archived chats do not evict active chats from the recency window", async () => {
+    const CHAT_WINDOW = 200;
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user" as const, canonical: "u" });
+      // A handful of ACTIVE chats with the OLDEST timestamps.
+      for (let i = 1; i <= 5; i++) {
+        await ctx.db.insert("chats", {
+          userId: uid, updatedAt: i, title: `active-${i}`, archived: false,
+        });
+      }
+      // MORE than a full window of ARCHIVED chats, ALL more recent than the active
+      // ones (higher updatedAt). Against the old code these fill take(200) entirely.
+      for (let i = 1; i <= CHAT_WINDOW + 25; i++) {
+        await ctx.db.insert("chats", {
+          userId: uid, updatedAt: 1000 + i, title: `archived-${i}`, archived: true,
+        });
+      }
+      return uid;
+    });
+
+    const rows = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listChats, {});
+
+    const titles = new Set(rows.map((r) => r.title));
+    // Every active chat surfaces despite being older than a full window of archives.
+    for (let i = 1; i <= 5; i++) {
+      expect(titles.has(`active-${i}`)).toBe(true);
+    }
+    // No archived chat leaks into the sidebar.
+    expect(rows.some((r) => (r.title ?? "").startsWith("archived-"))).toBe(false);
+  });
+
   test("chat bound to a DELETED Hermes agent → badge shows the fallback bridge (OpenClaw)", async () => {
     // Codex P2: the badge must name the bridge the NEXT turn uses. A binding to a
     // deleted agent rebinds to the default (here OpenClaw), so the chat must NOT

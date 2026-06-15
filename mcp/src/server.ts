@@ -14,6 +14,7 @@
  * than crashing.
  */
 
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ApiError, resolveConfig } from "./config.js";
@@ -33,6 +34,19 @@ import {
   reportAnomaly,
   reportAnomalyInput,
 } from "./tools.js";
+
+// The MCP server's own version, read from package.json at startup. createRequire
+// (not a static JSON import) because tsconfig.build.json roots at src/ and a
+// static import of ../package.json would escape rootDir — same idiom as the bridge
+// (bridge/src/compat.ts). Lockstep with the repo's single version, stamped from the
+// git tag at release time (scripts/set-version.mjs); "0.0.0" only as a last resort.
+const pkg = createRequire(import.meta.url)("../package.json") as {
+  version?: unknown;
+};
+const MCP_VERSION: string =
+  typeof pkg.version === "string" && pkg.version.length > 0
+    ? pkg.version
+    : "0.0.0";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -74,7 +88,7 @@ function main(): void {
 
   const server = new McpServer({
     name: "atrium-observability",
-    version: "0.1.0",
+    version: MCP_VERSION,
   });
 
   server.registerTool(

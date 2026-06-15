@@ -26,7 +26,7 @@ import {
   normalizeMessageErrorCode,
   mimeTypeBase,
 } from "./lib/chatRenderState";
-import { Id } from "./_generated/dataModel";
+import { Id, Doc } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
@@ -364,14 +364,75 @@ export const getSessionMeta = query({
 });
 
 // Optional: list the chats owned by the authenticated user (sidebar). Scoped.
+// Hard upper bound on how many recent chats the sidebar feed loads. Pinned chats
+// are returned IN ADDITION (any age), so this caps only the unbounded "recent"
+// tail, not the user's curated set.
+const CHAT_WINDOW = 200;
+// Hard ceiling on rows SCANNED while filling the recency window. The recency
+// index (`by_user_updated`) is shared by archived chats, so a naive
+// `take(CHAT_WINDOW)` could be entirely consumed by archived rows and evict
+// active chats from the sidebar when a user has >= CHAT_WINDOW archived chats
+// more recent than their active ones (Codex P2). We instead scan desc, SKIP
+// archived, and stop at CHAT_WINDOW kept OR this cap — bounding the read either
+// way. MUST be > CHAT_WINDOW: a value equal to it would break the scan at exactly
+// CHAT_WINDOW archived rows and re-introduce the eviction.
+const CHAT_RECENT_SCAN_CAP = CHAT_WINDOW * 5;
+
 export const listChats = query({
   args: {},
   handler: async (ctx) => {
     const { userId } = await requireActive(ctx);
-    const chats = await ctx.db
+    // BOUND (load-bearing — see Convex guidelines: never .collect() unbounded).
+    // The sidebar must NOT read ALL of a user's chats: that scan grows forever and
+    // on a heavy account exceeds Convex's per-function operation budget (observed
+    // in prod: listChats failing "too many system operations" under load). Read AT
+    // MOST CHAT_WINDOW most-recent NON-ARCHIVED chats by updatedAt, UNIONed with
+    // every PINNED chat regardless of age — a pinned chat is explicitly kept by the
+    // user, so the recency window must never silently drop it. Non-pinned chats
+    // older than the window fall off the sidebar (still reachable via global search
+    // / direct URL), as in every mainstream chat app.
+    //
+    // DELIBERATE tradeoff: a NON-pinned chat that was manually drag-ordered
+    // (`sortKey`) but is older than the window also falls off. We do NOT union the
+    // drag-ordered set: it would reintroduce an unbounded read, and drag-order is a
+    // soft preference (pinning is the strong "keep this" signal). The chat re-enters
+    // the sidebar on its next activity (updatedAt bumps back into the window).
+    // Fill the recency window with NON-ARCHIVED chats. A plain take(CHAT_WINDOW)
+    // here would let archived chats — which share this index — consume the window
+    // and push active chats off the sidebar (Codex P2). Scan desc, SKIP archived,
+    // stop at CHAT_WINDOW kept OR CHAT_RECENT_SCAN_CAP scanned. Async iteration
+    // reads lazily, so `break` ends the scan — the read stays bounded either way.
+    // `!c.archived` treats both undefined (legacy) and false as active, so no data
+    // assumption is needed. DELIBERATE residual (mirrors the sortKey tradeoff
+    // below): a user with MORE than CHAT_RECENT_SCAN_CAP archived chats newer than
+    // an active one can still push that active chat off — acceptable, and there is
+    // no archive feature today.
+    const recent: Doc<"chats">[] = [];
+    let scanned = 0;
+    for await (const c of ctx.db
       .query("chats")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+      .withIndex("by_user_updated", (q) => q.eq("userId", userId))
+      .order("desc")) {
+      if (++scanned > CHAT_RECENT_SCAN_CAP) break;
+      if (c.archived) continue;
+      recent.push(c);
+      if (recent.length >= CHAT_WINDOW) break;
+    }
+    // Pinned set, BOUNDED too (same op-budget discipline as `recent` — never an
+    // unbounded .collect()). Pinning is a deliberate per-chat action; a curated set
+    // is ≪ CHAT_WINDOW in practice. The cap only bites a pathological pinner, who
+    // would lose the oldest-pinned overflow from the sidebar — never a data loss.
+    const pinnedRows = await ctx.db
+      .query("chats")
+      .withIndex("by_user_pinned", (q) =>
+        q.eq("userId", userId).eq("pinned", true),
+      )
+      .take(CHAT_WINDOW);
+    // Union by id (same doc from either source — last write wins, identical).
+    const byId = new Map<Id<"chats">, Doc<"chats">>();
+    for (const c of recent) byId.set(c._id, c);
+    for (const c of pinnedRows) byId.set(c._id, c);
+    const chats = [...byId.values()];
     // Single comparator: pinned first, then manual sortKey (asc), then recency.
     // Manual order WINS over recency (user explicitly drags); recency is only a
     // tiebreaker for chats that have never been ordered.

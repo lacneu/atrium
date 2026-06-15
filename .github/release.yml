@@ -1,0 +1,28 @@
+# Configures GitHub's auto-generated release notes (used by the Release workflow's
+# `generate_release_notes: true`). The version-bump commits the release machinery
+# pushes back to main (chore(release): X.Y.Z, authored by the bot) are EXCLUDED so
+# they never pollute the changelog of the NEXT release. PRs are grouped by label;
+# the `*` catch-all guarantees nothing is silently dropped if a PR has no label.
+changelog:
+  exclude:
+    authors:
+      - github-actions[bot]
+      - dependabot[bot]
+  categories:
+    - title: 🚀 Features
+      labels:
+        - feature
+        - enhancement
+    - title: 🐛 Fixes
+      labels:
+        - fix
+        - bug
+    - title: 🧰 Maintenance
+      labels:
+        - chore
+        - ci
+        - docs
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*"

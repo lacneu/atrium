@@ -584,6 +584,12 @@ export default defineSchema({
     ),
   })
     .index("by_user", ["userId"])
+    // Bounded sidebar read (listChats): most-recent window by updatedAt + the
+    // pinned set of ANY age, so a user's chat list can grow without listChats
+    // ever doing an unbounded .collect() (which busts Convex's per-function op
+    // budget on a heavy account — observed in prod).
+    .index("by_user_updated", ["userId", "updatedAt"])
+    .index("by_user_pinned", ["userId", "pinned"])
     .index("by_project", ["projectId"]),
 
   // Individual messages within a chat. Streaming assistant text is patched in

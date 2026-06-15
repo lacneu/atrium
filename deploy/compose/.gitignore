@@ -1,0 +1,6 @@
+# Local deployment secrets — NEVER commit these.
+.env
+local.env
+*.pem
+jwks.json
+jwt_private_key.pem
