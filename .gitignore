@@ -44,10 +44,13 @@ openclaw-frame-captures/
 .idea/
 .vscode/
 
-# Agent / IDE tooling — NOT shipped in the community repo. `.agents/` and
-# `.claude/skills/*` are `convex ai-files install` artifacts: installable on
-# demand, and the `.claude` ones are machine-local symlinks that dangle on a
-# fresh clone. `.claude/worktrees/` are disposable workflow checkouts. None are
-# source — a community clone installs its own via `npx convex ai-files install`.
+# Agent / IDE tooling — mostly NOT shipped in the community repo. `.agents/` and
+# the `convex ai-files install` skills under `.claude/skills/*` are installable
+# artifacts / machine-local symlinks that dangle on a fresh clone; `.claude/worktrees/`
+# are disposable checkouts. EXCEPTION: hand-authored, repo-owned skills like
+# `.claude/skills/release-notes/` ARE source and are versioned + shared.
 .agents/
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/release-notes/

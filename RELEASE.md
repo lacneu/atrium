@@ -10,11 +10,18 @@ a library monorepo with independent per-package cadences.
 Each release is **two steps**: write the `CHANGELOG.md` entry, then push the tag.
 
 ```bash
-# 1. Add a "## [0.1.3] — <title>" section to CHANGELOG.md (the release description).
+# 1. Draft the CHANGELOG entry, then review/edit it:
+#    run the /release-notes skill (it reads the commits + diffs since the last tag
+#    and writes a "## [0.1.3] — <title>" section in this file's style). Or write it
+#    by hand. This section IS the GitHub Release description.
 # 2. Commit it, then:
 git tag v0.1.3
 git push origin v0.1.3      # ← this triggers the whole pipeline
 ```
+
+> The **`/release-notes`** skill (versioned at `.claude/skills/release-notes/`)
+> drafts the CHANGELOG section from the actual changes since the last tag, in this
+> file's style — so you review instead of write. You still pick the version and tag.
 
 On the tag push, CI does all of the following automatically:
 
