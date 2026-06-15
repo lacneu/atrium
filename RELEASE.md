@@ -75,14 +75,19 @@ secret. It works only when ALL of these hold:
 - the job has `permissions: id-token: write` (it does);
 - npmjs.com has a **Trusted Publisher** for `@lacneu/atrium` matching this repo +
   `release.yml` + (empty environment) — configured in the package's Settings;
-- the runner's **npm CLI is >= 11.5.1**. This is the easy one to miss: the npm
-  bundled with Node 24 is 11.x but **not guaranteed >= 11.5.1**, and an older npm
-  cannot do the OIDC handshake → the registry treats the publish as anonymous and
-  returns a misleading **`404 Not Found` on PUT**. The workflow upgrades npm
-  explicitly (`npm install -g npm@latest`) to guarantee this.
+- the runner's **npm CLI is >= 11.5.1** (the workflow upgrades it explicitly with
+  `npm install -g npm@latest`);
+- the publish job uses **`actions/setup-node@v4`, NOT @v6**. This is the subtle one:
+  `setup-node@v6` with `registry-url` injects a bogus `NODE_AUTH_TOKEN` placeholder
+  (`XXXXX-XXXXX-XXXXX-XXXXX`) into `.npmrc`, and npm uses THAT token instead of doing
+  the OIDC handshake → the registry rejects it → a misleading **`404 Not Found` on
+  PUT**. `@v4` does not inject the placeholder (this is the exact config proven to
+  work in the sibling repo `openclaw-knowledge-plugin`). So the `publish-npm` job
+  intentionally stays on `setup-node@v4` while the rest of the repo is on v6.
 
-If you ever see that 404 with the Trusted Publisher correctly set, suspect the npm
-version first, not the npm-side config.
+If you ever see that 404 with the Trusted Publisher correctly set, the cause is the
+`NODE_AUTH_TOKEN` placeholder from `setup-node@v6 + registry-url` — not the npm-side
+config and not (usually) the npm version.
 
 ## If a job fails mid-release (recovery)
 

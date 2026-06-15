@@ -33,22 +33,22 @@ jobs:
       id-token: write # required for npm Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      # setup-node@v4 here is DELIBERATE (the rest of the repo is on v6). This exact
+      # shape — v4 + registry-url + `npm install -g npm@latest` — is the config PROVEN
+      # to publish via OIDC trusted publishing in the sibling repo
+      # openclaw-knowledge-plugin. setup-node@v6 with registry-url injects a bogus
+      # `NODE_AUTH_TOKEN` placeholder into .npmrc that SHADOWS the OIDC handshake →
+      # `npm publish` 404'd (v0.1.1 and the first two v0.1.2 attempts; npm was already
+      # 11.17, so the version was NOT the cause — the placeholder was). v4 does not do
+      # this and still runs fine on Node 24.
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          # Disable the package-manager cache so no stale auth/lockfile state
-          # interferes with the OIDC publish.
-          package-manager-cache: false
-      # OIDC Trusted Publishing REQUIRES npm CLI >= 11.5.1 (npm docs). The npm
-      # BUNDLED with Node 24 is 11.x but NOT guaranteed >= 11.5.1, and an older
-      # npm can't do the OIDC handshake -> the registry treats the publish as
-      # ANONYMOUS -> a misleading `404 Not Found` on PUT (exactly what bit v0.1.1
-      # and the first v0.1.2 attempt). Upgrade explicitly so the handshake works.
-      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
-        run: |
-          npm install -g npm@latest
-          npm --version
+      # OIDC trusted publishing requires npm CLI >= 11.5.1 (npm docs); upgrade so the
+      # handshake is supported regardless of the npm bundled with Node 24.
+      - name: Upgrade npm CLI to >=11.5.1 (required for Trusted Publishing)
+        run: npm install -g npm@latest
       - name: Stamp version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
