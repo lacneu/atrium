@@ -67,6 +67,23 @@ when you see it.
   release token bypass). If you protect `main`, switch the commit-back job to open
   a PR instead.
 
+## npm OIDC Trusted Publishing (how `publish-npm` authenticates)
+
+`publish-npm` uses **OIDC Trusted Publishing** — no `NODE_AUTH_TOKEN`/`NPM_TOKEN`
+secret. It works only when ALL of these hold:
+
+- the job has `permissions: id-token: write` (it does);
+- npmjs.com has a **Trusted Publisher** for `@lacneu/atrium` matching this repo +
+  `release.yml` + (empty environment) — configured in the package's Settings;
+- the runner's **npm CLI is >= 11.5.1**. This is the easy one to miss: the npm
+  bundled with Node 24 is 11.x but **not guaranteed >= 11.5.1**, and an older npm
+  cannot do the OIDC handshake → the registry treats the publish as anonymous and
+  returns a misleading **`404 Not Found` on PUT**. The workflow upgrades npm
+  explicitly (`npm install -g npm@latest`) to guarantee this.
+
+If you ever see that 404 with the Trusted Publisher correctly set, suspect the npm
+version first, not the npm-side config.
+
 ## If a job fails mid-release (recovery)
 
 `npm publish` is the only irreversible step; the GitHub Release and the
@@ -76,9 +93,18 @@ version-commit-back are additive and run *after* it. So:
   because `main` moved): use **"Re-run failed jobs"** on the workflow run.
   `publish-npm` keeps its cached success, so npm is **not** republished, and only the
   failed job re-runs.
-- **Do NOT delete + re-push the same tag** to "retry": `publish-npm` would run again
-  and hit npm's "version already exists" wall. Re-running the failed jobs is the
-  correct path; bump to a new version only if the published artifact itself is wrong.
+- **`publish-npm` itself failed and the fix is a WORKFLOW change** (e.g. the npm
+  OIDC 404 fixed by upgrading npm): "Re-run failed jobs" will NOT help — a re-run
+  uses the workflow file *as it was at the tagged commit*. Commit the fix, then
+  **move the tag onto the fixed commit**. This is safe ONLY while that version is
+  not yet on npm:
+  ```bash
+  git tag -d vX.Y.Z && git push origin :vX.Y.Z   # remove the old tag
+  git tag vX.Y.Z && git push origin vX.Y.Z        # recreate on the fixed commit
+  ```
+- **Do NOT delete + re-push a tag whose version is ALREADY on npm**: `publish-npm`
+  would hit npm's "version already exists" wall. In that case bump to a new version.
+  (Docker images re-push fine to the same tag; only npm is write-once.)
 
 > Note: the first real tag under this model is also its **validation run** — the
 > release jobs (auto-notes, commit-back, in-CI stamping) only execute on an actual

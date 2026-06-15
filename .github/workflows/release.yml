@@ -37,11 +37,18 @@ jobs:
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          # setup-node v6 is OIDC-aware: with id-token:write and NO token it does
-          # NOT inject a placeholder `_authToken` into .npmrc. v4 DID, and that
-          # bogus token shadowed Trusted Publishing -> `npm publish` 404'd. Disable
-          # the package-manager cache so no stale auth/lockfile state interferes.
+          # Disable the package-manager cache so no stale auth/lockfile state
+          # interferes with the OIDC publish.
           package-manager-cache: false
+      # OIDC Trusted Publishing REQUIRES npm CLI >= 11.5.1 (npm docs). The npm
+      # BUNDLED with Node 24 is 11.x but NOT guaranteed >= 11.5.1, and an older
+      # npm can't do the OIDC handshake -> the registry treats the publish as
+      # ANONYMOUS -> a misleading `404 Not Found` on PUT (exactly what bit v0.1.1
+      # and the first v0.1.2 attempt). Upgrade explicitly so the handshake works.
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
+        run: |
+          npm install -g npm@latest
+          npm --version
       - name: Stamp version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -49,8 +56,9 @@ jobs:
       - run: npm ci || npm install
       - name: Build dist (the published artifact)
         run: npm run build
-      # Trusted Publishing (OIDC): npm >=11.5.1 ships with Node 24 and auto-detects
-      # the OIDC environment from id-token:write — NO NODE_AUTH_TOKEN needed.
+      # Trusted Publishing (OIDC): with id-token:write + the npmjs.com Trusted
+      # Publisher (this repo + release.yml) + npm >= 11.5.1, npm auto-detects the
+      # OIDC environment and mints a short-lived token — NO NODE_AUTH_TOKEN needed.
       - name: Publish to npm (OIDC)
         run: npm publish --access public
 
