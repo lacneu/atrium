@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.1.2] — Sidebar bound, deployment hardening, automated releases
+
+Reliability and operability release. No breaking changes; no API changes.
+
+- **Sidebar loads reliably on large accounts.** The chat list now reads a bounded
+  most-recent window (plus all pinned chats, any age) instead of every chat — fixing
+  the "too many system operations" failure observed in production on heavy accounts.
+  Archived chats can no longer crowd active chats out of the window.
+- **Deployment hardening.** New `deploy/TROUBLESHOOTING.md` (the real first-bring-up
+  footguns), a `convex-env-push.sh` helper that pushes the Convex *deployment* env,
+  an auth-key generation utility (`generate-auth-keys.mjs`), and a clearer Compose
+  `.env.example` / bootstrap.
+- **Automated, tag-driven releases.** Pushing a `vX.Y.Z` tag now publishes
+  `@lacneu/atrium` to npm (with provenance) + both Docker images, stamps the lockstep
+  version across all artifacts, and creates the GitHub Release from this file — see
+  `RELEASE.md`. GitHub Actions bumped off the deprecated Node 20 runtime.
+
 ## [0.1.1] — npm packaging fix
 
 The `0.1.0` npm publish (a manual bootstrap of a brand-new scope) shipped without

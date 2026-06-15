@@ -59,11 +59,12 @@ jobs:
       - name: Publish to npm (OIDC + provenance)
         run: npm publish --access public --provenance
 
-  # ---- GitHub Release with AUTO-GENERATED notes (additive; never blocks publish)-
-  # Runs only AFTER npm publish succeeds. `generate_release_notes` lets GitHub
-  # build the changelog from merged PRs/commits since the previous tag; the
-  # chore(release) bot commits are filtered out by .github/release.yml so the
-  # machinery never pollutes its own changelog.
+  # ---- GitHub Release (additive; never blocks publish) -------------------------
+  # Runs only AFTER npm publish succeeds. Notes come from the CHANGELOG.md section
+  # for this version (CURATED, rich — like 0.1.0/0.1.1). GitHub's auto-generated
+  # notes are only a FALLBACK when there is no matching CHANGELOG section: this repo
+  # commits straight to main (no PRs), so auto-notes are near-empty. Pattern mirrors
+  # the sibling repo openclaw-knowledge-plugin.
   github-release:
     needs: publish-npm
     runs-on: ubuntu-latest
@@ -71,7 +72,32 @@ jobs:
       contents: write # create the Release for the pushed tag
     steps:
       - uses: actions/checkout@v6
-      - name: Create GitHub Release (auto notes)
+      - name: Extract release notes from CHANGELOG.md
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Body = lines under "## [VERSION] ..." up to the next "## [".
+          awk '/^## \['"$VERSION"'\]/{found=1; next} /^## \[/{if(found) exit} found{print}' CHANGELOG.md > release_notes.md || true
+          # Title = the heading text after "## [VERSION]" (drops the bracket + any
+          # separator like " — "), used to name the release "Atrium <version> — <title>".
+          TITLE=$(grep -m1 -E "^## \[$VERSION\]" CHANGELOG.md | sed -E "s/^## \[$VERSION\][^A-Za-z0-9]*//")
+          if [ -s release_notes.md ]; then
+            echo "FOUND=true" >> "$GITHUB_OUTPUT"
+            echo "NAME=Atrium $VERSION${TITLE:+ — $TITLE}" >> "$GITHUB_OUTPUT"
+          else
+            echo "FOUND=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub Release (curated CHANGELOG notes)
+        if: steps.changelog.outputs.FOUND == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ steps.changelog.outputs.NAME }}
+          body_path: release_notes.md
+          generate_release_notes: false
+      # Fallback: no CHANGELOG entry for this version -> GitHub auto-notes (chore(release)
+      # bot commits excluded via .github/release.yml so they never pollute the changelog).
+      - name: Create GitHub Release (auto-notes fallback)
+        if: steps.changelog.outputs.FOUND == 'false'
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
