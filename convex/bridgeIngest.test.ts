@@ -10,9 +10,10 @@
 // shape (structural meta only — NEVER filename/path/content), and the
 // part-free `mediaTrace` diagnostic.
 
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -29,7 +30,11 @@ afterEach(() => {
   else process.env.BRIDGE_INGEST_SECRET = prevSecret;
 });
 
-type T = ReturnType<typeof convexTest>;
+// Type WITH the schema (not the bare `ReturnType<typeof convexTest>`, which erases
+// it to a generic DataModel where `ctx.db.query("messageParts").withIndex(...)`
+// only sees system indexes). `convex deploy` runs tsc over convex/**, test files
+// included — so this must typecheck, not just run under vitest's esbuild.
+type T = TestConvex<typeof schema>;
 
 /** A chat + a streaming assistant message to attach parts to. */
 async function seedAssistantMessage(t: T) {
@@ -67,11 +72,11 @@ function post(t: T, body: unknown, auth: string | null = `Bearer ${SECRET}`) {
   return t.fetch(URL, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
-async function partsOf(t: T, messageId: string) {
+async function partsOf(t: T, messageId: Id<"messages">) {
   return await t.run((ctx) =>
     ctx.db
       .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", messageId as never))
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .collect(),
   );
 }

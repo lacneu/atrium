@@ -94,42 +94,236 @@
   border: 0;
 }
 
+/* ── Sign-in screen ────────────────────────────────────────────────────────
+   The Atrium charte is black & white, so this uses only neutral tokens. Two
+   elements: (1) the crisp pulse LINE (logo center) behind the card; (2) a VERY
+   LIGHT glow rising from the bottom — the same "ambiance horizon" applied to the
+   chat canvas, reused here (--primary, neutral on Atrium → B&W). The gradient
+   bands that used to hug the line were removed. */
 .oc-signin {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
+  gap: 1.5rem;
   min-height: 100vh;
   padding: 2rem;
+  background-color: var(--background);
+  /* Very light glow from the bottom — mirrors the chat-canvas ambiance. --primary
+     is neutral on Atrium (soft darkening at the bottom in light, lightening in
+     dark); follows a colored chart automatically. */
+  background-image:
+    /* soft glow rising from the bottom (mirrors the chat canvas) */
+    radial-gradient(
+      120% 75% at 50% 100%,
+      color-mix(in oklch, var(--primary) 9%, transparent) 0%,
+      transparent 60%
+    ),
+    /* faint vignette — pools light at the centre (the "atrium" courtyard) and
+       darkens the edges; black-based so it darkens in BOTH modes */
+    radial-gradient(
+      125% 100% at 50% 42%,
+      transparent 52%,
+      color-mix(in oklch, black 9%, transparent) 100%
+    );
+  background-repeat: no-repeat;
 }
-.oc-signin__btn {
-  padding: 0.6rem 1.2rem;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--background);
+.dark .oc-signin {
+  background-image:
+    radial-gradient(
+      120% 75% at 50% 100%,
+      color-mix(in oklch, var(--primary) 6%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      125% 100% at 50% 42%,
+      transparent 50%,
+      color-mix(in oklch, black 26%, transparent) 100%
+    );
+}
+/* Line motif — the logo's center pulse, full-bleed behind the card. Just the
+   crisp line now (the gradient bands that hugged it were removed). */
+.oc-signin__motif {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  fill: none;
+}
+/* the crisp sharp line itself — the steady heartbeat trace */
+.oc-signin__line {
+  fill: none;
+  stroke: color-mix(in oklch, var(--foreground) 22%, transparent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* the travelling spark — a short bright dash that sweeps the trace like a cardiac
+   monitor (Atrium = heart + continuity). pathLength=100 (set on the element) makes
+   the dash units a 0–100 fraction, so the offset animation is resolution-free. */
+.oc-signin__pulse {
+  fill: none;
+  stroke: color-mix(in oklch, var(--foreground) 55%, transparent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 4 96;
+  filter: drop-shadow(0 0 5px color-mix(in oklch, var(--foreground) 35%, transparent));
+  animation: oc-heartbeat 6.5s linear infinite;
+}
+@keyframes oc-heartbeat {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* Respect reduced-motion: no sweeping spark, just the steady trace. */
+@media (prefers-reduced-motion: reduce) {
+  .oc-signin__pulse {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+.oc-signin__card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  width: 100%;
+  max-width: 26rem;
+  padding: 2.25rem 2rem;
+  border-radius: calc(var(--radius-lg) + 0.5rem);
+  background: var(--card);
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  box-shadow:
+    0 2px 4px color-mix(in oklch, black 6%, transparent),
+    0 30px 70px -22px color-mix(in oklch, black 38%, transparent);
+}
+/* Wordmark lockup ABOVE the card, sitting on the gradient — a background-tinted
+   halo (text/drop shadow) keeps it legible over bright pools in either mode. */
+.oc-signin__brand {
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+.oc-signin__wordmark {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--foreground);
-  cursor: pointer;
+  text-shadow: 0 1px 12px color-mix(in oklch, var(--background) 72%, transparent);
 }
-.oc-signin__btn--dev {
-  background: var(--secondary);
-  color: var(--secondary-foreground);
-}
-.oc-signin__hint {
-  margin: -0.4rem 0 0;
-  max-width: 22rem;
+.oc-signin__title {
+  margin: 0 0 0.1rem;
   text-align: center;
-  font-size: 0.82rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+.oc-signin__subtitle {
+  margin: 0 0 0.4rem;
+  text-align: center;
+  font-size: 0.85rem;
   color: var(--muted-foreground);
 }
+.oc-signin__providers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+/* Provider buttons — faithful to each brand (their OWN colors, not theme tokens,
+   so "Sign in with Google" reads as Google in any chart/mode). */
+.oc-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  height: 2.6rem;
+  padding: 0 1rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+.oc-provider__logo {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
+}
+.oc-provider:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+/* Google — official light / dark styles */
+.oc-provider--google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border: 1px solid #747775;
+}
+.oc-provider--google:hover {
+  background: #f7f8f8;
+  box-shadow:
+    0 1px 2px rgba(60, 64, 67, 0.3),
+    0 1px 3px 1px rgba(60, 64, 67, 0.15);
+}
+.dark .oc-provider--google {
+  background: #131314;
+  color: #e3e3e3;
+  border: 1px solid #8e918f;
+}
+.dark .oc-provider--google:hover {
+  background: #1e1f20;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+/* (Microsoft button removed for now — only Google is wired; re-add later.) */
+
+/* Dev-only anonymous entry — de-emphasized below the real providers. */
+.oc-signin__dev {
+  margin-top: 0.15rem;
+  height: 2.25rem;
+  border-radius: var(--radius-lg);
+  border: 1px dashed color-mix(in oklch, var(--border) 90%, transparent);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.oc-signin__dev:hover {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--foreground);
+}
+.oc-signin__dev:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
 .oc-signin__error {
-  margin: 0;
-  max-width: 22rem;
+  margin: 0.1rem 0 0;
   text-align: center;
   font-size: 0.85rem;
   padding: 0.5rem 0.75rem;
   border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--destructive, #e5484d) 14%, var(--background));
+  background: color-mix(in oklch, var(--destructive, #e5484d) 14%, var(--card));
   border: 1px solid color-mix(in oklch, var(--destructive, #e5484d) 45%, var(--border));
   color: var(--foreground);
 }
@@ -3655,31 +3849,7 @@
   box-shadow: 0 2px 22px -7px color-mix(in oklch, var(--primary) 70%, transparent);
 }
 
-/* 3 — Sign-in screen: a full-bleed multi-hue "mesh/aurora" (ATMOS-style) drawn
-   from the chart data colors. This is a pre-auth, content-free moment, so it
-   carries a touch more presence than the in-app glow. */
-:root[data-ambiance="on"] .oc-signin {
-  background-image:
-    radial-gradient(
-      42% 52% at 16% 20%,
-      color-mix(in oklch, var(--chart-1) 16%, transparent),
-      transparent 62%
-    ),
-    radial-gradient(
-      46% 56% at 86% 24%,
-      color-mix(in oklch, var(--chart-3) 15%, transparent),
-      transparent 62%
-    ),
-    radial-gradient(
-      52% 60% at 72% 92%,
-      color-mix(in oklch, var(--chart-5) 16%, transparent),
-      transparent 62%
-    ),
-    radial-gradient(
-      48% 56% at 24% 86%,
-      color-mix(in oklch, var(--chart-2) 13%, transparent),
-      transparent 62%
-    );
-  background-repeat: no-repeat;
-}
+/* (The sign-in "mesh/aurora" moved OUT of the prototype: the redesigned auth
+   page now OWNS its background unconditionally — see the `.oc-signin` block
+   above — so it no longer depends on the ambiance toggle.) */
 /* END PROTOTYPE — Ambient visual effects */

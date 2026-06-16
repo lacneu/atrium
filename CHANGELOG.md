@@ -8,6 +8,55 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.1.4] — File management and a refreshed sign-in
+
+UX release. No breaking changes; no migration.
+
+- **Outbound file links now open correctly.** A file produced by the agent opens in
+  a NEW browser tab and is served with its real content type (PDFs and images render
+  inline) instead of replacing the current page — a cross-origin quirk previously
+  navigated the whole conversation away to the file.
+- **Manage your files from Settings › Files.** Each file row now has an actions menu
+  (⋮) to **download** it or **remove** it from your list — a soft delete that leaves
+  the conversation where the file was exchanged untouched. A **Reset** button (top
+  right of the filters) clears the active filters when any is set.
+- **Refreshed sign-in screen.** A branded sign-in card with the Atrium logo and
+  clearer Google / Microsoft sign-in buttons.
+
+## [0.1.3] — Outbound files reach the chat without a shared filesystem
+
+Corrective + capability release. Fixes agent-generated files not appearing in the
+web chat. No breaking changes for new deployments; co-located shared-filesystem
+setups need a one-line opt-in (below).
+
+- **Agent-generated files now reach the chat by default — no shared filesystem.**
+  The bridge fetches outbound attachments (PDFs, exports, generated documents) over
+  HTTP from the gateway's `assistant-media` endpoint, so Atrium and your OpenClaw
+  gateway can run on different hosts. Previously the only path was a read-only mount
+  of the gateway's media directory, which silently dropped files whenever the two
+  were not co-located — the production symptom this release fixes.
+- **Configurable outbound-media transport (`OPENCLAW_MEDIA_MODE`).** Choose
+  `gateway-http` (default, no shared disk), `shared-fs` (opt-in mount, for a
+  co-located gateway), or `off`. New `OPENCLAW_GATEWAY_HTTP_URL` override (when the
+  gateway's HTTP endpoint is on a different host/port) and an
+  `OPENCLAW_MEDIA_FETCH_TIMEOUT_MS` connection timeout so an unresponsive gateway can
+  never stall a turn. Against a gateway with no media route (pre-6.x), the bridge now
+  logs a clear "switch to `shared-fs`" hint instead of failing silently.
+- **Outbound-media diagnostics.** A new `openclaw.media` observability trace records
+  each attachment's lifecycle — received / stored / dropped, with a structural reason
+  — using codes and size buckets only, never a filename, path, or file content, so
+  operators can tell *why* a file did not attach without exposing data.
+- **Ambient visual effects (prototype, on by default).** Subtle, theme-tinted glows
+  behind the conversation, on primary buttons, and on the sign-in screen, recolored
+  from the active graphic chart. Turn them off with
+  `localStorage.setItem("oc.ambiance", "off")` + reload; a proper per-user toggle
+  lands once the look is finalized.
+- **Self-hoster migration.** If your gateway shares a filesystem with Atrium and you
+  relied on the media mount, set `OPENCLAW_MEDIA_MODE=shared-fs` (Helm:
+  `bridge.media.enabled=true` sets it for you) and keep the read-only mount; the
+  Compose mount is now opt-in. Everyone else needs no action — `gateway-http` is the
+  default. Release notes are now curated from this changelog (see `RELEASE.md`).
+
 ## [0.1.2] — Sidebar bound, deployment hardening, automated releases
 
 Reliability and operability release. No breaking changes; no API changes.

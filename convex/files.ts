@@ -7,7 +7,7 @@
 // ever sees their own files.
 
 import { v } from "convex/values";
-import { query, internalMutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requirePermission, requireUserId } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
@@ -42,7 +42,11 @@ export const listMine = query({
     // filter dropdowns offer. Bounded; for a >CAP user this is the recent slice.
     const ownerWindow = await ctx.db
       .query("files")
-      .withIndex("by_user_created", (q) => q.eq("userId", userId))
+      // `deletedAt === undefined` is INDEXED (by_user_created prefix), so this
+      // ranges only LIVE rows — tombstones are never scanned.
+      .withIndex("by_user_created", (q) =>
+        q.eq("userId", userId).eq("deletedAt", undefined),
+      )
       .order("desc")
       .take(CAP);
     const facetChatIds = [...new Set(ownerWindow.map((r) => r.chatId))];
@@ -83,7 +87,7 @@ export const listMine = query({
         return ctx.db
           .query("files")
           .withIndex("by_user_chat", (x) =>
-            x.eq("userId", userId).eq("chatId", c),
+            x.eq("userId", userId).eq("chatId", c).eq("deletedAt", undefined),
           )
           .order("desc");
       }
@@ -95,7 +99,11 @@ export const listMine = query({
         return ctx.db
           .query("files")
           .withIndex("by_user_category_direction", (x) =>
-            x.eq("userId", userId).eq("category", cat).eq("direction", d),
+            x
+              .eq("userId", userId)
+              .eq("category", cat)
+              .eq("direction", d)
+              .eq("deletedAt", undefined),
           )
           .order("desc");
       }
@@ -105,7 +113,7 @@ export const listMine = query({
         return ctx.db
           .query("files")
           .withIndex("by_user_category", (x) =>
-            x.eq("userId", userId).eq("category", cat),
+            x.eq("userId", userId).eq("category", cat).eq("deletedAt", undefined),
           )
           .order("desc");
       }
@@ -115,7 +123,7 @@ export const listMine = query({
         return ctx.db
           .query("files")
           .withIndex("by_user_direction", (x) =>
-            x.eq("userId", userId).eq("direction", d),
+            x.eq("userId", userId).eq("direction", d).eq("deletedAt", undefined),
           )
           .order("desc");
       }
@@ -125,13 +133,18 @@ export const listMine = query({
         return ctx.db
           .query("files")
           .withIndex("by_user_instance", (x) =>
-            x.eq("userId", userId).eq("instanceName", i),
+            x
+              .eq("userId", userId)
+              .eq("instanceName", i)
+              .eq("deletedAt", undefined),
           )
           .order("desc");
       }
       return ctx.db
         .query("files")
-        .withIndex("by_user_created", (x) => x.eq("userId", userId))
+        .withIndex("by_user_created", (x) =>
+          x.eq("userId", userId).eq("deletedAt", undefined),
+        )
         .order("desc");
     })();
     let listQuery = indexed;
@@ -151,6 +164,9 @@ export const listMine = query({
       const cat = args.category;
       listQuery = listQuery.filter((f) => f.eq(f.field("category"), cat));
     }
+    // Soft-deleted rows are excluded by the INDEX range (`deletedAt === undefined`
+    // is part of every listing index prefix above), so tombstones are never
+    // scanned — no residual `.filter` needed here.
     const rows = await listQuery.take(CAP + 1);
     const truncated = rows.length > CAP;
     const list = truncated ? rows.slice(0, CAP) : rows;
@@ -198,6 +214,28 @@ export const listMine = query({
         categories: [...categorySet].sort(),
       },
     };
+  },
+});
+
+// Owner soft-delete: hide ONE of the caller's files from the Settings › Fichiers
+// listing. Scoped to the EFFECTIVE user (same as the listing the button sits on);
+// a missing row OR another user's id rejects identically (no cross-user oracle).
+// SOFT: sets `deletedAt`, keeps the row + the underlying message part + the blob
+// (the file still appears in its chat bubble — this only removes it from "my
+// files"). Idempotent: re-deleting an already-deleted row is a no-op.
+export const softDelete = mutation({
+  args: { fileId: v.id("files") },
+  handler: async (ctx, { fileId }) => {
+    await requirePermission(ctx, PERMISSIONS.CHATS_READ);
+    const userId = await requireUserId(ctx);
+    const row = await ctx.db.get(fileId);
+    if (!row || row.userId !== userId) {
+      throw new Error("File not found");
+    }
+    if (row.deletedAt === undefined) {
+      await ctx.db.patch(fileId, { deletedAt: Date.now() });
+    }
+    return { ok: true };
   },
 });
 

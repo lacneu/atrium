@@ -1,9 +1,26 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "convex/react";
-import { Download } from "lucide-react";
+import { useMutation, useQuery } from "convex/react";
+import { Download, MoreVertical, RotateCcw, Trash2 } from "lucide-react";
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -19,6 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 
@@ -63,6 +81,32 @@ export function FilesTab() {
   const [chatId, setChatId] = useState<string>(ALL);
   const [instanceName, setInstanceName] = useState<string>(ALL);
   const [category, setCategory] = useState<string>(ALL);
+  // The file awaiting delete confirmation (null = dialog closed).
+  const [pendingDelete, setPendingDelete] = useState<{
+    id: Id<"files">;
+    filename: string;
+  } | null>(null);
+  const softDelete = useMutation(api.files.softDelete);
+  const toast = useToast();
+
+  function resetFilters() {
+    setDirection(ALL);
+    setChatId(ALL);
+    setInstanceName(ALL);
+    setCategory(ALL);
+  }
+
+  async function confirmDelete() {
+    const target = pendingDelete;
+    setPendingDelete(null); // close the dialog immediately; the row drops reactively
+    if (!target) return;
+    try {
+      await softDelete({ fileId: target.id });
+      toast.success(m.files_delete_toast());
+    } catch (err) {
+      toast.error(m.files_delete_error(), err);
+    }
+  }
 
   const data = useQuery(api.files.listMine, {
     direction:
@@ -167,6 +211,26 @@ export function FilesTab() {
             ))}
           </SelectContent>
         </Select>
+
+        {/* Reset — shown only when a filter is active, pushed to the RIGHT edge of
+            the filter row (`margin-left: auto`), mirroring the FilterBar
+            convention (.oc-filterbar__reset) used by the other settings tabs. */}
+        {anyFilter ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={resetFilters}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              marginLeft: "auto",
+            }}
+          >
+            <RotateCcw size={14} aria-hidden />
+            {m.files_reset()}
+          </Button>
+        ) : null}
       </div>
 
       {files.length === 0 ? (
@@ -218,23 +282,51 @@ export function FilesTab() {
                     {dateFmt.format(f.createdAt)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {f.url ? (
-                      <a
-                        href={f.url}
-                        download={f.filename}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="oc-files__download"
-                        style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-                      >
-                        <Download size={14} />
-                        {m.files_download()}
-                      </a>
-                    ) : (
-                      <span className="text-muted-foreground">
-                        {m.files_unavailable()}
-                      </span>
-                    )}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={m.files_actions()}
+                        >
+                          <MoreVertical size={16} />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {f.url ? (
+                          <DropdownMenuItem asChild>
+                            {/* download where same-origin allows; cross-origin the
+                                browser opens it in the new tab by content-type. */}
+                            <a
+                              href={f.url}
+                              download={f.filename}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <Download size={14} />
+                              {m.files_download()}
+                            </a>
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem disabled>
+                            <Download size={14} />
+                            {m.files_unavailable()}
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() =>
+                            setPendingDelete({
+                              id: f._id,
+                              filename: f.filename,
+                            })
+                          }
+                        >
+                          <Trash2 size={14} />
+                          {m.files_delete()}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -247,6 +339,26 @@ export function FilesTab() {
           ) : null}
         </>
       )}
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => !o && setPendingDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{m.files_delete_confirm_title()}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {m.files_delete_confirm_desc()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{m.chat_cancel()}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()}>
+              {m.files_delete()}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -61,7 +61,18 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
   }
 
   return (
-    <a className="oc-media oc-media--file" href={url} download={name}>
+    // ALWAYS open in a new tab and let the browser render by content-type. NOT
+    // `download`: that attribute is silently IGNORED for a cross-origin URL (the
+    // Convex storage origin differs from the app), so the click would navigate the
+    // CURRENT tab to the file instead. `target="_blank"` makes the new tab explicit
+    // regardless of origin; the browser then honors the stored Content-Type
+    // (PDF/image inline, others download).
+    <a
+      className="oc-media oc-media--file"
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       <span className="oc-media__icon" aria-hidden>
         ⬇
       </span>

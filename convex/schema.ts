@@ -685,19 +685,36 @@ export default defineSchema({
       ),
     ),
     createdAt: v.number(),
+    // SOFT DELETE: owner hides a file from their Settings › Fichiers listing
+    // (files.softDelete). The row is KEPT (so the table invariant "a files row
+    // exists iff a file/media part exists" still holds — the part is untouched)
+    // and listMine + the facet window filter out rows with a `deletedAt`. Absent
+    // = visible. Recoverable (clear the field); the storage blob is not GC'd here.
+    deletedAt: v.optional(v.number()),
   })
-    .index("by_user_created", ["userId", "createdAt"]) // unfiltered listing + facets
+    // `deletedAt` sits BEFORE `createdAt` in every listing index: listMine eq-binds
+    // it to `undefined` (a missing optional is indexed as `undefined`, like the
+    // notifications `by_user_unread` pattern), so the scan ranges ONLY live rows —
+    // soft-deleted tombstones are never read, no matter how many a user accumulates.
+    // The trailing `createdAt` still drives the desc ordering inside that prefix.
+    // (by_message / by_storage stay tombstone-inclusive: the deleteMessage cascade
+    // + the admin user-delete must see ALL rows, deleted or not.)
+    .index("by_user_created", ["userId", "deletedAt", "createdAt"]) // unfiltered listing + facets
     .index("by_message", ["messageId"]) // cascade-delete mirror
     .index("by_storage", ["storageId"]) // GC / backfill dedup
     // Filtered listings: each puts the filter dimension in the index prefix so a
     // filter on a rare/old value scans only matching rows (not the whole owner
-    // set up to the cap). The trailing `createdAt` keeps the desc ordering inside
-    // the eq-constrained prefix. listMine picks the index of the most-selective
-    // active filter, then `.filter()`s any remaining dimensions.
-    .index("by_user_chat", ["userId", "chatId", "createdAt"])
-    .index("by_user_category", ["userId", "category", "createdAt"])
-    .index("by_user_direction", ["userId", "direction", "createdAt"])
-    .index("by_user_instance", ["userId", "instanceName", "createdAt"])
+    // set up to the cap). listMine picks the index of the most-selective active
+    // filter, then `.filter()`s any remaining dimensions.
+    .index("by_user_chat", ["userId", "chatId", "deletedAt", "createdAt"])
+    .index("by_user_category", ["userId", "category", "deletedAt", "createdAt"])
+    .index("by_user_direction", ["userId", "direction", "deletedAt", "createdAt"])
+    .index("by_user_instance", [
+      "userId",
+      "instanceName",
+      "deletedAt",
+      "createdAt",
+    ])
     // Two-dimension cover for the ONE multi-filter combination reachable without
     // chatId: category + direction (both low-cardinality, so neither alone bounds
     // the residual scan). chatId-bearing combos stay bounded by the conversation
@@ -709,6 +726,7 @@ export default defineSchema({
       "userId",
       "category",
       "direction",
+      "deletedAt",
       "createdAt",
     ]),
 

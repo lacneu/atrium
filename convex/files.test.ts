@@ -294,4 +294,56 @@ describe("files: invariant + owner-scoped listing", () => {
     expect(res.files.every((f) => f.category === "image")).toBe(true);
     expect(res.files.every((f) => f.direction === "inbound")).toBe(true);
   });
+
+  test("softDelete: owner hides from listMine (soft + idempotent); cross-user rejected", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedUser(t, "a");
+    const b = await seedUser(t, "b");
+    const fileId = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId: a, updatedAt: 1 });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId: a,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        updatedAt: 1,
+      });
+      return ctx.db.insert("files", {
+        userId: a,
+        chatId,
+        messageId,
+        storageId: await ctx.storage.store(new Blob(["x"])),
+        filename: "report.md",
+        mimeType: "text/markdown",
+        kind: "media" as const,
+        direction: "outbound" as const,
+        createdAt: 1,
+      });
+    });
+    const asA = t.withIdentity({ subject: `${a}|session` });
+    const asB = t.withIdentity({ subject: `${b}|session` });
+
+    expect((await asA.query(api.files.listMine, {})).files.length).toBe(1);
+
+    // IDOR: another user cannot delete A's file; it stays visible to A.
+    await expect(
+      asB.mutation(api.files.softDelete, { fileId }),
+    ).rejects.toThrow();
+    expect((await asA.query(api.files.listMine, {})).files.length).toBe(1);
+
+    // Owner soft-deletes → hidden from the listing.
+    await asA.mutation(api.files.softDelete, { fileId });
+    expect((await asA.query(api.files.listMine, {})).files.length).toBe(0);
+
+    // SOFT: the row is KEPT with `deletedAt` set (invariant holds, recoverable),
+    // not destroyed — distinct from the deleteMessage cascade that removes it.
+    const row = await t.run((ctx) => ctx.db.get(fileId));
+    expect(row).not.toBeNull();
+    expect(typeof row?.deletedAt).toBe("number");
+
+    // Idempotent: re-deleting is a no-op (no throw), still hidden.
+    await asA.mutation(api.files.softDelete, { fileId });
+    expect((await asA.query(api.files.listMine, {})).files.length).toBe(0);
+  });
 });

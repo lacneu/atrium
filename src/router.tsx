@@ -158,8 +158,40 @@ function RootShell() {
   );
 }
 
+// Official Google "G" mark (4-color), inlined so the provider button is faithful
+// to Google's sign-in branding without a network/icon-font dependency.
+function GoogleIcon() {
+  return (
+    <svg className="oc-provider__logo" viewBox="0 0 48 48" aria-hidden="true">
+      <path
+        fill="#EA4335"
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+      />
+      <path
+        fill="#4285F4"
+        d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+      />
+    </svg>
+  );
+}
+
 function SignIn() {
   const { signIn } = useAuthActions();
+  // Pre-auth there is no Convex theme, so resolve from the cache ("oc.theme",
+  // default "system"). Passing undefined makes useApplyTheme fall back to that
+  // cache AND, when it resolves to "system", live-track the OS light/dark
+  // preference (matchMedia) — so the sign-in screen follows the system theme,
+  // not just at first paint. The listener is cleaned up when SignIn unmounts on
+  // auth, so it can never override an authenticated user's explicit theme.
+  useApplyTheme(undefined);
   // Which providers the deployment enabled (env-driven, server-resolved). Pre-auth
   // query → no identity required.
   const providers = useQuery(api.me.authProviders);
@@ -182,33 +214,64 @@ function SignIn() {
     !providers.anonymous;
   return (
     <div className="oc-signin">
-      {providers?.google ? (
-        <button type="button" className="oc-signin__btn" onClick={() => void oauth("google")}>
-          {m.app_signin_google()}
-        </button>
-      ) : null}
-      {providers?.microsoft ? (
-        <button
-          type="button"
-          className="oc-signin__btn"
-          onClick={() => void oauth("microsoft-entra-id")}
-        >
-          {m.app_signin_microsoft()}
-        </button>
-      ) : null}
-      {error ? <p className="oc-signin__error">{error}</p> : null}
-      {noneEnabled ? (
-        <p className="oc-signin__error">{m.app_signin_none_enabled()}</p>
-      ) : null}
-      {providers?.anonymous ? (
-        <button
-          type="button"
-          className="oc-signin__btn oc-signin__btn--dev"
-          onClick={() => void signIn("anonymous")}
-        >
-          {m.app_signin_anonymous()}
-        </button>
-      ) : null}
+      {/* Crisp line motif: the Atrium logo's CENTER pulse (heartbeat) scaled to
+          span the screen, like the social-preview background. SVG strokes give the
+          sharp edges a gradient can't; non-scaling-stroke keeps the line thin at
+          any viewport size; color is a faint --foreground (B&W, set in CSS). */}
+      <svg
+        className="oc-signin__motif"
+        viewBox="0 0 1200 560"
+        preserveAspectRatio="xMidYMid slice"
+        aria-hidden="true"
+      >
+        <polyline
+          className="oc-signin__line"
+          points="0,300 520,300 562,170 605,440 650,235 700,300 1200,300"
+          vectorEffect="non-scaling-stroke"
+        />
+        {/* A bright spark that travels the heartbeat (Atrium = heart/atrium +
+            continuity). pathLength=100 normalizes the dash; CSS animates the
+            dashoffset so a short segment sweeps the line like a cardiac monitor.
+            Disabled under prefers-reduced-motion (see CSS). */}
+        <polyline
+          className="oc-signin__pulse"
+          points="0,300 520,300 562,170 605,440 650,235 700,300 1200,300"
+          pathLength="100"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="oc-signin__brand">
+        <span className="oc-signin__wordmark">Atrium</span>
+      </div>
+      <div className="oc-signin__card">
+        <h1 className="oc-signin__title">{m.app_signin_title()}</h1>
+        <p className="oc-signin__subtitle">{m.app_signin_subtitle()}</p>
+        <div className="oc-signin__providers">
+          {providers?.google ? (
+            <button
+              type="button"
+              className="oc-provider oc-provider--google"
+              onClick={() => void oauth("google")}
+            >
+              <GoogleIcon />
+              <span>{m.app_signin_google()}</span>
+            </button>
+          ) : null}
+        </div>
+        {error ? <p className="oc-signin__error">{error}</p> : null}
+        {noneEnabled ? (
+          <p className="oc-signin__error">{m.app_signin_none_enabled()}</p>
+        ) : null}
+        {providers?.anonymous ? (
+          <button
+            type="button"
+            className="oc-signin__dev"
+            onClick={() => void signIn("anonymous")}
+          >
+            {m.app_signin_anonymous()}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
