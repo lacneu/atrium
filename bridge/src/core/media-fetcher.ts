@@ -29,18 +29,71 @@ export interface OpenedMedia {
   /** Raw byte stream of the file (no base64, no full buffer). */
   stream: Readable;
   mimeType: string;
-  size: number;
+  /**
+   * Byte size IF known UP FRONT (shared-fs stat; an HTTP Content-Length/meta.size),
+   * else `null` — a chunked gateway-http download (the 6.5 case) has no size until
+   * drained. `null` means UNKNOWN, NOT empty: the diagnostic must bucket it as
+   * "unknown" rather than "0" (which would read as an empty file).
+   */
+  size: number | null;
 }
+
+/**
+ * Marker `code` for the cap-exceeded error thrown by a fetcher that can only
+ * enforce the size limit ON THE FLOW (gateway-http, when the gateway omits
+ * Content-Length/meta.size). It surfaces mid-stream — i.e. AFTER `open()` already
+ * returned `ok:true` — so the writer's stream/upload catch must recognise it and
+ * report `too_large` (operator fix = raise the cap / shrink the file) instead of a
+ * generic `upload_error` (which points at storage). Defined here, the shared seam,
+ * so the thrower (gateway-http fetcher) and the catcher (convex-writer) agree on
+ * one string.
+ */
+export const MEDIA_TOO_LARGE_CODE = "media_too_large";
+
+/**
+ * Why a fetcher could NOT open an outbound media path. STRUCTURAL reason CODES
+ * (no filename, no path, no content) — safe to surface on the observability API
+ * (SOC2). Each maps to a DIFFERENT operator fix, so the caller + the diagnostic
+ * trace keep them distinct rather than collapsing to a bare "dropped":
+ *   - not_found        -> file absent on the bridge's view (classic shared-FS /
+ *                         mount-not-wired / wrong-host case)
+ *   - too_large        -> exceeds OPENCLAW_MEDIA_MAX_MB (raise the cap)
+ *   - path_escape      -> resolved outside the media root (security reject)
+ *   - symlink_rejected -> a symlink in the media dir (security reject)
+ *   - not_a_file       -> a dir / socket / device at that path
+ *   - invalid_filename -> empty / "." / ".." / separator in the basename
+ *   - fetch_error      -> a transport/IO failure specific to a network fetcher
+ *                         (incl. a timeout/abort — never lets the turn hang)
+ *   - route_absent     -> the gateway has no `/__openclaw__/assistant-media` route
+ *                         (gateway-http mode against a pre-6.x gateway): a
+ *                         DISTINCT, actionable signal to switch to shared-fs,
+ *                         not a transient transport blip
+ */
+export type MediaSkipReason =
+  | "not_found"
+  | "too_large"
+  | "path_escape"
+  | "symlink_rejected"
+  | "not_a_file"
+  | "invalid_filename"
+  | "fetch_error"
+  | "route_absent";
+
+/** Discriminated open() outcome: the bytes, or the structural reason it failed. */
+export type OpenResult =
+  | ({ ok: true } & OpenedMedia)
+  | { ok: false; reason: MediaSkipReason };
 
 export interface MediaFetcher {
   /**
    * Open `path` (an absolute outbound media path the normalizer already
    * validated against traversal / scheme / inbound) as a readable byte stream
-   * + mime + size. Returns null when the file is missing, too large, or escapes
-   * the configured root — the caller treats null as "no attachment" and never
-   * breaks the turn.
+   * + mime + size. Returns `{ ok: false, reason }` when the file is missing, too
+   * large, or escapes the configured root — the caller treats a failure as "no
+   * attachment" (never breaks the turn) but records the structural REASON so the
+   * outbound-media path is diagnosable remotely (SOC2-safe codes, never a path).
    */
-  open(path: string): Promise<OpenedMedia | null>;
+  open(path: string): Promise<OpenResult>;
 }
 
 // Minimal extension -> mime map for the file kinds the chat matrix exercises
@@ -71,7 +124,7 @@ const MIME_BY_EXT: Record<string, string> = {
   zip: "application/zip",
 };
 
-function mimeForFilename(filename: string): string {
+export function mimeForFilename(filename: string): string {
   const dot = filename.lastIndexOf(".");
   const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
   return MIME_BY_EXT[ext] ?? "application/octet-stream";
@@ -107,7 +160,7 @@ export class LocalDirMediaFetcher implements MediaFetcher {
         console.warn(`[media] skip ${filename}: ${reason}`));
   }
 
-  async open(path: string): Promise<OpenedMedia | null> {
+  async open(path: string): Promise<OpenResult> {
     const filename = basename(path);
     // Defense in depth: the normalizer already rejected "..", but a bad basename
     // (".", "..", empty, or containing a separator) must never reach a join.
@@ -119,12 +172,12 @@ export class LocalDirMediaFetcher implements MediaFetcher {
       filename.includes(sep)
     ) {
       this.onSkip("invalid filename", filename || "<empty>");
-      return null;
+      return { ok: false, reason: "invalid_filename" };
     }
     const resolved = resolve(join(this.baseDir, filename));
     if (resolved !== this.baseDir && !resolved.startsWith(this.baseDir + sep)) {
       this.onSkip("path escapes media dir", filename);
-      return null;
+      return { ok: false, reason: "path_escape" };
     }
     let size: number;
     try {
@@ -140,22 +193,22 @@ export class LocalDirMediaFetcher implements MediaFetcher {
       const info = await lstat(resolved);
       if (info.isSymbolicLink()) {
         this.onSkip("symlink rejected (path escape)", filename);
-        return null;
+        return { ok: false, reason: "symlink_rejected" };
       }
       if (!info.isFile()) {
         this.onSkip("not a file", filename);
-        return null;
+        return { ok: false, reason: "not_a_file" };
       }
       size = info.size;
     } catch {
       this.onSkip("not found", filename);
-      return null;
+      return { ok: false, reason: "not_found" };
     }
     if (size > this.maxBytes) {
       this.onSkip(`too large (${size} > ${this.maxBytes} bytes)`, filename);
-      return null;
+      return { ok: false, reason: "too_large" };
     }
     const stream = createReadStream(resolved);
-    return { stream, mimeType: mimeForFilename(filename), size };
+    return { ok: true, stream, mimeType: mimeForFilename(filename), size };
   }
 }

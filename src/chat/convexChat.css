@@ -3587,3 +3587,99 @@
   color: var(--foreground);
   background: color-mix(in srgb, var(--muted) 60%, var(--border));
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROTOTYPE — Ambient visual effects (token-driven).  [easy to remove: this block]
+   ---------------------------------------------------------------------------
+   Goal: extremely delicate, almost-imperceptible ambient lighting that DRAWS ITS
+   COLORS FROM THE ACTIVE CHARTE GRAPHIQUE. Every effect is painted with
+   color-mix(in oklch, var(--<token>) N%, transparent), so it auto-recolors per
+   chart (terracotta for Ataraxis, neutral≈invisible for Atrium-native, the chart
+   hue for Ocean/Forest/Dusk) with ZERO per-chart code.
+
+   Layering: .oc-shell / .oc-main / .oc-thread* are TRANSPARENT — the conversation
+   canvas shows the `body` background. So the app glow is painted as a SEPARATE
+   `background-image` over body's `background-color: var(--background)` (the
+   `background` shorthand would reset the image). Opaque surfaces (sidebar/topbar)
+   sit on top, so the glow only shows in the negative space — the NetBird look.
+
+   Gated by `:root[data-ambiance="on"]` (set by the inline script in index.html).
+   Intensities are deliberately at the FLOOR — tune up by eye, not down.
+   Card-glow is intentionally NOT here yet (added last; it is the one that turns
+   "too much" fastest on every card). All static (no animation) — no
+   prefers-reduced-motion concern this round.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* 1 — App canvas: a faint "horizon" glow rising from the bottom + a whisper of
+   a second hue top-right. Painted on body so it shows behind the conversation. */
+:root[data-ambiance="on"] body {
+  background-image:
+    radial-gradient(
+      125% 80% at 50% 100%,
+      color-mix(in oklch, var(--primary) 6%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      80% 60% at 88% 6%,
+      color-mix(in oklch, var(--chart-1) 4%, transparent),
+      transparent 55%
+    );
+  background-repeat: no-repeat;
+}
+/* Light mode reads fainter than dark at EQUAL opacity (a low-alpha tint has less
+   contrast over a bright bg), so nudge the canvas glow up slightly in light ONLY.
+   `.dark` lives on :root, so `:not(.dark)` = light; the extra class raises
+   specificity over the rule above. Dark is intentionally left untouched. */
+:root[data-ambiance="on"]:not(.dark) body {
+  background-image:
+    radial-gradient(
+      125% 80% at 50% 100%,
+      color-mix(in oklch, var(--primary) 9%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      80% 60% at 88% 6%,
+      color-mix(in oklch, var(--chart-1) 6%, transparent),
+      transparent 55%
+    );
+  background-repeat: no-repeat;
+}
+
+/* 2 — Primary buttons: a soft colored bloom (box-shadow is immune to the opaque-
+   surface trap). Slightly stronger on hover. Token-driven → terracotta on
+   Ataraxis, a plain subtle shadow on the neutral chart. */
+:root[data-ambiance="on"] [data-slot="button"][data-variant="default"] {
+  box-shadow: 0 1px 16px -9px color-mix(in oklch, var(--primary) 55%, transparent);
+}
+:root[data-ambiance="on"] [data-slot="button"][data-variant="default"]:hover {
+  box-shadow: 0 2px 22px -7px color-mix(in oklch, var(--primary) 70%, transparent);
+}
+
+/* 3 — Sign-in screen: a full-bleed multi-hue "mesh/aurora" (ATMOS-style) drawn
+   from the chart data colors. This is a pre-auth, content-free moment, so it
+   carries a touch more presence than the in-app glow. */
+:root[data-ambiance="on"] .oc-signin {
+  background-image:
+    radial-gradient(
+      42% 52% at 16% 20%,
+      color-mix(in oklch, var(--chart-1) 16%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      46% 56% at 86% 24%,
+      color-mix(in oklch, var(--chart-3) 15%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      52% 60% at 72% 92%,
+      color-mix(in oklch, var(--chart-5) 16%, transparent),
+      transparent 62%
+    ),
+    radial-gradient(
+      48% 56% at 24% 86%,
+      color-mix(in oklch, var(--chart-2) 13%, transparent),
+      transparent 62%
+    );
+  background-repeat: no-repeat;
+}
+/* END PROTOTYPE — Ambient visual effects */

@@ -65,6 +65,43 @@ export interface BridgeConfig {
    * Files above it are skipped (logged) rather than shipped.
    */
   mediaMaxBytes: number;
+  /**
+   * How the bridge fetches OUTBOUND (agent-generated) file bytes to upload into
+   * Convex storage (OPENCLAW_MEDIA_MODE). Three modes:
+   *   - "gateway-http" (DEFAULT): fetch over HTTP from the gateway's
+   *     `/__openclaw__/assistant-media` endpoint — an authenticated meta-probe
+   *     returns a signed `mediaTicket`, then a ticketed download streams the
+   *     bytes. Needs NO shared filesystem → the portable default for the vast
+   *     majority of deployments (Atrium and the gateway on different hosts).
+   *     REQUIRES a gateway that serves that route (OpenClaw 6.x+); against an
+   *     older gateway (e.g. 2026.5.19, which has no HTTP media route) the probe
+   *     404s and the fetcher reports `route_absent` (a clear log points the
+   *     operator at shared-fs) — set OPENCLAW_MEDIA_MODE=shared-fs there.
+   *   - "shared-fs": read from a read-only mount of the gateway's `media/outbound`
+   *     (LocalDirMediaFetcher). OPT-IN — requires Atrium + the gateway to SHARE a
+   *     filesystem (same host / NFS), which most deployments do NOT; never the
+   *     default.
+   *   - "off": never fetch outbound media (no attachment part is created).
+   */
+  mediaMode: "gateway-http" | "shared-fs" | "off";
+  /**
+   * Gateway HTTP origin for the assistant-media endpoint (the "gateway-http"
+   * mode). Derived from OPENCLAW_GATEWAY_URL (ws→http, wss→https, SAME host:port
+   * — the endpoint is served on the WS port) unless OPENCLAW_GATEWAY_HTTP_URL
+   * overrides it (deployments where the gateway's HTTP server is on another host
+   * /port). No trailing slash.
+   */
+  gatewayHttpBase: string;
+  /**
+   * Connection timeout (ms) for the "gateway-http" media path
+   * (OPENCLAW_MEDIA_FETCH_TIMEOUT_MS, default 60s). Bounds the meta-probe + the
+   * download RESPONSE HEADERS (an AbortSignal), so a gateway that accepts the
+   * connection but never responds can NEVER hang the turn (TurnSink awaits
+   * addMedia) — it degrades to a best-effort `fetch_error`. The BODY transfer is
+   * NOT bounded by it: it streams at the Convex upload's pace, and a backpressure
+   * pause must not be mistaken for a stall (that would false-drop valid media).
+   */
+  mediaFetchTimeoutMs: number;
 
   // --- Convex ----------------------------------------------------------------
   /**
@@ -143,6 +180,40 @@ function parseIntEnv(name: string, fallback: number): number {
 }
 
 /**
+ * Map a ws/wss/http/https gateway URL to its HTTP origin (SAME host:port), no
+ * trailing slash. The gateway serves `/__openclaw__/assistant-media` on the same
+ * port as the operator WebSocket (verified on 2026.6.5), so the HTTP base is just
+ * the WS URL with an http(s) scheme. A bare `host:port` defaults to http://.
+ */
+export function deriveHttpBase(gatewayUrl: string): string {
+  let u = gatewayUrl.trim();
+  if (u.startsWith("ws://")) u = "http://" + u.slice("ws://".length);
+  else if (u.startsWith("wss://")) u = "https://" + u.slice("wss://".length);
+  else if (!/^https?:\/\//i.test(u)) u = "http://" + u;
+  // ORIGIN ONLY (scheme + host + port). The gateway serves the media route at the
+  // ROOT (`/__openclaw__/assistant-media`), so any path/query/fragment on the
+  // operator-WS URL (e.g. wss://gw.example.com/openclaw) MUST be dropped — keeping
+  // it would target `…/openclaw/__openclaw__/assistant-media` and 404. Fall back to
+  // a trailing-slash trim only if the URL is somehow unparseable.
+  try {
+    return new URL(u).origin;
+  } catch {
+    return u.replace(/\/+$/, "");
+  }
+}
+
+/** Parse OPENCLAW_MEDIA_MODE; unset => the portable "gateway-http" default. */
+function parseMediaMode(name: string): BridgeConfig["mediaMode"] {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
+  if (raw === "" || raw === "gateway-http") return "gateway-http";
+  if (raw === "shared-fs") return "shared-fs";
+  if (raw === "off") return "off";
+  throw new ConfigError(
+    `Invalid ${name}: "${raw}" (expected one of: gateway-http | shared-fs | off)`,
+  );
+}
+
+/**
  * Resolve the device identity from either an inline JSON env var or a path to a
  * JSON file. Exactly one must be present.
  */
@@ -198,6 +269,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
         "/home/node/.openclaw/media/outbound",
       ),
       mediaMaxBytes: parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
+      mediaMode: parseMediaMode("OPENCLAW_MEDIA_MODE"),
+      gatewayHttpBase: deriveHttpBase(
+        optionalEnv("OPENCLAW_GATEWAY_HTTP_URL", "") ||
+          requireEnv("OPENCLAW_GATEWAY_URL"),
+      ),
+      mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
       convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
       bridgeSharedSecret: requireEnv("BRIDGE_SHARED_SECRET"),

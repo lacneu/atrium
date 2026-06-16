@@ -28,6 +28,15 @@
         var l = localStorage.getItem("PARAGLIDE_LOCALE");
         if (l === "fr" || l === "en") document.documentElement.lang = l;
       })();
+      // PROTOTYPE — ambient visual effects (token-driven glows/mesh/halo). The
+      // whole effect set is gated by one data attribute so it is a single toggle.
+      // Defaults ON; run localStorage.setItem("oc.ambiance","off") + reload to
+      // compare. The real per-user preference + i18n wiring is deferred until the
+      // LOOK is validated (intensity is tuned by eye, not by code).
+      (function () {
+        var a = localStorage.getItem("oc.ambiance");
+        document.documentElement.dataset.ambiance = a === "off" ? "off" : "on";
+      })();
     </script>
   </head>
   <body>

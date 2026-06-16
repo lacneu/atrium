@@ -14,7 +14,7 @@
 // fake records `addMedia` without touching the filesystem or Convex storage.
 
 import { Readable } from "node:stream";
-import type { MediaFetcher } from "./core/media-fetcher.js";
+import { MEDIA_TOO_LARGE_CODE, type MediaFetcher } from "./core/media-fetcher.js";
 
 /** Mirrors convex/schema.ts messagePart `tool` variant. */
 export interface ToolPart {
@@ -134,6 +134,24 @@ type IngestOp =
       filename: string;
       mimeType: string;
     }
+  // SOC2-safe DIAGNOSTIC for the outbound-media path (no message part created).
+  // Recorded as an `openclaw.media` trace so the chain "gateway surfaced a file
+  // -> bridge fetched bytes -> stored part" is observable remotely WITHOUT any
+  // filename/path/content on the wire — only structural codes/buckets:
+  //   phase "received" : the normalizer surfaced a media ref (addMedia called).
+  //                      Its ABSENCE for a file-gen turn => the gateway never
+  //                      surfaced the file (normalizer/frame-parsing gap).
+  //   phase "stored"   : bytes fetched + persisted (bytesBucket + mimeBase).
+  //   phase "dropped"  : not persisted; `reason` says WHY (no_fetcher,
+  //                      not_found, too_large, path_escape, ... upload_error).
+  | {
+      op: "mediaTrace";
+      messageId: string;
+      phase: "received" | "stored" | "dropped";
+      reason?: string;
+      bytesBucket?: string;
+      mimeBase?: string;
+    }
   | {
       op: "finalize";
       messageId: string;
@@ -171,6 +189,49 @@ export interface HttpConvexWriterOptions {
 }
 
 const INGEST_PATH = "/bridge/ingest";
+
+/**
+ * Coarse byte bucket for the media diagnostic — never the exact size (mirrors the
+ * SOC2 textLen->bucket discipline). Tells "empty vs small vs large" without a
+ * fingerprint of the content.
+ */
+export function bytesBucket(size: number | null | undefined): string {
+  // UNKNOWN (a chunked download with no Content-Length/size) is distinct from a
+  // genuinely empty file: never collapse it to "0" (would read as empty).
+  if (size == null || !Number.isFinite(size)) return "unknown";
+  if (size <= 0) return "0";
+  if (size < 1024) return "<1KB";
+  if (size < 100 * 1024) return "1KB-100KB";
+  if (size < 1024 * 1024) return "100KB-1MB";
+  if (size < 10 * 1024 * 1024) return "1MB-10MB";
+  return ">10MB";
+}
+
+/** Base type of a mime (e.g. "image" from "image/png") — the SOC2 mimeType base. */
+export function mimeBaseOf(mimeType: string): string {
+  const slash = mimeType.indexOf("/");
+  return slash > 0 ? mimeType.slice(0, slash) : mimeType || "unknown";
+}
+
+/**
+ * Did this error originate from the streamed byte-cap (MEDIA_TOO_LARGE_CODE)?
+ * The cap fires mid-upload, and fetch/undici wraps a request-body stream error
+ * (the original becomes `.cause`), so we walk the cause chain rather than trust a
+ * top-level `.code`. Bounded depth — never loop on a self-referential cause.
+ */
+export function causedByTooLarge(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur != null; i++) {
+    if (
+      typeof cur === "object" &&
+      (cur as { code?: unknown }).code === MEDIA_TOO_LARGE_CODE
+    ) {
+      return true;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /**
  * Live writer that POSTs each op to the Convex ingest httpAction.
@@ -336,6 +397,11 @@ export class HttpConvexWriter implements ConvexWriter {
     media: { filename: string; path: string; mimeType?: string },
   ): Promise<void> {
     await this.flushDelta(messageId); // ordering: drain deltas before the part
+    // DIAGNOSTIC (SOC2-safe): the normalizer surfaced a media ref, so addMedia was
+    // called. This "received" trace is the load-bearing A/B discriminator — if it
+    // is ABSENT for a file-gen turn, the gateway never surfaced the file (a
+    // normalizer/frame gap), NOT a fetcher/mount problem.
+    this.emitMediaTrace(messageId, "received");
     if (!this.mediaFetcher) {
       if (!this.warnedNoFetcher) {
         this.warnedNoFetcher = true;
@@ -343,6 +409,7 @@ export class HttpConvexWriter implements ConvexWriter {
           "[media] no MediaFetcher configured -> outbound attachments are dropped",
         );
       }
+      this.emitMediaTrace(messageId, "dropped", { reason: "no_fetcher" });
       return;
     }
     // Best-effort: an attachment failure must NEVER abort the assistant turn —
@@ -352,8 +419,12 @@ export class HttpConvexWriter implements ConvexWriter {
       // a Convex upload URL — sidesteps the 20MB httpAction ceiling and the ~33%
       // base64 inflation. The server-side fs path stays inside the bridge.
       const opened = await this.mediaFetcher.open(media.path);
-      if (!opened) {
-        return; // missing/too-large/escaping — already logged by the fetcher
+      if (!opened.ok) {
+        // The structural reason (not_found / too_large / path_escape / ...) — the
+        // single most useful signal: each is a DIFFERENT fix. Already warned
+        // locally by the fetcher (with the filename); the trace stays code-only.
+        this.emitMediaTrace(messageId, "dropped", { reason: opened.reason });
+        return;
       }
       const mimeType = media.mimeType ?? opened.mimeType;
       const { uploadUrl } = await this.post<{ uploadUrl: string }>({
@@ -371,13 +442,44 @@ export class HttpConvexWriter implements ConvexWriter {
         filename: media.filename,
         mimeType,
       });
+      this.emitMediaTrace(messageId, "stored", {
+        bytesBucket: bytesBucket(opened.size),
+        mimeBase: mimeBaseOf(mimeType),
+      });
     } catch (err) {
       // Structural only (never the bytes/content). Filename hints at content, so
-      // log just the failure class.
+      // log just the failure class. A cap-exceeded error surfaces HERE (not from
+      // open()) when the gateway omits Content-Length/size: report `too_large` so
+      // the diagnostic points at the real fix (raise cap / shrink file), not at a
+      // generic upload/storage failure.
       console.warn(
         `[media] attachment skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
+      this.emitMediaTrace(messageId, "dropped", {
+        reason: causedByTooLarge(err) ? "too_large" : "upload_error",
+      });
     }
+  }
+
+  /**
+   * Fire-and-forget SOC2-safe media diagnostic. Sent OFF the serialization chain
+   * (a direct doPost, NOT this.post) so a slow/stuck observability mutation can
+   * NEVER delay the turn's real ops (getUploadUrl/addMediaPart/finalize) — a
+   * diagnostic must never block the flow (Codex P2). It records an independent
+   * `openclaw.media` trace (own timestamp, no part, no ordering-sensitive state),
+   * so racing the chain is harmless. Errors are swallowed; carries only structural
+   * codes/buckets: no filename, no path, no bytes.
+   */
+  private emitMediaTrace(
+    messageId: string,
+    phase: "received" | "stored" | "dropped",
+    extra?: { reason?: string; bytesBucket?: string; mimeBase?: string },
+  ): void {
+    void this.doPost({ op: "mediaTrace", messageId, phase, ...extra }).catch(
+      () => {
+        // best-effort: never surface as an unhandled rejection.
+      },
+    );
   }
 
   /**

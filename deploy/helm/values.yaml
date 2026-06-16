@@ -170,6 +170,10 @@ bridge:
 openclaw:
   # -- ws[s]:// URL of your OpenClaw gateway.
   gatewayUrl: "wss://gateway.example.com"
+  # -- [gateway-http media mode] Override the assistant-media HTTP base ONLY if the
+  # gateway serves it on a DIFFERENT host/port than gatewayUrl (e.g. a separate
+  # ingress). Empty => derived from gatewayUrl (ws->http, wss->https, same host:port).
+  gatewayHttpUrl: ""
 
 # =============================================================================
 # Service / Ingress (PUBLIC routing for the frontend only).

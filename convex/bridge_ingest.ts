@@ -115,6 +115,16 @@ type IngestOp =
       filename: string;
       mimeType: string;
     }
+  // SOC2-safe outbound-media DIAGNOSTIC (recorded as an `openclaw.media` trace; no
+  // message part, no DB write). Structural codes only — never filename/path/bytes.
+  | {
+      op: "mediaTrace";
+      messageId: string;
+      phase: "received" | "stored" | "dropped";
+      reason?: string;
+      bytesBucket?: string;
+      mimeBase?: string;
+    }
   | {
       op: "finalize";
       messageId: string;
@@ -303,6 +313,29 @@ export const ingest = httpAction(async (ctx, request) => {
           bytes,
           storedType,
           ok: true,
+        },
+      });
+      return json({ ok: true });
+    }
+    case "mediaTrace": {
+      // SOC2-safe outbound-media diagnostic: record as an `openclaw.media` trace,
+      // create NO message part and touch NO table. Structural codes/buckets only
+      // (phase/reason/bytesBucket/mimeBase) — the bridge already guarantees no
+      // filename/path/content reaches here. `received` with no later `stored` for
+      // a turn = the file was surfaced but never persisted (fetcher/mount); NO
+      // `received` at all = the gateway never surfaced it (normalizer/frame gap).
+      await traceIngest(ctx, {
+        kind: "openclaw.media",
+        correlationId: body.messageId,
+        meta: {
+          op: body.op,
+          messageId: body.messageId,
+          phase: body.phase,
+          ...(body.reason !== undefined ? { reason: body.reason } : {}),
+          ...(body.bytesBucket !== undefined
+            ? { bytesBucket: body.bytesBucket }
+            : {}),
+          ...(body.mimeBase !== undefined ? { mimeBase: body.mimeBase } : {}),
         },
       });
       return json({ ok: true });

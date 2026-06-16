@@ -95,12 +95,28 @@ services:
       - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
       - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET:?shared with the Convex deployment env}
       - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET:?shared with the Convex deployment env}
+      # Outbound (agent-generated) file transport. DEFAULT "gateway-http" pulls the
+      # bytes over HTTP from the gateway's assistant-media endpoint — NO shared
+      # filesystem needed, so it works when Atrium and the gateway run on DIFFERENT
+      # hosts (the common case). For a CO-LOCATED gateway you MAY instead read a
+      # read-only mount: set OPENCLAW_MEDIA_MODE=shared-fs AND uncomment the
+      # `volumes:` block + OPENCLAW_MEDIA_OUTBOUND_HOST_DIR below.
+      - OPENCLAW_MEDIA_MODE=${OPENCLAW_MEDIA_MODE:-gateway-http}
       - OPENCLAW_MEDIA_OUTBOUND_DIR=/home/node/.openclaw/media/outbound
       - OPENCLAW_MEDIA_MAX_MB=${OPENCLAW_MEDIA_MAX_MB:-1024}
+      # [gateway-http mode] Optional override: set ONLY if the gateway serves the
+      # assistant-media HTTP endpoint on a DIFFERENT host/port than the WS URL
+      # (e.g. a separate ingress). Blank => derived from OPENCLAW_GATEWAY_URL.
+      - OPENCLAW_GATEWAY_HTTP_URL=${OPENCLAW_GATEWAY_HTTP_URL:-}
+      # [gateway-http mode] Connection timeout (ms): bounds the media meta-probe +
+      # response headers so a non-responsive gateway can't stall a turn (the body
+      # then streams at the upload's pace). Default 60s.
+      - OPENCLAW_MEDIA_FETCH_TIMEOUT_MS=${OPENCLAW_MEDIA_FETCH_TIMEOUT_MS:-60000}
       - BRIDGE_PORT=8787
-    volumes:
-      # READ-ONLY bind of your gateway's outbound media dir (set the host path).
-      - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to your gateway's media/outbound dir}:/home/node/.openclaw/media/outbound:ro
+    # [shared-fs mode ONLY] Uncomment to mount the gateway's outbound media dir
+    # read-only (requires OPENCLAW_MEDIA_MODE=shared-fs above):
+    # volumes:
+    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to your gateway's media/outbound dir}:/home/node/.openclaw/media/outbound:ro
     # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
     # Convex (it reaches convex-backend by service DNS only on ingest, with
     # retry), so a hard depends_on would needlessly couple their lifecycles and

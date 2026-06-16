@@ -9,7 +9,13 @@
 // per backend round-trip, no queue growth.
 
 import { describe, expect, test } from "vitest";
-import { HttpConvexWriter } from "../src/convex-writer";
+import { Readable } from "node:stream";
+import { HttpConvexWriter, bytesBucket } from "../src/convex-writer";
+import {
+  MEDIA_TOO_LARGE_CODE,
+  type MediaFetcher,
+  type OpenResult,
+} from "../src/core/media-fetcher";
 
 type SentOp = { op: string; messageId?: string; text?: string };
 
@@ -147,5 +153,248 @@ describe("reportSessionMeta is OFF the serialization chain (Codex review #12)", 
 
     expect(metaDispatched).toBe(1); // the meta POST WAS dispatched (and is hung)
     expect(id).toBe("m1"); // startAssistant resolved despite the hung meta
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound-media DIAGNOSTIC (openclaw.media trace) — addMedia behaviour, every
+// branch (success + each failure), the SOC2 codes/buckets it emits, and the
+// off-chain guarantee (a hung diagnostic must never block the turn — Codex P2).
+// ---------------------------------------------------------------------------
+
+const UPLOAD_URL = "http://upload.invalid";
+
+/** Records ingest ops; serves getUploadUrl + the streamToUploadUrl POST. */
+function mediaFlowFetch(opts?: {
+  uploadFails?: boolean;
+  uploadNoStorageId?: boolean;
+  hangMediaTrace?: boolean;
+  uploadThrows?: unknown;
+}) {
+  const sent: Array<{
+    op: string;
+    phase?: string;
+    reason?: string;
+    bytesBucket?: string;
+    mimeBase?: string;
+    messageId?: string;
+  }> = [];
+  const fetchImpl = (async (url: unknown, init: { body: unknown }) => {
+    // The streamToUploadUrl POST goes to the pre-signed upload URL (body = stream).
+    if (url === UPLOAD_URL) {
+      if (opts?.uploadThrows !== undefined) {
+        // Mimic fetch/undici rejecting when the request-body stream errors
+        // mid-send (e.g. the byte-cap Transform fires past the limit).
+        throw opts.uploadThrows;
+      }
+      if (opts?.uploadFails) {
+        return {
+          ok: false,
+          status: 500,
+          text: async () => "upload boom",
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        json: async () => (opts?.uploadNoStorageId ? {} : { storageId: "st_1" }),
+      } as unknown as Response;
+    }
+    // Everything else is an ingest op (body = JSON).
+    const body = JSON.parse(init.body as string) as { op: string };
+    sent.push(body as (typeof sent)[number]);
+    if (body.op === "mediaTrace" && opts?.hangMediaTrace) {
+      return await new Promise<Response>(() => {}); // never resolves
+    }
+    if (body.op === "getUploadUrl") {
+      return {
+        ok: true,
+        json: async () => ({ uploadUrl: UPLOAD_URL }),
+      } as unknown as Response;
+    }
+    return { ok: true, json: async () => ({}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, sent };
+}
+
+const okOpen = (size = 5, mimeType = "text/markdown"): OpenResult => ({
+  ok: true,
+  stream: Readable.from([Buffer.alloc(size)]),
+  mimeType,
+  size,
+});
+const fakeFetcher = (result: OpenResult | (() => OpenResult)): MediaFetcher => ({
+  open: async () => (typeof result === "function" ? result() : result),
+});
+
+function mediaWriter(fetchImpl: typeof fetch, mediaFetcher?: MediaFetcher) {
+  return new HttpConvexWriter({
+    convexHttpActionsUrl: "http://test.invalid",
+    ingestSecret: "s",
+    fetchImpl,
+    mediaFetcher,
+  });
+}
+
+describe("bytesBucket: unknown vs empty", () => {
+  test("null/undefined/NaN size => 'unknown' (NOT '0' — would read as empty)", () => {
+    expect(bytesBucket(null)).toBe("unknown");
+    expect(bytesBucket(undefined)).toBe("unknown");
+    expect(bytesBucket(Number.NaN)).toBe("unknown");
+  });
+  test("a genuine 0 stays '0'; positive sizes bucket normally", () => {
+    expect(bytesBucket(0)).toBe("0");
+    expect(bytesBucket(5)).toBe("<1KB");
+    expect(bytesBucket(2048)).toBe("1KB-100KB");
+  });
+});
+
+describe("addMedia outbound diagnostic (openclaw.media)", () => {
+  test("UNKNOWN SIZE (chunked, no Content-Length): stored bucket is 'unknown', NOT '0'", async () => {
+    // A chunked gateway-http download has no size up front -> OpenedMedia.size is
+    // null. The `stored` diagnostic must bucket it as "unknown", never "0" (which
+    // reads as an empty file). The real byte count is captured server-side (the
+    // addMediaPart ingest trace reads _storage).
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const nullSize: OpenResult = {
+      ok: true,
+      stream: Readable.from([Buffer.from("hi")]),
+      mimeType: "text/markdown",
+      size: null,
+    };
+    const w = mediaWriter(fetchImpl, fakeFetcher(nullSize));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    const stored = sent
+      .filter((s) => s.op === "mediaTrace")
+      .find((t) => t.phase === "stored");
+    expect(stored?.bytesBucket).toBe("unknown");
+  });
+
+  test("SUCCESS: received -> getUploadUrl -> addMediaPart -> stored(bytesBucket,mimeBase)", async () => {
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen(5, "text/markdown")));
+    await w.addMedia("m1", {
+      filename: "r.md",
+      path: "/home/node/.openclaw/media/outbound/r.md",
+    });
+    await tick(10);
+    const ops = sent.map((s) => s.op);
+    expect(ops).toContain("getUploadUrl");
+    expect(ops).toContain("addMediaPart");
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces.map((t) => t.phase)).toEqual(["received", "stored"]);
+    const stored = traces.find((t) => t.phase === "stored");
+    expect(stored?.bytesBucket).toBe("<1KB");
+    expect(stored?.mimeBase).toBe("text");
+    // SOC2: the diagnostic ops carry NO filename / path / content.
+    for (const t of traces) {
+      expect(JSON.stringify(t)).not.toContain("r.md");
+      expect(JSON.stringify(t)).not.toContain("outbound");
+    }
+  });
+
+  test("NO FETCHER: received -> dropped(no_fetcher), no upload at all", async () => {
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl, undefined); // no mediaFetcher
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
+    expect(traces[1]?.reason).toBe("no_fetcher");
+  });
+
+  test.each([
+    "not_found",
+    "too_large",
+    "path_escape",
+    "symlink_rejected",
+    "not_a_file",
+    "invalid_filename",
+    "route_absent",
+  ] as const)(
+    "OPEN FAILS (%s): received -> dropped(reason), no upload",
+    async (reason) => {
+      const { fetchImpl, sent } = mediaFlowFetch();
+      const w = mediaWriter(fetchImpl, fakeFetcher({ ok: false, reason }));
+      await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+      await tick(10);
+      expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
+      expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
+      const traces = sent.filter((s) => s.op === "mediaTrace");
+      expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
+      expect(traces[1]?.reason).toBe(reason);
+    },
+  );
+
+  test("UPLOAD ERROR: received -> getUploadUrl -> dropped(upload_error), no addMediaPart", async () => {
+    const { fetchImpl, sent } = mediaFlowFetch({ uploadFails: true });
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    expect(sent.map((s) => s.op)).toContain("getUploadUrl");
+    expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
+    expect(traces[traces.length - 1]?.reason).toBe("upload_error");
+  });
+
+  test("STREAMED CAP (code on the error): dropped(too_large), NOT upload_error", async () => {
+    // When the gateway omits Content-Length/size the cap can only fire mid-upload
+    // (the byteCap Transform). That surfaces AFTER open() returned ok, so the
+    // catch must still map it to too_large — the real fix is cap/size, not storage.
+    const capErr = Object.assign(new Error("media exceeds cap"), {
+      code: MEDIA_TOO_LARGE_CODE,
+    });
+    const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: capErr });
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces[traces.length - 1]?.reason).toBe("too_large");
+  });
+
+  test("STREAMED CAP (wrapped as fetch .cause): still dropped(too_large)", async () => {
+    // fetch/undici wraps a request-body stream error: the original becomes .cause.
+    // causedByTooLarge walks the chain, so the diagnostic is right either way.
+    const wrapped = Object.assign(new TypeError("terminated"), {
+      cause: Object.assign(new Error("media exceeds cap"), {
+        code: MEDIA_TOO_LARGE_CODE,
+      }),
+    });
+    const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: wrapped });
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces[traces.length - 1]?.reason).toBe("too_large");
+  });
+
+  test("UPLOAD returns 200 but NO storageId: dropped(upload_error), no addMediaPart", async () => {
+    // streamToUploadUrl throws "no storageId" on a 200-without-storageId response;
+    // addMedia must catch it, persist NO part, and record the diagnostic.
+    const { fetchImpl, sent } = mediaFlowFetch({ uploadNoStorageId: true });
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    expect(sent.map((s) => s.op)).toContain("getUploadUrl");
+    expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces[traces.length - 1]?.reason).toBe("upload_error");
+  });
+
+  test("OFF-CHAIN (Codex P2): a HUNG mediaTrace never blocks the media writes", async () => {
+    // The `received` mediaTrace POST hangs forever; addMedia must STILL complete
+    // its real ops (getUploadUrl + addMediaPart) and resolve. On-chain (the bug)
+    // it would queue behind the hung trace and time out.
+    const { fetchImpl, sent } = mediaFlowFetch({ hangMediaTrace: true });
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
+    const outcome = await Promise.race([
+      w.addMedia("m1", { filename: "r.md", path: "/x/r.md" }).then(() => "DONE"),
+      tick(300).then(() => "TIMEOUT" as const),
+    ]);
+    expect(outcome).toBe("DONE");
+    expect(sent.map((s) => s.op)).toContain("addMediaPart"); // real write happened
   });
 });

@@ -2,13 +2,21 @@
 // drop a file in a temp dir, point the fetcher at it, assert the streamed bytes
 // + mime. The same code reads the `:ro` mount in prod and an SSHFS/synced dir
 // in dev, and streams (no base64, no full buffer) into a Convex upload URL.
+//
+// Also locks the STRUCTURAL reason codes open() returns on every failure path —
+// these drive the SOC2-safe outbound-media diagnostic (each reason is a DIFFERENT
+// operator fix; collapsing them to a bare "dropped" would make prod undebuggable).
 
 import { describe, it, expect } from "vitest";
-import { mkdtemp, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, symlink, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
-import { LocalDirMediaFetcher } from "../src/core/media-fetcher.js";
+import {
+  LocalDirMediaFetcher,
+  type OpenResult,
+  type MediaSkipReason,
+} from "../src/core/media-fetcher.js";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "oc-media-"));
@@ -27,32 +35,39 @@ async function drain(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+/** Narrow a success result or fail the test loudly. */
+function opened(got: OpenResult): Extract<OpenResult, { ok: true }> {
+  if (!got.ok) throw new Error(`expected bytes, got skip "${got.reason}"`);
+  return got;
+}
+
+/** Narrow a skip result and return its structural reason code. */
+function skipReason(got: OpenResult): MediaSkipReason {
+  if (got.ok) throw new Error("expected a skip, got bytes");
+  return got.reason;
+}
+
 describe("LocalDirMediaFetcher", () => {
   it("streams bytes + infers mime + reports size for a file in the media dir", async () => {
     await withTempDir(async (dir) => {
       const content = "# fruits\n- pomme\n- poire\n";
       await writeFile(join(dir, "fruits---abc.md"), content);
       const fetcher = new LocalDirMediaFetcher({ baseDir: dir, maxBytes: 1024 });
-      const got = await fetcher.open(
-        "/home/node/.openclaw/media/outbound/fruits---abc.md",
+      const got = opened(
+        await fetcher.open("/home/node/.openclaw/media/outbound/fruits---abc.md"),
       );
-      expect(got).not.toBeNull();
-      expect(got!.mimeType).toBe("text/markdown");
-      expect(got!.size).toBe(Buffer.byteLength(content));
-      expect((await drain(got!.stream)).toString("utf-8")).toContain("# fruits");
+      expect(got.mimeType).toBe("text/markdown");
+      expect(got.size).toBe(Buffer.byteLength(content));
+      expect((await drain(got.stream)).toString("utf-8")).toContain("# fruits");
     });
   });
 
-  it("REJECTS a symlink — never follows it out of the media dir (path-escape exfil)", async () => {
+  it("REJECTS a symlink (reason=symlink_rejected) — never follows it out of the media dir", async () => {
     await withTempDir(async (dir) => {
-      // A secret file OUTSIDE the media dir (the symlink target).
       const outside = await mkdtemp(join(tmpdir(), "oc-secret-"));
       try {
         const secret = join(outside, "secret.txt");
         await writeFile(secret, "TOP SECRET — outside the media dir");
-        // A tool/agent with write access to the mounted media/outbound dir drops
-        // `report.pdf -> <secret>` and emits that filename. The fetcher must NOT
-        // stat/stream the link target.
         await symlink(secret, join(dir, "report.pdf"));
         const skips: string[] = [];
         const fetcher = new LocalDirMediaFetcher({
@@ -63,7 +78,7 @@ describe("LocalDirMediaFetcher", () => {
         const got = await fetcher.open(
           "/home/node/.openclaw/media/outbound/report.pdf",
         );
-        expect(got).toBeNull(); // the link target is never streamed
+        expect(skipReason(got)).toBe("symlink_rejected"); // link target never streamed
         expect(skips.some((s) => s.includes("symlink"))).toBe(true);
       } finally {
         await rm(outside, { recursive: true, force: true });
@@ -71,7 +86,7 @@ describe("LocalDirMediaFetcher", () => {
     });
   });
 
-  it("returns null (never throws) for a missing file", async () => {
+  it("reason=not_found (never throws) for a missing file", async () => {
     await withTempDir(async (dir) => {
       const skips: string[] = [];
       const fetcher = new LocalDirMediaFetcher({
@@ -79,14 +94,15 @@ describe("LocalDirMediaFetcher", () => {
         maxBytes: 1024,
         onSkip: (reason) => skips.push(reason),
       });
-      expect(
-        await fetcher.open("/home/node/.openclaw/media/outbound/nope.md"),
-      ).toBeNull();
+      const got = await fetcher.open(
+        "/home/node/.openclaw/media/outbound/nope.md",
+      );
+      expect(skipReason(got)).toBe("not_found");
       expect(skips).toContain("not found");
     });
   });
 
-  it("rejects a file above the size cap", async () => {
+  it("reason=too_large for a file above the size cap", async () => {
     await withTempDir(async (dir) => {
       await writeFile(join(dir, "big.bin"), Buffer.alloc(2048));
       const skips: string[] = [];
@@ -95,10 +111,31 @@ describe("LocalDirMediaFetcher", () => {
         maxBytes: 1024,
         onSkip: (reason) => skips.push(reason),
       });
-      expect(
-        await fetcher.open("/home/node/.openclaw/media/outbound/big.bin"),
-      ).toBeNull();
+      const got = await fetcher.open(
+        "/home/node/.openclaw/media/outbound/big.bin",
+      );
+      expect(skipReason(got)).toBe("too_large");
       expect(skips.some((s) => s.startsWith("too large"))).toBe(true);
+    });
+  });
+
+  it("reason=not_a_file when the path resolves to a directory", async () => {
+    await withTempDir(async (dir) => {
+      await mkdir(join(dir, "adir"));
+      const fetcher = new LocalDirMediaFetcher({ baseDir: dir, maxBytes: 1024 });
+      const got = await fetcher.open(
+        "/home/node/.openclaw/media/outbound/adir",
+      );
+      expect(skipReason(got)).toBe("not_a_file");
+    });
+  });
+
+  it("reason=invalid_filename for a degenerate basename ('.')", async () => {
+    await withTempDir(async (dir) => {
+      const fetcher = new LocalDirMediaFetcher({ baseDir: dir, maxBytes: 1024 });
+      // basename("/.../.") === "." — must never reach a join.
+      const got = await fetcher.open("/home/node/.openclaw/media/outbound/.");
+      expect(skipReason(got)).toBe("invalid_filename");
     });
   });
 
@@ -130,11 +167,10 @@ describe("LocalDirMediaFetcher", () => {
       const fetcher = new LocalDirMediaFetcher({ baseDir: dir, maxBytes: 1024 });
       for (const [name, mime] of cases) {
         await writeFile(join(dir, name), "x");
-        const got = await fetcher.open(
-          `/home/node/.openclaw/media/outbound/${name}`,
+        const got = opened(
+          await fetcher.open(`/home/node/.openclaw/media/outbound/${name}`),
         );
-        expect(got, name).not.toBeNull();
-        expect(got!.mimeType, name).toBe(mime);
+        expect(got.mimeType, name).toBe(mime);
       }
     });
   });
@@ -144,9 +180,8 @@ describe("LocalDirMediaFetcher", () => {
       await writeFile(join(dir, "r.pdf"), "%PDF-1.4 ...");
       const fetcher = new LocalDirMediaFetcher({ baseDir: dir, maxBytes: 1024 });
       // A different absolute layout still resolves by basename into baseDir.
-      const got = await fetcher.open("/srv/openclaw/media/outbound/r.pdf");
-      expect(got).not.toBeNull();
-      expect(got!.mimeType).toBe("application/pdf");
+      const got = opened(await fetcher.open("/srv/openclaw/media/outbound/r.pdf"));
+      expect(got.mimeType).toBe("application/pdf");
     });
   });
 });

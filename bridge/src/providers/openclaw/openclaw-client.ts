@@ -16,11 +16,30 @@
 //     signal the inbound consumer, and terminate the socket (no zombie).
 
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import WebSocket, { type RawData } from "ws";
 
 import type { DeviceIdentity } from "../../config.js";
+
+// DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
+// inbound gateway frame is appended (full, untruncated) as one JSON line — the
+// ground-truth material for building version-accurate fixtures + diagnosing how a
+// given OpenClaw version (e.g. 6.5) actually transports media. Best-effort and
+// LOCAL-ONLY: never set in prod, since raw frames can carry message content.
+const CAPTURE_FRAMES_PATH =
+  typeof process !== "undefined"
+    ? process.env?.OPENCLAW_CAPTURE_FRAMES
+    : undefined;
+function captureFrame(frame: unknown): void {
+  if (!CAPTURE_FRAMES_PATH) return;
+  try {
+    appendFileSync(CAPTURE_FRAMES_PATH, JSON.stringify(frame) + "\n");
+  } catch {
+    /* best-effort dev capture — never disturb the read loop */
+  }
+}
 
 // Operator scopes the bridge requests at connect. `operator.admin` IS required:
 // the bridge calls `sessions.patch` (to set verboseLevel=full) which the gateway
@@ -335,6 +354,10 @@ export class OpenClawConnection {
     } catch {
       return; // drop malformed frames
     }
+    // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
+    // frame exactly as received — fixture + version-diagnosis material. No-op unless
+    // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
+    captureFrame(frame);
     if (frame.type === "res") {
       const id = String(frame.id);
       dbg(

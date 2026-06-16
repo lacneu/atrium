@@ -6,24 +6,49 @@
 // `--env-file=.env`, so secrets load from bridge/.env. Equivalent to
 // `node --env-file=.env dist/index.js`.
 
-import { loadConfig } from "./config.js";
+import { loadConfig, type BridgeConfig } from "./config.js";
 import { HttpConvexWriter } from "./convex-writer.js";
-import { LocalDirMediaFetcher } from "./core/media-fetcher.js";
+import {
+  LocalDirMediaFetcher,
+  type MediaFetcher,
+} from "./core/media-fetcher.js";
+import { GatewayHttpMediaFetcher } from "./core/gateway-http-media-fetcher.js";
 import { HealthRegistry } from "./core/health.js";
 import { SessionRegistry } from "./session.js";
 import { createBridgeServer } from "./server.js";
+
+/**
+ * Pick the outbound-media fetcher per OPENCLAW_MEDIA_MODE. DEFAULT "gateway-http"
+ * needs NO shared filesystem (the portable path for most deployments); "shared-fs"
+ * is the OPT-IN mount; "off" disables outbound attachments. Returns undefined for
+ * "off" — the writer then records a `dropped:no_fetcher` diagnostic and the turn's
+ * text/tools still land.
+ */
+function selectMediaFetcher(config: BridgeConfig): MediaFetcher | undefined {
+  switch (config.mediaMode) {
+    case "gateway-http":
+      return new GatewayHttpMediaFetcher({
+        httpBase: config.gatewayHttpBase,
+        token: config.openclawToken,
+        maxBytes: config.mediaMaxBytes,
+        timeoutMs: config.mediaFetchTimeoutMs,
+      });
+    case "shared-fs":
+      return new LocalDirMediaFetcher({
+        baseDir: config.mediaOutboundDir,
+        maxBytes: config.mediaMaxBytes,
+      });
+    case "off":
+      return undefined;
+  }
+}
 
 function main(): void {
   // Fail fast on missing/invalid env before opening any socket.
   const config = loadConfig();
 
-  // Outbound media is read from the gateway's `media/outbound` dir mounted into
-  // the bridge (`:ro` in prod, a synced/SSHFS dir in dev) — there is no remote
-  // media RPC on the gateway (see core/media-fetcher.ts).
-  const mediaFetcher = new LocalDirMediaFetcher({
-    baseDir: config.mediaOutboundDir,
-    maxBytes: config.mediaMaxBytes,
-  });
+  const mediaFetcher = selectMediaFetcher(config);
+  console.log(`[media] outbound mode: ${config.mediaMode}`);
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     ingestSecret: config.convexIngestSecret,

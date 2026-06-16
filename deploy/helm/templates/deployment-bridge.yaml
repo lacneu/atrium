@@ -43,6 +43,12 @@ spec:
             # --- your EXTERNAL OpenClaw gateway (values) ---
             - name: OPENCLAW_GATEWAY_URL
               value: {{ .Values.openclaw.gatewayUrl | quote }}
+            {{- if .Values.openclaw.gatewayHttpUrl }}
+            # gateway-http media base override (gateway's HTTP endpoint on a
+            # different host/port than the WS URL). Omitted => derived from gatewayUrl.
+            - name: OPENCLAW_GATEWAY_HTTP_URL
+              value: {{ .Values.openclaw.gatewayHttpUrl | quote }}
+            {{- end }}
             - name: OPENCLAW_INSTANCE_NAME
               value: {{ .Values.bridge.instanceName | quote }}
             - name: OPENCLAW_TOKEN
@@ -72,6 +78,13 @@ spec:
             - name: BRIDGE_PORT
               value: {{ .Values.bridge.port | quote }}
             {{- if .Values.bridge.media.enabled }}
+            # A media mount is wired -> select the shared-fs reader explicitly.
+            # (Without this the bridge defaults to gateway-http and would ignore
+            # the mount — silently losing outbound media if the gateway has no
+            # assistant-media endpoint.) Leave bridge.media.enabled=false to use
+            # the default gateway-http transport (no shared filesystem needed).
+            - name: OPENCLAW_MEDIA_MODE
+              value: shared-fs
             - name: OPENCLAW_MEDIA_OUTBOUND_DIR
               value: {{ .Values.bridge.media.mountPath | quote }}
             - name: OPENCLAW_MEDIA_MAX_MB
