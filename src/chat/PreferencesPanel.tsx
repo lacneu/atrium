@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "./convexApi";
+import { APP_HOST } from "@/lib/appHost";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
@@ -101,7 +102,7 @@ export function PreferencesPanel() {
   // Governance mode (admins only): hidden behind an explicit switch so the
   // everyday user view stays uncluttered.
   const [govMode, setGovMode] = useState(false);
-  const me = useQuery(api.me.getMe, {});
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const ui = me?.ui as UiState | undefined;
   const governing = canGovernPrefs(me?.role) && govMode;
   // OPTIMISTIC (shared updater): each checkbox flips instantly; the write + its

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -104,7 +105,7 @@ export function ChatSidebar({
   // MORE THAN ONE provider (today everything is OpenClaw → distinct kinds = 1 →
   // hidden; lights up automatically once Hermes chats exist). Gated ALSO by the
   // `showChatProvider` pref. Computed once here and threaded to each row.
-  const effectivePrefs = useQuery(api.me.getMe)?.ui?.effective as
+  const effectivePrefs = useQuery(api.me.getMe, { host: APP_HOST })?.ui?.effective as
     | Record<string, boolean>
     | undefined;
   const showProviderPref = effectivePrefs?.showChatProvider ?? true;
@@ -544,7 +545,7 @@ function ChatItem({
   // getMe is deduped by Convex across every item — one shared subscription.
   const showAge =
     (
-      useQuery(api.me.getMe)?.ui?.effective as
+      useQuery(api.me.getMe, { host: APP_HOST })?.ui?.effective as
         | Record<string, boolean>
         | undefined
     )?.showChatAge ?? true;

@@ -276,23 +276,25 @@ describe("assign/remove chart to group", () => {
 // ===========================================================================
 
 describe("resolveChart precedence", () => {
-  test("PURE: user pick > admin default > null", async () => {
+  // Signature: resolveChart(userKey, domainDefault, adminDefault, availableKeys,
+  // domainAvailable). Precedence: user > domain > admin > code.
+  test("PURE: user pick > domain > admin default > null", async () => {
     const available = new Set([FIRST_KEY, SECOND_KEY]);
 
     // 1) User pick available -> source "user".
-    expect(resolveChart(FIRST_KEY, SECOND_KEY, available)).toEqual({
+    expect(resolveChart(FIRST_KEY, null, SECOND_KEY, available, false)).toEqual({
       chartKey: FIRST_KEY,
       source: "user",
     });
 
     // 2) No user pick, admin default set -> source "common/admin".
-    expect(resolveChart(null, SECOND_KEY, available)).toEqual({
+    expect(resolveChart(null, null, SECOND_KEY, available, false)).toEqual({
       chartKey: SECOND_KEY,
       source: "common/admin",
     });
 
     // 3) Neither -> null/"code".
-    expect(resolveChart(null, null, available)).toEqual({
+    expect(resolveChart(null, null, null, available, false)).toEqual({
       chartKey: null,
       source: "code",
     });
@@ -304,8 +306,38 @@ describe("resolveChart precedence", () => {
     // ignored availability would return {FIRST_KEY,"user"}.
     const availableWithoutUserPick = new Set([SECOND_KEY]);
     expect(
-      resolveChart(FIRST_KEY, SECOND_KEY, availableWithoutUserPick),
+      resolveChart(FIRST_KEY, null, SECOND_KEY, availableWithoutUserPick, false),
     ).toEqual({ chartKey: SECOND_KEY, source: "common/admin" });
+  });
+
+  test("PURE (domain tier): applies when available, skipped when group-gated, loses to user pick, beats admin", async () => {
+    const available = new Set([FIRST_KEY]);
+    const DOMAIN = "dom-key";
+    const ADMIN = "adm-key";
+
+    // domain default applies when available (no user pick) AND beats admin default.
+    expect(resolveChart(null, DOMAIN, ADMIN, available, true)).toEqual({
+      chartKey: DOMAIN,
+      source: "domain",
+    });
+
+    // domain SKIPPED when not available (group-gated, non-member) -> admin default.
+    expect(resolveChart(null, DOMAIN, ADMIN, available, false)).toEqual({
+      chartKey: ADMIN,
+      source: "common/admin",
+    });
+
+    // a valid user pick beats the domain default.
+    expect(resolveChart(FIRST_KEY, DOMAIN, ADMIN, available, true)).toEqual({
+      chartKey: FIRST_KEY,
+      source: "user",
+    });
+
+    // domain default, no admin default -> domain (not native).
+    expect(resolveChart(null, DOMAIN, null, available, true)).toEqual({
+      chartKey: DOMAIN,
+      source: "domain",
+    });
   });
 
   test("WIRING (getMe): a user whose restricted pick became unavailable resolves to the admin default", async () => {
@@ -525,3 +557,7 @@ describe("isChartAvailableToUser (bounded reachability truth table)", () => {
     expect(await avail(member, "does-not-exist")).toBe(false);
   });
 });
+
+// NOTE: setChartLogo's input guards (oversized / non-image) + authorization are
+// covered in convex/chartsDomain.test.ts ("setChartLogo (server-side store)"),
+// which exercises the current bytes-in / server-stores-the-blob flow.

@@ -8,6 +8,34 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.1.6] — Per-domain branding and a self-healing bridge
+
+Feature + reliability release. No breaking changes; no data migration.
+
+- **Brand each hostname with its own chart — sign-in screen included.** An admin can
+  now map a domain (an exact `chat.acme.com` or a wildcard `*.acme.com`) to any public
+  chart from Settings › Appearance. Atrium then applies that chart as the default on
+  that host *before* sign-in, so a multi-domain self-host shows the right palette and
+  logo on the login screen, not just after authentication. A signed-in user's own
+  chart — and any chart shared through their groups — still takes precedence over the
+  domain default.
+- **Per-chart logo and name in the top bar.** The active chart now drives the top-bar
+  brand: the bundled Atrium mark by default, or a custom name and uploaded logo
+  (separate light/dark variants) for a custom chart. Logos are uploaded from
+  Settings › Appearance › My charts; the server validates the image and stores it
+  itself (PNG or WebP), then serves it as a plain image URL — the browser never hands
+  the server a storage handle to delete.
+- **The bridge survives a single error — no restart needed.** A process-level safety
+  net stops one unhandled error from taking the whole bridge down, and the streaming
+  loop now self-heals: if its connection machinery throws, the bridge closes and
+  reconnects on the next message and finalizes any in-flight turn as aborted, instead
+  of leaving that message stuck "thinking" forever. It also fails fast on boot if it
+  cannot bind its port, rather than coming up half-started.
+- **Deployment.** This release changes the Convex backend, the frontend, and the
+  bridge image; redeploy all three together — the per-domain default couples the
+  Convex backend and the frontend. No new environment variables and no data
+  migration: domain mappings simply start empty.
+
 ## [0.1.5] — Sending a file no longer fails after a session roll
 
 Corrective release (hotfix). No breaking changes; no migration.

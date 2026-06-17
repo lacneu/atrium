@@ -16,6 +16,10 @@ import { GatewayHttpMediaFetcher } from "./core/gateway-http-media-fetcher.js";
 import { HealthRegistry } from "./core/health.js";
 import { SessionRegistry } from "./session.js";
 import { createBridgeServer } from "./server.js";
+import {
+  installProcessSafetyNet,
+  installServerFailFast,
+} from "./core/safety-net.js";
 
 /**
  * Pick the outbound-media fetcher per OPENCLAW_MEDIA_MODE. DEFAULT "gateway-http"
@@ -58,8 +62,19 @@ function main(): void {
   const health = new HealthRegistry(Date.now());
   const server = createBridgeServer({ config, registry, health });
 
+  // A listen/bind failure must FAIL FAST so the supervisor restarts and the failure
+  // surfaces: an ASYNC `error` event (EADDRINUSE / EACCES) is claimed here and
+  // exits; a SYNCHRONOUS server.listen() throw (e.g. an out-of-range port ->
+  // ERR_SOCKET_BAD_PORT) propagates uncaught and exits because the process safety
+  // net is NOT armed until we are actually listening (below).
+  installServerFailFast(server);
+
   server.listen(config.port, () => {
     console.log(`bridge listening on :${config.port}`);
+    // Arm the last-resort net ONLY now, with a live listener: a stray RUNTIME error
+    // must never take the bridge down, while every BOOT-phase error above still
+    // fails fast (uncaught -> exit -> restart) rather than being swallowed.
+    installProcessSafetyNet();
   });
 
   let shuttingDown = false;

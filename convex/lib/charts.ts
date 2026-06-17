@@ -337,7 +337,7 @@ export function builtinChart(key: string): BuiltinChart | undefined {
 // ===========================================================================
 
 /** Where a resolved chart key came from. "code" = native index.css default. */
-export type ChartSource = "user" | "common/admin" | "code";
+export type ChartSource = "user" | "domain" | "common/admin" | "code";
 
 /** The outcome of resolving the effective chart for a user. */
 export type ResolvedChart = {
@@ -348,22 +348,29 @@ export type ResolvedChart = {
 /**
  * Resolve the EFFECTIVE chart key with precedence:
  *   1. the user's own pick, IF it is still available to them -> "user";
- *   2. else the admin global default, if set -> "common/admin";
- *   3. else null (native look) -> "code".
+ *   2. else the DOMAIN default (charte par domaine), IF it is available to the
+ *      user (the domain×group junction) -> "domain";
+ *   3. else the admin global default, if set -> "common/admin";
+ *   4. else null (native look) -> "code".
  *
- * `availableKeys` is the set of chart keys offered to the user (computed
- * server-side from group memberships). The user's pick is dropped when it is no
- * longer available (e.g. a restricted chart whose group access was removed). The
- * admin default is applied WITHOUT an availability check — it is a deliberate
- * global choice; this matches the spec contract.
+ * `availableKeys` is the set offered to the user (from group memberships); the
+ * user's pick is dropped when no longer available. `domainAvailable` is the
+ * pre-computed junction result for the domain default (isChartAvailableToUser):
+ * common -> all; group-restricted -> members only. The admin GLOBAL default is
+ * applied WITHOUT an availability check (a deliberate global choice).
  */
 export function resolveChart(
   userKey: string | null | undefined,
+  domainDefault: string | null | undefined,
   adminDefault: string | null | undefined,
   availableKeys: ReadonlySet<string>,
+  domainAvailable: boolean,
 ): ResolvedChart {
   if (userKey && availableKeys.has(userKey)) {
     return { chartKey: userKey, source: "user" };
+  }
+  if (domainDefault && domainAvailable) {
+    return { chartKey: domainDefault, source: "domain" };
   }
   if (adminDefault) {
     return { chartKey: adminDefault, source: "common/admin" };

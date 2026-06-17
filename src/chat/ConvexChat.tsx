@@ -20,6 +20,7 @@ import { useQuery, useMutation, useConvex } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { APP_HOST } from "@/lib/appHost";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import {
   transcriptToMarkdown,
@@ -125,7 +126,7 @@ export function ConvexChat({ chatId }: ConvexChatProps) {
   // single path (setUiPref), so it stays consistent with the Préférences panel.
   // `showTools` semantics: whether the ToolActivity DETAIL starts expanded —
   // the summary line is always visible (no more invisible tool-heavy turns).
-  const me = useQuery(api.me.getMe);
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const ui = (me?.ui?.effective as UiEffective | undefined) ?? DEFAULT_UI;
   const showTools = ui.showTools;
   // OPTIMISTIC (shared updater — see uiPrefOptimistic.ts): the toggle flips in the

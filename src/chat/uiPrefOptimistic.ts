@@ -1,5 +1,6 @@
 import type { OptimisticLocalStore } from "convex/browser";
 import { api } from "./convexApi";
+import { APP_HOST } from "@/lib/appHost";
 
 // Shared OPTIMISTIC updater for me.setUiPref — used by BOTH the composer's
 // "Outils" quick toggle (ConvexChat) and the Settings > Preferences checkboxes
@@ -15,7 +16,7 @@ export function uiPrefOptimisticUpdate(
   store: OptimisticLocalStore,
   { key, value }: { key: string; value: boolean | null },
 ): void {
-  const cur = store.getQuery(api.me.getMe, {});
+  const cur = store.getQuery(api.me.getMe, { host: APP_HOST });
   if (!cur?.ui) return;
   const effective = { ...cur.ui.effective };
   const userOverrides = { ...cur.ui.userOverrides };
@@ -31,7 +32,7 @@ export function uiPrefOptimisticUpdate(
   }
   store.setQuery(
     api.me.getMe,
-    {},
+    { host: APP_HOST },
     { ...cur, ui: { ...cur.ui, effective, userOverrides } },
   );
 }

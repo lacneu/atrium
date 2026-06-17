@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -177,7 +178,7 @@ function SortableTab({ tab, active }: { tab: Tab; active: boolean }) {
 // group's tabs this user may open, in their custom order. Mounted by the
 // settings-layout route (router.tsx) above the tab content.
 export function SettingsTabBar() {
-  const me = useQuery(api.me.getMe);
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const saveOrder = useMutation(api.me.setSettingsTabOrder);
   const pathname = useLocation({ select: (l) => l.pathname });
   const activeTab = tabFromPathname(pathname);
@@ -257,7 +258,7 @@ export function SettingsTabBar() {
 // Settings): the 4 groups, each visible only when it contains >=1 allowed tab.
 // Clicking a group opens its first allowed tab (in the user's custom order).
 export function SettingsNav() {
-  const me = useQuery(api.me.getMe);
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const navigate = useNavigate();
   const pathname = useLocation({ select: (l) => l.pathname });
   const activeTab = tabFromPathname(pathname);

@@ -85,7 +85,9 @@ describe("admin.deleteUser", () => {
       asUser(t, caller.uid).mutation(api.admin.deleteUser, {
         profileId: victim.profileId,
       }),
-    ).rejects.toThrow();
+      // Specific matcher (requireAdmin): the rejection is the RBAC gate, not an
+      // incidental error that would mask a removed gate.
+    ).rejects.toThrow(/admin/i);
     // The victim survived (the gate fired before any write).
     expect(await t.run((ctx) => ctx.db.get(victim.profileId))).not.toBeNull();
   });

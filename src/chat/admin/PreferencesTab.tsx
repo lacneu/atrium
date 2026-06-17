@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../convexApi";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,7 @@ import { PreferencesPanel } from "../PreferencesPanel";
 // Visible to ALL approved users — the account menu now only carries theme mode +
 // sign out.
 export function PreferencesTab() {
-  const me = useQuery(api.me.getMe, {}) as
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as
     | { locale: Locale | null; name: string | null }
     | undefined;
   const setLocale = useMutation(api.me.setLocale);

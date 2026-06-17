@@ -87,7 +87,11 @@ describe("admin.setUserName", () => {
         profileId: victim.profileId,
         name: "hacked",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/forbidden/i); // the RBAC gate, not an incidental error
+    // The gate fired before any write: the victim's name was NOT changed.
+    expect(
+      (await t.run((ctx) => ctx.db.get(victim.profileId)))?.name,
+    ).not.toBe("hacked");
   });
 });
 
@@ -155,6 +159,10 @@ describe("apiKeys.updateServiceAccount", () => {
         serviceAccountId: id,
         name: "pwned",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/forbidden/i); // the RBAC gate, not an incidental error
+    // The gate fired before any write: the account name was NOT changed.
+    expect(
+      (await t.run((ctx) => ctx.db.get(id)))?.name,
+    ).not.toBe("pwned");
   });
 });

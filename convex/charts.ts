@@ -20,11 +20,15 @@
 
 import { v } from "convex/values";
 import {
+  action,
+  internalMutation,
+  internalQuery,
   mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   getActor,
@@ -47,6 +51,7 @@ import {
   validateChartImport,
   validateChartTokens,
 } from "./lib/chartValidation";
+import { hostCandidates, normalizeDomain } from "./lib/domains";
 
 const APP_META_KEY = "singleton";
 
@@ -352,6 +357,148 @@ export async function resolveChartTokens(
   return (custom?.tokens as ChartTokens | undefined) ?? null;
 }
 
+/**
+ * The brand shown in the top bar. Two logo URLs (one per theme mode); the client
+ * picks by the active mode. `isDefault` = the app's own identity (native / builtin
+ * demo / dangling key) -> the client shows the bundled Atrium mark. For a CUSTOM
+ * chart `isDefault` is false: the client shows the mode's uploaded logo IF one
+ * exists (falling back to the other mode's), otherwise the LABEL ALONE -- never
+ * the Atrium mark next to a custom name.
+ */
+export type ChartBrand = {
+  label: string;
+  logoLightUrl: string | null;
+  logoDarkUrl: string | null;
+  isDefault: boolean;
+};
+
+/** The default (no chart / builtin demo palette / dangling key) brand. */
+export const DEFAULT_BRAND: ChartBrand = {
+  label: "Atrium",
+  logoLightUrl: null,
+  logoDarkUrl: null,
+  isDefault: true,
+};
+
+/**
+ * Resolve BOTH the tokens and the brand for `chartKey` in a SINGLE custom-row
+ * read (getMe is a hot path -- do not re-read with a second getCustomChartByKey).
+ * - null / builtin (demo palettes are not brands) => native tokens + DEFAULT_BRAND
+ * - custom => its tokens + { label: name, logoUrl: getUrl(logoStorageId) | null }
+ * A null `logoUrl` (unset or dangling blob) tells the client to use the bundled
+ * Atrium mark. Only the single ACTIVE chart row is read, so getMe subscribes to
+ * just that chart (its logo change re-renders the top bar) -- never enumerate.
+ */
+export async function resolveChartView(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string | null,
+): Promise<{ tokens: ChartTokens | null; brand: ChartBrand }> {
+  if (chartKey === null) return { tokens: null, brand: DEFAULT_BRAND };
+  const builtin = builtinChart(chartKey);
+  if (builtin !== undefined) {
+    return { tokens: builtin.tokens, brand: DEFAULT_BRAND };
+  }
+  const custom = await getCustomChartByKey(ctx, chartKey);
+  if (custom === null) return { tokens: null, brand: DEFAULT_BRAND };
+  const logoLightUrl = custom.logoLightStorageId
+    ? await ctx.storage.getUrl(custom.logoLightStorageId)
+    : null;
+  const logoDarkUrl = custom.logoDarkStorageId
+    ? await ctx.storage.getUrl(custom.logoDarkStorageId)
+    : null;
+  return {
+    tokens: (custom.tokens as ChartTokens | undefined) ?? null,
+    // Custom chart: its own label; per-mode logos ONLY if uploaded (else label
+    // alone -- isDefault:false tells the client NOT to fall back to the Atrium mark).
+    brand: { label: custom.name, logoLightUrl, logoDarkUrl, isDefault: false },
+  };
+}
+
+/**
+ * Resolve the DOMAIN-default chart KEY for a request `host`, or null. Tries the
+ * host's lookup keys MOST-SPECIFIC FIRST (exact, then wildcards) as bounded
+ * point-reads on `by_domain` -- NEVER a scan, so this stays cheap on the getMe
+ * hot path and subscribes only to the host's specific domain keys. (host is
+ * client-asserted via location.hostname; safe because the group junction still
+ * gates whether the resolved chart actually applies to the user.)
+ */
+export async function resolveDomainChartKey(
+  ctx: QueryCtx | MutationCtx,
+  host: string | undefined,
+): Promise<string | null> {
+  if (!host) return null;
+  for (const candidate of hostCandidates(host)) {
+    const row = await ctx.db
+      .query("chartDomains")
+      .withIndex("by_domain", (q) => q.eq("domain", candidate))
+      .unique();
+    if (row !== null) return row.chartKey;
+  }
+  return null;
+}
+
+/** True if a chart key has >= 1 groupCharts row (restricted to those groups). */
+async function chartIsGroupRestricted(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("groupCharts")
+    .withIndex("by_chart", (q) => q.eq("chartKey", chartKey))
+    .first();
+  return row !== null;
+}
+
+/**
+ * True if a chart may be shown to ANONYMOUS visitors (the pre-auth brandForHost
+ * path). A chart is publicly exposable ONLY when it is a builtin OR a custom chart
+ * promoted to scope "common" -- a "personal" chart is owner-private and must NEVER
+ * leak its name/logo/tokens to anonymous visitors of its domain (getMe also refuses
+ * it to non-owners post-auth, so exposing it pre-auth would both leak a private
+ * brand and cause a login->app visual flip). Group-restricted charts are also
+ * excluded (a group cannot be evaluated without a user).
+ */
+async function chartIsPubliclyExposable(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<boolean> {
+  // Builtin: public IFF not group-restricted -- a builtin's groupCharts rows ARE
+  // its restriction (zero rows = common, >=1 = members-only).
+  if (builtinChart(chartKey) !== undefined) {
+    return !(await chartIsGroupRestricted(ctx, chartKey));
+  }
+  // Custom: ONLY a "common"-scoped custom is public, and it STAYS public even when
+  // it still carries STALE groupCharts rows from before it was promoted -- this
+  // mirrors availableChartsForUser, which offers a common custom to ALL users
+  // regardless of those rows. (Without this, a promoted-common chart would paint
+  // the app for everyone via getMe but fall back to the Atrium mark pre-auth,
+  // re-introducing a login->app flip.) A "personal" custom is owner/group-only and
+  // can never be evaluated without a user, so it is never exposable pre-auth.
+  const custom = await getCustomChartByKey(ctx, chartKey);
+  return custom !== null && custom.scope === "common";
+}
+
+/**
+ * PUBLIC, PRE-AUTH: the brand + tokens to paint the LOGIN at `host` (charte par
+ * domaine). Returns the domain chart's view IF it is mapped AND not group-
+ * restricted (a group can't be evaluated without a user, so a member-only chart
+ * must NOT leak its brand to anonymous visitors). Otherwise the app default. A few
+ * bounded point-reads + one by_chart probe -- no scan, no auth.
+ */
+export const brandForHost = query({
+  args: { host: v.optional(v.string()) },
+  handler: async (ctx, { host }) => {
+    const key = await resolveDomainChartKey(ctx, host);
+    // Only a TRULY PUBLIC chart (builtin / common) may paint an anonymous login;
+    // a personal or group-restricted chart falls back to the app default so its
+    // brand never leaks pre-auth (see chartIsPubliclyExposable).
+    if (key === null || !(await chartIsPubliclyExposable(ctx, key))) {
+      return { tokens: null, brand: DEFAULT_BRAND };
+    }
+    return await resolveChartView(ctx, key);
+  },
+});
+
 async function readAppMeta(ctx: QueryCtx | MutationCtx) {
   return await ctx.db
     .query("appMeta")
@@ -384,7 +531,23 @@ export const listMyCharts = query({
         c.via === "owner"
           ? await restrictionGroupsForKey(ctx, c.key)
           : null;
-      out.push({ ...c, restrictedToGroups });
+      // Owner-managed rows also surface the current per-mode brand-logo URLs (for
+      // the preview + remove controls). Rare, user-initiated call -> the extra
+      // reads are fine (NOT the getMe hot path).
+      let logoLightUrl: string | null = null;
+      let logoDarkUrl: string | null = null;
+      let domains: string[] = [];
+      if (c.via === "owner" && c.chartId !== undefined) {
+        const doc = await ctx.db.get(c.chartId);
+        if (doc?.logoLightStorageId) {
+          logoLightUrl = await ctx.storage.getUrl(doc.logoLightStorageId);
+        }
+        if (doc?.logoDarkStorageId) {
+          logoDarkUrl = await ctx.storage.getUrl(doc.logoDarkStorageId);
+        }
+        domains = await domainsForChart(ctx, c.key);
+      }
+      out.push({ ...c, restrictedToGroups, logoLightUrl, logoDarkUrl, domains });
     }
     return out;
   },
@@ -475,6 +638,10 @@ type AdminChartRow = {
     key: string;
     name: string;
   }> | null;
+  // Domains mapped to this chart (charte par domaine). The admin UI renders the
+  // domain editor from this, so PUBLIC charts (builtins / common customs) are
+  // configurable — not just the owner's personal charts.
+  domains: string[];
   isGlobalDefault: boolean;
 };
 
@@ -502,6 +669,7 @@ export const listChartsAdmin = query({
         scope: "common",
         ownerLabel: null,
         restrictedToGroups: await restrictionGroupsForKey(ctx, chart.key),
+        domains: await domainsForChart(ctx, chart.key),
         isGlobalDefault: globalDefault === chart.key,
       });
     }
@@ -525,6 +693,7 @@ export const listChartsAdmin = query({
         scope: chart.scope,
         ownerLabel,
         restrictedToGroups: await restrictionGroupsForKey(ctx, chart.key),
+        domains: await domainsForChart(ctx, chart.key),
         isGlobalDefault: globalDefault === chart.key,
       });
     }
@@ -722,7 +891,7 @@ export const removeChartFromGroup = mutation({
  * auth). Returns the chart doc.
  */
 async function authorizeChartWrite(
-  ctx: MutationCtx,
+  ctx: QueryCtx | MutationCtx,
   chartId: Id<"charts">,
   effectiveUserId: Id<"users">,
 ): Promise<Doc<"charts">> {
@@ -867,6 +1036,18 @@ export const deleteChart = mutation({
     const actor = await getActor(ctx);
     const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
     await purgeGroupChartsByKey(ctx, chart.key);
+    // Cascade: domain mappings for this chart.
+    for (const row of await ctx.db
+      .query("chartDomains")
+      .withIndex("by_chart", (q) => q.eq("chartKey", chart.key))
+      .collect()) {
+      await ctx.db.delete(row._id);
+    }
+    // Delete both brand-logo blobs too (cascade) so they cannot orphan in storage.
+    if (chart.logoLightStorageId)
+      await ctx.storage.delete(chart.logoLightStorageId);
+    if (chart.logoDarkStorageId)
+      await ctx.storage.delete(chart.logoDarkStorageId);
     // Clear a dangling admin global default (bypasses the availability check).
     const meta = await readAppMeta(ctx);
     if (meta !== null && meta.defaultThemeName === chart.key) {
@@ -877,6 +1058,135 @@ export const deleteChart = mutation({
       resource: "chart",
       resourceId: chart.key,
     });
+  },
+});
+
+// Brand logos are small (client-normalized WebP); bound the upload anyway.
+const MAX_LOGO_BYTES = 1024 * 1024; // 1 MiB
+/** Theme mode a logo belongs to. */
+const logoMode = v.union(v.literal("light"), v.literal("dark"));
+
+/** Magic-byte sniff: accept ONLY what the client produces (WebP / PNG). */
+/** The actual image MIME of a logo blob from its MAGIC BYTES — "image/png" |
+ *  "image/webp" | null (anything else is rejected). The client's declared type is
+ *  untrusted (and processLogoImage may emit PNG as a WebP-encode fallback), so the
+ *  STORED Content-Type is derived HERE and not assumed. */
+export function detectLogoMime(
+  b: Uint8Array,
+): "image/png" | "image/webp" | null {
+  const isPng =
+    b.length >= 8 &&
+    b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
+    b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
+  if (isPng) return "image/png";
+  const isWebp =
+    b.length >= 12 &&
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && // "RIFF"
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50; // "WEBP"
+  if (isWebp) return "image/webp";
+  return null;
+}
+
+/**
+ * Authorize a chart-logo edit. Pre-flight for the setChartLogo ACTION (which cannot
+ * use ctx.db): runs with the caller's identity (runQuery propagates auth) and THROWS
+ * (forbidden / chart not found) BEFORE the action stores any bytes, so an
+ * unauthorized caller never mints an orphan blob.
+ */
+export const assertCanSetChartLogo = internalQuery({
+  args: { chartId: v.id("charts") },
+  handler: async (ctx, { chartId }) => {
+    const actor = await getActor(ctx);
+    await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
+  },
+});
+
+/**
+ * Persist a SERVER-STORED logo blob for one theme `mode`. INTERNAL: only reachable
+ * from the setChartLogo action, which minted `storageId` itself via
+ * ctx.storage.store. Because that id is server-minted and dedicated to THIS logo
+ * (never client-provided, never shared with a message attachment or another chart),
+ * deleting the PREVIOUS blob for this mode here is always safe — it can only ever be
+ * another single-use logo blob. RBAC = authorizeChartWrite.
+ */
+export const persistChartLogo = internalMutation({
+  args: { chartId: v.id("charts"), storageId: v.id("_storage"), mode: logoMode },
+  handler: async (ctx, { chartId, storageId, mode }) => {
+    const actor = await getActor(ctx);
+    const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
+    const prev =
+      mode === "light" ? chart.logoLightStorageId : chart.logoDarkStorageId;
+    if (prev && prev !== storageId) await ctx.storage.delete(prev);
+    await ctx.db.patch(
+      chart._id,
+      mode === "light"
+        ? { logoLightStorageId: storageId }
+        : { logoDarkStorageId: storageId },
+    );
+    await auditImpersonated(ctx, actor, "chart.setLogo", {
+      resource: "chart",
+      resourceId: `${chart.key}:${mode}`,
+    });
+  },
+});
+
+/**
+ * Set a chart's brand logo for `mode` from the RAW WebP bytes the client produced
+ * (processLogoImage normalizes any input to a small, bounded WebP). An ACTION so it
+ * can ctx.storage.store the bytes SERVER-SIDE: the resulting storageId is minted by
+ * the server and dedicated to THIS single logo — NEVER supplied by the client. That
+ * is what makes the logo flow free of the IDOR / shared-blob data-loss class: there
+ * is no client storageId to alias onto another chart, reuse from a message
+ * attachment, or replay across users, so a later remove/replace/deleteChart can only
+ * ever delete a blob this logo alone owns. The bytes are magic-byte validated (the
+ * declared type is untrusted) and size-capped BEFORE storing. The logo is only ever
+ * rendered via <img src>, so it can never execute script regardless.
+ */
+export const setChartLogo = action({
+  args: { chartId: v.id("charts"), bytes: v.bytes(), mode: logoMode },
+  handler: async (ctx, { chartId, bytes, mode }) => {
+    // Authorize BEFORE storing so an unauthorized caller never mints an orphan blob.
+    await ctx.runQuery(internal.charts.assertCanSetChartLogo, { chartId });
+    if (bytes.byteLength > MAX_LOGO_BYTES) {
+      throw new Error("Image trop volumineuse");
+    }
+    // Validate AND derive the real MIME from the magic bytes, so a PNG (the WebP-
+    // encode fallback) is stored + served with the correct Content-Type, not webp.
+    const contentType = detectLogoMime(new Uint8Array(bytes));
+    if (contentType === null) {
+      throw new Error("Format d'image non valide (WebP ou PNG attendu)");
+    }
+    // Server-minted, single-use storageId (see the function doc) — no client id.
+    const storageId = await ctx.storage.store(new Blob([bytes], { type: contentType }));
+    await ctx.runMutation(internal.charts.persistChartLogo, {
+      chartId,
+      storageId,
+      mode,
+    });
+  },
+});
+
+/** Remove a chart's brand logo for one `mode` (deletes the blob + clears it). */
+export const removeChartLogo = mutation({
+  args: { chartId: v.id("charts"), mode: logoMode },
+  handler: async (ctx, { chartId, mode }) => {
+    const actor = await getActor(ctx);
+    const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
+    const prev =
+      mode === "light" ? chart.logoLightStorageId : chart.logoDarkStorageId;
+    if (prev) {
+      await ctx.storage.delete(prev);
+      await ctx.db.patch(
+        chart._id,
+        mode === "light"
+          ? { logoLightStorageId: undefined }
+          : { logoDarkStorageId: undefined },
+      );
+      await auditImpersonated(ctx, actor, "chart.removeLogo", {
+        resource: "chart",
+        resourceId: `${chart.key}:${mode}`,
+      });
+    }
   },
 });
 
@@ -906,5 +1216,79 @@ export const promoteChartToCommon = mutation({
   },
 });
 
+/** The domains mapped to a chart (admin display). Bounded by_chart read. */
+async function domainsForChart(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<string[]> {
+  const rows = await ctx.db
+    .query("chartDomains")
+    .withIndex("by_chart", (q) => q.eq("chartKey", chartKey))
+    .collect();
+  return rows.map((r) => r.domain);
+}
+
+/**
+ * Map a domain to a chart (charte par domaine). Admin ONLY. Normalizes the domain
+ * (convex/lib/domains) and REJECTS one already mapped to ANOTHER chart -- a
+ * duplicate `by_domain` row would make resolution's `.unique()` throw for every
+ * visitor of that host. Verifies the chart exists (builtin OR custom). Idempotent.
+ */
+export const addChartDomain = mutation({
+  args: { chartKey: v.string(), domain: v.string() },
+  handler: async (ctx, { chartKey, domain }) => {
+    await requirePermission(ctx, PERMISSIONS.CHARTS_MANAGE);
+    const actor = await getActor(ctx);
+    if (
+      !BUILTIN_CHART_KEYS.has(chartKey) &&
+      (await getCustomChartByKey(ctx, chartKey)) === null
+    ) {
+      throw new Error("Not found: chart");
+    }
+    const norm = normalizeDomain(domain);
+    if (norm === null) throw new Error("Domaine invalide");
+    const existing = await ctx.db
+      .query("chartDomains")
+      .withIndex("by_domain", (q) => q.eq("domain", norm))
+      .unique();
+    if (existing !== null) {
+      if (existing.chartKey === chartKey) return; // idempotent
+      throw new Error("Ce domaine est déjà associé à une autre charte");
+    }
+    await ctx.db.insert("chartDomains", {
+      chartKey,
+      domain: norm,
+      createdBy: actor.realUserId,
+      createdAt: Date.now(),
+    });
+    await auditImpersonated(ctx, actor, "chart.addDomain", {
+      resource: "chart",
+      resourceId: `${chartKey}:${norm}`,
+    });
+  },
+});
+
+/** Unmap a domain from a chart. Admin ONLY. Idempotent. */
+export const removeChartDomain = mutation({
+  args: { chartKey: v.string(), domain: v.string() },
+  handler: async (ctx, { chartKey, domain }) => {
+    await requirePermission(ctx, PERMISSIONS.CHARTS_MANAGE);
+    const actor = await getActor(ctx);
+    const norm = normalizeDomain(domain) ?? domain;
+    const row = await ctx.db
+      .query("chartDomains")
+      .withIndex("by_domain", (q) => q.eq("domain", norm))
+      .unique();
+    if (row !== null && row.chartKey === chartKey) {
+      await ctx.db.delete(row._id);
+      await auditImpersonated(ctx, actor, "chart.removeDomain", {
+        resource: "chart",
+        resourceId: `${chartKey}:${norm}`,
+      });
+    }
+  },
+});
+
 // Re-export the resolution source type so callers (me.ts) get it from one place.
 export type { ChartSource };
+export { domainsForChart };

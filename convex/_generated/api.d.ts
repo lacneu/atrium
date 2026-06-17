@@ -44,6 +44,7 @@ import type * as lib_chartValidation from "../lib/chartValidation.js";
 import type * as lib_charts from "../lib/charts.js";
 import type * as lib_chatRenderState from "../lib/chatRenderState.js";
 import type * as lib_compat from "../lib/compat.js";
+import type * as lib_domains from "../lib/domains.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
 import type * as lib_rbac from "../lib/rbac.js";
@@ -106,6 +107,7 @@ declare const fullApi: ApiFromModules<{
   "lib/charts": typeof lib_charts;
   "lib/chatRenderState": typeof lib_chatRenderState;
   "lib/compat": typeof lib_compat;
+  "lib/domains": typeof lib_domains;
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
   "lib/rbac": typeof lib_rbac;

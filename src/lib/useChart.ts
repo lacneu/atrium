@@ -74,7 +74,10 @@ function applyChartTokens(
   mode: "light" | "dark",
 ) {
   const style = document.documentElement.style;
-  const colors = tokens?.colors[mode];
+  // `?.colors?.` (not just `tokens?.colors`): a malformed/legacy token object
+  // (e.g. `{}` from a stale brand cache) is non-null but has no `colors`, so a
+  // bare `tokens?.colors[mode]` would deref undefined and crash the (login) paint.
+  const colors = tokens?.colors?.[mode];
   for (const token of COLOR_TOKENS) {
     const value = colors?.[token];
     if (value !== undefined) {

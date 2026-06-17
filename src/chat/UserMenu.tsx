@@ -2,6 +2,7 @@ import { useMutation } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { ChevronDown, LogOut, Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { APP_HOST } from "@/lib/appHost";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,13 +41,13 @@ export function UserMenu({
   // cascade — on a constrained backend that's the "have to click several times" lag.
   const setThemeMode = useMutation(api.me.setThemeMode).withOptimisticUpdate(
     (store, { mode }) => {
-      const cur = store.getQuery(api.me.getMe, {});
+      const cur = store.getQuery(api.me.getMe, { host: APP_HOST });
       if (!cur) return;
       const resolved =
         mode !== null ? mode : (cur.defaultThemeMode ?? "system");
       store.setQuery(
         api.me.getMe,
-        {},
+        { host: APP_HOST },
         { ...cur, themeMode: mode, resolvedThemeMode: resolved },
       );
     },

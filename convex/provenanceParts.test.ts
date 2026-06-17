@@ -150,7 +150,9 @@ describe("getProvenanceParts — bounded on-demand detail", () => {
       intruder.as.query(api.messages.getProvenanceParts, {
         messageId: messageId as Id<"messages">,
       }),
-    ).rejects.toThrow();
+      // Read-only query (no side effect to negate) -> a specific matcher is the
+      // sole guard: pin the IDOR gate so an unrelated earlier throw can't mask it.
+    ).rejects.toThrow(/not owned/i);
 
     const { owner: owner2, messageId: gone } = await seedMessageWithProvenance(t);
     await t.run((ctx) => ctx.db.delete(gone as Id<"messages">));

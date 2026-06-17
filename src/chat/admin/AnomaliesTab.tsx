@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { api } from "../convexApi";
@@ -123,7 +124,7 @@ export function AnomaliesTab() {
   // requireAdmin). A non-admin granted only `anomalies.read` can VIEW anomalies
   // but must not see actions that would 403 — hide them. (admin.manage is held
   // by admins via the wildcard.)
-  const me = useQuery(api.me.getMe);
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const canResolve = (me?.permissions ?? []).includes("admin.manage");
 
   const rows = useQuery(api.anomalies.listAnomalies, {

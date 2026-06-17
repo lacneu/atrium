@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { m } from "@/paraglide/messages.js";
@@ -288,7 +289,7 @@ export function UsersTab() {
       role: role === ALL ? undefined : role,
     },
   });
-  const me = useQuery(api.me.getMe);
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
   const setRole = useMutation(api.admin.setRole);
   const setPerms = useMutation(api.admin.setUserPermissions);
   const startImpersonation = useMutation(api.admin.startImpersonation);

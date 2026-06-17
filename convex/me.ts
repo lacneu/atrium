@@ -33,7 +33,11 @@ import {
   type UiPrefsObject,
 } from "./lib/uiPrefs";
 import { resolveChart } from "./lib/charts";
-import { isChartAvailableToUser, resolveChartTokens } from "./charts";
+import {
+  isChartAvailableToUser,
+  resolveChartView,
+  resolveDomainChartKey,
+} from "./charts";
 
 const APP_META_KEY = "singleton";
 
@@ -93,8 +97,12 @@ export const authProviders = query({
 });
 
 export const getMe = query({
-  args: {},
-  handler: async (ctx) => {
+  // `host` = the client's location.hostname (charte par domaine). Optional +
+  // client-asserted (Convex can't read the WS Host); safe because the domain
+  // default still passes through the group junction below. ALL callers must pass
+  // the SAME host so this stays a single subscription (see src/lib/appHost).
+  args: { host: v.optional(v.string()) },
+  handler: async (ctx, { host }) => {
     const userId = await requireUserId(ctx);
     const profile = await getProfile(ctx, userId);
     const meta = await readAppMeta(ctx);
@@ -118,19 +126,31 @@ export const getMe = query({
     ) {
       availableChartKeys.add(userChartKey);
     }
+    // Charte par domaine: the chart mapped to the request host (bounded indexed
+    // point-reads, no scan), applied only if available to the user (the domain×
+    // group junction = isChartAvailableToUser). Precedence: user > domain > admin.
+    const domainChartKey = await resolveDomainChartKey(ctx, host);
+    const domainAvailable =
+      domainChartKey !== null &&
+      (await isChartAvailableToUser(ctx, userId, domainChartKey));
     const resolvedChart = resolveChart(
       userChartKey,
+      domainChartKey,
       adminDefaultChart,
       availableChartKeys,
+      domainAvailable,
     );
     // P4: resolve the chart KEY to its TOKENS server-side (builtin from the code
     // registry, custom from the `charts` table) so the client applies tokens
     // directly (no client-side key->tokens map, no builtin/custom branching in
     // the browser). null for the native index.css look.
-    const resolvedChartTokens = await resolveChartTokens(
+    // Resolve the chart's TOKENS and BRAND (label + logo URL) in a SINGLE
+    // custom-row read (resolveChartView) -- getMe is a hot path.
+    const resolvedChartView = await resolveChartView(
       ctx,
       resolvedChart.chartKey,
     );
+    const resolvedChartTokens = resolvedChartView.tokens;
     return {
       userId,
       role: roleOf(profile),
@@ -155,6 +175,10 @@ export const getMe = query({
       // the DB, resolved server-side). null = native look. The client applies
       // these directly via applyChartTokens (no client-side resolution).
       resolvedChartTokens,
+      // The active chart's BRAND for the top bar: { label, logoUrl }. Default
+      // (no chart / builtin demo) = { "Atrium", null }; a custom chart = its name
+      // + uploaded logo URL (null => client uses the bundled Atrium mark).
+      resolvedChartBrand: resolvedChartView.brand,
       // UI language (mirror of theme): the user's own pref (or null) + the
       // resolved effective locale the client applies via Paraglide + the admin
       // default. The client's useApplyLocale reconciles localStorage to this.

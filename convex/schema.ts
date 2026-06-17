@@ -405,12 +405,34 @@ export default defineSchema({
       fontSans: v.optional(v.string()),
       fontMono: v.optional(v.string()),
     }),
+    // Brand logos shown in the top bar when this chart is active (label = chart
+    // `name`), one per theme mode. Uploaded images are normalized to WebP and
+    // served via <img src> only — never inlined — so they carry no script. Absent
+    // => the bundled Atrium mark (default chart) or the other mode's logo / label
+    // alone (custom). See convex/charts.ts (setChartLogo / resolveChartView).
+    logoLightStorageId: v.optional(v.id("_storage")),
+    logoDarkStorageId: v.optional(v.id("_storage")),
     createdBy: v.id("users"),
     createdAt: v.number(),
   })
     .index("by_key", ["key"])
     .index("by_owner", ["ownerUserId"])
     .index("by_scope", ["scope"]),
+
+  // Domain -> chart mapping ("charte par domaine"): when Atrium is accessed at a
+  // matching host, that chart becomes the DEFAULT (login + app), subject to the
+  // group junction at resolution. `domain` is the canonical pattern from
+  // convex/lib/domains.ts (exact host OR "*.base" wildcard, base >= 2 labels).
+  // `by_domain` is UNIQUE per domain (enforced at write) so resolution can do a
+  // bounded point-read per host candidate — never a scan. Admin-managed.
+  chartDomains: defineTable({
+    chartKey: v.string(),
+    domain: v.string(),
+    createdBy: v.id("users"),
+    createdAt: v.number(),
+  })
+    .index("by_domain", ["domain"])
+    .index("by_chart", ["chartKey"]),
 
   // Singleton app metadata. Exactly one row (key === "singleton"). Acts as the
   // serialization point for first-admin bootstrap: the first sign-in that finds

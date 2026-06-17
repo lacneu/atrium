@@ -109,27 +109,10 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
     reg.closeAll();
   });
 
-  it("WITHOUT wake (reproduces the bug): the idle-blocked loop never sees the armed deadline and the turn hangs", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
-      async () => fakeConn() as never,
-    );
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Arm the turn but DO NOT wake the loop (the pre-fix behavior).
-    await s.runManager.beginTurn(now, "run-1");
-    // Even advancing time massively, the loop is blocked on a null-timeout frame
-    // wait it computed BEFORE beginTurn — it installed no timer, so nothing fires.
-    now += 100_000;
-    await vi.advanceTimersByTimeAsync(1_000_000);
-
-    expect(finalized.length).toBe(0); // hung in "streaming" — the bug
-    reg.closeAll();
-  });
+  // NOTE: the paired "WITHOUT wake" bug-characterization test was removed — it
+  // never called wake(), so reverting the wake() fix left its assertion unchanged
+  // (no fix-discriminating power) and it would break on a benign future self-heal.
+  // The "WITH wake" test above is the discriminating regression gate for the fix.
 });
 
 // Codex review #14 (P1) — history recovery must survive the wake `continue`s.
@@ -170,6 +153,115 @@ function fakeConnRecording() {
     },
   };
 }
+
+// Mars robustness — a throw in the consume loop's own machinery (NOT inside the
+// feed/tick try/catch) used to become an UNHANDLED REJECTION (the loop is started
+// with a bare `void this.consume()`), which kills the whole bridge process. The
+// guard wraps the loop: it logs and CLOSES the connection so the session self-heals
+// (SessionRegistry.acquire reconnects on the next send) instead of taking the
+// process down. A single error must never invalidate the bridge.
+/** Connection whose frames() blocks until `crash(err)` is called, which makes the
+ *  async iterator THROW — modeling a throw in the loop machinery while a turn may
+ *  be mid-flight. */
+function fakeConnControllable() {
+  let closed = false;
+  let rejectGate: (e: Error) => void = () => {};
+  const gate = new Promise<never>((_, rej) => {
+    rejectGate = rej;
+  });
+  return {
+    get isClosed() {
+      return closed;
+    },
+    close() {
+      closed = true;
+    },
+    async *frames(): AsyncGenerator<never> {
+      await gate; // rejects when crash() is called -> the generator throws
+    },
+    crash(err: Error) {
+      rejectGate(err);
+    },
+    async request() {
+      return { payload: {} };
+    },
+  };
+}
+
+describe("Session consume loop — crash self-heal (Mars robustness)", () => {
+  it("an immediate loop crash CLOSES the connection (so acquire reconnects) and does NOT crash the process", async () => {
+    const conn = fakeConnControllable();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => conn as never,
+    );
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { writer } = fakeWriter();
+    const reg = new SessionRegistry(config, writer, () => 1000);
+
+    const s = await reg.acquire(ROUTING);
+    await new Promise((r) => setTimeout(r, 5)); // loop reaches its frame wait
+    conn.crash(new Error("frames machinery exploded")); // no active turn yet
+    // (If the guard were missing, vitest would surface an unhandled rejection.)
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(s.connection.isClosed).toBe(true); // self-heal: next acquire reconnects
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes("consume loop crashed")),
+    ).toBe(true);
+    reg.closeAll();
+  });
+
+  it("a crash WHILE A TURN IS MID-FLIGHT finalizes it as aborted (no stuck 'streaming')", async () => {
+    const conn = fakeConnControllable();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => conn as never,
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(config, writer, () => 1000);
+
+    const s = await reg.acquire(ROUTING);
+    await new Promise((r) => setTimeout(r, 5));
+    // A turn is now in flight (the UI shows "streaming")...
+    await s.runManager.beginTurn(1000, "run-1");
+    // ...and the consume loop's machinery throws.
+    conn.crash(new Error("iterator exploded mid-turn"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(finalized.length).toBeGreaterThan(0); // turn finalized -> UI not stuck
+    expect(s.connection.isClosed).toBe(true); // and self-healed
+    reg.closeAll();
+  });
+
+  it("closes the connection BEFORE awaiting the (slow) turn finalize, so a concurrent acquire can't reuse the dead-consumer session", async () => {
+    const conn = fakeConnControllable();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => conn as never,
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // finalize() HANGS until released — models slow Convex writes during recovery.
+    const { writer } = fakeWriter();
+    let releaseFinalize: () => void = () => {};
+    (writer as unknown as { finalize: () => Promise<void> }).finalize = () =>
+      new Promise<void>((r) => {
+        releaseFinalize = r;
+      });
+    const reg = new SessionRegistry(config, writer, () => 1000);
+
+    const s = await reg.acquire(ROUTING);
+    await new Promise((r) => setTimeout(r, 5));
+    await s.runManager.beginTurn(1000, "run-1");
+    conn.crash(new Error("iterator exploded mid-turn"));
+    await new Promise((r) => setTimeout(r, 20)); // recovery: close() THEN await finalize (hung)
+
+    // The finalize is still pending, yet the connection is ALREADY closed — so
+    // SessionRegistry.acquire would drop this session and reconnect, never hand
+    // its dead consumer to a new /send (which would hang in "streaming").
+    expect(s.connection.isClosed).toBe(true);
+    releaseFinalize();
+    reg.closeAll();
+  });
+});
 
 describe("Session consume loop — history recovery survives a wake (review #14 P1)", () => {
   it("a pre-ACK-buffered message-tool reply triggers sessions.get AFTER the wake", async () => {

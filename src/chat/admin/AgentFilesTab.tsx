@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
 import { useAction, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../convexApi";
@@ -74,7 +75,7 @@ const keyOf = (o: { instanceName: string; agentId: string }) =>
   `${o.instanceName}::${o.agentId}`;
 
 export function AgentFilesTab() {
-  const me = useQuery(api.me.getMe) as
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as
     | { role?: string; permissions?: string[] }
     | undefined;
   const isAdmin = me?.role === "admin";

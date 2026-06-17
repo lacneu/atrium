@@ -113,7 +113,9 @@ describe("contextPct", () => {
 describe("verbosityLine — both branches of the pinned-verbosity row", () => {
   test("uses the reported level when present", () => {
     expect(verbosityLine("full")).toBe(m.spanel_verbosity_value({ level: "full" }));
-    expect(verbosityLine("low")).toContain("low");
+    // Full `.toBe` (not `.toContain`): pins the whole rendered line incl. the
+    // " · fixée" suffix, so a dropped suffix/template regression is caught.
+    expect(verbosityLine("low")).toBe(m.spanel_verbosity_value({ level: "low" }));
   });
   test("falls back to 'full' when the gateway has not reported one", () => {
     expect(verbosityLine(undefined)).toBe(

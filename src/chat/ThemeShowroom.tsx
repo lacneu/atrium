@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { MoreVertical, Check, X, Upload } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { Button } from "@/components/ui/button";
+import { processLogoImage } from "@/lib/processLogoImage";
+import { APP_HOST } from "@/lib/appHost";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -191,6 +193,11 @@ type MyChart = {
   restrictedToGroups:
     | Array<{ groupId: Id<"groups">; key: string; name: string }>
     | null;
+  // Owner-managed rows only: the current per-mode brand-logo URLs (null = none).
+  logoLightUrl?: string | null;
+  logoDarkUrl?: string | null;
+  // Owner-managed rows only: domains mapped to this chart (charte par domaine).
+  domains?: string[];
 };
 
 // The per-user palette picker. `selectedKey` is the user's RAW pick (me.chartKey,
@@ -458,6 +465,246 @@ function MyChartGroups({
   );
 }
 
+// Brand-logo control for ONE owned chart: a slot per theme mode (light + dark),
+// each preview + upload/replace + remove. ANY uploaded format is normalized to a
+// bounded WebP client-side (processLogoImage); the server magic-byte-validates it
+// (setChartLogo ACTION) and it is rendered only via <img src>. "Generate from the
+// other mode" fills the missing mode by inverting the existing logo (ideal for
+// monochrome marks) -- a proposal the user can replace.
+function ChartLogoControl({ chart }: { chart: MyChart }) {
+  const setChartLogo = useAction(api.charts.setChartLogo);
+  const removeChartLogo = useMutation(api.charts.removeChartLogo);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const urlFor = (mode: "light" | "dark") =>
+    mode === "light" ? chart.logoLightUrl : chart.logoDarkUrl;
+
+  // Normalize (any format -> bounded WebP, optionally inverted) -> upload -> attach.
+  async function uploadFor(mode: "light" | "dark", source: Blob, invert = false) {
+    if (chart.chartId === undefined) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const webp = await processLogoImage(source, { invert });
+      // Send the normalized WebP BYTES; the server stores them itself (a single-use,
+      // server-minted storageId), so there is no client-provided storage id that
+      // could be aliased/replayed onto another resource.
+      const bytes = await webp.arrayBuffer();
+      await setChartLogo({ chartId: chart.chartId, bytes, mode });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onFile(
+    mode: "light" | "dark",
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (file) await uploadFor(mode, file);
+  }
+
+  async function onRemove(mode: "light" | "dark") {
+    if (chart.chartId === undefined) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await removeChartLogo({ chartId: chart.chartId, mode });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Propose the missing mode from the existing one (fetch its blob -> invert).
+  async function onGenerate(targetMode: "light" | "dark") {
+    const sourceUrl = urlFor(targetMode === "light" ? "dark" : "light");
+    if (!sourceUrl) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const blob = await (await fetch(sourceUrl)).blob();
+      await uploadFor(targetMode, blob, true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function Slot({ mode }: { mode: "light" | "dark" }) {
+    const url = urlFor(mode);
+    const otherUrl = urlFor(mode === "light" ? "dark" : "light");
+    return (
+      <div className="oc-chart-mine__logo-slot">
+        <span className="oc-chart-mine__logo-mode">
+          {mode === "light"
+            ? m.charts_mine_logo_light()
+            : m.charts_mine_logo_dark()}
+        </span>
+        <span
+          className="oc-chart-mine__logo-preview"
+          data-mode={mode}
+          data-empty={url ? undefined : "1"}
+        >
+          {url ? <img src={url} alt="" /> : null}
+        </span>
+        <Button variant="outline" size="sm" asChild>
+          <label className="oc-chart-import__file">
+            <Upload className="size-4" />
+            {url ? m.charts_mine_logo_replace() : m.charts_mine_logo_upload()}
+            <input
+              type="file"
+              accept="image/*"
+              className="oc-chart-import__file-input"
+              onChange={(e) => void onFile(mode, e)}
+            />
+          </label>
+        </Button>
+        {!url && otherUrl ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => void onGenerate(mode)}
+          >
+            {m.charts_mine_logo_generate()}
+          </Button>
+        ) : null}
+        {url ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => void onRemove(mode)}
+          >
+            {m.charts_mine_logo_remove()}
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="oc-chart-mine__logo">
+      <span className="oc-chart-mine__groups-label">
+        {m.charts_mine_logo_label()}
+      </span>
+      <div className="oc-chart-mine__logo-slots">
+        <Slot mode="light" />
+        <Slot mode="dark" />
+      </div>
+      {busy ? (
+        <span className="oc-show__desc">{m.charts_mine_logo_busy()}</span>
+      ) : null}
+      {error ? <p className="oc-chart-import__error">{error}</p> : null}
+    </div>
+  );
+}
+
+// Domain mapping for ONE chart (charte par domaine). ADMIN-ONLY (the server gates
+// addChartDomain/removeChartDomain on charts.manage; the whole control hides for
+// non-admins). Mapping a domain makes this chart the DEFAULT on that host (login
+// included), subject to the domain×group junction at resolution.
+function ChartDomainControl({
+  chart,
+}: {
+  // Accepts any chart row carrying a key + its mapped domains (a MyChart for the
+  // owner section, an AdminChart for the public-charts admin section).
+  chart: { key: string; domains?: string[] };
+}) {
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
+  const addDomain = useMutation(api.charts.addChartDomain);
+  const removeDomain = useMutation(api.charts.removeChartDomain);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (me?.role !== "admin") return null;
+  const domains = chart.domains ?? [];
+
+  async function add() {
+    const domain = value.trim();
+    if (domain === "") return;
+    setError(null);
+    setBusy(true);
+    try {
+      await addDomain({ chartKey: chart.key, domain });
+      setValue("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function drop(domain: string) {
+    setError(null);
+    try {
+      await removeDomain({ chartKey: chart.key, domain });
+    } catch {
+      // best-effort; the list re-reads on success
+    }
+  }
+
+  return (
+    <div className="oc-chart-mine__domains">
+      <span className="oc-chart-mine__groups-label">
+        {m.charts_mine_domains_label()}
+      </span>
+      <div className="oc-chart-mine__domains-body">
+        <div className="oc-chart-avail__groups">
+          {domains.length === 0 ? (
+            <span className="oc-show__desc">{m.charts_mine_domains_none()}</span>
+          ) : (
+            domains.map((d) => (
+              <Badge
+                key={d}
+                variant="secondary"
+                className="oc-chart-avail__chip"
+              >
+                {d}
+                <button
+                  type="button"
+                  className="oc-chart-avail__chip-x"
+                  aria-label={m.charts_mine_domains_remove({ domain: d })}
+                  onClick={() => void drop(d)}
+                >
+                  <X className="size-3" />
+                </button>
+              </Badge>
+            ))
+          )}
+        </div>
+        <div className="oc-show__row">
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={m.charts_mine_domains_placeholder()}
+            className="oc-chart-mine__domains-input"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void add();
+            }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => void add()}
+          >
+            {m.charts_mine_domains_add()}
+          </Button>
+        </div>
+        <span className="oc-show__desc">{m.charts_mine_domains_help()}</span>
+        {error ? <p className="oc-chart-import__error">{error}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 // One owned personal chart: name + a JSON tokens editor (re-validated server-side
 // via updateChart) + delete + group associations. The token editor is a JSON
 // textarea (NOT a 32-token grid) prefilled with the current tokens.
@@ -564,6 +811,8 @@ function MyChartRow({ chart, myGroups }: { chart: MyChart; myGroups: MyGroup[] }
           </div>
         </div>
       ) : null}
+      <ChartLogoControl chart={chart} />
+      <ChartDomainControl chart={chart} />
       <MyChartGroups
         chartKey={chart.key}
         myGroups={myGroups}
@@ -618,6 +867,7 @@ type AdminChart = {
   restrictedToGroups:
     | Array<{ groupId: Id<"groups">; key: string; name: string }>
     | null;
+  domains?: string[];
   isGlobalDefault: boolean;
 };
 type GroupRow = { _id: Id<"groups">; key: string; name: string };
@@ -863,6 +1113,29 @@ function AppearanceAdminSection({
         </div>
       </section>
 
+      {/* Charte par domaine: map a host to a PUBLIC chart (builtin / common
+          custom) so it becomes that host's default — login page included. Personal
+          charts are mapped per-owner in "Mes chartes"; brandForHost only exposes
+          PUBLIC charts pre-auth, so only those are offered here. */}
+      <section className="oc-show__section">
+        <div className="oc-show__heading">
+          <h3 className="oc-show__title">{m.charts_admin_domain_title()}</h3>
+          <p className="oc-show__desc">{m.charts_admin_domain_desc()}</p>
+        </div>
+        <div className="oc-chart-avail-list">
+          {(adminCharts ?? [])
+            .filter((c) => c.kind === "builtin" || c.scope === "common")
+            .map((c) => (
+              <div key={c.key} className="oc-chart-avail">
+                <div className="oc-chart-avail__head">
+                  <span className="oc-chart-avail__name">{c.name}</span>
+                </div>
+                <ChartDomainControl chart={c} />
+              </div>
+            ))}
+        </div>
+      </section>
+
       {/* Custom charts (user-imported): promote-to-common + delete. */}
       <section className="oc-show__section">
         <div className="oc-show__heading">
@@ -942,7 +1215,7 @@ function AppearanceAdminSection({
 // The Apparence panel: the per-user chart picker (ALL users) + the admin-gated
 // administration block. Reads getMe once and feeds both.
 function AppearancePanel() {
-  const me = useQuery(api.me.getMe) as
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as
     | {
         role: "pending" | "user" | "admin";
         defaultThemeMode: ThemeMode | null;

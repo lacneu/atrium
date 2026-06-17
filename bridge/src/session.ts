@@ -103,7 +103,52 @@ class Session implements BridgeSession {
       return;
     }
     this.consumerStarted = true;
-    void this.consume();
+    // The consume loop catches its own feed/tick/endTurn errors, but a throw in
+    // the loop machinery itself (iterator, race) would otherwise become an
+    // unhandled rejection and kill the whole bridge. Guard it: finalize any
+    // mid-flight turn, then CLOSE the connection so `SessionRegistry.acquire`
+    // transparently reconnects on the next send — this session self-heals instead
+    // of taking the process down. The `.catch` callback stays SYNCHRONOUS (it only
+    // schedules the detached, fully-guarded recovery) so it can never itself reject.
+    void this.consume().catch((err) => {
+      console.error(
+        `[session] consume loop crashed chat=${this.chatId} — recovering:`,
+        (err as Error)?.message ?? err,
+      );
+      void this.recoverFromConsumeCrash();
+    });
+  }
+
+  /**
+   * Recover from a consume-loop crash. Mirrors the `winner.done` (connection
+   * closed) path: if a turn was mid-flight, finalize it as `aborted` so the
+   * assistant message never hangs in "streaming" forever; then close the
+   * connection so the next send reconnects. Fully self-contained — it MUST NOT
+   * throw (it runs detached, so a throw would be an unhandled rejection, i.e. the
+   * very crash we are guarding against).
+   */
+  private async recoverFromConsumeCrash(): Promise<void> {
+    // Close FIRST: close() synchronously marks the connection isClosed, so a
+    // concurrent SessionRegistry.acquire() during the AWAITED endTurn() below can
+    // no longer hand this dead-consumer session to a new /send (which would
+    // chat.send + beginTurn with NO frame reader -> a turn stuck in "streaming").
+    // acquire then drops this session and reconnects a fresh one. endTurn writes to
+    // Convex (not this socket), so closing first does not affect the finalize.
+    try {
+      this.connection.close();
+    } catch {
+      /* already gone */
+    }
+    if (!this.runManager.isFinalized) {
+      try {
+        await this.runManager.endTurn(this.clock(), "aborted");
+      } catch (err) {
+        console.error(
+          `[session] crash finalize error chat=${this.chatId}:`,
+          (err as Error)?.message ?? err,
+        );
+      }
+    }
   }
 
   /**

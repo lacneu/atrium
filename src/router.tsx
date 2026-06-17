@@ -98,10 +98,29 @@ import { ToastProvider } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
+import { pickLogoUrl } from "@/lib/brandLogo";
+import {
+  APP_HOST,
+  readCachedBrand,
+  writeCachedBrand,
+  type CachedBrand,
+} from "@/lib/appHost";
 import { useApplyLocale, type Locale } from "@/lib/useLocale";
 import type { ChartTokens } from "../convex/lib/charts";
 import { useSidebarLayout } from "@/lib/useSidebarLayout";
 import { Link, useMatchRoute } from "@tanstack/react-router";
+
+// Top-bar brand from the active chart, with a logo per theme mode. `isDefault` =
+// the app's own identity (native / builtin) → show the bundled Atrium mark. A
+// custom chart has isDefault:false → show the active mode's uploaded logo (falling
+// back to the other mode's), else the LABEL ALONE (no Atrium mark beside a custom
+// name).
+type ChartBrand = {
+  label: string;
+  logoLightUrl: string | null;
+  logoDarkUrl: string | null;
+  isDefault: boolean;
+};
 
 // What getMe returns (the bits the shell needs). `userId` is the EFFECTIVE id
 // (impersonation-aware) — used as a remount key so switching identity resets
@@ -122,6 +141,8 @@ type Me = {
   // P4: the resolved chart's TOKENS (builtin from the registry OR custom from the
   // DB, resolved server-side). null = native look. Fed straight to useApplyChart.
   resolvedChartTokens: ChartTokens | null;
+  // The active chart's brand for the top bar (see ChartBrand).
+  resolvedChartBrand: ChartBrand;
   locale: Locale | null;
   resolvedLocale: Locale;
   defaultLocale: Locale | null;
@@ -192,6 +213,24 @@ function SignIn() {
   // not just at first paint. The listener is cleaned up when SignIn unmounts on
   // auth, so it can never override an authenticated user's explicit theme.
   useApplyTheme(undefined);
+  // Charte par domaine: brand the LOGIN (colors + logo + label) for this host. A
+  // PUBLIC pre-auth query (no identity); the localStorage cache lets us apply
+  // tenant tokens on the first render instead of waiting the round-trip.
+  const hostBrandQ = useQuery(api.charts.brandForHost, { host: APP_HOST });
+  const cached = readCachedBrand(APP_HOST);
+  const view = (hostBrandQ ?? cached ?? null) as {
+    tokens: ChartTokens | null;
+    brand: ChartBrand;
+  } | null;
+  const mode = useResolvedMode(undefined);
+  useApplyChart(view?.tokens ?? null, mode);
+  useEffect(() => {
+    if (hostBrandQ) writeCachedBrand(APP_HOST, hostBrandQ as CachedBrand);
+  }, [hostBrandQ]);
+  const brand = view?.brand;
+  // Show the domain logo for the active mode (custom chart only); else the label.
+  const brandLogoUrl = brand && !brand.isDefault ? pickLogoUrl(brand, mode) : null;
+  const brandLabel = brand?.label ?? "Atrium";
   // Which providers the deployment enabled (env-driven, server-resolved). Pre-auth
   // query → no identity required.
   const providers = useQuery(api.me.authProviders);
@@ -246,7 +285,10 @@ function SignIn() {
         />
       </svg>
       <div className="oc-signin__brand">
-        <span className="oc-signin__wordmark">Atrium</span>
+        {brandLogoUrl ? (
+          <img className="oc-signin__brandlogo" src={brandLogoUrl} alt="" />
+        ) : null}
+        <span className="oc-signin__wordmark">{brandLabel}</span>
       </div>
       <div className="oc-signin__card">
         <h1 className="oc-signin__title">{m.app_signin_title()}</h1>
@@ -286,7 +328,7 @@ function SignIn() {
 // on navigation (only the inner chrome wrapper is keyed), so the impersonation
 // effect below lives here.
 function RoleGate() {
-  const me = useQuery(api.me.getMe) as Me | undefined;
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as Me | undefined;
   const bootstrap = useMutation(api.me.bootstrap);
   const navigate = useNavigate();
 
@@ -341,7 +383,12 @@ function RoleGate() {
         <ImpersonationBanner />
         <DevUserSwitcher />
         <header className="oc-topbar">
-          <span className="oc-topbar__brand">OpenClaw</span>
+          <span className="oc-topbar__brand">
+            <BrandMark
+              brand={me.resolvedChartBrand}
+              resolvedThemeMode={me.resolvedThemeMode}
+            />
+          </span>
           <div className="oc-topbar__actions">
             <UserMenu label={userLabel} mode={me.themeMode} minimal />
           </div>
@@ -364,6 +411,8 @@ function RoleGate() {
       canOpenSettings={visibleTabs(me.permissions ?? []).length > 0}
       userLabel={userLabel}
       themeMode={me.themeMode}
+      resolvedThemeMode={me.resolvedThemeMode}
+      brand={me.resolvedChartBrand}
     />
   );
 }
@@ -406,15 +455,95 @@ function ImpersonationBanner() {
   );
 }
 
+// The bundled Atrium mark (favicon glyph: brackets + heartbeat), the DEFAULT
+// brand logo. currentColor → inherits the top-bar text color in light/dark.
+function AtriumMark({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <path
+        d="M25 15H15V49H25"
+        stroke="currentColor"
+        strokeWidth="6.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M39 15H49V49H39"
+        stroke="currentColor"
+        strokeWidth="6.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <polyline
+        points="20 33 26 33 29 25 33 41 37 29 41 33 44 33"
+        stroke="currentColor"
+        strokeWidth="3.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Brand shown in the top bar = the ACTIVE chart's brand (label + optional logo),
+// from getMe.resolvedChartBrand. An uploaded logo is rendered as <img> (never
+// inlined → no script execution); a missing/broken URL falls back to the bundled
+// Atrium mark, so the brand is never blank. Default = Atrium mark + "Atrium".
+function BrandMark({
+  brand,
+  resolvedThemeMode,
+}: {
+  brand: ChartBrand | undefined;
+  resolvedThemeMode: ThemeMode;
+}) {
+  // Pick the logo for the SERVER-RESOLVED mode, so the logo can never desync from
+  // the applied CSS theme: useApplyTheme(me.resolvedThemeMode) drives the DOM, and
+  // resolving the SAME value here keeps the chosen light/dark logo in lockstep
+  // (the raw user `themeMode` may be null while an admin default resolves the
+  // theme). "system" is still resolved to light/dark, consistently with the app.
+  const mode = useResolvedMode(resolvedThemeMode);
+  const label = brand?.label ?? "Atrium";
+  const isDefault = brand?.isDefault ?? true;
+  const logoUrl = pickLogoUrl(brand, mode);
+  const [imgFailed, setImgFailed] = useState(false);
+  // Reset the broken-image flag when the chosen logo URL changes (mode flip /
+  // chart change) so a different logo gets a fresh chance to load.
+  useEffect(() => setImgFailed(false), [logoUrl]);
+  // Uploaded logo wins; else the app default shows the bundled Atrium mark; a
+  // custom chart with no (or broken) logo shows the LABEL ALONE -- never the
+  // Atrium mark next to a custom name.
+  const showImg = logoUrl !== null && !imgFailed;
+  return (
+    <>
+      {showImg ? (
+        <img
+          className="oc-brand__logo"
+          src={logoUrl}
+          alt=""
+          aria-hidden="true"
+          onError={() => setImgFailed(true)}
+        />
+      ) : isDefault ? (
+        <AtriumMark className="oc-brand__logo" />
+      ) : null}
+      <span className="oc-brand__label">{label}</span>
+    </>
+  );
+}
+
 // Global top bar: sidebar toggle (left) + brand + single user menu (right).
 function AppTopBar({
   userLabel,
   themeMode,
+  resolvedThemeMode,
+  brand,
   collapsed,
   onToggleSidebar,
 }: {
   userLabel: string;
   themeMode: ThemeMode | null;
+  resolvedThemeMode: ThemeMode;
+  brand: ChartBrand | undefined;
   collapsed: boolean;
   onToggleSidebar: () => void;
 }) {
@@ -429,9 +558,9 @@ function AppTopBar({
         >
           {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
         </Button>
-        {/* Brand returns to the chat surface (leaving Settings). */}
+        {/* Brand (active chart's logo + label) returns to the chat surface. */}
         <Link to="/" className="oc-topbar__brand">
-          OpenClaw
+          <BrandMark brand={brand} resolvedThemeMode={resolvedThemeMode} />
         </Link>
       </div>
       {/* Center zone: global conversation search (⌘K palette). */}
@@ -454,10 +583,14 @@ function AuthenticatedChrome({
   canOpenSettings,
   userLabel,
   themeMode,
+  resolvedThemeMode,
+  brand,
 }: {
   canOpenSettings: boolean;
   userLabel: string;
   themeMode: ThemeMode | null;
+  resolvedThemeMode: ThemeMode;
+  brand: ChartBrand | undefined;
 }) {
   const { width, collapsed, toggleCollapsed, startResize } = useSidebarLayout();
   const matchRoute = useMatchRoute();
@@ -475,6 +608,8 @@ function AuthenticatedChrome({
       <AppTopBar
         userLabel={userLabel}
         themeMode={themeMode}
+        resolvedThemeMode={resolvedThemeMode}
+        brand={brand}
         collapsed={collapsed}
         onToggleSidebar={toggleCollapsed}
       />
@@ -539,7 +674,7 @@ function SettingsLayout() {
   // clean "access denied" panel instead of an empty/broken view. The active tab
   // is read from the pathname (URL is always /settings/<tab>), which works for
   // both the static (filtered) and the shared $tab routes.
-  const me = useQuery(api.me.getMe) as Me | undefined;
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as Me | undefined;
   const navigate = useNavigate();
   const pathname = useLocation({ select: (l) => l.pathname });
   const visible = useMemo(
@@ -593,7 +728,7 @@ function SettingsAccessDenied() {
 // old hardcoded /settings/users redirect, which would have dropped a non-admin
 // straight onto an access-denied panel.
 function SettingsIndexRedirect() {
-  const me = useQuery(api.me.getMe) as Me | undefined;
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as Me | undefined;
   const navigate = useNavigate();
   useEffect(() => {
     if (me === undefined) return;

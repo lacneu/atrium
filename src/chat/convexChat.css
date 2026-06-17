@@ -224,6 +224,15 @@
   color: var(--foreground);
   text-shadow: 0 1px 12px color-mix(in oklch, var(--background) 72%, transparent);
 }
+/* Tenant brand logo on the LOGIN (charte par domaine). Bounded so an odd upload
+   can't dominate the screen; drop-shadow lifts it off the gradient. */
+.oc-signin__brandlogo {
+  height: 3rem;
+  width: auto;
+  max-width: 16rem;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 12px color-mix(in oklch, var(--background) 70%, transparent));
+}
 .oc-signin__title {
   margin: 0 0 0.1rem;
   text-align: center;
@@ -344,6 +353,24 @@
   background: var(--background);
 }
 .oc-topbar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--foreground);
+  text-decoration: none;
+}
+/* Brand logo (bundled Atrium mark OR an uploaded chart logo via <img>). Bounded
+   height so an odd-sized upload can never blow up the top bar; width auto keeps
+   a wordmark-style logo's aspect ratio. */
+.oc-brand__logo {
+  height: 1.4rem;
+  width: auto;
+  max-width: 7rem;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+.oc-brand__label {
   font-weight: 600;
 }
 .oc-topbar__actions {
@@ -2152,8 +2179,58 @@
 }
 .oc-chart-mine__groups-label {
   font-size: 0.8rem; font-weight: 600; color: var(--muted-foreground);
+  /* Fixed label column so the "Logo de marque" and "Groupes associés" VALUES
+     line up vertically across both rows. */
+  flex: 0 0 auto;
+  min-width: 8.5rem;
   margin-right: 0.25rem;
 }
+/* Brand-logo control: a header + one row per theme mode (mode label + preview +
+   buttons). The upload trigger reuses the shared <Button outline sm> +
+   `.oc-chart-import__file` label, identical to "Charger un fichier .json". */
+.oc-chart-mine__logo {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.oc-chart-mine__logo-slots {
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.oc-chart-mine__logo-slot {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  min-height: 1.75rem;
+}
+.oc-chart-mine__logo-mode {
+  flex: 0 0 auto; min-width: 5.5rem;
+  font-size: 0.8rem; color: var(--muted-foreground);
+}
+/* Preview shown against its TARGET background (light slot on white, dark slot on
+   near-black) so the logo is judged in context. Empty = a striped placeholder. */
+.oc-chart-mine__logo-preview {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 2rem; width: 5rem; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.oc-chart-mine__logo-preview[data-mode="light"] { background: #ffffff; }
+.oc-chart-mine__logo-preview[data-mode="dark"] { background: #131314; }
+.oc-chart-mine__logo-preview[data-empty="1"] {
+  background: repeating-linear-gradient(
+    45deg, var(--muted), var(--muted) 4px, transparent 4px, transparent 8px
+  );
+}
+.oc-chart-mine__logo-preview img {
+  max-height: 100%; max-width: 100%; object-fit: contain;
+}
+/* Domain mapping (charte par domaine) — admin-only row: label column + a body
+   with current-domain chips, an add row, and help text. */
+.oc-chart-mine__domains {
+  display: flex; align-items: flex-start; gap: 0.5rem; flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+.oc-chart-mine__domains-body {
+  display: flex; flex-direction: column; gap: 0.4rem; min-width: 16rem;
+}
+.oc-chart-mine__domains-input { max-width: 18rem; }
 
 /* --- Data table shell + sheet form -------------------------------------- */
 .oc-dt { display: flex; flex-direction: column; gap: 0.75rem; }
