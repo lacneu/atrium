@@ -258,6 +258,36 @@ export function parseSendBody(raw: string): SendBody | null {
   };
 }
 
+/**
+ * Whether to re-hydrate prior turns onto a chat.send, as a pure (testable)
+ * decision. Off entirely under `OPENCLAW_REHYDRATION=off`; otherwise needed only on
+ * a fresh/rolled session, and only SAFE without an attachment:
+ *   - `skip_disabled`   — operator kill-switch (no re-hydration, so no crash risk).
+ *   - `skip_warm`       — warm session already holds the context.
+ *   - `skip_attachment` — fresh session but the turn carries an attachment:
+ *     prepended-history + attachment stack-overflows the gateway (live-confirmed),
+ *     so we ship the bare message. KNOWN GAP: that turn (and that chat, until the
+ *     session next rolls) lacks pre-attachment context — accepted, best-effort, and
+ *     strictly better than crashing. No cross-turn debt state (it duplicates already
+ *     -warmed turns and dies on a bridge restart for marginal value — see history).
+ *   - `rehydrate`       — fresh, attachment-free, enabled.
+ */
+export type RehydrationDecision =
+  | "rehydrate"
+  | "skip_attachment"
+  | "skip_disabled"
+  | "skip_warm";
+export function rehydrationDecision(opts: {
+  freshSession: boolean;
+  hasAttachments: boolean;
+  enabled: boolean;
+}): RehydrationDecision {
+  if (!opts.enabled) return "skip_disabled";
+  if (!opts.freshSession) return "skip_warm";
+  if (opts.hasAttachments) return "skip_attachment"; // can't prepend history here
+  return "rehydrate";
+}
+
 /** Defensive parse of the session-reset body. Exported for tests. */
 export function parseResetBody(raw: string): ResetBody | null {
   let parsed: unknown;
@@ -585,6 +615,15 @@ async function performSend(
   // message in Convex stays `body.text` (we only enrich what the gateway sees), so
   // re-hydration never leaks into the UI. NON-FATAL: any failure falls back to the
   // bare message — re-hydration must never break a send.
+  // A turn carrying an attachment must NOT be re-hydrated: the OpenClaw gateway
+  // stack-overflows (RangeError) assembling a prepended-history message TOGETHER
+  // with an attachment — confirmed live in prod (re-hydration alone OK, attachment
+  // alone OK, the COMBINATION crashes -> INVALID_REQUEST). The attachment turn is
+  // self-contained anyway ("convert this file"). `OPENCLAW_REHYDRATION=off` is a
+  // kill-switch to disable re-hydration entirely without a redeploy.
+  const hasAttachments =
+    Array.isArray(body.attachments) && body.attachments.length > 0;
+  const rehydrationEnabled = process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
   try {
     const desc = await conn.request("sessions.describe", { key: sessionKey }, 8_000);
@@ -606,14 +645,27 @@ async function performSend(
     }
 
     // (b) Re-hydration on a fresh/rolled session (systemSent flips true after the
-    // first turn, false on reset; absent session row -> also fresh).
+    // first turn, false on reset; absent session row -> also fresh). The decision is
+    // a pure helper (tested).
     const freshSession = !sess || sess.systemSent === false;
-    if (freshSession) {
+    const decision = rehydrationDecision({
+      freshSession,
+      hasAttachments,
+      enabled: rehydrationEnabled,
+    });
+    if (decision === "skip_attachment") {
+      // Ship the bare message — prepending history to an attachment turn crashes the
+      // gateway. KNOWN GAP (best-effort, strictly better than crashing): this chat
+      // lacks pre-attachment context until the session next rolls. Counts/chatId
+      // only (no PHI).
+      console.error(
+        `[rehydrate] chat=${body.chatId} SKIPPED — attachment present (gateway-crash guard)`,
+      );
+    } else if (decision === "rehydrate") {
       const ctx = await writer.getRehydrationContext(body.chatId, body.messageId);
       if (ctx.history) {
         message = `${ctx.history}\n\n${body.text}`;
-        // Decision log (no PHI — counts + chatId only): fires on a fresh session
-        // WITH prior history, not on warm turns or empty chats.
+        // Decision log (no PHI — counts + chatId only).
         console.error(
           `[rehydrate] chat=${body.chatId} fresh session -> prepended ${ctx.turnCount} prior turn(s)`,
         );
@@ -628,7 +680,7 @@ async function performSend(
     message,
     idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
   };
-  if (Array.isArray(body.attachments) && body.attachments.length > 0) {
+  if (hasAttachments) {
     params.attachments = body.attachments;
   }
   const now = session.clock();

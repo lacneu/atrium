@@ -144,6 +144,10 @@ bridge:
   # -- The instance name THIS bridge serves (must match a Convex instances.name
   #    and the BRIDGE_INSTANCE_NAME pushed into Convex env).
   instanceName: "primary"
+  # -- Session re-hydration operator kill-switch. The bridge re-sends prior turns
+  #    when the gateway session rolls "fresh" (and already skips that on attachment
+  #    turns, which would crash the gateway). Set to "off" to disable it entirely.
+  rehydration: "on"
   # Outbound media: optional read-only mount of your gateway's media/outbound
   # dir. Leave enabled=false unless the gateway shares a volume with this pod.
   media:

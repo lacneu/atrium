@@ -77,6 +77,13 @@ spec:
                   key: BRIDGE_SHARED_SECRET
             - name: BRIDGE_PORT
               value: {{ .Values.bridge.port | quote }}
+            {{- if eq .Values.bridge.rehydration "off" }}
+            # Operator kill-switch: disable session re-hydration entirely (the bridge
+            # already skips it on attachment turns, which would crash the gateway).
+            # Only rendered when explicitly "off"; otherwise the bridge default (on).
+            - name: OPENCLAW_REHYDRATION
+              value: "off"
+            {{- end }}
             {{- if .Values.bridge.media.enabled }}
             # A media mount is wired -> select the shared-fs reader explicitly.
             # (Without this the bridge defaults to gateway-http and would ignore

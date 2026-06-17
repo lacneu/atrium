@@ -8,6 +8,22 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.1.5] — Sending a file no longer fails after a session roll
+
+Corrective release (hotfix). No breaking changes; no migration.
+
+- **Attaching a file no longer breaks the chat after a gateway/session roll.** When
+  the OpenClaw session was fresh — e.g. right after a bridge restart or redeploy —
+  the bridge re-sent the conversation's prior turns for context; on a turn that ALSO
+  carried an attachment, that combination crashed the gateway and surfaced as "the
+  chat service is momentarily unavailable (ref. bridge)". The bridge now skips that
+  re-hydration on attachment turns, so file conversions and uploads go through.
+  Text-only turns are unchanged and still receive the prior context.
+- **New `OPENCLAW_REHYDRATION` operator kill-switch.** Set it to `off` (Compose
+  `.env` or the Helm chart values) to disable session re-hydration entirely; the
+  default keeps it on. Only the bridge image changes in this release — no Convex or
+  frontend redeploy needed.
+
 ## [0.1.4] — File management and a refreshed sign-in
 
 UX release. No breaking changes; no migration.

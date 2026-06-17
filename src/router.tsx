@@ -218,15 +218,20 @@ function SignIn() {
           span the screen, like the social-preview background. SVG strokes give the
           sharp edges a gradient can't; non-scaling-stroke keeps the line thin at
           any viewport size; color is a faint --foreground (B&W, set in CSS). */}
+      {/* The heartbeat lives in the free space BELOW the card (baseline ~86% of
+          height, compact spike) so it is NEVER occluded and survives the card
+          growing taller. preserveAspectRatio="none" maps the viewBox 1:1 to the
+          viewport, so the spike stays horizontally centred under the (centred)
+          card on any screen. */}
       <svg
         className="oc-signin__motif"
-        viewBox="0 0 1200 560"
-        preserveAspectRatio="xMidYMid slice"
+        viewBox="0 0 1200 1000"
+        preserveAspectRatio="none"
         aria-hidden="true"
       >
         <polyline
           className="oc-signin__line"
-          points="0,300 520,300 562,170 605,440 650,235 700,300 1200,300"
+          points="0,860 470,860 522,790 574,940 626,810 678,860 1200,860"
           vectorEffect="non-scaling-stroke"
         />
         {/* A bright spark that travels the heartbeat (Atrium = heart/atrium +
@@ -235,7 +240,7 @@ function SignIn() {
             Disabled under prefers-reduced-motion (see CSS). */}
         <polyline
           className="oc-signin__pulse"
-          points="0,300 520,300 562,170 605,440 650,235 700,300 1200,300"
+          points="0,860 470,860 522,790 574,940 626,810 678,860 1200,860"
           pathLength="100"
           vectorEffect="non-scaling-stroke"
         />

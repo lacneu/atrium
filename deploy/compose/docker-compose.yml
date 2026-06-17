@@ -112,6 +112,11 @@ services:
       # response headers so a non-responsive gateway can't stall a turn (the body
       # then streams at the upload's pace). Default 60s.
       - OPENCLAW_MEDIA_FETCH_TIMEOUT_MS=${OPENCLAW_MEDIA_FETCH_TIMEOUT_MS:-60000}
+      # Session re-hydration kill-switch. The bridge re-sends prior turns when the
+      # gateway session rolls "fresh"; it already SKIPS that on attachment turns
+      # (which would crash the gateway). Set to "off" to disable re-hydration
+      # entirely (operator escape hatch); anything else keeps it on.
+      - OPENCLAW_REHYDRATION=${OPENCLAW_REHYDRATION:-on}
       - BRIDGE_PORT=8787
     # [shared-fs mode ONLY] Uncomment to mount the gateway's outbound media dir
     # read-only (requires OPENCLAW_MEDIA_MODE=shared-fs above):
