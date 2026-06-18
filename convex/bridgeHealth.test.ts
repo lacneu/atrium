@@ -59,6 +59,50 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
     expect(normalizeTarget(null)).toBeNull();
     expect(normalizeTarget("nope")).toBeNull();
   });
+
+  test("a downstream-reject target flattens lastDownstreamReject {code,at} + count", () => {
+    const t = normalizeTarget({
+      key: "olivier",
+      instanceName: "primary",
+      canonical: "olivier",
+      agentId: "olivier",
+      gatewayHost: "192.0.2.10:18789",
+      // The bridge stayed connected (it reached the gateway, which refused the file).
+      state: "connected",
+      lastOkAt: null,
+      lastError: null,
+      lastDownstreamReject: { code: "ATTACHMENT_REJECTED", at: 456 },
+      attempts: 1,
+      okCount: 0,
+      errorCount: 0,
+      downstreamRejectCount: 1,
+    });
+    expect(t).toMatchObject({
+      state: "connected",
+      lastErrorCode: null, // NOT a bridge error
+      lastDownstreamRejectCode: "ATTACHMENT_REJECTED",
+      lastDownstreamRejectAt: 456,
+      downstreamRejectCount: 1,
+    });
+  });
+
+  test("an older bridge body without downstream fields -> nulls/0 (back-compat)", () => {
+    const t = normalizeTarget({
+      key: "o",
+      canonical: "o",
+      agentId: "main",
+      gatewayHost: "h:1",
+      state: "connected",
+      lastOkAt: 9,
+      attempts: 1,
+      okCount: 1,
+      errorCount: 0,
+      // no lastDownstreamReject / downstreamRejectCount (pre-this-release bridge)
+    });
+    expect(t?.lastDownstreamRejectCode).toBeNull();
+    expect(t?.lastDownstreamRejectAt).toBeNull();
+    expect(t?.downstreamRejectCount).toBe(0);
+  });
 });
 
 function doc(p: {

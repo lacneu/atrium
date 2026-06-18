@@ -51,11 +51,81 @@ describe("HealthRegistry", () => {
   test("recordError -> error with the curated code + when", () => {
     let t = 7000;
     const h = new HealthRegistry(1000, () => t);
-    h.recordError(REF, "AGENT_NOT_FOUND");
+    h.recordError(REF, "GATEWAY_DISCONNECTED");
     const target = h.snapshot().targets[0]!;
     expect(target.state).toBe("error");
-    expect(target.lastError).toEqual({ code: "AGENT_NOT_FOUND", at: 7000 });
+    expect(target.lastError).toEqual({ code: "GATEWAY_DISCONNECTED", at: 7000 });
     expect(target.errorCount).toBe(1);
+  });
+
+  test("recordDownstreamReject -> stays connected (proves the bridge reached its gateway)", () => {
+    const h = new HealthRegistry(1000, () => 8000);
+    h.recordDownstreamReject(REF, "ATTACHMENT_REJECTED");
+    const target = h.snapshot().targets[0]!;
+    // The bridge link worked, so the target is healthy (green), NOT an error.
+    expect(target.state).toBe("connected");
+    expect(target.lastError).toBeNull(); // never a bridge error
+    expect(target.errorCount).toBe(0); // and NOT counted as a bridge failure
+    expect(target.lastDownstreamReject).toEqual({ code: "ATTACHMENT_REJECTED", at: 8000 });
+    expect(target.downstreamRejectCount).toBe(1);
+    expect(target.attempts).toBe(1);
+    expect(target.okCount).toBe(0); // the message was not accepted, only attempted
+  });
+
+  // The exact production incident: re-sending the gateway's unparseable attachment
+  // must leave the bridge GREEN, not paint it red.
+  test("DISCRIMINATING: a downstream reject does NOT flip the bridge to error", () => {
+    const h = new HealthRegistry(0, () => 1);
+    h.recordDownstreamReject(REF, "ATTACHMENT_REJECTED");
+    const reject = h.snapshot().targets[0]!;
+    // Contrast with a real bridge-domain failure on a fresh target:
+    const h2 = new HealthRegistry(0, () => 1);
+    h2.recordError(REF, "GATEWAY_DISCONNECTED");
+    const fail = h2.snapshot().targets[0]!;
+    // Same input shape, OPPOSITE health outcome — the split must hold. If
+    // recordDownstreamReject ever set state="error" this assertion would fail.
+    expect(reject.state).toBe("connected");
+    expect(fail.state).toBe("error");
+    expect(reject.state).not.toBe(fail.state);
+  });
+
+  test("a downstream reject after a stale bridge error reflects RECOVERY (reached gateway again)", () => {
+    let t = 1;
+    const h = new HealthRegistry(0, () => t);
+    h.recordError(REF, "GATEWAY_DISCONNECTED"); // the link was down
+    t = 2;
+    h.recordDownstreamReject(REF, "ATTACHMENT_REJECTED"); // now it reached the gateway
+    const target = h.snapshot().targets[0]!;
+    expect(target.state).toBe("connected"); // no longer red — the bridge recovered
+    expect(target.lastError).toEqual({ code: "GATEWAY_DISCONNECTED", at: 1 }); // history kept
+    expect(target.errorCount).toBe(1);
+    expect(target.downstreamRejectCount).toBe(1);
+    expect(target.attempts).toBe(2);
+  });
+
+  test("a later clean send CLEARS the downstream note (it is not a stale log)", () => {
+    let t = 1;
+    const h = new HealthRegistry(0, () => t);
+    h.recordDownstreamReject(REF, "ATTACHMENT_REJECTED");
+    expect(h.snapshot().targets[0]!.lastDownstreamReject).not.toBeNull();
+    t = 2;
+    h.recordOk(REF); // the next send succeeds -> the note is stale
+    const target = h.snapshot().targets[0]!;
+    expect(target.lastDownstreamReject).toBeNull(); // cleared, not lingering
+    expect(target.downstreamRejectCount).toBe(1); // cumulative count is history, kept
+    expect(target.okCount).toBe(1);
+  });
+
+  test("a later BRIDGE error also clears the downstream note (one current truth)", () => {
+    let t = 1;
+    const h = new HealthRegistry(0, () => t);
+    h.recordDownstreamReject(REF, "ATTACHMENT_REJECTED");
+    t = 2;
+    h.recordError(REF, "GATEWAY_DISCONNECTED"); // now the link itself fails
+    const target = h.snapshot().targets[0]!;
+    expect(target.state).toBe("error");
+    expect(target.lastDownstreamReject).toBeNull(); // the reject note is no longer the truth
+    expect(target.lastError).toEqual({ code: "GATEWAY_DISCONNECTED", at: 2 });
   });
 
   test("a later OK clears the state to connected (recovery), keeping history counts", () => {

@@ -42,12 +42,19 @@ export interface TargetHealth {
   gatewayHost: string;
   state: TargetState;
   lastOkAt: number | null;
-  /** Last classified failure (curated non-PHI code) + when. */
+  /** Last BRIDGE-domain failure (curated non-PHI code) + when — the bridge could
+   *  not reach/authenticate its gateway. This is what drives the `error` state. */
   lastError: { code: string; at: number } | null;
+  /** Last DOWNSTREAM rejection (the gateway received + refused the request) + when.
+   *  NOT a bridge-health failure: recorded for the health view's neutral note, but
+   *  it NEVER sets `state` to `error` (Traces + Anomalies carry the detail/alert). */
+  lastDownstreamReject: { code: string; at: number } | null;
   lastAttemptAt: number | null;
   attempts: number;
   okCount: number;
   errorCount: number;
+  /** Count of downstream rejections (distinct from errorCount = bridge-domain). */
+  downstreamRejectCount: number;
 }
 
 export interface HealthSnapshot {
@@ -95,10 +102,12 @@ export class HealthRegistry {
         state: "idle",
         lastOkAt: null,
         lastError: null,
+        lastDownstreamReject: null,
         lastAttemptAt: null,
         attempts: 0,
         okCount: 0,
         errorCount: 0,
+        downstreamRejectCount: 0,
       };
       this.targets.set(ref.key, h);
       return h;
@@ -118,10 +127,12 @@ export class HealthRegistry {
       h.state = "idle";
       h.lastOkAt = null;
       h.lastError = null;
+      h.lastDownstreamReject = null;
       h.lastAttemptAt = null;
       h.attempts = 0;
       h.okCount = 0;
       h.errorCount = 0;
+      h.downstreamRejectCount = 0;
     }
     // Keep the (non-secret) label fresh if a later send learned the instance name.
     if (ref.instanceName) h.instanceName = ref.instanceName;
@@ -134,20 +145,44 @@ export class HealthRegistry {
     const now = this.clock();
     h.state = "connected";
     h.lastOkAt = now;
+    // The latest outcome is a clean success, so any prior downstream-reject note
+    // is stale — clear it (the durable history belongs to Traces, not here).
+    h.lastDownstreamReject = null;
     h.lastAttemptAt = now;
     h.attempts += 1;
     h.okCount += 1;
   }
 
-  /** A send (or connect) failed; `code` is the curated classification. */
+  /** A send failed because the BRIDGE could not reach/authenticate its gateway
+   *  (`code` is a bridge-domain classification). Flips the target to `error`. */
   recordError(ref: TargetRef, code: string): void {
     const h = this.ensure(ref);
     const now = this.clock();
     h.state = "error";
     h.lastError = { code, at: now };
+    // The latest outcome is a bridge-domain failure, not a downstream reject —
+    // clear the stale note so the card shows one current truth.
+    h.lastDownstreamReject = null;
     h.lastAttemptAt = now;
     h.attempts += 1;
     h.errorCount += 1;
+  }
+
+  /** A send reached the gateway, which REJECTED the request downstream (a missing
+   *  agent, a bad/oversized attachment, a refused request shape, an upstream agent
+   *  error). The bridge's link worked, so this PROVES connectivity: the target
+   *  becomes `connected` and bridge health stays green. The rejection is recorded
+   *  for the health view's neutral note + counter, but is NEVER a bridge `error`
+   *  and does NOT touch `lastError`/`errorCount` (Traces + Anomalies own the
+   *  detail/alerting). See `faultDomain` in dispatch-errors. */
+  recordDownstreamReject(ref: TargetRef, code: string): void {
+    const h = this.ensure(ref);
+    const now = this.clock();
+    h.state = "connected";
+    h.lastDownstreamReject = { code, at: now };
+    h.lastAttemptAt = now;
+    h.attempts += 1;
+    h.downstreamRejectCount += 1;
   }
 
   snapshot(): HealthSnapshot {

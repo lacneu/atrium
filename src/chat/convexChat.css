@@ -3169,6 +3169,13 @@
   margin-top: 0.4rem;
   font-size: 0.83rem;
 }
+/* Downstream rejection: the gateway refused the request — NOT a bridge fault, so
+   it reads as a neutral/muted note, never the destructive red of __error. */
+.oc-bridge-target__downstream {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
 
 /* --- Bridge compatibility (VCOMPAT-C) -------------------------------------
    Settings > Bridge "Compatibilite" section + the unsupported-tab banner.

@@ -103,6 +103,13 @@ export const bridgeHealthTarget = v.object({
   attempts: v.number(),
   okCount: v.number(),
   errorCount: v.number(),
+  // Last DOWNSTREAM rejection (the gateway received + refused the request): the
+  // bridge worked, so it is NOT a bridge-health error — surfaced as a neutral
+  // note, never the red `error` state. Optional: a pre-this-release bridge image
+  // omits them (the poller defaults them to null/0).
+  lastDownstreamRejectCode: v.optional(v.union(v.string(), v.null())),
+  lastDownstreamRejectAt: v.optional(v.union(v.number(), v.null())),
+  downstreamRejectCount: v.optional(v.number()),
 });
 
 // One capability target from the bridge /capabilities snapshot, deduped to ONE

@@ -20,7 +20,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import type { BridgeConfig } from "./config.js";
 import { idempotencyKey, OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
-import { classifyGatewayError } from "./core/dispatch-errors.js";
+import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
 import {
   gatewayHostOf,
   type HealthRegistry,
@@ -1436,7 +1436,19 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         hasAttachments:
           Array.isArray(body.attachments) && body.attachments.length > 0,
       });
-      health.recordError(targetRef(body.agentId, body.canonical), code);
+      // Route by fault domain (see dispatch-errors.faultDomain): a DOWNSTREAM
+      // rejection (the gateway received + refused the request — e.g. an
+      // attachment it could not parse) proves the bridge reached its gateway, so
+      // it must NOT mark the bridge unhealthy. Only a BRIDGE-domain failure
+      // (can't reach/auth the gateway) flips the target to `error`. Either way the
+      // 502 + code below still drive the per-chat failDispatch bubble, the trace,
+      // and the anomaly — the detail/alert path is unchanged.
+      const ref = targetRef(body.agentId, body.canonical);
+      if (faultDomain(code) === "downstream") {
+        health.recordDownstreamReject(ref, code);
+      } else {
+        health.recordError(ref, code);
+      }
       console.error(`bridge /send failed [${code}]:`, (err as Error)?.message ?? err);
       sendJson(res, 502, { ok: false, error: { code } });
     }

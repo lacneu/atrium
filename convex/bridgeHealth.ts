@@ -44,6 +44,9 @@ export function normalizeTarget(raw: unknown): {
   attempts: number;
   okCount: number;
   errorCount: number;
+  lastDownstreamRejectCode: string | null;
+  lastDownstreamRejectAt: number | null;
+  downstreamRejectCount: number;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
@@ -56,6 +59,12 @@ export function normalizeTarget(raw: unknown): {
   const le =
     typeof o.lastError === "object" && o.lastError !== null
       ? (o.lastError as Record<string, unknown>)
+      : null;
+  // Downstream rejection (the gateway refused the request) — a pre-this-release
+  // bridge omits it, so it is parsed defensively and defaults to absent.
+  const dr =
+    typeof o.lastDownstreamReject === "object" && o.lastDownstreamReject !== null
+      ? (o.lastDownstreamReject as Record<string, unknown>)
       : null;
   return {
     key,
@@ -70,6 +79,9 @@ export function normalizeTarget(raw: unknown): {
     attempts: num(o.attempts) ?? 0,
     okCount: num(o.okCount) ?? 0,
     errorCount: num(o.errorCount) ?? 0,
+    lastDownstreamRejectCode: dr ? str(dr.code) : null,
+    lastDownstreamRejectAt: dr ? num(dr.at) : null,
+    downstreamRejectCount: num(o.downstreamRejectCount) ?? 0,
   };
 }
 

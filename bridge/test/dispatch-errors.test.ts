@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { classifyGatewayError } from "../src/core/dispatch-errors.js";
+import {
+  classifyGatewayError,
+  faultDomain,
+  type DispatchErrorCode,
+} from "../src/core/dispatch-errors.js";
 
 describe("classifyGatewayError", () => {
   test("the canonical live failure: INVALID_REQUEST wrapping 'no longer exists' -> AGENT_NOT_FOUND", () => {
@@ -139,5 +143,66 @@ describe("classifyGatewayError", () => {
         ),
       ).toBe("AGENT_NOT_FOUND");
     });
+  });
+});
+
+describe("faultDomain (bridge-health classification)", () => {
+  // BRIDGE-domain = the bridge could not REACH/AUTHENTICATE its gateway -> red.
+  // UPSTREAM_ERROR (the catch-all for any UNRECOGNIZED throw) is bridge-domain by
+  // design: fail-closed, since we cannot prove the gateway ever responded.
+  const BRIDGE: DispatchErrorCode[] = [
+    "AUTH_TOKEN_MISMATCH",
+    "DEVICE_SIGNING_FAILED",
+    "SESSION_SCOPE_DENIED",
+    "GATEWAY_TIMEOUT",
+    "GATEWAY_DISCONNECTED",
+    "UPSTREAM_ERROR",
+  ];
+  // DOWNSTREAM = the gateway DEMONSTRABLY responded + refused -> NOT a bridge fault.
+  const DOWNSTREAM: DispatchErrorCode[] = [
+    "AGENT_NOT_FOUND",
+    "ATTACHMENT_TOO_LARGE",
+    "ATTACHMENT_REJECTED",
+    "INVALID_REQUEST",
+  ];
+
+  test.each(BRIDGE)("%s is a BRIDGE-domain fault (turns the bridge red)", (code) => {
+    expect(faultDomain(code)).toBe("bridge");
+  });
+
+  test.each(DOWNSTREAM)("%s is a DOWNSTREAM rejection (bridge stays green)", (code) => {
+    expect(faultDomain(code)).toBe("downstream");
+  });
+
+  test("the production case: a rejected attachment is NOT a bridge fault", () => {
+    // The exact incident: re-sending the gateway's base64-overflow attachment must
+    // classify as ATTACHMENT_REJECTED and be DOWNSTREAM — the bridge survived it.
+    expect(faultDomain("ATTACHMENT_REJECTED")).toBe("downstream");
+  });
+
+  test("DISCRIMINATING: a real disconnect and an attachment reject are NOT the same domain", () => {
+    // If the split were dropped (everything -> one bucket) this would fail: a
+    // transport loss MUST still mark the bridge red, a payload reject MUST NOT.
+    expect(faultDomain("GATEWAY_DISCONNECTED")).not.toBe(
+      faultDomain("ATTACHMENT_REJECTED"),
+    );
+    expect(faultDomain("GATEWAY_DISCONNECTED")).toBe("bridge");
+  });
+
+  test("every classifiable code has a defined domain (no silent gap)", () => {
+    for (const code of [...BRIDGE, ...DOWNSTREAM]) {
+      expect(["bridge", "downstream"]).toContain(faultDomain(code));
+    }
+  });
+
+  test("FAIL-CLOSED: the UPSTREAM_ERROR catch-all is bridge-domain, not benign", () => {
+    // An UNRECOGNIZED throw (e.g. an unexpected registry.acquire/performSend
+    // failure) classifies as UPSTREAM_ERROR. We cannot prove the gateway answered,
+    // so it must stay VISIBLE as a bridge error — never silently green. If this
+    // ever flips to "downstream", a real bridge failure could hide as a reject.
+    expect(faultDomain("UPSTREAM_ERROR")).toBe("bridge");
+    // The end-to-end shape: an unknown error string -> UPSTREAM_ERROR -> bridge.
+    expect(faultDomain(classifyGatewayError(new Error("kaboom")))).toBe("bridge");
+    expect(faultDomain(classifyGatewayError(null))).toBe("bridge");
   });
 });

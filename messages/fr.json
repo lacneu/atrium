@@ -715,6 +715,7 @@
   "bridge_no_connection_tested": "Aucune connexion encore éprouvée. L’état d’une connexion apparaît dès qu’un message la sollicite (le bridge se connecte à la demande).",
   "bridge_target_stats": "{ok} OK · {errors} échec(s) · {attempts} tentative(s)",
   "bridge_target_last_ok": " · dernier OK {time}",
+  "bridge_target_downstream_reject": "Rejeté par la passerelle : {label} — pas une défaillance du bridge.",
   "bridge_state_connected": "connectée",
   "bridge_state_error": "erreur",
   "bridge_state_inactive": "inactive",

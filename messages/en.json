@@ -715,6 +715,7 @@
   "bridge_no_connection_tested": "No connection tested yet. A connection's state appears as soon as a message exercises it (the bridge connects on demand).",
   "bridge_target_stats": "{ok} OK · {errors} failure(s) · {attempts} attempt(s)",
   "bridge_target_last_ok": " · last OK {time}",
+  "bridge_target_downstream_reject": "Rejected by the gateway: {label} — not a bridge fault.",
   "bridge_state_connected": "connected",
   "bridge_state_error": "error",
   "bridge_state_inactive": "inactive",

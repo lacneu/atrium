@@ -23,6 +23,49 @@ export type DispatchErrorCode =
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
+ * Fault domain of a classified dispatch failure — consumed ONLY by the bridge
+ * HEALTH view, to decide whether a failure means "the BRIDGE is unhealthy" or
+ * "the bridge did its job and the gateway/agent/payload rejected this request".
+ *
+ *  - "bridge": the bridge could not REACH or AUTHENTICATE to its gateway — its own
+ *    link or credentials are the fault (socket loss, timeout, token/signing/scope).
+ *    These degrade bridge health (the Settings "Bridge" tab goes red).
+ *  - "downstream": the bridge reached the gateway, which RECEIVED the request and
+ *    refused it (a missing agent, an unparseable/oversized attachment, a request
+ *    shape the gateway rejected, or any other upstream/agent error). The bridge
+ *    worked, so this must NOT make the bridge look down. It is still surfaced — per
+ *    chat by the failDispatch bubble, and in detail/alerting by Traces + Anomalies —
+ *    but in the HEALTH view it is a neutral "rejected downstream" note, never a
+ *    bridge error. The health module's job is bridge health; the detail/alert job
+ *    already belongs to the other two modules.
+ *
+ * The taxonomy lives HERE (the bridge owns send classification). `/health` then
+ * reports a per-target `state` the UI renders blindly, so Convex + the UI stay
+ * taxonomy-agnostic.
+ */
+export type FaultDomain = "bridge" | "downstream";
+
+// Codes where the gateway DEMONSTRABLY responded and refused this specific request
+// (a missing agent, an oversized/unparseable attachment, a refused request shape):
+// the failure is downstream, not a bridge-health problem. Anything NOT listed is
+// treated as bridge-domain — FAIL-CLOSED. This deliberately EXCLUDES the
+// `UPSTREAM_ERROR` catch-all: classifyGatewayError returns it for any UNRECOGNIZED
+// throw, including an unexpected registry.acquire/performSend failure where we
+// CANNOT prove the gateway ever answered. An unknown failure must stay VISIBLE as a
+// bridge error, never be silently painted green as a benign downstream reject.
+const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
+  "AGENT_NOT_FOUND",
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_REJECTED",
+  "INVALID_REQUEST",
+]);
+
+/** Fault domain of a classified dispatch error (pure → unit-tested offline). */
+export function faultDomain(code: DispatchErrorCode): FaultDomain {
+  return DOWNSTREAM_REJECTION_CODES.has(code) ? "downstream" : "bridge";
+}
+
+/**
  * Map a thrown gateway error to a stable, non-PHI code. Order matters: more
  * specific patterns are tested before the generic INVALID_REQUEST/fallback (the
  * canonical "Agent … no longer exists" arrives wrapped as

@@ -24,6 +24,12 @@ import {
   targetBadgeState,
   versionLabel,
 } from "./compatView";
+import {
+  bridgeErrorTargets,
+  isBridgeHealthy,
+  showsBridgeErrorDetail,
+  showsDownstreamReject,
+} from "./bridgeHealthView";
 
 // "Bridge" settings tab — the place to see EVERYTHING about the bridge's health:
 // reachability, per-connection state, the curated root cause + fix hint of any
@@ -209,9 +215,9 @@ function BridgeHealthDetail({
   health: Health;
   onSeeAnomalies: () => void;
 }) {
-  const errorTargets = health.targets.filter((t) => t.state === "error");
+  const errorTargets = bridgeErrorTargets(health.targets);
   const unreachable = !health.reachable;
-  const healthy = health.reachable && errorTargets.length === 0;
+  const healthy = isBridgeHealthy(health);
   const tone = healthy ? "ok" : "error";
   const checkedAt = new Date(health.checkedAt).toLocaleString("fr-FR");
   const startedAt =
@@ -268,7 +274,17 @@ function BridgeHealthDetail({
       ) : (
         <div className="oc-bridge-targets">
           {health.targets.map((t) => {
-            const info = t.lastErrorCode ? dispatchErrorInfo(t.lastErrorCode) : null;
+            // The red error block is for a CURRENT bridge-domain failure only (see
+            // bridgeHealthView): a recovered/connected target keeps lastError as
+            // history but must NOT look red once the bridge reaches its gateway.
+            const info = showsBridgeErrorDetail(t)
+              ? dispatchErrorInfo(t.lastErrorCode)
+              : null;
+            // A downstream rejection (the gateway refused the request) is NOT a
+            // bridge fault — shown as a neutral note, attributed to the gateway.
+            const downstream = showsDownstreamReject(t)
+              ? dispatchErrorInfo(t.lastDownstreamRejectCode)
+              : null;
             return (
               <div key={t.key} className={`oc-bridge-target oc-bridge-target--${t.state}`}>
                 <div className="oc-bridge-target__head">
@@ -298,6 +314,15 @@ function BridgeHealthDetail({
                       ? ` · ${new Date(t.lastErrorAt).toLocaleTimeString("fr-FR")}`
                       : ""}
                     <p className="oc-bridge-card__hint">{info.hint}</p>
+                  </div>
+                ) : null}
+                {downstream ? (
+                  <div className="oc-bridge-target__downstream">
+                    {m.bridge_target_downstream_reject({ label: downstream.label })}{" "}
+                    <code className="oc-traces__mono">{t.lastDownstreamRejectCode}</code>
+                    {t.lastDownstreamRejectAt
+                      ? ` · ${new Date(t.lastDownstreamRejectAt).toLocaleTimeString("fr-FR")}`
+                      : ""}
                   </div>
                 ) : null}
               </div>
