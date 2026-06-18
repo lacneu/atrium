@@ -22,6 +22,7 @@ import {
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveTargetForChat } from "./routing";
+import { buildOpenClawThreadId } from "./lib/openclawThread";
 
 /**
  * ArrayBuffer -> base64 in the DEFAULT Convex action runtime (no Node Buffer;
@@ -150,6 +151,17 @@ const DISPATCH_FAILURE_MESSAGE: Record<string, string> = {
     "Le service de chat est momentanément indisponible. Réessayez ; si le problème persiste, contactez votre administrateur. (réf. bridge)",
 };
 
+// A FINER, attachment-scoped user message keyed by the curated errorCode, when the
+// generic `send_failed` reason has one. Same discipline: non-secret, no gateway
+// detail/PHI, ends with a short `(réf. …)`. Lets the user know it's the FILE (and
+// that text-only or a smaller file works) instead of a blanket "try again".
+const CODE_FAILURE_MESSAGE: Record<string, string> = {
+  ATTACHMENT_TOO_LARGE:
+    "La pièce jointe est trop volumineuse pour cet agent. Réessayez avec un fichier plus petit, ou envoyez votre message sans la pièce jointe. (réf. attach-size)",
+  ATTACHMENT_REJECTED:
+    "La pièce jointe n’a pas pu être traitée par le service. Réessayez avec un fichier plus petit, ou envoyez votre message sans la pièce jointe. (réf. attach-parse)",
+};
+
 // Terminal FAILURE transition for a dispatch, in ONE transaction: mark the outbox
 // row failed AND surface the failure to the user as an assistant `error` turn (the
 // frontend's RunStatus renders status:"error" + the `error` text). Before this, a
@@ -166,8 +178,11 @@ export const failDispatch = internalMutation({
       v.literal("no_agent"),
       v.literal("send_failed"),
     ),
+    // The curated non-PHI gateway code (when known) — lets us pick a finer,
+    // attachment-scoped user message than the generic reason.
+    errorCode: v.optional(v.string()),
   },
-  handler: async (ctx, { outboxId, reason }) => {
+  handler: async (ctx, { outboxId, reason, errorCode }) => {
     const row = await ctx.db.get(outboxId);
     if (row === null || row.status !== "pending") {
       return; // already terminal (or gone) — never double-fire
@@ -184,7 +199,14 @@ export const failDispatch = internalMutation({
       role: "assistant",
       status: "error",
       text: "",
-      error: DISPATCH_FAILURE_MESSAGE[reason] ?? DISPATCH_FAILURE_MESSAGE.send_failed,
+      error:
+        (errorCode ? CODE_FAILURE_MESSAGE[errorCode] : undefined) ??
+        DISPATCH_FAILURE_MESSAGE[reason] ??
+        DISPATCH_FAILURE_MESSAGE.send_failed,
+      // Keep the STABLE code too (non-PHI) so /api/v1/diagnose can classify the
+      // failure precisely (e.g. ATTACHMENT_TOO_LARGE) instead of seeing the
+      // localized `error` phrase normalize to "unknown".
+      ...(errorCode ? { errorCode } : {}),
       updatedAt: now,
     });
     // Keep the chat sorted-to-top so the failed turn is visible in the sidebar.
@@ -223,6 +245,39 @@ export const getChatRouting = internalQuery({
       // session reset. Non-secret labels only.
       sessionSettings: chat.sessionSettings ?? null,
     };
+  },
+});
+
+// Reconstruct the OpenClaw `thread_id` (== gateway session key) for a chat, so the
+// trace-enrichment route can find OpenClaw's OWN Opik traces for it (they're tagged
+// with this exact key). Mirrors the bridge's buildSessionKey input EXACTLY:
+// `buildSessionKey(openclawChatId ?? chatId, agentId, canonical)` — same rebind +
+// fallback rules as getChatRouting. Returns null when the chat is gone or has no
+// resolvable target. No-auth internal (called from the key-gated httpAction).
+export const openclawThreadForChat = internalQuery({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    let chat: Doc<"chats"> | null = null;
+    try {
+      chat = await ctx.db.get(chatId as Id<"chats">);
+    } catch {
+      return null; // not a valid chat id
+    }
+    if (chat === null) return null;
+    const res = await resolveTargetForChat(ctx, chat, chat.userId);
+    if (res.target === null) return null;
+    // Same segment the bridge keys on (session.ts: `openclawChatId ?? chatId`):
+    // the provider conversation id when one is bound, else the Convex chatId. On a
+    // rebind the stored id belongs to the OLD agent, so fall back to the chatId.
+    let segment = chatId;
+    if (res.rebind === null && chat.openclawChatId) {
+      segment = chat.openclawChatId;
+    }
+    return buildOpenClawThreadId({
+      agentId: res.target.agentId,
+      canonical: res.target.canonical,
+      chatId: segment,
+    });
   },
 });
 
@@ -418,9 +473,12 @@ export const dispatch = internalAction({
     } else {
       // The bridge accepted the POST shape but the gateway refused the turn
       // (502): surface it to the user instead of leaving the message unanswered.
+      // Pass the curated errorCode so an attachment refusal shows a file-specific
+      // message ("trop volumineuse" / "n'a pas pu être traitée"), not a blanket one.
       await ctx.runMutation(internal.bridge.failDispatch, {
         outboxId,
         reason: "send_failed",
+        errorCode,
       });
     }
     await traceDispatch(ctx, {

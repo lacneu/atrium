@@ -17,7 +17,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
-import { SessionRegistry } from "../src/session.js";
+import { SessionRegistry, IDLE_SESSION_TTL_SECONDS } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
@@ -292,6 +292,64 @@ describe("Session consume loop — history recovery survives a wake (review #14 
     await new Promise((r) => setTimeout(r, 30)); // loop TOP checks recovery -> sessions.get
 
     expect(conn.requests).toContain("sessions.get");
+    reg.closeAll();
+  });
+});
+
+// FD-leak reaping (audit CRITICAL): each chat holds an open WebSocket/FD; an idle
+// gateway socket stays open forever, so without reaping the bridge accumulates
+// sockets until FD exhaustion takes down ALL chats. The sweeper closes + drops
+// idle sessions and closed husks.
+describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
+  // UNIT GUARD: the Clock is in SECONDS, so the TTL must be too. We assert the
+  // concrete value (900 = 15 min) and drive the boundary in SECONDS — re-introducing
+  // a milliseconds TTL (the codex P1 regression: reap horizon ~10 days) flips both
+  // the value pin AND the "reaped just past 15 min" expectation to failure.
+  it("the TTL is 15 minutes expressed in SECONDS (matches the Clock unit)", () => {
+    expect(IDLE_SESSION_TTL_SECONDS).toBe(15 * 60);
+  });
+
+  it("reaps a session idle beyond the TTL and CLOSES its connection (no socket leak)", async () => {
+    const start = 1000; // seconds
+    const fifteenMinutes = 15 * 60; // 900 seconds of idle wall-clock
+    let now = start;
+    const conn = fakeConn();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    const { writer } = fakeWriter();
+    const reg = new SessionRegistry(config, writer, () => now);
+    const s = await reg.acquire(ROUTING); // lastActivityAt = start (seconds)
+    // At exactly 15 min idle: NOT yet reaped (strictly greater).
+    expect(reg.reapStaleSessions(start + fifteenMinutes)).toBe(0);
+    expect(s.connection.isClosed).toBe(false);
+    // One second past 15 min with no activity: reaped + the socket/FD is closed.
+    expect(reg.reapStaleSessions(start + fifteenMinutes + 1)).toBe(1);
+    expect(s.connection.isClosed).toBe(true);
+    reg.closeAll();
+  });
+
+  it("reaps a CLOSED husk immediately, regardless of idle time (crashed/dropped connection)", async () => {
+    let now = 1000;
+    const conn = fakeConn();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    const { writer } = fakeWriter();
+    const reg = new SessionRegistry(config, writer, () => now);
+    await reg.acquire(ROUTING);
+    conn.close(); // the gateway dropped it -> a husk that would otherwise linger
+    expect(reg.reapStaleSessions(now)).toBe(1); // reaped now, not after the TTL
+    reg.closeAll();
+  });
+
+  it("a send (re-acquire) keeps a session warm so an active conversation is NOT reaped", async () => {
+    let now = 1000;
+    const conn = fakeConn();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    const { writer } = fakeWriter();
+    const reg = new SessionRegistry(config, writer, () => now);
+    await reg.acquire(ROUTING);
+    now = 1000 + IDLE_SESSION_TTL_SECONDS - 1;
+    await reg.acquire(ROUTING); // a fresh send touches lastActivityAt = now
+    // The FIRST idle window elapsed, but the touch reset the clock -> not idle.
+    expect(reg.reapStaleSessions(now + 1)).toBe(0);
     reg.closeAll();
   });
 });

@@ -64,6 +64,9 @@ export interface ConvexWriter {
     messageId: string,
     media: { filename: string; path: string; mimeType?: string },
   ): Promise<void>;
+  /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
+   *  the agent generated media (codex imageGeneration) but the turn delivered none. */
+  noteMediaUndelivered(messageId: string): Promise<void>;
   /** message.final -> internal.stream.finalize. */
   finalize(
     messageId: string,
@@ -241,6 +244,17 @@ export function causedByTooLarge(err: unknown): boolean {
  * immediately before any non-delta op (snapshot/part/finalize) so ordering is
  * preserved relative to the rest of the stream.
  */
+// Bridge-level deadline on EVERY Convex write. Without it a slow/hung Convex
+// backend (the prod listChats-saturation incident) backs up the writer and the
+// consume loop awaiting it -> chats wedge with no self-heal. On timeout the op
+// aborts + throws; the per-message chain swallows the rejection so it self-heals.
+const WRITE_TIMEOUT_MS = 20_000;
+// Hard cap on ONE message's un-flushed delta buffer (chars). A sustained Convex
+// outage would otherwise grow it without bound -> OOM (which the process safety
+// net CANNOT catch). The turn's setSnapshot/finalize carries the FULL text, so
+// only intermediate streaming fidelity is trimmed under extreme backpressure.
+const MAX_PENDING_DELTA_CHARS = 256 * 1024;
+
 export class HttpConvexWriter implements ConvexWriter {
   private readonly url: string;
   private readonly ingestSecret: string;
@@ -254,10 +268,15 @@ export class HttpConvexWriter implements ConvexWriter {
   // Per-message pending delta buffer + its flush timer.
   private pendingDelta = new Map<string, string>();
   private flushTimer = new Map<string, NodeJS.Timeout>();
-  // Serialization chain: every op POSTs strictly in enqueue order, so a flush
-  // timer firing concurrently with a snapshot/finalize never scrambles ordering
-  // (the ingest mutations are sequential per message and order is load-bearing).
-  private chain: Promise<unknown> = Promise.resolve();
+  // One-shot "this message's deltas were capped" marker (log once per message).
+  private deltaCapped = new Set<string>();
+  // PER-MESSAGE serialization chains: ordering is load-bearing only WITHIN a
+  // message (a flush timer firing concurrently with a snapshot/finalize must not
+  // scramble that message's ingest order). A SINGLE global chain (the old design)
+  // also serialized UNRELATED chats, so one slow op blocked EVERY chat. Keyed by
+  // messageId; message-less ops (startAssistant/getUploadUrl/getRehydrationContext)
+  // run independently. Entries are evicted on finalize so the map stays bounded.
+  private chains = new Map<string, Promise<unknown>>();
 
   constructor(opts: HttpConvexWriterOptions) {
     this.url = opts.convexHttpActionsUrl.replace(/\/$/, "") + INGEST_PATH;
@@ -267,24 +286,80 @@ export class HttpConvexWriter implements ConvexWriter {
     this.mediaFetcher = opts.mediaFetcher;
   }
 
-  /** Enqueue an op on the serialization chain; resolves with its result. */
+  /** Post an op. A message-keyed op (it carries `messageId`) is serialized on that
+   *  message's chain; a message-less op (startAssistant/getUploadUrl/...) runs
+   *  independently so it never blocks behind another chat's work. */
   private post<T>(body: IngestOp): Promise<T> {
-    const run = this.chain.then(() => this.doPost<T>(body));
-    // Keep the chain alive even if this op rejects (don't poison later ops),
-    // but propagate the error to the caller via `run`.
-    this.chain = run.catch(() => undefined);
+    const messageId =
+      "messageId" in body && typeof (body as { messageId?: unknown }).messageId === "string"
+        ? (body as { messageId: string }).messageId
+        : null;
+    if (messageId === null) return this.doPost<T>(body);
+    return this.enqueue<T>(messageId, () => this.doPost<T>(body));
+  }
+
+  /** Run `op` after the message's prior op, and become its new chain tail. The
+   *  tail swallows rejections (don't poison later ops) but the caller still sees
+   *  this op's error via the returned promise. */
+  private enqueue<T>(messageId: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(messageId) ?? Promise.resolve();
+    const run = prev.then(op);
+    this.chains.set(messageId, run.catch(() => undefined));
     return run;
   }
 
+  /** Diagnostic/test seam: does this message still hold ANY retained state (chain,
+   *  buffered delta, cap flag, or flush timer)? The memory-bounding invariant is
+   *  "after finalize, false for every message" — so a test can assert cleanup ran
+   *  even when the final flush/post failed, without reaching into private maps. */
+  hasMessageState(messageId: string): boolean {
+    return (
+      this.chains.has(messageId) ||
+      this.pendingDelta.has(messageId) ||
+      this.deltaCapped.has(messageId) ||
+      this.flushTimer.has(messageId)
+    );
+  }
+
+  /** Drop a finalized message's chain + buffers so the maps stay bounded (the
+   *  finalize is its last op). Idempotent. */
+  private forgetMessage(messageId: string): void {
+    const t = this.flushTimer.get(messageId);
+    if (t) {
+      clearTimeout(t);
+      this.flushTimer.delete(messageId);
+    }
+    this.pendingDelta.delete(messageId);
+    this.deltaCapped.delete(messageId);
+    this.chains.delete(messageId);
+  }
+
   private async doPost<T>(body: IngestOp): Promise<T> {
-    const response = await this.fetchImpl(this.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.ingestSecret}`,
-      },
-      body: JSON.stringify(body),
-    });
+    // Bridge-level deadline: a slow/hung Convex backend must time out + throw (the
+    // chain then self-heals) rather than wedge the writer — and the consume loop
+    // awaiting it — forever. Mirrors the gateway-http-media-fetcher abort pattern.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.ingestSecret}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`Convex ingest ${body.op} timed out after ${WRITE_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new Error(
@@ -304,7 +379,19 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async appendDelta(messageId: string, text: string): Promise<void> {
-    const buffered = (this.pendingDelta.get(messageId) ?? "") + text;
+    let buffered = (this.pendingDelta.get(messageId) ?? "") + text;
+    if (buffered.length > MAX_PENDING_DELTA_CHARS) {
+      // Sustained backpressure: cap the buffer (keep the most-recent tail) so it
+      // can't grow without bound -> OOM. setSnapshot/finalize still carries the
+      // full normalizer text, so only intermediate streaming fidelity is trimmed.
+      if (!this.deltaCapped.has(messageId)) {
+        this.deltaCapped.add(messageId);
+        console.warn(
+          `[stream] delta buffer capped for ${messageId} (Convex backpressure) — intermediate text trimmed; snapshot will correct`,
+        );
+      }
+      buffered = buffered.slice(buffered.length - MAX_PENDING_DELTA_CHARS);
+    }
     this.pendingDelta.set(messageId, buffered);
     if (this.flushTimer.has(messageId)) {
       return; // a flush is already scheduled
@@ -342,7 +429,7 @@ export class HttpConvexWriter implements ConvexWriter {
       this.flushTimer.delete(messageId);
     }
     const enqueuedAt = Date.now();
-    const run = this.chain.then(async () => {
+    return this.enqueue(messageId, async () => {
       const text = this.pendingDelta.get(messageId);
       this.pendingDelta.delete(messageId);
       if (text === undefined || text === "") {
@@ -361,17 +448,18 @@ export class HttpConvexWriter implements ConvexWriter {
         );
       } catch (err) {
         // Re-buffer the UNSENT text (PREPEND — deltas may have arrived since) so
-        // a transient ingest failure loses nothing; the next flush retries.
+        // a transient ingest failure loses nothing; the next flush retries. Bounded
+        // by appendDelta's MAX_PENDING_DELTA_CHARS cap so a long outage can't OOM.
+        const merged = text + (this.pendingDelta.get(messageId) ?? "");
         this.pendingDelta.set(
           messageId,
-          text + (this.pendingDelta.get(messageId) ?? ""),
+          merged.length > MAX_PENDING_DELTA_CHARS
+            ? merged.slice(merged.length - MAX_PENDING_DELTA_CHARS)
+            : merged,
         );
         throw err;
       }
     });
-    // Keep the chain alive even if this flush rejects (don't poison later ops).
-    this.chain = run.catch(() => undefined);
-    return run;
   }
 
   async setSnapshot(messageId: string, text: string): Promise<void> {
@@ -430,6 +518,17 @@ export class HttpConvexWriter implements ConvexWriter {
       const { uploadUrl } = await this.post<{ uploadUrl: string }>({
         op: "getUploadUrl",
       });
+      // The getUploadUrl await is the window where the just-opened fs stream can
+      // fail (file removed after the stat, EACCES). If it errored BEFORE we start
+      // reading, the stream is settled and toWeb would yield 0 bytes cleanly -> a
+      // silent EMPTY upload. Detect that here and DROP instead. (There is NO async
+      // gap between this check and toWeb in streamToUploadUrl, and an fs error is
+      // always async, so a post-check error can only fire mid-read, where toWeb
+      // propagates it -> the catch below reports the drop.)
+      if (opened.readError?.()) {
+        this.emitMediaTrace(messageId, "dropped", { reason: "read_error" });
+        return;
+      }
       const storageId = await this.streamToUploadUrl(
         uploadUrl,
         opened.stream,
@@ -459,6 +558,19 @@ export class HttpConvexWriter implements ConvexWriter {
         reason: causedByTooLarge(err) ? "too_large" : "upload_error",
       });
     }
+  }
+
+  /**
+   * The agent GENERATED media this turn (e.g. a codex `imageGeneration` item) but
+   * delivered none — no `MEDIA:`/`mediaUrls`/outbound path, so there is nothing for
+   * the bridge to fetch. Record a SOC2-safe `openclaw.media` dropped diagnostic
+   * (reason `generated_no_delivery`, NO part, no content) so the #7 self-correction
+   * loop can flag the agent's missing delivery directive.
+   */
+  async noteMediaUndelivered(messageId: string): Promise<void> {
+    this.emitMediaTrace(messageId, "dropped", {
+      reason: "generated_no_delivery",
+    });
   }
 
   /**
@@ -520,14 +632,24 @@ export class HttpConvexWriter implements ConvexWriter {
     text: string,
     error: string | null,
   ): Promise<void> {
-    await this.flushDelta(messageId); // never strand buffered deltas behind final
-    const postStart = Date.now();
-    await this.post({ op: "finalize", messageId, status, text, error });
-    // The finalize is the LAST write (it stamps the message's updatedAt) — its
-    // wall-clock here vs the gateway's turn end is the end-to-end lag readout.
-    console.log(
-      `[stream] finalize msg=${messageId} status=${status} bytes=${text.length} postMs=${Date.now() - postStart}`,
-    );
+    try {
+      await this.flushDelta(messageId); // never strand buffered deltas behind final
+      const postStart = Date.now();
+      await this.post({ op: "finalize", messageId, status, text, error });
+      // The finalize is the LAST write (it stamps the message's updatedAt) — its
+      // wall-clock here vs the gateway's turn end is the end-to-end lag readout.
+      console.log(
+        `[stream] finalize msg=${messageId} status=${status} bytes=${text.length} postMs=${Date.now() - postStart}`,
+      );
+    } finally {
+      // The message is terminal: drop its chain + buffers so the maps never grow
+      // without bound across the process lifetime (one entry per message ever).
+      // MUST cover the flush too: if the FINAL flushDelta (or the finalize post)
+      // throws/times out under Convex backpressure, a `finally` that began AFTER the
+      // flush would leak this message's chain + delta buffer forever and strand it
+      // in `streaming` — defeating the very memory bound this cleanup exists for.
+      this.forgetMessage(messageId);
+    }
   }
 
   async getRehydrationContext(

@@ -136,6 +136,13 @@ export class TurnSink {
           }
           break;
         }
+        case "media.undelivered": {
+          // The agent generated media (e.g. a codex imageGeneration item) but the
+          // turn delivered none -> record a SOC2-safe diagnostic so the gap (missing
+          // MEDIA:/mediaUrls delivery directive) is visible. No content, no part.
+          await this.writer.noteMediaUndelivered(messageId);
+          break;
+        }
         case "message.final": {
           // Buffer; the paired run.status decides complete vs error vs aborted.
           this.pendingFinalText = asString(event.text);

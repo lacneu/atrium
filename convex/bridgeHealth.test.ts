@@ -85,17 +85,19 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
     expect(computeAvailability(null, NOW)).toEqual({
       known: false,
       available: true,
+      degraded: false,
       reason: null,
       checkedAt: null,
     });
   });
 
-  test("reachable, no target error, fresh -> available", () => {
+  test("reachable, no target error, fresh -> available, not degraded", () => {
     const a = computeAvailability(
       doc({ reachable: true, checkedAt: NOW, targets: [{ state: "connected" }] }),
       NOW,
     );
     expect(a.available).toBe(true);
+    expect(a.degraded).toBe(false);
     expect(a.reason).toBeNull();
   });
 
@@ -108,13 +110,38 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
     expect(a.reason).toBe("unreachable");
   });
 
-  test("a target in error -> unavailable (target_error)", () => {
+  // REGRESSION GATE for the global-readonly deadlock: a single agent/target in
+  // `error` while the bridge is reachable must keep the composer AVAILABLE for
+  // everyone (only `degraded` is flagged). If this ever flips back to
+  // available:false, one agent's failed send locks out every chat and — since the
+  // target only clears on a SUCCESSFUL send the lockout itself blocks — it deadlocks
+  // until a manual bridge restart. The per-chat failDispatch bubble is the backstop.
+  test("a target in error (bridge reachable) -> STILL available, degraded:true", () => {
     const a = computeAvailability(
-      doc({ reachable: true, checkedAt: NOW, targets: [{ state: "error" }] }),
+      doc({
+        reachable: true,
+        checkedAt: NOW,
+        targets: [{ state: "error" }, { state: "connected" }],
+      }),
       NOW,
     );
-    expect(a.available).toBe(false);
-    expect(a.reason).toBe("target_error");
+    expect(a.available).toBe(true); // NOT false — no global lockout on one agent
+    expect(a.degraded).toBe(true); // informational only
+    expect(a.reason).toBeNull(); // no blocking reason
+  });
+
+  test("unreachable still wins even if a target happens to be 'error'", () => {
+    const a = computeAvailability(
+      doc({
+        reachable: false,
+        checkedAt: NOW,
+        lastError: "http_502",
+        targets: [{ state: "error" }],
+      }),
+      NOW,
+    );
+    expect(a.available).toBe(false); // bridge process is down -> genuine block
+    expect(a.reason).toBe("http_502");
   });
 
   test("stale snapshot (poller wedged) -> unavailable (stale)", () => {

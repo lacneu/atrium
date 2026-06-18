@@ -453,6 +453,22 @@
   padding: 0.45rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--background);
+  /* The strip mounts only once the gateway's session meta arrives — give it a
+     designed entrance: the bar settles down + fades, its border-bottom wipes in,
+     and the meta chips cascade (see below). Plays once on mount. */
+  animation: oc-chathead-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes oc-chathead-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+    border-bottom-color: transparent;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    border-bottom-color: var(--border);
+  }
 }
 .oc-chathead__title {
   min-width: 0;
@@ -468,6 +484,45 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+/* The session chips (model / reasoning / context / export / advanced) cascade in
+   as the info "populates" — a short staggered fade + rise + scale. */
+.oc-chathead__meta > * {
+  animation: oc-chip-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.oc-chathead__meta > *:nth-child(1) {
+  animation-delay: 0.08s;
+}
+.oc-chathead__meta > *:nth-child(2) {
+  animation-delay: 0.13s;
+}
+.oc-chathead__meta > *:nth-child(3) {
+  animation-delay: 0.18s;
+}
+.oc-chathead__meta > *:nth-child(4) {
+  animation-delay: 0.23s;
+}
+.oc-chathead__meta > *:nth-child(5) {
+  animation-delay: 0.28s;
+}
+.oc-chathead__meta > *:nth-child(6) {
+  animation-delay: 0.33s;
+}
+@keyframes oc-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-chathead,
+  .oc-chathead__meta > * {
+    animation: none;
+  }
 }
 .oc-chip {
   display: inline-flex;
@@ -1229,6 +1284,34 @@
 .oc-msg__actions--user {
   left: auto;
   right: -0.35rem;
+}
+/* In-transit optimistic echo: the bubble is slightly dimmed and a quiet "Envoi…"
+   indicator sits under it (right-aligned with the user column) until the server
+   confirms (the real message replaces the optimistic one). */
+.oc-msg--user.is-sending .oc-msg__bubble {
+  opacity: 0.72;
+}
+.oc-msg__sending {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-end;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-msg__sending-spin {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in oklch, var(--muted-foreground) 35%, transparent);
+  border-top-color: var(--muted-foreground);
+  animation: oc-spin 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-msg__sending-spin {
+    animation: none;
+  }
 }
 .oc-msg__body {
   min-width: 0;
@@ -3385,7 +3468,73 @@
   font-size: 0.85rem;
   padding: 0.75rem 0.25rem;
 }
-.oc-agentpicker__search { margin-bottom: 0.5rem; }
+.oc-agentpicker__search,
+.oc-access__search { margin-bottom: 0.5rem; }
+/* Selected/total counter pinned to the right of a section header. */
+.oc-access__count {
+  margin-left: auto;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+/* shadcn DialogContent has no max-height/scroll — cap the access dialog so a
+   long list never pushes the title or footer off-screen. */
+.oc-access { max-height: 85vh; overflow-y: auto; }
+.oc-access__tabs { margin-top: 0.25rem; }
+/* Count chip inside a tab trigger (members / agents totals). */
+.oc-access__tabcount {
+  font-size: 0.62rem;
+  padding: 0 0.3rem;
+  min-width: 1rem;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+/* "Select all" sits above the list, separated by a hairline. */
+.oc-access__selectall {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.5rem;
+}
+/* Stacked primary label + secondary identifier (email / @handle). */
+.oc-access__who {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+.oc-access__who .oc-access__label {
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-access__sub {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-access__role {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  text-transform: capitalize;
+}
+/* Prev / page / next footer under a paged list. */
+.oc-access__pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border);
+}
+.oc-access__pageinfo {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
 .oc-agentpicker__list,
 .oc-access__list {
   display: flex; flex-direction: column; gap: 0.35rem;
@@ -3881,8 +4030,11 @@
    prefers-reduced-motion concern this round.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* 1 — App canvas: a faint "horizon" glow rising from the bottom + a whisper of
-   a second hue top-right. Painted on body so it shows behind the conversation. */
+/* 1 — App canvas: a faint "horizon" glow rising from the bottom + a whisper
+   top-right. Painted on body so it shows behind the conversation. Both use
+   --primary (NEUTRAL on the Atrium default → B&W, no stray colored glow; recolors
+   to the brand on a colored chart) — never --chart-* (those are colorful even on
+   Atrium and would tint the neutral default). */
 :root[data-ambiance="on"] body {
   background-image:
     radial-gradient(
@@ -3892,7 +4044,7 @@
     ),
     radial-gradient(
       80% 60% at 88% 6%,
-      color-mix(in oklch, var(--chart-1) 4%, transparent),
+      color-mix(in oklch, var(--primary) 4%, transparent),
       transparent 55%
     );
   background-repeat: no-repeat;
@@ -3910,7 +4062,7 @@
     ),
     radial-gradient(
       80% 60% at 88% 6%,
-      color-mix(in oklch, var(--chart-1) 6%, transparent),
+      color-mix(in oklch, var(--primary) 6%, transparent),
       transparent 55%
     );
   background-repeat: no-repeat;

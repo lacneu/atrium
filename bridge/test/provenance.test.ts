@@ -257,6 +257,9 @@ class FakeWriter implements ConvexWriter {
   async addMedia(): Promise<void> {
     this.calls.push(["other", "addMedia"]);
   }
+  async noteMediaUndelivered(): Promise<void> {
+    this.calls.push(["other", "noteMediaUndelivered"]);
+  }
   async finalize(_m: string, _s: FinalizeStatus): Promise<void> {
     this.calls.push(["other", "finalize"]);
   }

@@ -422,6 +422,62 @@ describe("timing model", () => {
   });
 });
 
+// --- native media generation without delivery (the C3 gap, live-found 2026-06-18) -
+// OpenClaw 2026.6.5 emits a codex `imageGeneration` item ({stream:
+// "codex_app_server.item", data:{type:"imageGeneration", phase}}) that carries NO
+// path/url/bytes. When the agent generates media this way but emits NO
+// MEDIA:/mediaUrls delivery directive, there is nothing for the bridge to fetch.
+// finalize must surface a SOC2-safe `media.undelivered` diagnostic so the gap (the
+// agent's missing delivery directive) is visible — and must NOT false-positive when
+// the agent DID deliver, nor on a plain turn. These guard the behaviour across
+// future OpenClaw compat versions.
+describe("native media generation without delivery", () => {
+  const imgGen = (phase: string) => ({
+    event: "agent",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId: OWN_RUN,
+      stream: "codex_app_server.item",
+      data: { type: "imageGeneration", phase, itemId: "ig_test" },
+    },
+  });
+  const assistantText = (text: string) => ({
+    event: "agent",
+    payload: { sessionKey: SESSION_KEY, runId: OWN_RUN, stream: "assistant", data: { text } },
+  });
+  function run(feedFrames: unknown[]): BridgeEvent[] {
+    const n = newNormalizer();
+    const c = new Clock();
+    n.beginTurn(c.now);
+    n.noteRunStarted(OWN_RUN, c.now);
+    const ev: BridgeEvent[] = [];
+    for (const f of feedFrames) ev.push(...n.feed(f, c.tick()));
+    c.tick(BASE_RECV_TIMEOUT + 1);
+    ev.push(...n.tick(c.now));
+    return ev;
+  }
+
+  it("imageGeneration completed + NO media -> emits media.undelivered (no media part)", () => {
+    const ev = run([imgGen("started"), imgGen("completed"), assistantText("Voici l'image.")]);
+    expect(ev.some((e) => e.type === "media.undelivered")).toBe(true);
+    expect(ev.some((e) => e.type === "media")).toBe(false);
+  });
+
+  it("imageGeneration completed BUT delivered via MEDIA: -> NO diagnostic (media wins)", () => {
+    const ev = run([
+      imgGen("completed"),
+      assistantText("Voici.\nMEDIA:/home/node/.openclaw/media/outbound/red.png"),
+    ]);
+    expect(ev.some((e) => e.type === "media")).toBe(true);
+    expect(ev.some((e) => e.type === "media.undelivered")).toBe(false);
+  });
+
+  it("plain turn (no imageGeneration) -> never emits the diagnostic (no false positive)", () => {
+    const ev = run([assistantText("just text, no media")]);
+    expect(ev.some((e) => e.type === "media.undelivered")).toBe(false);
+  });
+});
+
 // Silence unused-import lint when EMPTY_FINAL_GRACE / LIFECYCLE_END_GRACE are
 // only referenced for documentation parity with the Python suite.
 void EMPTY_FINAL_GRACE;

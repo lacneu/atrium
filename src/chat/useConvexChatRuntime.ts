@@ -58,29 +58,39 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // below) so this patches the same cached query result.
       const key = { chatId: args.chatId as unknown as string };
       const current = localStore.getQuery(api.messages.listByChat, key);
-      // Query not loaded yet (e.g. send before the first read settled): nothing
-      // to append to — skip rather than seed a partial cache.
-      if (current === undefined) return;
+      // The list may not be loaded yet — a fast send before the first read
+      // settles, OR a slow/overloaded/just-created chat (the exact "did my send
+      // register?" window). SEED onto an empty base so the user's message ALWAYS
+      // echoes this frame. Convex REAPPLIES this updater whenever listByChat
+      // changes, so when the real list loads it re-runs as [...history, optimistic]
+      // (no permanent history loss — at worst history is hidden for the in-flight
+      // ~1-2s, far better than a void), and drops the echo when the mutation
+      // commits (the real message takes its place).
+      const base = current ?? [];
       // Idempotency / double-fire guard: never echo the same logical send twice.
       const echoId = `optimistic-${args.clientMessageId}`;
-      if (current.some((m) => m._id === echoId)) return;
+      if (base.some((m) => m._id === echoId)) return;
       const now = Date.now();
       const optimistic = {
         _id: echoId as Id<"messages">,
         chatId: args.chatId,
         _creationTime: now,
         role: "user" as const,
+        // `complete` keeps the status switches simple; the "sending…" affordance
+        // keys off the `optimistic-` id prefix instead (see convertMessage), so no
+        // MessageStatus enum surgery / gate-logic risk.
         status: "complete" as const,
         runId: undefined,
         error: undefined,
+        errorCode: undefined, // optimistic user echo never carries a dispatch code
         text: args.text,
         updatedAt: now,
         // Attachments reconcile a beat later with their server-signed URL; the
         // instant echo carries the text (the primary case). Empty is fine — the
         // converter renders the text bubble immediately.
-        parts: [] as (typeof current)[number]["parts"],
-      } satisfies (typeof current)[number];
-      localStore.setQuery(api.messages.listByChat, key, [...current, optimistic]);
+        parts: [] as (typeof base)[number]["parts"],
+      } satisfies (typeof base)[number];
+      localStore.setQuery(api.messages.listByChat, key, [...base, optimistic]);
     },
   );
 

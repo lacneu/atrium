@@ -90,6 +90,9 @@ class FakeWriter implements ConvexWriter {
       { filename: media.filename, path: media.path },
     ]);
   }
+  async noteMediaUndelivered(): Promise<void> {
+    /* no-op for these tests */
+  }
   async finalize(
     messageId: string,
     status: FinalizeStatus,
@@ -203,6 +206,29 @@ describe("run-manager -> convex-writer mapping", () => {
       ["setSnapshot", MESSAGE_ID, "Bonjour !"],
       ["finalize", MESSAGE_ID, "complete", "Bonjour !", null],
     ]);
+  });
+
+  it("disarmReplayBuffer (failed send) drops the armed window so a stray frame is NOT buffered/replayed", async () => {
+    // performSend arms the buffer THEN calls chat.send; if chat.send THROWS,
+    // beginTurn never runs (its normal drain+disarm never fires). disarmReplayBuffer
+    // is the failure-path cleanup. DISCRIMINATING: a late/background frame from the
+    // failed send, arriving AFTER disarm but before the next arm, must be DROPPED —
+    // if disarm didn't clear `replayArmed`, the window would still capture it and
+    // beginTurn would replay stale content into the NEXT turn.
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    manager.disarmReplayBuffer(); // chat.send rejected before beginTurn
+    for (const frame of frames("chat-final-content")) {
+      await manager.feed(frame, clock.tick()); // disarmed -> dropped, not buffered
+    }
+    // The NEXT (successful) turn arms fresh + begins: only its own (empty) message,
+    // zero stale content from the failed send leaks in.
+    manager.armReplayBuffer();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    expect(writer.calls).toEqual([["startAssistant", CHAT_ID, OWN_RUN]]);
+    expect(manager.isFinalized).toBe(false);
   });
 
   it("between-turn frames (UNARMED) are dropped, never replayed into the next turn (P2)", async () => {

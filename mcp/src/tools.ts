@@ -167,6 +167,45 @@ export const getChatStateInput = {
   ),
 } as const;
 
+export const getTraceEnrichmentInput = {
+  correlationId: z
+    .string()
+    .describe(
+      "The Atrium correlationId of the turn (from a trace/anomaly via list_traces/list_anomalies) — the deterministic key to the Opik/Langfuse trace (required).",
+    ),
+  chatId: z
+    .string()
+    .optional()
+    .describe(
+      "Optional chat id. Enables the Langfuse session augmentation: surfaces OTHER traces on the same chat session (incl. any OpenClaw-emitted one), content-free. Omit for this turn's deterministic trace only.",
+    ),
+  at: z
+    .number()
+    .optional()
+    .describe(
+      "The ORIGINAL trace timestamp (epoch ms), from the same trace/anomaly row as " +
+        "the correlationId. REQUIRED to resolve an Opik trace (its id bakes the " +
+        "timestamp in); omit only for a Langfuse-only lookup. Without it, Opik " +
+        "reports `needs_timestamp` rather than silently returning nothing.",
+    ),
+} as const;
+
+export interface GetTraceEnrichmentArgs {
+  correlationId: string;
+  chatId?: string;
+  at?: number;
+}
+
+export const diagnoseChatInput = {
+  chatId: z.string().describe("The chat id to diagnose (required)."),
+} as const;
+
+export const reconcileChatInput = {
+  chatId: z
+    .string()
+    .describe("The chat id whose stuck stream to reconcile (required)."),
+} as const;
+
 /** Build a query string from defined values only (Bearer is never in the URL). */
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
@@ -202,6 +241,20 @@ export function getCompat(
 }
 
 /**
+ * GET /api/v1/integrations — Opik/Langfuse integration status: per vendor
+ * `configured`/`enabled` + the NON-SECRET effective endpoints + the shipping
+ * cursors (lastAt/failureCount/error code). NEVER a key. Requires `traces.read`.
+ * The self-correction loop's first step: an agent learns whether enriched
+ * observability data is available (and shipping is healthy) before asking for it.
+ */
+export function getIntegrations(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, "/integrations", {}, options);
+}
+
+/**
  * GET /api/v1/chat-state — per-message lifecycle of one chat (METADATA ONLY: no
  * text). Requires `traces.read`. Exposes the stuck-streaming signal: a message
  * `status:"streaming"` with a large `ageSeconds` (`stuckStreaming:true`) is a
@@ -213,6 +266,62 @@ export function getChatState(
   options?: ApiFetchOptions,
 ): Promise<unknown> {
   return apiFetch(config, `/chat-state${qs({ chatId: args.chatId })}`, {}, options);
+}
+
+/**
+ * GET /api/v1/trace-enrichment — the SOC2-safe STRUCTURE of a turn's trace (keyed
+ * by its correlationId) from the configured Opik/Langfuse: span
+ * names/types/lifecycle/timing/parent tree, NEVER input/output/message
+ * text/metadata. Requires `traces.read`. The self-correction loop's deep read: an
+ * agent sees the REAL OpenClaw message structure behind an anomaly without ever
+ * seeing regulated data.
+ */
+export function getTraceEnrichment(
+  config: Config,
+  args: GetTraceEnrichmentArgs,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    `/trace-enrichment${qs({ correlationId: args.correlationId, chatId: args.chatId, at: args.at })}`,
+    {},
+    options,
+  );
+}
+
+/**
+ * GET /api/v1/diagnose — ONE actionable assessment of a chat for the
+ * self-correction loop: SOC2-safe chat-state + bridge availability, classified
+ * (stuck_stream | dispatch_error | attachment_problem | bridge_unavailable |
+ * bridge_degraded | healthy) with a `suggestedAction` and, when a safe corrective
+ * exists, a `suggestedTool`. Requires `traces.read`. Read-only. Call FIRST on a
+ * user report, then act on the suggestion.
+ */
+export function diagnoseChat(
+  config: Config,
+  args: { chatId: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, `/diagnose${qs({ chatId: args.chatId })}`, {}, options);
+}
+
+/**
+ * POST /api/v1/reconcile-chat — the BOUNDED corrective `diagnose` may recommend:
+ * flip this chat's stuck 'streaming' message(s) to error (preserving text),
+ * releasing the hung UI so the user can retry. Requires `selfheal` (a sensitive
+ * write). Audited. Only touches messages already streaming past a short cutoff.
+ */
+export function reconcileChat(
+  config: Config,
+  args: { chatId: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/reconcile-chat",
+    { method: "POST", body: JSON.stringify({ chatId: args.chatId }) },
+    options,
+  );
 }
 
 /** GET /api/v1/traces — recent trace events. Requires `traces.read`. */

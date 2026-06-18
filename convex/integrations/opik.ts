@@ -42,6 +42,7 @@ export type OpikTrace = {
   metadata: Record<string, string | number>;
   tags: string[];
   thread_id?: string; // chat id for multi-turn grouping (non-PHI id)
+  project_name?: string; // the Opik project; set in send() so ship + enrich agree
 };
 
 export type OpikBatchPayload = {
@@ -124,7 +125,10 @@ export async function send(
     return { ok: true, count: 0 };
   }
 
-  const traces = await Promise.all(events.map(mapEventToVendor));
+  const mapped = await Promise.all(events.map(mapEventToVendor));
+  // Stamp the configured project on every trace so ship + enrich target the SAME
+  // Opik project (the read API requires project_name; default "Default Project").
+  const traces = mapped.map((t) => ({ ...t, project_name: config.projectName }));
   const payload = buildPayload(traces);
 
   const headers: Record<string, string> = {

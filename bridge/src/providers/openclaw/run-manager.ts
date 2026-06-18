@@ -151,6 +151,17 @@ export class RunManager {
   }
 
   /**
+   * Disarm the pre-ack buffer WITHOUT draining it — for a send whose `chat.send`
+   * THREW before beginTurn could run (so beginTurn's normal disarm never fired).
+   * Leaves no armed window lingering between a failed send and the next one (which
+   * would otherwise buffer stray/background frames until the next arm). Idempotent.
+   */
+  disarmReplayBuffer(): void {
+    this.replayArmed = false;
+    this.pendingFrames = [];
+  }
+
+  /**
    * Start a new assistant turn. Seeds ownRunIds from the chat.send ack runId
    * (foreign-run isolation) BEFORE the sink creates the streaming message, so
    * ordering matches the pre-refactor monolith. Call before feeding any frames.

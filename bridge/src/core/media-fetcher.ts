@@ -36,6 +36,18 @@ export interface OpenedMedia {
    * "unknown" rather than "0" (which would read as an empty file).
    */
   size: number | null;
+  /**
+   * The error the byte stream emitted BEFORE the consumer attached, or null — set
+   * by fetchers whose stream can fail asynchronously in the window between open()
+   * and the upload's first read (the local-fs `createReadStream`: file removed
+   * after the stat, EACCES, EMFILE). The consumer MUST check this after any await
+   * that precedes consuming `stream` and treat a non-null result as a DROP: a
+   * swallowed early error otherwise settles the stream so `Readable.toWeb` yields
+   * 0 bytes cleanly -> a SILENT empty upload. Absent (network fetchers) => null:
+   * their stream comes from an already-resolved fetch body, so failures surface at
+   * open() (fetch_error) or mid-read (propagated through toWeb -> the fetch throws).
+   */
+  readError?: () => Error | null;
 }
 
 /**
@@ -209,6 +221,25 @@ export class LocalDirMediaFetcher implements MediaFetcher {
       return { ok: false, reason: "too_large" };
     }
     const stream = createReadStream(resolved);
-    return { ok: true, stream, mimeType: mimeForFilename(filename), size };
+    // CAPTURE (do not swallow) an error that fires BEFORE the consumer attaches:
+    // the writer consumes this stream only after an async getUploadUrl round-trip,
+    // so an fs error in that window (file removed after the stat, EACCES, EMFILE)
+    // emits 'error' with no listener -> uncaughtException if unguarded. A bare
+    // swallow avoids the crash but then settles the stream so `Readable.toWeb`
+    // yields 0 bytes cleanly -> a SILENT empty upload. We instead HOLD the error
+    // and expose it via readError(); the writer checks it after the round-trip and
+    // drops. An error DURING the read (consumer already attached) still propagates
+    // through toWeb -> the upload fetch throws -> drop (verified).
+    let earlyError: Error | null = null;
+    stream.once("error", (err: Error) => {
+      earlyError = err;
+    });
+    return {
+      ok: true,
+      stream,
+      mimeType: mimeForFilename(filename),
+      size,
+      readError: () => earlyError,
+    };
   }
 }

@@ -27,6 +27,8 @@ export type OpikOverride = {
   baseUrl?: string;
   workspace?: string;
   enabled?: boolean;
+  projectName?: string;
+  openclawProjectName?: string;
 };
 
 /** Read the integrationConfig singleton (non-secret overrides) or null. */
@@ -84,7 +86,20 @@ export type OpikConfig = {
   baseUrl: string;
   apiKey: string;
   workspace: string;
+  /** Opik project ATRIUM's OWN traces live in. REQUIRED by the read API (`GET
+   *  /v1/private/spans` 400s without `project_name`), and the WRITE batch lands
+   *  traces here so ship + enrich stay consistent. Default "Default Project"
+   *  (Opik's own default when a trace omits it). */
+  projectName: string;
+  /** SEPARATE project Atrium READS OpenClaw's OWN traces from (the plugins ship
+   *  there, e.g. "openclaw-<canonical>"). Empty = no OpenClaw thread-search (only
+   *  Atrium's own deterministic trace). Kept distinct from `projectName` so
+   *  Atrium's metadata traces never mix with OpenClaw's rich span trees. */
+  openclawProjectName: string;
 };
+
+// Opik's default project name when a trace is ingested without `project_name`.
+const DEFAULT_OPIK_PROJECT = "Default Project";
 
 export function opikConfig(override?: OpikOverride): OpikConfig {
   const apiKey = (process.env.OPIK_API_KEY ?? "").trim();
@@ -92,12 +107,24 @@ export function opikConfig(override?: OpikOverride): OpikConfig {
   const baseUrl = stripTrailingSlash(
     pick(override?.baseUrl, process.env.OPIK_BASE_URL, DEFAULT_OPIK_BASE_URL),
   );
+  const projectName = pick(
+    override?.projectName,
+    process.env.OPIK_PROJECT_NAME,
+    DEFAULT_OPIK_PROJECT,
+  );
+  const openclawProjectName = pick(
+    override?.openclawProjectName,
+    process.env.OPIK_OPENCLAW_PROJECT,
+    "",
+  );
   return {
     configured: apiKey.length > 0,
     enabled: override?.enabled !== false,
     baseUrl,
     apiKey,
     workspace,
+    projectName,
+    openclawProjectName,
   };
 }
 

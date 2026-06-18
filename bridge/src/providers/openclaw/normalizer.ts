@@ -41,6 +41,7 @@ import {
   EVENT_RUN_STATUS,
   EVENT_TOOL_STATUS,
   EVENT_MEDIA,
+  EVENT_MEDIA_UNDELIVERED,
   type BridgeEvent,
 } from "../../core/events.js";
 import {
@@ -272,6 +273,10 @@ export class Normalizer {
   // holding a private-ack/empty-final grace, the session loop recovers the text
   // via `sessions.get` (history recovery, deferred since 5.19) exactly once.
   sawMessageToolItem: boolean;
+  // The agent ran NATIVE media generation this turn (a codex `imageGeneration`
+  // item). It carries no path/url/bytes — if the turn then delivers no media
+  // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
+  sawMediaGeneration: boolean;
   private recoveryAttempted = false;
   // Buffered tool args by toolCallId: a real tool's start(args) + result(result)
   // coalesce into ONE `completed` tool.status carrying input+output, so the UI
@@ -296,6 +301,7 @@ export class Normalizer {
     this.mediaPaths = [];
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.sawMediaGeneration = false;
     this.deadlines = new Map();
   }
 
@@ -314,6 +320,7 @@ export class Normalizer {
     this.mediaPaths = [];
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.sawMediaGeneration = false;
     this.recoveryAttempted = false;
     this.toolArgs.clear();
     // A fresh turn invalidates the previous run ids: frames arriving before the
@@ -491,6 +498,15 @@ export class Normalizer {
 
   private handleAgent(payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
     const stream = payload.stream;
+    // Codex NATIVE media generation (e.g. an `imageGeneration` item, stream
+    // "codex_app_server.item") is a lifecycle marker with NO path/url/bytes — there
+    // is no handle for the bridge to fetch. Flag it (keyed on data.type, robust to
+    // the stream label) so finalize can surface a diagnostic when the turn delivers
+    // no media (the agent omitted the MEDIA:/mediaUrls delivery directive).
+    if (data.type === "imageGeneration" && data.phase === "completed") {
+      this.sawMediaGeneration = true;
+      return;
+    }
     if (stream === "assistant") {
       const mediaUrls = data.mediaUrls;
       if (Array.isArray(mediaUrls)) {
@@ -838,7 +854,14 @@ export class Normalizer {
       finalEvent.error = error;
       statusEvent.message = error;
     }
-    return [finalEvent, statusEvent];
+    const result: BridgeEvent[] = [finalEvent, statusEvent];
+    // The agent ran native media generation this turn but delivered NO media
+    // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
+    // gap (agent omitted the delivery directive) is visible to the #7 loop.
+    if (this.sawMediaGeneration && this.mediaPaths.length === 0) {
+      result.push({ type: EVENT_MEDIA_UNDELIVERED, runId: this.currentRunId });
+    }
+    return result;
   }
 
   private resetForCompaction(now: number): void {

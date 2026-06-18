@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
 import { CircleAlert, Square } from "lucide-react";
 import type { MessageStatus } from "./convexTypes";
@@ -40,6 +41,21 @@ export function RunStatus() {
   );
 
   const view = runStatusView(status, hasText);
+  // After a while waiting for the first token (slow / overloaded / reconnecting
+  // backend — the client can't tell which), swap the thinking label for a
+  // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.
+  // Purely cosmetic: a local timer scoped to the thinking state; touches NOTHING
+  // in the gate / clear / safety-timeout logic.
+  const isThinking = view?.kind === "thinking";
+  const [longWait, setLongWait] = useState(false);
+  useEffect(() => {
+    if (!isThinking) {
+      setLongWait(false);
+      return;
+    }
+    const t = window.setTimeout(() => setLongWait(true), 6000);
+    return () => window.clearTimeout(t);
+  }, [isThinking]);
   if (!view) return null;
 
   // Error is rendered as a STANDARDIZED alert card (icon + title + message in a
@@ -77,7 +93,11 @@ export function RunStatus() {
       ) : (
         <Square size={13} aria-hidden />
       )}
-      <span className="oc-run-status__label">{view.label}</span>
+      <span className="oc-run-status__label">
+        {view.kind === "thinking" && longWait
+          ? m.chat_run_taking_longer()
+          : view.label}
+      </span>
     </div>
   );
 }

@@ -186,6 +186,7 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               ? (message.liveText ?? message.text)
               : message.text,
           error: message.error,
+          errorCode: message.errorCode, // stable curated code (set by failDispatch)
           updatedAt: message.updatedAt,
           parts,
         };
@@ -283,7 +284,10 @@ export const chatStateInternal = internalQuery({
         updatedAt: mDoc.updatedAt,
         ageSeconds: Math.round(ageMs / 1000),
         textLenBucket: textLenBucket(mDoc.text?.length ?? 0),
-        errorCode: normalizeMessageErrorCode(mDoc.error), // stable code, never raw
+        // Prefer the STORED stable code (set by failDispatch) so a dispatch failure
+        // is classified precisely; fall back to normalizing the error text (the
+        // path for gateway/stream errors that only carry a text reason).
+        errorCode: mDoc.errorCode ?? normalizeMessageErrorCode(mDoc.error),
         // Client's DERIVED render-state from the SHARED logic (runStatusView core).
         runStatusKind: runStatusKind(mDoc.status, hasText),
         stuckStreaming: mDoc.status === "streaming" && ageMs > STALE_STREAM_MS,

@@ -68,6 +68,11 @@ class Session implements BridgeSession {
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
   readonly clock: Clock;
+  // Last time this session saw work (a send via acquire, or an inbound frame), on
+  // the SECONDS Clock. The registry's idle sweeper reaps a session — closing its
+  // WebSocket/FD — once this is older than IDLE_SESSION_TTL_SECONDS, so idle sockets
+  // don't accumulate to FD exhaustion (the next send transparently reconnects).
+  lastActivityAt: number;
   private consumerStarted = false;
   // Wake seam for the consume loop (see consume() + wake()): lets beginTurn,
   // which runs OFF this loop and arms the recv/grace deadline, prod the loop to
@@ -92,6 +97,7 @@ class Session implements BridgeSession {
     this.connection = connection;
     this.runManager = new RunManager(chatId, sessionKey, writer);
     this.clock = clock;
+    this.lastActivityAt = clock();
   }
 
   /**
@@ -227,6 +233,7 @@ class Session implements BridgeSession {
           break;
         }
         nextFrame = iterator.next();
+        this.lastActivityAt = now; // active turn -> not idle, don't let the sweeper reap it
         try {
           await this.runManager.feed(winner.value, now);
         } catch (err) {
@@ -316,6 +323,19 @@ export function raceWithTimeout<T>(
   });
 }
 
+// Idle-session sweeper cadence + TTL. Each chat holds its own WebSocket (an open
+// FD) for the lifetime of its Session, and an idle gateway socket stays open
+// indefinitely (the gateway drives keepalive). Without reaping, EVERY chat ever
+// sent-to leaks one socket/FD -> eventual EMFILE/ENFILE -> the bridge can open
+// nothing (gateway, Convex, HTTP) -> ALL chats down, restart required (the prod
+// "bridge falls + new chats readonly" failure). The sweeper closes + drops a
+// session idle beyond the TTL, and reaps closed husks; the next send reconnects.
+const SWEEP_INTERVAL_MS = 60_000; // setInterval unit = milliseconds
+// TTL is compared against the module Clock, which is in SECONDS (Date.now()/1000),
+// so it MUST be expressed in seconds too. A milliseconds value here would push the
+// reap horizon to ~10 days and silently defeat the FD-leak fix.
+export const IDLE_SESSION_TTL_SECONDS = 15 * 60;
+
 /**
  * Owns the live sessions. `acquire` returns the session for a chat, creating
  * (and connecting) it on first use. Routing uses `openclawChatId` to build the
@@ -324,6 +344,7 @@ export function raceWithTimeout<T>(
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly config: BridgeConfig,
@@ -331,12 +352,44 @@ export class SessionRegistry {
     private readonly clock: Clock = defaultClock,
   ) {}
 
+  /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
+   *  never acquire don't spin a timer). The interval is unref'd — it never keeps
+   *  the process alive — and is cleared by closeAll. */
+  private ensureSweeper(): void {
+    if (this.sweepTimer !== null) return;
+    this.sweepTimer = setInterval(() => this.reapStaleSessions(this.clock()), SWEEP_INTERVAL_MS);
+    if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
+  }
+
+  /** Close + drop sessions that are already closed (husks) or idle beyond the TTL.
+   *  Returns the number reaped. Pure over `now` -> unit-testable with a fake clock. */
+  reapStaleSessions(now: number): number {
+    let reaped = 0;
+    for (const [chatId, session] of this.sessions) {
+      const dead = session.connection.isClosed;
+      const idle = now - session.lastActivityAt > IDLE_SESSION_TTL_SECONDS;
+      if (dead || idle) {
+        if (!dead) {
+          try {
+            session.close();
+          } catch {
+            /* already gone */
+          }
+        }
+        this.sessions.delete(chatId);
+        reaped++;
+      }
+    }
+    return reaped;
+  }
+
   /** The Convex writer (read seam for session re-hydration in performSend). */
   getWriter(): ConvexWriter {
     return this.writer;
   }
 
   async acquire(routing: SessionRouting): Promise<BridgeSession> {
+    this.ensureSweeper();
     const { chatId, openclawChatId, agentId, canonical } = routing;
     // The session key is derived from THIS turn's routed agent + canonical, so a
     // rebind (deleted agent → default = new agentId, or a changed canonical)
@@ -347,6 +400,7 @@ export class SessionRegistry {
 
     const existing = this.sessions.get(chatId);
     if (existing && !existing.connection.isClosed && existing.sessionKey === sessionKey) {
+      existing.lastActivityAt = this.clock(); // a send keeps it warm (not idle)
       return existing;
     }
     // A closed, missing, OR re-keyed session: drop (closing if still open) and
@@ -412,6 +466,10 @@ export class SessionRegistry {
 
   /** Cleanly close every live session (graceful shutdown). */
   closeAll(): void {
+    if (this.sweepTimer !== null) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     for (const session of this.sessions.values()) {
       session.close();
     }

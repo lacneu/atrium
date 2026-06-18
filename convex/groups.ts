@@ -311,6 +311,129 @@ export const removeAgentFromGroup = mutation({
   },
 });
 
+// Upper bound on a single bulk call. listUsers/listInstances are bounded at 500,
+// so a real "select all" never approaches this — it is purely an abuse guard.
+const BULK_CAP = 1000;
+
+// "Select all" / "deselect all" for members: add or remove a whole set in ONE
+// round-trip (the per-user mutations would be N requests). Each item reuses the
+// idempotent add/remove logic; a single audit row is written when anything
+// actually changed.
+export const bulkSetMembers = mutation({
+  args: {
+    groupId: v.id("groups"),
+    userIds: v.array(v.id("users")),
+    member: v.boolean(),
+  },
+  handler: async (ctx, { groupId, userIds, member }) => {
+    await requirePermission(ctx, PERMISSIONS.GROUPS_MANAGE);
+    const actor = await getActor(ctx);
+    await getGroupOrThrow(ctx, groupId);
+    if (userIds.length > BULK_CAP) {
+      throw new Error(
+        `Refused: bulk membership change exceeds ${BULK_CAP} users`,
+      );
+    }
+    let changed = 0;
+    for (const userId of userIds) {
+      const existing = await ctx.db
+        .query("groupMembers")
+        .withIndex("by_user_group", (q) =>
+          q.eq("userId", userId).eq("groupId", groupId),
+        )
+        .unique();
+      if (member && existing === null) {
+        await ctx.db.insert("groupMembers", {
+          groupId,
+          userId,
+          joinedAt: Date.now(),
+        });
+        changed++;
+      } else if (!member && existing !== null) {
+        await ctx.db.delete(existing._id);
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      await auditImpersonated(
+        ctx,
+        actor,
+        member ? "group.addMember" : "group.removeMember",
+        { resource: "group", resourceId: groupId },
+      );
+    }
+  },
+});
+
+// "Select all" / "deselect all" for the agents of ONE instance. On assign, each
+// agent is re-validated exactly like assignAgentToGroup (discovered + present);
+// anything not assignable is silently skipped so a partial set still applies.
+export const bulkSetGroupAgents = mutation({
+  args: {
+    groupId: v.id("groups"),
+    instanceName: v.string(),
+    agentIds: v.array(v.string()),
+    assigned: v.boolean(),
+  },
+  handler: async (ctx, { groupId, instanceName, agentIds, assigned }) => {
+    await requirePermission(ctx, PERMISSIONS.GROUPS_MANAGE);
+    const actor = await getActor(ctx);
+    await getGroupOrThrow(ctx, groupId);
+    if (agentIds.length > BULK_CAP) {
+      throw new Error(
+        `Refused: bulk agent change exceeds ${BULK_CAP} agents`,
+      );
+    }
+    let changed = 0;
+    for (const agentId of agentIds) {
+      const existing = await ctx.db
+        .query("groupAgents")
+        .withIndex("by_group_instance_agent", (q) =>
+          q
+            .eq("groupId", groupId)
+            .eq("instanceName", instanceName)
+            .eq("agentId", agentId),
+        )
+        .unique();
+      if (assigned) {
+        if (existing !== null) continue; // idempotent
+        const agent = await ctx.db
+          .query("agents")
+          .withIndex("by_instance_agent", (q) =>
+            q.eq("instanceName", instanceName).eq("agentId", agentId),
+          )
+          .first();
+        if (
+          agent === null ||
+          agent.source !== "discovered" ||
+          !agent.presentInLastOk
+        ) {
+          continue; // not assignable — skip, do not abort the batch
+        }
+        await ctx.db.insert("groupAgents", {
+          groupId,
+          instanceName,
+          agentId,
+          createdAt: Date.now(),
+        });
+        changed++;
+      } else {
+        if (existing === null) continue; // idempotent
+        await ctx.db.delete(existing._id);
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      await auditImpersonated(
+        ctx,
+        actor,
+        assigned ? "group.assignAgent" : "group.removeAgent",
+        { resource: "group", resourceId: groupId },
+      );
+    }
+  },
+});
+
 // ===========================================================================
 // QUERIES
 // ===========================================================================

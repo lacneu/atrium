@@ -42,6 +42,14 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_gateway_disconnected_label(),
     hint: m.error_gateway_disconnected_hint(),
   }),
+  ATTACHMENT_TOO_LARGE: () => ({
+    label: m.error_attachment_too_large_label(),
+    hint: m.error_attachment_too_large_hint(),
+  }),
+  ATTACHMENT_REJECTED: () => ({
+    label: m.error_attachment_rejected_label(),
+    hint: m.error_attachment_rejected_hint(),
+  }),
   BRIDGE_UNREACHABLE: () => ({
     label: m.error_bridge_unreachable_label(),
     hint: m.error_bridge_unreachable_hint(),

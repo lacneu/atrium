@@ -863,8 +863,15 @@ function SourceToggleButton({
 function UserMessage() {
   const [showSource, setShowSource] = useState(false);
   const ui = useUiPrefs();
+  // The optimistic echo (id `optimistic-…`) is in transit until the server
+  // message replaces it. While in transit, show a quiet "Envoi…" affordance
+  // instead of the action bar so the user sees their message is registered +
+  // being sent (esp. on a slow/overloaded/reconnecting backend).
+  const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
   return (
-    <MessagePrimitive.Root className="oc-msg oc-msg--user">
+    <MessagePrimitive.Root
+      className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}`}
+    >
       <div className="oc-msg__col oc-msg__col--user">
         <div className="oc-msg__bubble">
           {showSource ? (
@@ -873,11 +880,17 @@ function UserMessage() {
             <MessagePrimitive.Parts components={plainComponents} />
           )}
         </div>
-        <ActionBarPrimitive.Root
-          className="oc-msg__actions oc-msg__actions--user"
-          hideWhenRunning
-          autohide="not-last"
-        >
+        {sending ? (
+          <span className="oc-msg__sending" role="status">
+            <span className="oc-msg__sending-spin" aria-hidden />
+            {m.chat_message_sending()}
+          </span>
+        ) : (
+          <ActionBarPrimitive.Root
+            className="oc-msg__actions oc-msg__actions--user"
+            hideWhenRunning
+            autohide="not-last"
+          >
           {ui.copyUser ? (
             <ActionBarPrimitive.Copy className="oc-iconbtn" title={m.chat_copy_message()}>
               <MessagePrimitive.If copied>
@@ -896,7 +909,8 @@ function UserMessage() {
           ) : null}
           {ui.showReport ? <FeedbackButton /> : null}
           {ui.showDelete ? <DeleteMessageButton kind="user" /> : null}
-        </ActionBarPrimitive.Root>
+          </ActionBarPrimitive.Root>
+        )}
       </div>
     </MessagePrimitive.Root>
   );

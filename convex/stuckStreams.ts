@@ -15,6 +15,7 @@
 // the composer unlocks — the user can delete or regenerate. A trace event is
 // written so the action is visible in the trace center / API.
 
+import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { writeTraceEvent } from "./observability";
@@ -30,6 +31,55 @@ export const STALE_STREAM_MS = 12 * 60 * 1000;
 // their own text — this code is reserved for the watchdog.
 export const STUCK_STREAM_ERROR_CODE = "stream_orphaned";
 const BATCH = 25;
+
+// A DELIBERATE, chat-scoped reconcile for the self-correction loop (#7): an AI
+// agent that diagnosed a stuck chat releases ITS hung stream NOW instead of waiting
+// for the 12-min passive watchdog. Shorter cutoff (60s) because the caller is acting
+// on a reported problem. Safe + bounded: only flips messages ALREADY streaming for
+// >= the cutoff, in ONE chat, scanning only the 50 most-recent messages.
+export const RECONCILE_MIN_AGE_MS = 60 * 1000;
+
+export const reconcileChatStuckStreams = internalMutation({
+  args: { chatId: v.string(), principalId: v.optional(v.string()) },
+  handler: async (ctx, { chatId, principalId }) => {
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return { ok: false as const, error: "bad chatId", reconciled: 0 };
+    const now = Date.now();
+    const cutoff = now - RECONCILE_MIN_AGE_MS;
+    // Most-recent messages only — a stuck stream is the in-flight (last) turn.
+    const recent = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", id))
+      .order("desc")
+      .take(50);
+    let reconciled = 0;
+    for (const msg of recent) {
+      if (msg.status !== "streaming" || msg.updatedAt >= cutoff) continue;
+      // Preserve text/parts; flip ONLY the lifecycle so isRunning releases.
+      await ctx.db.patch(msg._id, {
+        status: "error",
+        error: STUCK_STREAM_ERROR_CODE,
+      });
+      await writeTraceEvent(ctx, {
+        kind: "assistant.reconcile",
+        direction: "internal",
+        principalType: "service",
+        principalId: principalId ?? "selfheal",
+        chatId: msg.chatId,
+        runId: msg.runId ?? undefined,
+        correlationId: msg.runId ? `${msg.chatId}:${msg.runId}` : msg.chatId,
+        meta: JSON.stringify({
+          reason: "deliberate_reconcile",
+          messageId: msg._id,
+          ageSeconds: Math.round((now - msg.updatedAt) / 1000),
+          hadText: (msg.text?.length ?? 0) > 0,
+        }),
+      });
+      reconciled++;
+    }
+    return { ok: true as const, reconciled };
+  },
+});
 
 export const reconcileStuckStreams = internalMutation({
   args: {},

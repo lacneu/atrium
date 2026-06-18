@@ -14,6 +14,9 @@ import { authenticateApiKey, principalHasPermission } from "./lib/apiAuth";
 import { PERMISSIONS } from "./lib/rbac";
 import { parseRange } from "./lib/timeRange";
 import type { Filter } from "./lib/filters";
+import { enrichTraceByCorrelation } from "./integrations/enrich";
+import { langfuseConfig, opikConfig } from "./integrations/config";
+import { assessChat } from "./lib/diagnose";
 
 const http = httpRouter();
 
@@ -252,6 +255,260 @@ http.route({
     });
 
     return apiJson({ ok: true, rollups });
+  }),
+});
+
+// Integration status (Opik / Langfuse) for a key-authed principal — so an AI agent
+// can discover whether each observability tool is wired + shipping is healthy
+// before it asks for enriched trace data (the self-correction loop's first step).
+// Mirrors /api/v1/traces. NON-SECRET: configured/enabled + the effective endpoints
+// + shipping cursors (vendor/lastAt/failureCount/error code), NEVER a key. Gated on
+// traces.read.
+http.route({
+  path: "/api/v1/integrations",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/integrations",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+    const integrations = await ctx.runQuery(
+      internal.integrations.status.statusInternal,
+      {},
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/integrations",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, integrations });
+  }),
+});
+
+// Trace ENRICHMENT — fetch the SOC2-safe STRUCTURE of a chat's traces from the
+// configured Opik/Langfuse (span names/types/lifecycle/timing/tree — NEVER
+// input/output/text/metadata). The self-correction loop reads this to see the
+// REAL OpenClaw message structure behind an anomaly without seeing regulated data.
+// `?chatId=` (required) drives the Langfuse session query; `?correlationId=` +
+// optional `?at=` (epoch ms) add the deterministic vendor-trace-id lookup (the
+// Opik link). Gated on traces.read. Configs (incl. keys) stay in the action's env.
+http.route({
+  path: "/api/v1/trace-enrichment",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/trace-enrichment",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+    const correlationId = strParam(url, "correlationId");
+    if (!correlationId) {
+      return apiJson({ ok: false, error: "correlationId is required" }, 400);
+    }
+    // `at` is the ORIGINAL ship-time trace timestamp (Opik's UUIDv7 bakes it in).
+    // Pass it through ONLY when explicitly provided + finite — never default to now,
+    // which would derive a wrong Opik id and silently return zero spans for a
+    // historic trace. Absent => enrichTraceByCorrelation reports Opik needs_timestamp.
+    const atParam = strParam(url, "at");
+    const atNum =
+      atParam !== undefined && Number.isFinite(Number(atParam))
+        ? Number(atParam)
+        : undefined;
+    // Optional: enables the Langfuse content-free `sessionId` augmentation AND the
+    // Opik thread-search (reconstructed gateway session key) so OpenClaw's OWN traces
+    // for this chat surface — not just this turn's deterministic one.
+    const chatId = strParam(url, "chatId");
+    const openclawThreadId = chatId
+      ? ((await ctx.runQuery(internal.bridge.openclawThreadForChat, {
+          chatId,
+        })) ?? undefined)
+      : undefined;
+    const ov = await ctx.runQuery(internal.integrations.ship.vendorOverrides, {});
+    const enrichment = await enrichTraceByCorrelation({
+      correlationId,
+      chatId,
+      openclawThreadId,
+      atMs: atNum,
+      langfuse: langfuseConfig(ov.langfuse),
+      opik: opikConfig(ov.opik),
+    });
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/trace-enrichment",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, enrichment });
+  }),
+});
+
+// DIAGNOSE — one actionable assessment of a chat for the self-correction loop:
+// aggregates the SOC2-safe chat-state + bridge availability and classifies the
+// problem (stuck_stream / dispatch_error / attachment_problem / bridge_unavailable
+// / bridge_degraded / healthy) with a `suggestedAction` and, when a safe corrective
+// exists, a `suggestedTool` (e.g. reconcile_chat). Gated on traces.read. Read-only.
+http.route({
+  path: "/api/v1/diagnose",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/diagnose",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: traces.read" }, 403);
+    }
+    const chatId = strParam(url, "chatId");
+    if (!chatId) {
+      return apiJson({ ok: false, error: "chatId is required" }, 400);
+    }
+    const chatState = await ctx.runQuery(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    const availability = await ctx.runQuery(
+      internal.bridgeHealth.availabilityInternal,
+      {},
+    );
+    const assessment = assessChat(chatState, availability);
+    // SOC2 access log (CC6.1/CC7.2), mirroring /chat-state: WHO diagnosed WHICH chat
+    // + the structural verdict (class/severity only — never content). Attributes the
+    // read to the chat so a key enumerating chatIds is detectable.
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/diagnose",
+      method: "GET",
+      status: 200,
+      chatId,
+      latencyMs: Date.now() - startedAt,
+      meta: JSON.stringify({
+        class: assessment.class,
+        severity: assessment.severity,
+      }),
+    });
+    return apiJson({ ok: true, assessment, chatState, availability });
+  }),
+});
+
+// RECONCILE-CHAT — the BOUNDED corrective the diagnose may recommend: flip this
+// chat's stuck 'streaming' message(s) to error (preserving text), releasing the
+// hung UI. Sensitive WRITE -> requires `selfheal`. POST { chatId }. Audited.
+http.route({
+  path: "/api/v1/reconcile-chat",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/reconcile-chat",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    let body: { chatId?: unknown };
+    try {
+      body = (await request.json()) as { chatId?: unknown };
+    } catch {
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const chatId = typeof body.chatId === "string" ? body.chatId : "";
+    if (!chatId) {
+      return apiJson({ ok: false, error: "chatId is required" }, 400);
+    }
+    const result = await ctx.runMutation(
+      internal.stuckStreams.reconcileChatStuckStreams,
+      { chatId, principalId: principal.id },
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/reconcile-chat",
+      method: "POST",
+      status: result.ok ? 200 : 400,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: result.ok, reconciled: result.reconciled }, result.ok ? 200 : 400);
   }),
 });
 

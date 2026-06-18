@@ -8,7 +8,7 @@
 // in ONE buffer and the next executed flush carries ALL of them — one real POST
 // per backend round-trip, no queue growth.
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { Readable } from "node:stream";
 import { HttpConvexWriter, bytesBucket } from "../src/convex-writer";
 import {
@@ -304,6 +304,21 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     expect(traces[1]?.reason).toBe("no_fetcher");
   });
 
+  test("noteMediaUndelivered -> dropped(generated_no_delivery), NO part, NO fetch", async () => {
+    // The agent generated media (codex imageGeneration) but delivered none: a
+    // content-free diagnostic only, never an upload or a media part.
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl); // no fetcher needed — nothing is fetched
+    await w.noteMediaUndelivered("m1");
+    await tick(10);
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces).toHaveLength(1);
+    expect(traces[0]?.phase).toBe("dropped");
+    expect(traces[0]?.reason).toBe("generated_no_delivery");
+    expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
+    expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
+  });
+
   test.each([
     "not_found",
     "too_large",
@@ -337,6 +352,30 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
     expect(traces[traces.length - 1]?.reason).toBe("upload_error");
+  });
+
+  test("EARLY STREAM ERROR (file vanished in the getUploadUrl window): dropped(read_error), NEVER an empty upload", async () => {
+    // The fs stream errored BEFORE the first read (open() captured it via
+    // readError()). Uploading it would stream 0 bytes and silently persist an EMPTY
+    // attachment. addMedia must detect readError() after the getUploadUrl round-trip
+    // and DROP. Discriminating: a fetcher whose readError() is null on the SAME
+    // stream uploads normally (see SUCCESS) — only the non-null error forces the drop.
+    const open: OpenResult = {
+      ok: true,
+      stream: Readable.from([Buffer.alloc(5)]),
+      mimeType: "text/markdown",
+      size: 5,
+      readError: () => new Error("ENOENT: gone after stat"),
+    };
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl, fakeFetcher(open));
+    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await tick(10);
+    expect(sent.map((s) => s.op)).toContain("getUploadUrl"); // got that far
+    expect(sent.map((s) => s.op)).not.toContain("addMediaPart"); // but never persisted
+    const traces = sent.filter((s) => s.op === "mediaTrace");
+    expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
+    expect(traces[traces.length - 1]?.reason).toBe("read_error");
   });
 
   test("STREAMED CAP (code on the error): dropped(too_large), NOT upload_error", async () => {
@@ -396,5 +435,82 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     ]);
     expect(outcome).toBe("DONE");
     expect(sent.map((s) => s.op)).toContain("addMediaPart"); // real write happened
+  });
+});
+
+// Bridge-never-falls hardening (audit CRITICAL): the writer used to funnel EVERY
+// chat through ONE chain with no write deadline, so a slow/hung Convex backend (the
+// listChats-saturation incident) wedged ALL chats. These pin the per-message chain
+// + the write timeout + the delta cap.
+describe("per-message chains + write timeout + delta cap (never-falls)", () => {
+  test("a HELD op on one message does NOT block an op on a DIFFERENT message (no cross-chat wedge)", async () => {
+    const { fetchImpl, sent, release } = controlledFetch();
+    const w = writerWith(fetchImpl, 5);
+    // m1's snapshot POST goes in flight and is HELD (slow Convex for that message).
+    const p1 = w.setSnapshot("m1", "A");
+    await tick(2);
+    expect(sent.length).toBe(1); // m1's POST in flight, held
+    // m2's snapshot must NOT wait behind m1 — with the old single global chain it
+    // would; with per-message chains it posts independently.
+    const p2 = w.setSnapshot("m2", "B");
+    await tick(2);
+    expect(sent.length).toBe(2); // m2 went through WITHOUT m1 being released
+    release();
+    release();
+    await Promise.all([p1, p2]);
+  });
+
+  test("a single message's delta buffer is CAPPED (cannot grow without bound -> OOM)", async () => {
+    const { fetchImpl, sent, release } = controlledFetch();
+    const w = writerWith(fetchImpl, 5);
+    const CAP = 256 * 1024;
+    await w.appendDelta("m1", "x".repeat(CAP + 50_000)); // way over the cap
+    await tick(15); // the flush POST goes in flight with the CAPPED buffer
+    release();
+    await tick(20);
+    const appended = sent.filter((s) => s.op === "appendDelta");
+    expect(appended.length).toBe(1);
+    expect(appended[0]!.text!.length).toBe(CAP); // trimmed to the cap, not 306KB
+  });
+
+  test("finalize FORGETS the message even when its FINAL flush POST fails (memory bound holds on the failure path)", async () => {
+    // A fetch that rejects the appendDelta flush (models Convex backpressure/timeout
+    // on the very last flush) but would otherwise succeed.
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { op: string };
+      if (body.op === "appendDelta") throw new Error("convex backpressure on flush");
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl, 5);
+    await w.appendDelta("m1", "buffered tail"); // arm a pending delta + flush timer
+    expect(w.hasMessageState("m1")).toBe(true);
+    // finalize flushes FIRST -> that POST throws -> finalize rejects (text re-buffered)
+    await expect(w.finalize("m1", "complete", "final", null)).rejects.toThrow(
+      /backpressure/,
+    );
+    // ...but the message MUST still be forgotten. The OLD code put forgetMessage in a
+    // finally that began AFTER the flush, so a flush throw leaked the chain + the
+    // re-buffered delta forever and stranded the message in `streaming`. Discriminating:
+    // revert finalize to flush-before-try and this flips to true.
+    expect(w.hasMessageState("m1")).toBe(false);
+  });
+
+  test("a hung Convex write TIMES OUT and rejects (self-heals; never wedges forever)", async () => {
+    vi.useFakeTimers();
+    // A fetch that only settles when its AbortSignal fires (models a hung backend).
+    const fetchImpl = ((_url: unknown, init: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+        );
+      })) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl, 5);
+    const p = w.setSnapshot("m1", "X").then(
+      () => "resolved",
+      (e) => (e as Error).message,
+    );
+    await vi.advanceTimersByTimeAsync(20_001); // past WRITE_TIMEOUT_MS
+    expect(await p).toMatch(/timed out/i);
+    vi.useRealTimers();
   });
 });

@@ -691,9 +691,20 @@ async function performSend(
   // streaming response is never dropped. Arming is scoped to THIS send→ack
   // window, so a stray frame between turns is never buffered or replayed.
   session.runManager.armReplayBuffer();
-  const response = await conn.request("chat.send", params, 20_000);
-  const ackRunId = extractRunId(response);
-  await session.runManager.beginTurn(now, ackRunId);
+  try {
+    const response = await conn.request("chat.send", params, 20_000);
+    const ackRunId = extractRunId(response);
+    await session.runManager.beginTurn(now, ackRunId);
+  } catch (err) {
+    // ANY failure in the armed send→turn-start window: chat.send rejected (e.g. the
+    // gateway refused the attachment), OR beginTurn threw AFTER the ack (e.g. its
+    // startAssistant write hit the Convex write timeout). The buffer is still armed
+    // either way — disarm it (idempotent) so no armed window lingers buffering stray
+    // frames until the next send. Then re-throw for the /send handler to classify +
+    // report — a failed turn must NEVER wedge the session (bridge robustness #1).
+    session.runManager.disarmReplayBuffer();
+    throw err;
+  }
   // beginTurn armed the recv/grace deadline from OUTSIDE the consume loop. If
   // that loop is already blocked on a null-timeout frame wait (idle session, or
   // the whole reply arrived in the pre-ack buffer), it would never re-evaluate
@@ -1418,7 +1429,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Classify into a stable, non-PHI code: the RAW message stays in this log
       // only; only `error.code` crosses to Convex (the platform forbids shipping
       // raw message text). Convex maps the code to the user/admin surfaces.
-      const code = classifyGatewayError(err);
+      // Pass hasAttachments so an attachment-turn failure is classified as an
+      // ATTACHMENT_* cause (the gateway's parse/stage overflow surfaces only as a
+      // generic INVALID_REQUEST otherwise).
+      const code = classifyGatewayError(err, {
+        hasAttachments:
+          Array.isArray(body.attachments) && body.attachments.length > 0,
+      });
       health.recordError(targetRef(body.agentId, body.canonical), code);
       console.error(`bridge /send failed [${code}]:`, (err as Error)?.message ?? err);
       sendJson(res, 502, { ok: false, error: { code } });

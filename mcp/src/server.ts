@@ -21,7 +21,14 @@ import { ApiError, resolveConfig } from "./config.js";
 import {
   getChatState,
   getChatStateInput,
+  getTraceEnrichment,
+  getTraceEnrichmentInput,
+  diagnoseChat,
+  diagnoseChatInput,
+  reconcileChat,
+  reconcileChatInput,
   getCompat,
+  getIntegrations,
   getKpi,
   getKpiInput,
   health,
@@ -115,6 +122,20 @@ function main(): void {
   );
 
   server.registerTool(
+    "get_integrations",
+    {
+      title: "Observability integration status (Opik / Langfuse)",
+      description:
+        "Per-vendor configured/enabled + non-secret effective endpoints + shipping " +
+        "cursors (lastAt/failureCount/error code), NEVER a key (GET /integrations). " +
+        "Requires traces.read. Use FIRST when self-diagnosing: it tells an agent " +
+        "whether enriched Opik/Langfuse trace data is available and shipping is healthy.",
+      inputSchema: {},
+    },
+    async () => run(() => getIntegrations(config)),
+  );
+
+  server.registerTool(
     "get_chat_state",
     {
       title: "Inspect chat state",
@@ -126,6 +147,55 @@ function main(): void {
       inputSchema: getChatStateInput,
     },
     async (args) => run(() => getChatState(config, args)),
+  );
+
+  server.registerTool(
+    "get_trace_enrichment",
+    {
+      title: "Enriched trace structure (Opik / Langfuse)",
+      description:
+        "SOC2-safe STRUCTURE of a turn's trace (keyed by its correlationId) " +
+        "fetched from the configured Opik/Langfuse: span " +
+        "names/types/lifecycle/timing/parent tree, NEVER input/output/message " +
+        "text (GET /trace-enrichment). Requires traces.read. Get the correlationId " +
+        "from list_traces/list_anomalies, then use this to see the REAL OpenClaw " +
+        "message structure behind an anomaly without seeing regulated data. Pass " +
+        "chatId too to also surface OTHER traces on the same chat session " +
+        "(content-free). Call get_integrations first to confirm a vendor is wired.",
+      inputSchema: getTraceEnrichmentInput,
+    },
+    async (args) => run(() => getTraceEnrichment(config, args)),
+  );
+
+  server.registerTool(
+    "diagnose_chat",
+    {
+      title: "Diagnose a chat (assessment + suggested fix)",
+      description:
+        "ONE actionable assessment of a chat (GET /diagnose): SOC2-safe chat-state " +
+        "+ bridge availability, classified (stuck_stream | dispatch_error | " +
+        "attachment_problem | bridge_unavailable | bridge_degraded | healthy) with a " +
+        "`suggestedAction` and, when safe, a `suggestedTool` (e.g. reconcile_chat). " +
+        "Requires traces.read. Read-only. CALL THIS FIRST on a user report, then act " +
+        "on the suggestion.",
+      inputSchema: diagnoseChatInput,
+    },
+    async (args) => run(() => diagnoseChat(config, args)),
+  );
+
+  server.registerTool(
+    "reconcile_chat",
+    {
+      title: "Self-correct: release a chat's stuck stream",
+      description:
+        "BOUNDED corrective (POST /reconcile-chat): flip this chat's stuck " +
+        "'streaming' message(s) to error (preserving text) so the hung UI releases " +
+        "and the user can retry. Requires `selfheal` (a sensitive write). Audited. " +
+        "Only touches messages already streaming past a short cutoff. Use when " +
+        "diagnose_chat returns class 'stuck_stream' / suggestedTool 'reconcile_chat'.",
+      inputSchema: reconcileChatInput,
+    },
+    async (args) => run(() => reconcileChat(config, args)),
   );
 
   server.registerTool(

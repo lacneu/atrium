@@ -118,6 +118,25 @@ describe("bridge.failDispatch", () => {
     const msgs = await messagesOf(t, chatId);
     expect(msgs[0]!.error).toMatch(/bridge-config/);
   });
+
+  test("an attachment errorCode is PRESERVED on the message (so diagnose can classify it) + drives the user message", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seed(t);
+
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "send_failed",
+      errorCode: "ATTACHMENT_TOO_LARGE",
+    });
+
+    const msgs = await messagesOf(t, chatId);
+    // The STABLE code is stored — /api/v1/diagnose reads it (via chatStateInternal)
+    // to reach the `attachment_problem` class instead of normalizing the localized
+    // text to "unknown" (the codex-review gap this fixes).
+    expect(msgs[0]!.errorCode).toBe("ATTACHMENT_TOO_LARGE");
+    // The user still sees the attachment-specific message, not the generic one.
+    expect(msgs[0]!.error).toMatch(/volumineuse/i);
+  });
 });
 
 // readErrorCode is the version-skew guard: a Convex deploy can land BEFORE the new
@@ -212,5 +231,83 @@ describe("bridge.dispatchReset — regenerate with NO agent surfaces an error (n
       if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
       else process.env.BRIDGE_SHARED_SECRET = prevSecret;
     }
+  });
+});
+
+// openclawThreadForChat reconstructs the OpenClaw `thread_id` (== gateway session
+// key) so trace-enrichment can find OpenClaw's OWN Opik traces for a chat. It MUST
+// produce the SAME string the bridge sends with (session-keys.ts) — these pin that
+// the Convex-side reconstruction (resolveTargetForChat + the openclawChatId??chatId
+// + rebind rules) agrees with the bridge byte-for-byte.
+describe("bridge.openclawThreadForChat — reconstruct the OpenClaw thread_id", () => {
+  async function seedChat(
+    t: ReturnType<typeof convexTest>,
+    opts: { bound?: boolean; openclawChatId?: string; withAgent?: boolean } = {},
+  ): Promise<Id<"chats">> {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user",
+        canonical: "alice",
+      });
+      if (opts.withAgent !== false) {
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "prod",
+          agentId: "bob",
+          isDefault: true,
+          source: "manual",
+          createdAt: 1,
+        });
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId: "bob",
+          source: "discovered",
+          presentInLastOk: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      }
+      return await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: Date.now(),
+        ...(opts.bound ? { instanceName: "prod", agentId: "bob" } : {}),
+        ...(opts.openclawChatId ? { openclawChatId: opts.openclawChatId } : {}),
+      });
+    });
+  }
+
+  test("unbound chat -> agent:<default agent>:webchat:chat:<canonical>:<convex chatId>", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    const thread = await t.query(internal.bridge.openclawThreadForChat, { chatId });
+    // Unbound -> rebind to default -> stale openclawChatId dropped -> convex chatId.
+    expect(thread).toBe(`agent:bob:webchat:chat:alice:${chatId}`);
+  });
+
+  test("bound chat with a provider conversation id -> uses that openclawChatId segment", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t, { bound: true, openclawChatId: "oc-xyz" });
+    const thread = await t.query(internal.bridge.openclawThreadForChat, { chatId });
+    expect(thread).toBe("agent:bob:webchat:chat:alice:oc-xyz");
+  });
+
+  test("no assigned agent -> null (never query with a partial/guessed key)", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t, { withAgent: false });
+    expect(
+      await t.query(internal.bridge.openclawThreadForChat, { chatId }),
+    ).toBeNull();
+  });
+
+  test("a nonexistent chat id -> null (no throw)", async () => {
+    const t = convexTest(schema, modules);
+    expect(
+      await t.query(internal.bridge.openclawThreadForChat, {
+        chatId: "not-a-real-id",
+      }),
+    ).toBeNull();
   });
 });

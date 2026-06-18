@@ -32,6 +32,9 @@ export const PERMISSIONS = {
   ANOMALIES_READ: "anomalies.read",
   ANOMALIES_REPORT: "anomalies.report",
   BRIDGE_READ: "bridge.read", // read bridge health (Settings → Bridge tab)
+  // Trigger a BOUNDED self-correction (e.g. reconcile a chat's stuck stream). A
+  // sensitive WRITE — admin / service-account only, never in GRANTABLE_USER below.
+  SELF_HEAL: "selfheal",
   // Read agent RULE files (AGENTS/SOUL/IDENTITY/TOOLS .md) via the bridge.
   // Amendment A3: covers ONLY the rules allowlist — memory/user/boot files stay
   // admin-only even in read (agents are shared; memory holds others' data).
@@ -149,6 +152,11 @@ export const BUILTIN_ROLES: Record<
       // seedBuiltinRoles reconciles this onto an existing `agent` row on the
       // next listRoles / mintApiKey (same migration path as observer.bridge.read).
       PERMISSIONS.BRIDGE_READ,
+      // The "self-repair" this role's description promises: a BOUNDED corrective
+      // (reconcile a chat's stuck stream via POST /api/v1/reconcile-chat). Without
+      // it the self-correction loop's diagnose_chat could only RECOMMEND a fix the
+      // agent key was 403'd from applying. Reconciled onto existing rows by seed.
+      PERMISSIONS.SELF_HEAL,
     ],
   },
 };

@@ -8,6 +8,56 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.2.0] — Trace enrichment, a self-correction loop, and group management
+
+Feature + reliability release. No breaking changes; no data migration. Trace
+enrichment adds optional environment for the Opik/Langfuse integrations (see
+Deployment).
+
+- **See what an agent actually did — trace enrichment from Opik & Langfuse.** Atrium
+  can now pull the *structure* of a turn's trace (span names, types, lifecycle,
+  timing, the parent tree) back from a configured Opik or Langfuse and show it
+  alongside its own traces — so an operator, or an agent debugging a report, sees the
+  real message structure behind an anomaly. It is SOC2-safe by construction: it
+  requests structure-only field groups and projects to an explicit allowlist, so no
+  message text, input/output, or metadata is ever fetched. The new `get_integrations`
+  reports which vendors are configured (never the keys), and `get_trace_enrichment`
+  returns the structure for a turn.
+- **A self-correction loop for stuck conversations.** A new `diagnose_chat` classifies
+  a chat (healthy / stuck stream / dispatch error / attachment problem / bridge
+  unavailable) with a suggested action, and `reconcile_chat` is the bounded
+  corrective: it flips a hung "streaming" message to an error while preserving its
+  text, releasing a UI that was stuck "thinking". Reconcile is gated behind a new,
+  service-account-only `selfheal` permission (grantable in Settings › Roles) and is
+  audited.
+- **Generated-but-undelivered media is now visible.** When an agent generates an image
+  natively but doesn't deliver it (no `MEDIA:`/`mediaUrls` directive), the turn used
+  to finish with the image silently missing. Atrium now records a content-free
+  diagnostic so the gap — the agent's missing delivery directive — is detectable
+  instead of invisible. Delivering a file the documented way (write to the outbound
+  dir, emit `MEDIA:`) is unchanged and works.
+- **Clearer attachment and dispatch errors.** A failed send now carries a stable error
+  code, and an attachment the gateway refuses for size or content shows a specific
+  "file too large" / "attachment rejected" message with a hint, instead of a generic
+  "an error occurred".
+- **Group management — assign members and agents in bulk.** The Groups admin gained a
+  Manage dialog to add or remove members and agents in bulk, with search, pagination,
+  and select-all.
+- **Bridge reliability hardening.** Building on 0.1.6's self-heal: one agent's error no
+  longer makes *every* chat read-only (availability degrades rather than blocks, and
+  recovers on its own); idle gateway sockets are reaped so a long-lived bridge can't
+  exhaust file descriptors; each message's writes are isolated so one slow write can't
+  wedge the others; every Convex write is bounded by a timeout; and streaming buffers
+  are capped so a backpressured turn can't run the bridge out of memory.
+- **Perceived performance.** The composer shows an immediate "sending…" state and a
+  "this is taking longer than usual" hint on a slow turn.
+- **Deployment.** Changes the Convex backend, the frontend, and the bridge image —
+  redeploy all three together and run `npx convex deploy`. Trace enrichment is opt-in:
+  set the vendor keys in the Convex environment (`LANGFUSE_PUBLIC_KEY` /
+  `LANGFUSE_SECRET_KEY`, `OPIK_API_KEY` / `OPIK_WORKSPACE`) and, to read OpenClaw's own
+  traces, `OPIK_OPENCLAW_PROJECT`; the compose env-push script now carries them. No
+  data migration.
+
 ## [0.1.6] — Per-domain branding and a self-healing bridge
 
 Feature + reliability release. No breaking changes; no data migration.

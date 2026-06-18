@@ -11,6 +11,7 @@ import { v } from "convex/values";
 import {
   internalAction,
   internalMutation,
+  internalQuery,
   query,
   QueryCtx,
 } from "./_generated/server";
@@ -75,8 +76,14 @@ export function normalizeTarget(raw: unknown): {
 export interface Availability {
   /** Do we have any health data yet? (false -> fail OPEN, never block blindly) */
   known: boolean;
-  /** Is the chat path usable right now? */
+  /** Is the chat path usable right now? GLOBAL gate = the bridge PROCESS is
+   *  reachable + the poller is fresh. Deliberately NOT gated on a single target's
+   *  error (see computeAvailability) so one agent never locks out every chat. */
   available: boolean;
+  /** A target (agent) is erroring while the bridge is up: informational +
+   *  NON-blocking. The per-send failDispatch bubble surfaces the specific failure
+   *  in the affected chat; the composer stays usable everywhere. */
+  degraded: boolean;
   /** Non-secret reason when NOT available (for the banner). */
   reason: string | null;
   checkedAt: number | null;
@@ -89,18 +96,20 @@ export function computeAvailability(
   doc: Doc<"bridgeHealth"> | null,
   now: number,
 ): Availability {
-  if (doc === null) return { known: false, available: true, reason: null, checkedAt: null };
+  if (doc === null)
+    return { known: false, available: true, degraded: false, reason: null, checkedAt: null };
   const stale = now - doc.checkedAt > STALE_MS;
   const anyTargetError = doc.targets.some((t) => t.state === "error");
-  const available = doc.reachable && !anyTargetError && !stale;
-  const reason = !doc.reachable
-    ? (doc.lastError ?? "unreachable")
-    : stale
-      ? "stale"
-      : anyTargetError
-        ? "target_error"
-        : null;
-  return { known: true, available, reason, checkedAt: doc.checkedAt };
+  // GLOBAL availability gates ONLY on "the bridge process is reachable AND the
+  // poller is fresh". A SINGLE agent/target in `error` must NOT grey out the
+  // composer for EVERY user/chat — that was a global-readonly DEADLOCK: one agent's
+  // failed send (e.g. an attachment the gateway can't process) locked everyone out,
+  // and the target stays `error` until a SUCCESSFUL send, which the lockout itself
+  // prevents, so it never cleared without a manual bridge restart. A per-agent error
+  // is surfaced per-chat by the failDispatch bubble; here it is only `degraded`.
+  const available = doc.reachable && !stale;
+  const reason = !doc.reachable ? (doc.lastError ?? "unreachable") : stale ? "stale" : null;
+  return { known: true, available, degraded: anyTargetError, reason, checkedAt: doc.checkedAt };
 }
 
 async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeHealth"> | null> {
@@ -210,4 +219,12 @@ export const getBridgeAvailability = query({
     await requireActive(ctx);
     return computeAvailability(await readDoc(ctx), Date.now());
   },
+});
+
+/** Internal (no auth): the availability projection for the /api/v1 diagnose route,
+ *  which runs the key permission check itself. Same computeAvailability output. */
+export const availabilityInternal = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<Availability> =>
+    computeAvailability(await readDoc(ctx), Date.now()),
 });

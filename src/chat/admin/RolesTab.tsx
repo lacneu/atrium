@@ -70,7 +70,14 @@ const PERMISSION_GROUPS: {
   },
   {
     group: () => m.roles_group_chats(),
-    keys: [{ key: "chats.read", label: () => m.roles_perm_read() }],
+    keys: [
+      { key: "chats.read", label: () => m.roles_perm_read() },
+      // Service-account grant for the #7 self-correction loop: gates
+      // POST /api/v1/reconcile-chat (flip a stuck streaming message -> error).
+      // Built into the `agent` role; exposed here so CUSTOM service roles can be
+      // granted/audited the same key instead of silently 403-ing.
+      { key: "selfheal", label: () => m.roles_perm_selfheal() },
+    ],
   },
   {
     group: () => m.roles_group_admin(),

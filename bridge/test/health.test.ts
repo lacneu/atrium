@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { HealthRegistry, gatewayHostOf, type TargetRef } from "../src/core/health.js";
+import {
+  HealthRegistry,
+  gatewayHostOf,
+  decayedState,
+  ERROR_DECAY_MS,
+  type TargetRef,
+} from "../src/core/health.js";
 import { BRIDGE_VERSION, PROTOCOL_VERSION } from "../src/compat.js";
 import { enrichHealthSnapshot } from "../src/server.js";
 
@@ -105,6 +111,47 @@ describe("HealthRegistry", () => {
     expect(target.attempts).toBe(2);
     expect(target.errorCount).toBe(1);
     expect(target.okCount).toBe(1);
+  });
+
+  // A stale one-off error must not be reported as a current error forever.
+  test("snapshot decays a stale 'error' to 'idle' after ERROR_DECAY_MS of inactivity", () => {
+    let t = 1000;
+    const h = new HealthRegistry(0, () => t);
+    h.recordError(REF, "INVALID_REQUEST"); // errors at t=1000
+    // Just before the decay window: still error.
+    t = 1000 + ERROR_DECAY_MS;
+    expect(h.snapshot().targets[0]!.state).toBe("error");
+    // Past the window with no new attempt: decays to idle (history preserved).
+    t = 1000 + ERROR_DECAY_MS + 1;
+    const decayed = h.snapshot().targets[0]!;
+    expect(decayed.state).toBe("idle");
+    expect(decayed.lastError).toEqual({ code: "INVALID_REQUEST", at: 1000 }); // history kept
+    expect(decayed.errorCount).toBe(1);
+  });
+
+  test("a fresh attempt resets the decay clock (an actively-failing agent stays 'error')", () => {
+    let t = 0;
+    const h = new HealthRegistry(0, () => t);
+    h.recordError(REF, "X");
+    t = ERROR_DECAY_MS - 1;
+    h.recordError(REF, "X"); // re-exercised just before decay -> clock resets
+    t = ERROR_DECAY_MS + 1; // would have decayed off the FIRST error, but not the second
+    expect(h.snapshot().targets[0]!.state).toBe("error");
+  });
+});
+
+describe("decayedState (pure)", () => {
+  const NOW = 1_000_000;
+  test("non-error states are returned unchanged", () => {
+    expect(decayedState("connected", NOW - 10 * ERROR_DECAY_MS, NOW)).toBe("connected");
+    expect(decayedState("idle", null, NOW)).toBe("idle");
+  });
+  test("error within the window stays error; past it decays to idle", () => {
+    expect(decayedState("error", NOW - (ERROR_DECAY_MS - 1), NOW)).toBe("error");
+    expect(decayedState("error", NOW - (ERROR_DECAY_MS + 1), NOW)).toBe("idle");
+  });
+  test("error with no recorded attempt time is left as error (cannot age it)", () => {
+    expect(decayedState("error", null, NOW)).toBe("error");
   });
 });
 

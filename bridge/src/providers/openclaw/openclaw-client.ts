@@ -228,6 +228,13 @@ export class OpenClawConnection {
       );
 
       ws.once("error", (err: Error) => fail(err));
+      // A clean socket close DURING the handshake (a 'close' with no preceding
+      // 'error') would otherwise wait out the 30s connect timer before /send fails.
+      // Fail fast. After a successful connect, attachReader removeAllListeners drops
+      // this, and `fail` is a no-op once settled — so it can only fire mid-handshake.
+      ws.once("close", () =>
+        fail(new OpenClawError("OpenClaw closed the socket during connect")),
+      );
 
       // Phase 1: await connect.challenge. Phase 2: await the connect res.
       let phase: "challenge" | "connect" = "challenge";

@@ -62,6 +62,8 @@ const OPIK_CONFIG = {
   baseUrl: "https://www.comet.com/opik/api",
   apiKey: OPIK_KEY,
   workspace: "my-workspace",
+  projectName: "Default Project",
+  openclawProjectName: "",
 };
 
 /** Build a fake fetch that records the single call and returns a fixed status. */
@@ -115,6 +117,19 @@ describe("config helpers", () => {
         "https://opik.internal",
       );
       expect(opikConfig({ workspace: "team-a" }).workspace).toBe("team-a");
+
+      // Opik projectName precedence: override > env > "Default Project". Required
+      // by the read API; ship stamps it so ship + enrich target the same project.
+      delete process.env.OPIK_PROJECT_NAME;
+      expect(opikConfig().projectName).toBe("Default Project");
+      expect(opikConfig({ projectName: "atrium" }).projectName).toBe("atrium");
+
+      // OpenClaw read-project: SEPARATE from projectName, empty (disabled) by default.
+      delete process.env.OPIK_OPENCLAW_PROJECT;
+      expect(opikConfig().openclawProjectName).toBe("");
+      expect(
+        opikConfig({ openclawProjectName: "openclaw-olivier" }).openclawProjectName,
+      ).toBe("openclaw-olivier");
 
       // `enabled`: undefined => enabled; false => paused.
       expect(langfuseConfig().enabled).toBe(true);
@@ -284,6 +299,9 @@ describe("opik send()", () => {
 
     const body = JSON.parse(init.body as string) as opik.OpikBatchPayload;
     expect(body.traces).toHaveLength(2);
+    // Every shipped trace carries the configured project so ship + enrich agree on
+    // WHERE the trace lives (the read API requires project_name).
+    expect(body.traces.every((t) => t.project_name === "Default Project")).toBe(true);
     assertNoSecrets(init.body as string);
   });
 

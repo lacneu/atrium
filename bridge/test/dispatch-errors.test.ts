@@ -61,4 +61,83 @@ describe("classifyGatewayError", () => {
     expect(classifyGatewayError(undefined)).toBe("UPSTREAM_ERROR");
     expect(classifyGatewayError("plain string")).toBe("UPSTREAM_ERROR");
   });
+
+  describe("attachment-specific failures", () => {
+    test("the sandbox staging cap -> ATTACHMENT_TOO_LARGE (by message, no context needed)", () => {
+      expect(
+        classifyGatewayError(
+          new Error(
+            "INVALID_REQUEST: UnsupportedAttachmentError: attachments exceed sandbox staging limit (5242880 bytes): big.pdf (11498819 bytes)",
+          ),
+        ),
+      ).toBe("ATTACHMENT_TOO_LARGE");
+    });
+
+    test("a GENERIC 'exceeds the maximum' on an ATTACHMENT turn -> ATTACHMENT_TOO_LARGE", () => {
+      // A size cap that doesn't name "attachment" is the file ONLY when the turn
+      // carried one.
+      expect(
+        classifyGatewayError(
+          new Error("INVALID_REQUEST: payload exceeds the maximum size of 33554432 bytes"),
+          { hasAttachments: true },
+        ),
+      ).toBe("ATTACHMENT_TOO_LARGE");
+    });
+
+    test("INVERSE: a text-only 'exceeds the maximum' is NOT blamed on a file (stays INVALID_REQUEST)", () => {
+      // Discriminating (codex P2): a no-attachment "prompt exceeds the maximum"
+      // must NOT tell the user to shrink a non-existent attachment. Dropping the
+      // hasAttachments guard on the generic size pattern would break this.
+      expect(
+        classifyGatewayError(
+          new Error("INVALID_REQUEST: prompt exceeds the maximum context length"),
+        ),
+      ).toBe("INVALID_REQUEST");
+    });
+
+    test("the prod isValidBase64 overflow, on an ATTACHMENT turn -> ATTACHMENT_REJECTED", () => {
+      // The gateway returns "INVALID_REQUEST: RangeError: Maximum call stack size
+      // exceeded" with NO 'attachment' in the text — only the hasAttachments context
+      // distinguishes it from a generic bad request.
+      expect(
+        classifyGatewayError(
+          new Error("INVALID_REQUEST: RangeError: Maximum call stack size exceeded"),
+          { hasAttachments: true },
+        ),
+      ).toBe("ATTACHMENT_REJECTED");
+    });
+
+    test("INVERSE: the SAME overflow with NO attachment stays INVALID_REQUEST (not misattributed)", () => {
+      // Discriminating: if hasAttachments is not set, a generic INVALID_REQUEST must
+      // NOT be blamed on a file. Removing the context guard would break this.
+      expect(
+        classifyGatewayError(
+          new Error("INVALID_REQUEST: RangeError: Maximum call stack size exceeded"),
+        ),
+      ).toBe("INVALID_REQUEST");
+    });
+
+    test("an explicit 'attachment parse/stage' message -> ATTACHMENT_REJECTED (no context needed)", () => {
+      expect(
+        classifyGatewayError(new Error("chat.send attachment parse/stage failed: boom")),
+      ).toBe("ATTACHMENT_REJECTED");
+    });
+
+    test("a non-attachment INVALID_REQUEST with hasAttachments=false stays INVALID_REQUEST", () => {
+      expect(
+        classifyGatewayError(new Error("INVALID_REQUEST: bad params"), {
+          hasAttachments: false,
+        }),
+      ).toBe("INVALID_REQUEST");
+    });
+
+    test("the agent rule still wins over the attachment context (specificity order)", () => {
+      expect(
+        classifyGatewayError(
+          new Error('INVALID_REQUEST: Agent "olivier" no longer exists in configuration'),
+          { hasAttachments: true },
+        ),
+      ).toBe("AGENT_NOT_FOUND");
+    });
+  });
 });

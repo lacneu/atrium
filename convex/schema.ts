@@ -641,6 +641,10 @@ export default defineSchema({
     // stays the single searchable/durable copy. OPTIONAL (additive on existing rows).
     liveText: v.optional(v.string()),
     error: v.optional(v.string()),
+    // The STABLE, curated dispatch error CODE (non-PHI: AGENT_NOT_FOUND,
+    // ATTACHMENT_TOO_LARGE, …), stored alongside the user-facing `error` text so a
+    // diagnosis can read the code without parsing a localized phrase. OPTIONAL.
+    errorCode: v.optional(v.string()),
     updatedAt: v.number(),
   })
     .index("by_chat", ["chatId"])

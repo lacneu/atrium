@@ -22,6 +22,11 @@ export const EVENT_MESSAGE_FINAL = "message.final"; // the turn's authoritative 
 export const EVENT_RUN_STATUS = "run.status"; // {status, runId}
 export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId}
 export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
+// {runId} — the agent GENERATED media (e.g. a codex `imageGeneration` item) but the
+// turn delivered NO media (no MEDIA:/mediaUrls/outbound path) → nothing for the bridge
+// to fetch. A SOC2-safe diagnostic so the #7 self-correction loop can flag the agent's
+// missing delivery directive; it carries no content, only the signal.
+export const EVENT_MEDIA_UNDELIVERED = "media.undelivered";
 
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):

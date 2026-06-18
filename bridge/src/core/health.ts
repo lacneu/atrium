@@ -11,6 +11,24 @@
 
 export type TargetState = "idle" | "connected" | "error";
 
+// An `error` state only clears on the next SUCCESSFUL send (recordOk). If an agent
+// errors once and is never retried, it would otherwise show `error` forever — a
+// stale, misleading signal (and, before the Convex gate was scoped to bridge
+// reachability, the source of a global-readonly deadlock). Decay a stale error to
+// `idle` after this much inactivity (no new attempt) so the last-known state stops
+// lying once the failing turn is well in the past. Read-time only — the underlying
+// `lastError`/counters are preserved for history.
+export const ERROR_DECAY_MS = 5 * 60 * 1000;
+
+/** Project a target's reported state at read time: a stale `error` (no attempt for
+ *  ERROR_DECAY_MS) decays to `idle`. Pure + exported for unit tests. */
+export function decayedState(state: TargetState, lastAttemptAt: number | null, now: number): TargetState {
+  if (state === "error" && lastAttemptAt !== null && now - lastAttemptAt > ERROR_DECAY_MS) {
+    return "idle";
+  }
+  return state;
+}
+
 export interface TargetHealth {
   /** Stable key for the target (mono-tenant: the operator canonical). */
   key: string;
@@ -133,11 +151,17 @@ export class HealthRegistry {
   }
 
   snapshot(): HealthSnapshot {
+    const now = this.clock();
     return {
       status: "ok",
       startedAt: this.startedAt,
-      now: this.clock(),
-      targets: [...this.targets.values()],
+      now,
+      // Project a stale `error` down to `idle` so a long-past one-off failure stops
+      // being reported as a current error (read-time only; history is preserved).
+      targets: [...this.targets.values()].map((h) => ({
+        ...h,
+        state: decayedState(h.state, h.lastAttemptAt, now),
+      })),
     };
   }
 }
