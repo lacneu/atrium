@@ -14,6 +14,7 @@ import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import { extractMessageToolReplies } from "./providers/openclaw/history-recovery.js";
 import type { ConvexWriter } from "./convex-writer.js";
+import type { OutboundScan } from "./core/turn-sink.js";
 import type { BridgeConfig } from "./config.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 
@@ -58,6 +59,9 @@ export interface LiveTarget {
   canonical: string;
   agentId: string;
   gatewayVersion: string | null;
+  /** Gateway WS frame limit (policy.maxPayload) from this session's handshake —
+   *  the authoritative inbound-attachment ceiling, surfaced for /health. */
+  maxPayload: number | null;
 }
 
 class Session implements BridgeSession {
@@ -89,13 +93,14 @@ class Session implements BridgeSession {
     connection: OpenClawConnection,
     writer: ConvexWriter,
     clock: Clock,
+    outboundScan?: OutboundScan,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
     this.agentId = routing.agentId;
     this.canonical = routing.canonical;
     this.connection = connection;
-    this.runManager = new RunManager(chatId, sessionKey, writer);
+    this.runManager = new RunManager(chatId, sessionKey, writer, outboundScan);
     this.clock = clock;
     this.lastActivityAt = clock();
   }
@@ -350,6 +355,9 @@ export class SessionRegistry {
     private readonly config: BridgeConfig,
     private readonly writer: ConvexWriter,
     private readonly clock: Clock = defaultClock,
+    // Deterministic outbound-media scan (see core/outbound-scan), threaded to each
+    // session's TurnSink. Optional: omitted by tests / minimal embedders.
+    private readonly outboundScan?: OutboundScan,
   ) {}
 
   /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
@@ -441,6 +449,7 @@ export class SessionRegistry {
       connection,
       this.writer,
       this.clock,
+      this.outboundScan,
     );
     session.startConsumer();
     this.sessions.set(chatId, session);
@@ -459,6 +468,7 @@ export class SessionRegistry {
         canonical: session.canonical,
         agentId: session.agentId,
         gatewayVersion: session.connection.gatewayVersion,
+        maxPayload: session.connection.maxPayload,
       });
     }
     return out;

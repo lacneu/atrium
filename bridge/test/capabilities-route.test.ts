@@ -28,10 +28,14 @@ const CONFIG: BridgeConfig = {
   deviceIdentity: { id: "device-test", publicKey: "pk", privateKey: "sk" },
   instanceName: "primary",
   mediaOutboundDir: "/tmp/media-outbound",
+  mediaOutboundAgentMount: "/home/node/.openclaw/media/outbound",
   mediaMaxBytes: 1024,
   mediaMode: "gateway-http",
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
+  inboundMediaDir: "/tmp/media-inbound",
+  inboundAgentMount: "/tmp/media-inbound",
+  inboundTtlMs: 6 * 60 * 60 * 1000,
   convexHttpActionsUrl: "http://convex.example.org",
   convexIngestSecret: "ingest-secret",
   bridgeSharedSecret: "shared-secret",
@@ -180,6 +184,7 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     canonical,
     agentId: "main",
     gatewayVersion,
+    maxPayload: null,
   });
 
   test("a validated live version resolves its full capability row", () => {

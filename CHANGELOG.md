@@ -8,6 +8,61 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.3.0] — Multi-instance gateways, large media over a shared filesystem, and reliable file delivery
+
+Feature release. No breaking changes; no data migration. The single-gateway setup
+keeps working unchanged — multi-instance, shared-fs media, and the new bridge
+environment are all additive and opt-in (see Deployment).
+
+- **Run several gateways, each on its own bridge.** Atrium can now route each chat to
+  its instance's own bridge endpoint (Model M: one bridge per gateway), so adding a
+  second OpenClaw — or an OpenClaw and a Hermes — no longer means one shared bridge.
+  Each instance carries its own non-secret configuration (media mode, size caps,
+  history rehydration, shared-fs paths) editable from **Settings › Agents › Bridge**
+  and applied on the next turn **without restarting the bridge**. Bridge health is now
+  reported per instance — one gateway being down no longer hides the others — and the
+  Bridge tab is organized by provider. (A bridge's secrets — tokens, device identity,
+  shared secrets — remain environment-only and are never editable in the UI.)
+- **Send and receive large media (video, audio, big documents) over a shared
+  filesystem.** In `shared-fs` mode the bridge streams a file by *reference* instead of
+  inlining it, so attachments are no longer bounded by the ~25–32 MiB websocket/body
+  limits: an inbound file is streamed to a mounted directory and its path is handed to
+  the agent to read, and a file the agent produces is streamed back to storage. Vision
+  images still ride inline (model-native). The default transport is unchanged.
+- **Generated files reliably become a download.** When an agent produces a file, in
+  `shared-fs` mode the bridge hosts it at the end of the turn from the shared outbound
+  directory **whether or not the model emitted a `MEDIA:` line** — removing the most
+  common reason a deliverable failed to appear. In `gateway-http` mode the `MEDIA:`
+  directive now handles filenames **with spaces**, and an agent that writes a Markdown
+  link to a local path no longer renders a link that opens the app home — non-URL
+  references render as plain text. A misconfigured outbound directory now surfaces a
+  warning instead of silently dropping every file.
+- **Attachment size limits are enforced honestly.** The inbound attachment cap is
+  derived from the gateway's actual frame limit and enforced consistently at the
+  composer, in Convex, and at the bridge: a too-large file gets a clear "too large"
+  message instead of being silently dropped or killing the gateway connection.
+- **Per-chart brand logo.** The active chart now drives the top-bar logo and label, so
+  a custom chart can show its own mark instead of the bundled Atrium one (uploaded
+  logos are served as images only — no path or markup is exposed).
+- **Path checks and field help for shared-fs.** The Bridge config editor gained a
+  "verify paths" action that round-trips the bridge's own read/write access to the
+  shared directories, plus a help tooltip on every field.
+- **Multi-instance correctness hardening (review pass).** A per-instance config with
+  unset fields no longer overrides a bridge's own environment defaults on every send;
+  the env `BRIDGE_URL` fallback is scoped so a chat is never posted to a different
+  instance's gateway; and a per-chat policy lookup is owner-scoped (no cross-user
+  information).
+- **Deployment.** Changes the Convex backend, the frontend, and the bridge image —
+  redeploy all three together and run `npx convex deploy`. A new admin-only permission
+  `bridge.config.write` gates the per-instance config editor. Multi-instance routing is
+  opt-in: set `bridgeUrl` per instance (otherwise the single `BRIDGE_URL` env is used as
+  before). Shared-fs media is opt-in: mount a shared directory into both the bridge and
+  the gateway and set the bridge's inbound/outbound directory + agent-mount environment
+  (`OPENCLAW_INBOUND_DIR`, `OPENCLAW_INBOUND_AGENT_MOUNT`,
+  `OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT`, `OPENCLAW_INBOUND_TTL_MS`) — point
+  `OPENCLAW_MEDIA_OUTBOUND_DIR` at the bridge's OWN mount of the shared volume, not the
+  gateway's container path. No data migration.
+
 ## [0.2.0] — Trace enrichment, a self-correction loop, and group management
 
 Feature + reliability release. No breaking changes; no data migration. Trace

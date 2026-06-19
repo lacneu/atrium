@@ -7,6 +7,8 @@ import type {
 import type { ConvexReactClient } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { isModelNativeMime } from "../../convex/lib/mediaTransport";
+import { m } from "@/paraglide/messages.js";
 
 // Attachment adapter for assistant-ui that uploads files straight into Convex
 // file storage via a short-lived signed upload URL, then carries the resulting
@@ -24,8 +26,6 @@ import type { Id } from "./convexApi";
 // an authenticated Convex mutation, so only the signed-in user can upload, and
 // step 3 records that ownership so `sendMessage` can reject attachments the
 // caller does not own.
-
-const MAX_BYTES = 25 * 1024 * 1024; // 25 MB client-side guard
 
 /** Convex storage metadata stashed on the assistant-ui attachment. */
 export interface ConvexAttachmentContent {
@@ -75,6 +75,14 @@ export function attachmentParts(
 
 export function createConvexAttachmentAdapter(
   convex: ConvexReactClient,
+  // Surface a rejection (e.g. too large) as a VISIBLE toast — assistant-ui only
+  // logs a thrown add() error, so without this the user gets no reason. Optional
+  // so non-UI callers/tests can omit it.
+  onReject?: (message: string) => void,
+  // The current chat, so add() can resolve the routed instance's INBOUND policy:
+  // a tool-read file on a shared-fs instance rides by reference (any size), so the
+  // inline maxPayload cap must NOT block it. Null/omitted → inline cap only.
+  chatId?: string | null,
 ): AttachmentAdapter {
   return {
     // "*" is assistant-ui's "no restriction" sentinel: the composer then omits
@@ -82,24 +90,55 @@ export function createConvexAttachmentAdapter(
     // (docx/xlsx/zip/… all selectable). Safe end-to-end: sendMessage validates
     // mimeType as a plain string, the bridge passes bytes through verbatim and
     // the gateway offloads ANY inbound file to media/inbound for the agent's
-    // tools — only images additionally feed vision. Size stays the only gate
-    // (MAX_BYTES below; the gateway re-checks on its side).
+    // tools — only images additionally feed vision. Size is the only gate, and it
+    // is DERIVED from the gateway's maxPayload (see add(), via getBridgeAvailability).
     accept: "*",
 
     async add({ file }: { file: File }): Promise<PendingAttachment> {
-      // TEMP DIAGNOSTIC (prod file-import investigation): trace the client path
-      // at every step. Non-PII metadata only (name/size/type — never content).
-      // Remove once the prod import path is confirmed end-to-end.
-      console.info(
-        `[attach] add: name=${file.name} size=${file.size} type=${file.type || "?"}`,
-      );
-      if (file.size > MAX_BYTES) {
-        console.warn(`[attach] add: REJECTED — too large (${file.size} > ${MAX_BYTES})`);
-        throw new Error(
-          `File too large (${Math.round(file.size / 1024 / 1024)} MB, max 25 MB).`,
+      // Reject oversized files UPFRONT (before upload) using the limit DERIVED from
+      // the gateway's maxPayload — no hardcoded size. The server reports it via
+      // getBridgeAvailability.maxInboundBytes. When unknown (bridge not yet polled)
+      // we fail OPEN: the Convex dispatch + the bridge frame guard are the backstop
+      // (they reject an over-cap attachment with a clear ATTACHMENT_TOO_LARGE
+      // instead of the old silent drop).
+      let maxInboundBytes: number | null = null;
+      try {
+        const avail = await convex.query(
+          api.bridgeHealth.getBridgeAvailability,
+          {},
         );
+        maxInboundBytes = avail?.maxInboundBytes ?? null;
+      } catch {
+        // Availability unknown -> fail open; the server enforces.
       }
-      const pending: PendingAttachment = {
+      // Transport-aware cap: a TOOL-READ file (not a Vision image) on a shared-fs
+      // instance rides BY REFERENCE — the bridge streams it to a shared volume, so
+      // it bypasses the inline maxPayload frame entirely. Use the (much larger)
+      // shared-fs cap for those; images (model-native) still ride inline → capped.
+      let effectiveCap = maxInboundBytes;
+      if (chatId && !isModelNativeMime(file.type)) {
+        try {
+          const policy = await convex.query(api.bridge.getChatInboundPolicy, {
+            chatId: chatId as Id<"chats">,
+          });
+          if (policy?.inboundMediaMode === "shared-fs") {
+            effectiveCap = policy.sharedFsMaxBytes;
+          }
+        } catch {
+          // Policy unknown -> keep the inline cap; the server still enforces.
+        }
+      }
+      if (effectiveCap !== null && file.size > effectiveCap) {
+        const mb = (n: number) => Math.floor(n / 1024 / 1024);
+        const message = m.attach_too_large({
+          size: mb(file.size),
+          max: mb(effectiveCap),
+        });
+        // Show the reason (toast); still throw so assistant-ui drops the file.
+        onReject?.(message);
+        throw new Error(message);
+      }
+      return {
         id: makeId(),
         type: inferAttachmentType(file.type),
         name: file.name,
@@ -107,22 +146,17 @@ export function createConvexAttachmentAdapter(
         file,
         status: { type: "running", reason: "uploading", progress: 0 },
       };
-      console.info(`[attach] add: PENDING created id=${pending.id} type=${pending.type}`);
-      return pending;
     },
 
     async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
       const file = attachment.file;
-      // TEMP DIAGNOSTIC (prod file-import investigation) — see add() above.
-      console.info(`[attach] send: START upload name=${file.name} size=${file.size}`);
 
       // 1) One-time signed upload URL from an authenticated mutation.
       let uploadUrl: string;
       try {
         uploadUrl = await convex.mutation(api.chats.generateUploadUrl, {});
-        console.info(`[attach] send: generateUploadUrl OK -> ${uploadUrl.slice(0, 60)}…`);
       } catch (err) {
-        console.error("[attach] send: generateUploadUrl FAILED:", err);
+        console.error("[attach] generateUploadUrl failed:", err);
         throw err;
       }
 
@@ -135,10 +169,9 @@ export function createConvexAttachmentAdapter(
           body: file,
         });
       } catch (err) {
-        console.error("[attach] send: POST to storage THREW (network/CORS/CSP):", err);
+        console.error("[attach] upload POST threw (network/CORS/CSP):", err);
         throw err;
       }
-      console.info(`[attach] send: POST status=${res.status}`);
       if (!res.ok) {
         throw new Error(`Upload failed (${res.status})`);
       }
@@ -150,7 +183,6 @@ export function createConvexAttachmentAdapter(
       await convex.mutation(api.uploads.registerUpload, {
         storageId: storageId as Id<"_storage">,
       });
-      console.info(`[attach] send: DONE storageId=${storageId}`);
 
       const result: ConvexAttachment = {
         id: attachment.id,

@@ -95,6 +95,7 @@ import {
 } from "./lib/routing/searchSchemas";
 import { Button } from "@/components/ui/button";
 import { ToastProvider } from "@/components/ui/toast";
+import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
@@ -452,36 +453,6 @@ function ImpersonationBanner() {
         {m.app_imp_exit()}
       </Button>
     </div>
-  );
-}
-
-// The bundled Atrium mark (favicon glyph: brackets + heartbeat), the DEFAULT
-// brand logo. currentColor → inherits the top-bar text color in light/dark.
-function AtriumMark({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 64 64" fill="none" aria-hidden="true">
-      <path
-        d="M25 15H15V49H25"
-        stroke="currentColor"
-        strokeWidth="6.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M39 15H49V49H39"
-        stroke="currentColor"
-        strokeWidth="6.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <polyline
-        points="20 33 26 33 29 25 33 41 37 29 41 33 44 33"
-        stroke="currentColor"
-        strokeWidth="3.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 

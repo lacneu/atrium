@@ -13,6 +13,7 @@ import {
   attachmentParts,
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
+import { useToast } from "@/components/ui/toast";
 
 // The single source of truth for the chat UI runtime.
 //
@@ -45,6 +46,10 @@ export interface TurnGate {
 
 export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const convex = useConvex();
+  // Surface attachment rejections (e.g. too large) as a visible toast — assistant-ui
+  // only logs a thrown add() error, so the composer adapter needs this to tell the
+  // user WHY the file did not attach (the user's actual complaint: silent drop).
+  const toast = useToast();
   // OPTIMISTIC ECHO (perceived performance — Doherty ~400ms / Nielsen 0.1s
   // "instant"): without this the user message only appears AFTER the Convex
   // round-trip (insert -> reactive listByChat re-run), a ~1-2s void where the
@@ -104,8 +109,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   ) as ConvexMessageView[] | undefined;
 
   const attachmentAdapter = useMemo(
-    () => createConvexAttachmentAdapter(convex),
-    [convex],
+    () =>
+      createConvexAttachmentAdapter(
+        convex,
+        (msg) => toast.error(msg),
+        chatId,
+      ),
+    [convex, toast, chatId],
   );
 
   const list = useMemo(() => messages ?? [], [messages]);
@@ -178,14 +188,6 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           filename: a.filename,
           mimeType: a.mimeType,
         }));
-
-        // TEMP DIAGNOSTIC (prod file-import investigation): how many attachments
-        // survived the adapter and reached the send. `attachments=0` here while a
-        // file was attached means the upload path (adapter.send) never completed.
-        console.info(
-          `[attach] onNew: text.len=${text.length} attachments=${attachments.length} ` +
-            `(raw=${message.attachments?.length ?? 0})`,
-        );
 
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send

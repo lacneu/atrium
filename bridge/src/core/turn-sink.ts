@@ -39,12 +39,30 @@ interface MediaItem {
   path: string;
 }
 
+/**
+ * Deterministic outbound-media hook (see core/outbound-scan). Called at finalize
+ * with the turn-start time + the set of basenames already hosted via MEDIA: this
+ * turn; it hosts any other file the agent dropped in the outbound dir. Optional —
+ * absent in tests / when outbound media is off.
+ */
+export type OutboundScan = (
+  messageId: string,
+  sinceMs: number,
+  hosted: Set<string>,
+) => Promise<void>;
+
 export class TurnSink {
   private readonly chatId: string;
   private readonly writer: ConvexWriter;
+  private readonly outboundScan?: OutboundScan;
 
   private messageId: string | null = null;
   private turnActive = false;
+  // Turn-start wall clock + the basenames hosted via MEDIA: this turn — together
+  // they let the finalize-time outbound scan host ONLY this turn's NEW files and
+  // skip ones already delivered.
+  private turnStartMs = 0;
+  private hostedThisTurn = new Set<string>();
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
   private pendingFinalError: string | null = null;
@@ -53,9 +71,10 @@ export class TurnSink {
   // turn the sources affordance into a flood of parts.
   private provenanceCount = 0;
 
-  constructor(chatId: string, writer: ConvexWriter) {
+  constructor(chatId: string, writer: ConvexWriter, outboundScan?: OutboundScan) {
     this.chatId = chatId;
     this.writer = writer;
+    this.outboundScan = outboundScan;
   }
 
   /** True between beginTurn and the terminal flush; gates driving the provider. */
@@ -74,6 +93,8 @@ export class TurnSink {
     this.pendingFinalError = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
+    this.turnStartMs = Date.now();
+    this.hostedThisTurn = new Set<string>();
     // Create the streaming message FIRST, go active SECOND. If we flipped
     // turnActive before awaiting startAssistant, frames arriving during that
     // network round-trip would see an ACTIVE sink with a null messageId and be
@@ -133,6 +154,8 @@ export class TurnSink {
               filename: item.filename,
               path: item.path,
             });
+            // Mark delivered so the finalize-time outbound scan does not re-host it.
+            this.hostedThisTurn.add(item.filename);
           }
           break;
         }
@@ -178,6 +201,20 @@ export class TurnSink {
       return;
     }
     this.turnActive = false;
+    // DETERMINISTIC outbound media: before finalizing, host any file the agent
+    // dropped in the outbound dir this turn that wasn't already delivered via a
+    // MEDIA: directive (the LLM often omits it / a space breaks the path parse).
+    // Best-effort — a scan failure must never block the finalize.
+    if (this.outboundScan) {
+      try {
+        await this.outboundScan(messageId, this.turnStartMs, this.hostedThisTurn);
+      } catch (e) {
+        console.error(
+          "[outbound-scan] skipped (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
     // The error string (if any) was buffered from message.final; on a clean turn
     // it is null. lifecycle:error finalizes with both partial text + error.
     await this.writer.finalize(

@@ -14,15 +14,30 @@
 
 import { v } from "convex/values";
 import {
+  action,
   internalAction,
   internalMutation,
   internalQuery,
+  query,
   ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveTargetForChat } from "./routing";
+import { requireActive, requirePermission } from "./lib/access";
+import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
+import { base64ByteLength, base64FitsFrame } from "./lib/attachmentLimits";
+import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
+import { resolveInstanceConfig } from "./lib/instanceConfig";
+import { classifyAttachment } from "./lib/mediaTransport";
+
+// OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
+// 2026.x hello-ok. Used ONLY as the conservative inbound-attachment fallback when
+// the bridge has not reported its real maxPayload yet (old image in a mixed deploy,
+// or a cold poll) — so the over-size check NEVER silently skips. The real reported
+// value supersedes it the moment it is known.
+const DEFAULT_GATEWAY_MAX_PAYLOAD = 26214400; // 25 MiB
 
 /**
  * ArrayBuffer -> base64 in the DEFAULT Convex action runtime (no Node Buffer;
@@ -230,13 +245,31 @@ export const getChatRouting = internalQuery({
     // authorized for this user (dispatch-time IDOR defense). `rebind` (when set)
     // is persisted by the dispatch action before sending.
     const res = await resolveTargetForChat(ctx, chat, userId);
+    // Model M: resolve the routed instance's OWN bridge endpoint + per-instance
+    // NON-secret config. Look up the instance row by NAME (the same first()
+    // duplicate-name resilience as routing); when there is no target (no_agent) the
+    // instance is null → resolveBridgeUrlForDispatch falls back to env BRIDGE_URL and
+    // the config resolves to defaults (the dispatch fails no_agent before POSTing anyway).
+    const target = res.target;
+    const instance =
+      target !== null
+        ? await ctx.db
+            .query("instances")
+            .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+            .first()
+        : null;
+    // Env fallback for a bridgeUrl-less instance is SAFE only for the sole/served
+    // instance (else a chat would be POSTed to a different instance's gateway). A
+    // cheap take(2) decides "sole" without a full count.
+    const someInstances = await ctx.db.query("instances").take(2);
+    const isSole = someInstances.length <= 1;
     return {
       // On a REBIND (unbound/legacy chat, or the bound agent was revoked/deleted)
       // the stored openclawChatId belongs to the OLD agent's provider conversation
       // — sending it with the NEW target would resume/reset the wrong agent's
       // session. Start the new agent fresh (the bridge falls back to the Convex
       // chatId as the routing-id segment). Persisted to null by bindChatTarget.
-      openclawChatId: res.rebind ? null : chat.openclawChatId ?? null,
+      openclawChatId: res.rebind ? null : (chat.openclawChatId ?? null),
       target: res.target, // null => no agent assigned (failReason no_agent)
       rebind: res.rebind,
       failReason: res.failReason,
@@ -244,7 +277,142 @@ export const getChatRouting = internalQuery({
       // re-applies these via sessions.patch before each turn so they survive a
       // session reset. Non-secret labels only.
       sessionSettings: chat.sessionSettings ?? null,
+      // Per-instance bridge URL (Model M) + NON-secret config (hot, in-band).
+      // Scoped fallback: a bridgeUrl-less instance only inherits env BRIDGE_URL when
+      // it is the sole/served instance, never cross-attributed (see bridgeRouting).
+      bridgeUrl: resolveBridgeUrlForDispatch(instance, {
+        instanceName: target?.instanceName ?? null,
+        served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+        isSole,
+      }),
+      // `config` is the RESOLVED (defaults-filled) view for Convex's OWN inbound
+      // transport decision (classifyAttachment). `configOverrides` is the RAW stored
+      // partial sent to the bridge — only fields the admin explicitly set, so an
+      // UNSET field lets the bridge keep its OWN env default (D-F-b) instead of being
+      // shadowed by a Convex default on every /send (which would force e.g. an
+      // env-configured shared-fs/off bridge back to gateway-http).
+      config: resolveInstanceConfig(instance?.config),
+      configOverrides: instance?.config ?? null,
     };
+  },
+});
+
+// Per-chat INBOUND attachment policy for the COMPOSER's upfront size gate. The
+// inline cap (maxInboundBytes, from getBridgeAvailability) bounds base64 files that
+// ride the WS frame; but a TOOL-READ file on a shared-fs instance rides BY
+// REFERENCE (the bridge streams it — any size), so the composer must use the much
+// larger shared-fs cap for those. This resolves the chat's ROUTED instance (same as
+// dispatch) and returns its inbound transport + shared-fs byte cap. A hint only —
+// the server (dispatch + bridge guard) still enforces; failing open is safe.
+export const getChatInboundPolicy = query({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{ inboundMediaMode: string; sharedFsMaxBytes: number } | null> => {
+    const { userId } = await requireActive(ctx);
+    const chat = await ctx.db.get(chatId);
+    // Ownership scope (IDOR): this query must not reveal the existence/routing/media
+    // config of another user's chat. Fail closed (return null = composer uses the
+    // default inline cap) for both a missing chat AND one the caller does not own.
+    if (chat === null || chat.userId !== userId) return null;
+    const res = await resolveTargetForChat(ctx, chat, userId);
+    const instanceName = res.target?.instanceName ?? null;
+    const instance = instanceName
+      ? await ctx.db
+          .query("instances")
+          .withIndex("by_name", (q) => q.eq("name", instanceName))
+          .first()
+      : null;
+    const cfg = resolveInstanceConfig(instance?.config);
+    return {
+      inboundMediaMode: cfg.inboundMediaMode,
+      sharedFsMaxBytes: cfg.mediaMaxMb * 1024 * 1024,
+    };
+  },
+});
+
+// Admin-gated resolution for the shared-fs "Valider" action: the routed instance's
+// bridge URL + the modes (which legs to check). Auth is BRIDGE_CONFIG_WRITE (same
+// admin gate as the config editor) — propagated from the calling action's identity.
+export const validateMediaTargetInternal = internalQuery({
+  args: { instanceName: v.string() },
+  handler: async (ctx, { instanceName }) => {
+    await requirePermission(ctx, PERMISSIONS.BRIDGE_CONFIG_WRITE);
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    const cfg = resolveInstanceConfig(instance?.config);
+    // SAME scoped fallback as dispatch (resolveBridgeUrlForDispatch): a bridgeUrl-less
+    // instance only inherits env BRIDGE_URL when it is the sole/served instance.
+    // Otherwise "Valider" would round-trip a DIFFERENT instance's bridge and report
+    // its paths as OK while this instance's real sends fail not_configured.
+    const someInstances = await ctx.db.query("instances").take(2);
+    return {
+      bridgeUrl:
+        resolveBridgeUrlForDispatch(instance, {
+          instanceName,
+          served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+          isSole: someInstances.length <= 1,
+        }) ?? null,
+      inboundMediaMode: cfg.inboundMediaMode,
+      mediaMode: cfg.mediaMode,
+    };
+  },
+});
+
+type DirCheck = { checked: boolean; ok: boolean; detail: string };
+type ValidateMediaResult = {
+  reachable: boolean;
+  reason?: string;
+  inbound?: DirCheck;
+  outbound?: DirCheck;
+};
+
+// Shared-fs "Valider" button: POST the routed instance's modes to its bridge's
+// `/validate-media`, which checks the BRIDGE's access to the shared dirs (no
+// gateway fs API → bridge-side only; the agent-side mount is the operator's to
+// match). Admin-gated via the internal query above. NEVER throws to the UI on a
+// transport error — returns a structured {reachable:false}.
+export const validateMediaPaths = action({
+  args: { instanceName: v.string() },
+  handler: async (ctx, { instanceName }): Promise<ValidateMediaResult> => {
+    const target = await ctx.runQuery(
+      internal.bridge.validateMediaTargetInternal,
+      { instanceName },
+    );
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    if (!target.bridgeUrl || !sharedSecret) {
+      return { reachable: false, reason: "not_configured" };
+    }
+    try {
+      const res = await fetch(
+        `${target.bridgeUrl.replace(/\/$/, "")}/validate-media`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: sharedSecret,
+          },
+          body: JSON.stringify({
+            instanceName,
+            inboundMediaMode: target.inboundMediaMode,
+            mediaMode: target.mediaMode,
+          }),
+        },
+      );
+      if (!res.ok) {
+        return { reachable: true, reason: `http_${res.status}` };
+      }
+      const data = (await res.json()) as {
+        inbound?: DirCheck;
+        outbound?: DirCheck;
+      };
+      return { reachable: true, inbound: data.inbound, outbound: data.outbound };
+    } catch {
+      return { reachable: false, reason: "unreachable" };
+    }
   },
 });
 
@@ -298,7 +466,11 @@ export const bindChatTarget = internalMutation({
     // Rebinding to a different agent: DROP the stale provider conversation id (it
     // belonged to the old agent) so the next turn starts the new agent fresh on
     // the Convex chatId instead of resuming the old agent's thread (Codex P1).
-    await ctx.db.patch(chatId, { instanceName, agentId, openclawChatId: undefined });
+    await ctx.db.patch(chatId, {
+      instanceName,
+      agentId,
+      openclawChatId: undefined,
+    });
   },
 });
 
@@ -313,16 +485,14 @@ export const dispatch = internalAction({
       return; // already handled (guards duplicate schedules)
     }
 
-    const bridgeUrl = process.env.BRIDGE_URL;
+    // The shared secret is deployment-wide env (Convex→bridge auth, shared across
+    // all per-instance bridges). The bridge URL is now PER-INSTANCE (resolved from
+    // routing below), so it is checked after we know the target. We do NOT throw on
+    // a misconfig — a thrown action is retried by Convex and would re-POST/re-fail
+    // without the operator fixing anything; the durable "failed" row is the signal.
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (!bridgeUrl || !sharedSecret) {
-      // Misconfiguration: mark the row failed so it is visible. We do NOT throw,
-      // because a thrown action is retried by Convex — and a retry would re-POST
-      // (or re-fail) without the operator having fixed anything. The "failed"
-      // row is the durable, queryable signal.
-      console.error(
-        "bridge.dispatch: BRIDGE_URL / BRIDGE_SHARED_SECRET not configured",
-      );
+    if (!sharedSecret) {
+      console.error("bridge.dispatch: BRIDGE_SHARED_SECRET not configured");
       await ctx.runMutation(internal.bridge.failDispatch, {
         outboxId,
         reason: "not_configured",
@@ -369,6 +539,28 @@ export const dispatch = internalAction({
       return;
     }
 
+    // Per-instance bridge endpoint (Model M). routing.bridgeUrl is the instance's
+    // own bridgeUrl, else the env BRIDGE_URL fallback (single-bridge path). Unset
+    // both → not_configured (durable failed row, not a throw/retry).
+    const bridgeUrl = routing.bridgeUrl;
+    if (!bridgeUrl) {
+      console.error(
+        "bridge.dispatch: no bridgeUrl for the routed instance (set instances.bridgeUrl or BRIDGE_URL)",
+      );
+      await ctx.runMutation(internal.bridge.failDispatch, {
+        outboxId,
+        reason: "not_configured",
+      });
+      await traceDispatch(ctx, {
+        outboxId,
+        chatId: row.chatId,
+        dispatchStatus: "failed",
+        reason: "not_configured",
+        errorCode: "NOT_CONFIGURED",
+      });
+      return;
+    }
+
     // Persist a re-bind (legacy/unbound chat resolved to the default, or the bound
     // agent was deleted on the gateway) BEFORE sending, so the chat's stored
     // binding matches the agent we dispatch to and the next turn is stable.
@@ -382,26 +574,92 @@ export const dispatch = internalAction({
 
     // Resolve INBOUND attachments (storageId -> bytes -> base64) into OpenClaw's
     // chat.send.attachment shape. Inbound rides the JSON WS, so it MUST be inline
-    // base64 (the gateway offloads it to media://inbound); bounded by the WS
-    // maxPayload (~25 MiB). Unreadable / over-cap blobs are skipped (logged) so a
-    // bad attachment never fails the text send.
-    const INBOUND_MAX_BYTES = 20 * 1024 * 1024;
+    // base64 (the gateway offloads it to media://inbound); the whole frame is
+    // bounded by the gateway's maxPayload. An attachment over that ceiling CANNOT
+    // be delivered (its base64 would overflow the WS frame and CLOSE the gateway
+    // connection) — so we FAIL the send with a clear ATTACHMENT_TOO_LARGE rather
+    // than SILENTLY dropping it (the prod bug: a 20.9 MiB pptx was skipped here and
+    // the text went out fileless, no error). The cap is DERIVED from the gateway-
+    // announced maxPayload (read from bridgeHealth), never a hardcoded size; when it
+    // is not yet known the composer already capped upfront and the bridge frame
+    // guard is the backstop, so we proceed.
+    // The EFFECTIVE inbound frame (the bridge publishes min(gateway maxPayload, its
+    // own HTTP body cap), envelope included). We check the AGGREGATE base64 size of
+    // ALL attachments + the message against it — maxPayload bounds the whole
+    // chat.send frame, NOT each file, so N files individually under the per-file cap
+    // can still overflow it together (matches the bridge guard).
+    const reportedMaxPayload = await ctx.runQuery(
+      internal.bridgeHealth.maxPayloadInternal,
+      // Per routed instance (Model M): the cap is derived from THIS instance's
+      // gateway frame limit, not a global one.
+      { instanceName: routing.target.instanceName },
+    );
+    // CONSERVATIVE fallback when the bridge has NOT reported a maxPayload yet — an
+    // OLD bridge image in a mixed deploy (Convex/front shipped first), or a cold
+    // poll. We must NEVER skip the size check: an old bridge lacks the frame guard,
+    // so a 20+ MiB attachment POSTed to it would close the gateway connection (the
+    // very bug this fixes). The fallback is OpenClaw's OWN default frame limit (the
+    // value every 2026.x hello-ok reports) — it auto-corrects to the real value once
+    // the new bridge publishes it, so it is derived knowledge, not a magic number.
+    const maxPayload =
+      typeof reportedMaxPayload === "number"
+        ? reportedMaxPayload
+        : DEFAULT_GATEWAY_MAX_PAYLOAD;
     const resolvedAttachments: Array<{
       type: string;
       mimeType: string;
       fileName: string;
       content: string;
     }> = [];
+    // Phase 3 (shared-fs): TOOL-READ files in shared-fs mode ride BY REFERENCE — a
+    // short-lived Convex getUrl the bridge STREAMS to a shared volume (no base64, no
+    // frame ceiling → videos/audio of any size). The storageId is server-minted from
+    // the outbox (never client-supplied — IDOR lesson). References are NOT counted
+    // toward the maxPayload frame guard (only inline base64 is).
+    const referenceAttachments: Array<{
+      url: string;
+      mimeType: string;
+      fileName: string;
+    }> = [];
+    const inboundMediaMode = routing.config.inboundMediaMode;
+    let attachmentTooLarge = false;
+    // We size the frame by the SUM of the attachments' base64 only. The message
+    // text + JSON structure ride the fixed envelope reserved inside base64FitsFrame
+    // (FRAME_ENVELOPE_OVERHEAD_BYTES) — NOT counted here. This keeps the composer's
+    // per-file cap (which reserves the same envelope) consistent with this check, so
+    // a file at the advertised cap PLUS a normal prompt is never accepted-then-
+    // rejected (the message is byte/encoding-agnostic to the budget), and matches
+    // the bridge frame guard. A pathological prompt larger than the envelope is the
+    // only residual, backstopped by the bridge body cap (413) + the gateway.
+    let base64Total = 0;
     for (const a of row.attachments ?? []) {
       try {
+        // Model-native (Vision) → inline base64 (size-bounded). Tool-read in
+        // shared-fs mode → reference (streamed by the bridge, any size).
+        if (
+          classifyAttachment({ mimeType: a.mimeType, inboundMediaMode }) ===
+          "reference"
+        ) {
+          const url = await ctx.storage.getUrl(a.storageId);
+          if (url === null) continue; // blob gone — skip (never fail the whole turn)
+          referenceAttachments.push({
+            url,
+            mimeType: a.mimeType || "application/octet-stream",
+            fileName: a.filename,
+          });
+          continue; // NOT base64, NOT counted toward the frame guard
+        }
         const blob = await ctx.storage.get(a.storageId);
         if (blob === null) continue;
-        if (blob.size > INBOUND_MAX_BYTES) {
+        const next = base64Total + base64ByteLength(blob.size);
+        if (!base64FitsFrame(next, maxPayload)) {
           console.error(
-            `bridge.dispatch: inbound attachment too large (${blob.size} bytes) — skipped`,
+            `bridge.dispatch: inbound attachment frame too large (${next} base64 bytes > maxPayload ${maxPayload}) — failing send (not dropping)`,
           );
-          continue;
+          attachmentTooLarge = true;
+          break;
         }
+        base64Total = next;
         resolvedAttachments.push({
           type: "file",
           mimeType: a.mimeType || blob.type || "application/octet-stream",
@@ -424,45 +682,61 @@ export const dispatch = internalAction({
     // Curated root-cause code for a failed send (non-PHI). From the bridge's 502
     // body when reachable; a fixed local code when the bridge can't be reached.
     let errorCode: string | undefined;
-    try {
-      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Shared secret authenticates Convex -> bridge (server-to-server).
-          Authorization: sharedSecret,
-        },
-        body: JSON.stringify({
-          chatId: row.chatId,
-          openclawChatId: routing.openclawChatId,
-          // Resolved valve target (non-secret names): the bridge maps
-          // instanceName -> gateway token/device identity from its env.
-          instanceName: routing.target.instanceName,
-          agentId: routing.target.agentId,
-          canonical: routing.target.canonical,
-          text: row.text,
-          clientMessageId: row.clientMessageId,
-          // The user message id for THIS turn — the bridge excludes it when it
-          // fetches prior history for session re-hydration (so the current
-          // message is not duplicated into the injected context).
-          messageId: row.messageId ?? null,
-          // Per-chat knob intent: the bridge re-applies these (sessions.patch)
-          // before chat.send so a reset session keeps the user's reasoning/model.
-          sessionSettings: routing.sessionSettings,
-          attachments: resolvedAttachments,
-        }),
-      });
-      ok = response.ok;
-      if (!ok) {
-        console.error(`bridge POST /send -> HTTP ${response.status}`);
-        // Parse the curated cause from the 502 body (tolerant of old/new bridge).
-        errorCode = await readErrorCode(response);
+    if (attachmentTooLarge) {
+      // Over-cap attachment: do NOT POST it (its base64 would overflow the WS
+      // frame and close the gateway connection). Fail with a clear, file-specific
+      // code so the user sees "trop volumineuse" — never a silent text-only send.
+      errorCode = "ATTACHMENT_TOO_LARGE";
+    } else {
+      try {
+        const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Shared secret authenticates Convex -> bridge (server-to-server).
+            Authorization: sharedSecret,
+          },
+          body: JSON.stringify({
+            chatId: row.chatId,
+            openclawChatId: routing.openclawChatId,
+            // Resolved valve target (non-secret names): the bridge maps
+            // instanceName -> gateway token/device identity from its env.
+            instanceName: routing.target.instanceName,
+            agentId: routing.target.agentId,
+            canonical: routing.target.canonical,
+            text: row.text,
+            clientMessageId: row.clientMessageId,
+            // The user message id for THIS turn — the bridge excludes it when it
+            // fetches prior history for session re-hydration (so the current
+            // message is not duplicated into the injected context).
+            messageId: row.messageId ?? null,
+            // Per-chat knob intent: the bridge re-applies these (sessions.patch)
+            // before chat.send so a reset session keeps the user's reasoning/model.
+            sessionSettings: routing.sessionSettings,
+            attachments: resolvedAttachments,
+            // Tool-read files streamed by reference (shared-fs). An old bridge
+            // ignores this unknown field (those files simply won't reach the agent
+            // until the bridge is updated — shared-fs is opt-in, default inline).
+            referenceAttachments,
+            // Per-instance NON-secret bridge config, hot-consumed in-band (media
+            // mode + caps + rehydration). ONLY the admin's explicit overrides — an
+            // unset field is absent so the bridge keeps its own env default (never
+            // shadowed). An old bridge ignores this unknown field.
+            config: routing.configOverrides,
+          }),
+        });
+        ok = response.ok;
+        if (!ok) {
+          console.error(`bridge POST /send -> HTTP ${response.status}`);
+          // Parse the curated cause from the 502 body (tolerant of old/new bridge).
+          errorCode = await readErrorCode(response);
+        }
+      } catch (err) {
+        console.error("bridge POST /send failed:", err);
+        ok = false;
+        // Network-level: the request never reached the bridge (down / wrong URL).
+        errorCode = "BRIDGE_UNREACHABLE";
       }
-    } catch (err) {
-      console.error("bridge POST /send failed:", err);
-      ok = false;
-      // Network-level: the request never reached the bridge (down / wrong URL).
-      errorCode = "BRIDGE_UNREACHABLE";
     }
 
     if (ok) {
@@ -515,12 +789,9 @@ export const dispatchPatch = internalAction({
     // outage is repaired on the next turn exactly like a set.
   },
   handler: async (ctx, { chatId, userId }) => {
-    const bridgeUrl = process.env.BRIDGE_URL;
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (!bridgeUrl || !sharedSecret) {
-      console.error(
-        "bridge.dispatchPatch: BRIDGE_URL / BRIDGE_SHARED_SECRET not configured",
-      );
+    if (!sharedSecret) {
+      console.error("bridge.dispatchPatch: BRIDGE_SHARED_SECRET not configured");
       return;
     }
 
@@ -530,6 +801,12 @@ export const dispatchPatch = internalAction({
     });
     if (!routing || routing.target === null) {
       console.error("bridge.dispatchPatch: user is unrouted (no valve target)");
+      return;
+    }
+    // Per-instance bridge endpoint (Model M), else env BRIDGE_URL fallback.
+    const bridgeUrl = routing.bridgeUrl;
+    if (!bridgeUrl) {
+      console.error("bridge.dispatchPatch: no bridgeUrl for the routed instance");
       return;
     }
     const settings = routing.sessionSettings;
@@ -633,12 +910,9 @@ export const dispatchReset = internalAction({
       }
     };
 
-    const bridgeUrl = process.env.BRIDGE_URL;
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (!bridgeUrl || !sharedSecret) {
-      console.error(
-        "bridge.dispatchReset: BRIDGE_URL / BRIDGE_SHARED_SECRET not configured",
-      );
+    if (!sharedSecret) {
+      console.error("bridge.dispatchReset: BRIDGE_SHARED_SECRET not configured");
       await failRegen("not_configured");
       return;
     }
@@ -649,6 +923,13 @@ export const dispatchReset = internalAction({
     if (!routing || routing.target === null) {
       console.error("bridge.dispatchReset: no agent assigned for user");
       await failRegen("no_agent");
+      return;
+    }
+    // Per-instance bridge endpoint (Model M), else env BRIDGE_URL fallback.
+    const bridgeUrl = routing.bridgeUrl;
+    if (!bridgeUrl) {
+      console.error("bridge.dispatchReset: no bridgeUrl for the routed instance");
+      await failRegen("not_configured");
       return;
     }
 

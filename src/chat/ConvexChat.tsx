@@ -12,6 +12,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -21,6 +22,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
+import { useResolvedMode } from "@/lib/useChart";
+import { pickLogoUrl, brandInitials } from "@/lib/brandLogo";
+import { AtriumMark } from "@/components/AtriumMark";
+import {
+  AssistantIdentityContext,
+  useAssistantIdentity,
+  assistantDisplayName,
+  type AssistantIdentity,
+} from "./assistantIdentity";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import {
   transcriptToMarkdown,
@@ -114,10 +124,30 @@ function useUiPrefs(): UiEffective {
   return useContext(UiPrefsContext);
 }
 
+
 // Imperative turn-gate handle (see useConvexChatRuntime.TurnGate): lets the
 // delete-assistant flow arm the SAME thinking placeholder + composer lock a
 // send uses, from inside any message row.
 const TurnGateContext = createContext<TurnGate | null>(null);
+
+// The active charte's avatar tile, shared by the assistant message header AND the
+// new-chat welcome (both under AssistantIdentityContext) so the two can't drift:
+// uploaded logo (whole, contain) -> Atrium mark (default) -> initials (custom, no
+// logo). `className` is the host tile (.oc-msg__avatar / .oc-emptystate__avatar).
+function BrandAvatar({ className }: { className: string }) {
+  const id = useAssistantIdentity();
+  return (
+    <div className={className} aria-hidden>
+      {id.logoUrl ? (
+        <img className="oc-avatar__img" src={id.logoUrl} alt="" />
+      ) : id.isDefault ? (
+        <AtriumMark className="oc-avatar__mark" />
+      ) : (
+        id.initials
+      )}
+    </div>
+  );
+}
 
 export function ConvexChat({ chatId }: ConvexChatProps) {
   const { runtime, turnGate } = useConvexChatRuntime({ chatId });
@@ -129,6 +159,30 @@ export function ConvexChat({ chatId }: ConvexChatProps) {
   const me = useQuery(api.me.getMe, { host: APP_HOST });
   const ui = (me?.ui?.effective as UiEffective | undefined) ?? DEFAULT_UI;
   const showTools = ui.showTools;
+
+  // Resolve the assistant identity ONCE (see AssistantIdentityContext): the
+  // charte graphique drives the AVATAR (logo follows the SAME server-resolved
+  // theme mode so it never desyncs from the applied CSS), and the responding
+  // AGENT drives the NAME (multi-agent only — single-agent falls back to the
+  // brand label). getChatAgent is the SAME subscription the header chip uses.
+  const brandMode = useResolvedMode(me?.resolvedThemeMode);
+  const brand = me?.resolvedChartBrand;
+  const agentInfo = useQuery(
+    api.agents.getChatAgent,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
+  const agent = agentInfo?.multiAgent ? agentInfo.agent : null;
+  const assistantIdentity = useMemo<AssistantIdentity>(() => {
+    const label = brand?.label ?? "Atrium";
+    return {
+      label,
+      logoUrl: pickLogoUrl(brand, brandMode),
+      isDefault: brand?.isDefault ?? true,
+      initials: brandInitials(label),
+      agentName: agent?.displayName ?? agent?.agentId ?? null,
+      agentEmoji: agent?.emoji ?? null,
+    };
+  }, [brand, brandMode, agent]);
   // OPTIMISTIC (shared updater — see uiPrefOptimistic.ts): the toggle flips in the
   // local getMe cache IMMEDIATELY; the write + its getMe-invalidation cascade run
   // in the background instead of blocking the click.
@@ -151,6 +205,7 @@ export function ConvexChat({ chatId }: ConvexChatProps) {
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnGateContext.Provider value={turnGate}>
       <UiPrefsContext.Provider value={ui}>
+      <AssistantIdentityContext.Provider value={assistantIdentity}>
         <div className="oc-chat">
           {chatId ? (
             notFound ? (
@@ -168,6 +223,7 @@ export function ConvexChat({ chatId }: ConvexChatProps) {
             <div className="oc-empty">{m.chat_empty_select()}</div>
           )}
         </div>
+      </AssistantIdentityContext.Provider>
       </UiPrefsContext.Provider>
       </TurnGateContext.Provider>
     </AssistantRuntimeProvider>
@@ -320,9 +376,7 @@ function ThreadAnnouncer({ chatId }: { chatId: ConvexId<"chats"> }) {
 function ThreadEmptyState() {
   return (
     <div className="oc-emptystate">
-      <div className="oc-emptystate__avatar" aria-hidden>
-        OC
-      </div>
+      <BrandAvatar className="oc-emptystate__avatar" />
       <h2 className="oc-emptystate__title">{m.chat_empty_help()}</h2>
     </div>
   );
@@ -922,13 +976,22 @@ function UserMessage() {
 function AssistantMessage() {
   const [showSource, setShowSource] = useState(false);
   const ui = useUiPrefs();
+  // Avatar = active charte graphique (logo / Atrium mark / initials); name = the
+  // responding AGENT's display name (falls back to the brand label for a
+  // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
+  const identity = useAssistantIdentity();
   return (
     <MessagePrimitive.Root className="oc-msg oc-msg--assistant">
-      <div className="oc-msg__avatar" aria-hidden>
-        OC
-      </div>
+      <BrandAvatar className="oc-msg__avatar" />
       <div className="oc-msg__col">
-        <div className="oc-msg__name">OpenClaw</div>
+        <div className="oc-msg__name">
+          {identity.agentEmoji ? (
+            <span className="oc-msg__name-emoji" aria-hidden>
+              {identity.agentEmoji}
+            </span>
+          ) : null}
+          {assistantDisplayName(identity)}
+        </div>
         <div className="oc-msg__body">
           {/* Grouped tool activity (summary + collapsible ToolCards), BEFORE the
               body so the streamed text always lands below it, in view of the

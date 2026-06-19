@@ -195,6 +195,15 @@ export class OpenClawConnection {
   // compat manifest then applies its CONSERVATIVE capability policy.
   gatewayVersion: string | null = null;
 
+  // Max WS frame the gateway accepts, captured live from the hello-ok
+  // `payload.policy.maxPayload` (observed 26214400 = 25 MiB). This is the ONE
+  // authoritative limit for inbound attachments: they ride the JSON WS as inline
+  // base64, so the whole chat.send frame (base64 ≈ raw×4/3 + envelope) must fit
+  // here. The bridge enforces it (frame guard) and reports it so the composer +
+  // Convex derive the same raw cap instead of hardcoding one. `null` until the
+  // first connect (the server enforces regardless).
+  maxPayload: number | null = null;
+
   private constructor(ws: WebSocket) {
     this.ws = ws;
   }
@@ -321,6 +330,13 @@ export class OpenClawConnection {
           connection.gatewayVersion =
             typeof server.version === "string" && server.version.length > 0
               ? server.version
+              : null;
+          // Capture the WS frame limit (policy.maxPayload) — the authoritative
+          // inbound-attachment ceiling. Defensive: a non-number leaves null.
+          const policy = (payload.policy ?? {}) as Record<string, unknown>;
+          connection.maxPayload =
+            typeof policy.maxPayload === "number" && policy.maxPayload > 0
+              ? policy.maxPayload
               : null;
           connection.attachReader();
           resolve(connection);

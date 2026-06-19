@@ -59,6 +59,16 @@ export interface BridgeConfig {
    */
   mediaOutboundDir: string;
   /**
+   * The GATEWAY/AGENT-visible path of the outbound media dir (where the AGENT
+   * WRITES a generated file). The delivery instruction tells the agent to write
+   * here + emit `MEDIA:<path>`. DIFFERENT from `mediaOutboundDir` when the bridge
+   * and the gateway mount the shared volume at different points (e.g. a host bridge
+   * reads `/Users/.../media-outbound` while the agent, in the container, writes
+   * `/home/node/.openclaw/media/outbound`). Default = the gateway standard. Env
+   * OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT.
+   */
+  mediaOutboundAgentMount: string;
+  /**
    * Safety cap on a single outbound attachment. Bytes are STREAMED to a Convex
    * upload URL (no base64, no full buffer, no 20MB httpAction ceiling), so this
    * is just a guard against absurd files — raise OPENCLAW_MEDIA_MAX_MB freely.
@@ -102,6 +112,27 @@ export interface BridgeConfig {
    * pause must not be mistaken for a stall (that would false-drop valid media).
    */
   mediaFetchTimeoutMs: number;
+  /**
+   * Phase 3 (shared-fs INBOUND): the dir the bridge WRITES streamed tool-read
+   * files to (OPENCLAW_INBOUND_DIR). Must be a volume bind-mounted into THIS
+   * instance's gateway container (the bridge writes, the gateway reads). Defaults
+   * to the gateway's media/inbound, the co-located dev case.
+   */
+  inboundMediaDir: string;
+  /**
+   * The GATEWAY-visible mount path the agent reads inbound files from
+   * (OPENCLAW_INBOUND_AGENT_MOUNT). The bridge translates inboundMediaDir/<name> →
+   * inboundAgentMount/<name> in the injected `[FICHIERS REÇUS]` block. Equal to
+   * inboundMediaDir when the bridge + gateway share the path (co-located); differs
+   * when the same volume is mounted at different paths in each container.
+   */
+  inboundAgentMount: string;
+  /**
+   * TTL (ms) after which a stale inbound file is reaped (OPENCLAW_INBOUND_TTL_MS).
+   * MUST exceed the longest possible turn (the agent must finish reading first).
+   * Default 6h.
+   */
+  inboundTtlMs: number;
 
   // --- Convex ----------------------------------------------------------------
   /**
@@ -268,6 +299,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
         "OPENCLAW_MEDIA_OUTBOUND_DIR",
         "/home/node/.openclaw/media/outbound",
       ),
+      mediaOutboundAgentMount: optionalEnv(
+        "OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT",
+        "/home/node/.openclaw/media/outbound",
+      ),
       mediaMaxBytes: parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
       mediaMode: parseMediaMode("OPENCLAW_MEDIA_MODE"),
       gatewayHttpBase: deriveHttpBase(
@@ -275,6 +310,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
           requireEnv("OPENCLAW_GATEWAY_URL"),
       ),
       mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
+      inboundMediaDir: optionalEnv(
+        "OPENCLAW_INBOUND_DIR",
+        "/home/node/.openclaw/media/inbound",
+      ),
+      inboundAgentMount: optionalEnv(
+        "OPENCLAW_INBOUND_AGENT_MOUNT",
+        "/home/node/.openclaw/media/inbound",
+      ),
+      inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
       convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
       bridgeSharedSecret: requireEnv("BRIDGE_SHARED_SECRET"),

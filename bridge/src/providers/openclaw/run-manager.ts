@@ -10,7 +10,7 @@
 // One RunManager handles one OpenClaw session (one chat).
 
 import { Normalizer } from "./normalizer.js";
-import { TurnSink } from "../../core/turn-sink.js";
+import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
@@ -65,10 +65,15 @@ export class RunManager {
   // can never be replayed into the next turn (no stale-frame leak).
   private replayArmed = false;
 
-  constructor(chatId: string, sessionKey: string, writer: ConvexWriter) {
+  constructor(
+    chatId: string,
+    sessionKey: string,
+    writer: ConvexWriter,
+    outboundScan?: OutboundScan,
+  ) {
     this.sessionKey = sessionKey;
     this.normalizer = new Normalizer(sessionKey);
-    this.sink = new TurnSink(chatId, writer);
+    this.sink = new TurnSink(chatId, writer, outboundScan);
   }
 
   private tallyFrame(frame: unknown): void {

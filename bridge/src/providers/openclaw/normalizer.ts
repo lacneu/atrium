@@ -169,20 +169,46 @@ function isOutboundMediaPath(path: Json): path is string {
 }
 
 // Global scanner for an outbound media path EMBEDDED anywhere inside a (possibly
-// multi-line) string -- e.g. exec stdout or a "MEDIA:/home/node/..." directive
-// line surfaced in a tool result. The tail stops at whitespace, backtick, quote,
-// paren or angle bracket (mirrors sanitize.ts OUTBOUND_PATH_RE), so a path inside
-// prose or a shell transcript is extracted without trailing junk. Each hit is
-// re-validated through isOutboundMediaPath, so the "..", inbound, scheme and
-// query filters still apply -- this widens DISCOVERY only, never the safety gate.
+// multi-line) string -- e.g. exec stdout or a bare path surfaced in a tool
+// result. The tail stops at whitespace, backtick, quote, paren or angle bracket
+// (mirrors sanitize.ts OUTBOUND_PATH_RE), so a path inside prose or a shell
+// transcript is extracted without trailing junk. Each hit is re-validated
+// through isOutboundMediaPath, so the "..", inbound, scheme and query filters
+// still apply -- this widens DISCOVERY only, never the safety gate.
 const EMBEDDED_OUTBOUND_RE =
   /\/home\/node\/\.openclaw\/media\/outbound\/[^\s`)>"']+/g;
 
-/** Every outbound media path occurrence embedded in a string (may be empty). */
+// A whole-line MEDIA: delivery directive (the convention the bridge injects via
+// the [LIVRAISON] block). Mirrors sanitize.ts MEDIA_DIRECTIVE_RE so DISCOVERY and
+// visible-text STRIPPING agree on the same path. CRUCIAL: the convention defines
+// the ENTIRE rest of the line as the path, so a filename WITH SPACES ("IFOA
+// Presentation.pdf") is captured intact -- the bare-token scan above would
+// truncate it at the first space (the reported gateway-http delivery bug: the
+// visible text was stripped correctly but the file the bridge then tried to
+// fetch was the truncated ".../IFOA", which does not exist -> no media part).
+const MEDIA_DIRECTIVE_LINE_RE =
+  /^MEDIA:(\/home\/node\/\.openclaw\/media\/outbound\/.+)$/;
+
+/**
+ * Every outbound media path embedded in a string (may be empty). Scanned
+ * line-by-line so a MEDIA: directive line yields its WHOLE rest-of-line path
+ * (spaces included) while every other line falls back to the conservative
+ * bare-token scan. A directive line is NOT also bare-scanned, so a spaced name
+ * never produces a truncated duplicate alongside the full path.
+ */
 function extractOutboundPaths(text: string): string[] {
   const out: string[] = [];
-  for (const match of text.matchAll(EMBEDDED_OUTBOUND_RE)) {
-    out.push(match[0]);
+  for (const line of text.split(/\r\n|[\n\r\v\f]/)) {
+    const directive = MEDIA_DIRECTIVE_LINE_RE.exec(line);
+    if (directive) {
+      // trimEnd: the gateway file has no trailing whitespace, and a trailing
+      // space would make the fetch path not-found.
+      out.push(directive[1]!.trimEnd());
+      continue;
+    }
+    for (const match of line.matchAll(EMBEDDED_OUTBOUND_RE)) {
+      out.push(match[0]);
+    }
   }
   return out;
 }

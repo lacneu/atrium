@@ -540,12 +540,14 @@ type InstanceKind = "openclaw" | "hermes";
 type InstanceForm = {
   name: string;
   gatewayUrl: string;
+  bridgeUrl: string;
   displayName: string;
   kind: InstanceKind;
 };
 const EMPTY_INSTANCE: InstanceForm = {
   name: "",
   gatewayUrl: "",
+  bridgeUrl: "",
   displayName: "",
   kind: "openclaw",
 };
@@ -565,6 +567,7 @@ export function InstancesTab() {
       await upsert({
         name: form.name,
         gatewayUrl: form.gatewayUrl,
+        bridgeUrl: form.bridgeUrl || undefined,
         displayName: form.displayName || undefined,
         kind: form.kind,
       });
@@ -666,6 +669,13 @@ export function InstancesTab() {
             <Input
               value={form.gatewayUrl}
               onChange={(e) => setForm({ ...form, gatewayUrl: e.target.value })}
+            />
+          </Field>
+          <Field label={m.settings_field_bridge_url()}>
+            <Input
+              value={form.bridgeUrl}
+              placeholder={m.settings_field_bridge_url_ph()}
+              onChange={(e) => setForm({ ...form, bridgeUrl: e.target.value })}
             />
           </Field>
           <Field label={m.settings_field_display_name()}>

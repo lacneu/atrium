@@ -71,6 +71,14 @@ services:
       # SAME files the gateway writes. A production deployment typically uses a
       # shared NAMED volume instead — same mechanism, different backing.
       - ./media-outbound:/home/node/.openclaw/media/outbound
+      # SHARED INBOUND media (Phase 3 shared-fs): the host BRIDGE streams user-sent
+      # tool-read files here (OPENCLAW_INBOUND_DIR=./local-openclaw/media-inbound) and
+      # the gateway/agent READS them at this path (OPENCLAW_INBOUND_AGENT_MOUNT=
+      # /home/node/.openclaw/media/inbound). Mirror of media-outbound, opposite write
+      # direction. Prod uses a shared NAMED volume; on Docker Desktop the host-bind
+      # uid mismatch (bridge-host-uid writes, gateway node-uid reads) is handled by
+      # the osxfs/gRPC-FUSE layer; on Linux apply a default ACL (o:rX) on the dir.
+      - ./media-inbound:/home/node/.openclaw/media/inbound
       # Reorder wrapper over the image's buggy one (codex harness flag fix).
       - ./codex-yolo-wrapper.sh:/usr/local/bin/codex-yolo-wrapper.sh:ro
     healthcheck:

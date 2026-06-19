@@ -364,6 +364,88 @@ describe("media", () => {
       },
     ]);
   });
+
+  // Feed one `agent`/tool `result` frame + a lifecycle end; return its events.
+  function feedToolResult(result: unknown, name = "exec"): BridgeEvent[] {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    events.push(
+      ...normalizer.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: { name, phase: "result", toolCallId: "tc-1", result },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    return events;
+  }
+
+  it("MEDIA: directive with SPACES in the filename keeps the WHOLE path (gateway-http bug)", () => {
+    // The reported prod failure: a pptx->pdf produced "IFOA Presentation.pdf" and
+    // the agent emitted `MEDIA:/.../IFOA Presentation.pdf`. The OLD bare-token scan
+    // (`[^\s...]+`) truncated at the first space -> the bridge tried to fetch
+    // ".../IFOA" (not found) -> NO media part, while sanitize stripped the line
+    // correctly. The directive now yields the rest-of-line path, spaces intact.
+    const events = feedToolResult(
+      "done\nMEDIA:/home/node/.openclaw/media/outbound/IFOA Presentation.pdf\nexit 0",
+    );
+    expect(mediaItems(events)).toEqual([
+      {
+        filename: "IFOA Presentation.pdf",
+        path: "/home/node/.openclaw/media/outbound/IFOA Presentation.pdf",
+      },
+    ]);
+    // Discriminating: delete the directive handling and this regresses to the
+    // truncated "IFOA" basename — assert the full multi-word name explicitly.
+    expect(mediaItems(events)[0]!.filename).not.toBe("IFOA");
+  });
+
+  it("structured tool-result path (apply_patch changes[].path) is hosted, spaces included", () => {
+    // A file-edit tool reports its target as a STRUCTURED JSON field, not free
+    // text. flattenStrings yields that path as a standalone string, so it is
+    // hosted WITHOUT the regex (hence spaces are safe) — the gateway-http
+    // deterministic signal that needs no MEDIA: narration. Pins that behavior.
+    const events = feedToolResult(
+      {
+        status: "completed",
+        changes: [
+          {
+            path: "/home/node/.openclaw/media/outbound/Mon Rapport Final.pdf",
+            kind: { type: "add" },
+          },
+        ],
+      },
+      "apply_patch",
+    );
+    expect(mediaItems(events)).toEqual([
+      {
+        filename: "Mon Rapport Final.pdf",
+        path: "/home/node/.openclaw/media/outbound/Mon Rapport Final.pdf",
+      },
+    ]);
+  });
+
+  it("a bare outbound path embedded in PROSE (no MEDIA: prefix, with a space) stays conservative", () => {
+    // Documents the boundary: outside the explicit MEDIA: convention, a space in
+    // free prose is ambiguous (filename char vs path/word separator), so the
+    // bare-token scan still stops at the space. This is why the bridge INJECTS the
+    // MEDIA: convention ([LIVRAISON]) rather than relying on prose mentions.
+    const events = feedToolResult(
+      "I saved it to /home/node/.openclaw/media/outbound/My File.pdf for you.",
+    );
+    expect(mediaItems(events).map((i) => i.path)).toEqual([
+      "/home/node/.openclaw/media/outbound/My",
+    ]);
+  });
 });
 
 // --- upstream error ----------------------------------------------------------

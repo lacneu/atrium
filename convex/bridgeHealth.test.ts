@@ -10,6 +10,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
 import { normalizeTarget, computeAvailability } from "./bridgeHealth";
+import { maxRawInboundBytes } from "./lib/attachmentLimits";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -109,6 +110,7 @@ function doc(p: {
   reachable: boolean;
   checkedAt: number;
   lastError?: string;
+  maxPayload?: number | null;
   targets?: { state: string }[];
 }): Doc<"bridgeHealth"> {
   return {
@@ -118,6 +120,7 @@ function doc(p: {
     reachable: p.reachable,
     checkedAt: p.checkedAt,
     lastError: p.lastError,
+    maxPayload: p.maxPayload,
     targets: (p.targets ?? []) as Doc<"bridgeHealth">["targets"],
   } as Doc<"bridgeHealth">;
 }
@@ -132,7 +135,36 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
       degraded: false,
       reason: null,
       checkedAt: null,
+      maxInboundBytes: null,
     });
+  });
+
+  test("maxInboundBytes is DERIVED from the gateway maxPayload (not hardcoded)", () => {
+    const a = computeAvailability(
+      doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400, targets: [] }),
+      NOW,
+    );
+    // (26214400 - 131072 envelope) * 3/4 — the base64-adjusted raw cap, ~18.6 MiB.
+    expect(a.maxInboundBytes).toBe(maxRawInboundBytes(26214400));
+    expect(a.maxInboundBytes).toBeGreaterThan(18 * 1024 * 1024);
+    expect(a.maxInboundBytes).toBeLessThan(26214400);
+  });
+
+  test("maxInboundBytes scales with maxPayload (a bigger gateway frame -> bigger cap)", () => {
+    const small = computeAvailability(
+      doc({ reachable: true, checkedAt: NOW, maxPayload: 26214400 }),
+      NOW,
+    ).maxInboundBytes;
+    const big = computeAvailability(
+      doc({ reachable: true, checkedAt: NOW, maxPayload: 52428800 }),
+      NOW,
+    ).maxInboundBytes;
+    expect(big!).toBeGreaterThan(small!);
+  });
+
+  test("maxInboundBytes is null when the gateway has not reported maxPayload yet", () => {
+    const a = computeAvailability(doc({ reachable: true, checkedAt: NOW }), NOW);
+    expect(a.maxInboundBytes).toBeNull(); // composer fails open; server is the backstop
   });
 
   test("reachable, no target error, fresh -> available, not degraded", () => {

@@ -13,6 +13,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
+import { instanceConfigValidator } from "./lib/instanceConfig";
 
 // A single normalized message part. assistant-ui's `convertMessage` maps these
 // onto ThreadMessageLike content parts:
@@ -110,6 +111,11 @@ export const bridgeHealthTarget = v.object({
   lastDownstreamRejectCode: v.optional(v.union(v.string(), v.null())),
   lastDownstreamRejectAt: v.optional(v.union(v.number(), v.null())),
   downstreamRejectCount: v.optional(v.number()),
+  // Per-instance gateway WS frame limit (Model M): the maxPayload reported by THIS
+  // instance's bridge, so the inbound-attachment cap is derived per routed instance
+  // (maxPayloadInternal). Optional: a pre-this-release bridge / unreached instance
+  // omits it (the dispatch falls back to the doc-level value, then the default).
+  maxPayload: v.optional(v.union(v.number(), v.null())),
 });
 
 // One capability target from the bridge /capabilities snapshot, deduped to ONE
@@ -241,6 +247,14 @@ export default defineSchema({
     name: v.string(),
     gatewayUrl: v.string(),
     displayName: v.optional(v.string()),
+    // Per-instance bridge endpoint (Model M: one bridge process per gateway).
+    // Convex dispatch POSTs here; UNSET → fall back to the deployment `BRIDGE_URL`
+    // env (the single-bridge path). NON-secret URL — the shared secret stays env.
+    bridgeUrl: v.optional(v.string()),
+    // Per-instance NON-SECRET bridge config, hot-reloaded in-band on dispatch
+    // (mediaMode / inboundMediaMode / rehydration / mediaMaxMb). Secrets are NEVER
+    // here. Validator shared with admin.upsertInstanceConfig (lib/instanceConfig).
+    config: v.optional(instanceConfigValidator),
     // Which provider technology backs this instance. OPTIONAL (additive) →
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
@@ -1215,6 +1229,10 @@ export default defineSchema({
     startedAt: v.optional(v.number()), // bridge process start (for uptime)
     checkedAt: v.number(), // last poll time (staleness = now - checkedAt)
     lastError: v.optional(v.string()), // poll-level reason code when unreachable
+    // Gateway WS frame limit (policy.maxPayload) reported by the bridge — the ONE
+    // source for the inbound-attachment cap (composer + dispatch derive from it,
+    // no hardcoded size). Optional: a pre-this-release bridge omits it.
+    maxPayload: v.optional(v.union(v.number(), v.null())),
     targets: v.array(bridgeHealthTarget),
   }).index("by_key", ["key"]),
 

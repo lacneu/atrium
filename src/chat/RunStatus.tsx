@@ -3,6 +3,7 @@ import { useMessage } from "@assistant-ui/react";
 import { CircleAlert, Square } from "lucide-react";
 import type { MessageStatus } from "./convexTypes";
 import { runStatusView, messageHasText } from "./runStatusView";
+import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
 import { m } from "@/paraglide/messages.js";
 
 // Map a stored, stable error CODE to a localized, actionable message; any other
@@ -30,6 +31,7 @@ interface RunMeta {
 }
 
 export function RunStatus() {
+  const identity = useAssistantIdentity();
   const status = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.status);
   const runId = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.runId);
   const error = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.error);
@@ -95,7 +97,7 @@ export function RunStatus() {
       )}
       <span className="oc-run-status__label">
         {view.kind === "thinking" && longWait
-          ? m.chat_run_taking_longer()
+          ? runWaitingLabel(identity)
           : view.label}
       </span>
     </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pickLogoUrl } from "./brandLogo";
+import { pickLogoUrl, brandInitials } from "./brandLogo";
 
 describe("pickLogoUrl", () => {
   const both = { logoLightUrl: "L", logoDarkUrl: "D" };
@@ -28,5 +28,29 @@ describe("pickLogoUrl", () => {
 
   it("returns null for an undefined brand", () => {
     expect(pickLogoUrl(undefined, "light")).toBeNull();
+  });
+});
+
+describe("brandInitials", () => {
+  it("takes the first letter of the first two words", () => {
+    expect(brandInitials("Acme Corp")).toBe("AC");
+    expect(brandInitials("Ataraxis Coaching")).toBe("AC");
+  });
+
+  it("takes the first two letters of a single word", () => {
+    expect(brandInitials("Ataraxis")).toBe("AT");
+  });
+
+  it("uppercases and ignores surrounding / extra whitespace", () => {
+    expect(brandInitials("  ataraxis  ")).toBe("AT");
+    expect(brandInitials("acme   corp")).toBe("AC");
+  });
+
+  it("handles a one-character label", () => {
+    expect(brandInitials("x")).toBe("X");
+  });
+
+  it("falls back to '?' for an empty label", () => {
+    expect(brandInitials("   ")).toBe("?");
   });
 });

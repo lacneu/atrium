@@ -1,14 +1,32 @@
 import { memo, type ComponentPropsWithoutRef } from "react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
+import { isNavigableHref } from "./markdownLinks";
 
-// Every link inside AGENT-AUTHORED content opens in a new tab: agent output is
-// untrusted/unpredictable, and a same-tab navigation would replace the webchat.
-// Enforced HERE at the renderer (deterministic — never delegated to the agents)
-// for ALL anchors regardless of href shape; `noopener noreferrer` also blocks
-// reverse-tabnabbing from the opened page.
-function AgentAnchor(props: ComponentPropsWithoutRef<"a">) {
-  return <a {...props} target="_blank" rel="noopener noreferrer" />;
+// Anchor renderer for AGENT-AUTHORED markdown. Two cases:
+//   - A real, browser-navigable URL (absolute http(s)/mailto) → open in a NEW tab
+//     (agent output is untrusted; a same-tab nav would replace the webchat) with
+//     `noopener noreferrer` (anti reverse-tabnabbing).
+//   - Anything else (a server-side FILE PATH, a bare filename, a media:// ref —
+//     what an agent writes when it mentions a file it produced) is NOT navigable:
+//     rendering it as <a> made a click resolve RELATIVE to the app origin, so the
+//     SPA router showed the home/404 screen ("opens the home page instead of the
+//     file"). Render those as plain TEXT — the name stays visible, no broken nav.
+//     (A genuinely downloadable agent file is hosted separately as a media part
+//     with an absolute storage URL, which IS navigable and unaffected here.)
+function AgentAnchor({
+  href,
+  children,
+  ...rest
+}: ComponentPropsWithoutRef<"a">) {
+  if (!isNavigableHref(href)) {
+    return <span {...rest}>{children}</span>;
+  }
+  return (
+    <a {...rest} href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
 }
 
 // Renders an assistant text part as GitHub-flavored markdown (bold, inline code

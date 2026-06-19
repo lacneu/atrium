@@ -6,13 +6,12 @@
 // `--env-file=.env`, so secrets load from bridge/.env. Equivalent to
 // `node --env-file=.env dist/index.js`.
 
-import { loadConfig, type BridgeConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { HttpConvexWriter } from "./convex-writer.js";
-import {
-  LocalDirMediaFetcher,
-  type MediaFetcher,
-} from "./core/media-fetcher.js";
-import { GatewayHttpMediaFetcher } from "./core/gateway-http-media-fetcher.js";
+import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
+import { startInboundReaper } from "./core/inbound-reaper.js";
+import { scanAndHostOutbound } from "./core/outbound-scan.js";
+import type { OutboundScan } from "./core/turn-sink.js";
 import { HealthRegistry } from "./core/health.js";
 import { SessionRegistry } from "./session.js";
 import { createBridgeServer } from "./server.js";
@@ -21,46 +20,40 @@ import {
   installServerFailFast,
 } from "./core/safety-net.js";
 
-/**
- * Pick the outbound-media fetcher per OPENCLAW_MEDIA_MODE. DEFAULT "gateway-http"
- * needs NO shared filesystem (the portable path for most deployments); "shared-fs"
- * is the OPT-IN mount; "off" disables outbound attachments. Returns undefined for
- * "off" — the writer then records a `dropped:no_fetcher` diagnostic and the turn's
- * text/tools still land.
- */
-function selectMediaFetcher(config: BridgeConfig): MediaFetcher | undefined {
-  switch (config.mediaMode) {
-    case "gateway-http":
-      return new GatewayHttpMediaFetcher({
-        httpBase: config.gatewayHttpBase,
-        token: config.openclawToken,
-        maxBytes: config.mediaMaxBytes,
-        timeoutMs: config.mediaFetchTimeoutMs,
-      });
-    case "shared-fs":
-      return new LocalDirMediaFetcher({
-        baseDir: config.mediaOutboundDir,
-        maxBytes: config.mediaMaxBytes,
-      });
-    case "off":
-      return undefined;
-  }
-}
-
 function main(): void {
   // Fail fast on missing/invalid env before opening any socket.
   const config = loadConfig();
 
-  const mediaFetcher = selectMediaFetcher(config);
-  console.log(`[media] outbound mode: ${config.mediaMode}`);
+  // Hot-swappable outbound media fetcher (D-E): the provider holds the current
+  // fetcher and rebuilds it when /send applies a per-instance mediaMode/mediaMaxMb
+  // change; the writer reads it lazily so async outbound media reflects the change.
+  const mediaProvider = new MediaFetcherProvider(config);
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     ingestSecret: config.convexIngestSecret,
-    mediaFetcher,
+    getFetcher: () => mediaProvider.current(),
   });
-  const registry = new SessionRegistry(config, writer);
+  // DETERMINISTIC outbound media: at each turn's finalize, host any file the agent
+  // dropped in the outbound dir — independent of whether it emitted a MEDIA: line
+  // (the LLM is unreliable about it). Only active in shared-fs outbound mode (the
+  // bridge has a local mount to scan); a no-op otherwise.
+  const outboundScan: OutboundScan = (messageId, sinceMs, hosted) =>
+    scanAndHostOutbound(
+      {
+        writer,
+        dir: config.mediaOutboundDir,
+        // HOT cap (not the boot config.mediaMaxBytes): match what the current fetcher
+        // would accept after a per-instance mediaMaxMb change.
+        maxBytes: mediaProvider.currentMaxBytes(),
+        enabled: () => mediaProvider.currentMode() === "shared-fs",
+      },
+      messageId,
+      sinceMs,
+      hosted,
+    );
+  const registry = new SessionRegistry(config, writer, undefined, outboundScan);
   const health = new HealthRegistry(Date.now());
-  const server = createBridgeServer({ config, registry, health });
+  const server = createBridgeServer({ config, registry, health, mediaProvider });
 
   // A listen/bind failure must FAIL FAST so the supervisor restarts and the failure
   // surfaces: an ASYNC `error` event (EADDRINUSE / EACCES) is claimed here and
@@ -68,6 +61,10 @@ function main(): void {
   // ERR_SOCKET_BAD_PORT) propagates uncaught and exits because the process safety
   // net is NOT armed until we are actually listening (below).
   installServerFailFast(server);
+
+  // Reap stale shared-fs inbound files (Phase 3) — the bridge owns this dir's
+  // lifecycle. Unref'd, so it never holds the process open during shutdown.
+  startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
 
   server.listen(config.port, () => {
     console.log(`bridge listening on :${config.port}`);

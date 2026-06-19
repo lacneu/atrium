@@ -10,11 +10,12 @@
 // to a chat deleted mid-turn.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { readErrorCode } from "./bridge";
+import { maxRawInboundBytes } from "./lib/attachmentLimits";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -234,6 +235,338 @@ describe("bridge.dispatchReset — regenerate with NO agent surfaces an error (n
   });
 });
 
+// The user's prod bug: a 20.9 MiB attachment was SILENTLY skipped (`continue`)
+// here, so the text went out fileless with no error. The fix FAILS the send with a
+// clear ATTACHMENT_TOO_LARGE and NEVER POSTs (an oversized base64 frame closes the
+// gateway connection). This is the server-side "no silent drop" — the PRIMARY
+// defense in the cold-start window where the composer cap is still unknown.
+describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently dropped)", () => {
+  test("an over-cap attachment -> outbox failed ATTACHMENT_TOO_LARGE, NO POST to the bridge", async () => {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    // The over-cap path must NEVER POST; spy so we assert that — and so a regression
+    // to the old silent `continue` (which WOULD POST text-only) is caught.
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        // A routed default agent so resolveTargetForChat returns a target.
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "read this",
+          updatedAt: now,
+        });
+        // A TINY (5-byte) blob — but maxPayload=1000 derives maxRawInboundBytes=0,
+        // so ANY attachment is over-cap (no multi-MB blob needed to trip the path).
+        const storageId = await ctx.storage.store(
+          new Blob([new Uint8Array([1, 2, 3, 4, 5])]),
+        );
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-over",
+          messageId,
+          text: "read this",
+          attachmentIds: [storageId],
+          attachments: [
+            { storageId, filename: "a.bin", mimeType: "application/octet-stream" },
+          ],
+          status: "pending",
+        });
+        await ctx.db.insert("bridgeHealth", {
+          key: "singleton",
+          reachable: true,
+          checkedAt: now,
+          maxPayload: 1000, // -> maxRawInboundBytes 0 -> the 5-byte blob is over-cap
+          targets: [],
+        });
+        return { outboxId, chatId };
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("failed"); // NOT silently sent text-only
+      expect(fetchSpy).not.toHaveBeenCalled(); // never POSTed the socket-killing frame
+      const msgs = await messagesOf(t, chatId);
+      const err = msgs.find((m) => m.role === "assistant" && m.status === "error");
+      expect(err?.error ?? "").toMatch(/attach-size/); // the ATTACHMENT_TOO_LARGE message
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("AGGREGATE: two files each UNDER the per-file cap but over the frame TOGETHER -> FAIL", async () => {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    // envelope (131072) + 8 -> per-file raw cap 6 bytes; ONE 5-byte file fits the
+    // frame, TWO do not. maxPayload bounds the WHOLE frame, not each file — a
+    // per-blob check (the bug Codex flagged) would wrongly accept both.
+    const MAXP = 131072 + 8;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "",
+          updatedAt: now,
+        });
+        const five = () =>
+          ctx.storage.store(new Blob([new Uint8Array([1, 2, 3, 4, 5])]));
+        const s1 = await five();
+        const s2 = await five();
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-2att",
+          messageId,
+          text: "",
+          attachmentIds: [s1, s2],
+          attachments: [
+            { storageId: s1, filename: "a.bin", mimeType: "application/octet-stream" },
+            { storageId: s2, filename: "b.bin", mimeType: "application/octet-stream" },
+          ],
+          status: "pending",
+        });
+        await ctx.db.insert("bridgeHealth", {
+          key: "singleton",
+          reachable: true,
+          checkedAt: now,
+          maxPayload: MAXP,
+          targets: [],
+        });
+        return { outboxId, chatId };
+      });
+
+      // Each 5-byte file IS under the per-file raw cap -> a per-blob check passes both.
+      expect(maxRawInboundBytes(MAXP)).toBeGreaterThan(5);
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("failed"); // the aggregate frame is over -> fail
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const msgs = await messagesOf(t, chatId);
+      expect(msgs.some((m) => /attach-size/.test(m.error ?? ""))).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("MIXED DEPLOY: maxPayload UNKNOWN (old bridge) still enforces a conservative cap, never skips", async () => {
+    // Regression for the deployment-compat hole (Codex P1): an old bridge image
+    // does not report maxPayload (no bridgeHealth doc here), and the old hardcoded
+    // INBOUND_MAX_BYTES was removed. Without the fallback, a 20+ MiB attachment
+    // would be POSTed to a bridge with NO frame guard -> gateway disconnect. The
+    // conservative default must still FAIL it locally.
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "",
+          updatedAt: now,
+        });
+        // 20 MiB > the conservative default's ~18.6 MiB raw cap (the size check runs
+        // on blob.size BEFORE base64-encoding, so no 27 MiB string is built here).
+        const storageId = await ctx.storage.store(
+          new Blob([new Uint8Array(20 * 1024 * 1024)]),
+        );
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-mixed",
+          messageId,
+          text: "",
+          attachmentIds: [storageId],
+          attachments: [
+            { storageId, filename: "big.bin", mimeType: "application/octet-stream" },
+          ],
+          status: "pending",
+        });
+        // NO bridgeHealth doc -> maxPayloadInternal returns null (old/cold bridge).
+        return { outboxId, chatId };
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("failed"); // enforced by the conservative default
+      expect(fetchSpy).not.toHaveBeenCalled(); // never POSTed to the (guard-less) old bridge
+      const msgs = await messagesOf(t, chatId);
+      expect(msgs.some((m) => /attach-size/.test(m.error ?? ""))).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a file at the cap PLUS a long prompt is NOT rejected (message rides the envelope, not double-counted)", async () => {
+    // Codex P3/P2: the message text must NOT be added to the frame size on top of
+    // the reserved envelope — else a file exactly at the advertised cap + a normal
+    // prompt is accepted by the composer then rejected at dispatch (and a UTF-16 vs
+    // UTF-8 mismatch could push a frame over). Here a blob at the cap + a 5000-char
+    // prompt must SEND (fetch called), proving the message does not shrink the file
+    // budget. The pre-fix code (frameBytes = text.length) would have failed this.
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    // maxPayload so the per-file raw cap is exactly 900 bytes (base64 1200 == usable).
+    const MAXP = 131072 + 1200;
+    const longText = "x".repeat(5000);
+    try {
+      const outboxId = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: longText,
+          updatedAt: now,
+        });
+        const storageId = await ctx.storage.store(
+          new Blob([new Uint8Array(maxRawInboundBytes(MAXP))]),
+        );
+        return await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-cap-plus-text",
+          messageId,
+          text: longText,
+          attachmentIds: [storageId],
+          attachments: [
+            { storageId, filename: "f.bin", mimeType: "application/octet-stream" },
+          ],
+          status: "pending",
+        });
+      });
+      await t.run(async (ctx) => {
+        await ctx.db.insert("bridgeHealth", {
+          key: "singleton",
+          reachable: true,
+          checkedAt: Date.now(),
+          maxPayload: MAXP,
+          targets: [],
+        });
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      // The file fit the frame; the long prompt did NOT shrink its budget -> SENT.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("sent");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+});
+
 // openclawThreadForChat reconstructs the OpenClaw `thread_id` (== gateway session
 // key) so trace-enrichment can find OpenClaw's OWN Opik traces for a chat. It MUST
 // produce the SAME string the bridge sends with (session-keys.ts) — these pin that
@@ -309,5 +642,289 @@ describe("bridge.openclawThreadForChat — reconstruct the OpenClaw thread_id", 
         chatId: "not-a-real-id",
       }),
     ).toBeNull();
+  });
+});
+
+// Model M (one bridge per instance): dispatch POSTs to the ROUTED instance's own
+// bridgeUrl (else the env BRIDGE_URL fallback) and carries the resolved per-
+// instance NON-secret config in-band. These pin the routing + the hot-config wire.
+describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)", () => {
+  /** Seed a user routed to `instanceName`, that instance row, a chat + pending
+   *  outbox WITHOUT attachments (so the send reaches the POST). */
+  async function seedRouted(
+    t: ReturnType<typeof convexTest>,
+    opts: { bridgeUrl?: string; config?: Record<string, unknown> },
+  ): Promise<Id<"outbox">> {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const now = Date.now();
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: "primary",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: now,
+      });
+      await ctx.db.insert("instances", {
+        name: "primary",
+        gatewayUrl: "ws://gw:18790",
+        ...(opts.bridgeUrl ? { bridgeUrl: opts.bridgeUrl } : {}),
+        ...(opts.config ? { config: opts.config } : {}),
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: now,
+      });
+      return await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "cmid-route",
+        text: "hello",
+        attachmentIds: [],
+        status: "pending",
+      });
+    });
+  }
+
+  test("POSTs to the instance's OWN bridgeUrl (wins over env BRIDGE_URL) with ONLY the stored overrides", async () => {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://env-fallback:1"; // must be OVERRIDDEN
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "shared-fs", inboundMediaMode: "shared-fs" },
+      });
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("http://instance-host:9999/send"); // per-instance, NOT env
+      const body = JSON.parse(init.body as string);
+      // ONLY the admin's stored overrides — NOT the defaults-filled object. Sending
+      // the filled defaults would shadow an env-configured bridge (e.g. force its
+      // OPENCLAW_MEDIA_MODE/MAX_MB/REHYDRATION back to Convex defaults on every send).
+      // The unset fields (rehydration/mediaMaxMb/mounts) are ABSENT so the bridge
+      // keeps its own env default.
+      expect(body.config).toEqual({
+        mediaMode: "shared-fs",
+        inboundMediaMode: "shared-fs",
+      });
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("sent");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("shared-fs: a tool-read file rides BY REFERENCE (getUrl, not base64); an image stays inline", async () => {
+    const t = convexTest(schema, modules);
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const outboxId = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        await ctx.db.insert("instances", {
+          name: "primary",
+          gatewayUrl: "ws://gw:18790",
+          bridgeUrl: "http://b:9",
+          config: { inboundMediaMode: "shared-fs" },
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const videoId = await ctx.storage.store(
+          new Blob([new Uint8Array([1, 2, 3, 4])]),
+        );
+        const imageId = await ctx.storage.store(
+          new Blob([new Uint8Array([5, 6, 7, 8])]),
+        );
+        return await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-ref",
+          text: "transcribe this",
+          attachmentIds: [videoId, imageId],
+          attachments: [
+            { storageId: videoId, filename: "clip.mp4", mimeType: "video/mp4" },
+            { storageId: imageId, filename: "pic.png", mimeType: "image/png" },
+          ],
+          status: "pending",
+        });
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(init.body as string);
+      // The video → reference (a getUrl, NO base64 content).
+      expect(body.referenceAttachments).toHaveLength(1);
+      expect(body.referenceAttachments[0].fileName).toBe("clip.mp4");
+      expect(typeof body.referenceAttachments[0].url).toBe("string");
+      expect(body.referenceAttachments[0].content).toBeUndefined();
+      // The image (model-native) stays inline base64.
+      expect(body.attachments).toHaveLength(1);
+      expect(body.attachments[0].fileName).toBe("pic.png");
+      expect(typeof body.attachments[0].content).toBe("string");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("falls back to env BRIDGE_URL when the instance has no bridgeUrl (single-bridge path)", async () => {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://env-fallback:1";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const outboxId = await seedRouted(t, {}); // no bridgeUrl, no config
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("http://env-fallback:1/send");
+      // No instance config → NO config override sent (null), so the bridge keeps its
+      // OWN env defaults (not shadowed by Convex defaults on every send). This is the
+      // backward-compat path D-F-b: an env-only-configured bridge is untouched.
+      const body = JSON.parse(init.body as string);
+      expect(body.config).toBeNull();
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("getChatInboundPolicy: shared-fs instance → shared-fs mode + its cap; default → inline", async () => {
+    const t = convexTest(schema, modules);
+    // shared-fs instance with a 200 MB cap.
+    const { userId, sharedChatId, defaultChatId } = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user" });
+      const now = Date.now();
+      await ctx.db.insert("userAgents", {
+        userId: uid,
+        instanceName: "primary",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: now,
+      });
+      await ctx.db.insert("instances", {
+        name: "primary",
+        gatewayUrl: "ws://gw",
+        config: { inboundMediaMode: "shared-fs", mediaMaxMb: 200 },
+      });
+      const sharedChatId = await ctx.db.insert("chats", {
+        userId: uid,
+        archived: false,
+        updatedAt: now,
+      });
+      return { userId: uid, sharedChatId, defaultChatId: sharedChatId };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+
+    const policy = await as.query(api.bridge.getChatInboundPolicy, {
+      chatId: sharedChatId,
+    });
+    expect(policy).toEqual({
+      inboundMediaMode: "shared-fs",
+      sharedFsMaxBytes: 200 * 1024 * 1024,
+    });
+
+    // An instance WITHOUT config resolves to the inline default.
+    const { uid2, plainChatId } = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user" });
+      const now = Date.now();
+      await ctx.db.insert("userAgents", {
+        userId: u,
+        instanceName: "plain",
+        agentId: "bob",
+        isDefault: true,
+        source: "manual",
+        createdAt: now,
+      });
+      await ctx.db.insert("instances", { name: "plain", gatewayUrl: "ws://gw2" });
+      const c = await ctx.db.insert("chats", {
+        userId: u,
+        archived: false,
+        updatedAt: now,
+      });
+      return { uid2: u, plainChatId: c };
+    });
+    const as2 = t.withIdentity({ subject: `${uid2}|session` });
+    const plain = await as2.query(api.bridge.getChatInboundPolicy, {
+      chatId: plainChatId,
+    });
+    expect(plain?.inboundMediaMode).toBe("inline");
+
+    // IDOR: user 2 must NOT learn user 1's chat routing/media policy. Returns null
+    // (fail-closed), NOT user 1's shared-fs policy. Delete the ownership check and
+    // this leaks {inboundMediaMode:"shared-fs", ...} cross-user.
+    const leak = await as2.query(api.bridge.getChatInboundPolicy, {
+      chatId: sharedChatId,
+    });
+    expect(leak).toBeNull();
+    void defaultChatId;
+  });
+
+  test("no instance bridgeUrl AND no env BRIDGE_URL -> failed not_configured, NO POST", async () => {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    delete process.env.BRIDGE_URL;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const outboxId = await seedRouted(t, {}); // neither URL set
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("failed");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
   });
 });

@@ -248,11 +248,40 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     h.recordOk(REF);
     h.recordOk({ ...REF, key: "u-bob", canonical: "u-bob" });
     const enriched = enrichHealthSnapshot(h.snapshot(), [
-      { canonical: "u-testuser01", agentId: "main", gatewayVersion: "2026.6.5" },
+      { canonical: "u-testuser01", agentId: "main", gatewayVersion: "2026.6.5", maxPayload: 26214400 },
     ]);
     const byKey = new Map(enriched.targets.map((t) => [t.key, t]));
     expect(byKey.get("u-testuser01")!.gatewayVersion).toBe("2026.6.5");
     // No live session for that canonical -> honestly unknown.
     expect(byKey.get("u-bob")!.gatewayVersion).toBeNull();
+    // The gateway's maxPayload is surfaced at the top level (inbound cap source).
+    expect(enriched.maxPayload).toBe(26214400);
+  });
+
+  // Codex P2: the published cap must fit BOTH the gateway WS frame AND the bridge's
+  // own HTTP body cap (the Convex->bridge POST). Publish the binding MINIMUM, else a
+  // gateway maxPayload above our body cap advertises a size the POST can't carry
+  // (413 at readBody before the frame guard).
+  test("publishes min(gateway maxPayload, http body cap)", () => {
+    const h = new HealthRegistry(0, () => 1);
+    h.recordOk(REF);
+    const FIFTY = 50 * 1024 * 1024;
+    const BODY = 32 * 1024 * 1024;
+    // Gateway frame BIGGER than our body cap -> publish the body cap.
+    const big = enrichHealthSnapshot(
+      h.snapshot(),
+      [{ canonical: "u-testuser01", agentId: "main", gatewayVersion: null, maxPayload: FIFTY }],
+      null,
+      BODY,
+    );
+    expect(big.maxPayload).toBe(BODY);
+    // Gateway frame SMALLER than the body cap -> publish the gateway frame.
+    const small = enrichHealthSnapshot(
+      h.snapshot(),
+      [{ canonical: "u-testuser01", agentId: "main", gatewayVersion: null, maxPayload: 26214400 }],
+      null,
+      BODY,
+    );
+    expect(small.maxPayload).toBe(26214400);
   });
 });

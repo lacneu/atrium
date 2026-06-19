@@ -20,6 +20,8 @@ import { internal } from "./_generated/api";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { bridgeHealthTarget } from "./schema";
+import { maxRawInboundBytes } from "./lib/attachmentLimits";
+import { resolveHealthPollTargets } from "./lib/bridgeRouting";
 
 const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
@@ -63,7 +65,8 @@ export function normalizeTarget(raw: unknown): {
   // Downstream rejection (the gateway refused the request) — a pre-this-release
   // bridge omits it, so it is parsed defensively and defaults to absent.
   const dr =
-    typeof o.lastDownstreamReject === "object" && o.lastDownstreamReject !== null
+    typeof o.lastDownstreamReject === "object" &&
+    o.lastDownstreamReject !== null
       ? (o.lastDownstreamReject as Record<string, unknown>)
       : null;
   return {
@@ -99,6 +102,10 @@ export interface Availability {
   /** Non-secret reason when NOT available (for the banner). */
   reason: string | null;
   checkedAt: number | null;
+  /** Max RAW inbound-attachment bytes, DERIVED from the gateway's maxPayload (the
+   *  composer rejects bigger files upfront). null when maxPayload is not yet known
+   *  -> the composer fails OPEN (the bridge frame guard is the backstop). */
+  maxInboundBytes: number | null;
 }
 
 /** Pure availability decision from a health doc (testable without auth). Fail
@@ -109,7 +116,14 @@ export function computeAvailability(
   now: number,
 ): Availability {
   if (doc === null)
-    return { known: false, available: true, degraded: false, reason: null, checkedAt: null };
+    return {
+      known: false,
+      available: true,
+      degraded: false,
+      reason: null,
+      checkedAt: null,
+      maxInboundBytes: null,
+    };
   const stale = now - doc.checkedAt > STALE_MS;
   const anyTargetError = doc.targets.some((t) => t.state === "error");
   // GLOBAL availability gates ONLY on "the bridge process is reachable AND the
@@ -120,8 +134,23 @@ export function computeAvailability(
   // prevents, so it never cleared without a manual bridge restart. A per-agent error
   // is surfaced per-chat by the failDispatch bubble; here it is only `degraded`.
   const available = doc.reachable && !stale;
-  const reason = !doc.reachable ? (doc.lastError ?? "unreachable") : stale ? "stale" : null;
-  return { known: true, available, degraded: anyTargetError, reason, checkedAt: doc.checkedAt };
+  const reason = !doc.reachable
+    ? (doc.lastError ?? "unreachable")
+    : stale
+      ? "stale"
+      : null;
+  return {
+    known: true,
+    available,
+    degraded: anyTargetError,
+    reason,
+    checkedAt: doc.checkedAt,
+    // Derived from the gateway-announced maxPayload — never a hardcoded size.
+    maxInboundBytes:
+      typeof doc.maxPayload === "number"
+        ? maxRawInboundBytes(doc.maxPayload)
+        : null,
+  };
 }
 
 async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeHealth"> | null> {
@@ -137,8 +166,22 @@ async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeHealth"> | null> {
 export const pollBridgeHealth = internalAction({
   args: {},
   handler: async (ctx) => {
-    const bridgeUrl = process.env.BRIDGE_URL;
-    if (!bridgeUrl) {
+    // Model M: poll EACH instance's own bridge (resolvePollTargets) and AGGREGATE
+    // into the singleton — the bridge /health targets already carry instanceName,
+    // so the existing per-target UI shows every instance with no UI change. Each
+    // instance's targets are tagged with that bridge's maxPayload (so the dispatch
+    // can derive the inbound cap per routed instance). Backward-compatible: with a
+    // single env BRIDGE_URL the loop runs once and the doc is byte-identical to the
+    // old single-bridge behaviour (incl. the http_/unreachable lastError codes).
+    const instances = await ctx.runQuery(
+      internal.agents.listInstancesForPoll,
+      {},
+    );
+    const pollTargets = resolveHealthPollTargets(instances, {
+      envUrl: process.env.BRIDGE_URL?.trim() || null,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+    });
+    if (pollTargets.length === 0) {
       await ctx.runMutation(internal.bridgeHealth.upsertBridgeHealth, {
         reachable: false,
         lastError: "not_configured",
@@ -146,35 +189,56 @@ export const pollBridgeHealth = internalAction({
       });
       return;
     }
-    try {
-      const res = await fetch(`${bridgeUrl.replace(/\/$/, "")}/health`, {
-        method: "GET",
-      });
-      if (!res.ok) {
-        await ctx.runMutation(internal.bridgeHealth.upsertBridgeHealth, {
-          reachable: false,
-          lastError: `http_${res.status}`,
-          targets: [],
-        });
-        return;
+
+    const allTargets: Doc<"bridgeHealth">["targets"] = [];
+    const maxPayloads: number[] = [];
+    let anyReachable = false;
+    let status: string | undefined;
+    let startedAt: number | undefined;
+    let lastError: string | undefined; // used only when NOTHING is reachable
+
+    for (const { name, url } of pollTargets) {
+      try {
+        const res = await fetch(`${url}/health`, { method: "GET" });
+        if (!res.ok) {
+          lastError = `http_${res.status}`;
+          continue; // this instance is down this cycle; others may be up
+        }
+        const body = (await res.json()) as Record<string, unknown>;
+        anyReachable = true;
+        if (status === undefined && typeof body.status === "string") {
+          status = body.status;
+        }
+        if (startedAt === undefined && typeof body.startedAt === "number") {
+          startedAt = body.startedAt;
+        }
+        const mp = typeof body.maxPayload === "number" ? body.maxPayload : null;
+        if (mp !== null) maxPayloads.push(mp);
+        const its = (Array.isArray(body.targets) ? body.targets : [])
+          .map(normalizeTarget)
+          .filter((t): t is NonNullable<typeof t> => t !== null)
+          // When we KNOW the instance (per-instance bridgeUrl, or the served name),
+          // FORCE it (never trust the body to attribute another instance); when name
+          // is null (env bridge, no served name) keep the bridge's self-reported one
+          // (backward-compat). Always tag this instance's frame limit.
+          .map((t) => ({ ...t, instanceName: name ?? t.instanceName, maxPayload: mp }));
+        allTargets.push(...its);
+      } catch {
+        lastError = "unreachable";
       }
-      const body = (await res.json()) as Record<string, unknown>;
-      const targets = (Array.isArray(body.targets) ? body.targets : [])
-        .map(normalizeTarget)
-        .filter((t): t is NonNullable<typeof t> => t !== null);
-      await ctx.runMutation(internal.bridgeHealth.upsertBridgeHealth, {
-        reachable: true,
-        status: typeof body.status === "string" ? body.status : undefined,
-        startedAt: typeof body.startedAt === "number" ? body.startedAt : undefined,
-        targets,
-      });
-    } catch {
-      await ctx.runMutation(internal.bridgeHealth.upsertBridgeHealth, {
-        reachable: false,
-        lastError: "unreachable",
-        targets: [],
-      });
     }
+
+    await ctx.runMutation(internal.bridgeHealth.upsertBridgeHealth, {
+      reachable: anyReachable,
+      status,
+      startedAt,
+      lastError: anyReachable ? undefined : (lastError ?? "unreachable"),
+      // Doc-level cap = the MIN across reachable instances (conservative for the
+      // GLOBAL composer gate, which doesn't know the chat's instance). The precise
+      // per-instance value lives on each target for maxPayloadInternal.
+      maxPayload: maxPayloads.length > 0 ? Math.min(...maxPayloads) : null,
+      targets: allTargets,
+    });
   },
 });
 
@@ -184,6 +248,7 @@ export const upsertBridgeHealth = internalMutation({
     status: v.optional(v.string()),
     startedAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
+    maxPayload: v.optional(v.union(v.number(), v.null())),
     targets: v.array(bridgeHealthTarget),
   },
   handler: async (ctx, args) => {
@@ -196,6 +261,7 @@ export const upsertBridgeHealth = internalMutation({
       status: args.status,
       startedAt: args.startedAt,
       lastError: args.lastError,
+      maxPayload: args.maxPayload,
       targets: args.targets,
       checkedAt: now,
     };
@@ -239,4 +305,29 @@ export const availabilityInternal = internalQuery({
   args: {},
   handler: async (ctx): Promise<Availability> =>
     computeAvailability(await readDoc(ctx), Date.now()),
+});
+
+/** Internal (no auth): the gateway's last-reported WS frame limit (maxPayload), or
+ *  null if unknown. The dispatch derives the inbound-attachment cap from it to fail
+ *  an over-cap attachment with a clear error instead of silently dropping it. */
+export const maxPayloadInternal = internalQuery({
+  args: { instanceName: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, { instanceName }): Promise<number | null> => {
+    const doc = await readDoc(ctx);
+    if (doc === null) return null;
+    // Prefer the routed instance's OWN frame limit (Model M): find a target for
+    // this instance that reported a maxPayload. Fall back to the doc-level (MIN
+    // across instances — conservative), then null (the dispatch uses the default).
+    if (instanceName != null) {
+      for (const t of doc.targets) {
+        if (
+          t.instanceName === instanceName &&
+          typeof t.maxPayload === "number"
+        ) {
+          return t.maxPayload;
+        }
+      }
+    }
+    return doc.maxPayload ?? null;
+  },
 });

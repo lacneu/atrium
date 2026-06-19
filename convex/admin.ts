@@ -8,8 +8,12 @@
 import { v } from "convex/values";
 import { mutation, query, MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { getProfile, requireAdmin, roleOf } from "./lib/access";
-import { isGrantableUserPermission } from "./lib/rbac";
+import { getProfile, requireAdmin, requirePermission, roleOf } from "./lib/access";
+import { isGrantableUserPermission, PERMISSIONS } from "./lib/rbac";
+import {
+  instanceConfigValidator,
+  parseInstanceConfig,
+} from "./lib/instanceConfig";
 import { recordAudit } from "./lib/audit";
 import { cascadeDeleteChat } from "./chats";
 import {
@@ -555,15 +559,24 @@ export const upsertInstance = mutation({
     name: v.string(),
     gatewayUrl: v.string(),
     displayName: v.optional(v.string()),
+    // Per-instance bridge endpoint (Model M). NON-secret; the shared secret stays
+    // env. Empty string is normalized to "unset" → dispatch falls back to BRIDGE_URL.
+    bridgeUrl: v.optional(v.string()),
     // Which provider technology backs this instance (the bridge adapts by kind).
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    const trimmedBridgeUrl = args.bridgeUrl?.trim();
     const fields = {
       name: args.name,
       gatewayUrl: args.gatewayUrl,
       displayName: args.displayName,
+      // Store undefined (not "") for an unset URL so resolveBridgeUrl falls back.
+      bridgeUrl:
+        trimmedBridgeUrl && trimmedBridgeUrl.length > 0
+          ? trimmedBridgeUrl
+          : undefined,
       kind: args.kind ?? "openclaw",
     };
     if (args.instanceId) {
@@ -571,6 +584,30 @@ export const upsertInstance = mutation({
       return args.instanceId;
     }
     return await ctx.db.insert("instances", fields);
+  },
+});
+
+// Edit the per-instance NON-SECRET bridge config (mediaMode / inboundMediaMode /
+// rehydration / mediaMaxMb), hot-consumed by that instance's bridge on the next
+// dispatch. Admin-only via BRIDGE_CONFIG_WRITE (the admin wildcard; never granted
+// to a non-admin). The closed validator already rejects unknown keys/bad enums;
+// parseInstanceConfig adds the range bound and rejects the WHOLE write on any bad
+// field (never a silent drop). Pass an empty object to clear all overrides.
+export const upsertInstanceConfig = mutation({
+  args: {
+    instanceId: v.id("instances"),
+    config: instanceConfigValidator,
+  },
+  handler: async (ctx, { instanceId, config }) => {
+    await requirePermission(ctx, PERMISSIONS.BRIDGE_CONFIG_WRITE);
+    const parsed = parseInstanceConfig(config);
+    if (parsed === "invalid") {
+      throw new Error("Invalid instance config");
+    }
+    const inst = await ctx.db.get(instanceId);
+    if (inst === null) throw new Error("Instance not found");
+    await ctx.db.patch(instanceId, { config: parsed });
+    return instanceId;
   },
 });
 

@@ -17,6 +17,7 @@ import {
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireActive, requireAdmin } from "./lib/access";
+import { resolvePollTargets } from "./lib/bridgeRouting";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
 // into the cache). Matches bridge `NormalizedAgent` (server.ts).
@@ -181,22 +182,24 @@ export const recordDiscoveryFailure = internalMutation({
 export const pollAgentDiscovery = internalAction({
   args: {},
   handler: async (ctx) => {
-    const bridgeUrl = process.env.BRIDGE_URL;
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (!bridgeUrl || !sharedSecret) return; // not configured — nothing to poll
-    const base = bridgeUrl.replace(/\/$/, "");
+    if (!sharedSecret) return; // not configured — nothing to poll
 
-    // Phase 1 is MONO-tenant: there is ONE bridge serving ONE gateway, but the
-    // `instances` table may hold several rows (the NAS has 4). Polling every row
-    // against the single BRIDGE_URL would cache the SAME gateway's agents under
-    // every instance name (cache corruption — red-team MINOR). So poll ONLY the
-    // instance this bridge serves: `BRIDGE_INSTANCE_NAME` when set, else the sole
-    // instance when exactly one exists, else NOTHING (fail safe, never corrupt).
-    const all = await ctx.runQuery(internal.agents.listInstanceNames, {});
-    const served = process.env.BRIDGE_INSTANCE_NAME;
-    const targets = served ? [served] : all.length === 1 ? all : [];
+    // Model M: poll EACH instance's OWN bridge (resolvePollTargets) — each hits its
+    // own gateway, so there is NO cross-instance cache corruption (the reason the
+    // mono-tenant version polled only the served instance). An instance without its
+    // own bridgeUrl falls back to the env BRIDGE_URL only when it is the served /
+    // sole instance, so the env bridge's agents are never cached under another name.
+    const instances = await ctx.runQuery(
+      internal.agents.listInstancesForPoll,
+      {},
+    );
+    const targets = resolvePollTargets(instances, {
+      envUrl: process.env.BRIDGE_URL?.trim() || null,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+    });
 
-    for (const instanceName of targets) {
+    for (const { name: instanceName, url: base } of targets) {
       try {
         const res = await fetch(
           `${base}/agents?instance=${encodeURIComponent(instanceName)}`,
@@ -266,6 +269,17 @@ export const listInstanceNames = internalQuery({
   handler: async (ctx): Promise<string[]> => {
     const rows = await ctx.db.query("instances").collect();
     return rows.map((r) => r.name);
+  },
+});
+
+/** Internal: instance names + their per-instance bridgeUrl (Model M poller fan-out). */
+export const listInstancesForPoll = internalQuery({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<Array<{ name: string; bridgeUrl: string | null }>> => {
+    const rows = await ctx.db.query("instances").collect();
+    return rows.map((r) => ({ name: r.name, bridgeUrl: r.bridgeUrl ?? null }));
   },
 });
 

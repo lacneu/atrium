@@ -674,6 +674,7 @@
   color: var(--primary-foreground);
   font-weight: 700;
   font-size: 0.95rem;
+  overflow: hidden;
 }
 .oc-emptystate__title {
   margin: 0;
@@ -722,7 +723,9 @@
 .oc-msg__actions {
   position: absolute;
   bottom: 0;
-  left: -0.35rem;
+  /* -(1.9rem button - 1rem glyph)/2 = -0.45rem → the first action glyph sits on
+     the same left edge as the name / body / tool row. */
+  left: -0.45rem;
   display: flex;
   gap: 0.15rem;
 }
@@ -1243,7 +1246,6 @@
   flex-shrink: 0;
   width: 1.75rem;
   height: 1.75rem;
-  margin-top: 0.1rem;
   border-radius: var(--radius-md);
   background: var(--primary);
   color: var(--primary-foreground);
@@ -1253,6 +1255,27 @@
   font-weight: 700;
   letter-spacing: -0.02em;
   user-select: none;
+  overflow: hidden;
+}
+/* Brand-driven avatar (active charte), shared by the message header + the empty
+   state via <BrandAvatar>: an uploaded logo is shown WHOLE (contain, never
+   cropped — the upload pipeline produces wide ~3:1 wordmarks that `cover` would
+   center-crop into nonsense in these tiles); the bundled Atrium mark inherits the
+   tile's foreground; initials fall back to the tile's default text styling. The
+   mark is sized per host tile (message vs the larger welcome avatar). */
+.oc-avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+.oc-msg__avatar .oc-avatar__mark {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.oc-emptystate__avatar .oc-avatar__mark {
+  width: 1.6rem;
+  height: 1.6rem;
 }
 .oc-msg__col {
   flex: 1;
@@ -1267,9 +1290,17 @@
   padding-bottom: 1.9rem;
 }
 .oc-msg__name {
+  /* Match the avatar height + center, so the name sits on the avatar's optical
+     midline (not in its top third) — avatar and name share one baseline row. */
+  display: flex;
+  align-items: center;
+  min-height: 1.75rem;
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--foreground);
+}
+.oc-msg__name-emoji {
+  margin-right: 0.3rem;
 }
 /* User-turn column: sized to the bubble + right-aligned (the bubble + its delete
    action sit on the right). Reuses .oc-msg__col's reserved action-bar space. */
@@ -1567,6 +1598,9 @@
   align-items: center;
   gap: 0.45rem;
   padding: 0.25rem 0.55rem;
+  /* Cancel the left padding's optical indent so the wrench glyph lines up with
+     the name + body text edge (the hover pill still extends into the gutter). */
+  margin-left: -0.55rem;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
@@ -2330,7 +2364,59 @@
 
 .oc-form { display: flex; flex-direction: column; gap: 1rem; max-width: 32rem; }
 .oc-field { display: flex; flex-direction: column; gap: 0.375rem; }
-.oc-field__label { font-size: 0.8rem; font-weight: 500; color: var(--muted-foreground); }
+.oc-field__label { font-size: 0.8rem; font-weight: 500; color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 0.3rem; }
+/* `?` help bubble next to a field label (tooltip trigger). */
+.oc-field__help {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 0; padding: 0; margin: 0; line-height: 0;
+  color: var(--muted-foreground); opacity: 0.6; cursor: help;
+}
+.oc-field__help:hover, .oc-field__help:focus-visible { opacity: 1; }
+.oc-field__help svg { width: 0.85rem; height: 0.85rem; }
+/* Shared-fs path-check result (the "Valider" button output). */
+.oc-bridge-config__check { display: flex; flex-direction: column; gap: 0.4rem; }
+.oc-bridge-config__check-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; margin: 0; }
+.oc-bridge-config__check-row svg { width: 0.9rem; height: 0.9rem; flex-shrink: 0; }
+.oc-bridge-config__check-row--ok { color: #16a34a; }
+.oc-bridge-config__check-row--err { color: var(--destructive); }
+.oc-bridge-config__check-row--skip { color: var(--muted-foreground); }
+/* A horizontal label (checkbox/toggle + text), distinct from the stacked .oc-field. */
+.oc-field--row { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.oc-field--row .oc-field__label { cursor: pointer; }
+
+/* Per-instance bridge config editor: a vertical settings card (NOT the flex-row
+   health card). Header (title + hint), a responsive 2-col grid of knobs, the
+   re-hydration toggle on its own row, and a footer action row with a separator so
+   the save button reads as the panel's primary action (same idiom as EntitySheet). */
+.oc-bridge-config {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.5rem);
+  background: var(--card, transparent);
+  color: var(--card-foreground, inherit);
+}
+.oc-bridge-config__head { display: flex; flex-direction: column; gap: 0.35rem; }
+.oc-bridge-config__title { font-size: 0.95rem; font-weight: 600; }
+.oc-bridge-config__head .oc-admin__hint { margin-bottom: 0; }
+.oc-bridge-config__form { display: flex; flex-direction: column; gap: 1rem; }
+.oc-bridge-config__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+@media (max-width: 640px) {
+  .oc-bridge-config__grid { grid-template-columns: 1fr; }
+}
+.oc-bridge-config__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
 
 /* --- Chat sidebar (projects, items, DnD, color) ------------------------- */
 .oc-sidebar-col {
@@ -3069,6 +3155,7 @@
 .oc-bridge {
   display: flex;
   flex-direction: column;
+  gap: 1rem;
 }
 .oc-bridge__section {
   margin: 1.25rem 0 0.5rem;
@@ -3135,6 +3222,82 @@
   margin: 0.15rem 0 0;
   font-size: 0.82rem;
   color: var(--muted-foreground);
+}
+
+/* Trust caption directly under the global status card (tightens the 1rem gap so
+   it reads as the status card's note, not a floating line). */
+.oc-bridge__caption {
+  margin-top: -0.5rem;
+}
+
+/* ── Per-provider card (Bridge tab, axis = provider) ──────────────────────────
+   One self-contained, bordered card per downstream provider (OpenClaw, Hermes…),
+   so the blocks are instantly separable (Gestalt common region). Each bundles
+   that provider's connections + compatibility + (admin) collapsible config. */
+.oc-bridge-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.5rem);
+  background: var(--card, transparent);
+  color: var(--card-foreground, inherit);
+}
+.oc-bridge-provider__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-bridge-provider__icon {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+.oc-bridge-provider__name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+/* Sub-section labels inside a provider card (Connexions / Compatibilité). */
+.oc-bridge-provider__sub {
+  margin: 0.45rem 0 0.05rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+/* Collapsible configuration (admin), separated by a hairline. */
+.oc-bridge-provider__config {
+  margin-top: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.oc-bridge-provider__config-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--foreground);
+  transition: color 150ms ease;
+}
+.oc-bridge-provider__config-toggle:hover {
+  color: var(--primary);
+}
+/* The config editor sits flush inside the provider card — drop its own card
+   chrome so there is no double border / nested-box look. */
+.oc-bridge-provider__config .oc-bridge-config {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  gap: 0.75rem;
 }
 .oc-bridge-targets {
   display: flex;

@@ -15,12 +15,34 @@
 // SECURITY: the shared secret is compared in CONSTANT TIME; the body is size-
 // limited before parsing. We never echo gateway/filesystem detail to the caller.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
 import type { BridgeConfig } from "./config.js";
-import { idempotencyKey, OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
+import {
+  idempotencyKey,
+  OpenClawConnection,
+} from "./providers/openclaw/openclaw-client.js";
 import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
+import { base64FitsFrame } from "./core/attachment-limits.js";
+import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
+import {
+  parseInboundConfig,
+  type InboundInstanceConfig,
+} from "./core/instance-config.js";
+import {
+  buildFilesReceivedBlock,
+  stageInboundReferences,
+  type InboundMediaConfig,
+  type InboundReference,
+} from "./core/inbound-media.js";
+import { buildDeliveryInstruction } from "./core/outbound-delivery.js";
+import { validateSharedFs } from "./core/media-validate.js";
 import {
   gatewayHostOf,
   type HealthRegistry,
@@ -100,7 +122,19 @@ interface SendBody extends BodyRouting {
   messageId: string | null;
   /** The user's reasoning/model overrides, re-applied before chat.send. */
   sessionSettings: SessionSettings | null;
+  /** INLINE (model-native / non-shared-fs) attachments: base64 in the WS frame. */
   attachments?: unknown;
+  /**
+   * REFERENCE (tool-read, shared-fs) attachments: a short-lived getUrl the bridge
+   * STREAMS to the shared inbound dir, then path-references in `[FICHIERS REÇUS]`.
+   */
+  referenceAttachments: InboundReference[];
+  /**
+   * Per-instance NON-secret config (Convex resolves it from `instances.config`).
+   * Hot-consumed: mediaMode/mediaMaxMb feed the MediaFetcherProvider, rehydration
+   * gates re-hydration. `null` (old Convex / absent) → bridge env defaults.
+   */
+  config: InboundInstanceConfig | null;
 }
 
 /** Inbound body for the immediate knob write-back (`POST /patch`). */
@@ -184,7 +218,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  * null if absent) — no env fallback, by design (see BodyRouting). `instanceName`
  * is optional. Exported for tests.
  */
-export function parseBodyRouting(obj: Record<string, unknown>): BodyRouting | null {
+export function parseBodyRouting(
+  obj: Record<string, unknown>,
+): BodyRouting | null {
   const str = (v: unknown): string | null =>
     typeof v === "string" && v.length > 0 ? v : null;
   const agentId = str(obj.agentId);
@@ -249,13 +285,42 @@ export function parseSendBody(raw: string): SendBody | null {
   return {
     ...routing,
     chatId: obj.chatId,
-    openclawChatId: typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    openclawChatId:
+      typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     text: obj.text,
     clientMessageId: obj.clientMessageId,
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
     sessionSettings,
     attachments: obj.attachments,
+    referenceAttachments: parseReferenceAttachments(obj.referenceAttachments),
+    // Defensive parse: a bad/absent config yields null → env defaults; a malformed
+    // field is dropped, never fails the send (parseInboundConfig never throws).
+    config: parseInboundConfig(obj.config),
   };
+}
+
+/** Defensive parse of the optional `referenceAttachments` array (Phase 3). A
+ *  malformed entry is dropped; a non-array yields []. Never throws. */
+export function parseReferenceAttachments(raw: unknown): InboundReference[] {
+  if (!Array.isArray(raw)) return [];
+  const out: InboundReference[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.url !== "string" || o.url.length === 0) continue;
+    out.push({
+      url: o.url,
+      mimeType:
+        typeof o.mimeType === "string" && o.mimeType.length > 0
+          ? o.mimeType
+          : "application/octet-stream",
+      fileName:
+        typeof o.fileName === "string" && o.fileName.length > 0
+          ? o.fileName
+          : "file",
+    });
+  }
+  return out;
 }
 
 /**
@@ -304,7 +369,8 @@ export function parseResetBody(raw: string): ResetBody | null {
   return {
     ...routing,
     chatId: obj.chatId,
-    openclawChatId: typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    openclawChatId:
+      typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
   };
 }
 
@@ -385,7 +451,8 @@ export function parsePatchBody(raw: string): PatchBody | null {
   return {
     ...routing,
     chatId: obj.chatId,
-    openclawChatId: typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    openclawChatId:
+      typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     sessionSettings,
   };
 }
@@ -455,7 +522,9 @@ function parseSessionMeta(
     thinkingDefault,
     thinkingLevels,
     availableModels:
-      availableModels && availableModels.length > 0 ? availableModels : undefined,
+      availableModels && availableModels.length > 0
+        ? availableModels
+        : undefined,
     verboseLevel: str(sess.verboseLevel),
     totalTokens: num(sess.totalTokens),
     contextTokens: num(sess.contextTokens),
@@ -485,7 +554,8 @@ export function dedupeModels(list: unknown): { id: string; label: string }[] {
       const id = typeof o?.id === "string" ? o.id : "";
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      const label = typeof o?.name === "string" && o.name.length > 0 ? o.name : id;
+      const label =
+        typeof o?.name === "string" && o.name.length > 0 ? o.name : id;
       out.push({ id, label });
     }
   }
@@ -501,7 +571,10 @@ async function ensureAvailableModels(
     const list = (resp.payload as { models?: unknown } | undefined)?.models;
     conn.availableModels = dedupeModels(list);
   } catch (err) {
-    console.error("[models.list] skipped (non-fatal):", (err as Error)?.message ?? err);
+    console.error(
+      "[models.list] skipped (non-fatal):",
+      (err as Error)?.message ?? err,
+    );
     conn.availableModels = [];
   }
   return conn.availableModels;
@@ -578,17 +651,29 @@ export async function applyPatchIntent(
   settings: SessionSettings,
 ): Promise<void> {
   for (const field of settings.clears ?? []) {
-    await conn.request("sessions.patch", { key: sessionKey, [field]: null }, 10_000);
+    await conn.request(
+      "sessions.patch",
+      { key: sessionKey, [field]: null },
+      10_000,
+    );
   }
   // Remaining sets stay non-fatal (UI-3 contract). `clears` is stripped: it was
   // just applied strictly above; applySessionSettings must not re-send it.
-  await applySessionSettings(conn, sessionKey, { ...settings, clears: undefined });
+  await applySessionSettings(conn, sessionKey, {
+    ...settings,
+    clears: undefined,
+  });
 }
 
 async function performSend(
   session: BridgeSession,
   body: SendBody,
   writer: ConvexWriter,
+  inbound: InboundMediaConfig | null,
+  // Outbound media dir for the delivery instruction (how the agent makes a
+  // generated file downloadable: write it here + emit `MEDIA:<path>`). Null when
+  // outbound media is disabled (mode "off") — then no instruction is injected.
+  deliveryDir: string | null,
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
@@ -621,14 +706,25 @@ async function performSend(
   // alone OK, the COMBINATION crashes -> INVALID_REQUEST). The attachment turn is
   // self-contained anyway ("convert this file"). `OPENCLAW_REHYDRATION=off` is a
   // kill-switch to disable re-hydration entirely without a redeploy.
-  const hasAttachments =
+  // D-D two-axis: ONLY inline base64 attachments trip the frame guard + the
+  // rehydration crash-guard. Reference (shared-fs) files carry no base64 and ride
+  // as injected PATH text, so they must NOT count here.
+  const hasInlineAttachments =
     Array.isArray(body.attachments) && body.attachments.length > 0;
-  const rehydrationEnabled = process.env.OPENCLAW_REHYDRATION !== "off";
+  // Per-instance `rehydration` (in-band, hot) wins; absent (old Convex / no config)
+  // → the OPENCLAW_REHYDRATION env kill-switch. Either source can disable it.
+  const rehydrationEnabled =
+    body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
   try {
-    const desc = await conn.request("sessions.describe", { key: sessionKey }, 8_000);
-    const sess = (desc.payload as { session?: Record<string, unknown> } | undefined)
-      ?.session;
+    const desc = await conn.request(
+      "sessions.describe",
+      { key: sessionKey },
+      8_000,
+    );
+    const sess = (
+      desc.payload as { session?: Record<string, unknown> } | undefined
+    )?.session;
 
     // (a) Mirror LIVE session meta onto the chat for the header strip (model +
     // reasoning chips + context meter). Fire-and-forget — never blocks/fails the
@@ -640,7 +736,10 @@ async function performSend(
       void writer
         .reportSessionMeta(body.chatId, parseSessionMeta(sess, models))
         .catch((e) =>
-          console.error("[sessionMeta] skipped (non-fatal):", (e as Error)?.message ?? e),
+          console.error(
+            "[sessionMeta] skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
         );
     }
 
@@ -650,7 +749,7 @@ async function performSend(
     const freshSession = !sess || sess.systemSent === false;
     const decision = rehydrationDecision({
       freshSession,
-      hasAttachments,
+      hasAttachments: hasInlineAttachments,
       enabled: rehydrationEnabled,
     });
     if (decision === "skip_attachment") {
@@ -662,7 +761,10 @@ async function performSend(
         `[rehydrate] chat=${body.chatId} SKIPPED — attachment present (gateway-crash guard)`,
       );
     } else if (decision === "rehydrate") {
-      const ctx = await writer.getRehydrationContext(body.chatId, body.messageId);
+      const ctx = await writer.getRehydrationContext(
+        body.chatId,
+        body.messageId,
+      );
       if (ctx.history) {
         message = `${ctx.history}\n\n${body.text}`;
         // Decision log (no PHI — counts + chatId only).
@@ -672,7 +774,37 @@ async function performSend(
       }
     }
   } catch (err) {
-    console.error("[rehydrate] skipped (non-fatal):", (err as Error)?.message ?? err);
+    console.error(
+      "[rehydrate] skipped (non-fatal):",
+      (err as Error)?.message ?? err,
+    );
+  }
+
+  // Shared-fs INBOUND (Phase 3): stream each tool-read reference to the shared
+  // volume and APPEND a `[FICHIERS REÇUS]` block with the gateway-visible paths to
+  // the message (the agent reads the files BY PATH). Best-effort: a per-file failure
+  // drops only that file; staging NEVER blocks/fails the turn. Reference files do
+  // NOT set hasInlineAttachments, so they bypass the frame guard + rehydration guard.
+  if (body.referenceAttachments.length > 0 && inbound !== null) {
+    const staged = await stageInboundReferences(
+      body.referenceAttachments,
+      body.clientMessageId,
+      inbound,
+      (name, reason) =>
+        console.error(`[inbound-media] dropped ${name}: ${reason}`),
+    );
+    const block = buildFilesReceivedBlock(staged);
+    if (block.length > 0) message = message ? `${message}\n${block}` : block;
+  }
+
+  // Outbound delivery contract (gateway-visible only): tell the agent how to make
+  // a generated file DOWNLOADABLE in this webchat (write to the outbound dir + emit
+  // `MEDIA:<path>`). Without it the agent writes a markdown link to a local path
+  // that the webchat can't host → "I couldn't attach it" (the reported bug). Mirror
+  // of the proven OpenWebUI pipe. Skipped when outbound media is off.
+  if (deliveryDir !== null) {
+    const delivery = buildDeliveryInstruction(deliveryDir);
+    message = message ? `${message}\n${delivery}` : delivery;
   }
 
   const params: Record<string, unknown> = {
@@ -680,7 +812,30 @@ async function performSend(
     message,
     idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
   };
-  if (hasAttachments) {
+  if (hasInlineAttachments) {
+    // Frame guard: inbound attachments ride THIS chat.send as inline base64, so
+    // the whole frame must fit the gateway's maxPayload — an oversized frame makes
+    // the gateway CLOSE the connection (live-verified: a 20.9 MiB pptx → base64
+    // ≈ 27.9 MiB > maxPayload 25 MiB → GATEWAY_DISCONNECTED). Reject with a
+    // classified, non-fatal ATTACHMENT_TOO_LARGE BEFORE sending, so one oversized
+    // file never drops the socket. We size by the SUM of attachment base64 only;
+    // the message + JSON structure ride the fixed envelope reserved inside
+    // base64FitsFrame — same accounting as the Convex dispatch + composer cap, so a
+    // file at the advertised cap plus a normal prompt is never rejected here.
+    // Derived from the gateway-announced maxPayload (no hardcoded size); only
+    // skipped when maxPayload is not yet known (the composer + Convex are the
+    // earlier gates).
+    const atts = body.attachments as Array<{ content?: unknown }>;
+    const base64Bytes = atts.reduce(
+      (sum, a) => sum + (typeof a?.content === "string" ? a.content.length : 0),
+      0,
+    );
+    if (conn.maxPayload !== null && !base64FitsFrame(base64Bytes, conn.maxPayload)) {
+      throw new Error(
+        `attachment too large for the gateway frame ` +
+          `(base64 ${base64Bytes} > maxPayload ${conn.maxPayload})`,
+      );
+    }
     params.attachments = body.attachments;
   }
   const now = session.clock();
@@ -733,15 +888,26 @@ async function performPatch(
 
   // Confirm + mirror the live state so the chip converges to the truth.
   try {
-    const desc = await conn.request("sessions.describe", { key: sessionKey }, 8_000);
-    const sess = (desc.payload as { session?: Record<string, unknown> } | undefined)
-      ?.session;
+    const desc = await conn.request(
+      "sessions.describe",
+      { key: sessionKey },
+      8_000,
+    );
+    const sess = (
+      desc.payload as { session?: Record<string, unknown> } | undefined
+    )?.session;
     if (sess) {
       const models = await ensureAvailableModels(conn);
-      await writer.reportSessionMeta(body.chatId, parseSessionMeta(sess, models));
+      await writer.reportSessionMeta(
+        body.chatId,
+        parseSessionMeta(sess, models),
+      );
     }
   } catch (err) {
-    console.error("[patch] describe/report skipped (non-fatal):", (err as Error)?.message ?? err);
+    console.error(
+      "[patch] describe/report skipped (non-fatal):",
+      (err as Error)?.message ?? err,
+    );
   }
 }
 
@@ -783,14 +949,18 @@ async function performCompact(session: BridgeSession): Promise<void> {
 async function withOperatorConnection<T>(
   config: BridgeConfig,
   fn: (conn: OpenClawConnection) => Promise<T>,
-  onVersion?: (v: string | null) => void,
+  // Called with the connection right after the hello-ok, so the caller can capture
+  // BOTH the gateway version AND maxPayload from a SHORT discovery handshake (not
+  // just a live chat session) — needed so an idle bridge still publishes the
+  // inbound-attachment cap.
+  onHandshake?: (conn: OpenClawConnection) => void,
 ): Promise<T> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
     config.openclawToken,
     config.deviceIdentity,
   );
-  onVersion?.(conn.gatewayVersion);
+  onHandshake?.(conn);
   try {
     return await fn(conn);
   } finally {
@@ -809,7 +979,10 @@ async function withOperatorConnection<T>(
 async function confirmDefaultsAfterRestart(
   config: BridgeConfig,
   body: Extract<ConfigDefaultsBody, { op: "set" }>,
-): Promise<{ thinkingDefault: string | null; fastModeDefault: boolean | null } | null> {
+): Promise<{
+  thinkingDefault: string | null;
+  fastModeDefault: boolean | null;
+} | null> {
   for (let attempt = 0; attempt < 8; attempt++) {
     await new Promise((r) => setTimeout(r, 2_000));
     try {
@@ -886,14 +1059,14 @@ export function normalizeOpenClawAgent(
  *  pollutes the per-chat session map. Mono-tenant: uses the configured gateway. */
 async function discoverAgents(
   config: BridgeConfig,
-  onVersion?: (v: string | null) => void,
+  onHandshake?: (conn: OpenClawConnection) => void,
 ): Promise<{ agents: NormalizedAgent[]; rawCount: number }> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
     config.openclawToken,
     config.deviceIdentity,
   );
-  onVersion?.(conn.gatewayVersion);
+  onHandshake?.(conn);
   try {
     const res = (await conn.request("agents.list", {}, 10_000)) as {
       payload?: unknown;
@@ -1006,7 +1179,8 @@ export function buildCapabilityTargets(
       gatewayVersion: fallbackVersion,
       capabilities: resolved.capabilities,
     };
-    if (resolved.versionBeyondValidated) synthetic.versionBeyondValidated = true;
+    if (resolved.versionBeyondValidated)
+      synthetic.versionBeyondValidated = true;
     targets.push(synthetic);
   }
   return targets;
@@ -1020,22 +1194,48 @@ export function buildCapabilityTargets(
  * bridge is lazy, a drained target keeps its history but has no socket to ask).
  * Pure — exported for tests.
  */
-export interface EnrichedHealthSnapshot extends Omit<HealthSnapshot, "targets"> {
+export interface EnrichedHealthSnapshot extends Omit<
+  HealthSnapshot,
+  "targets"
+> {
   bridgeVersion: string;
   protocolVersion: number;
+  /** Gateway WS frame limit (policy.maxPayload) — the authoritative inbound-
+   *  attachment ceiling, so Convex + the composer derive the same cap instead of
+   *  hardcoding one. From a live session, else the last-seen fallback, else null. */
+  maxPayload: number | null;
   targets: (TargetHealth & { gatewayVersion: string | null })[];
 }
 
 export function enrichHealthSnapshot(
   snapshot: HealthSnapshot,
   live: LiveTarget[],
+  fallbackMaxPayload: number | null = null,
+  httpBodyCap: number | null = null,
 ): EnrichedHealthSnapshot {
   const versionByCanonical = new Map<string, string | null>();
   for (const t of live) versionByCanonical.set(t.canonical, t.gatewayVersion);
+  // Mono-tenant: every live session shares the one gateway's maxPayload — take the
+  // first non-null, else the last-seen fallback (so an idle poll still reports it).
+  const gatewayMaxPayload =
+    (live.find((t) => t.maxPayload !== null)?.maxPayload ?? null) ??
+    fallbackMaxPayload;
+  // The inbound frame must fit BOTH the gateway WS frame AND the bridge's OWN HTTP
+  // body cap (the Convex->bridge /send POST carries the base64-inflated payload).
+  // Publish the binding MINIMUM so consumers derive a cap that never trips a 413 at
+  // readBody before the frame guard runs (a gateway maxPayload above our body cap
+  // would otherwise advertise a deliverable size the POST can't even carry).
+  const maxPayload =
+    gatewayMaxPayload === null
+      ? null
+      : httpBodyCap === null
+        ? gatewayMaxPayload
+        : Math.min(gatewayMaxPayload, httpBodyCap);
   return {
     ...snapshot,
     bridgeVersion: BRIDGE_VERSION,
     protocolVersion: PROTOCOL_VERSION,
+    maxPayload,
     targets: snapshot.targets.map((t) => ({
       ...t,
       gatewayVersion: versionByCanonical.get(t.canonical) ?? null,
@@ -1048,6 +1248,12 @@ export interface BridgeServerDeps {
   registry: SessionRegistry;
   /** Tracks per-target connection health for the /health endpoint. */
   health: HealthRegistry;
+  /**
+   * Hot-swappable outbound media fetcher; `/send` applies the in-band config.
+   * OPTIONAL: defaults to a provider built from `config` (the boot behaviour) so a
+   * test or a minimal embedder need not wire it.
+   */
+  mediaProvider?: MediaFetcherProvider;
 }
 
 /**
@@ -1065,6 +1271,8 @@ export interface BridgeServerDeps {
  */
 export function createBridgeServer(deps: BridgeServerDeps): Server {
   const { config, registry, health } = deps;
+  // Default to a boot-config provider when not wired (tests / minimal embedders).
+  const mediaProvider = deps.mediaProvider ?? new MediaFetcherProvider(config);
   // Non-secret host:port computed once. The health target now reflects the
   // ROUTED identity (the agent/canonical from the body we actually dispatched to)
   // — honest liveness, no longer a static env claim. Keyed by canonical so the
@@ -1078,6 +1286,20 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   let lastGatewayVersion: string | null = null;
   const noteGatewayVersion = (v: string | null): void => {
     if (typeof v === "string" && v.length > 0) lastGatewayVersion = v;
+  };
+  // Same idea for the gateway's maxPayload (the inbound-attachment ceiling): cache
+  // the last-seen value so an idle /health poll still reports it (the lazy bridge
+  // holds no socket at rest), letting Convex + the composer derive the cap.
+  let lastMaxPayload: number | null = null;
+  const noteMaxPayload = (n: number | null): void => {
+    if (typeof n === "number" && n > 0) lastMaxPayload = n;
+  };
+  // Capture BOTH from any operator handshake (incl. a short /agents or /capabilities
+  // discovery), so an idle/just-restarted bridge publishes the version AND the
+  // inbound-attachment cap without waiting for a live chat session.
+  const noteHandshake = (conn: OpenClawConnection): void => {
+    noteGatewayVersion(conn.gatewayVersion);
+    noteMaxPayload(conn.maxPayload);
   };
   // In-flight memo for the /capabilities one-shot version discovery: concurrent
   // unauthenticated GET /capabilities (the 5-min compat poll + any other caller)
@@ -1102,13 +1324,27 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     });
   });
 
-  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
     if (req.method === "GET" && req.url === "/health") {
       // Health is UNAUTHENTICATED on purpose (liveness + a non-secret state
       // snapshot — codes + host only, never tokens). The Convex poller reads it.
-      // Additive compat fields: bridgeVersion + protocolVersion at the top,
-      // gatewayVersion per target (from the live session's handshake capture).
-      sendJson(res, 200, enrichHealthSnapshot(health.snapshot(), registry.listLive()));
+      // Additive compat fields: bridgeVersion + protocolVersion + maxPayload at
+      // the top, gatewayVersion per target (from the live session's handshake).
+      const live = registry.listLive();
+      for (const t of live) noteMaxPayload(t.maxPayload); // keep the idle fallback fresh
+      sendJson(
+        res,
+        200,
+        enrichHealthSnapshot(
+          health.snapshot(),
+          live,
+          lastMaxPayload,
+          config.maxBodyBytes,
+        ),
+      );
       return;
     }
 
@@ -1116,8 +1352,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Non-secret provider capability descriptor (incl. agentDiscovery). The app
       // caches this to adapt its UI per provider. Unauthenticated like /health.
 
-      // Refresh the version fallback from any currently-live session first.
-      for (const t of registry.listLive()) noteGatewayVersion(t.gatewayVersion);
+      // Refresh the version + maxPayload fallbacks from any currently-live session.
+      for (const t of registry.listLive()) {
+        noteGatewayVersion(t.gatewayVersion);
+        noteMaxPayload(t.maxPayload);
+      }
       // SELF-SUFFICIENT version capture (BUG-1 fragility fix): lastGatewayVersion
       // is in-memory (reset on restart) and otherwise only set by /agents
       // discovery or a send. If it is STILL null and no live session can supply
@@ -1130,7 +1369,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       if (lastGatewayVersion === null && registry.listLive().length === 0) {
         // Dedup concurrent callers onto ONE discovery (see versionDiscoveryInFlight).
         if (versionDiscoveryInFlight === null) {
-          versionDiscoveryInFlight = discoverAgents(config, noteGatewayVersion)
+          versionDiscoveryInFlight = discoverAgents(config, noteHandshake)
             .then(() => undefined)
             .catch((err) => {
               console.error(
@@ -1156,7 +1395,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // resolves the version-gated capabilities itself — the bridge no longer
         // needs to echo its own instance name for AgentFiles/ChatDefaults to
         // resolve. Same precedence as the targets: live/discovered > configured.
-        gatewayVersion: lastGatewayVersion ?? config.gatewayVersionFallback ?? null,
+        gatewayVersion:
+          lastGatewayVersion ?? config.gatewayVersionFallback ?? null,
         capabilities: openclawCapabilities(),
         // Compat manifest (additive): the single source of truth for bridge/
         // protocol versions + per-provider validated capability tables, plus
@@ -1180,22 +1420,32 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       return;
     }
 
-    if (req.method === "GET" && (req.url === "/agents" || req.url?.startsWith("/agents?"))) {
+    if (
+      req.method === "GET" &&
+      (req.url === "/agents" || req.url?.startsWith("/agents?"))
+    ) {
       // Bridge-driven agent discovery. Authenticated (it opens a gateway
       // connection) with the shared secret, like /send. Returns NORMALIZED,
       // non-secret agent descriptors; the app caches them as the bind whitelist.
       const provided = req.headers["authorization"];
-      if (typeof provided !== "string" || !constantTimeEqual(provided, config.bridgeSharedSecret)) {
+      if (
+        typeof provided !== "string" ||
+        !constantTimeEqual(provided, config.bridgeSharedSecret)
+      ) {
         sendJson(res, 401, { ok: false, error: "unauthorized" });
         return;
       }
       // mono-tenant: `?instance` is echoed for the poller's convenience but the
       // single configured gateway is always used.
-      const instanceName = new URL(req.url ?? "/agents", "http://bridge").searchParams.get(
-        "instance",
-      );
+      const instanceName = new URL(
+        req.url ?? "/agents",
+        "http://bridge",
+      ).searchParams.get("instance");
       try {
-        const { agents, rawCount } = await discoverAgents(config, noteGatewayVersion);
+        const { agents, rawCount } = await discoverAgents(
+          config,
+          noteHandshake,
+        );
         // `count` (raw gateway agent count) lets the Convex poller distinguish a
         // genuinely empty gateway from normalizer shape-drift (agents cache P2).
         sendJson(res, 200, {
@@ -1208,7 +1458,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         // Classify into a stable non-PHI code; raw detail stays in this log only.
         const code = classifyGatewayError(err);
-        console.error(`bridge /agents failed [${code}]:`, (err as Error)?.message ?? err);
+        console.error(
+          `bridge /agents failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
         sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
@@ -1221,6 +1474,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/compact",
       "/agent-files",
       "/config-defaults",
+      "/validate-media",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -1229,7 +1483,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
 
     // Auth: convex/bridge.ts sends the secret RAW in Authorization (no Bearer).
     const provided = req.headers["authorization"];
-    if (typeof provided !== "string" || !constantTimeEqual(provided, config.bridgeSharedSecret)) {
+    if (
+      typeof provided !== "string" ||
+      !constantTimeEqual(provided, config.bridgeSharedSecret)
+    ) {
       sendJson(res, 401, { ok: false, error: "unauthorized" });
       return;
     }
@@ -1305,7 +1562,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 200, { ok: true });
       } catch (err) {
         const code = classifyGatewayError(err);
-        console.error(`bridge /compact failed [${code}]:`, (err as Error)?.message ?? err);
+        console.error(
+          `bridge /compact failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
         sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
@@ -1327,7 +1587,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const result = await withOperatorConnection(
           config,
           (conn) => performAgentFilesOp(conn, body),
-          noteGatewayVersion,
+          noteHandshake,
         );
         sendJson(res, result.status, result.body);
       } catch (err) {
@@ -1357,7 +1617,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const result = await withOperatorConnection(
           config,
           (conn) => performConfigDefaultsOp(conn, body),
-          noteGatewayVersion,
+          noteHandshake,
         );
         sendJson(res, result.status, result.body);
       } catch (err) {
@@ -1397,6 +1657,29 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       return;
     }
 
+    if (req.url === "/validate-media") {
+      // Bridge-side shared-fs access check (the "Valider" button). Confirms the
+      // bridge can WRITE its inbound dir + READ its outbound dir for the legs in
+      // shared-fs mode. There is no gateway fs API, so the AGENT-side container
+      // mount is NOT checked here (the response notes this). NON-secret.
+      let mvBody: { inboundMediaMode?: unknown; mediaMode?: unknown };
+      try {
+        mvBody = JSON.parse(raw) as typeof mvBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const result = await validateSharedFs({
+        inboundDir: config.inboundMediaDir,
+        outboundDir: config.mediaOutboundDir,
+        inboundSharedFs: mvBody.inboundMediaMode === "shared-fs",
+        outboundSharedFs: mvBody.mediaMode === "shared-fs",
+        now: Date.now(),
+      });
+      sendJson(res, 200, { ok: true, ...result });
+      return;
+    }
+
     const body = parseSendBody(raw);
     if (body === null) {
       sendJson(res, 400, { ok: false, error: "invalid body" });
@@ -1419,8 +1702,38 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     );
 
     try {
+      // Apply the per-instance config IN-BAND before the turn runs (D-B: process-
+      // global, last-write-wins). Rebuilds the outbound media fetcher only if the
+      // mode/cap changed; the rehydration knob is read inside performSend.
+      mediaProvider.applyConfig(body.config);
+      // Shared-fs inbound config: dirs are env (per-instance by Model M), the cap is
+      // hot (body.config.mediaMaxMb → mediaMaxBytes, else the boot default).
+      const inboundCfg: InboundMediaConfig = {
+        // The bridge WRITES to its own mount; the agent READS at the agent-mount
+        // (per-instance override, else env). These differ when bridge + gateway
+        // mount the shared volume at different points.
+        inboundDir: config.inboundMediaDir,
+        agentMount: body.config?.inboundAgentMount ?? config.inboundAgentMount,
+        maxBytes: body.config?.mediaMaxBytes ?? config.mediaMaxBytes,
+      };
+      // Inject the outbound delivery instruction unless outbound media is OFF (then
+      // a generated file could not be hosted anyway). Effective mode = the in-band
+      // per-instance config, else the bridge's boot default. The delivery path is
+      // the AGENT-visible outbound mount (where the agent WRITES) — NOT the bridge's
+      // read dir (which may be a host path the container can't write).
+      const effectiveMediaMode = body.config?.mediaMode ?? config.mediaMode;
+      const deliveryDir =
+        effectiveMediaMode === "off"
+          ? null
+          : (body.config?.outboundAgentMount ?? config.mediaOutboundAgentMount);
       const session = await registry.acquire(toRouting(body));
-      await performSend(session, body, registry.getWriter());
+      await performSend(
+        session,
+        body,
+        registry.getWriter(),
+        inboundCfg,
+        deliveryDir,
+      );
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical));
       sendJson(res, 200, { ok: true });
@@ -1449,7 +1762,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } else {
         health.recordError(ref, code);
       }
-      console.error(`bridge /send failed [${code}]:`, (err as Error)?.message ?? err);
+      console.error(
+        `bridge /send failed [${code}]:`,
+        (err as Error)?.message ?? err,
+      );
       sendJson(res, 502, { ok: false, error: { code } });
     }
   }

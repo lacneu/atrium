@@ -32,6 +32,10 @@ export const PERMISSIONS = {
   ANOMALIES_READ: "anomalies.read",
   ANOMALIES_REPORT: "anomalies.report",
   BRIDGE_READ: "bridge.read", // read bridge health (Settings → Bridge tab)
+  // Edit per-instance NON-SECRET bridge config (mediaMode, rehydration, caps) via
+  // Settings → Bridge. A sensitive WRITE — admin-only (reached through the admin
+  // wildcard), DELIBERATELY excluded from GRANTABLE_USER_PERMISSIONS below.
+  BRIDGE_CONFIG_WRITE: "bridge.config.write",
   // Trigger a BOUNDED self-correction (e.g. reconcile a chat's stuck stream). A
   // sensitive WRITE — admin / service-account only, never in GRANTABLE_USER below.
   SELF_HEAL: "selfheal",

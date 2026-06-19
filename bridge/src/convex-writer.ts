@@ -186,9 +186,18 @@ export interface HttpConvexWriterOptions {
    * Resolves an outbound media path to bytes (see core/media-fetcher.ts). When
    * absent, `addMedia` is a no-op: the turn still streams text/tools, but no
    * attachment part is created (logged once). This is the OpenClaw/Hermes media
-   * seam — the writer never knows HOW bytes are obtained.
+   * seam — the writer never knows HOW bytes are obtained. STATIC: frozen for the
+   * writer's lifetime. Tests use this; production uses `getFetcher` (hot-swap).
    */
   mediaFetcher?: MediaFetcher;
+  /**
+   * DYNAMIC fetcher resolver (D-E). Read lazily on EVERY `addMedia` so a hot
+   * `mediaMode`/`mediaMaxMb` change (applied per-`/send` via MediaFetcherProvider)
+   * takes effect immediately — the outbound media path runs async on gateway
+   * events, decoupled from the send that delivered the config, so a frozen
+   * fetcher would never reflect the change. Takes precedence over `mediaFetcher`.
+   */
+  getFetcher?: () => MediaFetcher | undefined;
 }
 
 const INGEST_PATH = "/bridge/ingest";
@@ -260,7 +269,9 @@ export class HttpConvexWriter implements ConvexWriter {
   private readonly ingestSecret: string;
   private readonly deltaFlushMs: number;
   private readonly fetchImpl: typeof fetch;
-  private readonly mediaFetcher?: MediaFetcher;
+  // Resolve the current fetcher lazily (hot-swap seam). Built from `getFetcher`
+  // when given, else a constant returning the static `mediaFetcher` (tests).
+  private readonly getFetcher: () => MediaFetcher | undefined;
   // Warn once (not per attachment) when media arrives without a configured
   // fetcher, so a misconfigured deployment is visible without log spam.
   private warnedNoFetcher = false;
@@ -283,7 +294,8 @@ export class HttpConvexWriter implements ConvexWriter {
     this.ingestSecret = opts.ingestSecret;
     this.deltaFlushMs = opts.deltaFlushMs ?? 50;
     this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.mediaFetcher = opts.mediaFetcher;
+    const staticFetcher = opts.mediaFetcher;
+    this.getFetcher = opts.getFetcher ?? (() => staticFetcher);
   }
 
   /** Post an op. A message-keyed op (it carries `messageId`) is serialized on that
@@ -490,7 +502,10 @@ export class HttpConvexWriter implements ConvexWriter {
     // is ABSENT for a file-gen turn, the gateway never surfaced the file (a
     // normalizer/frame gap), NOT a fetcher/mount problem.
     this.emitMediaTrace(messageId, "received");
-    if (!this.mediaFetcher) {
+    // Resolve the fetcher lazily so a hot mediaMode change (off ↔ shared-fs ↔
+    // gateway-http) applied since boot takes effect on THIS attachment.
+    const fetcher = this.getFetcher();
+    if (!fetcher) {
       if (!this.warnedNoFetcher) {
         this.warnedNoFetcher = true;
         console.warn(
@@ -506,7 +521,7 @@ export class HttpConvexWriter implements ConvexWriter {
       // The bridge STREAMS the raw bytes (no base64, no full buffer) directly to
       // a Convex upload URL — sidesteps the 20MB httpAction ceiling and the ~33%
       // base64 inflation. The server-side fs path stays inside the bridge.
-      const opened = await this.mediaFetcher.open(media.path);
+      const opened = await fetcher.open(media.path);
       if (!opened.ok) {
         // The structural reason (not_found / too_large / path_escape / ...) — the
         // single most useful signal: each is a DIFFERENT fix. Already warned
