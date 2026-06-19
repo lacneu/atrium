@@ -559,7 +559,16 @@ function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
     setChecking(true);
     setCheck(null);
     try {
-      setCheck(await validate({ instanceName: inst.name }));
+      // Validate the CURRENT (possibly unsaved) form modes, not the stored config,
+      // so the operator verifies the bridge's shared dirs are reachable BEFORE
+      // committing — never persisting a config that turns out non-functional.
+      setCheck(
+        await validate({
+          instanceName: inst.name,
+          inboundMediaMode: form.inboundMediaMode,
+          mediaMode: form.mediaMode,
+        }),
+      );
     } catch (err) {
       toast.error(m.bridge_config_check_failed(), err);
     } finally {

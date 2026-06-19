@@ -148,12 +148,22 @@ bridge:
   #    when the gateway session rolls "fresh" (and already skips that on attachment
   #    turns, which would crash the gateway). Set to "off" to disable it entirely.
   rehydration: "on"
-  # Outbound media: optional read-only mount of your gateway's media/outbound
-  # dir. Leave enabled=false unless the gateway shares a volume with this pod.
+  # Outbound media: optional read-only mount of the SHARED media/outbound volume.
+  # Leave enabled=false unless the gateway shares a volume with this pod.
   media:
     enabled: false
     maxMb: 1024
+    # mountPath is the BRIDGE's OWN view of the shared volume — it is BOTH the
+    # volumeMount path AND OPENCLAW_MEDIA_OUTBOUND_DIR (the chart ties them, so the
+    # "env points at a path that isn't mounted -> ENOENT" misconfig is impossible
+    # here). It need NOT match the gateway's path; it is whatever this pod mounts at.
     mountPath: /home/node/.openclaw/media/outbound
+    # agentMountPath is the GATEWAY/agent's view of the SAME volume (where the agent
+    # WRITES) — injected into the delivery instruction so the agent writes where the
+    # gateway serves it. Set it to the gateway container's path when it differs from
+    # mountPath (e.g. the bridge mounts at /data/... but the agent writes at the
+    # gateway's /home/node/.openclaw/media/outbound).
+    agentMountPath: /home/node/.openclaw/media/outbound
     # Provide EITHER an existingClaim (a pre-bound RWX PVC shared with the
     # gateway) OR a hostPath. existingClaim wins if both are set.
     existingClaim: ""

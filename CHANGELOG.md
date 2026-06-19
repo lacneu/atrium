@@ -8,6 +8,30 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.3.1] — Safer shared-fs setup: verify before save, clearer media mounts
+
+Fix and operability release. No breaking changes; no data migration. Follows up on
+0.3.0's shared-fs media with a safer Bridge config flow and much clearer deployment
+docs (a single mount misconfiguration was easy to hit).
+
+- **Verify shared-fs paths BEFORE saving.** The Bridge config editor's "verify paths"
+  button now checks the media modes you've selected **in the form** — not the
+  last-saved config — so you confirm the bridge can actually reach its shared
+  directories before committing the change. Previously the check only ran against the
+  saved config, so you had to save first and could persist a non-functional setup.
+- **Clearer shared-fs media deployment (the most common misconfig).** A bridge's
+  `OPENCLAW_MEDIA_OUTBOUND_DIR` is the **bridge's OWN** mount of the shared volume, not
+  the gateway container's path — the two run in separate containers. Pointing it at the
+  gateway path makes the bridge report `ENOENT` and silently drop every generated file.
+  The `.env.example`, Compose, and Helm now spell this out, add
+  `OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT` (the agent's *write* view of the same volume)
+  and the inbound shared-fs mount, and a new troubleshooting section walks through the
+  `ENOENT` fix and the "not applicable (not shared-fs)" result.
+- **Deployment.** Changes the Convex backend and the frontend (the verify-paths fix) —
+  redeploy both and run `npx convex deploy`; the bridge image is functionally unchanged.
+  Shared-fs media gains an optional `OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT` (defaults to
+  the gateway path); see the updated `deploy/` docs for the inbound/outbound mounts.
+
 ## [0.3.0] — Multi-instance gateways, large media over a shared filesystem, and reliable file delivery
 
 Feature release. No breaking changes; no data migration. The single-gateway setup

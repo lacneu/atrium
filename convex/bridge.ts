@@ -376,8 +376,20 @@ type ValidateMediaResult = {
 // match). Admin-gated via the internal query above. NEVER throws to the UI on a
 // transport error — returns a structured {reachable:false}.
 export const validateMediaPaths = action({
-  args: { instanceName: v.string() },
-  handler: async (ctx, { instanceName }): Promise<ValidateMediaResult> => {
+  // The modes come from the EDITOR (the unsaved form), NOT the stored config, so an
+  // operator can verify the bridge actually has its shared dirs BEFORE saving — and
+  // never persist a config that turns out to be non-functional (a missing/wrong
+  // OPENCLAW_MEDIA_OUTBOUND_DIR mount). The bridgeUrl is still resolved from the
+  // instance (admin-gated). An invalid mode value simply reads as "not shared-fs".
+  args: {
+    instanceName: v.string(),
+    inboundMediaMode: v.string(),
+    mediaMode: v.string(),
+  },
+  handler: async (
+    ctx,
+    { instanceName, inboundMediaMode, mediaMode },
+  ): Promise<ValidateMediaResult> => {
     const target = await ctx.runQuery(
       internal.bridge.validateMediaTargetInternal,
       { instanceName },
@@ -395,11 +407,7 @@ export const validateMediaPaths = action({
             "Content-Type": "application/json",
             Authorization: sharedSecret,
           },
-          body: JSON.stringify({
-            instanceName,
-            inboundMediaMode: target.inboundMediaMode,
-            mediaMode: target.mediaMode,
-          }),
+          body: JSON.stringify({ instanceName, inboundMediaMode, mediaMode }),
         },
       );
       if (!res.ok) {

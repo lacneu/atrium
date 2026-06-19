@@ -99,11 +99,29 @@ services:
       # bytes over HTTP from the gateway's assistant-media endpoint — NO shared
       # filesystem needed, so it works when Atrium and the gateway run on DIFFERENT
       # hosts (the common case). For a CO-LOCATED gateway you MAY instead read a
-      # read-only mount: set OPENCLAW_MEDIA_MODE=shared-fs AND uncomment the
-      # `volumes:` block + OPENCLAW_MEDIA_OUTBOUND_HOST_DIR below.
+      # mount: set OPENCLAW_MEDIA_MODE=shared-fs AND uncomment the `volumes:` block.
       - OPENCLAW_MEDIA_MODE=${OPENCLAW_MEDIA_MODE:-gateway-http}
+      # [shared-fs] OPENCLAW_MEDIA_OUTBOUND_DIR is where the BRIDGE READS — it MUST
+      # equal the path the shared volume is mounted at IN THIS BRIDGE container (the
+      # `volumes:` mount below ties the two; keep them in sync). It is NOT "the
+      # gateway's path" — the bridge and gateway are separate containers. Setting it
+      # to a path that is not mounted here is the #1 shared-fs misconfig: the bridge
+      # reports ENOENT and every generated file is undeliverable (the "verify paths"
+      # button surfaces it). OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT is the GATEWAY/agent's
+      # view of the SAME volume (where the agent WRITES), injected into the delivery
+      # instruction; set it to the gateway container's path when the two differ.
       - OPENCLAW_MEDIA_OUTBOUND_DIR=/home/node/.openclaw/media/outbound
+      - OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT=${OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT:-/home/node/.openclaw/media/outbound}
       - OPENCLAW_MEDIA_MAX_MB=${OPENCLAW_MEDIA_MAX_MB:-1024}
+      # [shared-fs INBOUND] Large user→agent files (video/audio/docs) the bridge
+      # STREAMS to a WRITABLE shared dir, then injects the gateway-visible path into
+      # the prompt. Enable per instance (Settings -> Agents -> Bridge,
+      # inboundMediaMode=shared-fs) AND mount OPENCLAW_INBOUND_DIR writable below.
+      # _DIR = the bridge's WRITE view; _AGENT_MOUNT = the gateway's view of the same
+      # volume; _TTL_MS reaps staged files older than this (> the longest turn).
+      - OPENCLAW_INBOUND_DIR=/home/node/.openclaw/media/inbound
+      - OPENCLAW_INBOUND_AGENT_MOUNT=${OPENCLAW_INBOUND_AGENT_MOUNT:-/home/node/.openclaw/media/inbound}
+      - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
       # [gateway-http mode] Optional override: set ONLY if the gateway serves the
       # assistant-media HTTP endpoint on a DIFFERENT host/port than the WS URL
       # (e.g. a separate ingress). Blank => derived from OPENCLAW_GATEWAY_URL.
@@ -118,10 +136,15 @@ services:
       # entirely (operator escape hatch); anything else keeps it on.
       - OPENCLAW_REHYDRATION=${OPENCLAW_REHYDRATION:-on}
       - BRIDGE_PORT=8787
-    # [shared-fs mode ONLY] Uncomment to mount the gateway's outbound media dir
-    # read-only (requires OPENCLAW_MEDIA_MODE=shared-fs above):
+    # [shared-fs mode ONLY] Uncomment to give the bridge its OWN mount of the shared
+    # media volume. The mount TARGET (right of the colon) MUST equal the matching
+    # OPENCLAW_*_DIR env above — that path is what the bridge reads/writes; the host
+    # source is the same dir the gateway container mounts. Outbound is read-only (the
+    # bridge only reads agent output); inbound is read-WRITE (the bridge writes staged
+    # files there). Add only the leg(s) you enabled.
     # volumes:
-    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to your gateway's media/outbound dir}:/home/node/.openclaw/media/outbound:ro
+    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to the shared media/outbound dir}:/home/node/.openclaw/media/outbound:ro
+    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to the shared media/inbound dir}:/home/node/.openclaw/media/inbound
     # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
     # Convex (it reaches convex-backend by service DNS only on ingest, with
     # retry), so a hard depends_on would needlessly couple their lifecycles and

@@ -204,6 +204,43 @@ volume — which is exactly the point.)
 
 ---
 
+## G. Shared-fs media (large files / generated downloads)
+
+### "Verify paths" says `ENOENT … /home/node/.openclaw/media/outbound`, or generated files never become a download
+- **The bridge can't see its outbound dir — the most common shared-fs misconfig.**
+  In `shared-fs` mode the bridge reads agent-generated files from
+  `OPENCLAW_MEDIA_OUTBOUND_DIR`. That path is the **bridge's OWN** view of the shared
+  volume — **not** the gateway container's path. The bridge and gateway are separate
+  containers, so the gateway's `/home/node/.openclaw/media/outbound` does **not**
+  exist inside the bridge unless you mount the shared volume there.
+  - **Fix:** mount the shared media/outbound volume into the **bridge** container, and
+    set `OPENCLAW_MEDIA_OUTBOUND_DIR` to **that mount point** (compose ties the two;
+    Helm ties `mountPath` to the env automatically). Mirror your inbound mount, which
+    is likely already correct if its leg shows "Accessible".
+  - Keep the UI's **"Chemin sortant (vu par l'agent)"** (`outboundAgentMount`) as the
+    **gateway** container's path — it's where the *agent writes*, injected into the
+    delivery instruction; it is a different view of the same volume.
+  - The bridge also logs `[outbound-scan] … outbound dir unreadable` once when this
+    happens, so it's visible in the bridge logs even without clicking "verify".
+
+### "Verify paths" reports "Non concerné (pas shared-fs)" although the dropdowns show shared-fs
+- The check validates the **saved** instance config (≤ 0.3.0), not your unsaved form
+  selection. **Save first, then verify** — or upgrade past 0.3.0, where "verify"
+  validates the form modes BEFORE you save. Either way, the real fix for a *failed*
+  check is the mount above.
+
+### A generated file isn't downloadable even though shared-fs is wired
+- **`shared-fs` makes delivery deterministic** (the bridge hosts any file the agent
+  drops in the outbound dir, no `MEDIA:` line needed). **`gateway-http` (the default)
+  is best-effort** — it relies on the agent emitting a `MEDIA:` line, so set the
+  instance to `shared-fs` for the deterministic guarantee.
+- **The agent must be able to PRODUCE the file.** A `pptx → pdf` conversion needs
+  `libreoffice` (and a PDF engine) **inside the gateway/agent container** — that's the
+  OpenClaw image, not Atrium. If the conversion tool is missing, no delivery mechanism
+  can help.
+
+---
+
 ## Deploy from any machine (the CI-friendly way — no host Node needed)
 
 Only **minting the admin key** needs the host (it runs inside the backend

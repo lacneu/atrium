@@ -92,8 +92,13 @@ spec:
             # the default gateway-http transport (no shared filesystem needed).
             - name: OPENCLAW_MEDIA_MODE
               value: shared-fs
+            # OPENCLAW_MEDIA_OUTBOUND_DIR == the volumeMount path below (the BRIDGE's
+            # own view of the shared volume) — tied to one value so the env can never
+            # point at an unmounted path. AGENT_MOUNT is the gateway/agent's view.
             - name: OPENCLAW_MEDIA_OUTBOUND_DIR
               value: {{ .Values.bridge.media.mountPath | quote }}
+            - name: OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT
+              value: {{ .Values.bridge.media.agentMountPath | quote }}
             - name: OPENCLAW_MEDIA_MAX_MB
               value: {{ .Values.bridge.media.maxMb | quote }}
             {{- end }}
