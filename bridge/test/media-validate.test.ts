@@ -3,7 +3,7 @@
 // dir reports the error; a readable outbound dir passes.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,9 +30,14 @@ describe("checkWritableDir", () => {
     expect(await readdir(dir)).toEqual([]); // marker cleaned up
   });
 
-  it("reports an error for an unwritable path (a file as the dir)", async () => {
-    // A path under a non-existent, non-creatable parent (NUL on a file) → mkdir fails.
-    const r = await checkWritableDir("/proc/atrium-cannot-write", 1);
+  it("reports an error when a path COMPONENT is a file, not a dir (ENOTDIR)", async () => {
+    // Use a path UNDER a real FILE: mkdir then fails ENOTDIR DETERMINISTICALLY on
+    // every platform. (The old test hardcoded `/proc/...`, which doesn't exist on
+    // macOS — fast fail — but on the Linux CI runner the fs op HUNG → 5s timeout.)
+    const base = await tempDir();
+    const filePath = join(base, "iam-a-file");
+    await writeFile(filePath, "x");
+    const r = await checkWritableDir(join(filePath, "subdir"), 1);
     expect(r.checked).toBe(true);
     expect(r.ok).toBe(false);
   });
