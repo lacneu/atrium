@@ -873,6 +873,11 @@
   color: var(--foreground);
   border-color: color-mix(in oklch, var(--destructive, orange) 50%, var(--border));
 }
+.oc-fbadmin__pill.is-closed {
+  background: color-mix(in oklch, var(--muted-foreground) 12%, var(--background));
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
 .oc-fbadmin__ctx { display: flex; flex-direction: column; gap: 0.3rem; }
 .oc-fbadmin__ctx-turn {
   display: grid;
@@ -1006,6 +1011,49 @@
 .oc-notif__msg-text { white-space: pre-wrap; word-break: break-word; }
 .oc-notif__link { font-size: 0.74rem; color: var(--primary, #3b82f6); text-decoration: none; align-self: flex-start; }
 .oc-notif__link:hover { text-decoration: underline; }
+/* Reported-message reveal (the frozen snapshot text) + withdraw form. */
+.oc-notif__report-toggle {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  margin-top: 0.3rem; padding: 0;
+  background: transparent; border: none; cursor: pointer;
+  font-size: 0.72rem; color: var(--muted-foreground);
+}
+.oc-notif__report-toggle:hover { color: var(--foreground); }
+.oc-notif__report-msg {
+  margin-top: 0.25rem; padding: 0.4rem 0.55rem;
+  max-height: 9rem; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 0.4rem;
+  background: var(--muted);
+  font-size: 0.78rem; white-space: pre-wrap; word-break: break-word;
+}
+.oc-notif__report-actions { display: flex; align-items: center; gap: 0.85rem; margin-top: 0.35rem; }
+.oc-notif__link--muted {
+  padding: 0; background: none; border: none; cursor: pointer;
+  color: var(--muted-foreground);
+}
+.oc-notif__link--muted:hover { color: var(--destructive); text-decoration: underline; }
+.oc-notif__close-form { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem; }
+.oc-notif__close-input {
+  width: 100%; resize: vertical; min-height: 2.2rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border); border-radius: 0.4rem;
+  background: var(--background); color: var(--foreground);
+  font-size: 0.78rem; font-family: inherit;
+}
+.oc-notif__close-input:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.oc-notif__close-actions { display: flex; gap: 0.4rem; }
+.oc-notif__close-confirm {
+  padding: 0.25rem 0.7rem; border-radius: 0.4rem; cursor: pointer;
+  font-size: 0.74rem; font-weight: 600; border: none;
+  background: var(--destructive); color: var(--destructive-foreground, #fff);
+}
+.oc-notif__close-confirm:disabled { opacity: 0.6; cursor: not-allowed; }
+.oc-notif__close-cancel {
+  padding: 0.25rem 0.7rem; border-radius: 0.4rem; cursor: pointer;
+  font-size: 0.74rem; background: transparent; color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+.oc-notif__close-cancel:hover { color: var(--foreground); }
 
 /* ── User UI-preferences panel (interface-config module) */
 /* Single root so the panel always occupies ONE cell of the settings grid
@@ -1218,6 +1266,34 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Deep-link target flash (`?m=` jump from a feedback report): a tinted ring +
+   wash that fades, drawing the eye to the message then settling. Added
+   imperatively for ~2.4s (see useFocusMessage). `!important` because the reported
+   message is often the LAST one, whose entrance rule
+   (`.oc-thread__viewport > .oc-msg:last-child { animation: oc-msg-in }`) has a
+   HIGHER specificity and would otherwise win the `animation` property. */
+.oc-msg--highlight {
+  border-radius: 0.6rem;
+  animation: oc-msg-flash 2.4s ease-out !important;
+}
+@keyframes oc-msg-flash {
+  0%,
+  45% {
+    background-color: color-mix(in oklch, var(--primary) 22%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-msg--highlight {
+    animation: none !important;
+    background-color: color-mix(in oklch, var(--primary) 14%, transparent);
   }
 }
 
@@ -2356,6 +2432,44 @@
 }
 .oc-dt__title { font-size: 1rem; font-weight: 600; }
 .oc-dt__bar-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* Sortable column header (CHARTE): the whole header label is a button; a muted
+   double-chevron hints sortability, replaced by a solid up/down when active. */
+.oc-dt__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  transition: color 150ms ease;
+}
+.oc-dt__sort:hover {
+  color: var(--foreground);
+}
+.oc-dt__sort:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+.oc-dt__sort-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+}
+/* The idle hint is dim until the column header is hovered/focused. */
+.oc-dt__sort-icon--idle {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.oc-dt__sort:hover .oc-dt__sort-icon--idle,
+.oc-dt__sort:focus-visible .oc-dt__sort-icon--idle {
+  opacity: 0.5;
+}
 /* Inline row expansion (DataTableShell): the detail card sits directly under
    its row, full-width, with no hover highlight. */
 .oc-dt__expansion:hover { background: transparent; }
@@ -2947,6 +3061,9 @@
 .oc-anomaly__msg {
   font-size: 0.85rem; line-height: 1.4;
   display: inline-block; max-width: 28rem;
+  /* WRAP within the max-width: the shared TableCell sets white-space:nowrap,
+     which (with a max-width) would otherwise overflow + overlap the next cell. */
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -2956,6 +3073,7 @@
   flex-direction: column;
   gap: 0.25rem;
   max-width: 30rem;
+  white-space: normal; /* wrap within max-width (TableCell forces nowrap) */
 }
 .oc-anomaly__cause-head {
   display: flex;
@@ -3268,6 +3386,65 @@
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
 }
+/* Same label, made into a collapse toggle (Connexions) — chevron + clickable. */
+.oc-bridge-provider__sub--toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+.oc-bridge-provider__sub--toggle:hover {
+  color: var(--foreground);
+}
+/* ── Connexions data table (sortable + filterable) ───────────────────────── */
+.oc-conn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+}
+.oc-conn__table {
+  font-size: 0.82rem;
+}
+/* Sortable column header: a borderless button carrying the label + sort caret. */
+.oc-conn__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: color 150ms ease;
+}
+.oc-conn__sort:hover {
+  color: var(--foreground);
+}
+/* The idle (unsorted) caret is faint until the column is hovered/active. */
+.oc-conn__sort-idle {
+  opacity: 0.35;
+}
+.oc-conn__sort:hover .oc-conn__sort-idle {
+  opacity: 0.7;
+}
+.oc-conn__stats {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+/* Error/downstream detail sub-row: sits flush under its connection row, no extra
+   inner border, faintly tinted so it reads as belonging to the row above. */
+.oc-conn__detail-cell {
+  padding-top: 0.2rem;
+  background: color-mix(in srgb, var(--destructive) 5%, transparent);
+}
+.oc-conn__row--error > * {
+  background: color-mix(in srgb, var(--destructive) 6%, transparent);
+}
 /* Collapsible configuration (admin), separated by a hairline. */
 .oc-bridge-provider__config {
   margin-top: 0.35rem;
@@ -3318,10 +3495,27 @@
   gap: 0.5rem;
   flex-wrap: wrap;
 }
-.oc-bridge-target__host {
+/* Right-aligned cluster: instance display name + gateway host + version. */
+.oc-bridge-target__meta {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.oc-bridge-target__instance {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.oc-bridge-target__host {
   font-size: 0.78rem;
   color: var(--muted-foreground);
+}
+.oc-bridge-target__version {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
 }
 .oc-bridge-target__stats {
   margin-top: 0.3rem;
@@ -3428,6 +3622,27 @@
 }
 .oc-compat__provider {
   color: var(--muted-foreground);
+}
+.oc-compat__instance {
+  font-weight: 500;
+  color: var(--foreground);
+}
+/* Trailing per-instance config kebab, pushed to the row's right edge. */
+.oc-compat__target-menu {
+  margin-left: auto;
+  width: 1.85rem;
+  height: 1.85rem;
+  color: var(--muted-foreground);
+}
+/* The config editor inside its modal — keep the 3-up field grid roomy. */
+.oc-bridge-config-dialog {
+  max-width: 40rem;
+}
+.oc-bridge-config-dialog .oc-bridge-config {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
 }
 /* Whole-tab "unsupported by this instance" banner (AgentFiles / ChatDefaults). */
 .oc-compat__blocked {

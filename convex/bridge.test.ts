@@ -927,4 +927,109 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       else process.env.BRIDGE_SHARED_SECRET = prevSecret;
     }
   });
+
+  test("two instances dispatch INDEPENDENTLY: each POSTs to its OWN bridge with its OWN config (no crossover)", async () => {
+    // The robustness proof of Model M isolation: with TWO instances configured at
+    // once, a dispatch for one NEVER reaches the other's bridge nor carries the
+    // other's config. The single-instance tests above prove routing reads the
+    // instance row; this proves two such reads stay independent in one run.
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    delete process.env.BRIDGE_URL; // no env fallback → force per-instance routing
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    // Record every POST keyed by its target URL.
+    const calls: Record<string, { config?: { mediaMode?: string } }> = {};
+    const fetchSpy = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls[String(input)] = JSON.parse((init?.body as string) ?? "{}");
+        return new Response(null, { status: 200 });
+      },
+    );
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const seedInstance = (
+        name: string,
+        agentId: string,
+        bridgeUrl: string,
+        config: Record<string, unknown>,
+      ): Promise<Id<"outbox">> =>
+        t.run(async (ctx) => {
+          const userId = await ctx.db.insert("users", {});
+          const now = Date.now();
+          await ctx.db.insert("userAgents", {
+            userId,
+            instanceName: name,
+            agentId,
+            isDefault: true,
+            source: "manual",
+            createdAt: now,
+          });
+          await ctx.db.insert("instances", {
+            name,
+            gatewayUrl: `ws://gw-${name}`,
+            bridgeUrl,
+            config,
+          });
+          const chatId = await ctx.db.insert("chats", {
+            userId,
+            archived: false,
+            updatedAt: now,
+          });
+          return ctx.db.insert("outbox", {
+            chatId,
+            userId,
+            clientMessageId: `cmid-${name}`,
+            text: "hi",
+            attachmentIds: [],
+            status: "pending",
+          });
+        });
+
+      // Two fully-separate instances: different bridge URLs AND different configs.
+      const outA = await seedInstance("primary", "alice", "http://bridge-primary:8787", {
+        mediaMode: "shared-fs",
+      });
+      const outB = await seedInstance("beta", "bob", "http://bridge-beta:8787", {
+        mediaMode: "off",
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId: outA });
+      await t.action(internal.bridge.dispatch, { outboxId: outB });
+
+      // Routing isolation: each instance hit its OWN bridge, exactly once. A crossover
+      // (primary's send reaching bridge-beta) would change these keys.
+      expect(Object.keys(calls).sort()).toEqual([
+        "http://bridge-beta:8787/send",
+        "http://bridge-primary:8787/send",
+      ]);
+      // Config isolation: primary's shared-fs did NOT bleed onto beta (off), nor the
+      // reverse. Swap the routing OR the config and one of these flips.
+      expect(calls["http://bridge-primary:8787/send"].config?.mediaMode).toBe(
+        "shared-fs",
+      );
+      expect(calls["http://bridge-beta:8787/send"].config?.mediaMode).toBe("off");
+      expect(calls["http://bridge-primary:8787/send"].config?.mediaMode).not.toBe(
+        "off",
+      );
+      expect(calls["http://bridge-beta:8787/send"].config?.mediaMode).not.toBe(
+        "shared-fs",
+      );
+
+      // Both sends succeeded independently.
+      const [rowA, rowB] = await t.run(async (ctx) => [
+        await ctx.db.get(outA),
+        await ctx.db.get(outB),
+      ]);
+      expect(rowA?.status).toBe("sent");
+      expect(rowB?.status).toBe("sent");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
 });

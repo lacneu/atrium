@@ -32,6 +32,7 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { DataTableShell } from "./admin/DataTableShell";
+import { InstanceConfigDialog, type Instance } from "./admin/BridgeTab";
 import { EntitySheet } from "./admin/EntitySheet";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
@@ -458,9 +459,12 @@ export function UsersTab() {
               </div>
             );
           },
+          sort: (u) => u.email || u.name || u.canonical || u.userId,
         },
         {
           header: m.settings_col_role(),
+          // rank: pending (0) < user (1) < admin (2)
+          sort: (u) => (u.role === "admin" ? 2 : u.role === "user" ? 1 : 0),
           cell: (u) => (
             <Select
               value={u.role}
@@ -484,6 +488,9 @@ export function UsersTab() {
         },
         {
           header: m.settings_col_settings_access(),
+          // admins hold all access (rank high), else by count of granted tabs.
+          sort: (u) =>
+            u.role === "admin" ? 9999 : (u.extraPermissions?.length ?? 0),
           cell: (u) =>
             u.role === "admin" ? (
               <span className="text-muted-foreground text-xs">{m.settings_all_admin()}</span>
@@ -561,6 +568,9 @@ export function InstancesTab() {
   const [form, setForm] = useState<InstanceForm>(EMPTY_INSTANCE);
   // The instance whose discovered-agents dialog is open.
   const [agentsFor, setAgentsFor] = useState<string | null>(null);
+  // The instance whose bridge-config modal is open (the SAME modal the Bridge tab
+  // opens from a compat-row kebab — one config UI, reached from two places).
+  const [configInstance, setConfigInstance] = useState<Instance | null>(null);
 
   async function submit() {
     try {
@@ -594,15 +604,24 @@ export function InstancesTab() {
         }}
         emptyHint={m.settings_instances_empty()}
         columns={[
-          { header: m.settings_col_name(), cell: (i) => i.name },
+          { header: m.settings_col_name(), cell: (i) => i.name, sort: (i) => i.name },
           {
             header: m.settings_col_bridge(),
             cell: (i) => (
               <Badge variant="outline">{i.kind ?? "openclaw"}</Badge>
             ),
+            sort: (i) => i.kind ?? "openclaw",
           },
-          { header: m.settings_col_gateway_url(), cell: (i) => i.gatewayUrl },
-          { header: m.settings_col_display(), cell: (i) => i.displayName ?? "—" },
+          {
+            header: m.settings_col_gateway_url(),
+            cell: (i) => i.gatewayUrl,
+            sort: (i) => i.gatewayUrl,
+          },
+          {
+            header: m.settings_col_display(),
+            cell: (i) => i.displayName ?? "—",
+            sort: (i) => i.displayName ?? null,
+          },
           {
             header: m.settings_col_agents(),
             cell: (i) => (
@@ -618,6 +637,10 @@ export function InstancesTab() {
           },
         ]}
         rowActions={(i) => [
+          {
+            label: m.settings_configure_bridge(),
+            onSelect: () => setConfigInstance(i),
+          },
           {
             label: m.settings_delete(),
             variant: "destructive",
@@ -693,6 +716,14 @@ export function InstancesTab() {
           if (!o) setAgentsFor(null);
         }}
       />
+      {/* Keyed by instance id so the config form seeds fresh per instance. */}
+      {configInstance ? (
+        <InstanceConfigDialog
+          key={configInstance._id}
+          instance={configInstance}
+          onClose={() => setConfigInstance(null)}
+        />
+      ) : null}
     </>
   );
 }
@@ -921,10 +952,19 @@ export function AuditTab() {
           {
             header: m.settings_col_when(),
             cell: (r) => new Date(r.at).toLocaleString("fr-FR"),
+            sort: (r) => r.at,
           },
-          { header: m.settings_action(), cell: (r) => r.action },
-          { header: m.settings_col_real_actor(), cell: (r) => r.realLabel },
-          { header: m.settings_col_on_behalf_of(), cell: (r) => r.targetLabel ?? "—" },
+          { header: m.settings_action(), cell: (r) => r.action, sort: (r) => r.action },
+          {
+            header: m.settings_col_real_actor(),
+            cell: (r) => r.realLabel,
+            sort: (r) => r.realLabel,
+          },
+          {
+            header: m.settings_col_on_behalf_of(),
+            cell: (r) => r.targetLabel ?? "—",
+            sort: (r) => r.targetLabel ?? null,
+          },
           {
             header: m.settings_resource(),
             cell: (r) =>
@@ -932,6 +972,7 @@ export function AuditTab() {
                 ? r.resource +
                   (r.resourceId ? ` · ${r.resourceId.slice(0, 8)}` : "")
                 : "—",
+            sort: (r) => r.resource ?? null,
           },
         ]}
       />

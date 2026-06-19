@@ -96,6 +96,8 @@ import {
 
 export interface ConvexChatProps {
   chatId: ConvexId<"chats"> | null;
+  // Optional message to scroll to + highlight on open (deep-link `?m=`).
+  focusMessageId?: string | null;
 }
 
 // Effective per-user UI toggles, resolved by getMe.ui (see convex/lib/uiPrefs).
@@ -149,7 +151,7 @@ function BrandAvatar({ className }: { className: string }) {
   );
 }
 
-export function ConvexChat({ chatId }: ConvexChatProps) {
+export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const { runtime, turnGate } = useConvexChatRuntime({ chatId });
   // Resolved UI preferences (reactive): the single source for which interface
   // elements render. The composer "Outils" quick toggle writes through the same
@@ -217,6 +219,7 @@ export function ConvexChat({ chatId }: ConvexChatProps) {
                 onToggleTools={() =>
                   void setUiPref({ key: "showTools", value: !showTools })
                 }
+                focusMessageId={focusMessageId ?? null}
               />
             )
           ) : (
@@ -255,14 +258,59 @@ function ChatNotFound() {
   );
 }
 
+// Deep-link to a specific message (`?m=<id>`): scroll it into view + flash a
+// highlight. The list loads async and the target may be ABSENT (regenerated /
+// deleted / older than the loaded window) — so we poll briefly then give up
+// gracefully (the feedback bell still shows the frozen message text). The `?m`
+// param is cleared after a hit so a re-render / browser-back doesn't re-jump.
+function useFocusMessage(
+  chatId: ConvexId<"chats">,
+  focusMessageId: string | null,
+) {
+  useEffect(() => {
+    if (!focusMessageId) return;
+    let cancelled = false;
+    let tries = 0;
+    let timer = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      const el = document.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(focusMessageId)}"]`,
+      );
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        // CSS-class flash (re-add to retrigger the keyframes). We do NOT clear the
+        // `?m` param here — the navigate caused a thread REMOUNT that discarded
+        // the class before it could paint (verified). The effect only re-runs when
+        // focusMessageId/chatId change, so leaving `?m` is harmless.
+        el.classList.remove("oc-msg--highlight");
+        void el.offsetWidth; // reflow so re-adding restarts the animation
+        el.classList.add("oc-msg--highlight");
+        window.setTimeout(() => el.classList.remove("oc-msg--highlight"), 2400);
+        return;
+      }
+      if (tries++ < 40) timer = window.setTimeout(attempt, 150); // ~6s window
+    };
+    // Run after paint so the just-mounted thread is in the DOM.
+    timer = window.setTimeout(attempt, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // chatId is intentionally a dep so re-opening another chat re-runs.
+  }, [chatId, focusMessageId]);
+}
+
 function ChatThread({
   chatId,
   showTools,
   onToggleTools,
+  focusMessageId,
 }: {
   chatId: ConvexId<"chats">;
   showTools: boolean;
   onToggleTools: () => void;
+  focusMessageId: string | null;
 }) {
   // Chat availability gate: if the bridge is down/erroring (active health poll),
   // grey out the composer and show a banner BEFORE a turn is persisted — the
@@ -271,6 +319,7 @@ function ChatThread({
   // failDispatch error bubble remains the backstop for a send that slips through.
   const avail = useQuery(api.bridgeHealth.getBridgeAvailability, {});
   const unavailable = avail && !avail.available ? avail : null;
+  useFocusMessage(chatId, focusMessageId);
   return (
     <ThreadPrimitive.Root className="oc-thread">
       <ChatHeader chatId={chatId} />
@@ -922,9 +971,11 @@ function UserMessage() {
   // instead of the action bar so the user sees their message is registered +
   // being sent (esp. on a slow/overloaded/reconnecting backend).
   const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
+  const messageId = useMessage((msg) => msg.id);
   return (
     <MessagePrimitive.Root
       className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}`}
+      data-message-id={messageId}
     >
       <div className="oc-msg__col oc-msg__col--user">
         <div className="oc-msg__bubble">
@@ -980,8 +1031,12 @@ function AssistantMessage() {
   // responding AGENT's display name (falls back to the brand label for a
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
+  const messageId = useMessage((msg) => msg.id);
   return (
-    <MessagePrimitive.Root className="oc-msg oc-msg--assistant">
+    <MessagePrimitive.Root
+      className="oc-msg oc-msg--assistant"
+      data-message-id={messageId}
+    >
       <BrandAvatar className="oc-msg__avatar" />
       <div className="oc-msg__col">
         <div className="oc-msg__name">
@@ -1042,8 +1097,12 @@ function AssistantMessage() {
 }
 
 function SystemMessage() {
+  const messageId = useMessage((msg) => msg.id);
   return (
-    <MessagePrimitive.Root className="oc-msg oc-msg--system">
+    <MessagePrimitive.Root
+      className="oc-msg oc-msg--system"
+      data-message-id={messageId}
+    >
       <div className="oc-msg__body">
         <MessagePrimitive.Parts components={plainComponents} />
       </div>

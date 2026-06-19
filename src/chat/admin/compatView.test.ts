@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { m } from "@/paraglide/messages.js";
 import {
+  badgeStateFromVersion,
   hasProvider,
   targetBadgeLabel,
   targetBadgeState,
@@ -62,6 +63,25 @@ describe("targetBadgeState", () => {
 
   test("legacy bridge (manifest null) -> unknown", () => {
     expect(targetBadgeState(target("2026.6.5"), null)).toBe("unknown");
+  });
+});
+
+describe("badgeStateFromVersion (per-instance verdict from a RAW version)", () => {
+  test("null version -> unknown", () => {
+    expect(badgeStateFromVersion(null, "openclaw", MANIFEST)).toBe("unknown");
+  });
+  test("within [min, maxValidated] -> supported", () => {
+    expect(badgeStateFromVersion("2026.6.5", "openclaw", MANIFEST)).toBe("supported");
+    expect(badgeStateFromVersion("2026.5.19", "openclaw", MANIFEST)).toBe("supported");
+  });
+  test("above the validated ceiling -> beyond (computed from the range here)", () => {
+    expect(badgeStateFromVersion("2026.7.1", "openclaw", MANIFEST)).toBe("beyond");
+  });
+  test("below the support window -> unknown", () => {
+    expect(badgeStateFromVersion("2026.4.1", "openclaw", MANIFEST)).toBe("unknown");
+  });
+  test("legacy bridge (manifest null) -> unknown", () => {
+    expect(badgeStateFromVersion("2026.6.5", "openclaw", null)).toBe("unknown");
   });
 });
 

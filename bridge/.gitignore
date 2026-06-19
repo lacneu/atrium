@@ -25,5 +25,9 @@ Thumbs.db
 
 # Local OpenClaw harness runtime state (also covered by local-openclaw/.gitignore)
 local-openclaw/.token
+local-openclaw/.token-b
 local-openclaw/local.env
 local-openclaw/media-outbound/
+local-openclaw/media-outbound-b/
+local-openclaw/media-inbound/
+local-openclaw/media-inbound-b/

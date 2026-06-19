@@ -5,10 +5,42 @@
 // shadow an env-configured bridge's OWN mediaMode/cap/rehydration on every dispatch).
 
 import { describe, expect, test } from "vitest";
-import { buildConfigOverride, type ConfigForm } from "./bridgeConfigForm";
+import {
+  buildConfigOverride,
+  formFromConfig,
+  type ConfigForm,
+} from "./bridgeConfigForm";
 import { DEFAULT_INSTANCE_CONFIG } from "../../../convex/lib/instanceConfig";
 
 const defaults: ConfigForm = { ...DEFAULT_INSTANCE_CONFIG };
+
+describe("formFromConfig", () => {
+  test("nothing stored → every field shows its default (no undefined leaks)", () => {
+    expect(formFromConfig({})).toEqual(defaults);
+  });
+
+  test("a stored override is reflected verbatim, the rest stay default", () => {
+    const form = formFromConfig({ mediaMode: "shared-fs", mediaMaxMb: 200 });
+    expect(form.mediaMode).toBe("shared-fs");
+    expect(form.mediaMaxMb).toBe(200);
+    // Untouched fields keep their defaults — not the other instance's values.
+    expect(form.inboundMediaMode).toBe(DEFAULT_INSTANCE_CONFIG.inboundMediaMode);
+    expect(form.rehydration).toBe(DEFAULT_INSTANCE_CONFIG.rehydration);
+  });
+
+  test("round-trip: load defaults then Save persists NOTHING (no shadowing)", () => {
+    // The load-bearing invariant: opening the editor on an unconfigured instance and
+    // hitting Save unchanged must not materialize the displayed defaults as overrides.
+    // (If formFromConfig leaked `undefined` for unset fields, buildConfigOverride would
+    // persist them — this round-trip is what catches that regression.)
+    expect(buildConfigOverride(formFromConfig({}), {})).toEqual({});
+  });
+
+  test("round-trip: a stored override survives load → Save", () => {
+    const stored: Partial<ConfigForm> = { mediaMode: "shared-fs" };
+    expect(buildConfigOverride(formFromConfig(stored), stored)).toEqual(stored);
+  });
+});
 
 describe("buildConfigOverride", () => {
   test("all-defaults form + nothing stored → {} (a bare Save shadows NOTHING)", () => {

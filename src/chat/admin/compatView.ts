@@ -1,5 +1,6 @@
 import { m } from "@/paraglide/messages.js";
 import {
+  compareVersions,
   providerSupport,
   withinSupport,
   type ProviderSupport,
@@ -40,6 +41,27 @@ export function targetBadgeState(
   if (target.versionBeyondValidated) return "beyond";
   const { range } = providerSupport(compat, target.provider);
   return withinSupport(range, target.gatewayVersion) ? "supported" : "unknown";
+}
+
+/**
+ * Same verdict as `targetBadgeState` but from a RAW gateway version (not a compat
+ * target). Lets the per-instance compatibility list be driven by the PER-INSTANCE
+ * health targets — which carry every instance's version — instead of the singleton
+ * compat poller (which only knows the env-BRIDGE_URL instance). `beyond` (newer than
+ * the validated ceiling) is computed here from the range, since there is no
+ * precomputed flag on a health target.
+ */
+export function badgeStateFromVersion(
+  version: string | null,
+  provider: string,
+  compat: unknown,
+): TargetBadgeState {
+  if (version === null) return "unknown";
+  const { range } = providerSupport(compat, provider);
+  if (!withinSupport(range, version)) return "unknown";
+  const beyond =
+    range !== null && (compareVersions(version, range.maxValidated) ?? 0) > 0;
+  return beyond ? "beyond" : "supported";
 }
 
 export function targetBadgeLabel(state: TargetBadgeState): string {

@@ -341,7 +341,12 @@ export const listForAdmin = query({
             : null,
           chatId: r.chatId,
           messageId: r.messageId,
-          // METADATA ONLY — never messageText/promptText/comment here.
+          // Withdrawn-by-user status + reason (the user closed it prematurely);
+          // the reason IS content the user typed, surfaced to the admin here so
+          // they know why it was withdrawn. (METADATA + this reason only — never
+          // messageText/promptText/the original comment here.)
+          userClosedAt: r.userClosedAt ?? null,
+          userCloseReason: r.userCloseReason ?? null,
         };
       }),
     );
@@ -525,26 +530,34 @@ export const myFeedback = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .order("desc")
       .take(ADMIN_LIST_MAX);
-    return rows.map((r) => {
-      const adminAt = latestAdminAt(r.thread);
-      return {
-        _id: r._id,
-        at: r.at,
-        category: r.category,
-        comment: r.comment ?? null,
-        messageRole: r.snapshot.messageRole,
-        chatId: r.chatId,
-        messageId: r.messageId,
-        // Thread WITHOUT author ids (the user only needs role + text + time).
-        thread: (r.thread ?? []).map((m) => ({
-          authorRole: m.authorRole,
-          text: m.text,
-          at: m.at,
-        })),
-        answered: adminAt > 0,
-        unread: adminAt > (r.userReadAt ?? 0),
-      };
-    });
+    // Withdrawn reports vanish from the user's OWN list (they keep existing for
+    // the admin); a later admin reply does NOT resurface them.
+    return rows
+      .filter((r) => r.userClosedAt == null)
+      .map((r) => {
+        const adminAt = latestAdminAt(r.thread);
+        return {
+          _id: r._id,
+          at: r.at,
+          category: r.category,
+          comment: r.comment ?? null,
+          messageRole: r.snapshot.messageRole,
+          // The REPORTED message text, from the FROZEN snapshot — robust even
+          // after the live message was regenerated/deleted (the very reason the
+          // snapshot exists). The user's OWN report content → no admin gate.
+          messageText: r.snapshot.messageText,
+          chatId: r.chatId,
+          messageId: r.messageId,
+          // Thread WITHOUT author ids (the user only needs role + text + time).
+          thread: (r.thread ?? []).map((m) => ({
+            authorRole: m.authorRole,
+            text: m.text,
+            at: m.at,
+          })),
+          answered: adminAt > 0,
+          unread: adminAt > (r.userReadAt ?? 0),
+        };
+      });
   },
 });
 
@@ -559,9 +572,53 @@ export const myUnreadFeedbackCount = query({
       .take(ADMIN_LIST_MAX);
     let count = 0;
     for (const r of rows) {
+      if (r.userClosedAt != null) continue; // withdrawn → never badges
       if (latestAdminAt(r.thread) > (r.userReadAt ?? 0)) count++;
     }
     return count;
+  },
+});
+
+/**
+ * The OWNER withdraws/closes their own report, with an optional reason. Owner-only;
+ * NO-OP under impersonation (an admin peeking AS the user must not withdraw it,
+ * same guard as markAllMyFeedbackRead). The feedback row is KEPT (the admin still
+ * sees it + the reason); it just leaves the user's list + clears the report's
+ * reply notifications from the bell so nothing is left behind. Idempotent.
+ */
+export const closeMyFeedback = mutation({
+  args: { feedbackId: v.id("feedback"), reason: v.optional(v.string()) },
+  handler: async (ctx, { feedbackId, reason }) => {
+    const { userId, impersonating } = await requireActive(ctx);
+    if (impersonating) return;
+    const fb = await ctx.db.get(feedbackId);
+    if (fb === null) throw new Error("Not found: feedback");
+    if (fb.userId !== userId) throw new Error("Forbidden: not your report");
+    if (fb.userClosedAt != null) return; // idempotent
+    const now = Date.now();
+    const trimmed = reason?.trim().slice(0, RESPONSE_MAX);
+    await ctx.db.patch(feedbackId, {
+      userClosedAt: now,
+      userCloseReason: trimmed && trimmed.length > 0 ? trimmed : undefined,
+    });
+    // Remove the report's reply notifications from the bell's top feed so a
+    // withdrawn report leaves NOTHING behind (the "Mes signalements" entry is
+    // filtered by userClosedAt; these top rows must go too). Their dedupeKey is
+    // `feedback_reply:<feedbackId>:<at>` (see respondToFeedback).
+    const prefix = `feedback_reply:${feedbackId}:`;
+    const notifs = await ctx.db
+      .query("notifications")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    for (const n of notifs) {
+      if (n.dedupeKey?.startsWith(prefix)) await ctx.db.delete(n._id);
+    }
+    await recordAudit(
+      ctx,
+      { realUserId: userId, effectiveUserId: userId, impersonating: false },
+      "feedback.close",
+      { resource: "feedback", resourceId: feedbackId },
+    );
   },
 });
 

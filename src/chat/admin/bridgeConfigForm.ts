@@ -19,6 +19,25 @@ export type ConfigForm = {
 };
 
 /**
+ * Fill the editor form from an instance's STORED (partial) config — every unset
+ * field shows its env/Convex default for display. The inverse of
+ * `buildConfigOverride` (which strips the unset defaults back out on save).
+ */
+export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
+  return {
+    mediaMode: stored.mediaMode ?? DEFAULT_INSTANCE_CONFIG.mediaMode,
+    inboundMediaMode:
+      stored.inboundMediaMode ?? DEFAULT_INSTANCE_CONFIG.inboundMediaMode,
+    rehydration: stored.rehydration ?? DEFAULT_INSTANCE_CONFIG.rehydration,
+    mediaMaxMb: stored.mediaMaxMb ?? DEFAULT_INSTANCE_CONFIG.mediaMaxMb,
+    inboundAgentMount:
+      stored.inboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.inboundAgentMount,
+    outboundAgentMount:
+      stored.outboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
+  };
+}
+
+/**
  * Build the per-instance config OVERRIDE to persist: ONLY fields the admin
  * explicitly set. The editor fills unset fields with `DEFAULT_INSTANCE_CONFIG` for
  * display, but persisting those would turn an env-configured bridge's defaults into

@@ -95,32 +95,25 @@ services:
       - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
       - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET:?shared with the Convex deployment env}
       - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET:?shared with the Convex deployment env}
-      # Outbound (agent-generated) file transport. DEFAULT "gateway-http" pulls the
-      # bytes over HTTP from the gateway's assistant-media endpoint — NO shared
-      # filesystem needed, so it works when Atrium and the gateway run on DIFFERENT
-      # hosts (the common case). For a CO-LOCATED gateway you MAY instead read a
-      # mount: set OPENCLAW_MEDIA_MODE=shared-fs AND uncomment the `volumes:` block.
-      - OPENCLAW_MEDIA_MODE=${OPENCLAW_MEDIA_MODE:-gateway-http}
-      # [shared-fs] OPENCLAW_MEDIA_OUTBOUND_DIR is where the BRIDGE READS — it MUST
-      # equal the path the shared volume is mounted at IN THIS BRIDGE container (the
-      # `volumes:` mount below ties the two; keep them in sync). It is NOT "the
-      # gateway's path" — the bridge and gateway are separate containers. Setting it
-      # to a path that is not mounted here is the #1 shared-fs misconfig: the bridge
-      # reports ENOENT and every generated file is undeliverable (the "verify paths"
-      # button surfaces it). OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT is the GATEWAY/agent's
-      # view of the SAME volume (where the agent WRITES), injected into the delivery
-      # instruction; set it to the gateway container's path when the two differ.
+      # Media transport MODE, per-file size CAP, agent-visible mount PATHS and
+      # session rehydration are PER-INSTANCE settings configured in Atrium ->
+      # Settings -> Agents -> Bridge (applied HOT, in-band on each send, no restart)
+      # — NOT env vars here. The bridge defaults to gateway-http (fetch bytes over
+      # HTTP from the gateway's assistant-media endpoint; NO shared filesystem needed)
+      # until the first send carries the instance config. For shared-fs, only the
+      # per-bridge DEPLOY-TIME plumbing below lives here (a docker mount can't be hot).
+      #
+      # [shared-fs] OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR are where the
+      # BRIDGE reads/writes — they MUST equal the path the shared volume is mounted at
+      # IN THIS BRIDGE container (the `volumes:` mount below ties them; keep in sync).
+      # They are NOT the gateway's path (separate containers). Pointing them at an
+      # unmounted path is the #1 shared-fs misconfig: ENOENT, every file silently
+      # undeliverable (the "verify paths" button surfaces it). The agent-visible path
+      # the gateway serves these at is the per-instance "Chemin (vu par l'agent)" in
+      # Settings, not here.
       - OPENCLAW_MEDIA_OUTBOUND_DIR=/home/node/.openclaw/media/outbound
-      - OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT=${OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT:-/home/node/.openclaw/media/outbound}
-      - OPENCLAW_MEDIA_MAX_MB=${OPENCLAW_MEDIA_MAX_MB:-1024}
-      # [shared-fs INBOUND] Large user→agent files (video/audio/docs) the bridge
-      # STREAMS to a WRITABLE shared dir, then injects the gateway-visible path into
-      # the prompt. Enable per instance (Settings -> Agents -> Bridge,
-      # inboundMediaMode=shared-fs) AND mount OPENCLAW_INBOUND_DIR writable below.
-      # _DIR = the bridge's WRITE view; _AGENT_MOUNT = the gateway's view of the same
-      # volume; _TTL_MS reaps staged files older than this (> the longest turn).
       - OPENCLAW_INBOUND_DIR=/home/node/.openclaw/media/inbound
-      - OPENCLAW_INBOUND_AGENT_MOUNT=${OPENCLAW_INBOUND_AGENT_MOUNT:-/home/node/.openclaw/media/inbound}
+      # [shared-fs] Reap staged inbound files older than this (> the longest turn).
       - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
       # [gateway-http mode] Optional override: set ONLY if the gateway serves the
       # assistant-media HTTP endpoint on a DIFFERENT host/port than the WS URL
@@ -130,11 +123,6 @@ services:
       # response headers so a non-responsive gateway can't stall a turn (the body
       # then streams at the upload's pace). Default 60s.
       - OPENCLAW_MEDIA_FETCH_TIMEOUT_MS=${OPENCLAW_MEDIA_FETCH_TIMEOUT_MS:-60000}
-      # Session re-hydration kill-switch. The bridge re-sends prior turns when the
-      # gateway session rolls "fresh"; it already SKIPS that on attachment turns
-      # (which would crash the gateway). Set to "off" to disable re-hydration
-      # entirely (operator escape hatch); anything else keeps it on.
-      - OPENCLAW_REHYDRATION=${OPENCLAW_REHYDRATION:-on}
       - BRIDGE_PORT=8787
     # [shared-fs mode ONLY] Uncomment to give the bridge its OWN mount of the shared
     # media volume. The mount TARGET (right of the colon) MUST equal the matching

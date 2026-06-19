@@ -49,6 +49,7 @@ export function normalizeTarget(raw: unknown): {
   lastDownstreamRejectCode: string | null;
   lastDownstreamRejectAt: number | null;
   downstreamRejectCount: number;
+  gatewayVersion: string | null;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
@@ -85,6 +86,10 @@ export function normalizeTarget(raw: unknown): {
     lastDownstreamRejectCode: dr ? str(dr.code) : null,
     lastDownstreamRejectAt: dr ? num(dr.at) : null,
     downstreamRejectCount: num(o.downstreamRejectCount) ?? 0,
+    // Per-instance gateway version (Model M): each bridge's /health reports its own
+    // gateway's version, so the connection row shows it per instance (the compat
+    // poller is a singleton and can't).
+    gatewayVersion: str(o.gatewayVersion),
   };
 }
 

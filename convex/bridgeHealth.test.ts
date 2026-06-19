@@ -55,6 +55,26 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
     expect(t?.lastOkAt).toBe(9);
   });
 
+  test("parses the per-instance gatewayVersion (null when absent/non-string)", () => {
+    const withV = normalizeTarget({
+      key: "k",
+      canonical: "c",
+      agentId: "main",
+      gatewayHost: "h:1",
+      state: "connected",
+      gatewayVersion: "2026.6.5",
+    });
+    expect(withV?.gatewayVersion).toBe("2026.6.5");
+    const without = normalizeTarget({
+      key: "k",
+      canonical: "c",
+      agentId: "main",
+      gatewayHost: "h:1",
+      state: "connected",
+    });
+    expect(without?.gatewayVersion).toBeNull();
+  });
+
   test("a malformed target (missing required field) -> null (dropped)", () => {
     expect(normalizeTarget({ key: "x", state: "error" })).toBeNull();
     expect(normalizeTarget(null)).toBeNull();

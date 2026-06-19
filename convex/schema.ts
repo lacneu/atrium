@@ -116,6 +116,10 @@ export const bridgeHealthTarget = v.object({
   // (maxPayloadInternal). Optional: a pre-this-release bridge / unreached instance
   // omits it (the dispatch falls back to the doc-level value, then the default).
   maxPayload: v.optional(v.union(v.number(), v.null())),
+  // Per-instance gateway VERSION reported by THIS instance's bridge /health, shown
+  // on the connection row. Optional: a pre-this-release bridge / unreached instance
+  // omits it.
+  gatewayVersion: v.optional(v.union(v.string(), v.null())),
 });
 
 // One capability target from the bridge /capabilities snapshot, deduped to ONE
@@ -944,6 +948,13 @@ export default defineSchema({
     // When the OWNER last read their thread (drives the unread badge). Unread =
     // latest admin message `at` > userReadAt. NOT written under impersonation.
     userReadAt: v.optional(v.number()),
+    // The OWNER withdrew/closed their own report (with an optional reason). Once
+    // set, the report disappears from the user's "Mes signalements" + bell, and a
+    // later admin reply does NOT resurface it (a deliberate withdrawal sticks).
+    // The row is KEPT (not deleted) so the admin still sees it + the reason. NOT
+    // written under impersonation.
+    userClosedAt: v.optional(v.number()),
+    userCloseReason: v.optional(v.string()),
   })
     .index("by_chat", ["chatId"])
     .index("by_message", ["messageId"])

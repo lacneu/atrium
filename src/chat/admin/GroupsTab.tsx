@@ -146,7 +146,7 @@ export function GroupsTab() {
         onAdd={openCreate}
         emptyHint={m.groups_empty()}
         columns={[
-          { header: m.groups_col_name(), cell: (g) => g.name },
+          { header: m.groups_col_name(), cell: (g) => g.name, sort: (g) => g.name },
           {
             header: m.groups_col_members(),
             cell: (g) => (
@@ -155,6 +155,7 @@ export function GroupsTab() {
                 {g.memberCount}
               </Badge>
             ),
+            sort: (g) => g.memberCount,
           },
           {
             header: m.groups_col_agents(),
@@ -164,6 +165,7 @@ export function GroupsTab() {
                 {g.agentCount}
               </Badge>
             ),
+            sort: (g) => g.agentCount,
           },
           {
             header: m.groups_col_manage(),

@@ -1,6 +1,12 @@
 # Volatile runtime state — never commit.
+# Gateway auth tokens (A = single-instance bench, B = second instance via up-b.sh).
 .token
+.token-b
 local.env
+# Shared-fs media mount dirs (recreated by up.sh / up-b.sh; hold runtime files).
 media-outbound/
+media-outbound-b/
+media-inbound/
+media-inbound-b/
 # Local seed override (personal agents/auth profile) — never commit.
 seed/openclaw.local.json

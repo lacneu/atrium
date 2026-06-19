@@ -77,30 +77,18 @@ spec:
                   key: BRIDGE_SHARED_SECRET
             - name: BRIDGE_PORT
               value: {{ .Values.bridge.port | quote }}
-            {{- if eq .Values.bridge.rehydration "off" }}
-            # Operator kill-switch: disable session re-hydration entirely (the bridge
-            # already skips it on attachment turns, which would crash the gateway).
-            # Only rendered when explicitly "off"; otherwise the bridge default (on).
-            - name: OPENCLAW_REHYDRATION
-              value: "off"
-            {{- end }}
             {{- if .Values.bridge.media.enabled }}
-            # A media mount is wired -> select the shared-fs reader explicitly.
-            # (Without this the bridge defaults to gateway-http and would ignore
-            # the mount — silently losing outbound media if the gateway has no
-            # assistant-media endpoint.) Leave bridge.media.enabled=false to use
-            # the default gateway-http transport (no shared filesystem needed).
-            - name: OPENCLAW_MEDIA_MODE
-              value: shared-fs
-            # OPENCLAW_MEDIA_OUTBOUND_DIR == the volumeMount path below (the BRIDGE's
-            # own view of the shared volume) — tied to one value so the env can never
-            # point at an unmounted path. AGENT_MOUNT is the gateway/agent's view.
+            # A media mount is wired -> set the BRIDGE's deploy-time read path. This
+            # only PROVISIONS the mount; the transport MODE (shared-fs vs gateway-http),
+            # caps and agent-visible paths are PER-INSTANCE config set in Atrium ->
+            # Settings -> Agents -> Bridge (applied hot, no restart). So after enabling
+            # this mount, ALSO set the instance to shared-fs in Settings — otherwise the
+            # bridge stays on its gateway-http default and ignores the mount.
+            # OPENCLAW_MEDIA_OUTBOUND_DIR == the volumeMount path below (the BRIDGE's own
+            # view of the shared volume) — tied to one value so the env can never point
+            # at an unmounted path.
             - name: OPENCLAW_MEDIA_OUTBOUND_DIR
               value: {{ .Values.bridge.media.mountPath | quote }}
-            - name: OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT
-              value: {{ .Values.bridge.media.agentMountPath | quote }}
-            - name: OPENCLAW_MEDIA_MAX_MB
-              value: {{ .Values.bridge.media.maxMb | quote }}
             {{- end }}
           {{- if .Values.bridge.media.enabled }}
           volumeMounts:

@@ -402,8 +402,15 @@ export const routeUser = mutation({
     agentId: v.string(),
     canonical: v.string(),
     email: v.optional(v.string()),
+    // Model M: the per-instance bridge endpoint dispatch POSTs to. Without it the
+    // instance falls back to env BRIDGE_URL — fine for one instance, but a
+    // multi-instance bench MUST set it so each chat routes to its OWN bridge.
+    bridgeUrl: v.optional(v.string()),
   },
-  handler: async (ctx, { instanceName, gatewayUrl, agentId, canonical, email }) => {
+  handler: async (
+    ctx,
+    { instanceName, gatewayUrl, agentId, canonical, email, bridgeUrl },
+  ) => {
     assertDev();
     assertDevInstance(instanceName); // never route a profile to a protected tenant
 
@@ -419,9 +426,14 @@ export const routeUser = mutation({
         gatewayUrl,
         displayName: instanceName,
         kind: "openclaw",
+        ...(bridgeUrl ? { bridgeUrl } : {}),
       });
     } else {
-      await ctx.db.patch(existing._id, { gatewayUrl, kind: "openclaw" });
+      await ctx.db.patch(existing._id, {
+        gatewayUrl,
+        kind: "openclaw",
+        ...(bridgeUrl ? { bridgeUrl } : {}),
+      });
     }
 
     // Seed the agent as DISCOVERED + a successful discovery (what the bridge
@@ -472,6 +484,19 @@ export const routeUser = mutation({
         (p.role === "admin" || p.role === "user") &&
         (email ? p.email === email : true),
     );
+    // Bench convenience: if an email is given but no profile has it yet, CREATE the
+    // user+profile so a multi-instance setup is one call per instance (route a
+    // distinct user to each bridge). Dev-only (assertDev above).
+    if (email && targets.length === 0) {
+      const uid = await ctx.db.insert("users", {});
+      const pid = await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "user",
+        email,
+      });
+      const created = await ctx.db.get(pid);
+      if (created !== null) targets.push(created);
+    }
     const routed: Array<{ userId: Id<"users">; email: string | null; role: string }> = [];
     for (const p of targets) {
       await ctx.db.patch(p._id, { canonical });

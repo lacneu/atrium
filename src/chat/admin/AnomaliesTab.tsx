@@ -301,30 +301,42 @@ export function AnomaliesTab() {
                 {new Date(r.at).toLocaleString("fr-FR")}
               </span>
             ),
+            sort: (r) => r.at,
           },
           {
             header: m.anomalies_type(),
             cell: (r) => <code className="oc-traces__mono">{r.kind}</code>,
+            sort: (r) => r.kind,
           },
           {
             header: m.anomalies_severity(),
             cell: (r) => <SeverityBadge severity={r.severity} />,
+            // rank: info (0) < warn (1) < critical (2)
+            sort: (r) =>
+              r.severity === "critical" ? 2 : r.severity === "warn" ? 1 : 0,
           },
           {
             header: m.anomalies_col_status(),
             cell: (r) => <StatusBadge status={r.status} />,
+            // rank: open (0) < acknowledged (1) < resolved (2)
+            sort: (r) =>
+              r.status === "resolved" ? 2 : r.status === "acknowledged" ? 1 : 0,
           },
           {
             header: m.anomalies_source(),
             cell: (r) => <Badge variant="outline">{r.source}</Badge>,
+            sort: (r) => r.source,
           },
           {
             header: m.anomalies_col_message(),
             cell: (r) => <span className="oc-anomaly__msg">{r.message}</span>,
+            sort: (r) => r.message,
           },
           {
             header: m.anomalies_col_cause(),
             cell: (r) => <CauseCell row={r} />,
+            // derived cell — sort by the underlying evidence string (best-effort).
+            sort: (r) => r.evidence ?? null,
           },
           {
             header: m.anomalies_col_correlation(),
@@ -336,6 +348,7 @@ export function AnomaliesTab() {
               ) : (
                 <span className="oc-traces__muted">—</span>
               ),
+            sort: (r) => r.correlationId,
           },
         ]}
       />

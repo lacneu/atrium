@@ -1,5 +1,13 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { MoreVertical, Plus, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronUp,
+  MoreVertical,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { sortRows, type SortDir, type SortValue } from "./dataTableSort";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -36,6 +44,10 @@ export type Column<T> = {
   header: string;
   cell: (row: T) => ReactNode;
   className?: string;
+  // Opt a column into sorting by returning its UNDERLYING comparable value
+  // (a timestamp, a number, an enum rank — NOT the formatted cell string).
+  // Columns without `sort` (pure actions / non-data) stay unsortable.
+  sort?: (row: T) => SortValue;
 };
 
 export function DataTableShell<T extends { _id: string }>({
@@ -65,7 +77,22 @@ export function DataTableShell<T extends { _id: string }>({
   renderExpanded?: (row: T) => ReactNode;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Sort is a pure render-time slice (CHARTE: every data column is sortable).
+  // null = the server's incoming order. 3-state per column: asc -> desc -> none.
+  const [sort, setSort] = useState<{ index: number; dir: SortDir } | null>(null);
   const list = rows ?? [];
+  const sortCol = sort ? columns[sort.index] : undefined;
+  const sortedList =
+    sort && sortCol?.sort ? sortRows(list, sortCol.sort, sort.dir) : list;
+
+  function onSortClick(index: number) {
+    setSort((prev) => {
+      if (!prev || prev.index !== index) return { index, dir: "asc" };
+      if (prev.dir === "asc") return { index, dir: "desc" };
+      return null; // third click clears -> back to incoming order
+    });
+  }
+
   // Total column span for the full-width expansion cell.
   const colCount =
     (bulkActions ? 1 : 0) + columns.length + (rowActions ? 1 : 0);
@@ -129,16 +156,55 @@ export function DataTableShell<T extends { _id: string }>({
                   />
                 </TableHead>
               ) : null}
-              {columns.map((c) => (
-                <TableHead key={c.header} className={c.className}>
-                  {c.header}
-                </TableHead>
-              ))}
+              {columns.map((c, i) => {
+                const active = sort?.index === i;
+                if (!c.sort) {
+                  return (
+                    <TableHead key={c.header} className={c.className}>
+                      {c.header}
+                    </TableHead>
+                  );
+                }
+                return (
+                  <TableHead
+                    key={c.header}
+                    className={c.className}
+                    aria-sort={
+                      active
+                        ? sort.dir === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="oc-dt__sort"
+                      onClick={() => onSortClick(i)}
+                      aria-label={m.datatable_sort_by({ column: c.header })}
+                    >
+                      {c.header}
+                      {active ? (
+                        sort.dir === "asc" ? (
+                          <ChevronUp className="oc-dt__sort-icon" aria-hidden />
+                        ) : (
+                          <ChevronDown className="oc-dt__sort-icon" aria-hidden />
+                        )
+                      ) : (
+                        <ChevronsUpDown
+                          className="oc-dt__sort-icon oc-dt__sort-icon--idle"
+                          aria-hidden
+                        />
+                      )}
+                    </button>
+                  </TableHead>
+                );
+              })}
               {rowActions ? <TableHead className="w-8" /> : null}
             </TableRow>
           </TableHeader>
           <TableBody>
-            {list.map((row) => {
+            {sortedList.map((row) => {
               const actions = rowActions?.(row) ?? [];
               const expanded = isExpanded?.(row) ?? false;
               return (

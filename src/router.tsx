@@ -37,6 +37,7 @@ import {
   Outlet,
   useNavigate,
   useParams,
+  useSearch,
   useLocation,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
@@ -745,10 +746,17 @@ function SettingsParamlessScreen() {
   }
 }
 
-// Chat route screen: reads the chatId path param and feeds the chat surface.
+// Chat route screen: reads the chatId path param + optional `?m` message anchor
+// and feeds the chat surface.
 function ChatScreen() {
   const { chatId } = useParams({ from: "/chat/$chatId" });
-  return <ConvexChat chatId={chatId as ConvexId<"chats">} />;
+  const { m: focusMessageId } = useSearch({ from: "/chat/$chatId" });
+  return (
+    <ConvexChat
+      chatId={chatId as ConvexId<"chats">}
+      focusMessageId={focusMessageId ?? null}
+    />
+  );
 }
 
 // Chat home: no chat selected (the empty pane).
@@ -772,6 +780,11 @@ const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "chat/$chatId",
   component: ChatScreen,
+  // `?m=<messageId>` deep-links to a specific message (e.g. from a feedback
+  // report's "Voir la conversation") — the thread scrolls to + highlights it.
+  validateSearch: (search: Record<string, unknown>): { m?: string } => ({
+    m: typeof search.m === "string" ? search.m : undefined,
+  }),
 });
 
 const settingsRoute = createRoute({

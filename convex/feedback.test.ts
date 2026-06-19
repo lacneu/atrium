@@ -495,4 +495,92 @@ describe("feedback admin view (increment B)", () => {
     await owner.as.mutation(api.feedback.markAllMyFeedbackRead, {});
     expect(await owner.as.query(api.feedback.myUnreadFeedbackCount, {})).toBe(0);
   });
+
+  test("closeMyFeedback: owner withdraws with a reason → leaves their list, row KEPT for admin, audited", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, admin, feedbackId } = await seedReported(t);
+    expect((await owner.as.query(api.feedback.myFeedback, {})).length).toBe(1);
+
+    await owner.as.mutation(api.feedback.closeMyFeedback, {
+      feedbackId,
+      reason: "  fausse alerte  ",
+    });
+
+    // Gone from the user's OWN list + badge...
+    expect((await owner.as.query(api.feedback.myFeedback, {})).length).toBe(0);
+    expect(await owner.as.query(api.feedback.myUnreadFeedbackCount, {})).toBe(0);
+    // ...but KEPT for the admin, with the TRIMMED reason surfaced.
+    const adminRows = await admin.as.query(api.feedback.listForAdmin, {});
+    expect(adminRows[0].userClosedAt).toBeGreaterThan(0);
+    expect(adminRows[0].userCloseReason).toBe("fausse alerte");
+    // Audited under the owner's identity.
+    const audit = await t.run(async (ctx) =>
+      ctx.db
+        .query("auditLog")
+        .filter((q) => q.eq(q.field("action"), "feedback.close"))
+        .collect(),
+    );
+    expect(audit.length).toBe(1);
+    expect(audit[0].effectiveUserId).toBe(owner.userId);
+  });
+
+  test("closeMyFeedback: a withdrawn report does NOT resurface on a later admin reply, and its reply notif is cleared", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, admin, feedbackId } = await seedReported(t);
+    await admin.as.mutation(api.feedback.respondToFeedback, {
+      feedbackId,
+      text: "réponse",
+    });
+    const hasReplyNotif = async () =>
+      (await owner.as.query(api.notifications.myNotifications, {})).some(
+        (n) => n.kind === "feedback_reply",
+      );
+    expect(await hasReplyNotif()).toBe(true);
+
+    await owner.as.mutation(api.feedback.closeMyFeedback, { feedbackId });
+    // The report's reply notification is removed from the bell's top feed.
+    expect(await hasReplyNotif()).toBe(false);
+
+    // A NEW admin reply afterwards does NOT bring the withdrawn report back.
+    await admin.as.mutation(api.feedback.respondToFeedback, {
+      feedbackId,
+      text: "suite",
+    });
+    expect((await owner.as.query(api.feedback.myFeedback, {})).length).toBe(0);
+    expect(await owner.as.query(api.feedback.myUnreadFeedbackCount, {})).toBe(0);
+  });
+
+  test("closeMyFeedback: owner-only, idempotent, NO-OP under impersonation", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, admin, feedbackId } = await seedReported(t);
+    const intruder = await seedUser(t);
+
+    // Another user cannot close someone else's report.
+    await expect(
+      intruder.as.mutation(api.feedback.closeMyFeedback, { feedbackId }),
+    ).rejects.toThrow(/forbidden/i);
+    expect((await t.run((ctx) => ctx.db.get(feedbackId)))?.userClosedAt).toBeUndefined();
+
+    // Admin peeking AS the owner must NOT withdraw it (impersonation no-op).
+    await impersonate(t, admin.userId, owner.userId);
+    await admin.as.mutation(api.feedback.closeMyFeedback, { feedbackId });
+    await impersonate(t, admin.userId, undefined);
+    expect((await t.run((ctx) => ctx.db.get(feedbackId)))?.userClosedAt).toBeUndefined();
+
+    // The real owner closes WITHOUT a reason → reason stays undefined.
+    await owner.as.mutation(api.feedback.closeMyFeedback, { feedbackId });
+    const r1 = await t.run((ctx) => ctx.db.get(feedbackId));
+    expect(r1?.userClosedAt).toBeGreaterThan(0);
+    expect(r1?.userCloseReason).toBeUndefined();
+
+    // Idempotent: a second close does not overwrite the timestamp or the reason.
+    const firstClosedAt = r1!.userClosedAt;
+    await owner.as.mutation(api.feedback.closeMyFeedback, {
+      feedbackId,
+      reason: "trop tard",
+    });
+    const r2 = await t.run((ctx) => ctx.db.get(feedbackId));
+    expect(r2?.userClosedAt).toBe(firstClosedAt);
+    expect(r2?.userCloseReason).toBeUndefined();
+  });
 });

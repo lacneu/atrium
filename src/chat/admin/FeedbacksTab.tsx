@@ -30,6 +30,8 @@ type Row = {
   realOperatorEmail: string | null;
   chatId: string;
   messageId: string;
+  userClosedAt: number | null;
+  userCloseReason: string | null;
 };
 
 type ThreadMsg = { authorRole: "admin" | "user"; text: string; at: number };
@@ -98,7 +100,13 @@ function FidelityBadge({
   return <span className="oc-fbadmin__pill">—</span>;
 }
 
-function Detail({ data }: { data: Snapshot }) {
+function Detail({
+  data,
+  closeReason,
+}: {
+  data: Snapshot;
+  closeReason?: string | null;
+}) {
   const s = data.snapshot;
   const respond = useMutation(api.feedback.respondToFeedback);
   // Local thread (optimistic): the admin just authored the reply, so append it
@@ -145,6 +153,14 @@ function Detail({ data }: { data: Snapshot }) {
         <section>
           <h4 className="oc-fbadmin__h">{m.feedbacks_reporter_comment()}</h4>
           <p className="oc-fbadmin__comment">{data.comment}</p>
+        </section>
+      ) : null}
+
+      {/* The user withdrew this report — surface why (their words). */}
+      {closeReason ? (
+        <section>
+          <h4 className="oc-fbadmin__h">{m.feedbacks_close_reason()}</h4>
+          <p className="oc-fbadmin__comment">{closeReason}</p>
         </section>
       ) : null}
 
@@ -336,12 +352,26 @@ export function FeedbacksTab() {
         emptyHint={m.feedbacks_empty_hint()}
         isExpanded={(r) => openId === r._id && !!byId[r._id]}
         renderExpanded={(r) =>
-          byId[r._id] ? <Detail data={byId[r._id]} /> : null
+          byId[r._id] ? (
+            <Detail data={byId[r._id]} closeReason={r.userCloseReason} />
+          ) : null
         }
         columns={[
-          { header: m.feedbacks_col_when(), cell: (r) => new Date(r.at).toLocaleString("fr-FR") },
-          { header: m.feedbacks_col_category(), cell: (r) => cat(r.category) },
-          { header: m.feedbacks_col_type(), cell: (r) => (r.messageRole === "user" ? m.feedbacks_type_user() : m.feedbacks_type_ai()) },
+          {
+            header: m.feedbacks_col_when(),
+            cell: (r) => new Date(r.at).toLocaleString("fr-FR"),
+            sort: (r) => r.at, // sort by the timestamp, not the formatted string
+          },
+          {
+            header: m.feedbacks_col_category(),
+            cell: (r) => cat(r.category),
+            sort: (r) => cat(r.category),
+          },
+          {
+            header: m.feedbacks_col_type(),
+            cell: (r) => (r.messageRole === "user" ? m.feedbacks_type_user() : m.feedbacks_type_ai()),
+            sort: (r) => r.messageRole,
+          },
           {
             header: m.feedbacks_col_reporter(),
             cell: (r) =>
@@ -349,6 +379,7 @@ export function FeedbacksTab() {
               (r.impersonated && r.realOperatorEmail
                 ? ` ${m.feedbacks_via({ operator: r.realOperatorEmail })}`
                 : ""),
+            sort: (r) => r.reporterEmail || r.reporterName || null,
           },
           {
             header: m.feedbacks_col_fidelity(),
@@ -358,16 +389,33 @@ export function FeedbacksTab() {
                 sourceWasOpen={r.sourceWasOpen}
               />
             ),
+            // rank: mismatch (0) < faithful (1) < not-applicable (2)
+            sort: (r) =>
+              r.displayedMatchesStored === false
+                ? 0
+                : r.displayedMatchesStored === true
+                  ? 1
+                  : 2,
           },
-          { header: m.feedbacks_col_note(), cell: (r) => (r.hasComment ? "✎" : "—") },
+          {
+            header: m.feedbacks_col_note(),
+            cell: (r) => (r.hasComment ? "✎" : "—"),
+            sort: (r) => (r.hasComment ? 1 : 0),
+          },
           {
             header: m.feedbacks_col_status(),
             cell: (r) =>
-              r.answered ? (
+              r.userClosedAt != null ? (
+                <span className="oc-fbadmin__pill is-closed">
+                  {m.feedbacks_status_closed_by_user()}
+                </span>
+              ) : r.answered ? (
                 <span className="oc-fbadmin__pill is-ok">{m.feedbacks_status_answered()}</span>
               ) : (
                 <span className="oc-fbadmin__pill">{m.feedbacks_status_pending()}</span>
               ),
+            // rank: pending (0) < answered (1) < closed-by-user (2)
+            sort: (r) => (r.userClosedAt != null ? 2 : r.answered ? 1 : 0),
           },
         ]}
         rowActions={(r) => [

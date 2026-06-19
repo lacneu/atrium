@@ -357,6 +357,7 @@ export function TracesTab() {
         columns={[
           {
             header: m.traces_col_when(),
+            sort: (r) => r.at,
             cell: (r) => (
               <span className="oc-traces__time">
                 {new Date(r.at).toLocaleString("fr-FR")}
@@ -365,6 +366,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_kind(),
+            sort: (r) => r.kind,
             cell: (r) => <Badge variant="secondary">{r.kind}</Badge>,
           },
           {
@@ -372,6 +374,7 @@ export function TracesTab() {
             // error/aborted, ingest denied, HTTP >=400) jump out across kinds,
             // with the curated cause code so the eye lands on what's wrong.
             header: m.traces_col_result(),
+            sort: (r) => traceFailureCode(r) ?? null,
             cell: (r) => {
               const fail = traceFailureCode(r);
               return fail ? (
@@ -387,6 +390,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_direction(),
+            sort: (r) => r.direction,
             cell: (r) =>
               r.direction ? (
                 <Badge variant="outline">{r.direction}</Badge>
@@ -396,6 +400,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_principal(),
+            sort: (r) => r.principalType,
             cell: (r) => (
               <span className="oc-traces__principal">
                 <Badge variant="outline">{r.principalType}</Badge>
@@ -409,6 +414,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_role(),
+            sort: (r) => r.roleKey,
             cell: (r) =>
               r.roleKey ? (
                 <Badge variant="secondary">{r.roleKey}</Badge>
@@ -418,6 +424,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_route(),
+            sort: (r) => r.route,
             cell: (r) =>
               r.route ? (
                 <span className="oc-traces__route">
@@ -432,6 +439,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_status(),
+            sort: (r) => r.status,
             cell: (r) =>
               r.status === null ? (
                 <span className="oc-traces__muted">—</span>
@@ -445,6 +453,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_latency(),
+            sort: (r) => r.latencyMs,
             cell: (r) =>
               r.latencyMs === null ? (
                 <span className="oc-traces__muted">—</span>
@@ -454,6 +463,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_correlation(),
+            sort: (r) => r.correlationId,
             cell: (r) =>
               r.correlationId ? (
                 <button
@@ -470,6 +480,7 @@ export function TracesTab() {
           },
           {
             header: m.traces_col_meta(),
+            sort: (r) => (r.meta ? 1 : 0),
             cell: (r) =>
               r.meta ? (
                 <Button

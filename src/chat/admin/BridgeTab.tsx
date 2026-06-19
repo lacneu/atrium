@@ -11,6 +11,7 @@ import {
   ChevronRight,
   HelpCircle,
   Loader2,
+  MoreVertical,
   Server,
 } from "lucide-react";
 import { api } from "../convexApi";
@@ -34,6 +35,19 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -47,22 +61,23 @@ import {
   type InboundMediaMode,
   type MediaMode,
 } from "../../../convex/lib/instanceConfig";
-import { buildConfigOverride, type ConfigForm } from "./bridgeConfigForm";
+import {
+  buildConfigOverride,
+  formFromConfig,
+  type ConfigForm,
+} from "./bridgeConfigForm";
 import { m } from "@/paraglide/messages.js";
 import {
+  badgeStateFromVersion,
   hasProvider,
   providerSupport,
   targetBadgeLabel,
-  targetBadgeState,
+  type TargetBadgeState,
   versionLabel,
 } from "./compatView";
-import {
-  bridgeErrorTargets,
-  isBridgeHealthy,
-  showsBridgeErrorDetail,
-  showsDownstreamReject,
-} from "./bridgeHealthView";
+import { bridgeErrorTargets, isBridgeHealthy } from "./bridgeHealthView";
 import { groupBridgeByProvider, providerLabel } from "./bridgeProviderView";
+import { ConnectionsTable } from "./ConnectionsTable";
 
 // "Bridge" settings tab. Organized BY PROVIDER (CHAT_UX_DESIGN layer-cake +
 // Gestalt common-region): one GLOBAL status card for the bridge process itself
@@ -77,7 +92,9 @@ function useBridgeHealth() {
   return useQuery(api.bridgeHealth.getBridgeHealth, {});
 }
 type Compat = NonNullable<FunctionReturnType<typeof api.compat.getBridgeCompat>>;
-type Instance = NonNullable<
+// Exported so the Instances tab can pass its own listInstances row to the shared
+// InstanceConfigDialog (same query → identical type).
+export type Instance = NonNullable<
   FunctionReturnType<typeof api.admin.listInstances>
 >[number];
 
@@ -127,12 +144,10 @@ export function BridgeTab() {
           key={b.key}
           providerKey={b.key}
           connections={b.connections}
-          compatTargets={b.compatTargets}
           instances={b.instances}
           manifest={manifest}
           compatStatus={compatStatus}
           compatReachable={compat?.reachable ?? true}
-          isAdmin={isAdmin}
         />
       ))}
       {hermesAnnounced ? (
@@ -235,31 +250,69 @@ function BridgeStatusCard({
 function ProviderCard({
   providerKey,
   connections,
-  compatTargets,
   instances,
   manifest,
   compatStatus,
   compatReachable,
-  isAdmin,
 }: {
   providerKey: string;
   connections: Health["targets"];
-  compatTargets: Compat["targets"];
   instances: Instance[];
   manifest: Compat["compat"] | null;
   compatStatus: "loading" | "nodata" | "ready";
   compatReachable: boolean;
-  isAdmin: boolean;
 }) {
   const support = manifest ? providerSupport(manifest, providerKey) : null;
-  // Aggregate header verdict: red if any target is beyond support, "supported"
+  // Per-instance compatibility from the PER-INSTANCE health targets (each carries
+  // its own gateway version), deduped by instance — NOT the singleton compat poller
+  // (which only knew the env-BRIDGE_URL instance, so a 2nd instance was missing).
+  // Display name from the instances rows (admin-only) → falls back to the raw
+  // instance name for non-admins.
+  const displayByInstance = new Map<string, string>();
+  for (const i of instances) displayByInstance.set(i.name, i.displayName ?? i.name);
+  const instanceRows: {
+    instanceName: string;
+    displayName: string;
+    version: string | null;
+    state: TargetBadgeState;
+  }[] = [];
+  const seenInstance = new Set<string>();
+  for (const t of connections) {
+    if (!t.instanceName || seenInstance.has(t.instanceName)) continue;
+    seenInstance.add(t.instanceName);
+    const version = t.gatewayVersion ?? null;
+    instanceRows.push({
+      instanceName: t.instanceName,
+      displayName: displayByInstance.get(t.instanceName) ?? t.instanceName,
+      version,
+      state: badgeStateFromVersion(version, providerKey, manifest),
+    });
+  }
+  // Aggregate header verdict: red if any instance is beyond support, "supported"
   // when all are, else nothing (legacy / unknown → no badge).
-  const states = compatTargets.map((t) => targetBadgeState(t, manifest));
+  const states = instanceRows.map((r) => r.state);
   const verdict = states.includes("beyond")
     ? "beyond"
     : states.length > 0 && states.every((s) => s === "supported")
       ? "supported"
       : null;
+
+  // Connexions are a diagnostic detail → collapsed by default (the card is read
+  // mostly to CHECK compatibility, drilled into connections occasionally).
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  // The per-instance config now opens in a MODAL from each compatibility row's
+  // kebab — keyed by instance NAME (the stable join key across health/instances).
+  const [configInstanceName, setConfigInstanceName] = useState<string | null>(
+    null,
+  );
+  const configInstance =
+    configInstanceName !== null
+      ? (instances.find((i) => i.name === configInstanceName) ?? null)
+      : null;
+  // Only instances that actually have an admin row are configurable — so a compat
+  // row for an instance with no matching row never shows a dead kebab. Empty for
+  // non-admins (their instances query is skipped), which also hides every kebab.
+  const configurableNames = new Set(instances.map((i) => i.name));
 
   return (
     <section className="oc-bridge-provider">
@@ -273,92 +326,55 @@ function ProviderCard({
         ) : null}
       </header>
 
-      {/* Connexions */}
-      <h4 className="oc-bridge-provider__sub">
-        {m.bridge_connections_section({ count: connections.length })}
-      </h4>
-      {connections.length === 0 ? (
-        <p className="oc-admin__hint">{m.bridge_no_connection_tested()}</p>
-      ) : (
-        <div className="oc-bridge-targets">
-          {connections.map((t) => (
-            <ConnectionRow key={t.key} t={t} />
-          ))}
-        </div>
-      )}
-
-      {/* Compatibility */}
+      {/* Compatibility — the support window first, so a connection's version below
+          reads against the known-good range. Each instance row carries a kebab
+          (admin-only) opening that instance's config in a modal. */}
       <h4 className="oc-bridge-provider__sub">{m.compat_section()}</h4>
       <ProviderCompat
         support={support}
         compatStatus={compatStatus}
         compatReachable={compatReachable}
         manifest={manifest}
-        compatTargets={compatTargets}
+        instanceRows={instanceRows}
+        canConfigure={(name) => configurableNames.has(name)}
+        onConfigure={setConfigInstanceName}
       />
 
-      {/* Configuration (admin-only, collapsed by default) */}
-      {isAdmin && instances.length > 0 ? (
-        <CollapsibleConfig instances={instances} />
+      {/* Connexions — collapsed by default, rendered as a list of rows. */}
+      <button
+        type="button"
+        className="oc-bridge-provider__sub oc-bridge-provider__sub--toggle"
+        aria-expanded={connectionsOpen}
+        onClick={() => setConnectionsOpen((o) => !o)}
+      >
+        {connectionsOpen ? (
+          <ChevronDown size={13} aria-hidden />
+        ) : (
+          <ChevronRight size={13} aria-hidden />
+        )}
+        {m.bridge_connections_section({ count: connections.length })}
+      </button>
+      {connectionsOpen ? (
+        <ConnectionsTable
+          connections={connections}
+          displayByInstance={displayByInstance}
+        />
+      ) : null}
+
+      {/* Per-instance config modal (admin-only) — opened from a compat row kebab. */}
+      {configInstance ? (
+        <InstanceConfigDialog
+          key={configInstance._id}
+          instance={configInstance}
+          onClose={() => setConfigInstanceName(null)}
+        />
       ) : null}
     </section>
   );
 }
 
-// One connection row (a canonical/agent target of the bridge → its gateway).
-function ConnectionRow({ t }: { t: Health["targets"][number] }) {
-  // The red error block is for a CURRENT bridge-domain failure only (see
-  // bridgeHealthView): a recovered/connected target keeps lastError as history
-  // but must NOT look red once the bridge reaches its gateway.
-  const info = showsBridgeErrorDetail(t) ? dispatchErrorInfo(t.lastErrorCode) : null;
-  // A downstream rejection (the gateway refused the request) is NOT a bridge
-  // fault — shown as a neutral note, attributed to the gateway.
-  const downstream = showsDownstreamReject(t)
-    ? dispatchErrorInfo(t.lastDownstreamRejectCode)
-    : null;
-  return (
-    <div className={`oc-bridge-target oc-bridge-target--${t.state}`}>
-      <div className="oc-bridge-target__head">
-        <code className="oc-traces__mono">
-          {t.canonical}/{t.agentId}
-        </code>
-        <TargetStateBadge state={t.state} />
-        <span className="oc-bridge-target__host">{t.gatewayHost}</span>
-      </div>
-      <div className="oc-bridge-target__stats">
-        {m.bridge_target_stats({
-          ok: t.okCount,
-          errors: t.errorCount,
-          attempts: t.attempts,
-        })}
-        {t.lastOkAt
-          ? m.bridge_target_last_ok({
-              time: new Date(t.lastOkAt).toLocaleTimeString("fr-FR"),
-            })
-          : ""}
-      </div>
-      {info ? (
-        <div className="oc-bridge-target__error">
-          <strong>{info.label}</strong>{" "}
-          <code className="oc-traces__mono">{t.lastErrorCode}</code>
-          {t.lastErrorAt
-            ? ` · ${new Date(t.lastErrorAt).toLocaleTimeString("fr-FR")}`
-            : ""}
-          <p className="oc-bridge-card__hint">{info.hint}</p>
-        </div>
-      ) : null}
-      {downstream ? (
-        <div className="oc-bridge-target__downstream">
-          {m.bridge_target_downstream_reject({ label: downstream.label })}{" "}
-          <code className="oc-traces__mono">{t.lastDownstreamRejectCode}</code>
-          {t.lastDownstreamRejectAt
-            ? ` · ${new Date(t.lastDownstreamRejectAt).toLocaleTimeString("fr-FR")}`
-            : ""}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+// The connection list (sortable/filterable table + error sub-rows) lives in
+// ./ConnectionsTable.
 
 // One provider's compatibility: its support window + validated versions + the
 // per-target verdict rows. The GLOBAL bridge/protocol version lives in the status
@@ -368,13 +384,22 @@ function ProviderCompat({
   compatStatus,
   compatReachable,
   manifest,
-  compatTargets,
+  instanceRows,
+  canConfigure,
+  onConfigure,
 }: {
   support: ReturnType<typeof providerSupport> | null;
   compatStatus: "loading" | "nodata" | "ready";
   compatReachable: boolean;
   manifest: Compat["compat"] | null;
-  compatTargets: Compat["targets"];
+  instanceRows: {
+    instanceName: string;
+    displayName: string;
+    version: string | null;
+    state: TargetBadgeState;
+  }[];
+  canConfigure: (instanceName: string) => boolean;
+  onConfigure: (instanceName: string) => void;
 }) {
   // Loading / no-data come BEFORE the manifest check, so a still-loading compat
   // never flashes the "legacy bridge" message.
@@ -407,61 +432,87 @@ function ProviderCompat({
           ) : null}
         </div>
       )}
-      {compatTargets.length === 0 ? (
+      {instanceRows.length === 0 ? (
         <p className="oc-admin__hint">{m.compat_no_targets()}</p>
       ) : (
         <div className="oc-compat__targets">
-          {compatTargets.map((t) => {
-            const state = targetBadgeState(t, manifest);
-            return (
-              <div key={t.instanceName} className="oc-compat__target">
-                <code className="oc-traces__mono">{t.instanceName}</code>
-                <span className="oc-compat__provider">{t.provider}</span>
-                <code className="oc-traces__mono">
-                  {versionLabel(t.gatewayVersion)}
-                </code>
-                <Badge
-                  variant={
-                    state === "supported"
-                      ? "secondary"
-                      : state === "beyond"
-                        ? "destructive"
-                        : "outline"
-                  }
-                >
-                  {targetBadgeLabel(state)}
-                </Badge>
-              </div>
-            );
-          })}
+          {instanceRows.map((r) => (
+            // One row PER INSTANCE (display name, not the raw name). The provider is
+            // NOT repeated — the whole card is already this provider. A trailing kebab
+            // (admin-only) opens that instance's config in a modal.
+            <div key={r.instanceName} className="oc-compat__target">
+              <span className="oc-compat__instance">{r.displayName}</span>
+              <code className="oc-traces__mono">{versionLabel(r.version)}</code>
+              <Badge
+                variant={
+                  r.state === "supported"
+                    ? "secondary"
+                    : r.state === "beyond"
+                      ? "destructive"
+                      : "outline"
+                }
+              >
+                {targetBadgeLabel(r.state)}
+              </Badge>
+              {canConfigure(r.instanceName) ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="oc-compat__target-menu"
+                      aria-label={m.bridge_config_configure()}
+                    >
+                      <MoreVertical size={16} aria-hidden />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => onConfigure(r.instanceName)}>
+                      {m.bridge_config_configure()}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-// Collapsible wrapper around the per-instance config editor: the densest block,
-// admin-only, collapsed by default (Hick / progressive disclosure — the tab is
-// read mostly to CHECK health, configured occasionally).
-function CollapsibleConfig({ instances }: { instances: Instance[] }) {
-  const [open, setOpen] = useState(false);
+// Modal wrapper around the per-instance config editor (admin-only). Opened from a
+// compatibility row's kebab; scoped to ONE instance and keyed by its id at the call
+// site, so the editor mounts fresh per instance (no stale form to clear).
+// Exported so the Instances tab can open the SAME per-instance bridge config
+// modal from its own row action (one config UI, reached from two places).
+export function InstanceConfigDialog({
+  instance,
+  onClose,
+}: {
+  instance: Instance;
+  onClose: () => void;
+}) {
   return (
-    <div className={`oc-bridge-provider__config${open ? " is-open" : ""}`}>
-      <button
-        type="button"
-        className="oc-bridge-provider__config-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="oc-bridge-config-dialog"
+        // Don't auto-focus the first field's "?" help button on open — it would pop
+        // its tooltip over the title. Focus the dialog container instead (a11y-safe:
+        // the dialog is still trapped + labelled by its title).
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        {open ? (
-          <ChevronDown size={14} aria-hidden />
-        ) : (
-          <ChevronRight size={14} aria-hidden />
-        )}
-        {m.bridge_config_title()}
-      </button>
-      {open ? <InstanceConfigEditor instances={instances} /> : null}
-    </div>
+        <DialogHeader>
+          <DialogTitle>
+            {m.bridge_config_dialog_title({
+              instance: instance.displayName ?? instance.name,
+            })}
+          </DialogTitle>
+          <DialogDescription>{m.bridge_config_hint()}</DialogDescription>
+        </DialogHeader>
+        <InstanceConfigEditor instance={instance} onClose={onClose} />
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -533,15 +584,25 @@ function CheckRow({
 }
 
 // Per-instance NON-secret bridge config editor (Model M). Scoped to ONE
-// provider's instances (passed in). ADMIN-ONLY (parent gates + the mutation
-// re-enforces it server-side). Edits are hot-consumed by that instance's bridge
-// on its next dispatch — no restart. Secrets are NEVER here (env-only).
-function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
+// instance (the one whose compat-row kebab opened this), rendered inside a modal.
+// ADMIN-ONLY (parent gates + the mutation re-enforces it server-side). Edits are
+// hot-consumed by that instance's bridge on its next dispatch — no restart.
+// Secrets are NEVER here (env-only).
+function InstanceConfigEditor({
+  instance,
+  onClose,
+}: {
+  instance: Instance;
+  onClose: () => void;
+}) {
   const save = useMutation(api.admin.upsertInstanceConfig);
   const validate = useAction(api.bridge.validateMediaPaths);
   const toast = useToast();
-  const [instanceId, setInstanceId] = useState<string | null>(null);
-  const [form, setForm] = useState<ConfigForm>({ ...DEFAULT_INSTANCE_CONFIG });
+  // Form seeded from THIS instance's stored config. The dialog is keyed by
+  // instance id, so a fresh editor mounts per instance (no stale state to clear).
+  const [form, setForm] = useState<ConfigForm>(() =>
+    formFromConfig((instance.config ?? {}) as Partial<ConfigForm>),
+  );
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [check, setCheck] = useState<
@@ -553,9 +614,6 @@ function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
   const showsPaths = sharedFsInbound || sharedFsOutbound;
 
   async function runCheck() {
-    if (!instanceId) return;
-    const inst = instances.find((i) => i._id === instanceId);
-    if (!inst) return;
     setChecking(true);
     setCheck(null);
     try {
@@ -564,7 +622,7 @@ function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
       // committing — never persisting a config that turns out non-functional.
       setCheck(
         await validate({
-          instanceName: inst.name,
+          instanceName: instance.name,
           inboundMediaMode: form.inboundMediaMode,
           mediaMode: form.mediaMode,
         }),
@@ -576,37 +634,18 @@ function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
     }
   }
 
-  function selectInstance(id: string) {
-    setInstanceId(id);
-    const inst = instances.find((i) => i._id === id);
-    const c = inst?.config ?? {};
-    setForm({
-      mediaMode: c.mediaMode ?? DEFAULT_INSTANCE_CONFIG.mediaMode,
-      inboundMediaMode:
-        c.inboundMediaMode ?? DEFAULT_INSTANCE_CONFIG.inboundMediaMode,
-      rehydration: c.rehydration ?? DEFAULT_INSTANCE_CONFIG.rehydration,
-      mediaMaxMb: c.mediaMaxMb ?? DEFAULT_INSTANCE_CONFIG.mediaMaxMb,
-      inboundAgentMount:
-        c.inboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.inboundAgentMount,
-      outboundAgentMount:
-        c.outboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
-    });
-    setCheck(null);
-  }
-
   async function submit() {
-    if (!instanceId) return;
     setSaving(true);
     try {
       // Persist ONLY explicit overrides — never the defaults-filled form (which
       // would shadow the bridge's own env on every dispatch).
-      const stored = (instances.find((i) => i._id === instanceId)?.config ??
-        {}) as Partial<ConfigForm>;
+      const stored = (instance.config ?? {}) as Partial<ConfigForm>;
       await save({
-        instanceId: instanceId as Id<"instances">,
+        instanceId: instance._id as Id<"instances">,
         config: buildConfigOverride(form, stored),
       });
       // Silent-on-success (app convention); only a FAILURE surfaces a toast.
+      onClose();
     } catch (err) {
       toast.error(m.bridge_config_save_failed(), err);
     } finally {
@@ -616,205 +655,181 @@ function InstanceConfigEditor({ instances }: { instances: Instance[] }) {
 
   return (
     <div className="oc-bridge-config">
-      <p className="oc-admin__hint">{m.bridge_config_hint()}</p>
       <div className="oc-bridge-config__form">
-        <label className="oc-field">
-          <FieldLabel
-            label={m.bridge_config_instance()}
-            help={m.bridge_config_instance_help()}
-          />
-          <Select value={instanceId ?? ""} onValueChange={selectInstance}>
-            <SelectTrigger size="sm" className="w-full sm:w-72">
-              <SelectValue placeholder={m.bridge_config_pick_instance()} />
-            </SelectTrigger>
-            <SelectContent>
-              {instances.map((i) => (
-                <SelectItem key={i._id} value={i._id}>
-                  {i.displayName ?? i.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
+        <div className="oc-bridge-config__grid">
+          <label className="oc-field">
+            <FieldLabel
+              label={m.bridge_config_media_mode()}
+              help={m.bridge_config_media_mode_help()}
+            />
+            <Select
+              value={form.mediaMode}
+              onValueChange={(v) =>
+                setForm({ ...form, mediaMode: v as MediaMode })
+              }
+            >
+              <SelectTrigger size="sm" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MEDIA_MODES.map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {mode}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
 
-        {instanceId !== null && (
-          <>
-            <div className="oc-bridge-config__grid">
+          <label className="oc-field">
+            <FieldLabel
+              label={m.bridge_config_inbound_mode()}
+              help={m.bridge_config_inbound_mode_help()}
+            />
+            <Select
+              value={form.inboundMediaMode}
+              onValueChange={(v) =>
+                setForm({
+                  ...form,
+                  inboundMediaMode: v as InboundMediaMode,
+                })
+              }
+            >
+              <SelectTrigger size="sm" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {INBOUND_MEDIA_MODES.map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {mode}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+
+          <label className="oc-field">
+            <FieldLabel
+              label={m.bridge_config_media_max_mb()}
+              help={m.bridge_config_media_max_mb_help()}
+            />
+            <Input
+              type="number"
+              min={1}
+              max={4096}
+              className="w-full"
+              value={form.mediaMaxMb}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  mediaMaxMb: Math.trunc(Number(e.target.value) || 0),
+                })
+              }
+            />
+          </label>
+        </div>
+
+        {/* Shared-fs media PATHS — shown only for the leg(s) in shared-fs. */}
+        {showsPaths && (
+          <div className="oc-bridge-config__grid">
+            {sharedFsInbound && (
               <label className="oc-field">
                 <FieldLabel
-                  label={m.bridge_config_media_mode()}
-                  help={m.bridge_config_media_mode_help()}
-                />
-                <Select
-                  value={form.mediaMode}
-                  onValueChange={(v) =>
-                    setForm({ ...form, mediaMode: v as MediaMode })
-                  }
-                >
-                  <SelectTrigger size="sm" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {MEDIA_MODES.map((mode) => (
-                      <SelectItem key={mode} value={mode}>
-                        {mode}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-
-              <label className="oc-field">
-                <FieldLabel
-                  label={m.bridge_config_inbound_mode()}
-                  help={m.bridge_config_inbound_mode_help()}
-                />
-                <Select
-                  value={form.inboundMediaMode}
-                  onValueChange={(v) =>
-                    setForm({
-                      ...form,
-                      inboundMediaMode: v as InboundMediaMode,
-                    })
-                  }
-                >
-                  <SelectTrigger size="sm" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {INBOUND_MEDIA_MODES.map((mode) => (
-                      <SelectItem key={mode} value={mode}>
-                        {mode}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-
-              <label className="oc-field">
-                <FieldLabel
-                  label={m.bridge_config_media_max_mb()}
-                  help={m.bridge_config_media_max_mb_help()}
+                  label={m.bridge_config_inbound_path()}
+                  help={m.bridge_config_inbound_path_help()}
                 />
                 <Input
-                  type="number"
-                  min={1}
-                  max={4096}
                   className="w-full"
-                  value={form.mediaMaxMb}
+                  spellCheck={false}
+                  value={form.inboundAgentMount}
                   onChange={(e) =>
-                    setForm({
-                      ...form,
-                      mediaMaxMb: Math.trunc(Number(e.target.value) || 0),
-                    })
+                    setForm({ ...form, inboundAgentMount: e.target.value })
                   }
                 />
               </label>
-            </div>
-
-            {/* Shared-fs media PATHS — shown only for the leg(s) in shared-fs. */}
-            {showsPaths && (
-              <div className="oc-bridge-config__grid">
-                {sharedFsInbound && (
-                  <label className="oc-field">
-                    <FieldLabel
-                      label={m.bridge_config_inbound_path()}
-                      help={m.bridge_config_inbound_path_help()}
-                    />
-                    <Input
-                      className="w-full"
-                      spellCheck={false}
-                      value={form.inboundAgentMount}
-                      onChange={(e) =>
-                        setForm({ ...form, inboundAgentMount: e.target.value })
-                      }
-                    />
-                  </label>
-                )}
-                {sharedFsOutbound && (
-                  <label className="oc-field">
-                    <FieldLabel
-                      label={m.bridge_config_outbound_path()}
-                      help={m.bridge_config_outbound_path_help()}
-                    />
-                    <Input
-                      className="w-full"
-                      spellCheck={false}
-                      value={form.outboundAgentMount}
-                      onChange={(e) =>
-                        setForm({ ...form, outboundAgentMount: e.target.value })
-                      }
-                    />
-                  </label>
-                )}
-              </div>
             )}
-
-            <label className="oc-field--row">
-              <Checkbox
-                checked={form.rehydration}
-                onCheckedChange={(v) =>
-                  setForm({ ...form, rehydration: v === true })
-                }
-              />
-              <FieldLabel
-                label={m.bridge_config_rehydration()}
-                help={m.bridge_config_rehydration_help()}
-              />
-            </label>
-
-            {/* Shared-fs path check result (bridge-side access). */}
-            {showsPaths && check !== null && (
-              <div className="oc-bridge-config__check">
-                {!check.reachable ? (
-                  <p className="oc-bridge-config__check-row oc-bridge-config__check-row--err">
-                    <AlertTriangle aria-hidden />
-                    {m.bridge_config_check_unreachable()}
-                  </p>
-                ) : !check.inbound && !check.outbound ? (
-                  // Reachable but the bridge returned a non-2xx (old bridge w/o the
-                  // route, 500, bad secret…): surface the reason instead of rendering
-                  // empty check rows (both CheckRows null) that look like nothing ran.
-                  <p className="oc-bridge-config__check-row oc-bridge-config__check-row--err">
-                    <AlertTriangle aria-hidden />
-                    {m.bridge_config_check_errored({ reason: check.reason ?? "?" })}
-                  </p>
-                ) : (
-                  <>
-                    <CheckRow
-                      label={m.bridge_config_check_inbound()}
-                      result={check.inbound}
-                    />
-                    <CheckRow
-                      label={m.bridge_config_check_outbound()}
-                      result={check.outbound}
-                    />
-                    <p className="oc-admin__hint">{m.bridge_config_check_note()}</p>
-                  </>
-                )}
-              </div>
+            {sharedFsOutbound && (
+              <label className="oc-field">
+                <FieldLabel
+                  label={m.bridge_config_outbound_path()}
+                  help={m.bridge_config_outbound_path_help()}
+                />
+                <Input
+                  className="w-full"
+                  spellCheck={false}
+                  value={form.outboundAgentMount}
+                  onChange={(e) =>
+                    setForm({ ...form, outboundAgentMount: e.target.value })
+                  }
+                />
+              </label>
             )}
-
-            <div className="oc-bridge-config__actions">
-              {showsPaths && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void runCheck()}
-                  disabled={checking}
-                >
-                  {checking ? (
-                    <Loader2 className="size-4 animate-spin" aria-hidden />
-                  ) : null}
-                  {checking ? m.bridge_config_checking() : m.bridge_config_check()}
-                </Button>
-              )}
-              <Button size="sm" onClick={() => void submit()} disabled={saving}>
-                {m.bridge_config_save()}
-              </Button>
-            </div>
-          </>
+          </div>
         )}
+
+        <label className="oc-field--row">
+          <Checkbox
+            checked={form.rehydration}
+            onCheckedChange={(v) =>
+              setForm({ ...form, rehydration: v === true })
+            }
+          />
+          <FieldLabel
+            label={m.bridge_config_rehydration()}
+            help={m.bridge_config_rehydration_help()}
+          />
+        </label>
+
+        {/* Shared-fs path check result (bridge-side access). */}
+        {showsPaths && check !== null && (
+          <div className="oc-bridge-config__check">
+            {!check.reachable ? (
+              <p className="oc-bridge-config__check-row oc-bridge-config__check-row--err">
+                <AlertTriangle aria-hidden />
+                {m.bridge_config_check_unreachable()}
+              </p>
+            ) : !check.inbound && !check.outbound ? (
+              // Reachable but the bridge returned a non-2xx (old bridge w/o the
+              // route, 500, bad secret…): surface the reason instead of rendering
+              // empty check rows (both CheckRows null) that look like nothing ran.
+              <p className="oc-bridge-config__check-row oc-bridge-config__check-row--err">
+                <AlertTriangle aria-hidden />
+                {m.bridge_config_check_errored({ reason: check.reason ?? "?" })}
+              </p>
+            ) : (
+              <>
+                <CheckRow
+                  label={m.bridge_config_check_inbound()}
+                  result={check.inbound}
+                />
+                <CheckRow
+                  label={m.bridge_config_check_outbound()}
+                  result={check.outbound}
+                />
+                <p className="oc-admin__hint">{m.bridge_config_check_note()}</p>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="oc-bridge-config__actions">
+          {showsPaths && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void runCheck()}
+              disabled={checking}
+            >
+              {checking ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : null}
+              {checking ? m.bridge_config_checking() : m.bridge_config_check()}
+            </Button>
+          )}
+          <Button size="sm" onClick={() => void submit()} disabled={saving}>
+            {m.bridge_config_save()}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -851,12 +866,4 @@ function ValidatedVersions({ versions }: { versions: string[] }) {
       </PopoverContent>
     </Popover>
   );
-}
-
-function TargetStateBadge({ state }: { state: string }) {
-  if (state === "connected")
-    return <Badge variant="secondary">{m.bridge_state_connected()}</Badge>;
-  if (state === "error")
-    return <Badge variant="destructive">{m.bridge_state_error()}</Badge>;
-  return <Badge variant="outline">{m.bridge_state_inactive()}</Badge>;
 }

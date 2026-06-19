@@ -332,15 +332,32 @@ export function IntegrationsTab() {
         rows={status.cursors.map((c) => ({ ...c, _id: c.vendor }))}
         emptyHint={m.integrations_cursors_empty()}
         columns={[
-          { header: m.integrations_col_vendor(), cell: (c) => <Badge variant="secondary">{c.vendor}</Badge> },
+          {
+            header: m.integrations_col_vendor(),
+            cell: (c) => <Badge variant="secondary">{c.vendor}</Badge>,
+            sort: (c) => c.vendor,
+          },
           {
             header: m.integrations_col_last_send(),
             cell: (c) =>
               c.lastAt > 0 ? new Date(c.lastAt).toLocaleString("fr-FR") : "—",
+            sort: (c) => (c.lastAt > 0 ? c.lastAt : null),
           },
-          { header: m.integrations_col_consecutive_failures(), cell: (c) => String(c.failureCount) },
-          { header: m.integrations_col_last_http_status(), cell: (c) => c.lastErrorStatus ?? "—" },
-          { header: m.integrations_col_last_error(), cell: (c) => c.lastError ?? "—" },
+          {
+            header: m.integrations_col_consecutive_failures(),
+            cell: (c) => String(c.failureCount),
+            sort: (c) => c.failureCount,
+          },
+          {
+            header: m.integrations_col_last_http_status(),
+            cell: (c) => c.lastErrorStatus ?? "—",
+            sort: (c) => c.lastErrorStatus ?? null,
+          },
+          {
+            header: m.integrations_col_last_error(),
+            cell: (c) => c.lastError ?? "—",
+            sort: (c) => c.lastError ?? null,
+          },
         ]}
       />
     </>

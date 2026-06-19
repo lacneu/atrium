@@ -398,6 +398,7 @@ export function ServiceAccountsTab() {
           },
           {
             header: m.serviceaccounts_col_name(),
+            sort: (a) => a.name,
             cell: (a) => (
               <div className="flex flex-col">
                 <span>{a.name}</span>
@@ -411,10 +412,12 @@ export function ServiceAccountsTab() {
           },
           {
             header: m.serviceaccounts_col_role(),
+            sort: (a) => a.roleKey,
             cell: (a) => <Badge variant="secondary">{a.roleKey}</Badge>,
           },
           {
             header: m.serviceaccounts_col_status(),
+            sort: (a) => (a.disabled ? 1 : 0),
             cell: (a) =>
               a.disabled ? (
                 <Badge variant="destructive">{m.serviceaccounts_status_disabled()}</Badge>
@@ -449,6 +452,7 @@ export function ServiceAccountsTab() {
           },
           {
             header: m.serviceaccounts_col_keys(),
+            sort: (a) => (keysByAccount.get(a._id) ?? []).filter((k) => !k.disabled).length,
             cell: (a) => {
               const keys = keysByAccount.get(a._id) ?? [];
               const active = keys.filter((k) => !k.disabled).length;

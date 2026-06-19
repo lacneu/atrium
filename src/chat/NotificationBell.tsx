@@ -8,9 +8,12 @@ import {
   TriangleAlert,
   CircleCheck,
   MessageSquare,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { useToast } from "@/components/ui/toast";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -75,7 +78,9 @@ type FeedbackItem = {
   category: string;
   comment: string | null;
   messageRole: string;
+  messageText: string;
   chatId: string;
+  messageId: string;
   thread: ThreadMsg[];
   answered: boolean;
   unread: boolean;
@@ -93,6 +98,7 @@ export function NotificationBell() {
   const markAllRead = useMutation(api.notifications.markAllRead);
   const clearOne = useMutation(api.notifications.clearOne);
   const clearAll = useMutation(api.notifications.clearAll);
+  const closeMyFeedback = useMutation(api.feedback.closeMyFeedback);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
 
@@ -235,48 +241,160 @@ export function NotificationBell() {
             </div>
             <div className="oc-notif__list">
               {feedback.map((it) => (
-                <div key={it._id} className="oc-notif__item">
-                  <div className="oc-notif__item-head">
-                    <span className="oc-notif__title">{cat(it.category)}</span>
-                    <span
-                      className={`oc-notif__status${
-                        it.answered ? " is-answered" : ""
-                      }`}
-                    >
-                      {it.answered ? m.notif_answered() : m.notif_pending()}
-                    </span>
-                  </div>
-                  {it.thread.length > 0 ? (
-                    <div className="oc-notif__thread">
-                      {it.thread.map((msg, i) => (
-                        <div
-                          key={i}
-                          className={`oc-notif__msg oc-notif__msg--${msg.authorRole}`}
-                        >
-                          <span className="oc-notif__msg-who">
-                            {msg.authorRole === "admin"
-                              ? m.notif_author_admin()
-                              : m.notif_author_you()}
-                          </span>
-                          <span className="oc-notif__msg-text">{msg.text}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  <Link
-                    to="/chat/$chatId"
-                    params={{ chatId: it.chatId }}
-                    className="oc-notif__link"
-                    onClick={() => setOpen(false)}
-                  >
-                    {m.notif_view_conversation()}
-                  </Link>
-                </div>
+                <ReportItem
+                  key={it._id}
+                  it={it}
+                  onClose={(reason) =>
+                    closeMyFeedback({
+                      feedbackId: it._id as Id<"feedback">,
+                      reason,
+                    })
+                  }
+                  onNavigate={() => setOpen(false)}
+                />
               ))}
             </div>
           </>
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+// One "Mes signalements" row: status + admin/user thread + the REPORTED message
+// (from the frozen snapshot, collapsible) + a link to the conversation + a
+// withdraw action (owner closes their own report with an optional reason; the
+// row then drops out of myFeedback and unmounts).
+function ReportItem({
+  it,
+  onClose,
+  onNavigate,
+}: {
+  it: FeedbackItem;
+  onClose: (reason?: string) => Promise<unknown>;
+  onNavigate: () => void;
+}) {
+  const toast = useToast();
+  const [showMsg, setShowMsg] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function confirmClose() {
+    setBusy(true);
+    try {
+      await onClose(reason.trim() || undefined);
+      // On success the report leaves myFeedback → this item unmounts.
+    } catch (err) {
+      toast.error(m.notif_close_report(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="oc-notif__item">
+      <div className="oc-notif__item-head">
+        <span className="oc-notif__title">{cat(it.category)}</span>
+        <span
+          className={`oc-notif__status${it.answered ? " is-answered" : ""}`}
+        >
+          {it.answered ? m.notif_answered() : m.notif_pending()}
+        </span>
+      </div>
+      {it.thread.length > 0 ? (
+        <div className="oc-notif__thread">
+          {it.thread.map((msg, i) => (
+            <div
+              key={i}
+              className={`oc-notif__msg oc-notif__msg--${msg.authorRole}`}
+            >
+              <span className="oc-notif__msg-who">
+                {msg.authorRole === "admin"
+                  ? m.notif_author_admin()
+                  : m.notif_author_you()}
+              </span>
+              <span className="oc-notif__msg-text">{msg.text}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* The reported message itself, from the frozen snapshot (robust even if
+          the live message was regenerated/deleted), collapsible. */}
+      {it.messageText ? (
+        <>
+          <button
+            type="button"
+            className="oc-notif__report-toggle"
+            aria-expanded={showMsg}
+            onClick={() => setShowMsg((s) => !s)}
+          >
+            {showMsg ? (
+              <ChevronDown size={13} aria-hidden />
+            ) : (
+              <ChevronRight size={13} aria-hidden />
+            )}
+            {m.notif_reported_message()}
+          </button>
+          {showMsg ? (
+            <div className="oc-notif__report-msg">{it.messageText}</div>
+          ) : null}
+        </>
+      ) : null}
+
+      <div className="oc-notif__report-actions">
+        <Link
+          to="/chat/$chatId"
+          params={{ chatId: it.chatId }}
+          search={{ m: it.messageId }}
+          className="oc-notif__link"
+          onClick={onNavigate}
+        >
+          {m.notif_view_conversation()}
+        </Link>
+        {!closing ? (
+          <button
+            type="button"
+            className="oc-notif__link oc-notif__link--muted"
+            onClick={() => setClosing(true)}
+          >
+            {m.notif_close_report()}
+          </button>
+        ) : null}
+      </div>
+
+      {closing ? (
+        <div className="oc-notif__close-form">
+          <textarea
+            className="oc-notif__close-input"
+            rows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={m.notif_close_reason_placeholder()}
+          />
+          <div className="oc-notif__close-actions">
+            <button
+              type="button"
+              className="oc-notif__close-confirm"
+              disabled={busy}
+              onClick={() => void confirmClose()}
+            >
+              {m.notif_close_confirm()}
+            </button>
+            <button
+              type="button"
+              className="oc-notif__close-cancel"
+              onClick={() => {
+                setClosing(false);
+                setReason("");
+              }}
+            >
+              {m.notif_close_cancel()}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }

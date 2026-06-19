@@ -1,0 +1,48 @@
+# SECOND ephemeral LOCAL OpenClaw gateway — for Model-M multi-instance live tests.
+# Mirror of docker-compose.yml (instance A) with B-specific container names, host
+# ports (18889/18890), media dirs (media-outbound-b / media-inbound-b) and an
+# ISOLATED state volume (oc-state-b). Both gateways use the SAME codex account on
+# this bench (user-approved); production instances each have their own .openclaw.
+name: oc-local-b
+services:
+  openclaw-b:
+    image: ${OPENCLAW_IMAGE:-your-registry/openclaw-docker}:openclaw-${OPENCLAW_VERSION:-2026.5.19}
+    container_name: oc-local-gateway-b
+    restart: "no"
+    ports:
+      - "${OPENCLAW_LOCAL_PORT_B:-18889}:18789"
+      - "${OPENCLAW_LOOPBACK_PORT_B:-18890}:18790"
+    environment:
+      HOME: /home/node
+      TZ: America/Toronto
+      OPENCLAW_GATEWAY_BIND: lan
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN_B:?run via up-b.sh (generates the token)}
+      OPENCLAW_CODEX_APP_SERVER_BIN: /usr/local/bin/codex-yolo-wrapper.sh
+    env_file:
+      - ./local.env
+    tmpfs:
+      - /tmp:size=1g
+    volumes:
+      - oc-state-b:/home/node/.openclaw
+      - ./media-outbound-b:/home/node/.openclaw/media/outbound
+      - ./media-inbound-b:/home/node/.openclaw/media/inbound
+      - ./codex-yolo-wrapper.sh:/usr/local/bin/codex-yolo-wrapper.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:18789/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  oc-loopback-b:
+    image: alpine/socat:latest
+    container_name: oc-local-loopback-b
+    restart: "no"
+    network_mode: "service:openclaw-b"
+    command: ["TCP-LISTEN:18790,fork,reuseaddr", "TCP:127.0.0.1:18789"]
+    depends_on:
+      openclaw-b:
+        condition: service_healthy
+
+volumes:
+  oc-state-b:

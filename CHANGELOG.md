@@ -8,6 +8,42 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.4.0] — Sortable & filterable admin tables, a real Connexions table, and withdrawable feedback
+
+Feature release. No breaking changes; no data migration. Everything here is additive
+and builds on 0.3.x's multi-instance / shared-fs foundation — mostly workflow and
+readability improvements across Settings, plus a user-facing feedback control.
+
+- **Sort any admin table by its columns.** The shared admin tables (Users, Instances,
+  Traces, Anomalies, Integrations, Service accounts, Groups, Feedbacks…) now have
+  click-to-sort headers: click to sort ascending, again for descending, a third time to
+  clear. Sorting is type-aware — numbers compare numerically, versions compare as
+  versions (so `2026.6.10` sorts after `2026.6.5`, not before), and empty values always
+  fall to the bottom in both directions.
+- **The bridge "Connexions" list is now a real table you can sort and filter.** Each
+  connection is a row with sortable columns (target, state, instance, gateway host,
+  gateway version, stats, last OK), a free-text filter over target/host, quick filters by
+  state / instance / gateway version, and a one-click reset. The error detail of a failing
+  connection is preserved as a sub-row, and each connection now shows **its own gateway
+  version** (the bridge reports it per instance). The section is collapsed by default.
+- **Reach a bridge instance's configuration from where you manage it.** In **Settings ›
+  Agents › Bridge** the compatibility list shows one row per instance with a `⋮` menu that
+  opens that instance's non-secret config in a modal; the **Settings › Agents › Instances**
+  tab gained a matching "Configure bridge" row action that opens the same modal — so you
+  configure an instance's media modes, caps and rehydration from either place. (Bridge
+  secrets remain environment-only, never editable in the UI.)
+- **Withdraw a feedback report you filed.** From the notification bell you can now close
+  one of your own reports, with an optional reason — it disappears from your "My reports"
+  list and stops badging the bell, and a later admin reply won't bring it back. The report
+  is kept for the admin, who sees it tagged "Closed by user" with your reason. The bell now
+  also shows the reported message and can jump straight to it in the conversation.
+- **Deployment.** Changes the frontend (all of the above) and the Convex backend (the new
+  feedback fields + the "close my report" mutation, and the per-instance gateway version on
+  bridge health) — redeploy the frontend and run `npx convex deploy`. The bridge image is
+  functionally unchanged; only its `.env.example` and the Compose/Helm docs were tidied —
+  the per-instance media knobs introduced in 0.3.0 now live solely in Settings, so they
+  were dropped from the example bridge environment (an env value still works as a fallback).
+
 ## [0.3.1] — Safer shared-fs setup: verify before save, clearer media mounts
 
 Fix and operability release. No breaking changes; no data migration. Follows up on
