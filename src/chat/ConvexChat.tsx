@@ -15,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useQuery, useMutation, useConvex } from "convex/react";
@@ -23,6 +24,7 @@ import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import { useResolvedMode } from "@/lib/useChart";
+import { uploadProgressStore } from "./uploadProgressStore";
 import { pickLogoUrl, brandInitials } from "@/lib/brandLogo";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
@@ -1128,12 +1130,11 @@ function SystemMessage() {
 function ComposerAttachmentChip() {
   const status = useAttachment((a) => a.status?.type);
   const type = useAttachment((a) => a.type);
-  // A composer attachment is "pending" (status "running") between selection and
-  // message-send: the upload is deferred to composer.send() (assistant-ui calls
-  // adapter.send() then), so the chip is NOT actively uploading here — showing
-  // "envoi…" persistently would lie. The chip's presence + filename IS the
-  // feedback (the bug was that NO chip rendered at all). Only a genuine failure
-  // ("incomplete") surfaces a state, so an upload error is never silent.
+  // The chip shows the selected file + filename; the live upload PROGRESS (which
+  // runs in adapter.send() on send, the slow part for a big file) is surfaced
+  // separately by <UploadProgress> (a % bar) so this chip stays simple. Only a
+  // genuine failure ("incomplete") surfaces a state here, so an upload error is
+  // never silent.
   const failed = status === "incomplete";
   return (
     <AttachmentPrimitive.Root
@@ -1165,6 +1166,34 @@ function ComposerAttachmentChip() {
   );
 }
 
+// Immediate attachment-upload feedback (the "see that it is processing" the user
+// asked for, for the BIG-file case). Subscribes to the upload store so ONLY this
+// row re-renders on each progress tick — appears the instant send starts, shows
+// the % advancing, vanishes when the upload completes (then the optimistic echo
+// + the thinking indicator take over).
+function UploadProgress() {
+  const snap = useSyncExternalStore(
+    uploadProgressStore.subscribe,
+    uploadProgressStore.getSnapshot,
+  );
+  if (!snap.active) return null;
+  return (
+    <div className="oc-upload" role="status" aria-live="polite">
+      <div className="oc-upload__head">
+        <LoaderCircle className="oc-upload__spin" size={14} aria-hidden />
+        <span>
+          {snap.count > 1
+            ? m.chat_uploading_many({ count: snap.count, percent: snap.percent })
+            : m.chat_uploading({ percent: snap.percent })}
+        </span>
+      </div>
+      <div className="oc-upload__track" aria-hidden>
+        <div className="oc-upload__bar" style={{ width: `${snap.percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function Composer({
   showTools,
   onToggleTools,
@@ -1192,6 +1221,7 @@ function Composer({
       <ComposerPrimitive.Attachments
         components={{ Attachment: ComposerAttachmentChip }}
       />
+      <UploadProgress />
       {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
           text (autocorrect, auto-capitalize, autocomplete) so a word is sent
           exactly as typed — never silently swapped at submit. `data-gramm`

@@ -320,6 +320,8 @@
   "chat_composer_placeholder": "Message OpenClaw…",
   "chat_attach_file": "Attach a file",
   "chat_attach_failed": "failed",
+  "chat_uploading": "Uploading file… {percent}%",
+  "chat_uploading_many": "Uploading {count} files… {percent}%",
   "chat_attach_remove": "Remove attachment",
   "chat_tools_hide": "Collapse the details of tools run by OpenClaw by default",
   "chat_tools_show": "Expand the details of tools run by OpenClaw by default",

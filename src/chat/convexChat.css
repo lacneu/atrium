@@ -4393,6 +4393,52 @@
   background: color-mix(in srgb, var(--muted) 60%, var(--border));
 }
 
+/* Attachment-upload progress (appears the instant send starts, during the big-
+   file upload that precedes the optimistic echo). One row: spinner + label +
+   advancing bar. Only this element re-renders per progress tick (external store). */
+.oc-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.35rem 0.35rem 0;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  font-size: 0.8rem;
+  color: var(--foreground);
+}
+.oc-upload__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.oc-upload__spin {
+  flex: none;
+  color: var(--primary);
+  animation: oc-spin 1s linear infinite;
+}
+.oc-upload__track {
+  height: 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted-foreground) 22%, transparent);
+  overflow: hidden;
+}
+.oc-upload__bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 120ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-upload__spin {
+    animation: none;
+  }
+  .oc-upload__bar {
+    transition: none;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    PROTOTYPE — Ambient visual effects (token-driven).  [easy to remove: this block]
    ---------------------------------------------------------------------------

@@ -13,6 +13,15 @@
 // file-size number.
 export const FRAME_ENVELOPE_OVERHEAD_BYTES = 128 * 1024; // 128 KiB
 
+// OpenClaw's OWN default WS frame limit — the value every 2026.x hello-ok reports.
+// Used as the CONSERVATIVE fallback when the bridge has not yet reported a real
+// per-instance maxPayload (cold poll / old bridge): the dispatch AND the composer
+// both cap at this so an oversize upload is rejected with a clear "too large"
+// instead of being accepted then failing downstream. Derived knowledge (the
+// gateway default), not a magic number; it auto-corrects to the real value once
+// the bridge publishes it.
+export const DEFAULT_GATEWAY_MAX_PAYLOAD = 26214400; // 25 MiB
+
 /** base64 byte length of a raw byte count (4 output chars per 3 input bytes). */
 export function base64ByteLength(rawBytes: number): number {
   return 4 * Math.ceil(rawBytes / 3);

@@ -8,6 +8,11 @@ import type { ConvexReactClient } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { isModelNativeMime } from "../../convex/lib/mediaTransport";
+import {
+  DEFAULT_GATEWAY_MAX_PAYLOAD,
+  maxRawInboundBytes,
+} from "../../convex/lib/attachmentLimits";
+import { uploadProgressStore } from "./uploadProgressStore";
 import { m } from "@/paraglide/messages.js";
 
 // Attachment adapter for assistant-ui that uploads files straight into Convex
@@ -97,10 +102,7 @@ export function createConvexAttachmentAdapter(
     async add({ file }: { file: File }): Promise<PendingAttachment> {
       // Reject oversized files UPFRONT (before upload) using the limit DERIVED from
       // the gateway's maxPayload — no hardcoded size. The server reports it via
-      // getBridgeAvailability.maxInboundBytes. When unknown (bridge not yet polled)
-      // we fail OPEN: the Convex dispatch + the bridge frame guard are the backstop
-      // (they reject an over-cap attachment with a clear ATTACHMENT_TOO_LARGE
-      // instead of the old silent drop).
+      // getBridgeAvailability.maxInboundBytes.
       let maxInboundBytes: number | null = null;
       try {
         const avail = await convex.query(
@@ -109,13 +111,22 @@ export function createConvexAttachmentAdapter(
         );
         maxInboundBytes = avail?.maxInboundBytes ?? null;
       } catch {
-        // Availability unknown -> fail open; the server enforces.
+        // Availability query failed -> treat the cap as unknown (handled below).
       }
+      // When the real per-instance cap is NOT yet known (cold poll / availability
+      // query failed) we DON'T fail open — we fall back to OpenClaw's own default
+      // frame limit, the SAME conservative value the Convex dispatch uses. Failing
+      // open here let an oversize upload sail past the composer to be rejected
+      // downstream with a vague code (no upfront "trop volumineuse"); capping at the
+      // default catches it here with the clear toast, and auto-corrects once the
+      // bridge reports the real maxPayload.
+      const inlineCap =
+        maxInboundBytes ?? maxRawInboundBytes(DEFAULT_GATEWAY_MAX_PAYLOAD);
       // Transport-aware cap: a TOOL-READ file (not a Vision image) on a shared-fs
       // instance rides BY REFERENCE — the bridge streams it to a shared volume, so
       // it bypasses the inline maxPayload frame entirely. Use the (much larger)
       // shared-fs cap for those; images (model-native) still ride inline → capped.
-      let effectiveCap = maxInboundBytes;
+      let effectiveCap = inlineCap;
       if (chatId && !isModelNativeMime(file.type)) {
         try {
           const policy = await convex.query(api.bridge.getChatInboundPolicy, {
@@ -128,7 +139,7 @@ export function createConvexAttachmentAdapter(
           // Policy unknown -> keep the inline cap; the server still enforces.
         }
       }
-      if (effectiveCap !== null && file.size > effectiveCap) {
+      if (file.size > effectiveCap) {
         const mb = (n: number) => Math.floor(n / 1024 / 1024);
         const message = m.attach_too_large({
           size: mb(file.size),
@@ -150,54 +161,80 @@ export function createConvexAttachmentAdapter(
 
     async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
       const file = attachment.file;
-
-      // 1) One-time signed upload URL from an authenticated mutation.
-      let uploadUrl: string;
+      // Surface progress IMMEDIATELY (0%) so the user sees the request register
+      // the instant they hit send — the upload below is the slow part for a big
+      // file, and it runs BEFORE onNew's optimistic echo. Cleared in `finally`
+      // on success AND failure so a failed/cancelled upload never stays stuck.
+      uploadProgressStore.report(attachment.id, 0, file.size || 1);
       try {
-        uploadUrl = await convex.mutation(api.chats.generateUploadUrl, {});
-      } catch (err) {
-        console.error("[attach] generateUploadUrl failed:", err);
-        throw err;
-      }
+        // 1) One-time signed upload URL from an authenticated mutation.
+        let uploadUrl: string;
+        try {
+          uploadUrl = await convex.mutation(api.chats.generateUploadUrl, {});
+        } catch (err) {
+          console.error("[attach] generateUploadUrl failed:", err);
+          throw err;
+        }
 
-      // 2) Stream the bytes directly to Convex storage.
-      let res: Response;
-      try {
-        res = await fetch(uploadUrl, {
-          method: "POST",
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-          body: file,
+        // 2) Stream the bytes to Convex storage via XHR (vs fetch) so the upload
+        //    PROGRESS is observable — the same signed POST + headers as before.
+        const storageId = await new Promise<string>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", uploadUrl);
+          xhr.setRequestHeader(
+            "Content-Type",
+            file.type || "application/octet-stream",
+          );
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              uploadProgressStore.report(attachment.id, e.loaded, e.total);
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                resolve(
+                  (JSON.parse(xhr.responseText) as { storageId: string })
+                    .storageId,
+                );
+              } catch (err) {
+                reject(err);
+              }
+            } else {
+              reject(new Error(`Upload failed (${xhr.status})`));
+            }
+          };
+          xhr.onerror = () => {
+            console.error("[attach] upload POST failed (network/CORS/CSP)");
+            reject(new Error("Upload failed (network)"));
+          };
+          xhr.send(file);
         });
-      } catch (err) {
-        console.error("[attach] upload POST threw (network/CORS/CSP):", err);
-        throw err;
-      }
-      if (!res.ok) {
-        throw new Error(`Upload failed (${res.status})`);
-      }
-      const { storageId } = (await res.json()) as { storageId: string };
 
-      // 3) Record ownership so `sendMessage` can enforce IDOR. There is no
-      //    server-side upload-completed hook, so this client callback is the
-      //    only point at which the (user, storageId) pair becomes known.
-      await convex.mutation(api.uploads.registerUpload, {
-        storageId: storageId as Id<"_storage">,
-      });
+        // 3) Record ownership so `sendMessage` can enforce IDOR. There is no
+        //    server-side upload-completed hook, so this client callback is the
+        //    only point at which the (user, storageId) pair becomes known.
+        await convex.mutation(api.uploads.registerUpload, {
+          storageId: storageId as Id<"_storage">,
+        });
 
-      const result: ConvexAttachment = {
-        id: attachment.id,
-        type: attachment.type,
-        name: attachment.name,
-        contentType: attachment.contentType,
-        status: { type: "complete" },
-        content: [{ type: "text", text: file.name }],
-        convex: {
-          storageId,
-          filename: file.name,
-          mimeType: file.type || "application/octet-stream",
-        },
-      };
-      return result;
+        const result: ConvexAttachment = {
+          id: attachment.id,
+          type: attachment.type,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          status: { type: "complete" },
+          content: [{ type: "text", text: file.name }],
+          convex: {
+            storageId,
+            filename: file.name,
+            mimeType: file.type || "application/octet-stream",
+          },
+        };
+        return result;
+      } finally {
+        uploadProgressStore.clear(attachment.id);
+      }
     },
 
     async remove(): Promise<void> {

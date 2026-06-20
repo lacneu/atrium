@@ -27,17 +27,21 @@ import { resolveTargetForChat } from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
-import { base64ByteLength, base64FitsFrame } from "./lib/attachmentLimits";
+import {
+  base64ByteLength,
+  base64FitsFrame,
+  DEFAULT_GATEWAY_MAX_PAYLOAD,
+} from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { resolveInstanceConfig } from "./lib/instanceConfig";
 import { classifyAttachment } from "./lib/mediaTransport";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
-// 2026.x hello-ok. Used ONLY as the conservative inbound-attachment fallback when
-// the bridge has not reported its real maxPayload yet (old image in a mixed deploy,
-// or a cold poll) — so the over-size check NEVER silently skips. The real reported
-// value supersedes it the moment it is known.
-const DEFAULT_GATEWAY_MAX_PAYLOAD = 26214400; // 25 MiB
+// 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
+// now lives in ./lib/attachmentLimits so the COMPOSER shares the exact same value
+// (it must cap identically to this dispatch, or a file the composer accepts gets
+// rejected here — the divergence that let an oversize upload through with no upfront
+// "too large").
 
 /**
  * ArrayBuffer -> base64 in the DEFAULT Convex action runtime (no Node Buffer;
