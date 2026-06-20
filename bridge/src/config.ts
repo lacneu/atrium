@@ -53,9 +53,11 @@ export interface BridgeConfig {
    */
   gatewayVersionFallback?: string;
   /**
-   * Base directory the gateway writes outbound media into. The normalizer only
-   * ever surfaces paths under `<dir>/...`; we read bytes from here to upload
-   * into Convex storage. Mirrors OPENCLAW_MEDIA_OUTBOUND_DIR in backend/app.
+   * The dir the BRIDGE reads agent-produced outbound files from (its own mount of
+   * the shared volume). OPENCLAW_MEDIA_OUTBOUND_DIR; defaults to the instance-keyed
+   * `/home/node/.openclaw/media/<OPENCLAW_INSTANCE_NAME>/outbound` (flat
+   * `…/media/outbound` when no instance name). DIFFERENT from
+   * `mediaOutboundAgentMount` (the gateway-visible path the agent writes to).
    */
   mediaOutboundDir: string;
   /**
@@ -116,7 +118,9 @@ export interface BridgeConfig {
    * Phase 3 (shared-fs INBOUND): the dir the bridge WRITES streamed tool-read
    * files to (OPENCLAW_INBOUND_DIR). Must be a volume bind-mounted into THIS
    * instance's gateway container (the bridge writes, the gateway reads). Defaults
-   * to the gateway's media/inbound, the co-located dev case.
+   * to the instance-keyed `/home/node/.openclaw/media/<OPENCLAW_INSTANCE_NAME>/
+   * inbound` (flat `…/media/inbound` when no instance name) — the bridge-side
+   * mount, translated to `inboundAgentMount` in the injected `[FICHIERS REÇUS]`.
    */
   inboundMediaDir: string;
   /**
@@ -233,6 +237,27 @@ export function deriveHttpBase(gatewayUrl: string): string {
   }
 }
 
+/** The gateway-standard media root: each gateway container mounts its instance's
+ *  state dir at `/home/node/.openclaw`, so the agent ALWAYS sees its media under
+ *  this flat path (that exact path is what `file-transfer.allowReadPaths`
+ *  whitelists). The AGENT-visible mounts default here; the BRIDGE's own dirs key
+ *  off the instance name below. */
+const MEDIA_ROOT = "/home/node/.openclaw/media";
+
+/**
+ * Sanitize an instance name into a SAFE single path segment for the bridge's
+ * per-instance media subdir. Returns null when the name is empty or unsafe, so
+ * the caller falls back to the flat gateway-standard path. Defense in depth: the
+ * instance name is operator-set, but a `/`, `\` or `..` in it must never widen
+ * the mount path beyond one segment.
+ */
+export function mediaInstanceSegment(instanceName: string | null): string | null {
+  if (!instanceName) return null;
+  const seg = instanceName.trim().replace(/[^A-Za-z0-9._-]/g, "_");
+  if (seg === "" || seg === "." || seg === "..") return null;
+  return seg;
+}
+
 /** Parse OPENCLAW_MEDIA_MODE; unset => the portable "gateway-http" default. */
 function parseMediaMode(name: string): BridgeConfig["mediaMode"] {
   const raw = (process.env[name] ?? "").trim().toLowerCase();
@@ -289,19 +314,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const prev = process.env;
   process.env = env;
   try {
+    // The bridge's OWN mount of the shared volume is keyed by instance name, so
+    // multiple per-gateway bridges (Model M — one bridge per gateway) never
+    // collide on a shared host and each container's mount is self-documenting:
+    // for OPENCLAW_INSTANCE_NAME=<I> the bridge reads/writes
+    // `…/media/<I>/{outbound,inbound}`. The AGENT-visible mounts stay FLAT
+    // (`…/media/{outbound,inbound}`) — that exact path is what each gateway
+    // exposes its media at AND what the instance's openclaw.json
+    // `file-transfer.allowReadPaths` whitelists; keying it would break the
+    // agent's own read/write. With no instance name the bridge dirs fall back to
+    // the flat path too (the co-located dev/bench case). Explicit
+    // OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR always override.
+    const instanceName = optionalEnvOrNull("OPENCLAW_INSTANCE_NAME");
+    const seg = mediaInstanceSegment(instanceName);
+    const outboundDirDefault = seg
+      ? `${MEDIA_ROOT}/${seg}/outbound`
+      : `${MEDIA_ROOT}/outbound`;
+    const inboundDirDefault = seg
+      ? `${MEDIA_ROOT}/${seg}/inbound`
+      : `${MEDIA_ROOT}/inbound`;
     return {
       openclawGatewayUrl: requireEnv("OPENCLAW_GATEWAY_URL"),
       openclawToken: requireEnv("OPENCLAW_TOKEN"),
       deviceIdentity: loadDeviceIdentity(),
-      instanceName: optionalEnvOrNull("OPENCLAW_INSTANCE_NAME"),
+      instanceName,
       gatewayVersionFallback: optionalVersionEnv("OPENCLAW_GATEWAY_VERSION"),
       mediaOutboundDir: optionalEnv(
         "OPENCLAW_MEDIA_OUTBOUND_DIR",
-        "/home/node/.openclaw/media/outbound",
+        outboundDirDefault,
       ),
       mediaOutboundAgentMount: optionalEnv(
         "OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT",
-        "/home/node/.openclaw/media/outbound",
+        `${MEDIA_ROOT}/outbound`,
       ),
       mediaMaxBytes: parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
       mediaMode: parseMediaMode("OPENCLAW_MEDIA_MODE"),
@@ -310,13 +354,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
           requireEnv("OPENCLAW_GATEWAY_URL"),
       ),
       mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
-      inboundMediaDir: optionalEnv(
-        "OPENCLAW_INBOUND_DIR",
-        "/home/node/.openclaw/media/inbound",
-      ),
+      inboundMediaDir: optionalEnv("OPENCLAW_INBOUND_DIR", inboundDirDefault),
       inboundAgentMount: optionalEnv(
         "OPENCLAW_INBOUND_AGENT_MOUNT",
-        "/home/node/.openclaw/media/inbound",
+        `${MEDIA_ROOT}/inbound`,
       ),
       inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),

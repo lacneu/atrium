@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -50,7 +50,6 @@ import { Input } from "@/components/ui/input";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
-import { AgentPickerDialog, type PickableAgent } from "./AgentPicker";
 import { relativeAge } from "./relativeAge";
 import { m } from "@/paraglide/messages.js";
 
@@ -93,9 +92,16 @@ type Project = { _id: Id<"projects">; name: string; collapsed: boolean };
 export function ChatSidebar({
   activeChatId,
   onSelect,
+  onNewChat,
+  newChatShortcut,
 }: {
   activeChatId: Id<"chats"> | null;
   onSelect: (id: Id<"chats">) => void;
+  // New-chat orchestration lives in the persistent chrome (so the global
+  // shortcut works everywhere); the sidebar button just triggers it and shows
+  // the platform-aware shortcut badge.
+  onNewChat: () => void;
+  newChatShortcut: string;
 }) {
   const chats = useQuery(api.messages.listChats, {}) as ChatRow[] | undefined;
   const projects = useQuery(api.projects.listProjects, {}) as
@@ -124,41 +130,49 @@ export function ChatSidebar({
     const id = window.setInterval(() => setMinuteTick((t) => t + 1), 60_000);
     return () => window.clearInterval(id);
   }, [showAgePref]);
-  const createChat = useMutation(api.chats.createChat);
   const createProject = useMutation(api.projects.createProject);
   const setProjectCollapsed = useMutation(api.projects.setProjectCollapsed);
   const reorderChat = useMutation(api.chats.reorderChat);
   const moveToProject = useMutation(api.chats.moveChatToProject);
   const prompt = usePrompt();
 
-  // The agents this (effective) user may open a chat on. Drives the new-chat
-  // binding: exactly 1 → bind automatically; >1 (or 0) → open the picker.
-  const myAgents = useQuery(api.agents.listMyAgents) as
-    | PickableAgent[]
-    | undefined;
-  const [pickerOpen, setPickerOpen] = useState(false);
-
-  async function bindAndOpen(instanceName: string, agentId: string) {
-    const id = (await createChat({
-      title: "New chat",
-      instanceName,
-      agentId,
-    })) as Id<"chats">;
-    onSelect(id);
-  }
-
-  async function startNewChat() {
-    const agents = myAgents;
-    // Auto-bind ONLY when the sole agent is usable. A single agent that was
-    // deleted on the gateway falls through to the picker (which disables it) so we
-    // never auto-create a chat bound to a dead agent (red-team MEDIUM).
-    if (agents && agents.length === 1 && agents[0].state !== "deleted") {
-      await bindAndOpen(agents[0].instanceName, agents[0].agentId);
-      return;
-    }
-    // 0, >1, sole-deleted, or still loading → let the picker decide.
-    setPickerOpen(true);
-  }
+  // Responsive new-chat toolbar. The sidebar width is user-resizable AND the
+  // button text is localized, so a fixed px breakpoint would clip a long locale
+  // (German "Neue Unterhaltung") or collapse a short one too early. Instead we
+  // MEASURE: two hidden, absolutely-positioned ghosts render the row at its
+  // natural width (with badge / without badge); a ResizeObserver on the toolbar
+  // compares the available width to those measured requirements and degrades
+  // gracefully — drop the decorative shortcut badge first, then collapse the
+  // label to an icon. This keeps the "Nouveau projet" button from ever being
+  // pushed off-screen, in any language. (The CSS backstop below guarantees that
+  // even before the observer runs.)
+  const newChatLabel = m.sidebar_new_chat();
+  const topRef = useRef<HTMLDivElement>(null);
+  const ghostFullRef = useRef<HTMLDivElement>(null);
+  const ghostLabelRef = useRef<HTMLDivElement>(null);
+  const [topMode, setTopMode] = useState<"full" | "label" | "icon">("full");
+  useLayoutEffect(() => {
+    const top = topRef.current;
+    if (!top) return;
+    const measure = () => {
+      const avail = top.clientWidth;
+      const reqFull = ghostFullRef.current?.offsetWidth ?? 0;
+      const reqLabel = ghostLabelRef.current?.offsetWidth ?? 0;
+      // Ghosts not laid out yet → stay full (avoids a spurious collapse at 0).
+      const next =
+        reqFull === 0 || avail >= reqFull
+          ? "full"
+          : avail >= reqLabel
+            ? "label"
+            : "icon";
+      setTopMode((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(top);
+    return () => ro.disconnect();
+    // Re-measure when the localized label or platform badge changes width.
+  }, [newChatLabel, newChatShortcut]);
 
   // Transient local buffer: Convex is the source of truth; during a drag (and
   // until the write confirms) we render the local arrangement so the item does
@@ -283,26 +297,62 @@ export function ChatSidebar({
 
   return (
     <aside className="oc-sidebar">
-      <AgentPickerDialog
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        agents={myAgents}
-        onPick={(instanceName, agentId) => {
-          setPickerOpen(false);
-          void bindAndOpen(instanceName, agentId);
-        }}
-      />
-      <div className="oc-sidebar__top">
+      <div className="oc-sidebar__top" ref={topRef}>
         <Button
-          className="flex-1 justify-start"
-          onClick={() => void startNewChat()}
+          className={
+            topMode === "icon"
+              ? "oc-newchat flex-1 justify-center"
+              : "oc-newchat flex-1 justify-start"
+          }
+          onClick={onNewChat}
+          title={`${newChatLabel} (${newChatShortcut})`}
+          aria-label={newChatLabel}
         >
-          <Plus /> {m.sidebar_new_chat()}
+          <Plus />
+          {topMode !== "icon" ? (
+            <span className="oc-newchat__label">{newChatLabel}</span>
+          ) : null}
+          {topMode === "full" ? (
+            <kbd className="oc-newchat__kbd" aria-hidden>
+              {newChatShortcut}
+            </kbd>
+          ) : null}
         </Button>
+        {/* Hidden measurers: the row at natural width, with and without the
+            badge. The wrapper is clipped (height 0, overflow hidden) so it adds
+            no scrollable area; the inner row keeps `width: max-content` so its
+            offsetWidth is the true required width — always full, so the numbers
+            stay accurate regardless of the current compact state (no
+            hysteresis). */}
+        <div className="oc-newchat-ghost" aria-hidden>
+          <div className="oc-newchat-ghost__row" ref={ghostFullRef}>
+            <Button className="oc-newchat justify-start" tabIndex={-1}>
+              <Plus />
+              <span className="oc-newchat__label">{newChatLabel}</span>
+              <kbd className="oc-newchat__kbd">{newChatShortcut}</kbd>
+            </Button>
+            <Button variant="outline" size="icon" tabIndex={-1}>
+              <FolderPlus />
+            </Button>
+          </div>
+        </div>
+        <div className="oc-newchat-ghost" aria-hidden>
+          <div className="oc-newchat-ghost__row" ref={ghostLabelRef}>
+            <Button className="oc-newchat justify-start" tabIndex={-1}>
+              <Plus />
+              <span className="oc-newchat__label">{newChatLabel}</span>
+            </Button>
+            <Button variant="outline" size="icon" tabIndex={-1}>
+              <FolderPlus />
+            </Button>
+          </div>
+        </div>
         <Button
+          className="oc-newproject"
           variant="outline"
           size="icon"
           aria-label={m.sidebar_new_project()}
+          title={m.sidebar_new_project()}
           onClick={async () => {
             const name = await prompt({
               title: m.sidebar_new_project(),

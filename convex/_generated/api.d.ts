@@ -47,6 +47,8 @@ import type * as lib_chartValidation from "../lib/chartValidation.js";
 import type * as lib_charts from "../lib/charts.js";
 import type * as lib_chatRenderState from "../lib/chatRenderState.js";
 import type * as lib_compat from "../lib/compat.js";
+import type * as lib_crypto_cipher from "../lib/crypto/cipher.js";
+import type * as lib_crypto_keyProvider from "../lib/crypto/keyProvider.js";
 import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
 import type * as lib_files from "../lib/files.js";
@@ -117,6 +119,8 @@ declare const fullApi: ApiFromModules<{
   "lib/charts": typeof lib_charts;
   "lib/chatRenderState": typeof lib_chatRenderState;
   "lib/compat": typeof lib_compat;
+  "lib/crypto/cipher": typeof lib_crypto_cipher;
+  "lib/crypto/keyProvider": typeof lib_crypto_keyProvider;
   "lib/diagnose": typeof lib_diagnose;
   "lib/domains": typeof lib_domains;
   "lib/files": typeof lib_files;

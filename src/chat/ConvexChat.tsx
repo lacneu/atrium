@@ -504,12 +504,14 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
             ) : (
               <Bot size={13} aria-hidden />
             )}
-            {agent.displayName ?? agent.agentId}
+            <span className="oc-chip__label">
+              {agent.displayName ?? agent.agentId}
+            </span>
           </span>
         ) : null}
         {sm?.model ? (
           <span
-            className="oc-chip"
+            className="oc-chip oc-chip--info"
             title={
               sm.modelProvider
                 ? m.chat_model_with_provider({ provider: sm.modelProvider })
@@ -517,12 +519,12 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
             }
           >
             <IconCpu />
-            {sm.model}
+            <span className="oc-chip__label">{sm.model}</span>
           </span>
         ) : null}
         {sm?.thinkingLevel ? (
           <span
-            className="oc-chip"
+            className="oc-chip oc-chip--info"
             title={
               inherited
                 ? m.chat_thinking_inherited_title()
@@ -530,7 +532,9 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
             }
           >
             <IconBrain />
-            {m.chat_thinking_label()}&nbsp;: {capitalize(sm.thinkingLevel)}
+            <span className="oc-chip__label">
+              {m.chat_thinking_label()}&nbsp;: {capitalize(sm.thinkingLevel)}
+            </span>
             {inherited ? (
               <span className="oc-chip__hint">{m.chat_thinking_inherited_hint()}</span>
             ) : null}
@@ -552,8 +556,12 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
               />
             </span>
             <span className="oc-meter__label">
-              {pct}% · {formatTokens(sm.totalTokens as number)}/
-              {formatTokens(sm.contextTokens as number)}
+              {pct}%
+              <span className="oc-meter__detail">
+                {" · "}
+                {formatTokens(sm.totalTokens as number)}/
+                {formatTokens(sm.contextTokens as number)}
+              </span>
             </span>
           </span>
         ) : null}
@@ -635,7 +643,7 @@ function ExportMenu({
       <DropdownMenuTrigger asChild>
         <button type="button" className="oc-chip oc-chip--btn" title={m.chat_export_conversation()}>
           <Download size={13} aria-hidden />
-          {m.chat_export()}
+          <span className="oc-chip__label">{m.chat_export()}</span>
           <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
         </button>
       </DropdownMenuTrigger>
@@ -676,7 +684,7 @@ function SessionKnobsMenu({
       <PopoverTrigger asChild>
         <button type="button" className="oc-chip oc-chip--btn" title={m.chat_advanced_settings_title()}>
           <SlidersHorizontal size={13} aria-hidden />
-          {m.chat_advanced()}
+          <span className="oc-chip__label">{m.chat_advanced()}</span>
           <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
         </button>
       </PopoverTrigger>

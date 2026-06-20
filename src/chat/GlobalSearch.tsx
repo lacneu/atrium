@@ -11,6 +11,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -21,6 +22,7 @@ import { Search, MessageSquare, Hash } from "lucide-react";
 import { api } from "./convexApi";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { isMac, shortcutLabel, matchesShortcut, SHORTCUT_SEARCH } from "@/lib/shortcuts";
 import { m } from "@/paraglide/messages.js";
 
 // Mirror of the backend MIN_QUERY_LEN: below this we don't even subscribe.
@@ -38,6 +40,12 @@ export function GlobalSearch() {
   const [debounced, setDebounced] = useState("");
   const [active, setActive] = useState(0);
 
+  // Platform-aware badge: ⌘K on macOS, Ctrl+K on Windows/Linux (same shortcut).
+  const searchShortcut = useMemo(
+    () => shortcutLabel(SHORTCUT_SEARCH, isMac()),
+    [],
+  );
+
   // Debounce the typed query into the value we actually subscribe with.
   useEffect(() => {
     const id = setTimeout(() => setDebounced(q), DEBOUNCE_MS);
@@ -52,10 +60,10 @@ export function GlobalSearch() {
   const list = results ?? [];
   const loading = term.length >= MIN_QUERY_LEN && results === undefined;
 
-  // Global ⌘K / Ctrl-K opens the palette from anywhere.
+  // Global ⌘K / Ctrl+K opens the palette from anywhere.
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (matchesShortcut(e, SHORTCUT_SEARCH)) {
         e.preventDefault();
         setOpen(true);
       }
@@ -118,7 +126,7 @@ export function GlobalSearch() {
       >
         <Search className="oc-search-trigger__icon" aria-hidden />
         <span className="oc-search-trigger__label">{m.search_trigger_label()}</span>
-        <kbd className="oc-search-trigger__kbd">⌘K</kbd>
+        <kbd className="oc-search-trigger__kbd">{searchShortcut}</kbd>
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>

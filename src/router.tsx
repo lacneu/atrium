@@ -20,7 +20,7 @@
 //     /settings/$tab        shared route for the 4 PARAMLESS tabs
 //                           (roles/integrations/instances/theme)
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Authenticated,
   AuthLoading,
@@ -54,6 +54,7 @@ import type { Id } from "./chat/convexApi";
 import type { ConvexId } from "./chat/convexTypes";
 import { ConvexChat } from "./chat/ConvexChat";
 import { ChatSidebar } from "./chat/ChatSidebar";
+import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
 import { NotificationBell } from "./chat/NotificationBell";
@@ -100,6 +101,12 @@ import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
+import {
+  isMac,
+  shortcutLabel,
+  matchesShortcut,
+  SHORTCUT_NEW_CHAT,
+} from "@/lib/shortcuts";
 import { pickLogoUrl } from "@/lib/brandLogo";
 import {
   APP_HOST,
@@ -564,7 +571,8 @@ function AuthenticatedChrome({
   resolvedThemeMode: ThemeMode;
   brand: ChartBrand | undefined;
 }) {
-  const { width, collapsed, toggleCollapsed, startResize } = useSidebarLayout();
+  const { width, collapsed, toggleCollapsed, collapse, startResize, isMobile } =
+    useSidebarLayout();
   const matchRoute = useMatchRoute();
   // Active-chat highlight: read the chatId param without requiring a match on a
   // specific route (strict:false → undefined off the chat route).
@@ -573,8 +581,45 @@ function AuthenticatedChrome({
   // Settings is active when any /settings/* route matches (fuzzy).
   const settingsActive = Boolean(matchRoute({ to: "/settings", fuzzy: true }));
 
+  // Mobile: the sidebar is an overlay drawer. Close it on ANY navigation (chat
+  // select, new chat, settings tab) so the user lands on full-width content; the
+  // backdrop tap closes it otherwise. No-op on desktop (in-flow column).
+  const pathname = useLocation({ select: (l) => l.pathname });
+  useEffect(() => {
+    if (isMobile) collapse();
+  }, [pathname, isMobile, collapse]);
+
+  // New-chat orchestration lives HERE (persistent chrome, always mounted) so the
+  // ⌘⇧O / Ctrl+Shift+O global shortcut works on every surface — including when
+  // the sidebar is collapsed or while in Settings, where ChatSidebar unmounts.
+  // This mirrors the ⌘K search palette, which lives in the always-mounted topbar.
+  const goToChat = useCallback(
+    (id: Id<"chats">) => {
+      void navigate({ to: "/chat/$chatId", params: { chatId: id } });
+    },
+    [navigate],
+  );
+  const { startNewChat, picker } = useStartNewChat(goToChat);
+  const newChatShortcut = useMemo(
+    () => shortcutLabel(SHORTCUT_NEW_CHAT, isMac()),
+    [],
+  );
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (matchesShortcut(e, SHORTCUT_NEW_CHAT)) {
+        // Ctrl+Shift+O is Chrome's bookmark manager on Win/Linux but is NOT in
+        // the hard-reserved set (Ctrl+N/T/W…), so preventDefault reclaims it.
+        e.preventDefault();
+        void startNewChat();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [startNewChat]);
+
   return (
     <div className="oc-shell">
+      {picker}
       <ImpersonationBanner />
       <DevUserSwitcher />
       <AppTopBar
@@ -585,11 +630,21 @@ function AuthenticatedChrome({
         collapsed={collapsed}
         onToggleSidebar={toggleCollapsed}
       />
-      <div className="oc-workspace">
+      <div className={isMobile ? "oc-workspace oc-workspace--mobile" : "oc-workspace"}>
+        {/* Mobile: dim + tap-to-close backdrop behind the overlay drawer. */}
+        {isMobile && !collapsed ? (
+          <div
+            className="oc-sidebar-backdrop"
+            onClick={collapse}
+            aria-hidden
+          />
+        ) : null}
         {!collapsed ? (
           <div
             className="oc-sidebar-col"
-            style={{ width, flex: `0 0 ${width}px` }}
+            // On mobile the drawer width is fixed by CSS (overlay); the inline
+            // resizable width applies to the desktop in-flow column only.
+            style={isMobile ? undefined : { width, flex: `0 0 ${width}px` }}
           >
             {/* In Settings, the chat list is replaced by a VERTICAL settings nav
                 (the chat "disappears"); a top-bar / back link returns to chat. */}
@@ -599,9 +654,9 @@ function AuthenticatedChrome({
               <>
                 <ChatSidebar
                   activeChatId={(params.chatId ?? null) as Id<"chats"> | null}
-                  onSelect={(id) =>
-                    void navigate({ to: "/chat/$chatId", params: { chatId: id } })
-                  }
+                  onSelect={goToChat}
+                  onNewChat={() => void startNewChat()}
+                  newChatShortcut={newChatShortcut}
                 />
                 {canOpenSettings ? (
                   <Button variant="ghost" className="m-2 justify-start" asChild>

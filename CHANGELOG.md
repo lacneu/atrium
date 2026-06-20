@@ -8,6 +8,59 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.4.2] — Keyboard shortcuts & responsive sidebar, multi-gateway shared-fs media, and an at-rest secret cipher
+
+Feature + operability release. No breaking changes; everything additive. Day-to-day
+UI niceties (shortcuts, a sidebar that adapts to phones), shared-fs media that works
+cleanly across multiple gateways with an unambiguous setup guide, and the encryption
+groundwork for UI-configured gateway credentials.
+
+- **Keyboard shortcuts, platform-aware.** Open the conversation search palette with
+  **⌘K** (**Ctrl+K** on Windows/Linux) and start a new chat with **⌘⇧O**
+  (**Ctrl+Shift+O**). The shortcut badge shown in the UI matches your OS automatically
+  (⌘ symbols on macOS, `Ctrl+…` words elsewhere), and the new-chat shortcut works
+  globally — including from Settings or with the sidebar collapsed.
+- **Responsive sidebar with a mobile drawer.** The new-chat toolbar adapts to the
+  available width — it shows the shortcut badge when there's room and degrades to a
+  compact icon when space is tight, so it never overflows in any language. On phones
+  (≤767px) the sidebar becomes an off-canvas drawer with a backdrop that closes when you
+  pick a conversation, instead of squeezing the chat column.
+- **The bridge's shared-fs media dirs are now keyed by instance.** A bridge serving
+  instance `<I>` reads/writes `/home/node/.openclaw/media/<I>/{outbound,inbound}`,
+  derived automatically from `OPENCLAW_INSTANCE_NAME`. With several gateways (one
+  bridge per gateway), each bridge's mount is now distinct and self-documenting
+  instead of every bridge pointing at the same flat path. The **agent-visible** path
+  stays flat (`/home/node/.openclaw/media/{outbound,inbound}`) on purpose — that is
+  what each gateway exposes and what its `openclaw.json` `file-transfer.allowReadPaths`
+  whitelists. Existing setups are unaffected: an explicit `OPENCLAW_MEDIA_OUTBOUND_DIR`
+  / `OPENCLAW_INBOUND_DIR` still wins, and with no instance name the dirs fall back to
+  the flat path (the co-located dev case).
+- **New setup guide: `deploy/SHARED_FS_MEDIA.md`.** A from-scratch, example-rich page:
+  when to use shared-fs vs gateway-http, the four-path model (and *why* the agent path
+  must stay flat), the per-instance mount convention, a worked **two-gateway** example
+  with literal paths + compose, a deterministic step-by-step procedure (followable by a
+  person or an AI installer), how to verify, and the gotchas (uid match, create the host
+  dirs first, the agent's write-location convention).
+- **Compose template + `.env.example` updated to match.** The bridge mounts are now
+  instance-keyed, an inbound host-dir variable was added, and the comments spell out the
+  bridge-vs-agent path split. The stale “single-gateway” note in `deploy/README.md` is
+  corrected — multiple gateways are supported via a per-instance Bridge URL.
+- **At-rest secret encryption (foundation, inert in this release).** Adds an AES-256-GCM
+  secret cipher (Web Crypto) with a self-describing, crypto-agile envelope (so an
+  external KMS — AWS KMS / Vault — can slot in later without a schema change) and optional
+  context-binding. This is the groundwork for configuring gateway credentials from the
+  Settings UI (encrypted in Convex) instead of bridge env vars. It is **not wired to
+  anything yet** and requires **no new production config** — it ships as a tested building
+  block, changing no current behavior.
+
+## [0.4.1] — Upload progress and clean oversized-file rejection
+
+Fix release. No breaking changes.
+
+- **File uploads show progress and fail loudly when too large.** Attaching a file now
+  displays an upload progress indicator, and a file that exceeds the gateway's inbound
+  limit is rejected up front with a clear message instead of failing silently.
+
 ## [0.4.0] — Sortable & filterable admin tables, a real Connexions table, and withdrawable feedback
 
 Feature release. No breaking changes; no data migration. Everything here is additive

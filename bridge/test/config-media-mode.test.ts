@@ -3,7 +3,12 @@
 // filesystem needed), and "shared-fs" is strictly OPT-IN.
 
 import { describe, it, expect } from "vitest";
-import { loadConfig, deriveHttpBase, ConfigError } from "../src/config.js";
+import {
+  loadConfig,
+  deriveHttpBase,
+  mediaInstanceSegment,
+  ConfigError,
+} from "../src/config.js";
 
 const baseEnv = {
   OPENCLAW_GATEWAY_URL: "ws://gw.invalid:18790",
@@ -73,5 +78,63 @@ describe("loadConfig: outbound media mode", () => {
       OPENCLAW_GATEWAY_HTTP_URL: "https://media.example:9443",
     });
     expect(c.gatewayHttpBase).toBe("https://media.example:9443");
+  });
+});
+
+describe("mediaInstanceSegment", () => {
+  it("keeps a safe name verbatim", () => {
+    expect(mediaInstanceSegment("olivier")).toBe("olivier");
+    expect(mediaInstanceSegment("agent-1.beta_2")).toBe("agent-1.beta_2");
+  });
+
+  it("returns null for empty/unset so the caller falls back to the flat path", () => {
+    expect(mediaInstanceSegment(null)).toBeNull();
+    expect(mediaInstanceSegment("")).toBeNull();
+    expect(mediaInstanceSegment("   ")).toBeNull();
+  });
+
+  it("never widens beyond ONE segment (path-traversal defense)", () => {
+    // A `/`, `\` or `..` must NOT become a deeper/parent dir in the mount path.
+    expect(mediaInstanceSegment("a/b")).toBe("a_b");
+    expect(mediaInstanceSegment("../etc")).toBe(".._etc");
+    expect(mediaInstanceSegment("..")).toBeNull();
+    expect(mediaInstanceSegment(".")).toBeNull();
+    expect(mediaInstanceSegment("x/../y")).toBe("x_.._y");
+  });
+});
+
+describe("loadConfig: per-instance media dirs (the bridge's own mount)", () => {
+  it("DEFAULTS the bridge dirs to an instance-keyed subdir; agent-mounts stay FLAT", () => {
+    const c = loadConfig({ ...baseEnv, OPENCLAW_INSTANCE_NAME: "olivier" });
+    // The bridge reads/writes under the per-instance subdir (Model M isolation).
+    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/olivier/outbound");
+    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/olivier/inbound");
+    // The AGENT-visible mounts MUST stay flat (the gateway path the agent
+    // writes/reads + the openclaw.json allowReadPaths whitelist).
+    expect(c.mediaOutboundAgentMount).toBe("/home/node/.openclaw/media/outbound");
+    expect(c.inboundAgentMount).toBe("/home/node/.openclaw/media/inbound");
+  });
+
+  it("falls back to the FLAT bridge dirs when no instance name (co-located dev)", () => {
+    const c = loadConfig({ ...baseEnv });
+    expect(c.instanceName).toBeNull();
+    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/outbound");
+    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/inbound");
+  });
+
+  it("explicit OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override the keyed default", () => {
+    const c = loadConfig({
+      ...baseEnv,
+      OPENCLAW_INSTANCE_NAME: "olivier",
+      OPENCLAW_MEDIA_OUTBOUND_DIR: "/srv/out",
+      OPENCLAW_INBOUND_DIR: "/srv/in",
+    });
+    expect(c.mediaOutboundDir).toBe("/srv/out"); // not /media/olivier/outbound
+    expect(c.inboundMediaDir).toBe("/srv/in");
+  });
+
+  it("sanitizes an unsafe instance name into ONE segment (no path traversal in the mount)", () => {
+    const c = loadConfig({ ...baseEnv, OPENCLAW_INSTANCE_NAME: "a/b" });
+    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/a_b/outbound");
   });
 });

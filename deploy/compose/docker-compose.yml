@@ -103,16 +103,19 @@ services:
       # until the first send carries the instance config. For shared-fs, only the
       # per-bridge DEPLOY-TIME plumbing below lives here (a docker mount can't be hot).
       #
-      # [shared-fs] OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR are where the
-      # BRIDGE reads/writes — they MUST equal the path the shared volume is mounted at
-      # IN THIS BRIDGE container (the `volumes:` mount below ties them; keep in sync).
-      # They are NOT the gateway's path (separate containers). Pointing them at an
-      # unmounted path is the #1 shared-fs misconfig: ENOENT, every file silently
-      # undeliverable (the "verify paths" button surfaces it). The agent-visible path
-      # the gateway serves these at is the per-instance "Chemin (vu par l'agent)" in
-      # Settings, not here.
-      - OPENCLAW_MEDIA_OUTBOUND_DIR=/home/node/.openclaw/media/outbound
-      - OPENCLAW_INBOUND_DIR=/home/node/.openclaw/media/inbound
+      # [shared-fs] The dirs the BRIDGE reads/writes auto-derive from
+      # OPENCLAW_INSTANCE_NAME (above): `/home/node/.openclaw/media/<instance>/
+      # {outbound,inbound}`. Keying by instance keeps every per-gateway bridge's
+      # mount distinct + self-documenting (Model M — one bridge per gateway). The
+      # `volumes:` mount target below MUST equal that derived path (it does, via the
+      # same ${OPENCLAW_INSTANCE_NAME}); a mismatch is the #1 shared-fs misconfig:
+      # ENOENT, every file silently undeliverable (the "Vérifier les chemins" button
+      # surfaces it). These are the BRIDGE-side paths, NOT the gateway's — the
+      # agent-visible mount stays flat `/home/node/.openclaw/media/{outbound,inbound}`
+      # (what the gateway exposes + openclaw.json `file-transfer.allowReadPaths`
+      # whitelists; do NOT key it). Override only if you mount elsewhere:
+      # OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR. Full guide + worked
+      # multi-gateway example: deploy/SHARED_FS_MEDIA.md.
       # [shared-fs] Reap staged inbound files older than this (> the longest turn).
       - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
       # [gateway-http mode] Optional override: set ONLY if the gateway serves the
@@ -124,15 +127,42 @@ services:
       # then streams at the upload's pace). Default 60s.
       - OPENCLAW_MEDIA_FETCH_TIMEOUT_MS=${OPENCLAW_MEDIA_FETCH_TIMEOUT_MS:-60000}
       - BRIDGE_PORT=8787
-    # [shared-fs mode ONLY] Uncomment to give the bridge its OWN mount of the shared
-    # media volume. The mount TARGET (right of the colon) MUST equal the matching
-    # OPENCLAW_*_DIR env above — that path is what the bridge reads/writes; the host
-    # source is the same dir the gateway container mounts. Outbound is read-only (the
-    # bridge only reads agent output); inbound is read-WRITE (the bridge writes staged
-    # files there). Add only the leg(s) you enabled.
+    # ── TO ENABLE shared-fs media (deterministic delivery — see below) ──────────
+    # shared-fs is the ONLY way to deliver agent-produced files DETERMINISTICALLY:
+    # the bridge SCANS the outbound dir at end-of-turn and hosts every file the agent
+    # wrote, independent of whether the LLM emitted a `MEDIA:` line (empirically the
+    # gateway surfaces NOTHING for a bare file write — no mediaUrls, no artifacts; it
+    # only signals a file if the LLM cooperates). gateway-http (the default) cannot do
+    # this. So for reliable downloads, enable shared-fs:
+    #
+    #   1. Settings -> Agents -> Bridge -> (per instance) set Outbound + Inbound mode
+    #      to shared-fs (hot; no restart).
+    #   2. Uncomment `user:` below and set it to the SAME uid:gid the gateway container
+    #      runs as. The bridge WRITES inbound files; the gateway's agent (its uid) must
+    #      be able to READ them — a uid mismatch makes inbound silently "permission
+    #      denied". (Alternative: a default ACL `setfacl -d -m o::rX` on the host dirs.)
+    #   3. Create the HOST media dirs FIRST, owned by the gateway uid (else the mount
+    #      auto-creates them root-owned → the agent can't read). For an instance whose
+    #      gateway mounts `<root>/instances/<name>/.openclaw`, the host dirs are
+    #      `<root>/instances/<name>/.openclaw/media/{outbound,inbound}`:
+    #        mkdir -p <root>/instances/<name>/.openclaw/media/{inbound,outbound}
+    #        chown -R <uid>:<gid> <root>/instances/<name>/.openclaw/media
+    #   4. Uncomment the `volumes:` and point each HOST source at those dirs. The mount
+    #      TARGET is keyed by ${OPENCLAW_INSTANCE_NAME} so it equals the bridge's
+    #      auto-derived OPENCLAW_*_DIR. Outbound is :ro (bridge only reads agent
+    #      output); inbound is rw (bridge writes staged files).
+    #   5. Recreate the bridge (a docker mount is NOT hot): `up -d --force-recreate bridge`,
+    #      then click "Vérifier les chemins" in the per-instance config modal.
+    #
+    # Under Model M (one bridge per gateway) each bridge mounts ITS instance's dirs.
+    # MULTIPLE gateways? Run one bridge container PER gateway — each with its own
+    # OPENCLAW_INSTANCE_NAME, host dirs, port and Convex `instances.bridgeUrl`. The
+    # instance-keyed target below keeps their internal paths distinct. Full worked
+    # 2-gateway example: deploy/SHARED_FS_MEDIA.md.
+    # user: "${BRIDGE_RUN_AS_UID:?gateway uid:gid, e.g. 1000017:1000011}"
     # volumes:
-    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to the shared media/outbound dir}:/home/node/.openclaw/media/outbound:ro
-    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to the shared media/inbound dir}:/home/node/.openclaw/media/inbound
+    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to this instance's media/outbound dir}:/home/node/.openclaw/media/${OPENCLAW_INSTANCE_NAME}/outbound:ro
+    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to this instance's media/inbound dir}:/home/node/.openclaw/media/${OPENCLAW_INSTANCE_NAME}/inbound
     # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
     # Convex (it reaches convex-backend by service DNS only on ingest, with
     # retry), so a hard depends_on would needlessly couple their lifecycles and

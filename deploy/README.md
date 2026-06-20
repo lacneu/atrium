@@ -70,8 +70,25 @@ After deploying, add your gateway as an **instance** (Settings → Instances) wh
 serves that one name and self-declares it under Settings → Bridge → Compatibility;
 an instance with any other name discovers **zero agents**. Agents then appear
 within ~2 min (a discovery cron) or immediately when you send the first message.
-This deployment is **single-gateway**: an instance's "Gateway URL" field is not
-yet honored (multi-gateway is a planned phase).
+
+**Multiple gateways?** Supported. Add one **instance per gateway** (Settings →
+Agents → Instances), give each its own **Bridge URL**, and run **one bridge
+container per gateway** (Model M) — each with its own `OPENCLAW_INSTANCE_NAME`,
+port, gateway URL/token/device-identity. Dispatch routes each instance's chats to
+its own bridge by that Bridge URL; an instance with no Bridge URL falls back to the
+env `BRIDGE_URL`. A worked two-gateway example (with shared-fs media) is in
+[SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md).
+
+## Media: file delivery & ingestion
+
+By default the bridge moves files over HTTP (**gateway-http** mode) — no shared
+filesystem, works when Atrium and the gateway are on different hosts. For
+**deterministic** downloads (the agent produces a file you reliably get) and
+**large** uploads (video/audio/big docs past the WebSocket frame ceiling), enable
+**shared-fs** — Atrium and the gateway share the gateway's media dirs on disk. The
+full setup, the four-path model, the per-instance mount convention, a worked
+two-gateway example and a deterministic install procedure are in
+**[SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md)**.
 
 ## Docker Compose
 
