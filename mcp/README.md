@@ -4,9 +4,9 @@ A thin, dependency-light **MCP server + CLI** that proxy the atrium
 `/api/v1` observability surface using an `oc_live_` Bearer API key.
 
 It speaks **HTTP only** — it imports nothing from the Convex app. Each tool maps
-1:1 to a planned `/api/v1` route and to a single permission, which is enforced
-**server-side** by the deployment (`requirePermission`). A scoped key (e.g. an
-`observer`) therefore simply gets a `403` for routes it isn't allowed to call.
+to one `/api/v1` route and one permission, which is enforced **server-side** by the
+deployment (`requirePermission`). A scoped key (e.g. an `observer`) therefore simply
+gets a `403` for routes it isn't allowed to call.
 
 Runtime dependencies: `@modelcontextprotocol/sdk` and `zod` only.
 
@@ -33,18 +33,32 @@ Other scripts: `npm run typecheck`, `npm test`.
 
 ## Tools (MCP) / Commands (CLI)
 
-| MCP tool         | CLI command                            | Route                       | Permission         | Increment |
-| ---------------- | -------------------------------------- | --------------------------- | ------------------ | --------- |
-| `health`         | `health`                               | `GET  /api/v1/health`       | none               | 1 (live)  |
-| `list_traces`    | `traces`                               | `GET  /api/v1/traces`       | `traces.read`      | 1 (live)  |
-| `get_kpi`        | `kpi`                                  | `GET  /api/v1/kpi`          | `kpi.read`         | 4         |
-| `query_openclaw` | `query-openclaw`                       | `POST /api/v1/openclaw/query` | `openclaw.query` | 6         |
-| `list_anomalies` | `anomalies`                            | `GET  /api/v1/anomalies`    | `anomalies.read`   | 6         |
-| `report_anomaly` | `report-anomaly`                       | `POST /api/v1/anomalies`    | `anomalies.report` | 6         |
+| MCP tool               | CLI command      | Route                         | Permission         | Purpose |
+| ---------------------- | ---------------- | ----------------------------- | ------------------ | ------- |
+| `health`               | `health`         | `GET  /api/v1/health`         | none               | Liveness probe for the API surface. |
+| `get_compat`           | `compat`         | `GET  /api/v1/compat`         | `bridge.read`      | Bridge version + per-instance gateway versions/capabilities. |
+| `get_integrations`     | —                | `GET  /api/v1/integrations`   | `traces.read`      | Opik/Langfuse configured/enabled + shipping cursors. No keys. |
+| `get_chat_state`       | —                | `GET  /api/v1/chat-state`     | `traces.read`      | Per-message lifecycle of one chat (metadata only). |
+| `get_trace_enrichment` | —                | `GET  /api/v1/trace-enrichment` | `traces.read`    | SOC2-safe span structure from Opik/Langfuse, keyed by `correlationId`. |
+| `diagnose_chat`        | —                | `GET  /api/v1/diagnose`       | `traces.read`      | One assessment of a chat + a suggested action/tool. |
+| `reconcile_chat`       | —                | `POST /api/v1/reconcile-chat` | `selfheal`         | Release a chat's stuck `streaming` message (text preserved). Audited. |
+| `list_traces`          | `traces`         | `GET  /api/v1/traces`         | `traces.read`      | Recent trace events, with filtering. |
+| `get_kpi`              | `kpi`            | `GET  /api/v1/kpi`            | `kpi.read`         | KPI rollups. |
+| `query_openclaw`       | `query-openclaw` | `POST /api/v1/openclaw/query` | `openclaw.query`   | Query OpenClaw via the bridge. |
+| `list_anomalies`       | `anomalies`      | `GET  /api/v1/anomalies`      | `anomalies.read`   | Detected anomalies, with status/severity/source filtering. |
+| `report_anomaly`       | `report-anomaly` | `POST /api/v1/anomalies`      | `anomalies.report` | Record an anomaly / self-repair signal. |
 
-`health` and `list_traces` are live now (increment 1). The rest return their
-API response once increments 4/6 land; until then the server surfaces the API's
-own `404`/error gracefully instead of crashing.
+Tools without a CLI command are MCP-only. Every tool's permission is enforced by
+the deployment: a key lacking a tool's permission gets a `403` the tool surfaces
+as an error.
+
+The four read-only diagnostic tools (`get_integrations`, `diagnose_chat`,
+`get_chat_state`, `get_trace_enrichment`) plus the bounded corrective
+`reconcile_chat` compose into a closed loop an agent can drive from a single user
+report. See **[the self-correction loop](../docs/SELF_CORRECTION_LOOP.md)** for how
+they fit together and the SOC2-safe trace catalog (including the `documentary.*`
+document-fetch traces). The whole surface is metadata-only — never message text,
+filenames, URLs, or keys.
 
 ## CLI usage
 
@@ -52,8 +66,8 @@ own `404`/error gracefully instead of crashing.
 export OPENCLAW_WEBCHAT_API_BASE=http://127.0.0.1:3213
 export OPENCLAW_WEBCHAT_API_KEY=oc_live_xxxxxxxxxxxx
 
-# live now (increment 1)
 node dist/cli.js health
+node dist/cli.js compat
 node dist/cli.js traces --limit 20
 node dist/cli.js traces --kind api.call --correlation-id abc123
 
@@ -62,7 +76,6 @@ node dist/cli.js traces --kind api.call --correlation-id abc123
 node dist/cli.js traces --from now-24h --to now --status-class 4xx --kind api.call --q foo
 node dist/cli.js traces --status 404 --principal-type service --role-key admin
 
-# once increments 4/6 land
 node dist/cli.js kpi --metric api.calls --since 2026-06-01T00:00
 node dist/cli.js kpi --metric api.calls --from now-24h --to now
 node dist/cli.js anomalies --limit 50 --status open

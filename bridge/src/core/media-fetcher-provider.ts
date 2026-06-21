@@ -27,7 +27,9 @@ export function buildMediaFetcher(
     case "gateway-http":
       return new GatewayHttpMediaFetcher({
         httpBase: config.gatewayHttpBase,
-        token: config.openclawToken,
+        // Boot-resolved (index.ts) — non-null by construction; the same operator
+        // token the WS connect uses.
+        token: config.openclawToken!,
         maxBytes,
         timeoutMs: config.mediaFetchTimeoutMs,
       });

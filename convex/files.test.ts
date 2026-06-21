@@ -9,6 +9,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -99,6 +100,95 @@ describe("files: invariant + owner-scoped listing", () => {
     expect((await as.query(api.files.listMine, {})).files.length).toBe(0);
     const orphans = await t.run((ctx) => ctx.db.query("files").collect());
     expect(orphans.length).toBe(0);
+  });
+
+  test("truncate-forward uses LOGICAL order: deleting an assistant removes a queued follow-up (no orphan)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const { chatId, user1, user2, assistant1 } = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1 });
+      const mk = (role: "user" | "assistant", text: string) =>
+        ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role,
+          status: "complete" as const,
+          text,
+          updatedAt: 1,
+        });
+      const user1 = await mk("user", "U1");
+      const user2 = await mk("user", "U2"); // queued in U1's pre-ack: early _ct
+      const assistant1 = await mk("assistant", "A1"); // U1's reply, later _ct
+      const a1 = (await ctx.db.get(assistant1))!;
+      // U2 was DRAINED → orderTime AFTER A1 (logically after A1, _ct before it).
+      await ctx.db.patch(user2, { orderTime: a1._creationTime + 1 });
+      // U2 still carries a queued outbox (the purge below would orphan its message).
+      await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "u2",
+        messageId: user2,
+        text: "U2",
+        attachmentIds: [],
+        status: "queued" as const,
+      });
+      return { chatId, user1, user2, assistant1 };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+
+    await as.mutation(api.messages.deleteMessage, { messageId: assistant1 });
+
+    const ids = await t.run((ctx) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect()
+        .then((rows) => rows.map((m) => m._id)),
+    );
+    expect(ids).toContain(user1); // U1 kept (logically before A1)
+    expect(ids).not.toContain(assistant1); // A1 deleted
+    // Regression guard: raw _creationTime truncation keeps U2 (early _ct) as an
+    // undispatchable orphan (its outbox is purged); effectiveOrder removes it too.
+    expect(ids).not.toContain(user2);
+  });
+
+  test("truncate-forward keeps an EARLIER still-queued follow-up when a LATER one is deleted", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const { chatId, u2, u3 } = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1 });
+      // Two follow-ups parked at once → BOTH carry the SENTINEL; only _creationTime
+      // (FIFO) separates them.
+      const mk = (text: string) =>
+        ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user" as const,
+          status: "complete" as const,
+          text,
+          orderTime: QUEUED_ORDER_SENTINEL,
+          updatedAt: 1,
+        });
+      const u2 = await mk("U2"); // queued first (earlier _ct)
+      const u3 = await mk("U3"); // queued second (later _ct), SAME sentinel
+      return { chatId, u2, u3 };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+
+    // Delete U3 (the later follow-up). Regression guard: comparing effectiveOrder
+    // ALONE (both SENTINEL) would truncate U2 too; compareOrder's _creationTime
+    // tie-break keeps the earlier-queued U2.
+    await as.mutation(api.messages.deleteMessage, { messageId: u3 });
+
+    const ids = await t.run((ctx) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect()
+        .then((rows) => rows.map((m) => m._id)),
+    );
+    expect(ids).toContain(u2); // earlier still-queued follow-up KEPT
+    expect(ids).not.toContain(u3); // the deleted one gone
   });
 
   test("backfill is re-runnable: legacy part with no files row → 1 row; second run inserts nothing", async () => {

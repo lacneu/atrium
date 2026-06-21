@@ -88,8 +88,16 @@ services:
     environment:
       # YOUR OpenClaw gateway (external to this stack).
       - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:?ws[s]:// URL of your OpenClaw gateway}
-      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:?operator token for the gateway}
-      - OPENCLAW_DEVICE_IDENTITY=${OPENCLAW_DEVICE_IDENTITY:?Ed25519 device identity JSON}
+      # token + device identity are OPTIONAL here: blank => the bridge fetches them
+      # (decrypted) from Convex at boot using BRIDGE_INSTANCE_SECRET below ("UI
+      # mode"). Set them here for the simpler "env mode". See .env.example + the
+      # "UI-managed gateway credentials" section of deploy/README.md.
+      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
+      - OPENCLAW_DEVICE_IDENTITY=${OPENCLAW_DEVICE_IDENTITY:-}
+      # [UI mode] per-bridge secret minted in Settings -> Agents -> Instances ->
+      # Credentials; binds this bridge to its instance so it fetches ONLY that
+      # gateway's encrypted creds. Blank in env mode.
+      - BRIDGE_INSTANCE_SECRET=${BRIDGE_INSTANCE_SECRET:-}
       - OPENCLAW_INSTANCE_NAME=${OPENCLAW_INSTANCE_NAME:?the instance name this bridge serves}
       # Convex .site origin — SERVICE NAME (same network), no host IP needed.
       - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211

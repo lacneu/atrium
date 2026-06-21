@@ -114,6 +114,39 @@ describe("assessChat — priority + suggested action", () => {
   });
 });
 
+describe("assessChat — L2 stuck document fetch", () => {
+  test("a STALE pendingDocFetch -> attachment_problem + reconcile_chat", () => {
+    const a = assessChat(
+      { ok: true, messages: [], pendingDocFetch: { ageSeconds: 13 * 60 } },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("attachment_problem");
+    expect(a.severity).toBe("high");
+    expect(a.suggestedTool).toBe("reconcile_chat");
+    expect(a.summary).toMatch(/fetch/i);
+  });
+
+  test("a FRESH pendingDocFetch (still in progress) is NOT flagged", () => {
+    const a = assessChat(
+      { ok: true, messages: [], pendingDocFetch: { ageSeconds: 20 } },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("healthy");
+  });
+
+  test("priority: a stuck STREAM still wins over a stale doc fetch", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [{ role: "assistant", status: "streaming", stuckStreaming: true, errorCode: null }],
+        pendingDocFetch: { ageSeconds: 13 * 60 },
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("stuck_stream");
+  });
+});
+
 describe("actionForErrorCode", () => {
   test("known codes map to specific, non-generic remediations", () => {
     expect(actionForErrorCode("ATTACHMENT_REJECTED")).toMatch(/gateway/i);

@@ -27,6 +27,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { isChartAvailableToUser } from "./charts";
 import {
   BUILTIN_CHARTS,
@@ -77,6 +78,18 @@ async function groupKey(
   return listed.find((g) => g._id === groupId)!.key;
 }
 
+// Make a chart AVAILABLE to a group the 3-tier way: admin adds it to the group's
+// POOL (Tier 1) then SELECTS it into the group (Tier 2). Replaces the old direct
+// assignChartToGroup-as-admin (which now requires the chart to be pooled first).
+async function poolAndSelect(
+  asAdmin: ReturnType<ReturnType<typeof convexTest>["withIdentity"]>,
+  groupId: Id<"groups">,
+  chartKey: string,
+): Promise<void> {
+  await asAdmin.mutation(api.charts.addChartToGroupPool, { groupId, chartKey });
+  await asAdmin.mutation(api.charts.assignChartToGroup, { groupId, chartKey });
+}
+
 // Pick a known builtin key and a second distinct one (the registry has 3, so
 // these are stable; the test stays meaningful if names ever change).
 const FIRST_KEY = BUILTIN_CHARTS[0]!.key;
@@ -97,10 +110,7 @@ describe("listMyCharts availability", () => {
     const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
     await as.mutation(api.groups.addMember, { groupId, userId: member });
     // Restrict FIRST_KEY to group G (>=1 groupCharts row flips it to restricted).
-    await as.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: FIRST_KEY,
-    });
+    await poolAndSelect(as, groupId, FIRST_KEY);
     const key = await groupKey(as, groupId);
 
     // Member: sees ALL builtins; FIRST_KEY carries via={group:key}, the rest common.
@@ -143,10 +153,7 @@ describe("listMyCharts availability", () => {
     // Set up the membership + restriction as the (real) admin would.
     const groupId = await asAdmin.mutation(api.groups.createGroup, { name: "G" });
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: member });
-    await asAdmin.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: FIRST_KEY,
-    });
+    await poolAndSelect(asAdmin, groupId, FIRST_KEY);
     const key = await groupKey(asAdmin, groupId);
 
     // The impersonating admin's listMyCharts resolves to the MEMBER's set.
@@ -170,10 +177,7 @@ describe("setMyChart availability gate", () => {
 
     // Restrict FIRST_KEY to a group the user is NOT in -> unavailable to the user.
     const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
-    await as.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: FIRST_KEY,
-    });
+    await poolAndSelect(as, groupId, FIRST_KEY);
 
     await expect(
       t
@@ -208,21 +212,25 @@ describe("setMyChart availability gate", () => {
 // ===========================================================================
 
 describe("assign/remove chart to group", () => {
-  test("assignChartToGroup dedups; removeChartFromGroup is idempotent; deleteGroup CASCADE purges groupCharts", async () => {
+  test("Tier-2 select is pool-constrained + dedups; unselect is idempotent; deleteGroup CASCADE purges groupCharts", async () => {
     const t = convexTest(schema, modules);
     const adminId = await seedAdmin(t);
     const as = t.withIdentity({ subject: `${adminId}|session` });
     const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
 
-    // Unknown chart key is rejected (same guard as assign/remove/setDefault).
+    // A chart NOT in the group's pool cannot be selected (Tier-2 ⊆ Tier-1). This
+    // also rejects an unknown key (it can never be pooled). If the pool constraint
+    // regressed, FIRST_KEY would get a groupCharts row here.
     await expect(
       as.mutation(api.charts.assignChartToGroup, {
         groupId,
-        chartKey: "does-not-exist",
+        chartKey: FIRST_KEY,
       }),
-    ).rejects.toThrow(/Unknown chart/);
+    ).rejects.toThrow(/not in this group's pool/);
+    expect((await groupChartRows(t)).length).toBe(0);
 
-    // Assign twice -> exactly one row (by_group_chart .unique() dedup).
+    // Pool it, then select twice -> exactly one row (by_group_chart .unique() dedup).
+    await as.mutation(api.charts.addChartToGroupPool, { groupId, chartKey: FIRST_KEY });
     await as.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: FIRST_KEY,
@@ -233,23 +241,19 @@ describe("assign/remove chart to group", () => {
     });
     expect((await groupChartRows(t)).length).toBe(1);
 
-    // Unknown chart key is rejected on the remove path too (symmetry with
-    // assign/setDefault, per spec section 4's single "reject unknown" clause).
-    await expect(
-      as.mutation(api.charts.removeChartFromGroup, {
-        groupId,
-        chartKey: "does-not-exist",
-      }),
-    ).rejects.toThrow(/Unknown chart/);
-
-    // Remove a row that does NOT exist -> no throw (idempotent).
+    // Unselect is idempotent: an unknown / never-selected key is a silent no-op
+    // (unselect no longer validates the key — you can always stop offering).
+    await as.mutation(api.charts.removeChartFromGroup, {
+      groupId,
+      chartKey: "does-not-exist",
+    });
     await as.mutation(api.charts.removeChartFromGroup, {
       groupId,
       chartKey: SECOND_KEY,
     });
     expect((await groupChartRows(t)).length).toBe(1);
 
-    // Remove the real row, then again -> idempotent, back to zero.
+    // Unselect the real row, then again -> idempotent, back to zero.
     await as.mutation(api.charts.removeChartFromGroup, {
       groupId,
       chartKey: FIRST_KEY,
@@ -260,7 +264,7 @@ describe("assign/remove chart to group", () => {
     });
     expect((await groupChartRows(t)).length).toBe(0);
 
-    // Re-assign, then delete the group -> the P3 cascade purges groupCharts.
+    // Re-select (still pooled), then delete the group -> the cascade purges groupCharts.
     await as.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: FIRST_KEY,
@@ -276,25 +280,23 @@ describe("assign/remove chart to group", () => {
 // ===========================================================================
 
 describe("resolveChart precedence", () => {
-  // Signature: resolveChart(userKey, domainDefault, adminDefault, availableKeys,
-  // domainAvailable). Precedence: user > domain > admin > code.
-  test("PURE: user pick > domain > admin default > null", async () => {
+  // Signature: resolveChart(userKey, groupDefault, domainDefault, adminDefault,
+  // availableKeys, domainAvailable). Precedence: user > group > domain > admin > code.
+  test("PURE: user pick > admin default > null", async () => {
     const available = new Set([FIRST_KEY, SECOND_KEY]);
 
     // 1) User pick available -> source "user".
-    expect(resolveChart(FIRST_KEY, null, SECOND_KEY, available, false)).toEqual({
-      chartKey: FIRST_KEY,
-      source: "user",
-    });
+    expect(
+      resolveChart(FIRST_KEY, null, null, SECOND_KEY, available, false),
+    ).toEqual({ chartKey: FIRST_KEY, source: "user" });
 
     // 2) No user pick, admin default set -> source "common/admin".
-    expect(resolveChart(null, null, SECOND_KEY, available, false)).toEqual({
-      chartKey: SECOND_KEY,
-      source: "common/admin",
-    });
+    expect(
+      resolveChart(null, null, null, SECOND_KEY, available, false),
+    ).toEqual({ chartKey: SECOND_KEY, source: "common/admin" });
 
     // 3) Neither -> null/"code".
-    expect(resolveChart(null, null, null, available, false)).toEqual({
+    expect(resolveChart(null, null, null, null, available, false)).toEqual({
       chartKey: null,
       source: "code",
     });
@@ -306,8 +308,39 @@ describe("resolveChart precedence", () => {
     // ignored availability would return {FIRST_KEY,"user"}.
     const availableWithoutUserPick = new Set([SECOND_KEY]);
     expect(
-      resolveChart(FIRST_KEY, null, SECOND_KEY, availableWithoutUserPick, false),
+      resolveChart(
+        FIRST_KEY,
+        null,
+        null,
+        SECOND_KEY,
+        availableWithoutUserPick,
+        false,
+      ),
     ).toEqual({ chartKey: SECOND_KEY, source: "common/admin" });
+  });
+
+  test("PURE (group tier): group default beats domain + admin, loses to a valid user pick", async () => {
+    const available = new Set([FIRST_KEY]);
+    const GROUP = "grp-key";
+    const DOMAIN = "dom-key";
+    const ADMIN = "adm-key";
+
+    // group default applies (no user pick) and BEATS both the domain and admin defaults.
+    expect(resolveChart(null, GROUP, DOMAIN, ADMIN, available, true)).toEqual({
+      chartKey: GROUP,
+      source: "group",
+    });
+
+    // a VALID user pick still beats the group default.
+    expect(
+      resolveChart(FIRST_KEY, GROUP, DOMAIN, ADMIN, available, true),
+    ).toEqual({ chartKey: FIRST_KEY, source: "user" });
+
+    // an UNavailable user pick falls through to the group default (not the stale pick,
+    // not the domain) -- the discriminating case for the new tier's position.
+    expect(
+      resolveChart("stale", GROUP, DOMAIN, ADMIN, available, true),
+    ).toEqual({ chartKey: GROUP, source: "group" });
   });
 
   test("PURE (domain tier): applies when available, skipped when group-gated, loses to user pick, beats admin", async () => {
@@ -315,26 +348,25 @@ describe("resolveChart precedence", () => {
     const DOMAIN = "dom-key";
     const ADMIN = "adm-key";
 
-    // domain default applies when available (no user pick) AND beats admin default.
-    expect(resolveChart(null, DOMAIN, ADMIN, available, true)).toEqual({
+    // domain default applies when available (no user/group pick) AND beats admin.
+    expect(resolveChart(null, null, DOMAIN, ADMIN, available, true)).toEqual({
       chartKey: DOMAIN,
       source: "domain",
     });
 
     // domain SKIPPED when not available (group-gated, non-member) -> admin default.
-    expect(resolveChart(null, DOMAIN, ADMIN, available, false)).toEqual({
+    expect(resolveChart(null, null, DOMAIN, ADMIN, available, false)).toEqual({
       chartKey: ADMIN,
       source: "common/admin",
     });
 
     // a valid user pick beats the domain default.
-    expect(resolveChart(FIRST_KEY, DOMAIN, ADMIN, available, true)).toEqual({
-      chartKey: FIRST_KEY,
-      source: "user",
-    });
+    expect(
+      resolveChart(FIRST_KEY, null, DOMAIN, ADMIN, available, true),
+    ).toEqual({ chartKey: FIRST_KEY, source: "user" });
 
     // domain default, no admin default -> domain (not native).
-    expect(resolveChart(null, DOMAIN, null, available, true)).toEqual({
+    expect(resolveChart(null, null, DOMAIN, null, available, true)).toEqual({
       chartKey: DOMAIN,
       source: "domain",
     });
@@ -360,10 +392,7 @@ describe("resolveChart precedence", () => {
     });
     // Admin restricts FIRST_KEY to a group the user is NOT in -> unavailable now.
     const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
-    await as.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: FIRST_KEY,
-    });
+    await poolAndSelect(as, groupId, FIRST_KEY);
     // Admin global default = SECOND_KEY (common).
     await as.mutation(api.charts.setDefaultChart, { name: SECOND_KEY });
 
@@ -374,6 +403,32 @@ describe("resolveChart precedence", () => {
     expect(me.resolvedChartKey).toBe(SECOND_KEY); // dropped -> admin default
     expect(me.chartSource).toBe("common/admin");
     expect(me.defaultChartKey).toBe(SECOND_KEY);
+  });
+
+  test("WIRING (getMe): a member with no pick resolves to their GROUP default (source 'group')", async () => {
+    // The 3-tier group default tier: a member with no personal pick inherits the
+    // default chart their group SELECTED (first selection auto-defaults). The group
+    // default must WIN even when an admin global default also exists (user > group >
+    // domain > admin) -- a precedence bug would resolve to the admin default instead.
+    const t = convexTest(schema, modules);
+    const adminId = await seedAdmin(t);
+    const member = await seedUser(t, "member");
+    const as = t.withIdentity({ subject: `${adminId}|session` });
+
+    const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
+    await as.mutation(api.groups.addMember, { groupId, userId: member });
+    // Pool + select FIRST_KEY -> it becomes G's default (auto-elect first selection).
+    await poolAndSelect(as, groupId, FIRST_KEY);
+    // An admin global default is set to a DIFFERENT key -> the group default must win.
+    await as.mutation(api.charts.setDefaultChart, { name: SECOND_KEY });
+
+    const me = await t
+      .withIdentity({ subject: `${member}|session` })
+      .query(api.me.getMe, {});
+    expect(me.chartKey).toBeNull(); // no personal pick
+    expect(me.resolvedChartKey).toBe(FIRST_KEY); // the GROUP default, not SECOND_KEY
+    expect(me.chartSource).toBe("group");
+    expect(me.defaultChartKey).toBe(SECOND_KEY); // admin default still reported
   });
 });
 
@@ -396,18 +451,21 @@ describe("CHARTS_MANAGE keys off the REAL identity", () => {
     await expect(
       asUser.mutation(api.charts.setDefaultChart, { name: FIRST_KEY }),
     ).rejects.toThrow(/missing permission charts\.manage/);
+    // Chart group SELECTION is now Tier-2 (gated authorizeGroupManage), so a plain
+    // non-admin lacking groups.manage is rejected on the GROUPS permission — not
+    // charts.manage (the gate moved with the 3-tier split).
     await expect(
       asUser.mutation(api.charts.assignChartToGroup, {
         groupId,
         chartKey: FIRST_KEY,
       }),
-    ).rejects.toThrow(/missing permission charts\.manage/);
+    ).rejects.toThrow(/missing permission groups\.manage/);
     await expect(
       asUser.mutation(api.charts.removeChartFromGroup, {
         groupId,
         chartKey: FIRST_KEY,
       }),
-    ).rejects.toThrow(/missing permission charts\.manage/);
+    ).rejects.toThrow(/missing permission groups\.manage/);
   });
 
   test("an admin IMPERSONATING a regular user STILL manages charts (gate uses REAL id)", async () => {
@@ -429,12 +487,9 @@ describe("CHARTS_MANAGE keys off the REAL identity", () => {
     const as = t.withIdentity({ subject: `${adminId}|session` });
     const groupId = await as.mutation(api.groups.createGroup, { name: "G" });
 
-    // setDefaultChart + assignChartToGroup both succeed despite impersonation.
+    // setDefaultChart + (pool + select) both succeed despite impersonation.
     await as.mutation(api.charts.setDefaultChart, { name: FIRST_KEY });
-    await as.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: FIRST_KEY,
-    });
+    await poolAndSelect(as, groupId, FIRST_KEY);
     const admin = await as.query(api.charts.listChartsAdmin, {});
     const restricted = admin.find((c) => c.key === FIRST_KEY)!;
     expect(restricted.isGlobalDefault).toBe(true);
@@ -491,10 +546,7 @@ describe("isChartAvailableToUser (bounded reachability truth table)", () => {
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: member });
 
     // SECOND_KEY builtin restricted to the group; FIRST_KEY stays common.
-    await asAdmin.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: SECOND_KEY,
-    });
+    await poolAndSelect(asAdmin, groupId, SECOND_KEY);
 
     // Custom charts inserted directly (the helper reads them by key/scope/owner).
     const minimal = { colors: { light: {}, dark: {} } };
@@ -529,11 +581,8 @@ describe("isChartAvailableToUser (bounded reachability truth table)", () => {
         createdAt: 1,
       });
     });
-    // Admin shares the OWNER's personal chart with the group.
-    await asAdmin.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: sharedCustomKey,
-    });
+    // Admin makes the OWNER's personal chart available to the group (pool + select).
+    await poolAndSelect(asAdmin, groupId, sharedCustomKey);
 
     const avail = (userId: typeof owner, key: string) =>
       t.run((ctx) => isChartAvailableToUser(ctx, userId, key));

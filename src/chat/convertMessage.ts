@@ -9,6 +9,7 @@ import {
   type ProvenancePartView,
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
+import { stripGatewayMediaId } from "../../convex/lib/mediaName";
 
 // Maps a Convex `messages` document (joined with its ordered `messageParts`)
 // into the assistant-ui `ThreadMessageLike` shape consumed by
@@ -65,18 +66,13 @@ function toolPartToActivity(
   };
 }
 
-// The gateway names offloaded media `<base>---<uuid>.<ext>` (media-store id), so
-// an agent-generated file surfaces as e.g.
-// `openclaw-lightrag-report---4c23520c-…-….pdf`. Strip the `---<uuid>` segment
-// for DISPLAY (and the download filename) so the chip reads `…-report.pdf`. Only
-// a strict UUID immediately before the extension is removed — a user upload like
-// `IFOA Presentation.pptx` (no such segment) is left untouched.
-const GATEWAY_MEDIA_ID_RE =
-  /---[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\.[^.]+$|$)/i;
-
+// Strip the gateway media-store `---<uuid>` id for DISPLAY (and the download
+// filename) so an agent-generated file reads `…-report.pdf`. The strip lives in the
+// SHARED lib/mediaName so the backend documentary correlation uses the EXACT same
+// normalization (a returned `…---<uuid>.pdf` must match a `….pdf` reference).
 export function displayFilename(name: string | undefined): string | undefined {
   if (!name) return name;
-  return name.replace(GATEWAY_MEDIA_ID_RE, "");
+  return stripGatewayMediaId(name);
 }
 
 function filePartToContent(
@@ -177,6 +173,9 @@ export function convertConvexMessage(
         // Provenance reports (what the gateway plugins fed the LLM this turn),
         // in part order — rendered by SourcesActivity as the "Sources" line.
         provenanceParts,
+        // L2: count of READY downloadable document attachments for this turn —
+        // drives the subtle "joints" badge on the Sources chip.
+        attachedDocCount: message.attachedDocCount ?? 0,
         // The EXACT stored text — the verbatim string for the "Source" view (no
         // markdown, no autocorrect, no transformation). For the user turn this is
         // what was typed/sent; for the assistant turn it is the gateway's final

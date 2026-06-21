@@ -40,6 +40,7 @@ import {
 } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { auditImpersonated } from "./lib/audit";
+import { authorizeGroupManage } from "./lib/groupAccess";
 import {
   BUILTIN_CHARTS,
   BUILTIN_CHART_KEYS,
@@ -117,6 +118,40 @@ async function userGroupIds(
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
   return new Set(memberships.map((m) => m.groupId));
+}
+
+/**
+ * The user's GROUP default chart key (Tier-2 default), or null. Walks the user's
+ * group memberships in a DETERMINISTIC order (group createdAt, then _id) and returns
+ * the FIRST group's default chart (a groupCharts row with isDefault === true). A user
+ * in several groups each with a default resolves to the OLDEST group's default — a
+ * stable, explainable rule. Bounded reads (memberships + per-group groupCharts), used
+ * on the getMe hot path: the key is a chart that group SELECTED, so it is available to
+ * the member by construction (resolveChart applies it without a re-check).
+ */
+export async function groupDefaultChartForUser(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<string | null> {
+  const memberships = await ctx.db
+    .query("groupMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const groups: Doc<"groups">[] = [];
+  for (const m of memberships) {
+    const g = await ctx.db.get(m.groupId);
+    if (g !== null) groups.push(g);
+  }
+  groups.sort((a, b) => a.createdAt - b.createdAt || (a._id < b._id ? -1 : 1));
+  for (const g of groups) {
+    const rows = await ctx.db
+      .query("groupCharts")
+      .withIndex("by_group", (q) => q.eq("groupId", g._id))
+      .collect();
+    const def = rows.find((r) => r.isDefault === true);
+    if (def !== undefined) return def.chartKey;
+  }
+  return null;
 }
 
 /** Provenance of an OFFERED chart entry. */
@@ -521,19 +556,14 @@ export const listMyCharts = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     const offered = await availableChartsForUser(ctx, userId);
-    // For the owner-management list (entries the caller OWNS), attach the chart's
-    // current group associations so the owner can see + manage them. Only an
-    // owned personal custom needs this (the only entries that show manage actions);
-    // builtins + non-owned customs get null (no per-row management for the user).
+    // Owner-management rows (the entries the caller OWNS) surface the chart EDITOR
+    // affordances: per-mode brand-logo URLs + mapped domains. Group association is
+    // NO LONGER an owner affordance — under the 3-tier model a chart reaches a group
+    // ONLY via the admin pool + the group manager's selection, never owner self-share
+    // (see assignChartToGroup). Rare, user-initiated call -> the extra reads are fine
+    // (NOT the getMe hot path).
     const out = [];
     for (const c of offered) {
-      const restrictedToGroups =
-        c.via === "owner"
-          ? await restrictionGroupsForKey(ctx, c.key)
-          : null;
-      // Owner-managed rows also surface the current per-mode brand-logo URLs (for
-      // the preview + remove controls). Rare, user-initiated call -> the extra
-      // reads are fine (NOT the getMe hot path).
       let logoLightUrl: string | null = null;
       let logoDarkUrl: string | null = null;
       let domains: string[] = [];
@@ -547,7 +577,7 @@ export const listMyCharts = query({
         }
         domains = await domainsForChart(ctx, c.key);
       }
-      out.push({ ...c, restrictedToGroups, logoLightUrl, logoDarkUrl, domains });
+      out.push({ ...c, logoLightUrl, logoDarkUrl, domains });
     }
     return out;
   },
@@ -620,6 +650,30 @@ async function restrictionGroupsForKey(
   return out;
 }
 
+/**
+ * Resolve the groupChartPool rows for a chart key into a non-null list of the groups
+ * whose admin POOL (Tier 1) contains this chart (or null = no pool rows). The admin
+ * matrix EDITS this set (add/removeChartFromGroupPool); the manager then selects from
+ * it. Mirrors restrictionGroupsForKey on the pool table.
+ */
+async function poolGroupsForKey(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<Array<{ groupId: Id<"groups">; key: string; name: string }> | null> {
+  const rows = await ctx.db
+    .query("groupChartPool")
+    .withIndex("by_chart", (q) => q.eq("chartKey", chartKey))
+    .collect();
+  if (rows.length === 0) return null;
+  const out: Array<{ groupId: Id<"groups">; key: string; name: string }> = [];
+  for (const row of rows) {
+    const group = await ctx.db.get(row.groupId);
+    if (group === null) continue; // tolerate a transient dangling row
+    out.push({ groupId: group._id, key: group.key, name: group.name });
+  }
+  return out;
+}
+
 /** One row in the admin charts matrix (builtins + customs, single FLAT list). */
 type AdminChartRow = {
   // "builtin" => from the code registry (no id); "custom" => a `charts` row.
@@ -633,6 +687,15 @@ type AdminChartRow = {
   scope: "common" | "personal";
   // Non-PHI owner display for a PERSONAL custom; null for builtins/common.
   ownerLabel: string | null;
+  // Tier-1 POOL: groups whose admin pool offers this chart (the admin matrix EDITS
+  // this). null = in no pool.
+  poolGroups: Array<{
+    groupId: Id<"groups">;
+    key: string;
+    name: string;
+  }> | null;
+  // Tier-2 SELECTION (read-only here): groups that actually SELECTED this chart.
+  // null = selected by none. Informational for the admin (managed in GroupManageDialog).
   restrictedToGroups: Array<{
     groupId: Id<"groups">;
     key: string;
@@ -668,6 +731,7 @@ export const listChartsAdmin = query({
         name: chart.name,
         scope: "common",
         ownerLabel: null,
+        poolGroups: await poolGroupsForKey(ctx, chart.key),
         restrictedToGroups: await restrictionGroupsForKey(ctx, chart.key),
         domains: await domainsForChart(ctx, chart.key),
         isGlobalDefault: globalDefault === chart.key,
@@ -692,6 +756,7 @@ export const listChartsAdmin = query({
         name: chart.name,
         scope: chart.scope,
         ownerLabel,
+        poolGroups: await poolGroupsForKey(ctx, chart.key),
         restrictedToGroups: await restrictionGroupsForKey(ctx, chart.key),
         domains: await domainsForChart(ctx, chart.key),
         isGlobalDefault: globalDefault === chart.key,
@@ -743,87 +808,51 @@ export const setDefaultChart = mutation({
 });
 
 /**
- * Authorize an assign/remove of `chartKey` to `groupId` for the calling user.
- * The GATE (the IDOR core of P4):
- *   - ADMIN (real identity) -> any chart, any group.
- *   - NON-admin -> ONLY a PERSONAL custom chart they OWN, AND only to a group
- *     they are a MEMBER of. A builtin (no owner) or a common custom is therefore
- *     admin-only automatically (the owner path can never match them). A
- *     non-existent chart key, a chart owned by someone else, a group the user is
- *     not in -> REJECT.
- * Returns the validated group doc (existence guaranteed) so the caller can audit.
+ * Reconcile a group's default chart to the invariant ">=1 selection => EXACTLY one
+ * default" (mirrors the userAgents exactly-one-default rule; the user asked for "une
+ * charte par défaut"). No selection -> no-op. Otherwise: KEEP the manager's current
+ * explicit default if one is set (and clear any duplicate flags); else ELECT the
+ * DETERMINISTIC first (lowest createdAt, then _id). Self-healing + idempotent —
+ * called after every select/unselect so the group always has exactly one default
+ * while it offers >=1 chart, and none when it offers zero.
  */
-async function authorizeGroupChartChange(
+async function electGroupDefaultChart(
   ctx: MutationCtx,
-  effectiveUserId: Id<"users">,
   groupId: Id<"groups">,
-  chartKey: string,
-): Promise<Doc<"groups">> {
-  const group = await ctx.db.get(groupId);
-  if (group === null) throw new Error("Not found: group");
-
-  if (await realIsAdmin(ctx)) {
-    // Admin still must reference a REAL chart (builtin or existing custom).
-    if (
-      !BUILTIN_CHART_KEYS.has(chartKey) &&
-      (await getCustomChartByKey(ctx, chartKey)) === null
-    ) {
-      throw new Error(`Unknown chart: ${chartKey}`);
+): Promise<void> {
+  const rows = await ctx.db
+    .query("groupCharts")
+    .withIndex("by_group", (q) => q.eq("groupId", groupId))
+    .collect();
+  if (rows.length === 0) return;
+  rows.sort((a, b) => a.createdAt - b.createdAt || (a._id < b._id ? -1 : 1));
+  const current = rows.find((r) => r.isDefault === true);
+  const chosen = current ?? rows[0]!;
+  for (const r of rows) {
+    const shouldBe = r._id === chosen._id;
+    if ((r.isDefault === true) !== shouldBe) {
+      await ctx.db.patch(r._id, { isDefault: shouldBe ? true : undefined });
     }
-    return group;
   }
-
-  // NON-admin. The owner path applies ONLY to a PERSONAL custom the caller owns.
-  // A BUILTIN (no owner) or a COMMON custom is admin-managed availability -- for a
-  // non-admin those are governed by CHARTS_MANAGE, so we route through the
-  // canonical permission gate (which always throws for a non-admin, since
-  // charts.manage is non-grantable). This branches on KEY KIND first, so it never
-  // short-circuits the owner path for a personal custom.
-  const custom = await getCustomChartByKey(ctx, chartKey);
-  if (custom === null || custom.scope !== "personal") {
-    // builtin, common-custom, or unknown key -> admin-only operation.
-    await requirePermission(ctx, PERMISSIONS.CHARTS_MANAGE); // throws for non-admin
-    // (Unreachable for a non-admin; an admin already returned above.)
-    return group;
-  }
-
-  // Personal custom: the caller MUST be the OWNER...
-  if (custom.ownerUserId !== effectiveUserId) {
-    throw new Error("Forbidden: not your chart");
-  }
-  // ...and a MEMBER of the target group.
-  const membership = await ctx.db
-    .query("groupMembers")
-    .withIndex("by_user_group", (q) =>
-      q.eq("userId", effectiveUserId).eq("groupId", groupId),
-    )
-    .unique();
-  if (membership === null) {
-    throw new Error("Forbidden: not a member of this group");
-  }
-  // ...and ACTIVE: a deactivated (pending) owner can no longer (un)share their
-  // chart, mirroring authorizeChartWrite. The admin path returned above.
-  await requireActive(ctx);
-  return group;
 }
 
 /**
- * Assign a chart to a group (insert a groupCharts row). Assigning >=1 group flips
- * a BUILTIN from common to restricted; for a custom it adds group availability ON
- * TOP of its scope. Gate: admin (any chart/group) OR the personal chart's OWNER
- * who is a MEMBER of the target group (see authorizeGroupChartChange). Dedup via
- * by_group_chart. Effective identity (the owner path acts as the effective user).
+ * TIER 2 — SELECT a chart for a group (insert a groupCharts row). This is the GROUP
+ * MANAGER's selection from the admin POOL: the chart MUST already be in the group's
+ * groupChartPool (Tier 1) — that constraint is what makes the pool meaningful, and
+ * it also rejects an unknown key (it cannot be pooled). Gate: admin OR the group's
+ * MANAGER (authorizeGroupManage) — the former personal-chart OWNER self-share path
+ * was REMOVED (pure 3-tier). Selecting >=1 chart flips a BUILTIN from common to
+ * restricted-to-this-group (availableChartsForUser reads groupCharts, unchanged).
+ * Dedup via by_group_chart; keeps the exactly-one-default invariant.
  */
 export const assignChartToGroup = mutation({
   args: { groupId: v.id("groups"), chartKey: v.string() },
   handler: async (ctx, { groupId, chartKey }) => {
-    const actor = await getActor(ctx);
-    await authorizeGroupChartChange(
-      ctx,
-      actor.effectiveUserId,
-      groupId,
-      chartKey,
-    );
+    const actor = await authorizeGroupManage(ctx, groupId);
+    if (!(await isChartInGroupPool(ctx, groupId, chartKey))) {
+      throw new Error(`Forbidden: chart not in this group's pool: ${chartKey}`);
+    }
     const existing = await ctx.db
       .query("groupCharts")
       .withIndex("by_group_chart", (q) =>
@@ -836,7 +865,9 @@ export const assignChartToGroup = mutation({
       chartKey,
       createdAt: Date.now(),
     });
-    await auditImpersonated(ctx, actor, "chart.assignGroup", {
+    // First selection becomes the group default; later ones keep the existing one.
+    await electGroupDefaultChart(ctx, groupId);
+    await auditImpersonated(ctx, actor, "chart.selectForGroup", {
       resource: "group",
       resourceId: groupId,
     });
@@ -844,20 +875,15 @@ export const assignChartToGroup = mutation({
 });
 
 /**
- * Remove a chart's availability to a group (delete the groupCharts row). For a
- * builtin, removing the last row reverts it to common. Same gate as assign
- * (admin OR owner+member). Idempotent.
+ * TIER 2 — UNSELECT a chart from a group (delete the groupCharts row). For a builtin,
+ * removing the last selection reverts it to common. Gate: admin OR the group's
+ * MANAGER. If the removed chart was the group default, a new default is re-elected
+ * among the remaining selections (cleared to none at zero). Idempotent.
  */
 export const removeChartFromGroup = mutation({
   args: { groupId: v.id("groups"), chartKey: v.string() },
   handler: async (ctx, { groupId, chartKey }) => {
-    const actor = await getActor(ctx);
-    await authorizeGroupChartChange(
-      ctx,
-      actor.effectiveUserId,
-      groupId,
-      chartKey,
-    );
+    const actor = await authorizeGroupManage(ctx, groupId);
     const existing = await ctx.db
       .query("groupCharts")
       .withIndex("by_group_chart", (q) =>
@@ -866,12 +892,270 @@ export const removeChartFromGroup = mutation({
       .unique();
     if (existing === null) return; // idempotent
     await ctx.db.delete(existing._id);
-    await auditImpersonated(ctx, actor, "chart.removeGroup", {
+    await electGroupDefaultChart(ctx, groupId);
+    await auditImpersonated(ctx, actor, "chart.unselectForGroup", {
       resource: "group",
       resourceId: groupId,
     });
   },
 });
+
+/**
+ * TIER 2 — set a group's DEFAULT chart. The key MUST be a chart the group currently
+ * SELECTS (a groupCharts row) — you cannot default a chart the group does not offer.
+ * Sets isDefault on that row and CLEARS it on every other selection (exactly-one).
+ * Gate: admin OR the group's MANAGER.
+ */
+export const setGroupDefaultChart = mutation({
+  args: { groupId: v.id("groups"), chartKey: v.string() },
+  handler: async (ctx, { groupId, chartKey }) => {
+    const actor = await authorizeGroupManage(ctx, groupId);
+    const rows = await ctx.db
+      .query("groupCharts")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    const target = rows.find((r) => r.chartKey === chartKey);
+    if (target === undefined) {
+      throw new Error(`Forbidden: chart not selected by this group: ${chartKey}`);
+    }
+    for (const r of rows) {
+      const shouldBe = r._id === target._id;
+      if ((r.isDefault === true) !== shouldBe) {
+        await ctx.db.patch(r._id, { isDefault: shouldBe ? true : undefined });
+      }
+    }
+    await auditImpersonated(ctx, actor, "chart.setGroupDefault", {
+      resource: "group",
+      resourceId: groupId,
+    });
+  },
+});
+
+// ===========================================================================
+// TIER 1 — admin chart POOL per group (groupChartPool). The admin defines WHICH
+// charts a group MAY offer; a group manager then SELECTS a subset into
+// groupCharts (Tier 2). Pool writes are admin-only (CHARTS_MANAGE = non-grantable
+// -> admins only), so a manager can never widen their own pool. INERT in step 1:
+// nothing reads the pool for availability yet (the manager-selection gate that
+// consults it lands in step 2); these mutations only populate Tier 1.
+// ===========================================================================
+
+/** True if `chartKey` references a REAL chart (builtin OR an existing custom). */
+async function chartKeyExists(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<boolean> {
+  if (BUILTIN_CHART_KEYS.has(chartKey)) return true;
+  return (await getCustomChartByKey(ctx, chartKey)) !== null;
+}
+
+/** The set of chart keys in a group's admin POOL (bounded by_group read). */
+export async function chartPoolKeysForGroup(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .query("groupChartPool")
+    .withIndex("by_group", (q) => q.eq("groupId", groupId))
+    .collect();
+  return new Set(rows.map((r) => r.chartKey));
+}
+
+/** Is `chartKey` in a group's admin POOL? Bounded by_group_chart point-read. */
+export async function isChartInGroupPool(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+  chartKey: string,
+): Promise<boolean> {
+  const row = await ctx.db
+    .query("groupChartPool")
+    .withIndex("by_group_chart", (q) =>
+      q.eq("groupId", groupId).eq("chartKey", chartKey),
+    )
+    .unique();
+  return row !== null;
+}
+
+/**
+ * Admin: add a chart to a group's POOL (Tier 1 — the charts the group MAY offer).
+ * Admin ONLY (CHARTS_MANAGE; a manager can never widen the pool). Verifies the
+ * group + the chart (builtin OR custom) exist. Dedup via by_group_chart. The
+ * manager-selection step (Tier 2) is a SEPARATE mutation that requires the key to
+ * already be in this pool.
+ */
+export const addChartToGroupPool = mutation({
+  args: { groupId: v.id("groups"), chartKey: v.string() },
+  handler: async (ctx, { groupId, chartKey }) => {
+    await requirePermission(ctx, PERMISSIONS.CHARTS_MANAGE);
+    const actor = await getActor(ctx);
+    if ((await ctx.db.get(groupId)) === null) throw new Error("Not found: group");
+    if (!(await chartKeyExists(ctx, chartKey))) {
+      throw new Error(`Unknown chart: ${chartKey}`);
+    }
+    const existing = await ctx.db
+      .query("groupChartPool")
+      .withIndex("by_group_chart", (q) =>
+        q.eq("groupId", groupId).eq("chartKey", chartKey),
+      )
+      .unique();
+    if (existing !== null) return; // idempotent
+    await ctx.db.insert("groupChartPool", {
+      groupId,
+      chartKey,
+      createdAt: Date.now(),
+    });
+    await auditImpersonated(ctx, actor, "chart.addToPool", {
+      resource: "group",
+      resourceId: groupId,
+    });
+  },
+});
+
+/**
+ * Admin: remove a chart from a group's POOL. Admin ONLY. CASCADE (keeps the
+ * invariant "selection ⊆ pool"): if the group had SELECTED this chart into
+ * groupCharts (Tier 2), that selection row is removed too — taking its `isDefault`
+ * with it (the manager re-elects a default in step 2; in step 1 `isDefault` is
+ * inert/unread). Idempotent.
+ */
+export const removeChartFromGroupPool = mutation({
+  args: { groupId: v.id("groups"), chartKey: v.string() },
+  handler: async (ctx, { groupId, chartKey }) => {
+    await requirePermission(ctx, PERMISSIONS.CHARTS_MANAGE);
+    const actor = await getActor(ctx);
+    const poolRow = await ctx.db
+      .query("groupChartPool")
+      .withIndex("by_group_chart", (q) =>
+        q.eq("groupId", groupId).eq("chartKey", chartKey),
+      )
+      .unique();
+    if (poolRow === null) return; // idempotent
+    await ctx.db.delete(poolRow._id);
+    // CASCADE: drop the group's selection of this chart (Tier 2), if any. Its
+    // isDefault is carried on the row, so deleting it clears the default cleanly.
+    const selection = await ctx.db
+      .query("groupCharts")
+      .withIndex("by_group_chart", (q) =>
+        q.eq("groupId", groupId).eq("chartKey", chartKey),
+      )
+      .unique();
+    if (selection !== null) {
+      await ctx.db.delete(selection._id);
+      // The cascaded row may have been the group default -> re-elect among survivors
+      // (keeps the exactly-one-default invariant; clears to none at zero).
+      await electGroupDefaultChart(ctx, groupId);
+    }
+    await auditImpersonated(ctx, actor, "chart.removeFromPool", {
+      resource: "group",
+      resourceId: groupId,
+    });
+  },
+});
+
+/** Display name for a chart key (builtin from the registry, custom from the doc). */
+export async function chartDisplayName(
+  ctx: QueryCtx | MutationCtx,
+  chartKey: string,
+): Promise<string> {
+  const builtin = builtinChart(chartKey);
+  if (builtin !== undefined) return builtin.name;
+  const custom = await getCustomChartByKey(ctx, chartKey);
+  return custom?.name ?? chartKey;
+}
+
+/**
+ * The per-group chart view for the GroupManageDialog Charts tab: the group's admin
+ * POOL (Tier 1), each entry flagged with whether the group has SELECTED it (Tier 2)
+ * and whether it is the group DEFAULT. Gated authorizeGroupManage (admin OR the
+ * group's manager) — the same gate as the selection mutations the tab calls. Sorted
+ * by display name for a stable UI.
+ */
+export const listGroupChartSelection = query({
+  args: { groupId: v.id("groups") },
+  handler: async (
+    ctx,
+    { groupId },
+  ): Promise<{
+    pool: Array<{
+      chartKey: string;
+      name: string;
+      selected: boolean;
+      isDefault: boolean;
+    }>;
+    // ADMIN-only: charts NOT yet in the group's pool that the admin may ADD to it
+    // (the Tier-1 pool editor in the dialog). Empty for a non-admin manager.
+    addable: Array<{ chartKey: string; name: string }>;
+    // True when the caller is a real admin -> the Charts tab shows the pool editor
+    // (add/remove from pool); a delegated manager only selects from the existing pool.
+    canManagePool: boolean;
+  }> => {
+    await authorizeGroupManage(ctx, groupId);
+    const poolRows = await ctx.db
+      .query("groupChartPool")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    const selRows = await ctx.db
+      .query("groupCharts")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    const selByKey = new Map(selRows.map((r) => [r.chartKey, r]));
+    // Iterate the UNION of pool + selection keys. New invariant: selection ⊆ pool
+    // (assignChartToGroup requires the pool), so the union == pool on a fresh system.
+    // The union also surfaces a LEGACY selection that has no backing pool row (from
+    // the pre-3-tier charts feature) so it stays visible + REMOVABLE in the tab,
+    // never silently applying yet unmanageable.
+    const poolKeys = new Set(poolRows.map((r) => r.chartKey));
+    const keys = new Set<string>([
+      ...poolRows.map((r) => r.chartKey),
+      ...selRows.map((r) => r.chartKey),
+    ]);
+    const pool = [];
+    for (const key of keys) {
+      const sel = selByKey.get(key);
+      pool.push({
+        chartKey: key,
+        name: await chartDisplayName(ctx, key),
+        selected: sel !== undefined,
+        isDefault: sel?.isDefault === true,
+      });
+    }
+    pool.sort((a, b) => a.name.localeCompare(b.name));
+
+    // ADMIN pool editor: the charts an admin may ADD to this group's pool = ALL
+    // real charts (builtins + every custom, personal OR common) MINUS those already
+    // pooled. A common custom is offered to everyone for AVAILABILITY, but pooling it
+    // still lets the group pick it as its DEFAULT (the group-default tier), so it
+    // belongs here. Computed only for an admin (a manager never widens the pool).
+    let addable: Array<{ chartKey: string; name: string }> = [];
+    const canManagePool = await realIsAdmin(ctx);
+    if (canManagePool) {
+      const candidates: Array<{ chartKey: string; name: string }> = BUILTIN_CHARTS.map(
+        (b) => ({ chartKey: b.key, name: b.name }),
+      );
+      for (const c of await ctx.db.query("charts").collect()) {
+        candidates.push({ chartKey: c.key, name: c.name });
+      }
+      addable = candidates
+        .filter((c) => !poolKeys.has(c.chartKey))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return { pool, addable, canManagePool };
+  },
+});
+
+/** Purge all groupChartPool rows that reference a chart key (delete cascade). */
+async function purgeGroupChartPoolByKey(
+  ctx: MutationCtx,
+  chartKey: string,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("groupChartPool")
+    .withIndex("by_chart", (q) => q.eq("chartKey", chartKey))
+    .collect();
+  for (const row of rows) {
+    await ctx.db.delete(row._id);
+  }
+}
 
 // ===========================================================================
 // CUSTOM chart import / edit / delete / promote (P4). RBAC is the IDOR contract:
@@ -921,8 +1205,16 @@ async function purgeGroupChartsByKey(
     .query("groupCharts")
     .withIndex("by_chart", (q) => q.eq("chartKey", chartKey))
     .collect();
+  const affected = new Set<Id<"groups">>();
   for (const row of rows) {
+    affected.add(row.groupId);
     await ctx.db.delete(row._id);
+  }
+  // A purged selection may have been a group's default -> re-elect each affected
+  // group's default among its survivors (exactly-one-default invariant; deleteChart
+  // can hit several groups at once).
+  for (const groupId of affected) {
+    await electGroupDefaultChart(ctx, groupId);
   }
 }
 
@@ -1036,6 +1328,8 @@ export const deleteChart = mutation({
     const actor = await getActor(ctx);
     const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
     await purgeGroupChartsByKey(ctx, chart.key);
+    // Cascade: this chart's presence in any group's admin POOL (Tier 1).
+    await purgeGroupChartPoolByKey(ctx, chart.key);
     // Cascade: domain mappings for this chart.
     for (const row of await ctx.db
       .query("chartDomains")

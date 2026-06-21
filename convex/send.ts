@@ -23,6 +23,8 @@ import { auditImpersonated } from "./lib/audit";
 import { assertOwnsUpload } from "./uploads";
 import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
+import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
+import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 export const sendMessage = mutation({
   args: {
@@ -85,6 +87,21 @@ export const sendMessage = mutation({
     const now = Date.now();
     const attachments = args.attachments ?? [];
 
+    // 2b. Mid-turn serialization (Phase 1: QUEUE). If the chat already has a turn
+    //     IN FLIGHT, this send is parked as a `queued` outbox row and the drainer
+    //     dispatches it (FIFO) once the current turn ends — the bridge is strictly
+    //     one-turn-per-session, so we never dispatch two turns to a chat at once.
+    //     An idle chat dispatches immediately (the historical behavior). Computed
+    //     BEFORE any insert so the busy-check (and Convex's serializable read set)
+    //     reflects only PRIOR turns, not this row.
+    const busy = await isChatBusy(ctx, chat._id);
+    if (busy && (await countQueued(ctx, chat._id)) >= MAX_QUEUED_PER_CHAT) {
+      // Bounded queue: refuse a runaway backlog with a clear, catchable error
+      // (the composer surfaces it as a toast). Thrown before any write, so the
+      // transaction rolls back cleanly — no orphan message/outbox row.
+      throw new Error("QUEUE_FULL");
+    }
+
     // 3. IDOR defense: every attachment must be a blob THIS user uploaded.
     //    `assertOwnsUpload` throws (aborting the whole mutation) on any id that
     //    was not registered to the caller, so we never attach someone else's
@@ -93,7 +110,10 @@ export const sendMessage = mutation({
       await assertOwnsUpload(ctx, userId, attachment.storageId);
     }
 
-    // 4. Optimistic user message (immediately visible & reactive).
+    // 4. Optimistic user message (immediately visible & reactive). A QUEUED follow-up
+    //    carries a SENTINEL orderTime so it sorts AFTER the in-flight turn (and its
+    //    not-yet-created assistant reply) — drainNextQueued re-stamps it to the real
+    //    dispatch time when this turn is promoted. Idle sends keep _creationTime order.
     const messageId = await ctx.db.insert("messages", {
       chatId: chat._id,
       userId,
@@ -101,6 +121,7 @@ export const sendMessage = mutation({
       status: "complete",
       text: args.text,
       updatedAt: now,
+      ...(busy ? { orderTime: QUEUED_ORDER_SENTINEL } : {}),
     });
 
     // Attach uploaded files as ordered parts on the user message so they render
@@ -146,11 +167,17 @@ export const sendMessage = mutation({
         filename: a.filename,
         mimeType: a.mimeType,
       })),
-      status: "pending",
+      // Busy chat → park as `queued` (the drainer dispatches it later); idle chat
+      // → `pending` and dispatch now.
+      status: busy ? "queued" : "pending",
     });
 
-    // 6. Schedule the dispatch to the bridge (cannot fetch from a mutation).
-    await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
+    // 6. Schedule the dispatch ONLY for an idle chat. A queued row is dispatched
+    //    by drainNextQueued when the in-flight turn ends (finalize / failed /
+    //    stuck-stream reconcile). Cannot fetch from a mutation, hence the schedule.
+    if (!busy) {
+      await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
+    }
 
     // Audit a send performed under impersonation. PHI: we log the message id
     // ONLY — never `args.text` or attachment contents.

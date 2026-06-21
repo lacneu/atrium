@@ -26,19 +26,23 @@ interface ToolActivityMeta {
   status?: string;
 }
 
-export function ToolActivity({ defaultExpanded }: { defaultExpanded: boolean }) {
+// Rendered ONLY when the "Outils" (analysis) view is on — the caller gates it,
+// so this component no longer decides visibility. The summary is collapsed by
+// default; the user clicks it to drill into the per-call detail. Auto-expanding
+// is avoided on purpose: on a long tool-heavy turn it would push the final text
+// below the fold.
+export function ToolActivity() {
   const toolParts = useMessage(
     (msg) => (msg.metadata?.custom as ToolActivityMeta | undefined)?.toolParts,
   );
   const status = useMessage(
     (msg) => (msg.metadata?.custom as ToolActivityMeta | undefined)?.status,
   );
-  // null = follow the pref default (showTools ON -> expanded). A manual toggle
-  // pins THIS message; other messages keep following the pref.
-  const [expanded, setExpanded] = useState<boolean | null>(null);
+  // Collapsed until the user expands THIS message's detail.
+  const [expanded, setExpanded] = useState(false);
   if (!toolParts || toolParts.length === 0) return null;
 
-  const isExpanded = expanded ?? defaultExpanded;
+  const isExpanded = expanded;
   const summary = toolActivitySummary(toolParts, status);
 
   return (

@@ -21,10 +21,16 @@ export interface BridgeConfig {
   // --- OpenClaw Gateway ------------------------------------------------------
   /** Gateway URL (ws:// wss:// http:// https://; normalized to ws/wss). */
   openclawGatewayUrl: string;
-  /** Bearer token presented in the connect request's auth.token. */
-  openclawToken: string;
-  /** Ed25519 device identity (id + publicKey + PEM privateKey). */
-  deviceIdentity: DeviceIdentity;
+  /** Bearer token presented in the connect request's auth.token. ENV FALLBACK only
+   *  since 3b: null when unset (the credential resolver may fetch it from Convex). */
+  openclawToken: string | null;
+  /** Ed25519 device identity (id + publicKey + PEM privateKey). ENV FALLBACK only
+   *  since 3b: null when unset (the resolver may fetch it from Convex). */
+  deviceIdentity: DeviceIdentity | null;
+  /** Per-bridge secret (Bearer) the bridge presents to Convex's `/bridge/credentials`
+   *  to fetch THIS instance's decrypted gateway creds (3b). null = not configured
+   *  (the bridge then relies on the env fallback). Set via BRIDGE_INSTANCE_SECRET. */
+  bridgeInstanceSecret: string | null;
   /**
    * The instance NAME this bridge serves. Must equal the Convex `instances.name`
    * row that maps to this bridge's BRIDGE_URL (and the poller's
@@ -270,23 +276,20 @@ function parseMediaMode(name: string): BridgeConfig["mediaMode"] {
 }
 
 /**
- * Resolve the device identity from either an inline JSON env var or a path to a
- * JSON file. Exactly one must be present.
+ * Parse + validate a device-identity JSON string into a DeviceIdentity. PURE +
+ * exported so the SAME guard validates BOTH the env value AND a value fetched from
+ * Convex (step 3b) — a malformed identity must fail clearly, never connect with
+ * garbage. `source` only shapes the error message. Throws ConfigError on invalid.
  */
-function loadDeviceIdentity(): DeviceIdentity {
-  const inline = (process.env.OPENCLAW_DEVICE_IDENTITY ?? "").trim();
-  if (!inline) {
-    throw new ConfigError(
-      "Missing required environment variable: OPENCLAW_DEVICE_IDENTITY (JSON)",
-    );
-  }
+export function parseDeviceIdentity(
+  inline: string,
+  source = "OPENCLAW_DEVICE_IDENTITY",
+): DeviceIdentity {
   let parsed: unknown;
   try {
     parsed = JSON.parse(inline);
   } catch (err) {
-    throw new ConfigError(
-      `OPENCLAW_DEVICE_IDENTITY is not valid JSON: ${(err as Error).message}`,
-    );
+    throw new ConfigError(`${source} is not valid JSON: ${(err as Error).message}`);
   }
   if (
     typeof parsed !== "object" ||
@@ -295,13 +298,22 @@ function loadDeviceIdentity(): DeviceIdentity {
     typeof (parsed as Record<string, unknown>).publicKey !== "string" ||
     typeof (parsed as Record<string, unknown>).privateKey !== "string"
   ) {
-    throw new ConfigError(
-      "OPENCLAW_DEVICE_IDENTITY must be {id, publicKey, privateKey}",
-    );
+    throw new ConfigError(`${source} must be {id, publicKey, privateKey}`);
   }
-  // Validated above: id/publicKey/privateKey are all present strings.
   const obj = parsed as DeviceIdentity;
   return { id: obj.id, publicKey: obj.publicKey, privateKey: obj.privateKey };
+}
+
+/**
+ * Device identity from env, or NULL when unset. OPTIONAL since step 3b: the bridge
+ * may instead fetch it (decrypted) from Convex via the per-bridge secret; the env
+ * value is the FALLBACK. A PRESENT-but-malformed env value still throws (catch a
+ * typo loudly), but an ABSENT one is fine (Convex may provide it).
+ */
+function loadDeviceIdentityOptional(): DeviceIdentity | null {
+  const inline = (process.env.OPENCLAW_DEVICE_IDENTITY ?? "").trim();
+  if (!inline) return null;
+  return parseDeviceIdentity(inline);
 }
 
 /**
@@ -335,8 +347,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
       : `${MEDIA_ROOT}/inbound`;
     return {
       openclawGatewayUrl: requireEnv("OPENCLAW_GATEWAY_URL"),
-      openclawToken: requireEnv("OPENCLAW_TOKEN"),
-      deviceIdentity: loadDeviceIdentity(),
+      // OPTIONAL since 3b: the credential resolver fetches these from Convex via the
+      // per-bridge secret, falling back to these env values per field.
+      openclawToken: optionalEnvOrNull("OPENCLAW_TOKEN"),
+      deviceIdentity: loadDeviceIdentityOptional(),
+      bridgeInstanceSecret: optionalEnvOrNull("BRIDGE_INSTANCE_SECRET"),
       instanceName,
       gatewayVersionFallback: optionalVersionEnv("OPENCLAW_GATEWAY_VERSION"),
       mediaOutboundDir: optionalEnv(

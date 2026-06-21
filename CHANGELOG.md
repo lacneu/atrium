@@ -8,6 +8,53 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.5.0] — UI-managed gateway credentials, mid-turn queue, document attachments & delegated groups
+
+Feature release. No breaking changes — everything is additive and existing env-based
+deployments keep working untouched. The headline: gateway credentials can now be
+managed from the web UI. Alongside it, several conversation and admin features plus a
+round of reliability hardening.
+
+- **Gateway credentials from the UI (optional).** Per instance, Settings → Agents →
+  Instances → Credentials now stores the operator token + Ed25519 device identity (a
+  Hermes API key where applicable), **encrypted at rest** and never shown again. Mint a
+  per-bridge secret there, set it as `BRIDGE_INSTANCE_SECRET` in the bridge env, blank
+  out `OPENCLAW_TOKEN`/`OPENCLAW_DEVICE_IDENTITY`, and the bridge fetches its decrypted
+  credentials at boot — each bridge reads only its OWN gateway's secrets, and rotating a
+  stored credential takes effect on the next bridge restart. Requires `ATRIUM_SECRET_KEY`
+  on the Convex deployment; leave it blank to keep the env-based flow unchanged. New
+  "Gateway credentials: env vs UI-managed" guide in `deploy/README.md`, with
+  `BRIDGE_INSTANCE_SECRET` wired through `.env.example`, Docker Compose and the Helm chart.
+- **Send a follow-up while the assistant is still replying.** Mid-turn messages are
+  queued and dispatched automatically, in order, as soon as the current turn ends — no
+  waiting, and nothing you typed is lost.
+- **Download the source files behind a reply.** From the Sources panel, "Joindre les
+  documents" fetches the real documents a reply's sources point to and offers them as
+  per-card downloads (via a documentary agent you're entitled to).
+- **Cleaner default thread view.** The conversation defaults to a content-focused view;
+  toggle **Outils** to reveal tool activity and the Sources panel.
+- **Per-instance agent curation.** Admins enable/disable each discovered agent for an
+  instance, choose the instance default, and tag agents with types (Conversational /
+  Source documentaire); gateway-removed agents are marked and removable.
+- **Delegated group management.** A non-admin granted `groups.manage` and set as a
+  group's manager can manage that group's members, shared agents and charts; creating,
+  renaming and deleting groups, and promoting managers, remain admin-only.
+- **Charts by group and by domain.** Admins offer a pool of charts to a group; its
+  manager selects a subset and a default; users pick from what their groups offer. A
+  chart can also be the default for a host/domain, including the pre-auth login screen.
+- **Reliable mid-turn ordering & cleanup.** A follow-up queued while a reply is still
+  arriving now always renders — and rehydrates into the model — after that reply, never
+  before it. Deleting or truncating a turn cleans up in logical order and releases any
+  in-flight document fetch, so no orphaned, undispatchable messages or stuck "fetch in
+  progress" locks remain.
+- **Safer attachments & hidden helper chats.** An attachment too big for the gateway is
+  rejected with a clear message (derived from the gateway's frame limit) instead of being
+  silently dropped, and the internal document-fetch helper chat is excluded from both the
+  sidebar and global search.
+- **Per-instance credential isolation.** A bridge configured with the wrong instance's
+  per-bridge secret refuses those credentials rather than connecting its gateway with
+  another instance's token.
+
 ## [0.4.2] — Keyboard shortcuts & responsive sidebar, multi-gateway shared-fs media, and an at-rest secret cipher
 
 Feature + operability release. No breaking changes; everything additive. Day-to-day

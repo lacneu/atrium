@@ -410,10 +410,41 @@
   min-width: 0;
   overflow: hidden;
 }
+/* Chat surface = a ROW: the conversation (flex) + an optional resizable Sources
+   column on the right. The conversation keeps its own vertical (column) layout
+   inside `.oc-chat__convo`, so it scrolls/sends independently while the panel is
+   open. */
 .oc-chat {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+}
+.oc-chat__convo {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+/* Integrated Sources column (mirrors the left sidebar: in-flow, resizable). */
+.oc-sources-col {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: var(--background);
+}
+/* Drag handle on the column's LEFT edge (mirror of .oc-sidebar-resizer). */
+.oc-sources-resizer {
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.oc-sources-resizer:hover {
+  background: color-mix(in srgb, var(--ring) 40%, transparent);
 }
 
 .oc-thread {
@@ -592,6 +623,19 @@
   font-size: 0.95rem;
   line-height: 1;
 }
+/* Instance sub-tag inside the agent chip — names the bound agent's gateway when
+   the user's agents span more than one instance. Muted, separated by a hairline;
+   part of the analysis layer (hidden when "Outils" is OFF). */
+.oc-chip__instance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: 0.35rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid var(--border);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+}
 /* "défaut" marker inside the reasoning radio list. */
 .oc-menu__hint {
   margin-left: auto;
@@ -653,63 +697,53 @@
 .oc-meter.is-critical .oc-meter__label {
   color: var(--destructive);
 }
-/* ── Chat header responsiveness (container-query, workspace-aware) ───────────
-   The complaint: in a narrow workspace (sidebar open, small window) or on mobile,
-   the header's info chips + action buttons spilled off the right edge and got
-   clipped by `.oc-main { overflow:hidden }`. Two layers fix it:
-   1) INVARIANT (any width): action buttons never shrink/clip; the title is the
-      designated shrinker; info chips are width-capped and ellipsize. So even at
-      an unforeseen width the actions stay reachable.
-   2) PROGRESSIVE COMPACT via @container on `.oc-thread` (workspace width, not
-      viewport): drop low-priority detail first. Priority kept on screen:
-      actions > title > agent > meter% > model > reasoning. */
-/* INVARIANT (the hard guarantee, independent of the breakpoints below): the title
-   yields first (high shrink), then the info chips shrink + ellipsize, while the
-   action buttons are PINNED. So no matter the workspace width or how long the
-   agent/model names are, Export/Advanced can never be the element that clips. */
+/* ── Chat header responsiveness (CONTENT-AWARE, measured in JS) ──────────────
+   The problem: in a narrow workspace (sidebar open, small window) or on mobile,
+   the header's info chips + actions spill off the right edge (clipped by
+   `.oc-main { overflow:hidden }`). A FIXED px breakpoint can't solve this because
+   the chips' widths vary by LOCALE/font (German is far wider than French). So the
+   collapse is decided in ChatHeader by measuring a hidden ghost of the full meta
+   against the real space (see ConvexChat ChatHeader): when it doesn't fit, the
+   `compact` mode collapses model/reasoning into the Advanced popover, iconifies the
+   buttons, and sheds the meter detail — language-agnostically. Priority kept on
+   screen: actions > title > agent > meter% > model > reasoning.
+   The rules below are the BACKSTOP for the pre-measure first frame (and any
+   unforeseen width): the title yields first, chips ellipsize, actions are PINNED —
+   so the actions can never be the element that clips even before the JS runs. The
+   ghost shares these caps so the measured width matches the real row. */
 .oc-chathead__title { flex: 0 1 auto; flex-shrink: 100; }
 .oc-chathead__meta { min-width: 0; flex: 0 1 auto; }
 .oc-chathead__meta .oc-chip,
 .oc-chathead__meta .oc-meter { min-width: 0; }
 .oc-chathead__meta .oc-chip--btn { flex-shrink: 0; }
-.oc-chathead__meta .oc-chip__label {
+.oc-chathead__meta .oc-chip__label,
+.oc-chathead-ghost .oc-chip__label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 .oc-chathead__meta .oc-chip--agent,
-.oc-chathead__meta .oc-chip--info {
+.oc-chathead__meta .oc-chip--info,
+.oc-chathead-ghost .oc-chip--agent,
+.oc-chathead-ghost .oc-chip--info {
   max-width: 10rem;
 }
-
-/* Stage 1 — narrow workspace: iconify the action buttons (icon + title tooltip
-   stay), compact the token meter to a bare %, drop the "inherited" hint. */
-@container chatpane (max-width: 720px) {
-  .oc-chathead__meta .oc-chip--btn .oc-chip__label,
-  .oc-chathead__meta .oc-chip--btn .oc-chip__chev {
-    display: none;
-  }
-  .oc-chathead__meta .oc-chip--btn {
-    padding-left: 0.45rem;
-    padding-right: 0.45rem;
-  }
-  .oc-meter__detail,
-  .oc-chip__hint {
-    display: none;
-  }
+/* Hidden measurer: the meta row at its full natural width. Laid out (so offsetWidth
+   is real) but invisible + inert; never affects the actual layout. Mirrors
+   .oc-chathead__meta's inline-flex + gap so its width matches the real row. */
+.oc-chathead-ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: max-content;
+  white-space: nowrap;
 }
-/* Stage 2 — very narrow / mobile: the model + reasoning chips are READ-ONLY
-   mirrors of what the "Advanced" popover already shows, so hide them here (before
-   they would have to ellipsize); the agent identity, the % meter and the (icon)
-   actions remain. */
-@container chatpane (max-width: 600px) {
-  .oc-chathead__meta .oc-chip--info {
-    display: none;
-  }
-}
-/* The session-panel meter (in a roomy Sheet) keeps its full label — only the
-   chat-header meter compacts, via the container rules above. */
 
 /* ── Empty state: capability transparency + suggested prompts ─────────────── */
 .oc-emptystate {
@@ -3038,6 +3072,19 @@
   flex: 1; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.85rem; word-break: break-all; user-select: all;
 }
+/* Per-bridge secret section in the credentials dialog: separated from the gateway
+   credentials above; the one-time reveal stacks warning + box + done. */
+.oc-bridgesecret {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.oc-bridgesecret__reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
 
 /* --- RBAC permission matrix --------------------------------------------- */
 .oc-matrix__scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
@@ -4009,6 +4056,141 @@
 /* shadcn DialogContent has no max-height/scroll — cap the access dialog so a
    long list never pushes the title or footer off-screen. */
 .oc-access { max-height: 85vh; overflow-y: auto; }
+/* The member / agent / chart rows carry a name PLUS several controls; give the
+   dialog more room (responsive cap) so nothing clips and the tab labels fit. The
+   doubled class beats shadcn's `sm:max-w-lg` utility without !important. */
+.oc-access.oc-access {
+  width: 100%;
+  max-width: min(44rem, calc(100vw - 2rem));
+}
+/* Compact manager toggle / indicator (shield): ONE control replaces a long text
+   button + a separate badge, so the row stays narrow even with very long emails.
+   Coloured when active so a manager is easy to spot at a glance. */
+/* Fixed-width slot at the FAR RIGHT of a member row that always reserves space for
+   the manager shield, so the role badges + shields line up in clean columns whether
+   or not a given row shows a shield. */
+.oc-access__mgrslot {
+  flex: 0 0 auto;
+  width: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Non-manager (off): heavily faded so promoted MANAGERS (--primary, full strength)
+   stand out with strong contrast. Brightens on hover / keyboard focus so the admin
+   promote toggle stays discoverable. */
+.oc-access__mgr {
+  color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  flex: 0 0 auto;
+}
+.oc-access__row:hover .oc-access__mgr:not(.oc-access__mgr--on),
+.oc-access__mgr:not(.oc-access__mgr--on):hover,
+.oc-access__mgr:not(.oc-access__mgr--on):focus-visible {
+  color: var(--muted-foreground);
+}
+/* Active manager = the active CHART's primary brand colour (token-driven, so it
+   recolours per charte graphique — never a hard-coded blue the chart may not use). */
+.oc-access__mgr--on {
+  color: var(--primary);
+}
+/* Per-instance agent management: each agent is a CARD (clear visual grouping of its
+   identity + its MULTI-select types) so the form reads cleanly and types are
+   obviously non-exclusive. */
+.oc-agentcard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--card);
+}
+.oc-agentcard--off {
+  opacity: 0.6;
+}
+.oc-agentcard__head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.oc-agentcard__head > * {
+  flex: 0 0 auto;
+}
+.oc-agentcard__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* TYPES row: a label + the SELECTED types as read-only chips + a "Manage" popover
+   trigger. Only selected types show here (scales to many types — the full catalogue
+   lives in the popover), aligned under the agent name (past the enable checkbox). */
+.oc-agentcard__types {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  padding-left: 1.85rem;
+}
+.oc-agentcard__types-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.oc-agenttype__chip {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Type-catalogue popover: each type = a checkbox + label + DESCRIPTION (so an admin
+   understands it). Scrollable so a growing catalogue (10+ types) stays usable. */
+.oc-agenttypes-pop {
+  width: 22rem;
+  max-width: calc(100vw - 2rem);
+}
+.oc-agenttypes-pop__title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.oc-agenttypes-pop__hint {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-top: 0.15rem;
+  margin-bottom: 0.6rem;
+}
+.oc-agenttypes-pop__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+.oc-agenttypes-pop__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+.oc-agenttypes-pop__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  cursor: pointer;
+  min-width: 0;
+}
+.oc-agenttypes-pop__name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+.oc-agenttypes-pop__desc {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  line-height: 1.3;
+}
 .oc-access__tabs { margin-top: 0.25rem; }
 /* Count chip inside a tab trigger (members / agents totals). */
 .oc-access__tabcount {
@@ -4101,6 +4283,44 @@
 .oc-access__row {
   display: flex; align-items: center; gap: 0.55rem;
   padding: 0.35rem 0.25rem;
+}
+/* Long values (corporate emails can be very long; same for agent + chart names)
+   TRUNCATE with an ellipsis so the row's controls (badges, buttons, role) stay
+   visible and aligned. Only the identity/name column flexes + shrinks; every other
+   child keeps its natural width. The full value is exposed via a title= tooltip. */
+.oc-access__row > * { flex-shrink: 0; }
+.oc-access__row > .oc-access__who,
+.oc-access__row > .oc-access__label,
+.oc-access__row > .oc-agentpicker__label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.oc-access__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Groups list "detail" cells: wrapped chips of names, each truncating a long value
+   (corporate email / agent / chart name) with an ellipsis + title tooltip so the
+   table row never blows out. */
+.oc-group-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+}
+.oc-group-chip {
+  max-width: 12rem;
+  min-width: 0;
+}
+.oc-group-chip__txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.oc-group-chip--empty {
+  color: var(--muted-foreground);
 }
 /* Default agent = the only visible star (filled gold), boxed to icon-sm so its
    glyph lines up with the hover star of the other rows. */
@@ -4229,6 +4449,22 @@
 }
 .oc-spanel-pop__all:hover { background: var(--muted); }
 .oc-spanel-pop__all > svg:last-child { margin-left: auto; color: var(--muted-foreground); }
+/* Read-only context-usage row at the top of the Advanced popover (keeps the meter
+   reachable with full detail when the narrow header compacts the inline one). */
+.oc-spanel-pop__usage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.35rem 0.55rem 0.5rem;
+  margin-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-spanel-pop__usage-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
 
 .oc-spanel__row {
   display: flex;
@@ -4391,88 +4627,334 @@
 }
 
 /* ── Sources (provenance/v1) — what memory/document plugins fed the LLM this
-   turn. Same UX grammar as ToolActivity: compact summary line, expandable
-   detail. Namespaced .oc-sources (container uniqueness — GC-P5 lesson). */
-.oc-sources {
-  margin-top: 0.35rem;
-}
-.oc-sources__summary {
+   turn. Entry grammar = an inline chip (like ToolActivity) that OPENS a side
+   panel (slide-over) to browse / search / multi-select / reason on the sources. */
+.oc-sources-trigger {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
+  margin-top: 0.35rem;
   padding: 0.25rem 0.55rem;
+  /* Cancel the left padding's optical indent so the file glyph lines up with the
+     ToolActivity wrench + the body text edge (mirror of .oc-toolact__summary). */
+  margin-left: -0.55rem;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--muted-foreground);
   font-size: 0.78rem;
+  font-family: inherit;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.oc-sources__summary:hover {
+/* Tools + Sources are one meta group: when the Sources chip follows the tool
+   activity, tighten the gap between them (they read as a pair, not two blocks). */
+.oc-toolact + .oc-sources-trigger {
+  margin-top: -0.3rem;
+}
+/* The META block = a subtly carded CONTEXT group (tool activity + sources), set
+   apart from the agent's actual answer below it. Boxed ONLY when it has content
+   (:has) so an empty meta region stays invisible. The chips' negative left margin
+   self-cancels their padding → their icons land on the box's inner left edge. */
+.oc-msg__meta:has(.oc-toolact, .oc-sources-trigger) {
+  margin: 0.1rem 0 0.7rem;
+  padding: 0.4rem 0.6rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+}
+/* Inside the box: drop the chips' outer margins and set one tight, consistent gap
+   between tool activity and sources (overrides the global adjacent-sibling rule). */
+.oc-msg__meta .oc-toolact {
+  margin: 0;
+}
+.oc-msg__meta .oc-toolact + .oc-sources-trigger {
+  margin-top: 0.15rem;
+}
+.oc-sources-trigger:hover {
   background: var(--muted);
   color: var(--foreground);
 }
-.oc-sources__summary:focus-visible {
+.oc-sources-trigger:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
-.oc-sources__label {
+.oc-sources-trigger__icon { flex-shrink: 0; }
+.oc-sources-trigger__label { font-weight: 600; }
+.oc-sources-trigger__counts { color: var(--muted-foreground); }
+.oc-sources-trigger__chev { flex-shrink: 0; opacity: 0.7; }
+/* Subtle "downloadable docs attached" badge on the Sources chip (replaces the old
+   prominent recap message). A small primary-tinted pill: present but unobtrusive. */
+.oc-sources-trigger__attached {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  padding: 0.02rem 0.34rem;
+  font-size: 0.72rem;
   font-weight: 600;
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  border-radius: 999px;
 }
-.oc-sources__detail {
-  margin: 0.35rem 0 0 1.4rem;
-  display: grid;
-  gap: 0.6rem;
-}
-.oc-sources__group-title {
+
+/* The panel content fills its host — the resizable column (desktop) or a Sheet
+   (mobile). Column: header / search / scrollable body / sticky action bar. */
+.oc-sources-panel {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
+  height: 100%;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+/* Mobile host = a right Sheet; let the inner panel fill it (it owns the padding). */
+.oc-sources-panel-sheet[data-slot="sheet-content"] {
+  width: min(92vw, 30rem);
+  max-width: 30rem;
+  padding: 0;
+  gap: 0;
+}
+.oc-sources-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 0.5rem;
-  margin: 0 0 0.3rem;
-  font-size: 0.75rem;
+}
+.oc-sources-panel__title {
+  margin: 0;
+  font-size: 1rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--foreground);
+}
+.oc-sources-panel__sub {
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
   color: var(--muted-foreground);
 }
-.oc-sources__plugin {
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-  font-size: 0.72rem;
-  opacity: 0.8;
+.oc-sources-panel__search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--muted-foreground);
 }
-.oc-sources__items {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
+.oc-sources-panel__search input {
+  border: none;
+  background: transparent;
+  padding-left: 0;
+}
+.oc-sources-panel__search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.oc-sources-panel__body {
+  flex: 1;
+  min-height: 0; /* scroll under content (flex-column floor) */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 -0.25rem;
+  padding: 0 0.25rem;
+}
+.oc-sources-panel__empty {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1.5rem 0;
+}
+/* Footer action bar: a single bulk action ("Joindre les documents") with an
+   always-visible status/help line under it. Vertical stack so a narrow resizable
+   column never cramps the count against the button. */
+.oc-sources-panel__actions {
+  display: flex;
+  flex-direction: column;
   gap: 0.4rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
 }
-.oc-sources__item-head {
+.oc-sources-panel__actrow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.oc-sources-panel__selcount {
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+.oc-sources-panel__acthint {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+/* Collapsible section (DOCUMENTS / MÉMOIRE) — folded by default with a count. */
+.oc-srcsec {
+  /* flex-shrink:0 so an expanded section keeps its FULL content height and the
+     panel body scrolls — without it the column-flex shrinks each section and the
+     next one paints over (overlaps) the previous. */
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.oc-srcsec__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  background: var(--muted);
+  border: none;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.oc-srcsec__head:hover { background: var(--sidebar-accent, var(--muted)); }
+.oc-srcsec__label { flex: 1; text-align: left; }
+.oc-srcsec__count {
+  min-width: 1.4rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.72rem;
+  text-align: center;
+  color: var(--muted-foreground);
+  background: var(--background);
+  border-radius: 999px;
+}
+.oc-srcsec__body {
+  display: flex;
+  flex-direction: column;
   gap: 0.4rem;
-  font-size: 0.82rem;
+  padding: 0.5rem;
 }
-.oc-sources__item-title {
-  font-weight: 500;
+.oc-srcsec__all {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.15rem 0.3rem 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
 }
-.oc-sources__chip {
+
+/* One selectable source card. */
+.oc-srccard {
+  display: flex;
+  gap: 0.55rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+}
+.oc-srccard.is-selected {
+  border-color: var(--ring);
+  background: color-mix(in oklch, var(--ring) 7%, var(--background));
+}
+.oc-srccard__pick { padding-top: 0.1rem; }
+.oc-srccard__body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 0.3rem; }
+.oc-srccard__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.oc-srccard__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+.oc-srccard__chip {
   padding: 0.05rem 0.45rem;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--muted-foreground);
   background: var(--muted);
   border-radius: 999px;
   white-space: nowrap;
 }
-.oc-sources__excerpt {
-  margin: 0.25rem 0 0;
-  padding: 0.3rem 0.6rem;
+.oc-srccard__relev { display: inline-flex; align-items: center; }
+.oc-srccard__relev-track {
+  width: 3rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.oc-srccard__relev-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+.oc-srccard__excerpt {
+  margin: 0;
+  padding: 0.3rem 0.55rem;
   font-size: 0.78rem;
   color: var(--muted-foreground);
   border-left: 2px solid var(--border);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.oc-srccard__excerpt.is-full {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  overflow: visible;
+}
+.oc-srccard__more {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 0.74rem;
+  color: var(--primary);
+  cursor: pointer;
+}
+.oc-srccard__origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+}
+/* L2 fetch states for the per-document "original source" slot. */
+.oc-srccard__origin--ready {
+  color: var(--primary);
+  opacity: 1;
+  text-decoration: none;
+  cursor: pointer;
+}
+.oc-srccard__origin--ready:hover {
+  text-decoration: underline;
+}
+.oc-srccard__origin-name {
+  overflow: hidden;
+  max-width: 16rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-srccard__origin--pending {
+  opacity: 1;
+}
+.oc-srccard__origin--pending svg {
+  animation: oc-spin 1s linear infinite;
+}
+.oc-srccard__origin--missing {
+  opacity: 0.55;
 }
 
 /* ── Composer attachment chip (BUG-2): selecting a file used to render nothing

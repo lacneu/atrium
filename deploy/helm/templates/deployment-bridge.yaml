@@ -51,16 +51,32 @@ spec:
             {{- end }}
             - name: OPENCLAW_INSTANCE_NAME
               value: {{ .Values.bridge.instanceName | quote }}
+            # token + device identity are OPTIONAL: leave them blank to use UI mode
+            # (creds stored encrypted in Convex, fetched at boot via
+            # BRIDGE_INSTANCE_SECRET below). `optional: true` so the pod starts even
+            # when an external existingSecret omits these keys. See README
+            # "Gateway credentials: env vs UI-managed".
             - name: OPENCLAW_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "atrium.secretName" . }}
                   key: OPENCLAW_TOKEN
+                  optional: true
             - name: OPENCLAW_DEVICE_IDENTITY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "atrium.secretName" . }}
                   key: OPENCLAW_DEVICE_IDENTITY
+                  optional: true
+            # [UI mode] per-bridge secret minted in Settings -> Agents -> Instances
+            # -> Credentials; binds this bridge to its instance so it fetches ONLY
+            # that gateway's encrypted creds. Blank/absent in env mode.
+            - name: BRIDGE_INSTANCE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "atrium.secretName" . }}
+                  key: BRIDGE_INSTANCE_SECRET
+                  optional: true
             # --- Convex .site endpoint by SERVICE DNS (no host IP) ---
             - name: CONVEX_HTTP_ACTIONS_URL
               value: {{ include "atrium.convexSiteInClusterUrl" . | quote }}

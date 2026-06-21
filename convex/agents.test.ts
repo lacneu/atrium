@@ -12,6 +12,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { resolveDocumentaryTarget } from "./agents";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -580,6 +581,62 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
     expect(await as.query(api.agents.getChatAgent, { chatId: "not-an-id" })).toBeNull();
   });
 
+  test("multi-agent on ONE instance: multiInstance=false (no instance disambiguation)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);
+    const chatId = await mkChat();
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    expect(res?.multiAgent).toBe(true);
+    expect(res?.multiInstance).toBe(false); // both agents live on the same gateway
+  });
+
+  test("agents across TWO instances: multiInstance=true (header names the instance)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "u" });
+      for (const inst of ["alpha", "beta"]) {
+        await ctx.db.insert("instances", { name: inst, gatewayUrl: "ws://x", kind: "openclaw" });
+        await ctx.db.insert("instanceDiscovery", {
+          instanceName: inst,
+          lastPollAt: 1,
+          lastPollOk: true,
+          lastOkAt: 1,
+        });
+        await ctx.db.insert("agents", {
+          instanceName: inst,
+          agentId: "main",
+          source: "discovered",
+          presentInLastOk: true,
+          displayName: "Main",
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+        await ctx.db.insert("userAgents", {
+          userId: uid,
+          instanceName: inst,
+          agentId: "main",
+          isDefault: inst === "alpha",
+          source: "manual",
+          createdAt: inst === "alpha" ? 0 : 1,
+        });
+      }
+      const chatId = await ctx.db.insert("chats", {
+        userId: uid,
+        updatedAt: 1,
+        instanceName: "beta",
+        agentId: "main",
+      });
+      return { userId: uid, chatId };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    expect(res?.multiAgent).toBe(true);
+    expect(res?.multiInstance).toBe(true);
+    // The chip names the BOUND agent's instance, not the default's.
+    expect(res?.agent?.instanceName).toBe("beta");
+  });
+
   test("bound agent DELETED on the gateway → chip falls back to the default (mirrors dispatch)", async () => {
     // The chip must name the agent the NEXT turn actually dispatches to. Dispatch
     // (resolveTargetForChat) refuses a deleted binding and rebinds to the default,
@@ -685,5 +742,55 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
     expect(res?.multiAgent).toBe(true);
     expect(res?.agent?.agentId).toBe("bob"); // NOT the dead default "main"
     expect(res?.agent?.state).toBe("ok");
+  });
+});
+
+describe("resolveDocumentaryTarget (default-first)", () => {
+  test("returns the user's DEFAULT documentary agent even when it isn't first in grant order", async () => {
+    // getEffectiveGrants MARKS isDefault but does NOT reorder; resolveDocumentaryTarget
+    // must sort default-first locally so the user's chosen default wins.
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "user" as const,
+        canonical: "u",
+      });
+      await ctx.db.insert("instances", { name: "primary", gatewayUrl: "ws://gw" });
+      for (const a of ["docA", "docB"]) {
+        await ctx.db.insert("agents", {
+          instanceName: "primary",
+          agentId: a,
+          source: "discovered" as const,
+          presentInLastOk: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+          types: ["documentary"],
+        });
+      }
+      // Grant order == creation order: docA first (NON-default), docB second (DEFAULT).
+      await ctx.db.insert("userAgents", {
+        userId: uid,
+        instanceName: "primary",
+        agentId: "docA",
+        isDefault: false,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: uid,
+        instanceName: "primary",
+        agentId: "docB",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 2,
+      });
+      return uid;
+    });
+
+    const target = await t.run((ctx) => resolveDocumentaryTarget(ctx, userId));
+    // Regression guard: drop the default-first sort and this returns "docA".
+    expect(target?.agentId).toBe("docB");
   });
 });

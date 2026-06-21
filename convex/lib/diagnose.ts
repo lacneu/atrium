@@ -41,7 +41,14 @@ export interface DiagMessage {
 export interface DiagChatState {
   ok: boolean;
   messages?: DiagMessage[];
+  /** L2: an in-flight document fetch on this (hidden documentary) chat. A large
+   *  `ageSeconds` = a STUCK fetch the owner is locked out behind. */
+  pendingDocFetch?: { ageSeconds: number } | null;
 }
+
+/** A document fetch in flight longer than this (s) is treated as STUCK — mirrors
+ *  the stream watchdog's tolerance (a slow documentary agent gets the same grace). */
+export const STUCK_DOC_FETCH_SECONDS = 12 * 60;
 export interface DiagAvailability {
   known: boolean;
   available: boolean;
@@ -109,6 +116,26 @@ export function assessChat(
       summary: "An assistant message is stuck 'streaming' — the bridge never relayed its finalize frame.",
       suggestedAction:
         "Reconcile the chat to release the stuck stream (flips it to error, preserving text), then the user can retry.",
+      suggestedTool: "reconcile_chat",
+    };
+  }
+
+  // 1.5) A document fetch stuck in flight — the owner is locked out of all future
+  // fetches (the fetch_in_flight guard) until released. Safe corrective exists
+  // (reconcile_chat releases a stale documentary pendingFetch, like a stuck stream).
+  if (
+    state.pendingDocFetch &&
+    state.pendingDocFetch.ageSeconds > STUCK_DOC_FETCH_SECONDS
+  ) {
+    return {
+      class: "attachment_problem",
+      severity: "high",
+      errorCode: null,
+      reason: "a document fetch never settled",
+      summary:
+        "A 'Joindre les documents' fetch is stuck in flight — its turn never relayed a settle, so the owner is locked out of further fetches.",
+      suggestedAction:
+        "Reconcile this hidden documentary chat to release the stuck fetch (marks its rows failed + clears the lock); the user can then retry the attach.",
       suggestedTool: "reconcile_chat",
     };
   }

@@ -56,6 +56,52 @@ user report (chatId)
   requests Langfuse `fields=core,basic,time` / drops Opik input/output, and the
   projection is an explicit structural allowlist — see `convex/integrations/enrich.ts`).
 
+## Document-fetch observability ("Joindre les documents")
+
+"Joindre les documents" fetches the real source files behind a reply's documentary
+sources and surfaces them as downloadable links. The fetch runs in a hidden per-user
+documentary chat (its own gateway session). The whole fetch is diagnosable end-to-end
+and SOC2-safe — the diagnostic surface carries counts/ids only, **never** a
+`reference`, `file_name`, `entryKey`, or URL (`entryKey` embeds the file_name, so it
+is excluded from every trace).
+
+**Trace kinds** (`list_traces`, filter by `kind`). All three traces of one fetch share
+the same `correlationId` (`docfetch:<sourceMessageId>:<createdAt>`), so a fetch is
+queryable as a single span; each meta also carries `hiddenChatId` to pivot into the
+hidden chat's `openclaw.dispatch` / `assistant.stream` traces:
+
+| kind | when | meta (counts only) |
+|---|---|---|
+| `documentary.attach` | fetch dispatched | `submitted`, `queued`, `distinctFiles`, `droppedNotSource` (>0 = a client submitted a reference NOT shown as a source — a tamper signal) |
+| `documentary.correlate` | fetch settled | `total`, `ready`, `notFound`, `mediaReturned` + `latencyMs` (full round-trip) |
+| `documentary.fail` | dispatch error or watchdog release | `failed`, `reason` (`dispatch_error` \| `stuck_stream`) |
+
+Example — follow one fetch end-to-end: `list_traces?correlationId=docfetch:<id>:<ts>`
+returns its `documentary.attach` then either `documentary.correlate` (counts of files
+resolved vs not found) or `documentary.fail` (with the reason).
+
+**chat-state** (`get_chat_state`): each message carries `attachedDocCount` (the count
+of ready downloadable files); the chat carries `kind` (`"documentary"` marks the hidden
+fetch chat) and `pendingDocFetch: { sourceMessageId, ageSeconds }`. A large `ageSeconds`
+means a STUCK fetch — the owner is locked out of further fetches by the
+`fetch_in_flight` guard.
+
+**diagnose_chat**: a `pendingDocFetch` older than 12 minutes is classified
+`attachment_problem` with `suggestedTool=reconcile_chat`. The failure mode here is the
+*absence* of a settle, so the signal is the pending age, not a `documentary.fail` trace.
+
+**Self-heal**: the stuck-stream watchdog (and the deliberate `reconcile_chat`) also
+release a stuck documentary `pendingFetch` — clearing the lock, marking its rows
+`failed`, and emitting `documentary.fail` (`reason:"stuck_stream"`). This makes the
+otherwise silent "pendingFetch never cleared" case observable and self-healing. Running
+`reconcile_chat` on the hidden documentary chat (its id is in each document-fetch
+trace's `hiddenChatId`) releases even a completed-but-stuck fetch.
+
+**User report**: the server-frozen feedback snapshot (`feedback.submitFeedback`)
+bundles the document-fetch state for the reported message — per-card `status`,
+`entryKey`, `reference` (the reporter's own data, like the provenance file_names already
+in `partsJson`) plus `docFetchPendingAgeSeconds` — but never the storageId or signed URL.
+
 ## What it does NOT do
 
 `reconcile_chat` is the only corrective primitive today. It does not restart the

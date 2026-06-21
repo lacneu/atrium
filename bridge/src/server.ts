@@ -957,8 +957,9 @@ async function withOperatorConnection<T>(
 ): Promise<T> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
-    config.openclawToken,
-    config.deviceIdentity,
+    // Boot-resolved (index.ts) — non-null by construction.
+    config.openclawToken!,
+    config.deviceIdentity!,
   );
   onHandshake?.(conn);
   try {
@@ -1063,8 +1064,9 @@ async function discoverAgents(
 ): Promise<{ agents: NormalizedAgent[]; rawCount: number }> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
-    config.openclawToken,
-    config.deviceIdentity,
+    // Boot-resolved (index.ts) — non-null by construction.
+    config.openclawToken!,
+    config.deviceIdentity!,
   );
   onHandshake?.(conn);
   try {

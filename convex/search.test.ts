@@ -72,6 +72,43 @@ describe("search.searchConversations — full-text over messages", () => {
     expect(hits[0].snippet.toLowerCase()).toContain("migration");
   });
 
+  test("HIDDEN: a documentary chat never surfaces (title OR message)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    // A normal chat (control) AND a hidden documentary chat, both matching "rapport"
+    // by title AND message — so without the filter BOTH search paths return it.
+    const normal = await seedChat(t, userId, {
+      title: "Rapport visible",
+      text: "le rapport annuel",
+    });
+    const hidden = await t.run(async (ctx) => {
+      const now = Date.now();
+      const hidden = await ctx.db.insert("chats", {
+        userId,
+        title: "Documents rapport",
+        kind: "documentary" as const,
+        archived: false,
+        updatedAt: now,
+      });
+      await ctx.db.insert("messages", {
+        chatId: hidden,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "fournis le rapport source",
+        updatedAt: now,
+      });
+      return hidden;
+    });
+    const hits = await as.query(api.search.searchConversations, {
+      query: "rapport",
+    });
+    const ids = hits.map((h) => h.chatId);
+    expect(ids).toContain(normal); // the real chat is found...
+    // Regression guard: the hidden L2 fetch chat must NEVER surface in search.
+    expect(ids).not.toContain(hidden);
+  });
+
   test("ACCESS: another user's message never surfaces for the caller", async () => {
     const t = convexTest(schema, modules);
     const a = await seedUser(t);

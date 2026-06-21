@@ -702,13 +702,17 @@ describe("agents union via groups", () => {
 // ===========================================================================
 
 describe("groups RBAC keys off the REAL identity", () => {
-  test("a real NON-admin user is rejected (groups.manage not grantable)", async () => {
+  test("a plain NON-admin (no groups.manage) is rejected: create is admin-only, list needs the perm", async () => {
     const t = convexTest(schema, modules);
     const userId = await seedUser(t, "u");
     const asUser = t.withIdentity({ subject: `${userId}|session` });
+    // createGroup is structural → ADMIN-only now (groups.manage is grantable, but
+    // granting it never lets a non-admin create/delete a group).
     await expect(
       asUser.mutation(api.groups.createGroup, { name: "G" }),
-    ).rejects.toThrow(/missing permission groups\.manage/);
+    ).rejects.toThrow(/admin role required/);
+    // listGroups still gates on the (now grantable) groups.manage permission; a
+    // plain user without the grant lacks it.
     await expect(asUser.query(api.groups.listGroups, {})).rejects.toThrow(
       /missing permission groups\.manage/,
     );

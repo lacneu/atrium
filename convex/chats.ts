@@ -12,6 +12,7 @@ import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
+import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 
 async function requireOwnedProject(
   ctx: MutationCtx,
@@ -268,6 +269,7 @@ export async function cascadeDeleteChat(
   ctx: MutationCtx,
   chatId: Id<"chats">,
 ): Promise<void> {
+  const chat = await ctx.db.get(chatId);
   const messages = await ctx.db
     .query("messages")
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
@@ -280,15 +282,32 @@ export async function cascadeDeleteChat(
     for (const p of parts) await ctx.db.delete(p._id);
     // Mirror the files-row invariant on the chat-cascade part deletion.
     await deleteFilesByMessage(ctx, m._id);
+    // L2: purge this message's documentary attachments — their rows reference the
+    // message and getDocumentAttachments would otherwise still surface (download)
+    // them. Rows only (storage blobs follow the same convention as message media).
+    const docs = await ctx.db
+      .query("documentAttachments")
+      .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
+      .collect();
+    for (const d of docs) await ctx.db.delete(d._id);
     await ctx.db.delete(m._id);
   }
-  const outbox = await ctx.db
-    .query("outbox")
-    .withIndex("by_status", (q) => q.eq("status", "pending"))
-    .collect();
-  for (const o of outbox) {
-    if (o.chatId === chatId) await ctx.db.delete(o._id);
+  // Purge the chat's NON-TERMINAL outbox — `pending` (in-flight) AND `queued`
+  // (parked follow-ups) — so a later drainNextQueued can't dispatch a deleted
+  // chat's queued send. Indexed by chat (not a global by_status scan).
+  for (const status of ["pending", "queued"] as const) {
+    const rows = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", chatId).eq("status", status),
+      )
+      .collect();
+    for (const o of rows) await ctx.db.delete(o._id);
   }
+  // L2: if this chat held the SOURCE of an in-flight documentary fetch, release the
+  // hidden chat's lock (same as deleteMessage). `chatId` is skipped when IT is the
+  // documentary chat — it is being deleted here anyway.
+  if (chat) await releaseDanglingDocumentaryFetch(ctx, chat.userId, chatId);
   await ctx.db.delete(chatId);
 }
 

@@ -22,6 +22,9 @@ import { Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
+import { drainNextQueued } from "./lib/outboxQueue";
+import { correlateDocumentaryFetch } from "./documentAttachments";
+import { compareOrder } from "./lib/messageOrder";
 
 /**
  * Build the stable per-turn correlationId for an assistant message. Prefers
@@ -240,6 +243,30 @@ export const finalize = internalMutation({
       streamStatus: status,
       textLen: finalLen,
     });
+    // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
+    // any) — the engine of mid-turn message serialization (Phase 1).
+    await drainNextQueued(ctx, message.chatId);
+
+    // L2: a finished DOCUMENTARY fetch turn → correlate the returned files back to
+    // the source reply's references. Best-effort: a correlation failure must NEVER
+    // break the turn lifecycle. GUARD: only correlate when THIS finalizing message is
+    // the reply to the CURRENT fetch. If an earlier fetch was declared stuck + released
+    // and a NEW one started, a LATE finalize of the OLD gateway run must not correlate
+    // against the new fetch's rows / clear its lock. The old run's assistant message
+    // was created when it streamed (before the new fetch's dispatch), so its
+    // _creationTime is strictly BEFORE the current pendingFetch.createdAt.
+    const chat = await ctx.db.get(message.chatId);
+    if (
+      chat?.kind === "documentary" &&
+      chat.pendingFetch &&
+      message._creationTime >= chat.pendingFetch.createdAt
+    ) {
+      try {
+        await correlateDocumentaryFetch(ctx, chat, message);
+      } catch (e) {
+        console.error("[docfetch] correlate failed:", (e as Error)?.message ?? e);
+      }
+    }
   },
 });
 
@@ -305,30 +332,44 @@ export const rehydrationContext = internalQuery({
     const chat = await ctx.db.get(chatId);
     if (chat === null) return { history: null, turnCount: 0 };
 
+    // History is everything LOGICALLY BEFORE the current turn (see lib/messageOrder).
+    // Ordering by raw _creationTime is wrong here: a mid-turn QUEUE follow-up inserted
+    // in the pending-pre-ack window has a _creationTime EARLIER than the in-flight
+    // turn's assistant reply. compareOrder (orderTime, tie-broken by _creationTime)
+    // sorts a queued follow-up correctly, and "strictly before the CURRENT turn" both
+    // KEEPS the prior assistant and EXCLUDES still-queued later follow-ups.
+    const current = excludeMessageId ? await ctx.db.get(excludeMessageId) : null;
+
     // Budget: reserve ~50% of the window for the system prompt, the new user
     // message, and the reply. ~3 chars/token (conservative). Fallback window
     // when we have not yet learned the real one from a prior turn's meta.
     const windowTokens = chat.sessionMeta?.contextTokens ?? 32_000;
     const budgetChars = Math.max(2_000, Math.floor(windowTokens * 0.5) * 3);
 
-    // Bounded tail read (newest first), then keep usable turns within budget.
-    const recentDesc = await ctx.db
+    // Bounded tail read by _creationTime (valid: an orderTime-bearing row has a recent
+    // _creationTime), then keep usable PRIOR turns in LOGICAL order within budget.
+    const recent = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .take(80);
+    const usableDesc = recent
+      .filter((m) => !(excludeMessageId && m._id === excludeMessageId))
+      .filter((m) => current === null || compareOrder(m, current) < 0) // strictly before the current turn
+      .filter(
+        (m) =>
+          m.status === "complete" &&
+          (m.role === "user" || m.role === "assistant") &&
+          m.text.trim().length > 0,
+      )
+      .sort((a, b) => compareOrder(b, a)); // newest logical first, for the budget walk
 
     const lines: string[] = [];
     let chars = 0;
     let truncated = false;
-    for (const m of recentDesc) {
-      if (excludeMessageId && m._id === excludeMessageId) continue;
-      if (m.status !== "complete") continue; // skip streaming/incomplete
-      if (m.role !== "user" && m.role !== "assistant") continue;
-      const text = m.text.trim();
-      if (text.length === 0) continue;
+    for (const m of usableDesc) {
       const label = m.role === "user" ? "Utilisateur" : "Assistant";
-      const line = `${label} : ${text}`;
+      const line = `${label} : ${m.text.trim()}`;
       if (lines.length > 0 && chars + line.length > budgetChars) {
         truncated = true;
         break;

@@ -564,6 +564,11 @@ export const upsertInstance = mutation({
     bridgeUrl: v.optional(v.string()),
     // Which provider technology backs this instance (the bridge adapts by kind).
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
+    // Non-secret gateway config (the SECRETS go through setInstanceSecret). Empty
+    // string → undefined (cleared). gatewayVersion = compat fallback;
+    // gatewayHttpUrl = media HTTP override.
+    gatewayVersion: v.optional(v.string()),
+    gatewayHttpUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -578,8 +583,20 @@ export const upsertInstance = mutation({
           ? trimmedBridgeUrl
           : undefined,
       kind: args.kind ?? "openclaw",
+      gatewayVersion: args.gatewayVersion?.trim() || undefined,
+      gatewayHttpUrl: args.gatewayHttpUrl?.trim() || undefined,
     };
     if (args.instanceId) {
+      // The name is the immutable ROUTING KEY: agents, userAgents, chats and
+      // instanceDiscovery all reference an instance BY NAME. Renaming would orphan
+      // every one of them, so reject a rename server-side — the disabled UI field is
+      // a convenience, NOT a trust boundary (a raw API call could still send a new
+      // name). With the names equal, the `name` in `fields` patches to itself.
+      const existing = await ctx.db.get(args.instanceId);
+      if (existing === null) throw new Error("instance_not_found");
+      if (existing.name !== args.name) {
+        throw new Error("instance_rename_not_supported");
+      }
       await ctx.db.patch(args.instanceId, fields);
       return args.instanceId;
     }
@@ -619,6 +636,23 @@ export const deleteInstance = mutation({
     if (inst === null) return; // idempotent
     const name = inst.name;
     await ctx.db.delete(instanceId);
+
+    // Encrypted credentials are keyed by THIS row's id (not its name), so they go
+    // UNCONDITIONALLY with the row — even if a duplicate-name instance remains
+    // (the name-keyed cascades below are gated on that; these are not).
+    const secretRows = await ctx.db
+      .query("instanceSecrets")
+      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
+      .collect();
+    for (const s of secretRows) await ctx.db.delete(s._id);
+
+    // The per-bridge auth secret is also keyed by THIS row's id — drop it
+    // unconditionally with the row (a stale hash must never resolve to a dead instance).
+    const bridgeAuthRows = await ctx.db
+      .query("bridgeAuth")
+      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
+      .collect();
+    for (const b of bridgeAuthRows) await ctx.db.delete(b._id);
 
     // `userAgents` / `agents` / `instanceDiscovery` reference the instance by
     // NAME (value), so deleting the row alone leaves ORPHAN grants the user could

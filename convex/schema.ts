@@ -1,9 +1,14 @@
 // Convex schema for the Atrium bridge.
 //
 // Design invariants (load-bearing):
-//   - Convex stores ONLY non-secret metadata. Gateway tokens, device
-//     identities, Convex deploy/service keys and OpenClaw filesystem paths
-//     NEVER live in any table here.
+//   - Convex stores non-secret metadata in the clear. Gateway CREDENTIALS
+//     (operator token, Ed25519 device identity, Hermes API key) are stored
+//     ENCRYPTED at rest (AES-256-GCM, lib/crypto) in the `instanceSecrets`
+//     table — NEVER as plaintext, and NEVER returned to the browser (only the
+//     bridge fetches the decrypted form server-side). The master key lives in
+//     the Convex deployment env (`ATRIUM_SECRET_KEY`), not the DB. The
+//     bridge↔Convex shared secret and OpenClaw filesystem paths still never
+//     live in any table here.
 //   - Reactivity is driven entirely by this DB: the bridge writes normalized
 //     events into `messages` / `messageParts` and assistant-ui re-renders.
 //   - Per-user access control is enforced in functions (queries/mutations),
@@ -14,6 +19,10 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
 import { instanceConfigValidator } from "./lib/instanceConfig";
+import {
+  encryptedSecretValidator,
+  secretFieldValidator,
+} from "./lib/crypto/convexValidator";
 
 // A single normalized message part. assistant-ui's `convertMessage` maps these
 // onto ThreadMessageLike content parts:
@@ -251,6 +260,12 @@ export default defineSchema({
     name: v.string(),
     gatewayUrl: v.string(),
     displayName: v.optional(v.string()),
+    // Non-secret gateway config moving from the bridge env to the UI (consumed by
+    // the bridge in a later step). `gatewayVersion` = the compat fallback
+    // (OPENCLAW_GATEWAY_VERSION); `gatewayHttpUrl` = the media HTTP override
+    // (OPENCLAW_GATEWAY_HTTP_URL). The SECRET credentials live in `instanceSecrets`.
+    gatewayVersion: v.optional(v.string()),
+    gatewayHttpUrl: v.optional(v.string()),
     // Per-instance bridge endpoint (Model M: one bridge process per gateway).
     // Convex dispatch POSTs here; UNSET → fall back to the deployment `BRIDGE_URL`
     // env (the single-bridge path). NON-secret URL — the shared secret stays env.
@@ -263,6 +278,11 @@ export default defineSchema({
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
+    // Admin-chosen DEFAULT agent for this instance (agentId). Overrides the
+    // gateway-discovered `agents.isDefaultOnInstance` in the routing default tier
+    // — but ONLY once Phase 2/3 consume it (set-but-INERT in Phase 1). Cleared when
+    // that agent is disabled/removed (set-time + resolve-time guard).
+    defaultAgentId: v.optional(v.string()),
     // Cached provider capabilities from the bridge `/capabilities` (incl.
     // agentDiscovery). Non-secret. OPTIONAL → unknown until first poll.
     capabilities: v.optional(
@@ -276,6 +296,43 @@ export default defineSchema({
       }),
     ),
   }).index("by_name", ["name"]),
+
+  // Encrypted gateway CREDENTIALS — one row per (instance, field). SEPARATE from
+  // `instances` ON PURPOSE (mirrors apiKeys-vs-serviceAccounts): the ciphertext
+  // never rides a client-facing `instances` read, and per-field rows avoid the
+  // nested-merge clobber. `secret` is the AES-256-GCM envelope (lib/crypto); the
+  // plaintext is never stored and never returned to the browser — only the bridge
+  // fetches the decrypted form server-side. Encryption binds AAD `<instanceId>:
+  // <field>` so a ciphertext can't be relocated to another instance/field.
+  instanceSecrets: defineTable({
+    instanceId: v.id("instances"),
+    field: secretFieldValidator, // "token" | "deviceIdentity" | "apiKey"
+    secret: encryptedSecretValidator,
+    updatedAt: v.number(),
+  })
+    .index("by_instance", ["instanceId"]) // status list + cascade delete
+    .index("by_instance_field", ["instanceId", "field"]), // upsert one per field
+
+  // PER-BRIDGE authentication secret (bridge -> Convex). Mirrors apiKeys: only the
+  // SHA-256 hash is stored, the plaintext is shown ONCE at mint. The point is
+  // ISOLATION: a presented secret RESOLVES to exactly ONE instance (by_hash), so a
+  // bridge proves WHICH instance it is — the credential-decrypt endpoint (step 3b)
+  // can then return ONLY that instance's gateway secrets, instead of trusting a
+  // self-asserted instanceName under a single shared BRIDGE_INGEST_SECRET (which
+  // would let any bridge decrypt every gateway's private key). One active secret per
+  // instance (rotate = replace the row). `by_instance` serves status + the
+  // deleteInstance cascade; `by_hash` is the O(1) verification lookup.
+  bridgeAuth: defineTable({
+    instanceId: v.id("instances"),
+    hashedSecret: v.string(), // SHA-256 hex of the plaintext (the only stored form)
+    prefix: v.string(), // non-secret leading segment for display
+    lastFour: v.string(), // non-secret trailing 4 chars for disambiguation
+    createdAt: v.number(),
+    createdBy: v.id("users"),
+    lastUsedAt: v.optional(v.number()),
+  })
+    .index("by_hash", ["hashedSecret"]) // O(1) verification -> resolves the instance
+    .index("by_instance", ["instanceId"]), // status + rotate (one per instance)
 
   // Per-instance discovery OUTCOME (the truth dispatch keys on). Distinct from
   // the `agents` cache: a single boolean cannot tell "agent absent in a
@@ -302,6 +359,19 @@ export default defineSchema({
     emoji: v.optional(v.string()),
     model: v.optional(v.string()),
     isDefaultOnInstance: v.optional(v.boolean()),
+    // ADMIN curation: is this discovered agent made available downstream (assignable
+    // to groups/users, usable in chats)? Admin-managed, PRESERVED across discovery
+    // polls (applyDiscovery never writes it). OPTIONAL → unset/false = NOT enabled
+    // (opt-in: the admin explicitly enables). ENFORCEMENT lands in Phase 2 — in
+    // Phase 1 this is set-but-not-read (inert), so no existing assignment breaks.
+    enabled: v.optional(v.boolean()),
+    // ADMIN curation: the agent's TYPE(s) — a fixed code-defined catalogue
+    // (convex/lib/agentTypes.ts: "conversational" | "documentary"). Tells Atrium HOW
+    // the agent may be used (normal chat vs a dedicated documentary-source action).
+    // Admin-managed + PRESERVED across discovery polls (applyDiscovery never writes
+    // it). OPTIONAL/empty => CONVERSATIONAL by default (resolveAgentTypes). An agent
+    // may hold several types.
+    types: v.optional(v.array(v.string())),
     // "discovered" = from a real provider enumeration; "manual" = admin fallback
     // when the provider cannot enumerate (agentDiscovery:false) => UNVERIFIED.
     source: v.union(v.literal("discovered"), v.literal("manual")),
@@ -333,7 +403,10 @@ export default defineSchema({
     .index("by_user_instance_agent", ["userId", "instanceName", "agentId"])
     // Targeted read for the instance-deletion cascade (admin.deleteInstance) so it
     // never has to scan the whole table — Convex read/write doc limits (Codex P2).
-    .index("by_instance", ["instanceName"]),
+    .index("by_instance", ["instanceName"])
+    // Scale-safe paginated delete of ALL users' grants for one removed agent
+    // (admin removeInstanceAgent cascade).
+    .index("by_instance_agent", ["instanceName", "agentId"]),
 
   // ===========================================================================
   // GROUPS (P2). Regroup users + share agents by group. Admin-managed only (no
@@ -363,6 +436,12 @@ export default defineSchema({
     groupId: v.id("groups"),
     userId: v.id("users"),
     joinedAt: v.number(),
+    // ADMIN-set delegation: a member promoted to MANAGER of THIS group may
+    // administer it (membership + agents + charts of this group ONLY) when they
+    // also hold the grantable `groups.manage` permission. Admin-only to set
+    // (promote/demote); create/delete-group + this promotion stay admin-only.
+    // OPTIONAL → unset/false = a plain member (consumes the group, doesn't manage).
+    manager: v.optional(v.boolean()),
   })
     .index("by_group", ["groupId"])
     .index("by_user", ["userId"])
@@ -392,7 +471,33 @@ export default defineSchema({
   // rejects an unknown key. `by_group` serves the deleteGroup cascade; `by_chart`
   // powers the availability computation; `by_group_chart` serves the
   // assign/remove unique() dedup (mirrors groupAgents' by_group_instance_agent).
+  //
+  // 3-TIER charts model: this table is the GROUP MANAGER's SELECTION (Tier 2 —
+  // "the group DOES offer this chart to its members"), constrained by the admin
+  // POOL (Tier 1, groupChartPool). `isDefault` is the group's default chart
+  // (Tier-2 default) — OPTIONAL; the selection/election logic (Phase B step 2)
+  // keeps it consistent. ENFORCEMENT (resolveChart group tier) lands in step 3 —
+  // until then `isDefault` is set-but-not-read (inert), like the agent curation.
   groupCharts: defineTable({
+    groupId: v.id("groups"),
+    chartKey: v.string(),
+    isDefault: v.optional(v.boolean()),
+    createdAt: v.number(),
+  })
+    .index("by_group", ["groupId"])
+    .index("by_chart", ["chartKey"])
+    .index("by_group_chart", ["groupId", "chartKey"]),
+
+  // Tier 1 of the 3-tier charts model: the admin-defined POOL of charts a group
+  // MAY offer ("applicable au groupe"). A group MANAGER may then SELECT a subset
+  // into groupCharts (Tier 2). Admin-managed ONLY (CHARTS_MANAGE); a manager can
+  // never widen their own pool. `chartKey` is a builtin OR custom key (the pool
+  // mutation rejects an unknown key). INERT in step 1 (nothing reads it for
+  // availability yet — the manager-selection gate that consults it lands in step
+  // 2). `by_group` serves the deleteGroup cascade + the pool listing; `by_chart`
+  // serves the deleteChart cascade; `by_group_chart` serves the add/remove
+  // unique() dedup (mirrors groupCharts' by_group_chart).
+  groupChartPool: defineTable({
     groupId: v.id("groups"),
     chartKey: v.string(),
     createdAt: v.number(),
@@ -575,6 +680,18 @@ export default defineSchema({
     // agent at dispatch (docs/MULTI_AGENT_REDESIGN.md §3.3).
     instanceName: v.optional(v.string()), // -> instances.name
     agentId: v.optional(v.string()), // -> agents.agentId (on instanceName)
+    // L2 ("Joindre les documents"): a HIDDEN, per-user chat that hosts the
+    // DOCUMENTARY fetch turns. It routes to a documentary agent in its OWN gateway
+    // session (distinct chatId) so the conversational chats are never re-keyed.
+    // Excluded from listChats. Absent = a normal conversational chat.
+    kind: v.optional(v.literal("documentary")),
+    // The in-flight documentary fetch this hidden chat is serving — its CONVERSATIONAL
+    // source message. Set at dispatch, read at finalize to correlate returned files to
+    // the source's references, then cleared. Only meaningful on a `kind:"documentary"`
+    // chat. Fetches serialize (one in flight per hidden chat).
+    pendingFetch: v.optional(
+      v.object({ sourceMessageId: v.id("messages"), createdAt: v.number() }),
+    ),
     archived: v.optional(v.boolean()),
     updatedAt: v.number(),
     // Sidebar organization (all optional — additive on existing rows):
@@ -650,6 +767,11 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()), // OpenClaw runId for assistant turns
+    // LOGICAL turn-order key (see lib/messageOrder). Set ONLY on a mid-turn QUEUE
+    // follow-up: a SENTINEL while parked (sorts last), re-stamped to the real dispatch
+    // time on drain. Unset for idle sends + assistant messages (their _creationTime IS
+    // their order). Consumers order by `effectiveOrder` (orderTime ?? _creationTime).
+    orderTime: v.optional(v.number()),
     status: v.union(
       v.literal("streaming"),
       v.literal("complete"),
@@ -670,9 +792,18 @@ export default defineSchema({
     // ATTACHMENT_TOO_LARGE, …), stored alongside the user-facing `error` text so a
     // diagnosis can read the code without parsing a localized phrase. OPTIONAL.
     errorCode: v.optional(v.string()),
+    // L2: count of READY downloadable document attachments fetched for THIS
+    // assistant message (denormalized by correlateDocumentaryFetch). Drives the
+    // subtle "joints" badge on the Sources chip without a per-message query.
+    // OPTIONAL (additive; absent/undefined = none).
+    attachedDocCount: v.optional(v.number()),
     updatedAt: v.number(),
   })
     .index("by_chat", ["chatId"])
+    // (chatId, status): exact "does this chat have a streaming turn?" check for the
+    // mid-turn send serialization (lib/outboxQueue.isChatBusy) — .first() on the
+    // (chat, "streaming") point range, no per-chat scan.
+    .index("by_chat_status", ["chatId", "status"])
     // Bounded scan for the stuck-stream watchdog: a message left `status:
     // "streaming"` whose `updatedAt` is far in the past = the bridge lost the
     // run's WS subscription and never relayed the finalize frame (the UI then
@@ -830,12 +961,22 @@ export default defineSchema({
       ),
     ),
     status: v.union(
+      // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an
+      // in-flight turn, held here until that turn ends. The drainer (lib/
+      // outboxQueue.drainNextQueued) flips the oldest queued row of a chat to
+      // `pending` + schedules dispatch once the chat is idle again — so only ONE
+      // turn is ever in flight per chat (the bridge is one-turn-per-session).
+      v.literal("queued"),
       v.literal("pending"),
       v.literal("sent"),
       v.literal("failed"),
     ),
   })
     .index("by_status", ["status"])
+    // (chatId, status): the busy-check reads (chat, "pending") and the FIFO drain
+    // reads (chat, "queued") ordered by _creationTime — both are point ranges, no
+    // scan. The single-in-flight-turn serialization is built on this index.
+    .index("by_chat_status", ["chatId", "status"])
     // Idempotency key scoped per user. (userId, clientMessageId) is effectively
     // unique because clientMessageId is a client-generated UUID; scoping by
     // userId keeps one user's id space from colliding with another's.
@@ -843,6 +984,43 @@ export default defineSchema({
     // Reverse lookup message -> outbox row, used by forensic feedback to capture
     // the dispatched payload best-effort (the row is transient, may be gone).
     .index("by_message", ["messageId"]),
+
+  // L2 "Joindre les documents": per (source assistant message, document reference)
+  // attachment lifecycle. The user asks a DOCUMENTARY agent to fetch the real file
+  // behind a LightRAG/pgvector reference; the returned file (via the outbound-media
+  // contract) is correlated back here BY FILENAME and surfaced in the source's
+  // "Source d'origine" slot. NEW table → required fields are fine.
+  documentAttachments: defineTable({
+    userId: v.id("users"),
+    // The CONVERSATIONAL assistant message whose Sources triggered the fetch.
+    sourceMessageId: v.id("messages"),
+    // The SELECTED source card's unique identity (SourceEntry.key). The fetch is
+    // scoped to the exact cards the user checked, so an unchecked duplicate (same
+    // file_name, different card) or a sibling chunk of the same file NEVER lights
+    // up — only the checked card does. OPTIONAL for additive migration (pre-entryKey
+    // rows are skipped on read); every NEW row always sets it.
+    entryKey: v.optional(v.string()),
+    // The document reference (file_name) requested — the AGENT fetch + media
+    // correlation key (the returned file is matched back to rows by basename).
+    reference: v.string(),
+    status: v.union(
+      v.literal("pending"), // dispatched, awaiting the documentary turn
+      v.literal("ready"), // file resolved + stored (storageId set)
+      v.literal("not_found"), // the documentary turn returned no matching file
+      v.literal("failed"), // the fetch errored
+    ),
+    storageId: v.optional(v.id("_storage")), // the downloadable blob (when ready)
+    filename: v.optional(v.string()),
+    mimeType: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    // Panel read: all attachments for a source message.
+    .index("by_source_message", ["sourceMessageId"])
+    // Correlation: a source's still-pending references, matched by filename.
+    .index("by_source_status", ["sourceMessageId", "status"])
+    // Upsert: find the row for a specific selected card.
+    .index("by_source_entry", ["sourceMessageId", "entryKey"]),
 
   // On-demand FORENSIC feedback (OpenRouter-style "Report Feedback"). When a user
   // flags a message (category + comment), we FREEZE a full forensic snapshot at
@@ -906,6 +1084,14 @@ export default defineSchema({
       outboxClientMessageId: v.optional(v.string()),
       outboxAttachmentsCount: v.optional(v.number()),
       outboxAvailable: v.optional(v.boolean()),
+      // --- L2 "Joindre les documents" state for THIS reply (SERVER-READ). The
+      // user's own forensic report, so entryKey/reference/status are included (like
+      // partsJson's provenance file_names already are) — but NEVER storageId/url
+      // (signed URLs leak + rot). `docFetchPendingAgeSeconds` flags a fetch still
+      // stuck in flight at report time (the likely reason the user is reporting). ---
+      docAttachmentsJson: v.optional(v.string()),
+      docAttachmentsCount: v.optional(v.number()),
+      docFetchPendingAgeSeconds: v.optional(v.number()),
       // --- Integrity (optional; snapshot itself is already the frozen proof) ---
       contentHash: v.optional(v.string()),
       // --- CLIENT DECLARATIONS (browser-fidelity comparison ONLY, not trusted) ---

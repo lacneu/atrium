@@ -117,6 +117,68 @@ describe("feedback.submitFeedback", () => {
     expect(rows.find((r) => r.snapshot.displayedMatchesStored === false)).toBeTruthy();
   });
 
+  test("snapshot bundles document-attachment state (status + reference, NO storageId) + pending-fetch age", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const { replyId } = await seedTurn(t, chatId, userId, "q", "r");
+    // Two attachment rows for the reply (one ready, one not_found) + a hidden
+    // documentary chat with a fetch still IN FLIGHT for this same message.
+    await t.run(async (ctx) => {
+      const storageId = await ctx.storage.store(new Blob(["x"]));
+      await ctx.db.insert("documentAttachments", {
+        userId,
+        sourceMessageId: replyId,
+        entryKey: "k1",
+        reference: "guide.md",
+        status: "ready" as const,
+        storageId,
+        filename: "guide.md",
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      await ctx.db.insert("documentAttachments", {
+        userId,
+        sourceMessageId: replyId,
+        entryKey: "k2",
+        reference: "faq.md",
+        status: "not_found" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      await ctx.db.insert("chats", {
+        userId,
+        kind: "documentary" as const,
+        title: "Documents",
+        updatedAt: 0,
+        pendingFetch: { sourceMessageId: replyId, createdAt: Date.now() - 5000 },
+      });
+    });
+
+    await as.mutation(api.feedback.submitFeedback, {
+      chatId,
+      messageId: replyId,
+      category: "other",
+    });
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query("feedback")
+        .withIndex("by_message", (q) => q.eq("messageId", replyId))
+        .first(),
+    );
+    expect(row!.snapshot.docAttachmentsCount).toBe(2);
+    const attachments = JSON.parse(row!.snapshot.docAttachmentsJson!);
+    expect(attachments.map((x: { status: string }) => x.status).sort()).toEqual([
+      "not_found",
+      "ready",
+    ]);
+    // The forensic snapshot carries status/reference but NEVER the storageId/url.
+    expect(row!.snapshot.docAttachmentsJson).not.toContain("storageId");
+    expect(row!.snapshot.docAttachmentsJson).not.toContain("http");
+    // A fetch in flight for this message is captured.
+    expect(typeof row!.snapshot.docFetchPendingAgeSeconds).toBe("number");
+  });
+
   test("owner-scope: a user cannot report another user's message", async () => {
     const t = convexTest(schema, modules);
     const owner = await seedUser(t);

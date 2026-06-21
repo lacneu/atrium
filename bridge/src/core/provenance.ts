@@ -165,6 +165,18 @@ export function parseProvenanceReport(data: unknown): ProvenancePart | null {
  * runId — the caller stashes by runId and flushes the entries matching the
  * ack. Returns null for any other frame.
  */
+/**
+ * Stable CONTENT signature of a provenance part (pluginId + source + group +
+ * items). Lets the pre-turn stash drop an EXACT-duplicate report a plugin may
+ * emit more than once in a single turn (e.g. a hook registered twice on a
+ * reload), WITHOUT collapsing two genuinely-distinct reports that share a group
+ * — openclaw-knowledge's pgvector and LightRAG reports are both group
+ * "documents" but carry different `items`, so their signatures differ.
+ */
+export function provenanceSignature(part: ProvenancePart): string {
+  return JSON.stringify([part.pluginId, part.source, part.group, part.items]);
+}
+
 export function parseProvenanceFrame(
   frame: unknown,
   sessionKey: string,

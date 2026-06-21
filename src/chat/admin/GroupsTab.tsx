@@ -1,11 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { ChevronLeft, ChevronRight, Server, Star, Users } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Palette,
+  Server,
+  ShieldCheck,
+  Star,
+  Users,
+  X,
+} from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
+import { APP_HOST } from "@/lib/appHost";
 import { DataTableShell } from "./DataTableShell";
 import { EntitySheet } from "./EntitySheet";
+import { FilterBar } from "./filters/FilterBar";
 import {
   filterInstanceAgents,
   filterSortMembers,
@@ -31,6 +42,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 
@@ -53,16 +71,72 @@ type GroupRow = {
   description: string | null;
   memberCount: number;
   agentCount: number;
+  chartCount: number;
+  // Bounded name PREVIEWS for the list "detail" columns (server-capped; the rest
+  // are summarized as "+N"). Managers / the default chart are sorted first.
+  members: Array<{ label: string; manager: boolean }>;
+  agents: string[];
+  charts: Array<{ name: string; isDefault: boolean }>;
   createdAt: number;
 };
 
 type GroupForm = { name: string; description: string };
 const EMPTY_FORM: GroupForm = { name: "", description: "" };
 
+// One "detail" cell of the groups list: small chips of names (server-capped to a
+// preview) + a "+N" overflow badge. Each chip TRUNCATES a long name (ellipsis +
+// title tooltip) so a few very long corporate emails / agent / chart names never
+// blow out the row. `marker` (manager shield / default star) renders before the
+// name; `highlight` switches the chip to the secondary variant so it stands out.
+function DetailChips({
+  icon,
+  total,
+  items,
+}: {
+  icon: ReactNode;
+  total: number;
+  items: Array<{ label: string; marker?: ReactNode; highlight?: boolean }>;
+}) {
+  if (total === 0) {
+    return (
+      <Badge variant="outline" className="oc-group-chip oc-group-chip--empty gap-1">
+        {icon}0
+      </Badge>
+    );
+  }
+  const hidden = total - items.length;
+  return (
+    <div className="oc-group-detail">
+      {items.map((it, i) => (
+        <Badge
+          key={i}
+          variant={it.highlight ? "secondary" : "outline"}
+          className="oc-group-chip gap-1"
+          title={it.label}
+        >
+          {it.marker}
+          <span className="oc-group-chip__txt">{it.label}</span>
+        </Badge>
+      ))}
+      {hidden > 0 ? (
+        <Badge variant="outline" className="oc-group-chip">
+          +{hidden}
+        </Badge>
+      ) : null}
+    </div>
+  );
+}
+
 export function GroupsTab() {
   const groups = useQuery(api.groups.listGroups, {}) as
     | GroupRow[]
     | undefined;
+  // The Groups tab is reachable by a delegated manager (groups.manage), but
+  // create / rename / delete a group stay ADMIN-ONLY (enforced server-side too).
+  // Reuse the existing role signal to HIDE those affordances for a non-admin
+  // manager rather than show buttons that 403.
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
+  const isAdmin = me?.role === "admin";
   const createGroup = useMutation(api.groups.createGroup);
   const updateGroup = useMutation(api.groups.updateGroup);
   const deleteGroup = useMutation(api.groups.deleteGroup);
@@ -79,6 +153,24 @@ export function GroupsTab() {
     groupId: Id<"groups">;
     name: string;
   } | null>(null);
+
+  // Client-side filter (the list is admin-scale): matches the group name +
+  // description + any PREVIEWED member / agent / chart name. `q` is the debounced
+  // value the FilterBar commits.
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    if (!groups) return groups;
+    const needle = q.trim().toLowerCase();
+    if (!needle) return groups;
+    return groups.filter(
+      (g) =>
+        g.name.toLowerCase().includes(needle) ||
+        (g.description ?? "").toLowerCase().includes(needle) ||
+        g.members.some((mb) => mb.label.toLowerCase().includes(needle)) ||
+        g.agents.some((a) => a.toLowerCase().includes(needle)) ||
+        g.charts.some((c) => c.name.toLowerCase().includes(needle)),
+    );
+  }, [groups, q]);
 
   function openCreate() {
     setEditing(null);
@@ -139,57 +231,84 @@ export function GroupsTab() {
   return (
     <>
       <p className="oc-admin__hint">{m.groups_hint()}</p>
+      <FilterBar
+        q={q}
+        onQChange={setQ}
+        onReset={() => setQ("")}
+        canReset={q !== ""}
+        searchPlaceholder={m.groups_filter_placeholder()}
+      />
       <DataTableShell
         title={m.groups_title()}
-        rows={groups}
+        rows={filtered}
         addLabel={m.groups_add()}
-        onAdd={openCreate}
+        onAdd={isAdmin ? openCreate : undefined}
         emptyHint={m.groups_empty()}
         columns={[
           { header: m.groups_col_name(), cell: (g) => g.name, sort: (g) => g.name },
           {
             header: m.groups_col_members(),
             cell: (g) => (
-              <Badge variant="outline" className="gap-1">
-                <Users size={12} aria-hidden />
-                {g.memberCount}
-              </Badge>
+              <DetailChips
+                icon={<Users size={12} aria-hidden />}
+                total={g.memberCount}
+                items={g.members.map((mb) => ({
+                  label: mb.label,
+                  marker: mb.manager ? (
+                    <ShieldCheck size={11} aria-hidden />
+                  ) : null,
+                  highlight: mb.manager,
+                }))}
+              />
             ),
             sort: (g) => g.memberCount,
           },
           {
             header: m.groups_col_agents(),
             cell: (g) => (
-              <Badge variant="outline" className="gap-1">
-                <Server size={12} aria-hidden />
-                {g.agentCount}
-              </Badge>
+              <DetailChips
+                icon={<Server size={12} aria-hidden />}
+                total={g.agentCount}
+                items={g.agents.map((a) => ({ label: a }))}
+              />
             ),
             sort: (g) => g.agentCount,
           },
           {
-            header: m.groups_col_manage(),
+            header: m.groups_col_charts(),
             cell: (g) => (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 font-normal"
-                onClick={() =>
-                  setManageFor({ groupId: g._id, name: g.name })
-                }
-              >
-                {m.groups_manage()}
-              </Button>
+              <DetailChips
+                icon={<Palette size={12} aria-hidden />}
+                total={g.chartCount}
+                items={g.charts.map((c) => ({
+                  label: c.name,
+                  marker: c.isDefault ? (
+                    <Star size={11} fill="currentColor" aria-hidden />
+                  ) : null,
+                  highlight: c.isDefault,
+                }))}
+              />
             ),
+            sort: (g) => g.chartCount,
           },
         ]}
         rowActions={(g) => [
-          { label: m.groups_rename(), onSelect: () => openRename(g) },
+          // Managing membership/agents/charts is delegated; renaming + deleting a
+          // group are admin-only (structural), so hide them for a non-admin manager.
           {
-            label: m.groups_delete(),
-            variant: "destructive",
-            onSelect: () => void remove(g),
+            label: m.groups_manage(),
+            onSelect: () => setManageFor({ groupId: g._id, name: g.name }),
           },
+          ...(isAdmin
+            ? [
+                { label: m.groups_rename(), onSelect: () => openRename(g) },
+                {
+                  label: m.groups_delete(),
+                  variant: "destructive" as const,
+                  onSelect: () => void remove(g),
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -300,12 +419,19 @@ function GroupManageDialog({
     api.groups.getGroup,
     open && groupId ? { groupId } : "skip",
   );
-  const instances = useQuery(api.admin.listInstances, open ? {} : "skip");
-  const users = useQuery(api.admin.listUsers, open ? {} : "skip");
+  // DELEGATION-safe directory queries (GROUPS_MANAGE-gated, label-only) so a
+  // delegated manager — not just an admin — can populate the dialog. The admin
+  // equivalents are requireAdmin + over-disclose (see convex/groups.ts).
+  const instances = useQuery(
+    api.groups.listAssignableInstances,
+    open ? {} : "skip",
+  );
+  const users = useQuery(api.groups.listAssignableUsers, open ? {} : "skip");
 
   const addMember = useMutation(api.groups.addMember);
   const removeMember = useMutation(api.groups.removeMember);
   const bulkSetMembers = useMutation(api.groups.bulkSetMembers);
+  const setGroupManager = useMutation(api.groups.setGroupManager);
   const toast = useToast();
 
   // Search filters + active tab, scoped to the open session. The parent keeps
@@ -328,6 +454,19 @@ function GroupManageDialog({
     () => new Set((detail?.members ?? []).map((mm) => mm.userId)),
     [detail],
   );
+  // Members promoted as MANAGERS of this group (groupMembers.manager). Drives the
+  // "Gestionnaire" badge for everyone + the admin-only promote/demote toggle.
+  const managerIds = useMemo(
+    () =>
+      new Set(
+        (detail?.members ?? [])
+          .filter((mm) => mm.manager)
+          .map((mm) => mm.userId),
+      ),
+    [detail],
+  );
+  // Promote/demote a manager is ADMIN-ONLY (server-enforced; the UI hides the toggle).
+  const viewerIsAdmin = detail?.viewerIsAdmin === true;
   const groupAgentKeys = useMemo(
     () =>
       new Set(
@@ -375,6 +514,15 @@ function GroupManageDialog({
       else await addMember({ groupId, userId });
     } catch (err) {
       toast.error(m.groups_toast_member_error(), err);
+    }
+  }
+
+  async function toggleManager(userId: Id<"users">, isManager: boolean) {
+    if (!groupId) return;
+    try {
+      await setGroupManager({ groupId, userId, manager: !isManager });
+    } catch (err) {
+      toast.error(m.groups_toast_manager_error(), err);
     }
   }
 
@@ -431,6 +579,15 @@ function GroupManageDialog({
                 </Badge>
               ) : null}
             </TabsTrigger>
+            <TabsTrigger value="charts" className="flex-1 gap-1.5">
+              <Palette size={13} aria-hidden />
+              {m.groups_charts_section()}
+              {detail ? (
+                <Badge variant="secondary" className="oc-access__tabcount">
+                  {detail.chartCount}
+                </Badge>
+              ) : null}
+            </TabsTrigger>
           </TabsList>
 
           {/* Members ------------------------------------------------------- */}
@@ -476,6 +633,7 @@ function GroupManageDialog({
                       {memberPaged.pageItems.map((u) => {
                         const isMember = memberIds.has(u.userId);
                         const parts = userDisplayParts(u);
+                        const isManager = managerIds.has(u.userId);
                         return (
                           <div key={u._id} className="oc-access__row">
                             <Checkbox
@@ -488,11 +646,17 @@ function GroupManageDialog({
                               })}
                             />
                             <span className="oc-access__who">
-                              <span className="oc-access__label">
+                              <span
+                                className="oc-access__label"
+                                title={parts.primary}
+                              >
                                 {parts.primary}
                               </span>
                               {parts.secondary ? (
-                                <span className="oc-access__sub">
+                                <span
+                                  className="oc-access__sub"
+                                  title={parts.secondary}
+                                >
                                   {parts.secondary}
                                 </span>
                               ) : null}
@@ -503,6 +667,49 @@ function GroupManageDialog({
                             >
                               {roleLabel(u.role)}
                             </Badge>
+                            {/* Manager = a COMPACT shield (coloured per the active
+                                charte via --primary) in a fixed slot at the FAR RIGHT
+                                so every row's controls stay aligned and nothing
+                                overflows. For an admin it is a promote/demote TOGGLE;
+                                for everyone else a read-only indicator shown only when
+                                the member manages. */}
+                            <span className="oc-access__mgrslot">
+                              {isMember && viewerIsAdmin ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className={`shrink-0 oc-access__mgr${
+                                    isManager ? " oc-access__mgr--on" : ""
+                                  }`}
+                                  aria-pressed={isManager}
+                                  aria-label={
+                                    isManager
+                                      ? m.groups_demote_manager()
+                                      : m.groups_promote_manager()
+                                  }
+                                  title={
+                                    isManager
+                                      ? m.groups_demote_manager()
+                                      : m.groups_promote_manager()
+                                  }
+                                  onClick={() =>
+                                    void toggleManager(u.userId, isManager)
+                                  }
+                                >
+                                  <ShieldCheck size={15} aria-hidden />
+                                </Button>
+                              ) : isMember && isManager ? (
+                                <span
+                                  className="oc-access__mgr oc-access__mgr--on"
+                                  role="img"
+                                  aria-label={m.groups_manager_badge()}
+                                  title={m.groups_manager_badge()}
+                                >
+                                  <ShieldCheck size={15} aria-hidden />
+                                </span>
+                              ) : null}
+                            </span>
                           </div>
                         );
                       })}
@@ -550,6 +757,11 @@ function GroupManageDialog({
               </>
             )}
           </TabsContent>
+
+          {/* Charts (charte graphique) ------------------------------------- */}
+          <TabsContent value="charts">
+            <GroupCharts groupId={groupId} />
+          </TabsContent>
         </Tabs>
       </DialogContent>
     </Dialog>
@@ -575,7 +787,9 @@ function GroupInstanceAgents({
   assigned: Set<string>;
   query: string;
 }) {
-  const data = useQuery(api.agents.listAgentsForInstance, { instanceName });
+  // Delegation-safe (GROUPS_MANAGE-gated, label-only): the admin
+  // listAgentsForInstance is requireAdmin + carries agent CURATION state.
+  const data = useQuery(api.groups.listAssignableAgents, { instanceName });
   const assign = useMutation(api.groups.assignAgentToGroup);
   const remove = useMutation(api.groups.removeAgentFromGroup);
   const bulkSetGroupAgents = useMutation(api.groups.bulkSetGroupAgents);
@@ -680,7 +894,10 @@ function GroupInstanceAgents({
                   name: a.displayName ?? a.agentId,
                 })}
               />
-              <span className="oc-access__label">
+              <span
+                className="oc-access__label"
+                title={a.displayName ?? a.agentId}
+              >
                 {a.emoji ? `${a.emoji} ` : ""}
                 {a.displayName ?? a.agentId}
               </span>
@@ -713,5 +930,139 @@ function GroupInstanceAgents({
         </>
       )}
     </div>
+  );
+}
+
+// Chart (charte graphique) SELECTION for one group (Tier 2). Lists the group's
+// admin POOL (Tier 1, listGroupChartSelection); the group MANAGER (or an admin)
+// toggles which pooled charts the group OFFERS and which one is the group DEFAULT.
+// Every mutation re-enforces authorizeGroupManage server-side (admin OR this
+// group's manager) — this UI is convenience, not the boundary. The POOL itself is
+// admin-defined elsewhere (Settings ▸ Apparence ▸ chart availability); an empty
+// pool shows a hint to ask an admin.
+function GroupCharts({ groupId }: { groupId: Id<"groups"> | null }) {
+  const data = useQuery(
+    api.charts.listGroupChartSelection,
+    groupId ? { groupId } : "skip",
+  );
+  const assign = useMutation(api.charts.assignChartToGroup);
+  const removeSelection = useMutation(api.charts.removeChartFromGroup);
+  const setDefault = useMutation(api.charts.setGroupDefaultChart);
+  const addToPool = useMutation(api.charts.addChartToGroupPool);
+  const removeFromPool = useMutation(api.charts.removeChartFromGroupPool);
+  const toast = useToast();
+
+  if (!groupId) return null;
+  if (data === undefined) {
+    return <p className="oc-access__hint">{m.groups_loading()}</p>;
+  }
+  const { pool, addable, canManagePool } = data;
+  // A delegated MANAGER with an empty pool can do nothing here -> tell them to ask
+  // an admin. An ADMIN always gets the pool editor below (even when empty).
+  if (pool.length === 0 && !canManagePool) {
+    return <p className="oc-access__hint">{m.groups_charts_pool_empty()}</p>;
+  }
+
+  async function toggle(chartKey: string, selected: boolean) {
+    try {
+      if (selected) await removeSelection({ groupId: groupId!, chartKey });
+      else await assign({ groupId: groupId!, chartKey });
+    } catch (err) {
+      toast.error(m.groups_toast_chart_error(), err);
+    }
+  }
+  async function makeDefault(chartKey: string) {
+    try {
+      await setDefault({ groupId: groupId!, chartKey });
+    } catch (err) {
+      toast.error(m.groups_toast_chart_error(), err);
+    }
+  }
+  async function poolAdd(chartKey: string) {
+    try {
+      await addToPool({ groupId: groupId!, chartKey });
+    } catch (err) {
+      toast.error(m.groups_toast_chart_error(), err);
+    }
+  }
+  async function poolRemove(chartKey: string) {
+    try {
+      await removeFromPool({ groupId: groupId!, chartKey });
+    } catch (err) {
+      toast.error(m.groups_toast_chart_error(), err);
+    }
+  }
+
+  return (
+    <>
+      <div className="oc-access__list">
+        {pool.map((c) => (
+          <div key={c.chartKey} className="oc-access__row">
+            <Checkbox
+              checked={c.selected}
+              onCheckedChange={() => void toggle(c.chartKey, c.selected)}
+              aria-label={m.groups_chart_toggle_aria({ name: c.name })}
+            />
+            <span className="oc-access__label" title={c.name}>
+              {c.name}
+            </span>
+            {c.selected ? (
+              c.isDefault ? (
+                <span
+                  className="oc-access__fav"
+                  role="img"
+                  aria-label={m.groups_chart_default()}
+                  title={m.groups_chart_default()}
+                >
+                  <Star size={14} fill="currentColor" />
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void makeDefault(c.chartKey)}
+                >
+                  {m.groups_make_default_chart()}
+                </Button>
+              )
+            ) : null}
+            {/* ADMIN pool editor: remove this chart from the group's pool (Tier 1).
+                Cascades the selection out + re-elects the default server-side. */}
+            {canManagePool ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={m.groups_charts_pool_remove({ name: c.name })}
+                title={m.groups_charts_pool_remove({ name: c.name })}
+                onClick={() => void poolRemove(c.chartKey)}
+              >
+                <X size={14} aria-hidden />
+              </Button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {/* ADMIN-only: add a chart to this group's pool (Tier 1). */}
+      {canManagePool ? (
+        addable.length > 0 ? (
+          <Select value="" onValueChange={(v) => void poolAdd(v)}>
+            <SelectTrigger size="sm" className="oc-access__search">
+              <SelectValue placeholder={m.groups_charts_pool_add()} />
+            </SelectTrigger>
+            <SelectContent>
+              {addable.map((a) => (
+                <SelectItem key={a.chartKey} value={a.chartKey}>
+                  {a.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : pool.length === 0 ? (
+          <p className="oc-access__hint">{m.groups_charts_pool_admin_empty()}</p>
+        ) : null
+      ) : null}
+    </>
   );
 }

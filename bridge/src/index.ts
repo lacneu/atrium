@@ -9,6 +9,7 @@
 import { loadConfig } from "./config.js";
 import { HttpConvexWriter } from "./convex-writer.js";
 import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
+import { CredentialResolver } from "./core/credential-resolver.js";
 import { startInboundReaper } from "./core/inbound-reaper.js";
 import { scanAndHostOutbound } from "./core/outbound-scan.js";
 import type { OutboundScan } from "./core/turn-sink.js";
@@ -20,9 +21,28 @@ import {
   installServerFailFast,
 } from "./core/safety-net.js";
 
-function main(): void {
+async function main(): Promise<void> {
   // Fail fast on missing/invalid env before opening any socket.
   const config = loadConfig();
+
+  // Step 3b: resolve the gateway credentials ONCE at boot — Convex (per-bridge
+  // secret) first, env fallback per field — and populate `config`. A rotation takes
+  // effect on the next restart (lazy-per-connect is a follow-up). If neither Convex
+  // nor env provides a required credential, resolve() throws and the bridge fails to
+  // boot (fail-fast) rather than running unauthenticatable.
+  const credentialResolver = new CredentialResolver({
+    convexHttpActionsUrl: config.convexHttpActionsUrl,
+    bridgeInstanceSecret: config.bridgeInstanceSecret,
+    // Confirm the secret's PROVEN instance equals the one this bridge serves —
+    // a mismatch means a misconfigured secret; its credentials are refused.
+    expectedInstanceName: config.instanceName,
+    envToken: config.openclawToken,
+    envDeviceIdentity: config.deviceIdentity,
+    onWarn: (msg) => console.warn(`[credentials] ${msg}`),
+  });
+  const creds = await credentialResolver.resolve();
+  config.openclawToken = creds.token;
+  config.deviceIdentity = creds.deviceIdentity;
 
   // Hot-swappable outbound media fetcher (D-E): the provider holds the current
   // fetcher and rebuilds it when /send applies a per-instance mediaMode/mediaMaxMb
@@ -94,4 +114,7 @@ function main(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main();
+main().catch((err) => {
+  console.error("bridge failed to start:", err);
+  process.exit(1);
+});

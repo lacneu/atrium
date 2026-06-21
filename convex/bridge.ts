@@ -35,6 +35,8 @@ import {
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { resolveInstanceConfig } from "./lib/instanceConfig";
 import { classifyAttachment } from "./lib/mediaTransport";
+import { drainNextQueued } from "./lib/outboxQueue";
+import { failDocumentaryFetchForChat } from "./documentAttachments";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -153,6 +155,15 @@ export const markOutbox = internalMutation({
       return; // row gone; nothing to do
     }
     await ctx.db.patch(outboxId, { status });
+    // Drain the next queued send on BOTH terminal statuses. `drainNextQueued` is
+    // idempotent and isChatBusy-guarded, so this is safe in every ordering:
+    //   - failed: the turn never streamed → chat idle → drains now.
+    //   - sent, NORMAL order (before finalize): the assistant message is streaming
+    //     → still busy → no-op; stream.finalize drains later.
+    //   - sent, RACE order (a very fast turn finalized BEFORE this `sent` commit):
+    //     finalize's own drain saw the outbox still `pending` and no-opped, so THIS
+    //     call is the one that runs — without it the queue stalls forever.
+    await drainNextQueued(ctx, row.chatId);
   },
 });
 
@@ -230,6 +241,29 @@ export const failDispatch = internalMutation({
     });
     // Keep the chat sorted-to-top so the failed turn is visible in the sidebar.
     await ctx.db.patch(row.chatId, { updatedAt: now });
+
+    // L2: a DOCUMENTARY fetch whose dispatch failed BEFORE stream.finalize would
+    // otherwise leave the hidden chat's pendingFetch set forever -> the owner is
+    // locked out of every future document fetch (fetch_in_flight). Release it here.
+    // Best-effort (wrapped): an L2-feature error must never roll back the core fail
+    // path (mirrors correlateDocumentaryFetch's best-effort shape in stream.finalize).
+    if (chat.kind === "documentary" && chat.pendingFetch) {
+      try {
+        await failDocumentaryFetchForChat(ctx, chat);
+      } catch (e) {
+        console.error(
+          "[docfetch] release on failed dispatch:",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
+
+    // A failed dispatch is a turn-end: the chat is now idle, so drain the next
+    // QUEUED send (mirrors markOutbox + finalize; drainNextQueued is documented as
+    // safe on every turn-end path). BARE (no try/catch): if it throws, the whole
+    // atomic mutation rolls back and the action's retry re-runs cleanly (the
+    // status!=="pending" guard only short-circuits already-COMMITTED runs).
+    await drainNextQueued(ctx, row.chatId);
   },
 });
 

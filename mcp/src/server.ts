@@ -9,9 +9,8 @@
  *
  * It imports NOTHING from the Convex app — HTTP only. Each tool maps 1:1 to a
  * permission enforced server-side (`requirePermission`), so a scoped key simply
- * gets a 403 for tools it isn't allowed to call. Tools whose routes are not yet
- * deployed (increments 4/6) return the API's response/error gracefully rather
- * than crashing.
+ * gets a 403 for tools it isn't allowed to call. A tool whose route is not yet
+ * deployed returns the API's response/error gracefully rather than crashing.
  */
 
 import { createRequire } from "node:module";
@@ -214,7 +213,7 @@ function main(): void {
     {
       title: "Get KPI rollups",
       description:
-        "KPI rollups (GET /kpi; increment 4). Key must have kpi.read.",
+        "KPI rollups (GET /kpi). Key must have kpi.read.",
       inputSchema: getKpiInput,
     },
     async (args) => run(() => getKpi(config, args)),
@@ -225,7 +224,7 @@ function main(): void {
     {
       title: "Query OpenClaw",
       description:
-        "Query OpenClaw via the bridge (POST /openclaw/query; increment 6). " +
+        "Query OpenClaw via the bridge (POST /openclaw/query). " +
         "Key must have openclaw.query.",
       inputSchema: queryOpenClawInput,
     },
@@ -237,7 +236,7 @@ function main(): void {
     {
       title: "List anomalies",
       description:
-        "Detected anomalies (GET /anomalies; increment 6). Key must have anomalies.read.",
+        "Detected anomalies (GET /anomalies). Key must have anomalies.read.",
       inputSchema: listAnomaliesInput,
     },
     async (args) => run(() => listAnomalies(config, args)),
@@ -248,7 +247,7 @@ function main(): void {
     {
       title: "Report an anomaly",
       description:
-        "Report an anomaly / self-repair signal (POST /anomalies; increment 6). " +
+        "Report an anomaly / self-repair signal (POST /anomalies). " +
         "Key must have anomalies.report.",
       inputSchema: reportAnomalyInput,
     },

@@ -16,9 +16,33 @@
 // written so the action is visible in the trace center / API.
 
 import { v } from "convex/values";
-import { internalMutation } from "./_generated/server";
+import { internalMutation, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
 import { writeTraceEvent } from "./observability";
+import { drainNextQueued } from "./lib/outboxQueue";
+import { failDocumentaryFetchForChat } from "./documentAttachments";
+
+/**
+ * When the watchdog flips a stale streaming message, also release a documentary
+ * FETCH stuck on that same hidden chat: its `pendingFetch` is never cleared on a
+ * dropped stream, so without this the owner stays locked out of all future fetches
+ * (the `fetch_in_flight` guard) AND the stuck case stays SILENT. Failing it here
+ * heals the lock and emits a `documentary.fail` trace (reason "stuck_stream"),
+ * turning the silent stuck case into an observable one. Best-effort: an L2 error
+ * must never break the core stuck-stream reconcile.
+ */
+async function releaseStuckDocumentaryFetch(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+): Promise<void> {
+  if (chat?.kind !== "documentary" || !chat.pendingFetch) return;
+  try {
+    await failDocumentaryFetchForChat(ctx, chat, "stuck_stream");
+  } catch {
+    /* never let an L2 cleanup error break the stuck-stream watchdog */
+  }
+}
 
 // A streaming message with NO update for this long is treated as orphaned.
 // Deliberately generous (12 min): a deep-reasoning, many-tool turn can have long
@@ -77,6 +101,23 @@ export const reconcileChatStuckStreams = internalMutation({
       });
       reconciled++;
     }
+    // A documentary FETCH chat the operator deliberately reconciles: release a
+    // pendingFetch older than the cutoff EVEN IF no streaming message was flipped —
+    // covers the rare "turn completed but the settle never cleared the lock" case
+    // (the cron watchdog only catches stuck STREAMS). The age gate avoids killing a
+    // legitimately in-progress fetch.
+    const chat = await ctx.db.get(id);
+    let docReleased = false;
+    if (
+      chat?.kind === "documentary" &&
+      chat.pendingFetch &&
+      chat.pendingFetch.createdAt < cutoff
+    ) {
+      await releaseStuckDocumentaryFetch(ctx, chat);
+      docReleased = true;
+    }
+    // Releasing a stuck stream/fetch ends that turn → drain any send queued behind it.
+    if (reconciled > 0 || docReleased) await drainNextQueued(ctx, id);
     return { ok: true as const, reconciled };
   },
 });
@@ -95,12 +136,17 @@ export const reconcileStuckStreams = internalMutation({
       )
       .take(BATCH);
 
+    // Chats whose in-flight turn we ended this pass → drain their queues AFTER the
+    // loop (a chat with >1 stale stream must be fully flipped before isChatBusy is
+    // re-evaluated, else the drain would see a still-streaming sibling and skip).
+    const touchedChats = new Set<Id<"chats">>();
     for (const msg of stale) {
       // Preserve text/parts; flip ONLY the lifecycle so isRunning releases.
       await ctx.db.patch(msg._id, {
         status: "error",
         error: STUCK_STREAM_ERROR_CODE,
       });
+      touchedChats.add(msg.chatId);
       await writeTraceEvent(ctx, {
         kind: "assistant.reconcile",
         direction: "internal",
@@ -116,6 +162,13 @@ export const reconcileStuckStreams = internalMutation({
           hadText: (msg.text?.length ?? 0) > 0,
         }),
       });
+      // If this stale stream is a documentary FETCH turn, release its stuck lock too.
+      await releaseStuckDocumentaryFetch(ctx, await ctx.db.get(msg.chatId));
+    }
+
+    // Each chat whose turn we just released is now idle → drain its queue.
+    for (const chatId of touchedChats) {
+      await drainNextQueued(ctx, chatId);
     }
 
     // Drain a backlog without exceeding mutation limits (mirrors purgeOldTraces):

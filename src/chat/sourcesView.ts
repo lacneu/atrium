@@ -84,3 +84,61 @@ export function groupLabel(group: ProvenancePartView["group"]): string {
     ? m.sources_group_memory()
     : m.sources_group_documents();
 }
+
+// ---------------------------------------------------------------------------
+// Side-panel model (Sources slide-over): a "source" the user can select is ONE
+// retrieved ITEM, not a whole report. We flatten parts → per-group entries with
+// a stable selection key, ordered best-score-first, plus a keyword filter.
+// Pure + table-testable (the panel stays a thin shell).
+// ---------------------------------------------------------------------------
+
+/** One selectable source = a single retrieved item, with its report context. */
+export interface SourceEntry {
+  /** Stable selection key (pluginId + group + item identity + position). */
+  key: string;
+  group: ProvenancePartView["group"];
+  pluginId: string;
+  source: string;
+  item: ProvenanceItemView;
+}
+
+/** Flatten the parts of ONE group into selectable entries, best score first. */
+export function sourceEntries(
+  parts: ProvenancePartView[],
+  group: ProvenancePartView["group"],
+): SourceEntry[] {
+  const entries: SourceEntry[] = [];
+  parts.forEach((part, partIdx) => {
+    if (part.group !== group) return;
+    part.items.forEach((item, i) => {
+      entries.push({
+        key: `${part.pluginId}|${part.group}|${item.id ?? item.file_name ?? "?"}|${partIdx}.${i}`,
+        group: part.group,
+        pluginId: part.pluginId,
+        source: part.source,
+        item,
+      });
+    });
+  });
+  return entries.sort((a, b) => (b.item.score ?? 0) - (a.item.score ?? 0));
+}
+
+/** Case-insensitive keyword match over an entry's title + excerpt + meta chips. */
+export function sourceMatchesQuery(entry: SourceEntry, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  const hay = [
+    itemTitle(entry.item),
+    entry.item.text ?? "",
+    ...itemMeta(entry.item),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+/** A document item has a real external referent (→ L2 "open the source"); a
+ *  memory item does not. Drives the asymmetric "Source d'origine" slot. */
+export function isDocumentEntry(entry: SourceEntry): boolean {
+  return entry.group === "documents";
+}

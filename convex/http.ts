@@ -10,6 +10,7 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { ingest } from "./bridge_ingest";
+import { instanceCredentials } from "./bridge_credentials";
 import { authenticateApiKey, principalHasPermission } from "./lib/apiAuth";
 import { PERMISSIONS } from "./lib/rbac";
 import { parseRange } from "./lib/timeRange";
@@ -66,6 +67,15 @@ http.route({
   path: "/bridge/ingest",
   method: "POST",
   handler: ingest,
+});
+
+// Bridge -> Convex credential fetch (step 3b). The bridge presents its PER-BRIDGE
+// secret (Bearer) and receives ONLY its instance's decrypted gateway credentials.
+// Served at the `.site` origin, like ingest.
+http.route({
+  path: "/bridge/credentials",
+  method: "GET",
+  handler: instanceCredentials,
 });
 
 // ===========================================================================

@@ -175,6 +175,11 @@ describe("introspectUser aggregates provenance for an arbitrary user", () => {
       instanceName: "prod",
       agentId: "shared",
     });
+    // 3-tier: admin POOLS the chart for the group, then SELECTS it (Tier 2).
+    await as.mutation(api.charts.addChartToGroupPool, {
+      groupId,
+      chartKey: RESTRICTED_KEY,
+    });
     await as.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: RESTRICTED_KEY,

@@ -181,8 +181,10 @@ function ChartCard({
 
 // One chart offered to the user. P4: the backend resolves `tokens` server-side
 // (builtin from the registry OR custom from the DB) so the picker renders swatches
-// without a client-side key->tokens map. `kind`/`chartId`/`restrictedToGroups`
-// drive the owner-management list (the `via:"owner"` entries).
+// without a client-side key->tokens map. `kind`/`chartId` drive the owner-management
+// list (the `via:"owner"` entries). NOTE: owner→group sharing was REMOVED (3-tier:
+// a chart reaches a group only via the admin pool + the group manager's selection),
+// so there is no `restrictedToGroups` here anymore.
 type MyChart = {
   key: string;
   name: string;
@@ -190,9 +192,6 @@ type MyChart = {
   kind: "builtin" | "custom";
   chartId?: Id<"charts">;
   tokens: ChartTokens;
-  restrictedToGroups:
-    | Array<{ groupId: Id<"groups">; key: string; name: string }>
-    | null;
   // Owner-managed rows only: the current per-mode brand-logo URLs (null = none).
   logoLightUrl?: string | null;
   logoDarkUrl?: string | null;
@@ -266,9 +265,6 @@ function MyChartPicker({
     </section>
   );
 }
-
-// A user's own group (listMyGroups shape) — the associate UI offers only THESE.
-type MyGroup = { groupId: Id<"groups">; key: string; name: string };
 
 // ===========================================================================
 // USER: "Importer une charte" — paste JSON or read a small .json file as TEXT
@@ -392,78 +388,6 @@ function ChartImportSection() {
 // USER: "Mes chartes" — edit name/tokens + delete + associate to THEIR groups.
 // Only the entries the user OWNS (via:"owner") show management controls.
 // ===========================================================================
-
-// Group associate/remove for ONE owned personal chart, offering only the user's
-// own groups (the server gate also enforces owner+member). Mirrors the admin
-// ChartAvailabilityRow but scoped to listMyGroups.
-function MyChartGroups({
-  chartKey,
-  myGroups,
-  restricted,
-}: {
-  chartKey: string;
-  myGroups: MyGroup[];
-  restricted:
-    | Array<{ groupId: Id<"groups">; key: string; name: string }>
-    | null;
-}) {
-  const assign = useMutation(api.charts.assignChartToGroup);
-  const remove = useMutation(api.charts.removeChartFromGroup);
-  const assignedIds = new Set((restricted ?? []).map((g) => g.groupId));
-  const assignable = myGroups.filter((g) => !assignedIds.has(g.groupId));
-
-  async function add(groupId: Id<"groups">) {
-    try {
-      await assign({ groupId, chartKey });
-    } catch {
-      // best-effort; the query re-reads the source of truth on success
-    }
-  }
-  async function drop(groupId: Id<"groups">) {
-    try {
-      await remove({ groupId, chartKey });
-    } catch {
-      // best-effort
-    }
-  }
-
-  return (
-    <div className="oc-chart-avail__groups">
-      <span className="oc-chart-mine__groups-label">
-        {m.charts_mine_groups_label()}
-      </span>
-      {(restricted ?? []).map((g) => (
-        <Badge key={g.groupId} variant="secondary" className="oc-chart-avail__chip">
-          {g.name}
-          <button
-            type="button"
-            className="oc-chart-avail__chip-x"
-            aria-label={m.charts_mine_remove_group({ group: g.name })}
-            onClick={() => void drop(g.groupId)}
-          >
-            <X className="size-3" />
-          </button>
-        </Badge>
-      ))}
-      {myGroups.length === 0 ? (
-        <span className="oc-show__desc">{m.charts_mine_groups_none()}</span>
-      ) : assignable.length > 0 ? (
-        <Select value="" onValueChange={(v) => void add(v as Id<"groups">)}>
-          <SelectTrigger size="sm" className="w-56">
-            <SelectValue placeholder={m.charts_mine_assign_placeholder()} />
-          </SelectTrigger>
-          <SelectContent>
-            {assignable.map((g) => (
-              <SelectItem key={g.groupId} value={g.groupId}>
-                {g.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : null}
-    </div>
-  );
-}
 
 // Brand-logo control for ONE owned chart: a slot per theme mode (light + dark),
 // each preview + upload/replace + remove. ANY uploaded format is normalized to a
@@ -708,7 +632,7 @@ function ChartDomainControl({
 // One owned personal chart: name + a JSON tokens editor (re-validated server-side
 // via updateChart) + delete + group associations. The token editor is a JSON
 // textarea (NOT a 32-token grid) prefilled with the current tokens.
-function MyChartRow({ chart, myGroups }: { chart: MyChart; myGroups: MyGroup[] }) {
+function MyChartRow({ chart }: { chart: MyChart }) {
   const updateChart = useMutation(api.charts.updateChart);
   const deleteChart = useMutation(api.charts.deleteChart);
   const [editing, setEditing] = useState(false);
@@ -813,20 +737,12 @@ function MyChartRow({ chart, myGroups }: { chart: MyChart; myGroups: MyGroup[] }
       ) : null}
       <ChartLogoControl chart={chart} />
       <ChartDomainControl chart={chart} />
-      <MyChartGroups
-        chartKey={chart.key}
-        myGroups={myGroups}
-        restricted={chart.restrictedToGroups}
-      />
     </div>
   );
 }
 
 function MyChartsManager() {
   const charts = useQuery(api.charts.listMyCharts) as MyChart[] | undefined;
-  const myGroups = useQuery(api.groups.listMyGroups, {}) as
-    | MyGroup[]
-    | undefined;
   // Only the charts the user OWNS (personal custom) get management controls.
   const mine = (charts ?? []).filter((c) => c.via === "owner");
 
@@ -841,7 +757,7 @@ function MyChartsManager() {
       ) : (
         <div className="oc-chart-mine-list">
           {mine.map((c) => (
-            <MyChartRow key={c.key} chart={c} myGroups={myGroups ?? []} />
+            <MyChartRow key={c.key} chart={c} />
           ))}
         </div>
       )}
@@ -864,6 +780,12 @@ type AdminChart = {
   name: string;
   scope: "common" | "personal";
   ownerLabel: string | null;
+  // Tier 1 — groups whose admin POOL offers this chart (the editable set here).
+  poolGroups:
+    | Array<{ groupId: Id<"groups">; key: string; name: string }>
+    | null;
+  // Tier 2 — groups that actually SELECTED this chart (read-only: drives the
+  // common/restricted badge; managed per-group in the Groups tab).
   restrictedToGroups:
     | Array<{ groupId: Id<"groups">; key: string; name: string }>
     | null;
@@ -872,9 +794,10 @@ type AdminChart = {
 };
 type GroupRow = { _id: Id<"groups">; key: string; name: string };
 
-// Per-builtin availability row: common vs restricted-to-groups, with a group
-// multi-select (assign) and removable chips (remove). Mirrors the agent-group
-// assignment pattern in GroupsTab.
+// Per-chart Tier-1 POOL row: the admin chooses which groups MAY offer this chart
+// (groupChartPool); a group manager then SELECTS from its pool in the Groups tab.
+// The common/restricted BADGE reflects the actual SELECTION (restrictedToGroups,
+// read-only here); the editable chips + add-select drive the POOL (poolGroups).
 function ChartAvailabilityRow({
   chart,
   groups,
@@ -882,22 +805,23 @@ function ChartAvailabilityRow({
   chart: AdminChart;
   groups: GroupRow[];
 }) {
-  const assign = useMutation(api.charts.assignChartToGroup);
-  const remove = useMutation(api.charts.removeChartFromGroup);
+  const addToPool = useMutation(api.charts.addChartToGroupPool);
+  const removeFromPool = useMutation(api.charts.removeChartFromGroupPool);
   const restricted = chart.restrictedToGroups;
-  const assignedIds = new Set((restricted ?? []).map((g) => g.groupId));
-  const assignable = groups.filter((g) => !assignedIds.has(g._id));
+  const pooled = chart.poolGroups;
+  const pooledIds = new Set((pooled ?? []).map((g) => g.groupId));
+  const addable = groups.filter((g) => !pooledIds.has(g._id));
 
   async function add(groupId: Id<"groups">) {
     try {
-      await assign({ groupId, chartKey: chart.key });
+      await addToPool({ groupId, chartKey: chart.key });
     } catch {
       // best-effort; the query re-reads the source of truth on success
     }
   }
   async function drop(groupId: Id<"groups">) {
     try {
-      await remove({ groupId, chartKey: chart.key });
+      await removeFromPool({ groupId, chartKey: chart.key });
     } catch {
       // best-effort
     }
@@ -924,29 +848,32 @@ function ChartAvailabilityRow({
         ) : null}
       </div>
       <div className="oc-chart-avail__groups">
-        {(restricted ?? []).map((g) => (
+        <span className="oc-chart-mine__groups-label">
+          {m.charts_admin_pool_label()}
+        </span>
+        {(pooled ?? []).map((g) => (
           <Badge key={g.groupId} variant="secondary" className="oc-chart-avail__chip">
             {g.name}
             <button
               type="button"
               className="oc-chart-avail__chip-x"
-              aria-label={m.charts_admin_remove_group({ group: g.name })}
+              aria-label={m.charts_admin_pool_remove_group({ group: g.name })}
               onClick={() => void drop(g.groupId)}
             >
               <X className="size-3" />
             </button>
           </Badge>
         ))}
-        {assignable.length > 0 ? (
+        {addable.length > 0 ? (
           <Select
             value=""
             onValueChange={(v) => void add(v as Id<"groups">)}
           >
             <SelectTrigger size="sm" className="w-56">
-              <SelectValue placeholder={m.charts_admin_assign_placeholder()} />
+              <SelectValue placeholder={m.charts_admin_pool_add_placeholder()} />
             </SelectTrigger>
             <SelectContent>
-              {assignable.map((g) => (
+              {addable.map((g) => (
                 <SelectItem key={g._id} value={g._id}>
                   {g.name}
                 </SelectItem>
@@ -1085,7 +1012,7 @@ function AppearanceAdminSection({
         </div>
       </section>
 
-      {/* Per-builtin availability (common vs restricted-to-groups). */}
+      {/* Per-chart Tier-1 POOL editor: which groups MAY offer each chart. */}
       <section className="oc-show__section">
         <div className="oc-show__heading">
           <h3 className="oc-show__title">
@@ -1096,11 +1023,11 @@ function AppearanceAdminSection({
           </p>
         </div>
         <div className="oc-chart-avail-list">
-          {/* A COMMON custom is offered to ALL: its groupCharts rows are inert
-              (availableChartsForUser ignores them), so a restriction editor here
-              would be misleading. Such charts are managed (promote/delete) in the
-              "Custom charts" section below. Builtins + personal customs (whose
-              availability IS governed by groupCharts) keep the editor. */}
+          {/* A COMMON custom is offered to ALL regardless of group rows, so a pool
+              editor here would be misleading. Such charts are managed (promote/
+              delete) in the "Custom charts" section below. Builtins + personal
+              customs (whose group availability flows through the pool -> the group
+              manager's selection) keep the pool editor. */}
           {(adminCharts ?? [])
             .filter((c) => !(c.kind === "custom" && c.scope === "common"))
             .map((c) => (

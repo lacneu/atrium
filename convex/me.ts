@@ -34,6 +34,7 @@ import {
 } from "./lib/uiPrefs";
 import { resolveChart } from "./lib/charts";
 import {
+  groupDefaultChartForUser,
   isChartAvailableToUser,
   resolveChartView,
   resolveDomainChartKey,
@@ -126,15 +127,20 @@ export const getMe = query({
     ) {
       availableChartKeys.add(userChartKey);
     }
+    // GROUP default (Tier-2): the default chart of the user's OWN group(s), derived
+    // from their memberships (so it is available to them by construction). Precedence
+    // (user decision): user > GROUP > domain > admin. Bounded reads.
+    const groupDefaultChartKey = await groupDefaultChartForUser(ctx, userId);
     // Charte par domaine: the chart mapped to the request host (bounded indexed
     // point-reads, no scan), applied only if available to the user (the domain×
-    // group junction = isChartAvailableToUser). Precedence: user > domain > admin.
+    // group junction = isChartAvailableToUser).
     const domainChartKey = await resolveDomainChartKey(ctx, host);
     const domainAvailable =
       domainChartKey !== null &&
       (await isChartAvailableToUser(ctx, userId, domainChartKey));
     const resolvedChart = resolveChart(
       userChartKey,
+      groupDefaultChartKey,
       domainChartKey,
       adminDefaultChart,
       availableChartKeys,

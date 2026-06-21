@@ -88,8 +88,12 @@ secrets:
     CONVEX_INSTANCE_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
     BRIDGE_INGEST_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
     BRIDGE_SHARED_SECRET: "REPLACE_WITH_openssl_rand_hex_32"
+    # env mode (below). For UI mode: blank these two, set ATRIUM_SECRET_KEY, and put
+    # the minted per-bridge secret in BRIDGE_INSTANCE_SECRET (README "Gateway
+    # credentials: env vs UI-managed").
     OPENCLAW_TOKEN: "REPLACE_WITH_GATEWAY_OPERATOR_TOKEN"
     OPENCLAW_DEVICE_IDENTITY: '{"id":"REPLACE","publicKey":"REPLACE","privateKey":"REPLACE"}'
+    BRIDGE_INSTANCE_SECRET: ""
     AUTH_ALLOWED_EMAIL_DOMAINS: "example.com"
     AUTH_GOOGLE_ID: ""
     AUTH_GOOGLE_SECRET: ""
@@ -99,6 +103,9 @@ secrets:
     AUTH_MICROSOFT_ENTRA_ID_ISSUER: ""
     JWT_PRIVATE_KEY: ""
     JWKS: ""
+    # base64 of 32 random bytes (openssl rand -base64 32) — encrypts gateway
+    # credentials at rest. Back it up; NEVER in the DB. Blank = feature inert.
+    ATRIUM_SECRET_KEY: ""
     LANGFUSE_PUBLIC_KEY: ""
     LANGFUSE_SECRET_KEY: ""
     LANGFUSE_HOST: ""

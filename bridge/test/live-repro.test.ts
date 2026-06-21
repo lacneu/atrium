@@ -25,8 +25,9 @@ const LIVE = process.env.LIVE_REPRO === "1";
     const cfg = loadConfig();
     const conn = await OpenClawConnection.connect(
       cfg.openclawGatewayUrl,
-      cfg.openclawToken,
-      cfg.deviceIdentity,
+      // Live probe: loadConfig reads the real .env which sets these (non-null).
+      cfg.openclawToken!,
+      cfg.deviceIdentity!,
     );
 
     const pdfPath = process.env.REAL_PDF;

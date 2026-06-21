@@ -6,12 +6,16 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useAttachment,
+  useComposer,
+  useComposerRuntime,
   useMessage,
+  useThread,
 } from "@assistant-ui/react";
 import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,6 +57,7 @@ import {
   Search,
   CircleAlert,
   Bot,
+  Server,
   LoaderCircle,
   Paperclip,
   Image as ImageIcon,
@@ -78,7 +83,14 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { ToolActivity } from "./ToolActivity";
-import { SourcesActivity } from "./SourcesActivity";
+import {
+  SourcesActivity,
+  SourcesPanelContent,
+  SourcesPanelContext,
+  type SourcesPanelApi,
+} from "./SourcesActivity";
+import { useResizableWidth, useIsMobile } from "@/lib/useSidebarLayout";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
 import { MarkdownText } from "./MarkdownText";
 import { FeedbackButton } from "./FeedbackDialog";
@@ -120,7 +132,7 @@ const DEFAULT_UI: UiEffective = {
   copyAssistant: true,
   copyUser: true,
   showDelete: true,
-  showTools: true,
+  showTools: false, // clean/content-focused view by default (see UI_PREF_CODE_DEFAULTS)
   voiceInput: false,
 };
 const UiPrefsContext = createContext<UiEffective>(DEFAULT_UI);
@@ -133,6 +145,13 @@ function useUiPrefs(): UiEffective {
 // delete-assistant flow arm the SAME thinking placeholder + composer lock a
 // send uses, from inside any message row.
 const TurnGateContext = createContext<TurnGate | null>(null);
+
+// Mid-turn QUEUE (Phase 1): the composer reads this to send a follow-up WHILE a
+// turn is in flight. Null when no chat is mounted. Provided by ConvexChat from the
+// runtime hook; consumed by the composer's while-running send button.
+const QueueSendContext = createContext<
+  ((text: string) => Promise<boolean>) | null
+>(null);
 
 // The active charte's avatar tile, shared by the assistant message header AND the
 // new-chat welcome (both under AssistantIdentityContext) so the two can't drift:
@@ -154,12 +173,14 @@ function BrandAvatar({ className }: { className: string }) {
 }
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
-  const { runtime, turnGate } = useConvexChatRuntime({ chatId });
+  const { runtime, turnGate, queueSend } = useConvexChatRuntime({ chatId });
   // Resolved UI preferences (reactive): the single source for which interface
   // elements render. The composer "Outils" quick toggle writes through the same
   // single path (setUiPref), so it stays consistent with the Préférences panel.
-  // `showTools` semantics: whether the ToolActivity DETAIL starts expanded —
-  // the summary line is always visible (no more invisible tool-heavy turns).
+  // `showTools` semantics: the ANALYSIS view toggle. ON shows the tool-activity
+  // block (summary + click-to-expand detail) AND the Sources block; OFF is the
+  // clean, content-focused view (both hidden, in-progress signal kept via
+  // RunStatus). Default is OFF (clean) — see UI_PREF_CODE_DEFAULTS.
   const me = useQuery(api.me.getMe, { host: APP_HOST });
   const ui = (me?.ui?.effective as UiEffective | undefined) ?? DEFAULT_UI;
   const showTools = ui.showTools;
@@ -205,31 +226,94 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   );
   const notFound = chatId !== null && meta === null;
 
+  // Sources panel as an INTEGRATED, resizable right COLUMN (not an overlay): the
+  // conversation stays visible + interactive on the left while the user reads the
+  // sources. A per-message chip opens it (via SourcesPanelContext); it pins to
+  // that message until closed or another chip is clicked, and resets on chat
+  // switch. Mobile (< 767px) falls back to the overlay drawer (no 3rd column).
+  const isMobile = useIsMobile();
+  const { width: sourcesWidth, startResize: startSourcesResize } = useResizableWidth(
+    { storageKey: "oc.sources.width", defaultWidth: 380, min: 300, max: 680, edge: "right" },
+  );
+  const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    setActiveSourcesMessageId(null);
+  }, [chatId]);
+  const sourcesApi = useMemo<SourcesPanelApi>(
+    () => ({
+      activeMessageId: activeSourcesMessageId,
+      openFor: (id) => setActiveSourcesMessageId(id),
+      close: () => setActiveSourcesMessageId(null),
+    }),
+    [activeSourcesMessageId],
+  );
+  const sourcesOpen = activeSourcesMessageId !== null;
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnGateContext.Provider value={turnGate}>
+      <QueueSendContext.Provider value={queueSend}>
       <UiPrefsContext.Provider value={ui}>
       <AssistantIdentityContext.Provider value={assistantIdentity}>
+      <SourcesPanelContext.Provider value={sourcesApi}>
         <div className="oc-chat">
-          {chatId ? (
-            notFound ? (
-              <ChatNotFound />
+          <div className="oc-chat__convo">
+            {chatId ? (
+              notFound ? (
+                <ChatNotFound />
+              ) : (
+                <ChatThread
+                  chatId={chatId}
+                  showTools={showTools}
+                  onToggleTools={() =>
+                    void setUiPref({ key: "showTools", value: !showTools })
+                  }
+                  focusMessageId={focusMessageId ?? null}
+                />
+              )
             ) : (
-              <ChatThread
-                chatId={chatId}
-                showTools={showTools}
-                onToggleTools={() =>
-                  void setUiPref({ key: "showTools", value: !showTools })
-                }
-                focusMessageId={focusMessageId ?? null}
+              <div className="oc-empty">{m.chat_empty_select()}</div>
+            )}
+          </div>
+          {/* DESKTOP: integrated, resizable Sources column (conversation stays
+              live on the left). MOBILE: overlay drawer below. */}
+          {sourcesOpen && !isMobile ? (
+            <>
+              <div
+                className="oc-sources-resizer"
+                onPointerDown={startSourcesResize}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={m.sources_panel_resize()}
               />
-            )
-          ) : (
-            <div className="oc-empty">{m.chat_empty_select()}</div>
-          )}
+              <aside
+                className="oc-sources-col"
+                style={{ width: sourcesWidth, flex: `0 0 ${sourcesWidth}px` }}
+              >
+                <SourcesPanelContent
+                  messageId={activeSourcesMessageId as string}
+                  onClose={sourcesApi.close}
+                />
+              </aside>
+            </>
+          ) : null}
         </div>
+        {sourcesOpen && isMobile ? (
+          <Sheet open onOpenChange={(o) => { if (!o) sourcesApi.close(); }}>
+            <SheetContent side="right" className="oc-sources-panel-sheet">
+              <SourcesPanelContent
+                messageId={activeSourcesMessageId as string}
+                onClose={sourcesApi.close}
+              />
+            </SheetContent>
+          </Sheet>
+        ) : null}
+      </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>
       </UiPrefsContext.Provider>
+      </QueueSendContext.Provider>
       </TurnGateContext.Provider>
     </AssistantRuntimeProvider>
   );
@@ -440,6 +524,55 @@ function ThreadEmptyState() {
 // bridge), so a new model / thinking level surfaces with no frontend change.
 // Read-only here; the write-back ("Advanced ▾") is a later increment. Renders
 // nothing until session meta exists, so it never flashes an empty bar.
+// Context-window usage meter. The SAME control sits inline in the chat header AND
+// inside the "Advanced" popover, so the usage stays reachable when a narrow workspace
+// compacts the header (the popover is portalled out of the @container, so it keeps
+// the full detail there). Renders nothing when usage is unknown.
+function ContextMeter({
+  sm,
+  detail = true,
+}: {
+  sm: SessionMetaView;
+  // detail: show the "· used/total" suffix (dropped inline when the header is tight;
+  // the Advanced popover always passes detail).
+  detail?: boolean;
+}) {
+  const pct =
+    sm.totalTokens != null && sm.contextTokens && sm.contextTokens > 0
+      ? Math.round((sm.totalTokens / sm.contextTokens) * 100)
+      : null;
+  if (pct == null) return null;
+  // Calm → escalating usage colors (universal meter language, theme-stable).
+  const level = pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
+  return (
+    <span
+      className={`oc-meter ${level}`}
+      title={m.chat_context_used({
+        pct,
+        used: formatTokens(sm.totalTokens as number),
+        total: formatTokens(sm.contextTokens as number),
+      })}
+    >
+      <span className="oc-meter__track">
+        <span
+          className="oc-meter__fill"
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
+      </span>
+      <span className="oc-meter__label">
+        {pct}%
+        {detail ? (
+          <span className="oc-meter__detail">
+            {" · "}
+            {formatTokens(sm.totalTokens as number)}/
+            {formatTokens(sm.contextTokens as number)}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   // ConvexId<"chats"> is our structural string-id type; the generated arg
   // validator wants the branded Id (same cast the runtime uses for listByChat).
@@ -456,124 +589,175 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const sm = (meta?.sessionMeta ?? null) as SessionMetaView | null;
   const settings = (meta?.sessionSettings ?? null) as SessionSettingsView;
   const agent = agentInfo?.multiAgent ? agentInfo.agent : null;
+  // "Outils" = the technical/analysis layer. When OFF (clean view) the header
+  // also sheds its TECHNICAL chips (model, reasoning, token meter) so the eye is
+  // not pulled toward non-vital diagnostics — only IDENTITY (title, agent) and
+  // ACTIONS (export, advanced) remain. model/reasoning stay reachable in Advanced.
+  const ui = useUiPrefs();
   // "All session settings" Sheet, opened from the popover's footer.
   const [panelOpen, setPanelOpen] = useState(false);
   // Render the strip when there is EITHER session meta OR a multi-agent chip to
   // show (a returning chat with no meta yet must still name its agent).
-  if (!sm && !agent) return null;
+  // CONTENT-AWARE responsiveness (not fixed px breakpoints): the chips' widths vary
+  // by LOCALE (e.g. German "Nachdenken"/"Erweitert" are far wider than French) and
+  // font, so a fixed breakpoint would clip one language while wasting space in
+  // another. We MEASURE instead: a hidden ghost renders the meta at its full natural
+  // width; a ResizeObserver on the (mode-INDEPENDENT) header compares the space left
+  // for the chips — header width minus the title's claim — against that ghost. When
+  // it doesn't fit we go COMPACT: model/reasoning collapse into the "Advanced"
+  // popover (their home), the buttons iconify, the meter sheds its detail. Observing
+  // the header (whose width is workspace-driven, NOT changed by the mode) avoids the
+  // classic feedback loop a flex-collapsing target would create.
+  const headRef = useRef<HTMLElement>(null);
+  const titleRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(false);
 
-  const pct =
-    sm && sm.totalTokens != null && sm.contextTokens && sm.contextTokens > 0
-      ? Math.round((sm.totalTokens / sm.contextTokens) * 100)
-      : null;
-  // "Spotted" meter color: calm until the context window fills, then escalates.
-  const meterLevel =
-    pct == null ? "" : pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
   // BINARY, intent-based provenance (CONF amendment A1): inherited = no
   // thinkingLevel key in sessionSettings. The old value-equality heuristic
   // (level === default) was wrong when overriding TO the default's value.
   const inherited = !isOverridden(settings, "thinkingLevel");
 
+  // The full meta (agent + model + reasoning + meter + actions). `compact` collapses
+  // the technical chips; `ghost` swaps the interactive triggers for width-accurate,
+  // non-focusable stand-ins (so the measurer mounts no second popover).
+  const renderMeta = (isCompact: boolean, ghost: boolean) => (
+    <>
+      {agent ? (
+        <span
+          className={`oc-chip oc-chip--agent${agent.state !== "ok" ? " is-warn" : ""}`}
+          title={
+            m.chat_agent_of_conversation({
+              name: agent.displayName ?? agent.agentId,
+            }) +
+            (agent.inheritedDefault ? m.chat_agent_default_suffix() : "") +
+            (agent.state === "deleted"
+              ? m.chat_agent_deleted_suffix()
+              : agent.state === "stale"
+                ? m.chat_agent_stale_suffix()
+                : "")
+          }
+        >
+          {agent.emoji ? (
+            <span className="oc-chip__emoji" aria-hidden>
+              {agent.emoji}
+            </span>
+          ) : (
+            <Bot size={13} aria-hidden />
+          )}
+          <span className="oc-chip__label">{agent.displayName ?? agent.agentId}</span>
+          {/* When the user's agents span MORE THAN ONE instance, name the bound
+              agent's instance so the same display name on two gateways is not
+              ambiguous. Part of the analysis layer: hidden when "Outils" is OFF. */}
+          {ui.showTools && agentInfo?.multiInstance ? (
+            <span
+              className="oc-chip__instance"
+              title={m.chat_agent_instance_title({ instance: agent.instanceName })}
+            >
+              <Server size={11} aria-hidden />
+              {agent.instanceName}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+      {ui.showTools && !isCompact && sm?.model ? (
+        <span
+          className="oc-chip oc-chip--info"
+          title={
+            sm.modelProvider
+              ? m.chat_model_with_provider({ provider: sm.modelProvider })
+              : m.chat_model()
+          }
+        >
+          <IconCpu />
+          <span className="oc-chip__label">{sm.model}</span>
+        </span>
+      ) : null}
+      {ui.showTools && !isCompact && sm?.thinkingLevel ? (
+        <span
+          className="oc-chip oc-chip--info"
+          title={
+            inherited
+              ? m.chat_thinking_inherited_title()
+              : m.chat_thinking_specific_title()
+          }
+        >
+          <IconBrain />
+          <span className="oc-chip__label">
+            {m.chat_thinking_label()}&nbsp;: {capitalize(sm.thinkingLevel)}
+          </span>
+          {inherited ? (
+            <span className="oc-chip__hint">{m.chat_thinking_inherited_hint()}</span>
+          ) : null}
+        </span>
+      ) : null}
+      {ui.showTools && sm ? <ContextMeter sm={sm} detail={!isCompact} /> : null}
+      <ExportMenu
+        chatId={chatId}
+        title={meta?.title ?? null}
+        compact={isCompact}
+        ghost={ghost}
+      />
+      {sm ? (
+        <SessionKnobsMenu
+          chatId={chatId}
+          sm={sm}
+          settings={settings}
+          onOpenPanel={() => setPanelOpen(true)}
+          compact={isCompact}
+          ghost={ghost}
+        />
+      ) : null}
+    </>
+  );
+
+  // Re-measure when anything that changes a measured width changes: the localized
+  // labels, the model/reasoning/agent/instance/title strings, the tools toggle.
+  const measureKey = [
+    m.chat_export(),
+    m.chat_advanced(),
+    sm?.model ?? "",
+    sm?.thinkingLevel ?? "",
+    agent?.displayName ?? agent?.agentId ?? "",
+    agentInfo?.multiInstance ? (agent?.instanceName ?? "") : "",
+    meta?.title ?? "",
+    ui.showTools ? "1" : "0",
+  ].join("|");
+  useLayoutEffect(() => {
+    const head = headRef.current;
+    if (!head) return;
+    // The title is a higher priority than the technical chips, so it gets a budget
+    // (it ellipsizes within it); the chips get the remainder. Reserving the title's
+    // natural width (capped) keeps the threshold from drifting with title length.
+    const TITLE_CAP = 360;
+    const GAP = 16;
+    const measure = () => {
+      const ghostW = ghostRef.current?.offsetWidth ?? 0;
+      if (ghostW === 0) return; // not laid out yet -> stay full (no spurious collapse)
+      const titleW = Math.min(titleRef.current?.scrollWidth ?? 0, TITLE_CAP);
+      const chipsAvail = head.clientWidth - titleW - GAP;
+      const next = chipsAvail < ghostW;
+      setCompact((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(head);
+    return () => ro.disconnect();
+  }, [measureKey]);
+
   return (
-    <header className="oc-chathead">
-      <div className="oc-chathead__title" title={meta?.title ?? undefined}>
+    <header className="oc-chathead" ref={headRef}>
+      <div
+        className="oc-chathead__title"
+        title={meta?.title ?? undefined}
+        ref={titleRef}
+      >
         {meta?.title || m.chat_conversation_fallback()}
       </div>
-      <div className="oc-chathead__meta">
-        {agent ? (
-          <span
-            className={`oc-chip oc-chip--agent${
-              agent.state !== "ok" ? " is-warn" : ""
-            }`}
-            title={
-              m.chat_agent_of_conversation({
-                name: agent.displayName ?? agent.agentId,
-              }) +
-              (agent.inheritedDefault ? m.chat_agent_default_suffix() : "") +
-              (agent.state === "deleted"
-                ? m.chat_agent_deleted_suffix()
-                : agent.state === "stale"
-                  ? m.chat_agent_stale_suffix()
-                  : "")
-            }
-          >
-            {agent.emoji ? (
-              <span className="oc-chip__emoji" aria-hidden>
-                {agent.emoji}
-              </span>
-            ) : (
-              <Bot size={13} aria-hidden />
-            )}
-            <span className="oc-chip__label">
-              {agent.displayName ?? agent.agentId}
-            </span>
-          </span>
-        ) : null}
-        {sm?.model ? (
-          <span
-            className="oc-chip oc-chip--info"
-            title={
-              sm.modelProvider
-                ? m.chat_model_with_provider({ provider: sm.modelProvider })
-                : m.chat_model()
-            }
-          >
-            <IconCpu />
-            <span className="oc-chip__label">{sm.model}</span>
-          </span>
-        ) : null}
-        {sm?.thinkingLevel ? (
-          <span
-            className="oc-chip oc-chip--info"
-            title={
-              inherited
-                ? m.chat_thinking_inherited_title()
-                : m.chat_thinking_specific_title()
-            }
-          >
-            <IconBrain />
-            <span className="oc-chip__label">
-              {m.chat_thinking_label()}&nbsp;: {capitalize(sm.thinkingLevel)}
-            </span>
-            {inherited ? (
-              <span className="oc-chip__hint">{m.chat_thinking_inherited_hint()}</span>
-            ) : null}
-          </span>
-        ) : null}
-        {sm && pct != null ? (
-          <span
-            className={`oc-meter ${meterLevel}`}
-            title={m.chat_context_used({
-              pct,
-              used: formatTokens(sm.totalTokens as number),
-              total: formatTokens(sm.contextTokens as number),
-            })}
-          >
-            <span className="oc-meter__track">
-              <span
-                className="oc-meter__fill"
-                style={{ width: `${Math.min(pct, 100)}%` }}
-              />
-            </span>
-            <span className="oc-meter__label">
-              {pct}%
-              <span className="oc-meter__detail">
-                {" · "}
-                {formatTokens(sm.totalTokens as number)}/
-                {formatTokens(sm.contextTokens as number)}
-              </span>
-            </span>
-          </span>
-        ) : null}
-        <ExportMenu chatId={chatId} title={meta?.title ?? null} />
-        {sm ? (
-          <SessionKnobsMenu
-            chatId={chatId}
-            sm={sm}
-            settings={settings}
-            onOpenPanel={() => setPanelOpen(true)}
-          />
-        ) : null}
+      <div className="oc-chathead__meta">{renderMeta(compact, false)}</div>
+      {/* Hidden measurer: the meta at FULL natural width, mode-independent. */}
+      <div className="oc-chathead-ghost" aria-hidden ref={ghostRef}>
+        {renderMeta(false, true)}
       </div>
       <SessionPanel
         chatId={chatId}
@@ -607,9 +791,15 @@ function downloadText(content: string, filename: string, mime: string): void {
 function ExportMenu({
   chatId,
   title,
+  compact = false,
+  ghost = false,
 }: {
   chatId: ConvexId<"chats">;
   title: string | null;
+  // compact: icon-only (the label/chevron collapse when the header is tight).
+  compact?: boolean;
+  // ghost: a non-interactive, width-accurate stand-in for the responsive measurer.
+  ghost?: boolean;
 }) {
   const convex = useConvex();
 
@@ -638,13 +828,25 @@ function ExportMenu({
     }
   }
 
+  // Trigger content shared by the real button AND the ghost stand-in, so their
+  // widths can never drift (the measurer stays accurate).
+  const inner = (
+    <>
+      <Download size={13} aria-hidden />
+      {!compact ? (
+        <>
+          <span className="oc-chip__label">{m.chat_export()}</span>
+          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
+        </>
+      ) : null}
+    </>
+  );
+  if (ghost) return <span className="oc-chip oc-chip--btn">{inner}</span>;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" className="oc-chip oc-chip--btn" title={m.chat_export_conversation()}>
-          <Download size={13} aria-hidden />
-          <span className="oc-chip__label">{m.chat_export()}</span>
-          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
+          {inner}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
@@ -672,25 +874,52 @@ function SessionKnobsMenu({
   sm,
   settings,
   onOpenPanel,
+  compact = false,
+  ghost = false,
 }: {
   chatId: ConvexId<"chats">;
   sm: SessionMetaView;
   settings: SessionSettingsView;
   onOpenPanel: () => void;
+  // compact: icon-only trigger; ghost: width-accurate non-interactive stand-in.
+  compact?: boolean;
+  ghost?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Trigger content shared by the real button AND the ghost stand-in (no width drift).
+  const inner = (
+    <>
+      <SlidersHorizontal size={13} aria-hidden />
+      {!compact ? (
+        <>
+          <span className="oc-chip__label">{m.chat_advanced()}</span>
+          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
+        </>
+      ) : null}
+    </>
+  );
+  if (ghost) return <span className="oc-chip oc-chip--btn">{inner}</span>;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="oc-chip oc-chip--btn" title={m.chat_advanced_settings_title()}>
-          <SlidersHorizontal size={13} aria-hidden />
-          <span className="oc-chip__label">{m.chat_advanced()}</span>
-          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
+          {inner}
         </button>
       </PopoverTrigger>
       {/* w-80/p-2 go through tw-merge (they MUST beat the component's w-72/p-4;
           relying on stylesheet cascade order against utilities is not safe). */}
       <PopoverContent align="end" className="oc-spanel-pop w-80 p-2">
+        {/* Read-only context-window usage. Lives here too so it stays reachable —
+            with its full detail + on touch (no hover title) — when a narrow header
+            compacts the inline meter. Model/reasoning are the knobs below. */}
+        {sm.totalTokens != null && sm.contextTokens ? (
+          <div className="oc-spanel-pop__usage">
+            <span className="oc-spanel-pop__usage-label">
+              {m.chat_context_label()}
+            </span>
+            <ContextMeter sm={sm} />
+          </div>
+        ) : null}
         <SessionKnobsGroup chatId={chatId} sm={sm} settings={settings} />
         <button
           type="button"
@@ -1058,19 +1287,27 @@ function AssistantMessage() {
           {assistantDisplayName(identity)}
         </div>
         <div className="oc-msg__body">
-          {/* Grouped tool activity (summary + collapsible ToolCards), BEFORE the
-              body so the streamed text always lands below it, in view of the
-              bottom-following auto-scroll. Initial detail state follows the
-              showTools pref; the summary line renders regardless. */}
-          <ToolActivity defaultExpanded={ui.showTools} />
+          {/* "Outils" ON = the ANALYSIS view: the grouped tool activity (summary +
+              click-to-expand ToolCards) AND the Sources block (what memory/document
+              plugins fed the LLM this turn) are shown so the user can drill into what
+              the gateway did. OFF = the CLEAN, content-focused view: both hidden; the
+              in-progress signal is carried by RunStatus ("… traite votre message")
+              below, so nothing about an active treatment is lost. Tools + Sources are
+              grouped ABOVE the body — the meta "what informed this turn" sits together
+              at the top, so everything BELOW is purely the agent's returned message
+              (text + delivered files), un-mixed. Above-the-body also keeps streamed
+              text in view of the bottom-following auto-scroll. */}
+          {ui.showTools ? (
+            <div className="oc-msg__meta">
+              <ToolActivity />
+              <SourcesActivity />
+            </div>
+          ) : null}
           {showSource ? (
             <MessageSource />
           ) : (
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
-          {/* "Sources" (provenance/v1): what memory/document plugins fed the
-              LLM this turn. Data-driven — renders nothing without reports. */}
-          <SourcesActivity />
           <RunStatus />
         </div>
         {/* Per-message actions, hidden while a turn runs + revealed on hover for
@@ -1202,6 +1439,37 @@ function UploadProgress() {
   );
 }
 
+// Send-while-running button (Phase 1: mid-turn QUEUE). Reads the composer text
+// reactively (enabled only when non-empty), queues it server-side via the
+// QueueSendContext, then clears the composer. The queued user message echoes
+// instantly (optimistic) below the streaming reply and is dispatched when the
+// current turn ends.
+function QueueSendButton() {
+  const queueSend = useContext(QueueSendContext);
+  const composer = useComposerRuntime();
+  const text = useComposer((c) => c.text);
+  const hasText = text.trim().length > 0;
+  return (
+    <button
+      type="button"
+      className="oc-composer__send"
+      disabled={!hasText || queueSend === null}
+      aria-label={m.chat_queue_send_aria()}
+      title={hasText ? m.chat_queue_send_title() : m.chat_response_in_progress()}
+      onClick={() => {
+        if (queueSend === null) return;
+        const t = composer.getState().text;
+        if (t.trim() === "") return;
+        void queueSend(t).then((ok) => {
+          if (ok) composer.setText("");
+        });
+      }}
+    >
+      <ArrowUp size={18} aria-hidden />
+    </button>
+  );
+}
+
 function Composer({
   showTools,
   onToggleTools,
@@ -1215,6 +1483,24 @@ function Composer({
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
+  // Mid-turn QUEUE (Phase 1): while a turn is in flight, assistant-ui blocks its
+  // own Enter→send, so we intercept Enter HERE and queue instead (server-side
+  // serialization). When NOT running, we do nothing and assistant-ui handles
+  // Enter normally.
+  const isRunning = useThread((t) => t.isRunning);
+  const queueSend = useContext(QueueSendContext);
+  const composerRuntime = useComposerRuntime();
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!isRunning || queueSend === null) return;
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const t = composerRuntime.getState().text;
+    if (t.trim() === "") return;
+    void queueSend(t).then((ok) => {
+      if (ok) composerRuntime.setText("");
+    });
+  };
   // Unified composer card (per the design reference): the input sits ON TOP, with
   // a single action bar BELOW it — attach (+) and the tools toggle on the left,
   // the circular send (or stop while running) on the right. The CARD owns the
@@ -1244,6 +1530,7 @@ function Composer({
         autoFocus
         rows={1}
         disabled={unavailable}
+        onKeyDownCapture={onInputKeyDown}
         autoCorrect="off"
         autoCapitalize="off"
         autoComplete="off"
@@ -1253,9 +1540,16 @@ function Composer({
       />
       <div className="oc-composer__bar">
         <div className="oc-composer__group">
+          {/* Phase-1 QUEUE is TEXT-ONLY: while a turn is in flight the follow-up
+              goes through queueSend (text only), so attaching here would be silently
+              dropped. Disable the picker during a run (and when unavailable) so the
+              affordance never lies. Including attachments in a queued send is a later
+              phase. */}
           <ComposerPrimitive.AddAttachment
             className="oc-composer__icon"
             aria-label={m.chat_attach_file()}
+            disabled={isRunning || unavailable}
+            title={isRunning ? m.chat_response_in_progress() : undefined}
           >
             <Plus size={18} aria-hidden />
           </ComposerPrimitive.AddAttachment>
@@ -1302,22 +1596,13 @@ function Composer({
                 </ComposerPrimitive.Send>
               </ThreadPrimitive.If>
               <ThreadPrimitive.If running>
-                {/* A turn is in flight. We have no gateway-abort endpoint, so a
-                    "Stop" control would be a DEAD affordance (cancel capability
-                    is absent → assistant-ui renders it disabled, implying you can
-                    interrupt when you can't). Show an HONEST disabled send instead
-                    ("réponse en cours") — the input stays usable for type-ahead,
-                    but Enter is blocked while running (assistant-ui), so this also
-                    keeps the double-send hole closed. */}
-                <button
-                  type="button"
-                  className="oc-composer__send"
-                  disabled
-                  aria-label={m.chat_response_in_progress()}
-                  title={m.chat_response_in_progress()}
-                >
-                  <ArrowUp size={18} aria-hidden />
-                </button>
+                {/* A turn is in flight. Phase 1 (QUEUE): the follow-up is accepted
+                    NOW and serialized server-side — parked as a `queued` outbox row
+                    and auto-dispatched when the current turn ends (the bridge is
+                    one-turn-per-session). The button is enabled iff there's text;
+                    Enter also queues (see the Input's onKeyDown). No gateway abort
+                    endpoint exists, so there is still no "Stop" affordance. */}
+                <QueueSendButton />
               </ThreadPrimitive.If>
             </>
           )}

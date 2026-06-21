@@ -71,6 +71,11 @@ export const GRANTABLE_USER_PERMISSIONS: readonly Permission[] = [
   PERMISSIONS.ANOMALIES_READ,
   PERMISSIONS.BRIDGE_READ,
   PERMISSIONS.AGENT_FILES_READ,
+  // Delegated GROUP management (the Groups tab): a holder administers ONLY the
+  // groups they are a MANAGER of (groupMembers.manager); admins manage all.
+  // Create/delete-group + promoting a manager stay admin-only (server gates split
+  // accordingly) — granting this perm is necessary but not sufficient per group.
+  PERMISSIONS.GROUPS_MANAGE,
 ] as const;
 
 /**

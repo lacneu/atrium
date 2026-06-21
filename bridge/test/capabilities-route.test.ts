@@ -26,6 +26,7 @@ const CONFIG: BridgeConfig = {
   openclawGatewayUrl: "ws://gateway.example.org:18789",
   openclawToken: "test-token",
   deviceIdentity: { id: "device-test", publicKey: "pk", privateKey: "sk" },
+  bridgeInstanceSecret: null,
   instanceName: "primary",
   mediaOutboundDir: "/tmp/media-outbound",
   mediaOutboundAgentMount: "/home/node/.openclaw/media/outbound",

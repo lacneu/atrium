@@ -31,7 +31,12 @@ export const UI_PREF_CODE_DEFAULTS: Record<UiPrefKey, boolean> = {
   copyAssistant: true,
   copyUser: true,
   showDelete: true,
-  showTools: true,
+  // OFF by default = the CLEAN, content-focused conversation view (no tool-activity
+  // / Sources blocks). The user opts IN to the analysis view (tool calls + sources,
+  // drill-down detail) by enabling "Outils". The in-progress signal is preserved in
+  // the clean view by the RunStatus line ("… traite votre message"), so disabling
+  // tools never hides that a turn is being processed.
+  showTools: false,
   voiceInput: false, // the voice pipeline is not wired yet
   showChatAge: true, // compact relative age in the sidebar (OpenWebUI-style)
   showChatProvider: true, // bridge badge in the sidebar — self-hides unless chats span >1 provider

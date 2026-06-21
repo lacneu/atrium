@@ -10,9 +10,10 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -101,6 +102,33 @@ describe("stream.rehydrationContext", () => {
     expect(r.history).not.toContain("MESSAGE COURANT");
   });
 
+  test("orderTime (#A): keeps the prior assistant + excludes a still-queued follow-up", async () => {
+    const t = convexTest(schema, modules);
+    // The OUTCOME of the queue flow: USER2 was queued in USER1's pre-ack window, so it
+    // was inserted BEFORE ASSISTANT1 (USER2._ct < ASSISTANT1._ct) — but it was DRAINED,
+    // so its orderTime is AFTER ASSISTANT1. USER3 is a later, STILL-queued follow-up.
+    const { chatId, messageIds } = await seedChat(t, [
+      { role: "user", text: "USER1" },
+      { role: "user", text: "USER2" }, // queued during USER1's pre-ack (early _ct)
+      { role: "assistant", text: "ASSISTANT1" }, // USER1's reply, created later
+      { role: "user", text: "USER3" }, // a later, still-parked follow-up
+    ]);
+    await t.run(async (ctx) => {
+      const a1 = (await ctx.db.get(messageIds[2]))!;
+      await ctx.db.patch(messageIds[1], { orderTime: a1._creationTime + 1 }); // USER2 drained AFTER ASSISTANT1
+      await ctx.db.patch(messageIds[3], { orderTime: QUEUED_ORDER_SENTINEL }); // USER3 still queued
+    });
+    const r = await run(t, chatId, messageIds[1]); // rehydrate USER2's turn
+    expect(r.history).toContain("USER1");
+    expect(r.history).toContain("ASSISTANT1"); // round-11 guard: prior assistant KEPT
+    expect(r.history).not.toContain("USER2"); // the current turn (excluded by id)
+    expect(r.history).not.toContain("USER3"); // round-9 guard: future follow-up EXCLUDED
+    expect(r.history!.indexOf("USER1")).toBeLessThan(
+      r.history!.indexOf("ASSISTANT1"),
+    );
+    expect(r.turnCount).toBe(2);
+  });
+
   test("skips streaming/incomplete and empty rows", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedChat(t, [
@@ -144,5 +172,41 @@ describe("stream.rehydrationContext", () => {
     // most-recent turn (11) kept; an early one (0) dropped
     expect(r.history).toContain("Tour numero 11");
     expect(r.history).not.toContain("Tour numero 0 ");
+  });
+});
+
+describe("listByChat logical order (#A)", () => {
+  test("a drained queued follow-up renders AFTER the in-flight turn's assistant", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, u1, u2, a1 } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1 });
+      const mk = (role: MsgRole, text: string) =>
+        ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role,
+          status: "complete" as const,
+          text,
+          updatedAt: 1,
+        });
+      const u1 = await mk("user", "USER1");
+      const u2 = await mk("user", "USER2"); // queued in the pre-ack window (early _ct)
+      const a1 = await mk("assistant", "ASSISTANT1"); // USER1's reply, created later
+      const a1Row = (await ctx.db.get(a1))!;
+      // USER2 was DRAINED → orderTime stamped AFTER ASSISTANT1's creation.
+      await ctx.db.patch(u2, { orderTime: a1Row._creationTime + 1 });
+      return { chatId, userId, u1, u2, a1 };
+    });
+    const rows = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listByChat, { chatId });
+    // Logical order: USER1, ASSISTANT1, USER2 — NOT USER1, USER2, ASSISTANT1 (raw _ct).
+    expect(rows.map((r) => r._id)).toEqual([u1, a1, u2]);
   });
 });

@@ -191,6 +191,34 @@ export const submitFeedback = mutation({
         .first();
     }
 
+    // L2 "Joindre les documents" state for THIS reply (SERVER-READ, owner-scoped):
+    // per-card status so a report on a failed/stuck attach carries the evidence.
+    // entryKey/reference are the user's own document sources (already present via
+    // partsJson's provenance); storageId/url are deliberately omitted.
+    const docRows = await ctx.db
+      .query("documentAttachments")
+      .withIndex("by_source_message", (q) => q.eq("sourceMessageId", message._id))
+      .collect();
+    const docAttachments = docRows
+      .filter((r) => r.userId === userId)
+      .map((r) => ({
+        entryKey: r.entryKey,
+        reference: r.reference,
+        status: r.status,
+      }));
+    // A fetch still IN FLIGHT for this message (the likely reason for the report):
+    // read the user's hidden documentary chat's pendingFetch.
+    const docChat = await ctx.db
+      .query("chats")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .filter((q) => q.eq(q.field("kind"), "documentary"))
+      .first();
+    const docFetchPendingAgeSeconds =
+      docChat?.pendingFetch &&
+      docChat.pendingFetch.sourceMessageId === message._id
+        ? Math.round((Date.now() - docChat.pendingFetch.createdAt) / 1000)
+        : undefined;
+
     // CLIENT comparison: did the browser render exactly the stored characters?
     const displayedText = args.client?.displayedText?.slice(0, DISPLAYED_MAX);
     const displayedMatchesStored =
@@ -240,6 +268,11 @@ export const submitFeedback = mutation({
         outboxClientMessageId: outbox?.clientMessageId,
         outboxAttachmentsCount: outbox?.attachmentIds.length,
         outboxAvailable: outbox !== null,
+        docAttachmentsJson:
+          docAttachments.length > 0 ? safeJson(docAttachments) : undefined,
+        docAttachmentsCount:
+          docAttachments.length > 0 ? docAttachments.length : undefined,
+        docFetchPendingAgeSeconds,
         // contentHash deferred (no deterministic sync hash in a mutation; the
         // frozen snapshot is itself the authoritative evidence).
         contentHash: undefined,

@@ -31,6 +31,8 @@ import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { enrichUserAgents, resolveAgentForChat } from "./agents";
+import { compareOrder } from "./lib/messageOrder";
+import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -112,10 +114,13 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
       .order("desc")
       .take(MESSAGE_WINDOW);
 
-    // Present chronologically (oldest -> newest) for rendering. The index's
-    // descending order is already by creation time, so reversing is sufficient
-    // and stable (no extra _creationTime sort needed).
-    const messages = recentDesc.reverse();
+    // Present in LOGICAL turn order (see lib/messageOrder): identical to creation
+    // time for idle sends + assistants, but a mid-turn QUEUE follow-up's orderTime
+    // places it AFTER the in-flight turn instead of where its early _creationTime
+    // fell. The window above is still read by _creationTime — valid because an
+    // orderTime-bearing row always has a recent _creationTime (it can't escape the
+    // newest-N window). Tie-break by _creationTime for a stable order.
+    const messages = [...recentDesc].sort(compareOrder);
 
     // Batch part resolution: fetch each message's parts in parallel. Convex has
     // no SQL join, so this is per-message — but the message set is bounded by
@@ -187,6 +192,8 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               : message.text,
           error: message.error,
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
+          // L2: ready downloadable-attachment count (subtle Sources-chip badge).
+          attachedDocCount: message.attachedDocCount,
           updatedAt: message.updatedAt,
           parts,
         };
@@ -291,6 +298,9 @@ export const chatStateInternal = internalQuery({
         // Client's DERIVED render-state from the SHARED logic (runStatusView core).
         runStatusKind: runStatusKind(mDoc.status, hasText),
         stuckStreaming: mDoc.status === "streaming" && ageMs > STALE_STREAM_MS,
+        // L2: count of READY downloadable document attachments fetched for this
+        // reply (a COUNT — never references/filenames). null when none.
+        attachedDocCount: mDoc.attachedDocCount ?? null,
         partCount: parts.length,
         parts,
       };
@@ -301,6 +311,18 @@ export const chatStateInternal = internalQuery({
       // The slug (instances.name), never the admin-settable displayName.
       instanceName: chat.instanceName ?? null,
       agentId: chat.agentId ?? null,
+      // L2: the HIDDEN per-user documentary chat is tagged `kind:"documentary"`; a
+      // diagnostic consumer keys off this (it's excluded from the sidebar).
+      kind: chat.kind ?? null,
+      // L2: an in-flight document fetch. A LARGE ageSeconds = a STUCK fetch (the
+      // owner is locked out by the fetch_in_flight guard until the watchdog releases
+      // it) — the primary L2 anomaly signal. sourceMessageId is an opaque id (SOC2).
+      pendingDocFetch: chat.pendingFetch
+        ? {
+            sourceMessageId: chat.pendingFetch.sourceMessageId,
+            ageSeconds: Math.round((now - chat.pendingFetch.createdAt) / 1000),
+          }
+        : null,
       messageCount: messages.length,
       streamingCount: messages.filter((m) => m.status === "streaming").length,
       stuckCount: messages.filter((m) => m.stuckStreaming).length,
@@ -419,6 +441,7 @@ export const listChats = query({
       .order("desc")) {
       if (++scanned > CHAT_RECENT_SCAN_CAP) break;
       if (c.archived) continue;
+      if (c.kind === "documentary") continue; // hidden L2 fetch chat — never in the sidebar
       recent.push(c);
       if (recent.length >= CHAT_WINDOW) break;
     }
@@ -506,15 +529,20 @@ export const deleteMessage = mutation({
     }
 
     const wasAssistant = message.role === "assistant";
-    const cutoff = message._creationTime;
-
-    // This message + every later one in the chat (truncate forward). Bounded read.
+    // Truncate-forward in LOGICAL turn order (see lib/messageOrder.compareOrder), NOT
+    // raw _creationTime: a mid-turn QUEUE follow-up has an early _creationTime but a
+    // later orderTime, so by _creationTime it would survive a delete of the turn it
+    // logically follows — an undispatchable orphan once its outbox is purged below.
+    // compareOrder tie-breaks by _creationTime, so deleting ONE of several still-queued
+    // follow-ups (all sharing the SENTINEL orderTime) keeps the EARLIER queued ones.
+    // This message + every LATER one in the chat (truncate forward). Bounded read.
     const chatMessages = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
       .collect();
+    const deletedIds = new Set<string>();
     for (const m of chatMessages) {
-      if (m._creationTime < cutoff) continue;
+      if (compareOrder(m, message) < 0) continue; // strictly BEFORE → keep
       const parts = await ctx.db
         .query("messageParts")
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
@@ -522,30 +550,49 @@ export const deleteMessage = mutation({
       for (const p of parts) await ctx.db.delete(p._id);
       // Mirror the files-row invariant on the part deletion (delete + regenerate).
       await deleteFilesByMessage(ctx, m._id);
+      // L2: purge this message's documentary attachments (rows reference it; else
+      // getDocumentAttachments keeps surfacing/downloading them after truncation).
+      const docs = await ctx.db
+        .query("documentAttachments")
+        .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
+        .collect();
+      for (const d of docs) await ctx.db.delete(d._id);
+      deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }
 
-    // Drop this chat's pending outbox so a stale dispatch cannot resurrect a
-    // deleted turn (mirrors chats.cascadeDeleteChat).
-    const pending = await ctx.db
-      .query("outbox")
-      .withIndex("by_status", (q) => q.eq("status", "pending"))
-      .collect();
-    for (const o of pending) {
-      if (o.chatId === chat._id) await ctx.db.delete(o._id);
+    // Drop the non-terminal outbox of the TRUNCATED messages ONLY (a stale dispatch
+    // or a later drainNextQueued must not resurrect a deleted turn). Scope by the
+    // deleted ids — NOT every pending/queued row of the chat: deleting a `queued`
+    // follow-up while an EARLIER turn is still `pending` (its message KEPT by the
+    // logical-order truncation) must not wipe that in-flight turn's outbox.
+    for (const status of ["pending", "queued"] as const) {
+      const rows = await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chat._id).eq("status", status),
+        )
+        .collect();
+      for (const o of rows) {
+        if (o.messageId && deletedIds.has(o.messageId)) await ctx.db.delete(o._id);
+      }
     }
+
+    // L2: if the truncation removed the SOURCE of an in-flight documentary fetch,
+    // release the hidden chat's lock (else future attaches throw fetch_in_flight).
+    await releaseDanglingDocumentaryFetch(ctx, userId);
 
     // Assistant delete -> regenerate the now-last user message (if any): build a
     // fresh outbox from that user turn (text + its file attachments). dispatchReset
     // runs it AFTER the gateway reset, so it re-hydrates the truncated history.
     let regenerateOutboxId: Id<"outbox"> | undefined;
     if (wasAssistant) {
-      const remaining = await ctx.db
-        .query("messages")
-        .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
-        .order("desc")
-        .take(1);
-      const lastUser = remaining[0];
+      // The now-last message in LOGICAL order (reuse the already-read set, minus the
+      // just-truncated tail) — same compareOrder as the truncation + display.
+      const survivors = chatMessages
+        .filter((m) => compareOrder(m, message) < 0)
+        .sort(compareOrder);
+      const lastUser = survivors[survivors.length - 1];
       if (lastUser && lastUser.role === "user") {
         const partDocs = await ctx.db
           .query("messageParts")

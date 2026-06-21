@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -14,6 +14,7 @@ import {
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
 import { useToast } from "@/components/ui/toast";
+import { m } from "@/paraglide/messages.js";
 
 // The single source of truth for the chat UI runtime.
 //
@@ -88,6 +89,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         runId: undefined,
         error: undefined,
         errorCode: undefined, // optimistic user echo never carries a dispatch code
+        attachedDocCount: undefined, // a user echo never has attachments
         text: args.text,
         updatedAt: now,
         // Attachments reconcile a beat later with their server-signed URL; the
@@ -232,5 +234,35 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     [],
   );
 
-  return { runtime: useExternalStoreRuntime(adapter), turnGate };
+  // MID-TURN QUEUE (Phase 1): send a follow-up WHILE a turn is in flight. Unlike
+  // `onNew`, this must NOT touch `pendingSince` — the in-flight gate belongs to
+  // the CURRENT turn; this message is serialized SERVER-SIDE (parked as a `queued`
+  // outbox row) and auto-dispatched when that turn ends. The optimistic echo (the
+  // same `sendMessage` updater) makes the queued user message appear instantly,
+  // below the streaming reply. Returns true if accepted, false if rejected
+  // (e.g. QUEUE_FULL) so the caller can keep the text for a retry.
+  const queueSend = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (!chatId || trimmed === "") return false;
+      try {
+        await sendMessage({
+          chatId: chatId as Id<"chats">,
+          text,
+          clientMessageId: crypto.randomUUID(),
+        });
+        return true;
+      } catch (e) {
+        toast.error(
+          (e as Error)?.message?.includes("QUEUE_FULL")
+            ? m.chat_queue_full()
+            : m.chat_queue_failed(),
+        );
+        return false;
+      }
+    },
+    [chatId, sendMessage, toast],
+  );
+
+  return { runtime: useExternalStoreRuntime(adapter), turnGate, queueSend };
 }

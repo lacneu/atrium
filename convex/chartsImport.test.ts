@@ -134,6 +134,20 @@ async function setRole(
   });
 }
 
+// Grant a user the (grantable) groups.manage permission. A group MANAGER also needs
+// the per-group manager flag (setGroupManager) to manage a SPECIFIC group's content.
+async function grantGroupsManage(
+  t: ReturnType<typeof convexTest>,
+  userId: string,
+) {
+  await t.run(async (ctx) => {
+    const profile = (await ctx.db.query("profiles").collect()).find(
+      (p) => p.userId === (userId as never),
+    )!;
+    await ctx.db.patch(profile._id, { extraPermissions: ["groups.manage"] });
+  });
+}
+
 // ===========================================================================
 // IDOR -- cross-user PERSONAL charts (the new P4 surface). RBAC FIRST.
 // ===========================================================================
@@ -237,57 +251,81 @@ describe("IDOR: a user cannot reach another user's PERSONAL chart", () => {
 // IDOR -- group association (admin OR owner+member; never a non-member)
 // ===========================================================================
 
-describe("IDOR: assignChartToGroup gate (owner+member OR admin)", () => {
-  test("A cannot assign B's chart to a group; A cannot assign even A's OWN chart to a group A is NOT a member of; owner+member CAN", async () => {
+describe("Tier-2 chart selection: manager + pool gated (owner self-share removed)", () => {
+  test("an owner can no longer self-share; a MANAGER selects only POOLED charts of THEIR own group", async () => {
     const t = convexTest(schema, modules);
     const adminId = await seedAdmin(t);
-    const userA = await seedUser(t, "a");
-    const userB = await seedUser(t, "b");
+    const owner = await seedUser(t, "owner");
+    const manager = await seedUser(t, "manager");
     const asAdmin = t.withIdentity({ subject: `${adminId}|session` });
-    const asA = t.withIdentity({ subject: `${userA}|session` });
-    const asB = t.withIdentity({ subject: `${userB}|session` });
+    const asOwner = t.withIdentity({ subject: `${owner}|session` });
+    const asManager = t.withIdentity({ subject: `${manager}|session` });
 
-    // Two groups: gMember (A is a member), gOther (A is NOT a member).
-    const gMember = await asAdmin.mutation(api.groups.createGroup, {
-      name: "Member Group",
-    });
+    // gMine: `manager` is its MANAGER. gOther: `manager` is NOT a manager.
+    const gMine = await asAdmin.mutation(api.groups.createGroup, { name: "Mine" });
     const gOther = await asAdmin.mutation(api.groups.createGroup, {
-      name: "Other Group",
+      name: "Other",
     });
     await asAdmin.mutation(api.groups.addMember, {
-      groupId: gMember,
-      userId: userA,
+      groupId: gMine,
+      userId: manager,
+    });
+    await grantGroupsManage(t, manager);
+    await asAdmin.mutation(api.groups.setGroupManager, {
+      groupId: gMine,
+      userId: manager,
+      manager: true,
     });
 
-    const { key: aKey } = await importAs(t, asA, validImport("A chart"));
-    const { key: bKey } = await importAs(t, asB, validImport("B chart"));
+    const { key } = await importAs(t, asOwner, validImport("Owned"));
 
-    // (1) A assigning B's chart -> the owner branch requires A own it; rejected.
+    // (1) The OWNER (no groups.manage) can NO LONGER self-share their own chart —
+    // the gate is groups.manage now, not the removed owner+member path. No row lands.
     await expect(
-      asA.mutation(api.charts.assignChartToGroup, {
-        groupId: gMember,
-        chartKey: bKey,
+      asOwner.mutation(api.charts.assignChartToGroup, {
+        groupId: gMine,
+        chartKey: key,
       }),
-    ).rejects.toThrow(/not your chart/);
+    ).rejects.toThrow(/missing permission groups\.manage/);
+    expect((await allGroupCharts(t)).length).toBe(0);
 
-    // (2) A assigning A's OWN chart but to gOther (A not a member) -> rejected.
+    // (2) The manager of gMine cannot select a chart that is NOT in gMine's pool —
+    // the Tier-2 ⊆ Tier-1 constraint. Still no row.
     await expect(
-      asA.mutation(api.charts.assignChartToGroup, {
-        groupId: gOther,
-        chartKey: aKey,
+      asManager.mutation(api.charts.assignChartToGroup, {
+        groupId: gMine,
+        chartKey: key,
       }),
-    ).rejects.toThrow(/not a member of this group/);
+    ).rejects.toThrow(/not in this group's pool/);
+    expect((await allGroupCharts(t)).length).toBe(0);
 
-    // (3) A assigning A's OWN chart to gMember (A IS a member) -> ALLOWED (the
-    // owner+member positive path; not co-true with a reject-everything gate).
-    await asA.mutation(api.charts.assignChartToGroup, {
-      groupId: gMember,
-      chartKey: aKey,
+    // (3) Admin POOLS the chart for gMine -> the manager CAN now select it (the
+    // positive path; not co-true with a reject-everything gate).
+    await asAdmin.mutation(api.charts.addChartToGroupPool, {
+      groupId: gMine,
+      chartKey: key,
+    });
+    await asManager.mutation(api.charts.assignChartToGroup, {
+      groupId: gMine,
+      chartKey: key,
     });
     const rows = await allGroupCharts(t);
     expect(rows.length).toBe(1);
-    expect(rows[0].chartKey).toBe(aKey);
-    expect(rows[0].groupId).toBe(gMember);
+    expect(rows[0].chartKey).toBe(key);
+    expect(rows[0].groupId).toBe(gMine);
+
+    // (4) Even with the chart pooled for gOther, the manager cannot select into a
+    // group they do NOT manage (authorizeGroupManage rejects before the pool check).
+    await asAdmin.mutation(api.charts.addChartToGroupPool, {
+      groupId: gOther,
+      chartKey: key,
+    });
+    await expect(
+      asManager.mutation(api.charts.assignChartToGroup, {
+        groupId: gOther,
+        chartKey: key,
+      }),
+    ).rejects.toThrow(/not a manager of this group/);
   });
 });
 
@@ -449,31 +487,10 @@ describe("ACTIVE gate: a deactivated owner cannot mutate its chart", () => {
     expect((await allCharts(t)).find((c) => c._id === chartId)).toBeUndefined();
   });
 
-  test("a deactivated owner+member can no longer assign its chart to a group", async () => {
-    const t = convexTest(schema, modules);
-    const adminId = await seedAdmin(t);
-    const userA = await seedUser(t, "a");
-    const asAdmin = t.withIdentity({ subject: `${adminId}|session` });
-    const asA = t.withIdentity({ subject: `${userA}|session` });
-
-    const { key } = await importAs(t, asA, validImport("A chart"));
-    const groupId = await asAdmin.mutation(api.groups.createGroup, {
-      name: "Clinique A",
-    });
-    await asAdmin.mutation(api.groups.addMember, { groupId, userId: userA });
-
-    // While ACTIVE + a member, A may assign its OWN chart (owner+member path).
-    await asA.mutation(api.charts.assignChartToGroup, {
-      groupId,
-      chartKey: key,
-    });
-
-    // Deactivated: the same owner+member path now rejects (active re-gated).
-    await setRole(t, userA, "pending");
-    await expect(
-      asA.mutation(api.charts.removeChartFromGroup, { groupId, chartKey: key }),
-    ).rejects.toThrow(/pending approval/);
-  });
+  // NOTE: the former "a deactivated owner+member can no longer assign its chart to a
+  // group" test was REMOVED with the owner self-share path (3-tier: a chart reaches a
+  // group only via the admin pool + manager selection). The deactivated-owner write
+  // gate stays covered by the updateChart/deleteChart cases above.
 });
 
 // ===========================================================================
@@ -502,6 +519,8 @@ describe("availability: a group-shared personal custom reaches members only", ()
       name: "Clinique A",
     });
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: member });
+    // 3-tier: admin POOLS the owner's personal custom for the group, then SELECTS it.
+    await asAdmin.mutation(api.charts.addChartToGroupPool, { groupId, chartKey: key });
     await asAdmin.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: key,
@@ -780,10 +799,12 @@ describe("availability: personal vs common vs admin", () => {
     const groupId = await asAdmin.mutation(api.groups.createGroup, { name: "G" });
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: member });
 
-    // Owner imports a personal chart, then associates it with G (owner+member of G).
+    // Owner imports a personal chart; the ADMIN makes it available to G (pool +
+    // select). The owner is also a member of G, so precedence still gives them "owner".
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: owner });
     const { key } = await importAs(t, asOwner, validImport("Shared personal"));
-    await asOwner.mutation(api.charts.assignChartToGroup, {
+    await asAdmin.mutation(api.charts.addChartToGroupPool, { groupId, chartKey: key });
+    await asAdmin.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: key,
     });
@@ -854,10 +875,12 @@ describe("cascade: deleteChart purge + fallback + global-default clear", () => {
     const { chartId, key } = await importAs(t, asOwner, validImport("Mine"));
     await asOwner.mutation(api.charts.setMyChart, { name: key });
 
-    // Associate it with a group the owner is a member of (so groupCharts has a row).
+    // Admin makes it available to a group the owner is a member of (pool + select),
+    // so groupCharts has a row to prove the deleteChart cascade purges it.
     const groupId = await asAdmin.mutation(api.groups.createGroup, { name: "G" });
     await asAdmin.mutation(api.groups.addMember, { groupId, userId: owner });
-    await asOwner.mutation(api.charts.assignChartToGroup, {
+    await asAdmin.mutation(api.charts.addChartToGroupPool, { groupId, chartKey: key });
+    await asAdmin.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: key,
     });

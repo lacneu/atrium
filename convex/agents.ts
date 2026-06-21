@@ -18,6 +18,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireActive, requireAdmin } from "./lib/access";
 import { resolvePollTargets } from "./lib/bridgeRouting";
+import { normalizeAgentTypes, resolveAgentTypes } from "./lib/agentTypes";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
 // into the cache). Matches bridge `NormalizedAgent` (server.ts).
@@ -300,6 +301,12 @@ export const listAgentsForInstance = query({
       .query("instanceDiscovery")
       .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
       .first();
+    // The instance's admin-chosen default agent (live, so the dialog reflects a
+    // setInstanceDefaultAgent immediately). `.first()` mirrors routing's name lookup.
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
     return {
       agents: agents.map((a) => ({
         agentId: a.agentId,
@@ -307,9 +314,13 @@ export const listAgentsForInstance = query({
         emoji: a.emoji ?? null,
         model: a.model ?? null,
         isDefaultOnInstance: a.isDefaultOnInstance ?? false,
+        enabled: a.enabled === true,
+        // Effective agent TYPE(s) — never empty (conversational by default).
+        types: resolveAgentTypes(a.types),
         source: a.source,
         presentInLastOk: a.presentInLastOk,
       })),
+      defaultAgentId: inst?.defaultAgentId ?? null,
       discovery: discovery
         ? {
             lastPollAt: discovery.lastPollAt,
@@ -319,6 +330,225 @@ export const listAgentsForInstance = query({
           }
         : null,
     };
+  },
+});
+
+// Admin: ALL discovered agents grouped by instance name — one read for the whole
+// Instances table's "Agents" column (vs one per-row query). Presence + the native
+// instance default only; non-secret. Agents are DISCOVERED from the bridge (never
+// admin-entered — the prod-bug fix), so this is read-only.
+export const listAllInstanceAgents = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const agents = await ctx.db.query("agents").take(2000);
+    const byInstance: Record<
+      string,
+      Array<{
+        agentId: string;
+        displayName: string | null;
+        emoji: string | null;
+        isDefaultOnInstance: boolean;
+        enabled: boolean;
+        presentInLastOk: boolean;
+      }>
+    > = {};
+    for (const a of agents) {
+      (byInstance[a.instanceName] ??= []).push({
+        agentId: a.agentId,
+        displayName: a.displayName ?? null,
+        emoji: a.emoji ?? null,
+        isDefaultOnInstance: a.isDefaultOnInstance ?? false,
+        enabled: a.enabled === true,
+        presentInLastOk: a.presentInLastOk,
+      });
+    }
+    return byInstance;
+  },
+});
+
+// ===========================================================================
+// ADMIN curation — per-instance enabled set + default agent (Phase 1: INERT,
+// set-but-not-read; ENFORCEMENT + routing land in Phase 2/3).
+// ===========================================================================
+
+async function instanceByName(
+  ctx: MutationCtx,
+  name: string,
+): Promise<Doc<"instances"> | null> {
+  return await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", name))
+    .first();
+}
+
+/** The enabled agentIds for an instance, sorted (deterministic default election). */
+// Agent ids ELIGIBLE to be an instance's default: ENABLED and currently PRESENT on
+// the gateway (presentInLastOk !== false; undefined = present). An enabled-but-ABSENT
+// agent is excluded — the UI hides absent agents, so a default pointing at one would
+// render as "no default" (the invariant is exactly-one VISIBLE default). Sorted for a
+// stable, deterministic pick.
+async function eligibleDefaultAgentIds(
+  ctx: MutationCtx,
+  instanceName: string,
+): Promise<string[]> {
+  const agents = await ctx.db
+    .query("agents")
+    .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+    .collect();
+  return agents
+    .filter((a) => a.enabled === true && a.presentInLastOk !== false)
+    .map((a) => a.agentId)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Admin: enable/disable a DISCOVERED agent for an instance (the downstream
+ *  availability gate — Phase 2 enforces it).
+ *
+ *  INVARIANT: an instance with >=1 ENABLED agent always has exactly one default
+ *  (0 enabled => no default, which is allowed). So:
+ *   - enabling when there is no valid default (e.g. the first/only selected agent)
+ *     makes THIS agent the default;
+ *   - disabling the default re-elects another enabled agent, or clears it when
+ *     none remain. */
+export const setAgentEnabled = mutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, { instanceName, agentId, enabled }) => {
+    await requireAdmin(ctx);
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    await ctx.db.patch(agent._id, { enabled });
+
+    const inst = await instanceByName(ctx, instanceName);
+    if (inst === null) return;
+    const ids = await eligibleDefaultAgentIds(ctx, instanceName);
+
+    // Heal the default on EVERY toggle: if the current default is no longer ELIGIBLE
+    // (disabled OR gone absent — including a default that was already absent before
+    // this toggle of a DIFFERENT agent), re-elect. Prefer the just-enabled agent when
+    // it is itself eligible (a single new selection becomes the default); else the
+    // first eligible; else clear (ids[0] is undefined for an empty set → 0 eligible =
+    // no default, which is allowed).
+    const valid =
+      inst.defaultAgentId != null && ids.includes(inst.defaultAgentId);
+    if (!valid) {
+      const next = enabled && ids.includes(agentId) ? agentId : ids[0];
+      await ctx.db.patch(inst._id, { defaultAgentId: next });
+    }
+  },
+});
+
+/** Admin: set the instance's default agent. The agent must be discovered AND
+ *  enabled. There is NO "clear" — with >=1 enabled agent the default is always
+ *  set (the invariant lives in setAgentEnabled); you change it by picking another.
+ *  Set-but-INERT in Phase 1 (routing consumes it in Phase 3). */
+export const setInstanceDefaultAgent = mutation({
+  args: { instanceName: v.string(), agentId: v.string() },
+  handler: async (ctx, { instanceName, agentId }) => {
+    await requireAdmin(ctx);
+    const inst = await instanceByName(ctx, instanceName);
+    if (inst === null) throw new Error("Not found: instance");
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    if (agent.enabled !== true) {
+      throw new Error("Refused: the default agent must be enabled first");
+    }
+    // An ABSENT agent (gone from the gateway) is hidden in the UI, so making it the
+    // default would render as "no default" — refuse it (mirror the election filter).
+    if (agent.presentInLastOk === false) {
+      throw new Error("Refused: the default agent is absent from the gateway");
+    }
+    await ctx.db.patch(inst._id, { defaultAgentId: agentId });
+  },
+});
+
+/** Admin: set the TYPE(s) of a discovered agent (convex/lib/agentTypes catalogue).
+ *  Every code MUST be in the catalogue (throws on an unknown one — never silently
+ *  dropped); the list is de-duplicated + catalogue-ordered. An empty list is stored
+ *  as-is and READS back as the default (conversational) via resolveAgentTypes, so an
+ *  agent always carries at least one type. PRESERVED across discovery polls. */
+export const setAgentTypes = mutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    types: v.array(v.string()),
+  },
+  handler: async (ctx, { instanceName, agentId, types }) => {
+    await requireAdmin(ctx);
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    // Throws on an unknown code; normalises (dedup + catalogue order).
+    const normalized = normalizeAgentTypes(types);
+    await ctx.db.patch(agent._id, { types: normalized });
+  },
+});
+
+const AGENT_CASCADE_BATCH = 500;
+
+/** Admin: PERMANENTLY remove a now-ABSENT agent (gateway no longer reports it)
+ *  from an instance's list, CASCADING to every group's and user's selection of it.
+ *  Only a gateway-absent agent can be removed — a still-present one would just be
+ *  re-discovered (disable it instead). DESTRUCTIVE (it deletes group/user
+ *  preferences), so the UI confirms first. Idempotent. */
+export const removeInstanceAgent = mutation({
+  args: { instanceName: v.string(), agentId: v.string() },
+  handler: async (ctx, { instanceName, agentId }) => {
+    await requireAdmin(ctx);
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) return; // idempotent — already gone
+    if (agent.presentInLastOk) {
+      throw new Error(
+        "Refused: agent is still present on the gateway — disable it instead of removing it",
+      );
+    }
+    await ctx.db.delete(agent._id);
+
+    // Cascade — every user's grant of this agent (paginated via by_instance_agent).
+    // Maintain the per-user "exactly one default" invariant (like removeAgent /
+    // deleteInstance): if the purged grant was a user's DIRECT default and they still
+    // have other agents, re-elect the first remaining as their default — else the user
+    // would be left with agents but no default (UI/effective-resolution would drift to
+    // an implicit pick or a group default instead of a real direct default).
+    for (;;) {
+      const batch = await ctx.db
+        .query("userAgents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", instanceName).eq("agentId", agentId),
+        )
+        .take(AGENT_CASCADE_BATCH);
+      for (const r of batch) {
+        await ctx.db.delete(r._id);
+        if (r.isDefault === true) {
+          const remaining = await ctx.db
+            .query("userAgents")
+            .withIndex("by_user", (q) => q.eq("userId", r.userId))
+            .collect();
+          if (remaining.length > 0 && !remaining.some((x) => x.isDefault === true)) {
+            await ctx.db.patch(remaining[0]._id, { isDefault: true });
+          }
+        }
+      }
+      if (batch.length < AGENT_CASCADE_BATCH) break;
+    }
+    // Cascade — every group's share of this agent (per-instance set is small).
+    const groupRows = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .collect();
+    for (const r of groupRows) {
+      if (r.agentId === agentId) await ctx.db.delete(r._id);
+    }
+    // Re-elect / clear the instance default if it pointed at the removed agent —
+    // to an ELIGIBLE (present + enabled) agent, never an absent one (or clear).
+    const inst = await instanceByName(ctx, instanceName);
+    if (inst && inst.defaultAgentId === agentId) {
+      const ids = await eligibleDefaultAgentIds(ctx, instanceName);
+      await ctx.db.patch(inst._id, { defaultAgentId: ids[0] });
+    }
   },
 });
 
@@ -487,6 +717,61 @@ export async function getEffectiveGrants(
   return out;
 }
 
+/**
+ * Resolve a DOCUMENTARY agent the user is ENTITLED to (L2 "Joindre les documents").
+ * Intersects the user's effective grants (the dispatch-time authorization boundary —
+ * NEVER a global agent) with the agents whose effective type includes "documentary",
+ * skipping ones deleted on the gateway. Returns the user's DEFAULT documentary agent
+ * when it is documentary, else the first documentary grant; null if none. PURE-ish
+ * (ctx reads only); reused by the availability query AND the L2 dispatch so they can
+ * never disagree on the target.
+ */
+export async function resolveDocumentaryTarget(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<{ instanceName: string; agentId: string; displayName: string } | null> {
+  // getEffectiveGrants MARKS isDefault but does NOT reorder its output (the array is
+  // direct-then-group insertion order). Sort a LOCAL copy default-first so the user's
+  // default documentary agent wins when it is documentary; non-defaults keep their
+  // relative order, so a non-documentary default falls through to the first
+  // documentary grant. Do NOT reorder getEffectiveGrants itself (shared by the header
+  // chip + sidebar badge + dispatch — a semantics change across three consumers).
+  const grants = [...(await getEffectiveGrants(ctx, userId))].sort(
+    (a, b) => Number(b.isDefault) - Number(a.isDefault),
+  );
+  for (const g of grants) {
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", g.instanceName).eq("agentId", g.agentId),
+      )
+      .first();
+    if (agent === null || agent.presentInLastOk === false) continue; // unknown/deleted
+    if (resolveAgentTypes(agent.types).includes("documentary")) {
+      return {
+        instanceName: g.instanceName,
+        agentId: g.agentId,
+        displayName: agent.displayName ?? g.agentId,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Is a documentary agent available to the caller? Drives the "Joindre les documents"
+ * action's enablement (the capability gate — like the bridge-capability pattern).
+ * Returns the agent's non-secret display label, or null.
+ */
+export const documentaryAvailable = query({
+  args: {},
+  handler: async (ctx) => {
+    const { userId } = await requireActive(ctx);
+    const target = await resolveDocumentaryTarget(ctx, userId);
+    return target ? { displayName: target.displayName } : null;
+  },
+});
+
 /** SINGLE resolver for "which agent does this chat route to" — used by BOTH the
  *  header chip (getChatAgent) AND the sidebar bridge badge (messages.listChats),
  *  so they can never drift from each other or from dispatch. Mirrors dispatch's
@@ -605,8 +890,14 @@ export const getChatAgent = query({
     // The chip exists ONLY to disambiguate between several agents. With 0 or 1
     // agent there is nothing to disambiguate -> never surface it.
     if (agents.length <= 1) {
-      return { multiAgent: false as const, agent: null };
+      return { multiAgent: false as const, multiInstance: false as const, agent: null };
     }
+
+    // Does the user's entitled set span MORE THAN ONE instance? When it does, the
+    // agent name alone can be ambiguous (the same display name can exist on two
+    // gateways), so the header also shows which instance the bound agent lives on.
+    const multiInstance =
+      new Set(agents.map((a) => a.instanceName)).size > 1;
 
     // The agent the NEXT turn will actually dispatch to (shared with the sidebar
     // badge — see resolveAgentForChat: honors a non-deleted binding, else the
@@ -621,6 +912,7 @@ export const getChatAgent = query({
     );
     return {
       multiAgent: true as const,
+      multiInstance,
       agent: resolved
         ? {
             instanceName: resolved.instanceName,

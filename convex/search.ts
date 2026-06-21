@@ -46,10 +46,15 @@ export const searchConversations = query({
     // the title-match source and as the owner-scoped lookup that resolves a
     // message hit's chat title — a message whose chat is not in this set is not
     // owned by the caller and is dropped.
-    const chats = await ctx.db
-      .query("chats")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+    const chats = (
+      await ctx.db
+        .query("chats")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect()
+    ).filter((c) => c.kind !== "documentary"); // hidden L2 fetch chats — never in
+    // search (mirrors the sidebar exclusion). Filtering the SET here covers BOTH the
+    // title-match loop AND the message-hit path (its chat lookup uses chatById below,
+    // so a hit in a documentary chat resolves to undefined and is dropped).
     const chatById = new Map(chats.map((c) => [c._id, c]));
 
     const results: SearchHit[] = [];

@@ -78,3 +78,34 @@ describe("admin.upsertInstanceConfig", () => {
     expect(inst?.config).toEqual({});
   });
 });
+
+describe("admin.upsertInstance rename guard", () => {
+  test("editing an instance with a CHANGED name is rejected (the name is the routing key)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, instanceId } = await seed(t, "admin");
+    await expect(
+      as.mutation(api.admin.upsertInstance, {
+        instanceId, // edit mode + a different name = a rename attempt
+        name: "renamed",
+        gatewayUrl: "ws://gw:18790",
+      }),
+    ).rejects.toThrow(/instance_rename_not_supported/);
+    // Regression guard: drop the guard and the row is renamed while agents/
+    // userAgents/chats/discovery still reference "primary" -> orphaned routing.
+    const inst = await t.run((ctx) => ctx.db.get(instanceId));
+    expect(inst?.name).toBe("primary");
+  });
+
+  test("editing with the SAME name updates the other fields normally", async () => {
+    const t = convexTest(schema, modules);
+    const { as, instanceId } = await seed(t, "admin");
+    await as.mutation(api.admin.upsertInstance, {
+      instanceId,
+      name: "primary", // unchanged -> not a rename
+      gatewayUrl: "ws://gw:NEW",
+    });
+    const inst = await t.run((ctx) => ctx.db.get(instanceId));
+    expect(inst?.name).toBe("primary");
+    expect(inst?.gatewayUrl).toBe("ws://gw:NEW");
+  });
+});

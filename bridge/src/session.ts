@@ -437,10 +437,14 @@ export class SessionRegistry {
     sessionKey: string,
     routing: SessionRouting,
   ): Promise<Session> {
+    // Credentials are RESOLVED ONCE AT BOOT (index.ts: Convex per-bridge secret,
+    // env fallback) and populated onto `config` — non-null here by construction (a
+    // missing credential fails the bridge at boot). A rotation takes effect on the
+    // next bridge restart (documented limitation; lazy-per-connect is a follow-up).
     const connection = await OpenClawConnection.connect(
       this.config.openclawGatewayUrl,
-      this.config.openclawToken,
-      this.config.deviceIdentity,
+      this.config.openclawToken!,
+      this.config.deviceIdentity!,
     );
     const session = new Session(
       chatId,

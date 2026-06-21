@@ -121,6 +121,8 @@ export interface ConvexMessageView {
   status: MessageStatus;
   text: string;
   error?: string;
+  /** L2: count of ready downloadable document attachments (Sources-chip badge). */
+  attachedDocCount?: number;
   updatedAt: number;
   parts: ConvexMessagePartView[];
 }

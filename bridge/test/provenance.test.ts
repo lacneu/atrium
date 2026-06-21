@@ -291,6 +291,38 @@ describe("RunManager provenance pipeline", () => {
     expect(writer.calls[0]![0]).toBe("startAssistant");
   });
 
+  it("DE-DUP: the SAME report emitted twice in one turn is stored once", async () => {
+    const writer = new FakeWriter();
+    const rm = new RunManager("chat_p", SESSION_KEY, writer);
+    // A plugin hook registered twice on a reload emits the identical report 2x.
+    await rm.feed(provenanceFrame(MEMORY_REPORT), 1000);
+    await rm.feed(provenanceFrame(MEMORY_REPORT), 1000.05); // exact duplicate
+    await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.1);
+    await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.15); // exact duplicate
+    await rm.beginTurn(1000.2, RUN_ID);
+    const parts = writer.provenanceParts();
+    // Each report stored ONCE — not doubled (the "every source shown twice" bug).
+    expect(parts.map((p) => p.group)).toEqual(["memory", "documents"]);
+  });
+
+  it("DE-DUP keeps DISTINCT reports of the same group (pgvector vs LightRAG)", async () => {
+    const writer = new FakeWriter();
+    const rm = new RunManager("chat_p", SESSION_KEY, writer);
+    // Two genuinely-different "documents" reports (different items) must BOTH
+    // survive — only EXACT duplicates collapse.
+    const pgvector = DOCUMENTS_REPORT;
+    const lightrag = {
+      ...DOCUMENTS_REPORT,
+      items: [{ id: "lightrag-context", type: "graph", text: "Mock KG context." }],
+    };
+    await rm.feed(provenanceFrame(pgvector), 1000);
+    await rm.feed(provenanceFrame(lightrag), 1000.1);
+    await rm.beginTurn(1000.2, RUN_ID);
+    const parts = writer.provenanceParts();
+    expect(parts).toHaveLength(2); // both kept
+    expect(parts.every((p) => p.group === "documents")).toBe(true);
+  });
+
   it("PRE-TURN stash from a DIFFERENT run never leaks into this turn", async () => {
     const writer = new FakeWriter();
     const rm = new RunManager("chat_p", SESSION_KEY, writer);
@@ -300,6 +332,22 @@ describe("RunManager provenance pipeline", () => {
     );
     await rm.beginTurn(1000.2, RUN_ID);
     expect(writer.provenanceParts()).toHaveLength(0);
+  });
+
+  it("DE-DUP is RUN-SCOPED: an identical report from a DIFFERENT run must not suppress this run's", async () => {
+    const writer = new FakeWriter();
+    const rm = new RunManager("chat_p", SESSION_KEY, writer);
+    // A stale/foreign run stashes a report, then THIS run emits the IDENTICAL one.
+    await rm.feed(
+      provenanceFrame(MEMORY_REPORT, { runId: "webchat-stale-run" }),
+      1000,
+    );
+    await rm.feed(provenanceFrame(MEMORY_REPORT), 1000.1); // same content, RUN_ID
+    await rm.beginTurn(1000.2, RUN_ID);
+    // Regression guard: a GLOBAL (non-run-scoped) dedup drops this run's report as a
+    // "duplicate" of the foreign one → beginTurn(RUN_ID) then flushes NOTHING and the
+    // run loses all its sources despite a valid frame.
+    expect(writer.provenanceParts().map((p) => p.group)).toEqual(["memory"]);
   });
 
   it("ACTIVE path: a provenance frame after beginTurn writes the part", async () => {

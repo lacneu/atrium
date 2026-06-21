@@ -178,6 +178,12 @@ describe("brandForHost (pre-auth) exposure rules", () => {
     const admin = await seedAdmin(t);
     const asAdmin = as(t, admin);
     const groupId = await asAdmin.mutation(api.groups.createGroup, { name: "G" });
+    // 3-tier: pool the builtin for the group, then select it (Tier 2) so the
+    // group-restriction (>=1 groupCharts row) holds for the pre-auth exposure check.
+    await asAdmin.mutation(api.charts.addChartToGroupPool, {
+      groupId,
+      chartKey: BUILTIN_KEY,
+    });
     await asAdmin.mutation(api.charts.assignChartToGroup, {
       groupId,
       chartKey: BUILTIN_KEY,

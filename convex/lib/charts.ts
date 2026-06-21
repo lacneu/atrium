@@ -337,7 +337,7 @@ export function builtinChart(key: string): BuiltinChart | undefined {
 // ===========================================================================
 
 /** Where a resolved chart key came from. "code" = native index.css default. */
-export type ChartSource = "user" | "domain" | "common/admin" | "code";
+export type ChartSource = "user" | "group" | "domain" | "common/admin" | "code";
 
 /** The outcome of resolving the effective chart for a user. */
 export type ResolvedChart = {
@@ -346,21 +346,27 @@ export type ResolvedChart = {
 };
 
 /**
- * Resolve the EFFECTIVE chart key with precedence:
+ * Resolve the EFFECTIVE chart key with precedence (3-tier charts model):
  *   1. the user's own pick, IF it is still available to them -> "user";
- *   2. else the DOMAIN default (charte par domaine), IF it is available to the
+ *   2. else the user's GROUP default (a chart their group SELECTED + flagged
+ *      default) -> "group";
+ *   3. else the DOMAIN default (charte par domaine), IF it is available to the
  *      user (the domain×group junction) -> "domain";
- *   3. else the admin global default, if set -> "common/admin";
- *   4. else null (native look) -> "code".
+ *   4. else the admin global default, if set -> "common/admin";
+ *   5. else null (native look) -> "code".
  *
- * `availableKeys` is the set offered to the user (from group memberships); the
- * user's pick is dropped when no longer available. `domainAvailable` is the
- * pre-computed junction result for the domain default (isChartAvailableToUser):
- * common -> all; group-restricted -> members only. The admin GLOBAL default is
- * applied WITHOUT an availability check (a deliberate global choice).
+ * Precedence (user decision, 2026-06-20): the GROUP default BEATS the domain/host
+ * default — a chart a user's group chose for them is more specific than the host
+ * brand. `availableKeys` is the set offered to the user (from group memberships);
+ * the user's pick is dropped when no longer available. `groupDefault` is already
+ * derived from the user's OWN group memberships (groupDefaultChartForUser), so it
+ * is available to them by construction -> applied WITHOUT a separate check.
+ * `domainAvailable` is the pre-computed junction for the domain default. The admin
+ * GLOBAL default is applied WITHOUT an availability check (a deliberate global choice).
  */
 export function resolveChart(
   userKey: string | null | undefined,
+  groupDefault: string | null | undefined,
   domainDefault: string | null | undefined,
   adminDefault: string | null | undefined,
   availableKeys: ReadonlySet<string>,
@@ -368,6 +374,9 @@ export function resolveChart(
 ): ResolvedChart {
   if (userKey && availableKeys.has(userKey)) {
     return { chartKey: userKey, source: "user" };
+  }
+  if (groupDefault) {
+    return { chartKey: groupDefault, source: "group" };
   }
   if (domainDefault && domainAvailable) {
     return { chartKey: domainDefault, source: "domain" };

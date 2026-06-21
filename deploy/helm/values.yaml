@@ -257,9 +257,17 @@ secrets:
     BRIDGE_INGEST_SECRET: ""
     BRIDGE_SHARED_SECRET: ""
     # --- bridge -> OpenClaw gateway credentials ---
+    # token + device identity are OPTIONAL: blank => "UI mode" (creds stored
+    # encrypted in Convex via Settings -> Agents -> Instances -> Credentials, fetched
+    # at boot via BRIDGE_INSTANCE_SECRET below; requires ATRIUM_SECRET_KEY). Set them
+    # here for "env mode". See README "Gateway credentials: env vs UI-managed".
     OPENCLAW_TOKEN: ""
     # Ed25519 device identity JSON (single line).
     OPENCLAW_DEVICE_IDENTITY: ""
+    # [UI mode only] per-bridge secret minted in the Credentials dialog; binds this
+    # bridge to its instance so it fetches ONLY that gateway's encrypted creds. NOT
+    # the shared BRIDGE_INGEST_SECRET. Blank in env mode.
+    BRIDGE_INSTANCE_SECRET: ""
     # --- Convex DEPLOYMENT env (pushed by the bootstrap Job) ---
     # Authoritative sign-in gate — comma-separated allowed email domains. The
     # FIRST sign-in from an allowed domain becomes admin. MUST be set before
@@ -277,6 +285,11 @@ secrets:
     # @convex-dev/auth keys. JWT_PRIVATE_KEY = PEM with REAL newlines; JWKS = raw JSON.
     JWT_PRIVATE_KEY: ""
     JWKS: ""
+    # Master key encrypting gateway credentials at rest in Convex (base64 of 32
+    # random bytes; `openssl rand -base64 32`). Same model as n8n's encryption key
+    # — a Secret value, NEVER in the DB. Back it up; losing it makes stored
+    # credentials unrecoverable. Blank = the UI credential feature stays inert.
+    ATRIUM_SECRET_KEY: ""
     # Optional trace shipping (leave blank to disable). Langfuse host = LANGFUSE_HOST.
     LANGFUSE_PUBLIC_KEY: ""
     LANGFUSE_SECRET_KEY: ""

@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
+import { AGENT_TYPE_CODES } from "../../convex/lib/agentTypes";
 import { UserAccessSheet } from "./admin/UserAccessSheet";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,6 +18,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Dialog,
   DialogContent,
@@ -185,6 +191,9 @@ export const GRANTABLE_TABS: readonly Tab[] = [
   "anomalies",
   "bridge",
   "agentFiles",
+  // Delegated group management (gated groups.manage; scoped to managed groups +
+  // admin-only structural actions inside). Lockstep with GRANTABLE_USER_PERMISSIONS.
+  "groups",
 ];
 
 // The tabs a holder of `perms` may see, in canonical TABS (nav) order.
@@ -550,6 +559,8 @@ type InstanceForm = {
   bridgeUrl: string;
   displayName: string;
   kind: InstanceKind;
+  gatewayVersion: string;
+  gatewayHttpUrl: string;
 };
 const EMPTY_INSTANCE: InstanceForm = {
   name: "",
@@ -557,10 +568,39 @@ const EMPTY_INSTANCE: InstanceForm = {
   bridgeUrl: "",
   displayName: "",
   kind: "openclaw",
+  gatewayVersion: "",
+  gatewayHttpUrl: "",
 };
+
+// Which encrypted credential fields apply per provider kind (UI guidance; the
+// backend does not enforce kind/field matching). OpenClaw authenticates with an
+// operator token + an Ed25519 device identity; Hermes with a single API key.
+const SECRET_FIELDS_BY_KIND: Record<
+  InstanceKind,
+  Array<"token" | "deviceIdentity" | "apiKey">
+> = {
+  openclaw: ["token", "deviceIdentity"],
+  hermes: ["apiKey"],
+};
+
+/** Seed the form from an existing instance row (for the edit flow). */
+function formFromInstance(i: Instance): InstanceForm {
+  return {
+    name: i.name,
+    gatewayUrl: i.gatewayUrl,
+    bridgeUrl: i.bridgeUrl ?? "",
+    displayName: i.displayName ?? "",
+    kind: (i.kind ?? "openclaw") as InstanceKind,
+    gatewayVersion: i.gatewayVersion ?? "",
+    gatewayHttpUrl: i.gatewayHttpUrl ?? "",
+  };
+}
 
 export function InstancesTab() {
   const instances = useQuery(api.admin.listInstances, {});
+  // All discovered agents grouped by instance name — drives the "Agents" column
+  // so the associated agents are visible at a glance (one read for the table).
+  const agentsByInstance = useQuery(api.agents.listAllInstanceAgents, {});
   const upsert = useMutation(api.admin.upsertInstance);
   const del = useMutation(api.admin.deleteInstance);
   const toast = useToast();
@@ -571,17 +611,25 @@ export function InstancesTab() {
   // The instance whose bridge-config modal is open (the SAME modal the Bridge tab
   // opens from a compat-row kebab — one config UI, reached from two places).
   const [configInstance, setConfigInstance] = useState<Instance | null>(null);
+  // The instance whose encrypted-credentials modal is open.
+  const [secretsInstance, setSecretsInstance] = useState<Instance | null>(null);
+  // The instance being EDITED in the sheet (null → the sheet creates a new one).
+  const [editId, setEditId] = useState<Id<"instances"> | null>(null);
 
   async function submit() {
     try {
       await upsert({
+        instanceId: editId ?? undefined,
         name: form.name,
         gatewayUrl: form.gatewayUrl,
         bridgeUrl: form.bridgeUrl || undefined,
         displayName: form.displayName || undefined,
         kind: form.kind,
+        gatewayVersion: form.gatewayVersion || undefined,
+        gatewayHttpUrl: form.gatewayHttpUrl || undefined,
       });
       setForm(EMPTY_INSTANCE);
+      setEditId(null);
       setSheetOpen(false);
     } catch (err) {
       // M5: surface server-side rejection instead of swallowing.
@@ -599,6 +647,7 @@ export function InstancesTab() {
         rows={instances}
         addLabel={m.settings_add_instance()}
         onAdd={() => {
+          setEditId(null);
           setForm(EMPTY_INSTANCE);
           setSheetOpen(true);
         }}
@@ -624,19 +673,61 @@ export function InstancesTab() {
           },
           {
             header: m.settings_col_agents(),
-            cell: (i) => (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 font-normal"
-                onClick={() => setAgentsFor(i.name)}
-              >
-                {m.settings_view_agents()}
-              </Button>
-            ),
+            cell: (i) => {
+              // Show ONLY the agents SELECTED (enabled) for this instance — the
+              // curated set. Disabled/absent agents are managed in the agents
+              // dialog, not surfaced in this column.
+              const list = (agentsByInstance?.[i.name] ?? []).filter(
+                (a) => a.presentInLastOk !== false && a.enabled,
+              );
+              if (list.length === 0) {
+                return <span className="text-muted-foreground">—</span>;
+              }
+              // Admin default first + filled badge. So a single read of the row
+              // shows the enabled agents + which is default.
+              const isDefault = (agentId: string) => i.defaultAgentId === agentId;
+              const ordered = [...list].sort(
+                (a, b) =>
+                  Number(isDefault(b.agentId)) - Number(isDefault(a.agentId)),
+              );
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {ordered.map((a) => (
+                    <Badge
+                      key={a.agentId}
+                      variant={isDefault(a.agentId) ? "default" : "outline"}
+                      title={
+                        isDefault(a.agentId)
+                          ? m.settings_badge_default()
+                          : undefined
+                      }
+                    >
+                      {a.emoji ? `${a.emoji} ` : ""}
+                      {a.displayName ?? a.agentId}
+                    </Badge>
+                  ))}
+                </div>
+              );
+            },
           },
         ]}
         rowActions={(i) => [
+          {
+            label: m.settings_edit(),
+            onSelect: () => {
+              setEditId(i._id);
+              setForm(formFromInstance(i));
+              setSheetOpen(true);
+            },
+          },
+          {
+            label: m.settings_manage_agents(),
+            onSelect: () => setAgentsFor(i.name),
+          },
+          {
+            label: m.settings_credentials(),
+            onSelect: () => setSecretsInstance(i),
+          },
           {
             label: m.settings_configure_bridge(),
             onSelect: () => setConfigInstance(i),
@@ -659,7 +750,11 @@ export function InstancesTab() {
       <EntitySheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        title={m.settings_new_instance_title()}
+        title={
+          editId
+            ? m.settings_edit_instance_title()
+            : m.settings_new_instance_title()
+        }
         description={m.settings_new_instance_desc()}
         canSubmit={Boolean(form.name && form.gatewayUrl)}
         onSubmit={submit}
@@ -669,8 +764,16 @@ export function InstancesTab() {
           <Field label={m.settings_field_instance_name()}>
             <Input
               value={form.name}
+              // The name is the routing key (agents/userAgents reference it by
+              // value); renaming would orphan them, so it is fixed after create.
+              disabled={editId !== null}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
+            {editId ? (
+              <span className="text-xs text-muted-foreground">
+                {m.settings_name_locked_hint()}
+              </span>
+            ) : null}
           </Field>
           <Field label={m.settings_field_technology()}>
             <Select
@@ -707,6 +810,24 @@ export function InstancesTab() {
               onChange={(e) => setForm({ ...form, displayName: e.target.value })}
             />
           </Field>
+          <Field label={m.settings_field_gateway_version()}>
+            <Input
+              value={form.gatewayVersion}
+              placeholder={m.settings_field_gateway_version_ph()}
+              onChange={(e) =>
+                setForm({ ...form, gatewayVersion: e.target.value })
+              }
+            />
+          </Field>
+          <Field label={m.settings_field_gateway_http_url()}>
+            <Input
+              value={form.gatewayHttpUrl}
+              placeholder={m.settings_field_gateway_http_url_ph()}
+              onChange={(e) =>
+                setForm({ ...form, gatewayHttpUrl: e.target.value })
+              }
+            />
+          </Field>
         </div>
       </EntitySheet>
       <InstanceAgentsDialog
@@ -724,13 +845,363 @@ export function InstancesTab() {
           onClose={() => setConfigInstance(null)}
         />
       ) : null}
+      {secretsInstance ? (
+        <InstanceSecretsDialog
+          key={secretsInstance._id}
+          instance={secretsInstance}
+          onClose={() => setSecretsInstance(null)}
+        />
+      ) : null}
     </>
+  );
+}
+
+// Per-instance ENCRYPTED CREDENTIALS editor (admin-only). Secrets are write-only:
+// the value is sent to the setInstanceSecret ACTION (which encrypts it AAD-bound
+// and persists the envelope), and is NEVER read back to the browser — the dialog
+// only knows WHICH fields are set (listInstanceSecretStatus). Mirrors a password
+// field: status + "Set/Replace" + "Clear". Requires ATRIUM_SECRET_KEY on the
+// Convex deployment (a clear error surfaces via the toast if unset).
+function InstanceSecretsDialog({
+  instance,
+  onClose,
+}: {
+  instance: Instance;
+  onClose: () => void;
+}) {
+  const status = useQuery(api.instanceSecrets.listInstanceSecretStatus, {});
+  const kind = (instance.kind ?? "openclaw") as InstanceKind;
+  const fields = SECRET_FIELDS_BY_KIND[kind];
+  // field -> updatedAt for THIS instance (presence only; never the ciphertext).
+  const setAt = useMemo(() => {
+    const map: Partial<Record<string, number>> = {};
+    for (const s of status ?? []) {
+      if (s.instanceId === instance._id) map[s.field] = s.updatedAt;
+    }
+    return map;
+  }, [status, instance._id]);
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent onOpenAutoFocus={(e) => e.preventDefault()}>
+        <DialogHeader>
+          <DialogTitle>
+            {m.settings_credentials_title({
+              instance: instance.displayName ?? instance.name,
+            })}
+          </DialogTitle>
+          <DialogDescription>{m.settings_credentials_hint()}</DialogDescription>
+        </DialogHeader>
+        <div className="oc-form">
+          {fields.map((f) => (
+            <SecretRow
+              key={f}
+              instanceId={instance._id}
+              field={f}
+              updatedAt={setAt[f] ?? null}
+            />
+          ))}
+        </div>
+        {/* Per-bridge auth secret (bridge -> Convex). Separate from the gateway
+            credentials above: it identifies THIS bridge as this instance so it can
+            (in 3b) fetch ONLY this gateway's secrets. Kind-agnostic. */}
+        <div className="oc-bridgesecret">
+          <BridgeSecretRow instance={instance} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Per-bridge secret management for one instance: status (configured + prefix…last4)
+// + Generate / Rotate / Revoke. Mint returns the plaintext ONCE — revealed inline
+// (no nested modal) with a copy + a clear "shown once" warning, then discarded from
+// state. Only the hash is ever stored server-side.
+function BridgeSecretRow({ instance }: { instance: Instance }) {
+  const status = useQuery(api.bridgeAuth.listBridgeAuthStatus, {});
+  const mint = useAction(api.bridgeAuth.mintBridgeSecret);
+  const revoke = useMutation(api.bridgeAuth.revokeBridgeSecret);
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [minted, setMinted] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const row = (status ?? []).find((s) => s.instanceId === instance._id);
+  const isSet = row !== undefined;
+
+  async function doMint() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await mint({ instanceId: instance._id });
+      setMinted(res.plaintext);
+      setCopied(false);
+    } catch (err) {
+      toast.error(m.settings_bridge_secret_mint_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function doRevoke() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await revoke({ instanceId: instance._id });
+      setMinted(null);
+      toast.success(m.settings_bridge_secret_revoked());
+    } catch (err) {
+      toast.error(m.settings_bridge_secret_mint_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function copy() {
+    if (!minted) return;
+    try {
+      await navigator.clipboard.writeText(minted);
+      setCopied(true);
+    } catch {
+      // best-effort; the value stays visible to copy manually
+    }
+  }
+
+  return (
+    <Field label={m.settings_bridge_secret_label()}>
+      <p className="oc-admin__hint">{m.settings_bridge_secret_hint()}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={isSet ? "outline" : "secondary"}>
+          {isSet
+            ? `${m.settings_secret_configured()} · ${row!.prefix}…${row!.lastFour}`
+            : m.settings_secret_unset()}
+        </Badge>
+        <Button size="sm" onClick={() => void doMint()} disabled={busy}>
+          {isSet
+            ? m.settings_bridge_secret_rotate()
+            : m.settings_bridge_secret_generate()}
+        </Button>
+        {isSet ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => void doRevoke()}
+            disabled={busy}
+          >
+            {m.settings_bridge_secret_revoke()}
+          </Button>
+        ) : null}
+      </div>
+      {minted ? (
+        <div className="oc-bridgesecret__reveal">
+          <p className="oc-sa__minted-warning">
+            {m.settings_bridge_secret_reveal_warn()}
+          </p>
+          <div className="oc-sa__minted-box">
+            <code className="oc-sa__minted-plain">{minted}</code>
+            <Button variant="outline" size="sm" onClick={() => void copy()}>
+              {copied ? m.serviceaccounts_copied() : m.serviceaccounts_copy()}
+            </Button>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setMinted(null);
+              setCopied(false);
+            }}
+          >
+            {m.settings_bridge_secret_reveal_done()}
+          </Button>
+        </div>
+      ) : null}
+    </Field>
+  );
+}
+
+// One credential row: a write-only input + Set + (if set) Clear, plus a status
+// badge. The plaintext only ever travels to the action; it is cleared from local
+// state right after a successful set and is never displayed.
+function SecretRow({
+  instanceId,
+  field,
+  updatedAt,
+}: {
+  instanceId: Id<"instances">;
+  field: "token" | "deviceIdentity" | "apiKey";
+  updatedAt: number | null;
+}) {
+  const setSecret = useAction(api.instanceSecrets.setInstanceSecret);
+  const clear = useMutation(api.instanceSecrets.clearInstanceSecret);
+  const toast = useToast();
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const isSet = updatedAt !== null;
+  const label =
+    field === "token"
+      ? m.settings_secret_token()
+      : field === "deviceIdentity"
+        ? m.settings_secret_device()
+        : m.settings_secret_apikey();
+
+  async function save() {
+    if (!value.trim() || busy) return;
+    setBusy(true);
+    try {
+      await setSecret({ instanceId, field, plaintext: value });
+      setValue(""); // never keep the plaintext around
+      toast.success(m.settings_secret_saved());
+    } catch (err) {
+      toast.error(m.settings_secret_save_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doClear() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await clear({ instanceId, field });
+      toast.success(m.settings_secret_cleared());
+    } catch (err) {
+      toast.error(m.settings_secret_save_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Field label={label}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={isSet ? "outline" : "secondary"}>
+          {isSet ? m.settings_secret_configured() : m.settings_secret_unset()}
+        </Badge>
+        <Input
+          type="password"
+          autoComplete="off"
+          className="flex-1 min-w-40"
+          value={value}
+          placeholder={
+            isSet
+              ? m.settings_secret_replace_ph()
+              : m.settings_secret_enter_ph()
+          }
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <Button
+          size="sm"
+          onClick={() => void save()}
+          disabled={busy || value.trim().length === 0}
+        >
+          {m.settings_secret_set()}
+        </Button>
+        {isSet ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => void doClear()}
+            disabled={busy}
+          >
+            {m.settings_secret_clear()}
+          </Button>
+        ) : null}
+      </div>
+    </Field>
   );
 }
 
 // Read-only view of the agents DISCOVERED on an instance (the bridge is the
 // source of truth) + the poll outcome. Manual entry is intentionally absent —
 // agents come from `agents.list`, never from a text field (the prod-bug fix).
+// Per-instance agent CURATION (admin). Agents are DISCOVERED (read-only list); the
+// admin picks which are ENABLED downstream (assignable to groups/users) and which
+// is the instance DEFAULT. Phase 1: these writes are stored but not yet enforced
+// (Phase 2/3). A disabled agent stays listed (greyed); the default can only be an
+// enabled, present agent.
+// Internationalised LABELS + DESCRIPTIONS for the code-defined agent-type catalogue
+// (the CODES come from convex/lib/agentTypes — the single source; only the per-locale
+// strings live here, keyed by the stable code). A code with no mapping falls back to
+// the code / empty description.
+const AGENT_TYPE_LABEL: Record<string, () => string> = {
+  conversational: m.agent_type_conversational,
+  documentary: m.agent_type_documentary,
+};
+const AGENT_TYPE_DESC: Record<string, () => string> = {
+  conversational: m.agent_type_conversational_desc,
+  documentary: m.agent_type_documentary_desc,
+};
+const agentTypeLabel = (code: string): string =>
+  (AGENT_TYPE_LABEL[code] ?? (() => code))();
+const agentTypeDesc = (code: string): string =>
+  (AGENT_TYPE_DESC[code] ?? (() => ""))();
+
+// Per-agent TYPE editor. SCALES to many types: the agent row shows only the SELECTED
+// types as chips + a "Manage" trigger; the full catalogue (with a DESCRIPTION per
+// type, so an admin understands each one) lives in a scrollable Popover where types
+// are toggled as MULTI-select checkboxes (the popover stays open across toggles).
+function AgentTypesEditor({
+  agentId,
+  types,
+  onToggle,
+}: {
+  agentId: string;
+  types: string[];
+  onToggle: (code: string) => void;
+}) {
+  return (
+    <div className="oc-agentcard__types">
+      <span className="oc-agentcard__types-label">
+        {m.settings_agent_types_label()}
+      </span>
+      {types.map((code) => (
+        <Badge
+          key={code}
+          variant="secondary"
+          className="oc-agenttype__chip"
+          title={agentTypeDesc(code)}
+        >
+          {agentTypeLabel(code)}
+        </Badge>
+      ))}
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" size="sm" className="h-7">
+            {m.settings_agent_types_manage()}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="oc-agenttypes-pop">
+          <p className="oc-agenttypes-pop__title">
+            {m.settings_agent_types_pop_title()}
+          </p>
+          <p className="oc-agenttypes-pop__hint">
+            {m.settings_agent_types_pop_hint()}
+          </p>
+          <div className="oc-agenttypes-pop__list">
+            {AGENT_TYPE_CODES.map((code) => {
+              const id = `agtype-${agentId}-${code}`;
+              return (
+                <div key={code} className="oc-agenttypes-pop__item">
+                  <Checkbox
+                    id={id}
+                    checked={types.includes(code)}
+                    onCheckedChange={() => onToggle(code)}
+                  />
+                  <label htmlFor={id} className="oc-agenttypes-pop__text">
+                    <span className="oc-agenttypes-pop__name">
+                      {agentTypeLabel(code)}
+                    </span>
+                    <span className="oc-agenttypes-pop__desc">
+                      {agentTypeDesc(code)}
+                    </span>
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
 function InstanceAgentsDialog({
   instanceName,
   open,
@@ -744,14 +1215,73 @@ function InstanceAgentsDialog({
     api.agents.listAgentsForInstance,
     open && instanceName ? { instanceName } : "skip",
   );
+  const setEnabled = useMutation(api.agents.setAgentEnabled);
+  const setDefault = useMutation(api.agents.setInstanceDefaultAgent);
+  const setTypes = useMutation(api.agents.setAgentTypes);
+  const removeAgent = useMutation(api.agents.removeInstanceAgent);
+  const confirm = useConfirm();
+  const toast = useToast();
+
+  async function toggle(agentId: string, enabled: boolean) {
+    if (!instanceName) return;
+    try {
+      await setEnabled({ instanceName, agentId, enabled });
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
+  async function makeDefault(agentId: string) {
+    if (!instanceName) return;
+    try {
+      await setDefault({ instanceName, agentId });
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
+  // Toggle one TYPE on/off for an agent (MULTI-select — types are NOT exclusive; an
+  // agent may hold several). Sends the full new set. Clearing every type is allowed:
+  // the server reads an empty set back as the default (conversational), so an agent
+  // always has at least one EFFECTIVE type.
+  async function toggleType(
+    agentId: string,
+    code: string,
+    current: readonly string[],
+  ) {
+    if (!instanceName) return;
+    const next = current.includes(code)
+      ? current.filter((c) => c !== code)
+      : [...current, code];
+    try {
+      await setTypes({ instanceName, agentId, types: next });
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
+  // Permanently purge a gateway-absent agent — DESTRUCTIVE (cascades to group/user
+  // selections), so confirm first (the usual deletion-validation gate).
+  async function remove(agentId: string, label: string) {
+    if (!instanceName) return;
+    const ok = await confirm({
+      title: m.settings_remove_agent_title({ name: label }),
+      description: m.settings_remove_agent_desc(),
+      confirmLabel: m.settings_remove_agent_action(),
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await removeAgent({ instanceName, agentId });
+      toast.success(m.settings_remove_agent_done());
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="oc-access">
         <DialogHeader>
-          <DialogTitle>{m.settings_discovered_agents_title({ name: instanceName ?? "" })}</DialogTitle>
-          <DialogDescription>
-            {m.settings_discovered_agents_desc_before()}<code>agents.list</code>{m.settings_discovered_agents_desc_after()}
-          </DialogDescription>
+          <DialogTitle>{m.settings_manage_agents_title({ name: instanceName ?? "" })}</DialogTitle>
+          <DialogDescription>{m.settings_manage_agents_hint()}</DialogDescription>
         </DialogHeader>
         {data === undefined ? (
           <p className="oc-access__hint">{m.settings_loading()}</p>
@@ -768,25 +1298,79 @@ function InstanceAgentsDialog({
               <p className="oc-access__hint">{m.settings_no_agents_discovered()}</p>
             ) : (
               <div className="oc-access__list">
-                {data.agents.map((a) => (
-                  <div key={a.agentId} className="oc-access__row">
-                    <span className="oc-access__label">
-                      {a.emoji ? `${a.emoji} ` : ""}
-                      {a.displayName ?? a.agentId}
-                    </span>
-                    {a.model ? (
-                      <span className="oc-access__model">{a.model}</span>
-                    ) : null}
-                    {a.isDefaultOnInstance ? (
-                      <Badge variant="outline">{m.settings_badge_default()}</Badge>
-                    ) : null}
-                    {a.presentInLastOk === false ? (
-                      <Badge variant="outline" className="oc-access__gone">
-                        {m.settings_badge_removed()}
-                      </Badge>
-                    ) : null}
-                  </div>
-                ))}
+                {data.agents.map((a) => {
+                  const absent = a.presentInLastOk === false;
+                  const isDefault = data.defaultAgentId === a.agentId;
+                  const label = a.displayName ?? a.agentId;
+                  const types = a.types ?? [];
+                  return (
+                    <div
+                      key={a.agentId}
+                      className={
+                        "oc-agentcard" + (a.enabled ? "" : " oc-agentcard--off")
+                      }
+                    >
+                      <div className="oc-agentcard__head">
+                        <Checkbox
+                          checked={a.enabled}
+                          disabled={absent}
+                          aria-label={label}
+                          onCheckedChange={(v) =>
+                            void toggle(a.agentId, v === true)
+                          }
+                        />
+                        <span className="oc-agentcard__name" title={label}>
+                          {a.emoji ? `${a.emoji} ` : ""}
+                          {label}
+                        </span>
+                        {a.model ? (
+                          <span className="oc-access__model">{a.model}</span>
+                        ) : null}
+                        {absent ? (
+                          <>
+                            <Badge variant="outline" className="oc-access__gone">
+                              {m.settings_badge_removed()}
+                            </Badge>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-destructive"
+                              onClick={() => void remove(a.agentId, label)}
+                            >
+                              {m.settings_remove_agent()}
+                            </Button>
+                          </>
+                        ) : isDefault ? (
+                          <Badge variant="default">
+                            {m.settings_badge_default()}
+                          </Badge>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7"
+                            disabled={!a.enabled}
+                            onClick={() => void makeDefault(a.agentId)}
+                          >
+                            {m.settings_make_default()}
+                          </Button>
+                        )}
+                      </div>
+                      {/* TYPE management (enabled agents only): MULTI-select; the row
+                          shows selected types, the full catalogue + descriptions live
+                          in the editor's popover (scales to many types). */}
+                      {a.enabled ? (
+                        <AgentTypesEditor
+                          agentId={a.agentId}
+                          types={types}
+                          onToggle={(code) =>
+                            void toggleType(a.agentId, code, types)
+                          }
+                        />
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>

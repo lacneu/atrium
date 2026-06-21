@@ -79,6 +79,64 @@ its own bridge by that Bridge URL; an instance with no Bridge URL falls back to 
 env `BRIDGE_URL`. A worked two-gateway example (with shared-fs media) is in
 [SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md).
 
+## Gateway credentials: env vs UI-managed
+
+Each bridge needs its gateway's **operator token** and **Ed25519 device identity**.
+There are two sources, resolved **per credential at bridge boot** (Convex-first,
+then env):
+
+- **Env mode (default).** Put `OPENCLAW_TOKEN` and `OPENCLAW_DEVICE_IDENTITY` in
+  the bridge's container env (`.env` / chart values). Nothing else to do.
+- **UI mode.** Store them **encrypted at rest in Convex** and let the bridge fetch
+  them at boot. Operators add/rotate credentials from the web UI — no secrets in
+  the bridge env, no redeploy to change a token. Requires `ATRIUM_SECRET_KEY` on
+  the Convex deployment (the master key that encrypts them; see `.env.example`
+  section B). Gateway credentials are stored AES-256-GCM-encrypted in the
+  `instanceSecrets` table — never as plaintext.
+
+**Switching an instance to UI mode** (e.g. migrating an existing env-mode bridge):
+
+1. Set `ATRIUM_SECRET_KEY` on the Convex deployment if not already (back it up —
+   losing it makes stored credentials unrecoverable). For compose, fill it in
+   `.env` section B and re-run `./bootstrap-env.sh`.
+2. **Settings → Agents → Instances → (your instance) → Credentials**: enter the
+   operator token and device identity. They are write-only (a stored value is
+   never shown again — only “Configuré”).
+3. In the same dialog, under **“Secret du bridge”**, **mint** a per-bridge secret.
+   It is shown **once** — copy it.
+4. Put that value in the bridge env as **`BRIDGE_INSTANCE_SECRET`**, and **blank
+   out** `OPENCLAW_TOKEN` / `OPENCLAW_DEVICE_IDENTITY` (compose accepts them empty).
+5. Recreate the bridge: `docker compose up -d --no-deps --force-recreate bridge`.
+   On boot it fetches the decrypted credentials from Convex over the authenticated
+   channel and connects. If a credential is missing from **both** Convex and env,
+   the bridge fails fast with a clear error.
+
+`BRIDGE_INSTANCE_SECRET` is per-bridge and binds it to **its** instance, so a
+bridge can only fetch **its own** gateway's credentials (it is **not** the shared
+`BRIDGE_INGEST_SECRET`). **Rotating** a UI-stored credential takes effect on the
+**next bridge restart**. To revert to env mode, set the env vars again and remove
+`BRIDGE_INSTANCE_SECRET` (or revoke the secret in the Credentials dialog).
+
+## Hardening
+
+Before going live (the security model + scope are in [`SECURITY.md`](../SECURITY.md);
+the SOC2 control mapping in [`compliance/`](../compliance/)):
+
+- Set `AUTH_ALLOWED_EMAIL_DOMAINS` **before** anyone signs in — the first sign-in
+  from an allowed domain becomes admin.
+- Generate and **back up** the secrets you cannot regenerate: `ATRIUM_SECRET_KEY`
+  (lose it and every Convex-stored credential is unrecoverable), the Convex auth
+  keys (`JWT_PRIVATE_KEY`/`JWKS`), and the Convex instance secret.
+- Generate strong, unique server-to-server secrets (`openssl rand -hex 32`); mint a
+  **distinct per-bridge** credential-fetch secret for each bridge.
+- Mount the gateway media directory **read-only** into the bridge.
+- Terminate TLS upstream (reverse proxy / ingress) and ensure WebSocket upgrade
+  support for the bridge ↔ gateway connection.
+- Do **not** expose the Convex dashboard publicly (bind it to localhost or a
+  LAN-only proxy).
+- Scope service-account API keys to the least permission they need, and rotate any
+  secret that may have leaked into logs.
+
 ## Media: file delivery & ingestion
 
 By default the bridge moves files over HTTP (**gateway-http** mode) — no shared

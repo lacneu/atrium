@@ -151,3 +151,108 @@ describe("reconcileChatStuckStreams (chat-scoped self-correction)", () => {
     expect(res).toMatchObject({ ok: false, reconciled: 0 });
   });
 });
+
+// L2: the watchdog must ALSO release a documentary FETCH stuck on the hidden chat,
+// else the owner is locked out (fetch_in_flight) forever AND the stuck case is silent.
+async function seedStuckDocFetch(
+  t: T,
+  opts: { withStreamingMsg: boolean; ageMs?: number },
+) {
+  const ageMs = opts.ageMs ?? STALE;
+  return await t.run(async (ctx) => {
+    const userId = await ctx.db.insert("users", {});
+    const convId = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+    const srcMsg = await ctx.db.insert("messages", {
+      chatId: convId,
+      userId,
+      role: "assistant" as const,
+      status: "complete" as const,
+      text: "x",
+      updatedAt: Date.now(),
+    });
+    const createdAt = Date.now() - ageMs;
+    const docId = await ctx.db.insert("chats", {
+      userId,
+      kind: "documentary" as const,
+      title: "Documents",
+      updatedAt: 0,
+      pendingFetch: { sourceMessageId: srcMsg, createdAt },
+    });
+    const rowId = await ctx.db.insert("documentAttachments", {
+      userId,
+      sourceMessageId: srcMsg,
+      entryKey: "k",
+      reference: "guide.md",
+      status: "pending" as const,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    let fetchMsgId: string | undefined;
+    if (opts.withStreamingMsg) {
+      fetchMsgId = await ctx.db.insert("messages", {
+        chatId: docId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "docfetch-run",
+        updatedAt: createdAt,
+      });
+    }
+    return { userId, srcMsg, docId, rowId, fetchMsgId };
+  });
+}
+
+describe("watchdog releases a stuck documentary fetch", () => {
+  test("cron: a dropped fetch STREAM clears pendingFetch + fails rows + emits documentary.fail", async () => {
+    const t = convexTest(schema, modules);
+    const { docId, rowId } = await seedStuckDocFetch(t, { withStreamingMsg: true });
+
+    await t.mutation(internal.stuckStreams.reconcileStuckStreams, {});
+
+    await t.run(async (ctx) => {
+      const doc = await ctx.db.get(docId);
+      expect(doc?.pendingFetch).toBeUndefined(); // lock released
+      expect((await ctx.db.get(rowId))?.status).toBe("failed");
+      const fail = (await ctx.db.query("traceEvents").collect()).find(
+        (e) => e.kind === "documentary.fail",
+      );
+      expect(fail).toBeDefined();
+      expect(JSON.parse(fail!.meta!).reason).toBe("stuck_stream");
+    });
+  });
+
+  test("deliberate reconcile heals a stale pendingFetch with NO streaming message (the rare completed-but-stuck case)", async () => {
+    const t = convexTest(schema, modules);
+    const { docId, rowId } = await seedStuckDocFetch(t, {
+      withStreamingMsg: false,
+    });
+
+    const res = await t.mutation(
+      internal.stuckStreams.reconcileChatStuckStreams,
+      { chatId: docId as string },
+    );
+    expect(res.reconciled).toBe(0); // no streaming message to flip...
+
+    await t.run(async (ctx) => {
+      // ...but the stale lock is still released.
+      expect((await ctx.db.get(docId))?.pendingFetch).toBeUndefined();
+      expect((await ctx.db.get(rowId))?.status).toBe("failed");
+    });
+  });
+
+  test("a FRESH pendingFetch is NOT released (never kill an in-progress fetch)", async () => {
+    const t = convexTest(schema, modules);
+    const { docId, rowId } = await seedStuckDocFetch(t, {
+      withStreamingMsg: false,
+      ageMs: 10 * 1000, // within the 60s deliberate cutoff
+    });
+    await t.mutation(internal.stuckStreams.reconcileChatStuckStreams, {
+      chatId: docId as string,
+    });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.get(docId))?.pendingFetch).not.toBeUndefined();
+      expect((await ctx.db.get(rowId))?.status).toBe("pending");
+    });
+  });
+});

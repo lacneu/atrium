@@ -1,11 +1,9 @@
 /**
  * Shared tool logic for both the MCP server and the CLI.
  *
- * Each function here maps 1:1 to a PLANNED /api/v1 route (see
- * docs/OBSERVABILITY_PLATFORM_PLAN.md). The package is a thin proxy: it builds
- * against the plan even though some routes only land in increments 4/6. Whether
- * a route is deployed is a *runtime* concern — a not-yet-deployed route returns
- * the API's own response/error (e.g. 404) which we surface, rather than
+ * Each function here maps 1:1 to one /api/v1 route. The package is a thin proxy:
+ * whether a route is deployed is a *runtime* concern — a not-yet-deployed route
+ * returns the API's own response/error (e.g. 404) which we surface, rather than
  * crashing the server.
  *
  * Server-side `requirePermission` enforces the key's scope, so a tool call to a
@@ -346,7 +344,7 @@ export function listTraces(
   return apiFetch(config, `/traces${query}`, {}, options);
 }
 
-/** GET /api/v1/kpi — KPI rollups (increment 4). Requires `kpi.read`. */
+/** GET /api/v1/kpi — KPI rollups. Requires `kpi.read`. */
 export function getKpi(
   config: Config,
   args: GetKpiArgs = {},
@@ -362,7 +360,7 @@ export function getKpi(
 }
 
 /**
- * POST /api/v1/openclaw/query — query OpenClaw via the bridge (increment 6).
+ * POST /api/v1/openclaw/query — query OpenClaw via the bridge.
  * Requires `openclaw.query`. Sends `{ question, payload }` (the only keys the
  * server route reads; it 400s when both are undefined).
  */
@@ -379,7 +377,7 @@ export function queryOpenClaw(
   );
 }
 
-/** GET /api/v1/anomalies — detected anomalies (increment 6). Requires `anomalies.read`. */
+/** GET /api/v1/anomalies — detected anomalies. Requires `anomalies.read`. */
 export function listAnomalies(
   config: Config,
   args: ListAnomaliesArgs = {},
@@ -400,7 +398,7 @@ export function listAnomalies(
 }
 
 /**
- * POST /api/v1/anomalies — report an anomaly (increment 6). Requires
+ * POST /api/v1/anomalies — report an anomaly. Requires
  * `anomalies.report`. Sends `evidence` (the server's field name), not `details`.
  */
 export function reportAnomaly(

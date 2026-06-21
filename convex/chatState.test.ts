@@ -117,6 +117,58 @@ describe("chatStateInternal", () => {
     expect(byKind.provenance).toEqual({ kind: "provenance" }); // presence only
   });
 
+  test("L2: surfaces attachedDocCount + documentary kind + pendingDocFetch age, never a reference", async () => {
+    const t = convexTest(schema, modules);
+    const { convId, docId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const convId = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const srcMsg = await ctx.db.insert("messages", {
+        chatId: convId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "hi",
+        attachedDocCount: 2,
+        updatedAt: Date.now(),
+      });
+      // A documentAttachments row with a PHI-like reference: chat-state must NEVER
+      // pull it (it reads the denormalized count only, not the rows).
+      await ctx.db.insert("documentAttachments", {
+        userId,
+        sourceMessageId: srcMsg,
+        entryKey: "k",
+        reference: "SENTINEL_DOCREF.pdf",
+        status: "ready" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      const docId = await ctx.db.insert("chats", {
+        userId,
+        kind: "documentary" as const,
+        title: "Documents",
+        updatedAt: 0,
+        pendingFetch: { sourceMessageId: srcMsg, createdAt: Date.now() - 13 * 60 * 1000 },
+      });
+      return { convId, docId };
+    });
+
+    const conv = await t.query(internal.messages.chatStateInternal, { chatId: convId });
+    expect(conv.ok).toBe(true);
+    if (!conv.ok) return;
+    expect(conv.messages[0]!.attachedDocCount).toBe(2);
+    expect(conv.kind).toBeNull(); // a conversational chat
+    expect(conv.pendingDocFetch).toBeNull();
+    // The reference NEVER leaks through chat-state.
+    expect(JSON.stringify(conv)).not.toContain("SENTINEL_DOCREF");
+
+    const doc = await t.query(internal.messages.chatStateInternal, { chatId: docId });
+    expect(doc.ok).toBe(true);
+    if (!doc.ok) return;
+    expect(doc.kind).toBe("documentary");
+    expect(doc.pendingDocFetch).not.toBeNull();
+    expect(doc.pendingDocFetch!.ageSeconds).toBeGreaterThan(700); // stale -> stuck
+  });
+
   test("bad / unknown chatId returns ok:false (never throws)", async () => {
     const t = convexTest(schema, modules);
     const bad = await t.query(internal.messages.chatStateInternal, {

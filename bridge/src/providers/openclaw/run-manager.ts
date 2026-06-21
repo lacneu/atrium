@@ -15,6 +15,7 @@ import type { ConvexWriter } from "../../convex-writer.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   parseProvenanceFrame,
+  provenanceSignature,
   type ProvenancePart,
 } from "../../core/provenance.js";
 
@@ -217,7 +218,18 @@ export class RunManager {
       // the assistant reply.
       const stashed = parseProvenanceFrame(frame, this.sessionKey);
       if (stashed !== null) {
-        if (this.pendingProvenance.length < MAX_PROVENANCE_PARTS_PER_TURN) {
+        // Drop an EXACT-duplicate report for THIS run (a plugin hook registered
+        // twice on a reload emits the same report 2x → the Sources panel would
+        // show every source doubled). De-dup by content signature so distinct
+        // reports of the same group (pgvector vs LightRAG) are kept. SCOPE the dedup
+        // to the SAME runId: an identical report stashed for a DIFFERENT run must NOT
+        // suppress this run's — beginTurn flushes by ackRunId, so the foreign entry
+        // is filtered out and this run would otherwise lose all its sources.
+        const sig = provenanceSignature(stashed.part);
+        const isDup = this.pendingProvenance.some(
+          (p) => p.runId === stashed.runId && provenanceSignature(p.part) === sig,
+        );
+        if (!isDup && this.pendingProvenance.length < MAX_PROVENANCE_PARTS_PER_TURN) {
           this.pendingProvenance.push(stashed);
         }
       } else if (this.replayArmed && this.pendingFrames.length < MAX_PENDING_FRAMES) {
