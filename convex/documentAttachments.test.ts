@@ -900,6 +900,17 @@ describe("attachedDocCount stays honest on re-attach", () => {
           mimeType: "text/markdown",
         },
       });
+      // In prod the dispatch acks (outbox -> sent) and the reply finalizes BEFORE
+      // correlate fires, so the hidden chat is idle again. Mirror that: leaving the
+      // first attach's outbox `pending` would keep isChatBusy true and make the
+      // re-attach below wrongly hit fetch_in_flight.
+      const ob = await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", hidden._id).eq("status", "pending"),
+        )
+        .first();
+      if (ob) await ctx.db.patch(ob._id, { status: "sent" });
       return { hidden, fetchMsg };
     });
     await t.run(async (ctx) =>
