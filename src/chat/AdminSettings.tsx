@@ -928,14 +928,31 @@ function InstanceSyncButton({ instance }: { instance: Instance }) {
     setSyncing(true);
     try {
       const res = await forceSync({ instanceId: instance._id });
-      // Honest 3-state feedback (the action does NOT throw on a non-success): only claim
-      // "Synced" when agents were actually applied; "no_agents" = the bridge answered but
-      // nothing came back (pair the device OR check the instance config); "unreachable" =
-      // no serving bridge.
-      if (res.status === "synced") toast.success(m.settings_sync_done());
-      else if (res.status === "no_agents")
-        toast.success(m.settings_sync_no_agents());
-      else toast.error(m.settings_sync_failed());
+      // SPECIFIC, actionable feedback per failure cause (the action does NOT throw on a
+      // non-success) — never a bare "sync failed" the admin can't act on.
+      switch (res.status) {
+        case "synced":
+          toast.success(m.settings_sync_done());
+          break;
+        case "no_agents":
+          toast.success(m.settings_sync_no_agents());
+          break;
+        case "no_bridge_url":
+          toast.error(m.settings_sync_err_no_bridge_url());
+          break;
+        case "deploy_misconfigured":
+          toast.error(m.settings_sync_err_deploy());
+          break;
+        case "unauthorized":
+          toast.error(m.settings_sync_err_unauthorized());
+          break;
+        case "not_served":
+          toast.error(m.settings_sync_err_not_served());
+          break;
+        default: // "unreachable"
+          toast.error(m.settings_sync_err_unreachable());
+          break;
+      }
     } catch (err) {
       toast.error(m.settings_sync_failed(), err);
     } finally {

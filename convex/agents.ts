@@ -224,7 +224,12 @@ export async function discoverInstanceAgents(
   instanceName: string,
   base: string,
   sharedSecret: string,
-): Promise<{ synced: boolean; reached: boolean; agentCount: number }> {
+): Promise<{
+  synced: boolean;
+  reached: boolean;
+  httpStatus: number | null;
+  agentCount: number;
+}> {
   try {
     const res = await fetch(
       `${base}/agents?instance=${encodeURIComponent(instanceName)}`,
@@ -235,7 +240,7 @@ export async function discoverInstanceAgents(
         instanceName,
         error: `http_${res.status}`,
       });
-      return { synced: false, reached: true, agentCount: 0 };
+      return { synced: false, reached: true, httpStatus: res.status, agentCount: 0 };
     }
     const body = (await res.json()) as {
       agents?: Array<Record<string, unknown>>;
@@ -265,22 +270,23 @@ export async function discoverInstanceAgents(
           agents: [],
           allowEmpty: true,
         });
-        return { synced: true, reached: true, agentCount: 0 }; // genuinely empty -> applied
+        // genuinely empty -> applied
+        return { synced: true, reached: true, httpStatus: 200, agentCount: 0 };
       }
       await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
         instanceName,
         error: rawCount === null ? "empty_discovery" : "shape_drift",
       });
-      return { synced: false, reached: true, agentCount: 0 };
+      return { synced: false, reached: true, httpStatus: 200, agentCount: 0 };
     }
     await ctx.runMutation(internal.agents.applyDiscovery, { instanceName, agents });
-    return { synced: true, reached: true, agentCount: agents.length };
+    return { synced: true, reached: true, httpStatus: 200, agentCount: agents.length };
   } catch {
     await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
       instanceName,
       error: "unreachable",
     });
-    return { synced: false, reached: false, agentCount: 0 };
+    return { synced: false, reached: false, httpStatus: null, agentCount: 0 };
   }
 }
 

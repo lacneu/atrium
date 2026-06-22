@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.6.3] — "Synchroniser" tells you WHY it failed
+
+Convenience release. No breaking changes — additive.
+
+- **Actionable sync errors.** "Synchroniser maintenant" no longer shows a bare "Sync
+  failed" you can't act on. It now names the exact cause and the fix: **no Bridge URL set
+  for the instance**, **bridge unreachable**, **auth mismatch** (`BRIDGE_SHARED_SECRET` out
+  of sync), **instance not served** by the bridge (its secret missing from
+  `BRIDGE_INSTANCE_SECRETS`, or invalid credentials), or **`BRIDGE_SHARED_SECRET` missing
+  on the Convex deployment**. The most common first-time miss — an instance with no Bridge
+  URL — now says exactly that instead of a generic failure.
+
 ## [0.6.2] — Faster device onboarding: instant pairing + a "Synchroniser" button
 
 Convenience release. No breaking changes — additive.

@@ -58,11 +58,11 @@ export const syncTargetInternal = internalQuery({
 async function pokeBridge(
   instanceName: string,
   bridgeUrl: string | null,
-): Promise<boolean> {
+): Promise<void> {
   const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-  if (!bridgeUrl || !sharedSecret) return false;
+  if (!bridgeUrl || !sharedSecret) return;
   try {
-    const res = await fetch(
+    await fetch(
       `${bridgeUrl.replace(/\/$/, "")}/refresh-credentials?instance=${encodeURIComponent(
         instanceName,
       )}`,
@@ -72,10 +72,11 @@ async function pokeBridge(
         headers: { Authorization: sharedSecret },
       },
     );
-    return res.ok;
   } catch {
-    // Bridge down/unreachable: the bridge's own self-heal poll picks the change up later.
-    return false;
+    // Bridge down/unreachable (network/DNS): the self-heal poll picks the change up later.
+    // BEST-EFFORT — the result is never used to gate the sync; the authoritative check is
+    // the /agents discovery below (a transient refresh failure must not block a served
+    // instance from syncing its agents).
   }
 }
 
@@ -94,11 +95,17 @@ export const pokeInstanceBridge = internalAction({
  * Admin: force an immediate sync for ONE instance — poke its bridge (resolve + connect ->
  * pairing) AND pull THAT instance's agents into Convex now, so an admin completes setup
  * right after approving the pairing instead of waiting for the discovery cron. SCOPED to
- * the target: never polls or mutates other instances. Returns a 3-state `status` so the UI
- * reports honestly WITHOUT guessing the cause: `synced` (agents applied), `no_agents` (the
- * bridge answered but no agents came back — the device may not be paired yet, OR the
- * instance is misconfigured for this bridge; the UI tells the admin to check both), or
- * `unreachable` (no serving bridge / transport error).
+ * the target: never polls or mutates other instances. Returns a SPECIFIC `status` so the
+ * UI can tell the admin exactly what to fix instead of a generic "sync failed":
+ *   - `synced`          — agents applied.
+ *   - `no_agents`       — bridge serves the instance but returned no agents (the device is
+ *                         likely not paired yet — approve it on the gateway, then re-sync).
+ *   - `no_bridge_url`   — no bridge serves this instance (set its Bridge URL).
+ *   - `deploy_misconfigured` — BRIDGE_SHARED_SECRET missing on the Convex deployment.
+ *   - `unreachable`     — the bridge did not respond (down / wrong URL).
+ *   - `unauthorized`    — the bridge rejected auth (BRIDGE_SHARED_SECRET mismatch).
+ *   - `not_served`      — bridge up but does not serve this instance (its per-bridge secret
+ *                         is not in BRIDGE_INSTANCE_SECRETS, or its creds don't resolve).
  */
 export const forceInstanceSync = action({
   args: { instanceId: v.id("instances") },
@@ -106,7 +113,14 @@ export const forceInstanceSync = action({
     ctx,
     { instanceId },
   ): Promise<{
-    status: "synced" | "no_agents" | "unreachable";
+    status:
+      | "synced"
+      | "no_agents"
+      | "no_bridge_url"
+      | "deploy_misconfigured"
+      | "unreachable"
+      | "unauthorized"
+      | "not_served";
     agents: number;
   }> => {
     // Admin gate (reuse the agent-files admin check — an internal query, since an action
@@ -116,25 +130,27 @@ export const forceInstanceSync = action({
       instanceId,
     });
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (target === null || target.bridgeUrl === null || !sharedSecret) {
-      return { status: "unreachable", agents: 0 };
+    if (!sharedSecret) {
+      return { status: "deploy_misconfigured", agents: 0 };
     }
-    // Resolve + connect (-> pairing if not yet paired).
-    const reached = await pokeBridge(target.instanceName, target.bridgeUrl);
-    // Pull ONLY this instance's agents (scoped — same discovery the cron uses).
-    const disc = await discoverInstanceAgents(
-      ctx,
-      target.instanceName,
-      target.bridgeUrl.replace(/\/$/, ""),
-      sharedSecret,
-    );
-    // `no_agents` deliberately does NOT guess WHY (not-paired vs misconfigured) — the bridge
-    // answered but applied nothing; the UI message points the admin at both causes.
-    const status = disc.synced
-      ? "synced"
-      : reached || disc.reached
-        ? "no_agents"
-        : "unreachable";
-    return { status, agents: disc.agentCount };
+    // No bridge serves this instance: it has no own bridgeUrl and is not the env-served /
+    // sole instance — the #1 setup miss (set the instance's Bridge URL).
+    if (target === null || target.bridgeUrl === null) {
+      return { status: "no_bridge_url", agents: 0 };
+    }
+    const base = target.bridgeUrl.replace(/\/$/, "");
+    // BEST-EFFORT: resolve any pending creds + connect (-> pairing if not yet paired). Its
+    // result is intentionally NOT used to classify — a transient refresh hiccup must not
+    // block a SERVED instance from syncing. The /agents discovery below is authoritative.
+    await pokeBridge(target.instanceName, target.bridgeUrl);
+    // Pull ONLY this instance's agents (scoped; same discovery as the cron) — this is the
+    // authoritative check: it confirms the bridge serves the instance AND reaches the gateway.
+    const disc = await discoverInstanceAgents(ctx, target.instanceName, base, sharedSecret);
+    if (disc.synced) return { status: "synced", agents: disc.agentCount };
+    if (!disc.reached) return { status: "unreachable", agents: 0 };
+    if (disc.httpStatus === 401) return { status: "unauthorized", agents: 0 };
+    if (disc.httpStatus === 409) return { status: "not_served", agents: 0 };
+    // Reached + served, but no agents applied — the device is not paired yet.
+    return { status: "no_agents", agents: 0 };
   },
 });
