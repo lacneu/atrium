@@ -29,6 +29,7 @@ const SHARED: SharedConfig = {
   mediaOutboundDirOverride: null,
   inboundMediaDirOverride: null,
   bridgeInstanceSecrets: [],
+  credentialRetryMs: 30_000,
 };
 
 /** One instance's /bridge/credentials response body. */
@@ -254,5 +255,71 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
     expect(served.size).toBe(0);
     expect(failures).toEqual([]);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("CredentialResolver.resolveOne + post-identity instanceName", () => {
+  it("resolveOne returns ok+data for a valid secret", async () => {
+    const r = new CredentialResolver(
+      deps({
+        fetchImpl: routedFetch({
+          s: {
+            instanceName: "olivier",
+            gateway: { url: "wss://o/ws" },
+            credentials: { token: "t", deviceIdentity: DEV_JSON },
+          },
+        }),
+      }),
+    );
+    const res = await r.resolveOne("s");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data.instanceName).toBe("olivier");
+  });
+
+  it("resolveOne carries the resolved instanceName on a POST-identity failure (bad_device)", async () => {
+    // The whole point of the self-heal /health surface: the operator must see WHICH
+    // instance is misconfigured. A pre-identity failure (401) cannot name it; a
+    // post-identity one (token saved, device missing) MUST.
+    const r = new CredentialResolver(
+      deps({
+        fetchImpl: routedFetch({
+          s: {
+            instanceName: "jerome",
+            gateway: { url: "wss://j/ws" },
+            credentials: { token: "t" }, // deviceIdentity missing -> bad_device
+          },
+        }),
+      }),
+    );
+    const res = await r.resolveOne("s");
+    expect(res).toEqual({
+      ok: false,
+      reason: "bad_device",
+      instanceName: "jerome",
+    });
+  });
+
+  it("resolveOne OMITS instanceName on a PRE-identity failure (401 unauthorized)", async () => {
+    const r = new CredentialResolver(deps({ fetchImpl: routedFetch({ s: 401 }) }));
+    const res = await r.resolveOne("s");
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    if (!res.ok) expect(res.instanceName).toBeUndefined();
+  });
+
+  it("resolveAll failures carry instanceName for no_token (distinguishes the misconfigured instance)", async () => {
+    const r = new CredentialResolver(
+      deps({
+        bridgeInstanceSecrets: ["s"],
+        fetchImpl: routedFetch({
+          s: {
+            instanceName: "olivier",
+            gateway: { url: "wss://o/ws" },
+            credentials: { deviceIdentity: DEV_JSON }, // token missing
+          },
+        }),
+      }),
+    );
+    const { failures } = await r.resolveAll();
+    expect(failures).toEqual([{ reason: "no_token", instanceName: "olivier" }]);
   });
 });

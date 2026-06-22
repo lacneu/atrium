@@ -390,6 +390,13 @@ export class SessionRegistry {
     return this.served.get(instanceName);
   }
 
+  /** Register a newly-resolved instance at RUNTIME (boot self-heal). Mutates the SAME
+   *  served map the HTTP server holds, so the instance becomes routable immediately —
+   *  no restart. Callers check membership/collision before building the bundle. */
+  register(instanceName: string, bundle: InstanceBundle): void {
+    this.served.set(instanceName, bundle);
+  }
+
   /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
    *  never acquire don't spin a timer). The interval is unref'd — it never keeps
    *  the process alive — and is cleared by closeAll. */

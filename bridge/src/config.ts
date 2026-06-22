@@ -424,6 +424,12 @@ export interface SharedConfig {
   inboundMediaDirOverride: string | null;
   /** Per-bridge secrets, one per served instance (the irreducible env anchor). */
   bridgeInstanceSecrets: string[];
+  /** Interval (ms) the boot self-heal loop waits between retries of the per-bridge
+   *  secrets that have not yet resolved (BRIDGE_CREDENTIAL_RETRY_MS, default 30s,
+   *  floored at 5s). The bridge ALWAYS boots; an unconfigured/misconfigured instance is
+   *  retried until Convex has a valid config for it, so a fix (creds, gateway URL) is
+   *  picked up WITHOUT recreating the bridge. */
+  credentialRetryMs: number;
 }
 
 /** Per-instance gateway data fetched from Convex (`/bridge/credentials`). */
@@ -477,6 +483,12 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
       mediaOutboundDirOverride: optionalEnvOrNull("OPENCLAW_MEDIA_OUTBOUND_DIR"),
       inboundMediaDirOverride: optionalEnvOrNull("OPENCLAW_INBOUND_DIR"),
       bridgeInstanceSecrets: parseSecretsList("BRIDGE_INSTANCE_SECRETS"),
+      // Floor the retry below which a slow Convex would be hammered. The bridge boots
+      // regardless; this only paces the self-heal of not-yet-resolved instances.
+      credentialRetryMs: Math.max(
+        5_000,
+        parseIntEnv("BRIDGE_CREDENTIAL_RETRY_MS", 30_000),
+      ),
     };
   } finally {
     process.env = prev;

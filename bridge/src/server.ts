@@ -56,6 +56,7 @@ import {
   resolveCapabilities,
 } from "./compat.js";
 import type { ConvexWriter, SessionMetaReport } from "./convex-writer.js";
+import type { ConfigIssue } from "./core/credential-resolver.js";
 import type {
   SessionRegistry,
   BridgeSession,
@@ -1293,6 +1294,10 @@ export interface BridgeServerDeps {
   registry: SessionRegistry;
   /** Tracks per-target connection health for the /health endpoint. */
   health: HealthRegistry;
+  /** Live per-instance config problems (unresolved/misconfigured secrets) surfaced on
+   *  /health so an operator sees WHY an instance is not served WITHOUT reading bridge
+   *  logs. Additive + non-secret (reason + instance name, never the secret/token). */
+  getConfigIssues?: () => ConfigIssue[];
 }
 
 /**
@@ -1309,7 +1314,7 @@ export interface BridgeServerDeps {
  *   POST /config-defaults -> authenticated gateway chat-defaults get/set
  */
 export function createBridgeServer(deps: BridgeServerDeps): Server {
-  const { shared, served, registry, health } = deps;
+  const { shared, served, registry, health, getConfigIssues } = deps;
   // PER-INSTANCE caches (one bridge, N gateways): the last gateway version +
   // maxPayload seen for EACH served instance, so /health and /capabilities report
   // each gateway honestly even when no chat session is live (lazy bridge / restart).
@@ -1375,16 +1380,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Pass the PER-INSTANCE last-seen caps so an idle target falls back to its OWN
       // gateway's frame (not a global value). The top-level maxPayload is derived
       // inside (live frame, else the min across instances) for context-free consumers.
-      sendJson(
-        res,
-        200,
-        enrichHealthSnapshot(
+      sendJson(res, 200, {
+        ...enrichHealthSnapshot(
           health.snapshot(),
           live,
           lastMaxPayload,
           shared.maxBodyBytes,
         ),
-      );
+        // Additive, non-secret: instances configured but not (yet) served + WHY. Lets the
+        // admin UI / a curl show "olivier: bad_device" instead of needing docker logs.
+        configIssues: getConfigIssues?.() ?? [],
+      });
       return;
     }
 

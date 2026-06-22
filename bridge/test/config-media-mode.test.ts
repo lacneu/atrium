@@ -50,6 +50,49 @@ describe("buildInstanceConfig: media dir derivation + overrides", () => {
   });
 });
 
+describe("loadSharedConfig: fatal env boundary (the boot invariant) + retry knob", () => {
+  const without = (key: string): NodeJS.ProcessEnv => {
+    const e = { ...sharedEnv };
+    delete e[key];
+    return e;
+  };
+
+  it("THROWS when a bridge-wiring env is missing (these are env-only + cannot self-heal)", () => {
+    // The deliberate FATAL boundary: CONVEX_HTTP_ACTIONS_URL / ingest+shared secrets are
+    // read once from env and the bridge truly cannot function without them. A regression
+    // making one optional would turn a loud crash into a silently-idle bridge that looks
+    // healthy while serving nothing — strictly worse than the crash. Guard it.
+    expect(() => loadSharedConfig(without("CONVEX_HTTP_ACTIONS_URL"))).toThrow(
+      ConfigError,
+    );
+    expect(() => loadSharedConfig(without("BRIDGE_INGEST_SECRET"))).toThrow(
+      ConfigError,
+    );
+    expect(() => loadSharedConfig(without("BRIDGE_SHARED_SECRET"))).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("does NOT throw when BRIDGE_INSTANCE_SECRETS is empty (instances are NON-fatal — boot + self-heal)", () => {
+    // The other side of the boundary: an unconfigured instance must NEVER block boot.
+    const shared = loadSharedConfig(without("BRIDGE_INSTANCE_SECRETS"));
+    expect(shared.bridgeInstanceSecrets).toEqual([]);
+  });
+
+  it("credentialRetryMs defaults to 30s and is floored at 5s", () => {
+    expect(loadSharedConfig({ ...sharedEnv }).credentialRetryMs).toBe(30_000);
+    // Floor: a too-small value would hammer a slow Convex.
+    expect(
+      loadSharedConfig({ ...sharedEnv, BRIDGE_CREDENTIAL_RETRY_MS: "1000" })
+        .credentialRetryMs,
+    ).toBe(5_000);
+    expect(
+      loadSharedConfig({ ...sharedEnv, BRIDGE_CREDENTIAL_RETRY_MS: "60000" })
+        .credentialRetryMs,
+    ).toBe(60_000);
+  });
+});
+
 describe("findMediaDirCollision (boot guard, codex P2)", () => {
   const ic = (instanceName: string, out: string, inb: string) => ({
     instanceName,

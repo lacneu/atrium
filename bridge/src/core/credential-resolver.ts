@@ -33,11 +33,35 @@ export class CredentialFetchError extends Error {
   constructor(
     readonly reason: CredentialFetchReason,
     message: string,
+    // The resolved instance name, when the failure happened AFTER identity was proven
+    // (no_gateway_url / no_token / bad_device). Absent for pre-identity failures
+    // (unreachable / http / unauthorized / bad JSON) — there is no instance to name yet.
+    readonly instanceName?: string,
   ) {
     super(message);
     this.name = "CredentialFetchError";
   }
 }
+
+/** A non-secret config problem surfaced on /health so operators see WHY an instance is
+ *  not served WITHOUT reading bridge logs. `media_dir_collision` is derived at register
+ *  time; `no_secrets` means BRIDGE_INSTANCE_SECRETS is empty. */
+export type ConfigIssueReason =
+  | CredentialFetchReason
+  | "media_dir_collision"
+  | "no_secrets";
+
+export interface ConfigIssue {
+  /** Resolved instance name when known (no_token / bad_device / collision); omitted for
+   *  pre-identity failures (unreachable / http / unauthorized). NEVER the secret. */
+  instanceName?: string;
+  reason: ConfigIssueReason;
+}
+
+/** Outcome of resolving ONE per-bridge secret (used by resolveAll + the self-heal loop). */
+export type ResolveOneResult =
+  | { ok: true; data: InstanceData }
+  | { ok: false; reason: CredentialFetchReason; instanceName?: string };
 
 export interface CredentialResolverDeps {
   /** Convex `.site` HTTP-actions origin (same as ingest). */
@@ -55,6 +79,8 @@ export interface CredentialResolverDeps {
 /** A served instance that failed to resolve (for the boot summary; non-secret). */
 export interface ResolveFailure {
   reason: CredentialFetchReason;
+  /** Resolved instance name when the failure is post-identity (no_token / bad_device). */
+  instanceName?: string;
 }
 
 export interface ResolveResult {
@@ -80,27 +106,45 @@ export class CredentialResolver {
     const served = new Map<string, BridgeConfig>();
     const failures: ResolveFailure[] = [];
     for (const secret of this.#deps.bridgeInstanceSecrets) {
-      try {
-        const data = await this.#fetchInstance(secret);
-        if (served.has(data.instanceName)) {
+      const r = await this.resolveOne(secret);
+      if (r.ok) {
+        if (served.has(r.data.instanceName)) {
           this.#deps.onWarn?.(
-            `bridge: two configured secrets resolve to instance "${data.instanceName}"; keeping the first`,
+            `bridge: two configured secrets resolve to instance "${r.data.instanceName}"; keeping the first`,
           );
           continue;
         }
-        served.set(data.instanceName, buildInstanceConfig(this.#deps.shared, data));
-      } catch (err) {
-        const reason =
-          err instanceof CredentialFetchError ? err.reason : "bad_value";
+        served.set(
+          r.data.instanceName,
+          buildInstanceConfig(this.#deps.shared, r.data),
+        );
+      } else {
         // Non-fatal (D4): skip THIS secret, never block the healthy instances. The
         // secret value is never logged.
         this.#deps.onWarn?.(
-          `bridge: skipping a configured per-bridge secret — credential fetch failed (${reason})`,
+          `bridge: skipping a configured per-bridge secret — credential fetch failed (${r.reason})`,
         );
-        failures.push({ reason });
+        failures.push({ reason: r.reason, instanceName: r.instanceName });
       }
     }
     return { served, failures };
+  }
+
+  /**
+   * Resolve ONE per-bridge secret to its instance data (or a non-secret failure reason).
+   * Never throws — wraps the fetch so the self-heal loop can retry a pending secret
+   * without try/catch at every call site. The secret value is never returned or logged.
+   */
+  async resolveOne(secret: string): Promise<ResolveOneResult> {
+    try {
+      const data = await this.#fetchInstance(secret);
+      return { ok: true, data };
+    } catch (err) {
+      if (err instanceof CredentialFetchError) {
+        return { ok: false, reason: err.reason, instanceName: err.instanceName };
+      }
+      return { ok: false, reason: "bad_value" };
+    }
   }
 
   /** Fetch + validate ONE instance's gateway config + creds from Convex. */
@@ -157,6 +201,7 @@ export class CredentialResolver {
       throw new CredentialFetchError(
         "no_gateway_url",
         `instance "${instanceName}" has no gatewayUrl configured in Convex`,
+        instanceName,
       );
     }
     // Empty/whitespace-only secret rows must be treated as MISSING (a corrupted or
@@ -169,6 +214,7 @@ export class CredentialResolver {
       throw new CredentialFetchError(
         "no_token",
         `instance "${instanceName}" has no operator token stored in Convex`,
+        instanceName,
       );
     }
     const deviceRaw = nonEmpty(creds.deviceIdentity);
@@ -176,6 +222,7 @@ export class CredentialResolver {
       throw new CredentialFetchError(
         "bad_device",
         `instance "${instanceName}" has no device identity stored in Convex`,
+        instanceName,
       );
     }
     let deviceIdentity;
@@ -186,6 +233,7 @@ export class CredentialResolver {
       throw new CredentialFetchError(
         "bad_device",
         `instance "${instanceName}" device identity is invalid: ${(err as Error).message}`,
+        instanceName,
       );
     }
     const kind = body.gateway?.kind === "hermes" ? "hermes" : "openclaw";

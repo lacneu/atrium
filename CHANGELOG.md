@@ -33,6 +33,14 @@ longer affects the others. Existing env-only deployments must migrate (steps bel
   (isolation preserved per secret).
 - **Per-instance availability.** Each served gateway connects independently — one gateway
   being unreachable degrades only its own instance instead of the whole bridge.
+- **The bridge always boots, even with an unconfigured or misconfigured instance.** A
+  per-bridge secret that does not yet resolve (the instance is missing its gateway URL,
+  operator token or device identity in Convex, or Convex is briefly unreachable at startup)
+  no longer crash-loops the bridge. It starts anyway, serves whatever is valid, and RETRIES
+  the rest — so once you finish configuring an instance in Convex it begins serving WITHOUT
+  recreating the bridge. `GET /health` now lists each not-yet-served instance with the
+  reason (e.g. a missing device identity), so you can see what is left to configure without
+  reading container logs.
 - **Breaking — env-only bridges no longer connect.** Configure each gateway in Convex:
   in Settings → Agents → Instances set its gateway URL + Bridge URL, enter the operator
   token + device identity under Credentials, and mint a per-bridge secret; set

@@ -45,5 +45,6 @@ export function sharedFromConfig(config: BridgeConfig): SharedConfig {
     mediaOutboundDirOverride: null,
     inboundMediaDirOverride: null,
     bridgeInstanceSecrets: [],
+    credentialRetryMs: 30_000,
   };
 }
