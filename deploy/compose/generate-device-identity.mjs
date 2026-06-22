@@ -11,11 +11,9 @@
 //   - id        : sha256 hex of those raw 32 public-key bytes
 //   - privateKey: PKCS#8 PEM
 //
-// The single-line JSON it prints works for BOTH delivery modes:
-//   - Env mode : paste it as OPENCLAW_DEVICE_IDENTITY=... (the PEM newlines are
-//                already escaped as \n, which a dotenv line needs).
-//   - UI  mode : paste the same string into Settings -> Agents -> Instances ->
-//                (instance) -> Credentials (JSON.parse restores the PEM newlines).
+// Paste the single-line JSON it prints into Settings -> Agents -> Instances ->
+// (instance) -> Credentials (JSON.parse restores the PEM newlines). The newlines
+// are already escaped as \n, so the value also pastes cleanly anywhere single-line.
 //
 // Generating the device is HALF of pairing: the gateway must still APPROVE this
 // device's publicKey (operator pairing) or the bridge gets NOT_PAIRED. On a
@@ -24,7 +22,7 @@
 // Uses ONLY Node's built-in crypto — no dependencies, runs with a bare `node`.
 //
 // Usage (from deploy/compose):
-//   node generate-device-identity.mjs                 # print env-ready JSON to stdout
+//   node generate-device-identity.mjs                 # print the single-line JSON to stdout
 //   node generate-device-identity.mjs olivier.device.json   # also write to a file
 //   node generate-device-identity.mjs olivier.device.json --force   # overwrite
 

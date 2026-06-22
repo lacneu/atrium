@@ -23,8 +23,8 @@ cd "$(dirname "$0")"
 [[ -f .env ]] || { echo "FATAL: .env not found (cp .env.example .env first)"; exit 1; }
 
 # Read .env with a DOTENV parser, never `source` it: the file holds values the
-# shell would choke on or mangle — a JSON OPENCLAW_DEVICE_IDENTITY, a PEM
-# JWT_PRIVATE_KEY, secrets with `$`/spaces/quotes. dotenv_get extracts a key's
+# shell would choke on or mangle — a PEM JWT_PRIVATE_KEY, secrets with
+# `$`/spaces/quotes. dotenv_get extracts a key's
 # LITERAL single-line value (last wins; one layer of surrounding quotes stripped;
 # no shell evaluation). Multiline secrets (PEM/JWKS) are supplied out-of-band via
 # a `<KEY>_FILE` path — see `resolve` below.

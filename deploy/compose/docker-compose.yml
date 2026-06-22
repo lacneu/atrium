@@ -93,10 +93,10 @@ services:
       # Credentials ("Secret du bridge"), resolves 1:1 to its instance, and unlocks
       # ONLY that instance's encrypted gateway credentials (isolation per secret).
       # The bridge fetches each instance's gateway URL + version + HTTP override +
-      # decrypted token + device identity from Convex at boot using these secrets —
-      # there is NO gateway env any more (no OPENCLAW_GATEWAY_URL / _TOKEN /
-      # _DEVICE_IDENTITY / _INSTANCE_NAME). Decryption needs ATRIUM_SECRET_KEY on the
-      # CONVEX deployment (see .env.example section B). DEFAULTS EMPTY on purpose: the
+      # decrypted token + device identity from Convex at boot using these secrets;
+      # the gateway connection details live in Convex, not in this service's env.
+      # Decryption needs ATRIUM_SECRET_KEY on the CONVEX deployment (see .env.example
+      # section B). DEFAULTS EMPTY on purpose: the
       # bootstrap order is `docker compose up -d` FIRST, THEN mint the per-bridge
       # secret(s) in the UI (Settings -> Agents -> Instances -> Credentials) and set
       # this — so `up` must not hard-fail on a blank value. The bridge then fails fast
@@ -129,8 +129,8 @@ services:
       # `/home/node/.openclaw/media/<instance>/{outbound,inbound}`. Keying by instance
       # keeps EACH served gateway's mount distinct + self-documenting, so one bridge can
       # serve several instances. The `volumes:` mount target below MUST equal that
-      # derived path (use the LITERAL instance name — there is no OPENCLAW_INSTANCE_NAME
-      # env to interpolate); a mismatch is the #1 shared-fs misconfig: ENOENT, every file
+      # derived path (use the LITERAL instance name); a mismatch is the #1 shared-fs
+      # misconfig: ENOENT, every file
       # silently undeliverable (the "Vérifier les chemins" button surfaces it). These are
       # the BRIDGE-side paths, NOT the gateway's — the agent-visible mount stays flat
       # `/home/node/.openclaw/media/{outbound,inbound}` (what the gateway exposes +
@@ -167,7 +167,7 @@ services:
     #        chown -R <uid>:<gid> <root>/instances/<name>/.openclaw/media
     #   4. Uncomment the `volumes:` block and point each HOST source at those dirs. The
     #      mount TARGET is keyed by the LITERAL instance name so it equals the bridge's
-    #      auto-derived dir (there is no OPENCLAW_INSTANCE_NAME env to interpolate now).
+    #      auto-derived dir.
     #      Outbound is :ro (bridge only reads agent output); inbound is rw (bridge writes
     #      staged files).
     #   5. Recreate the bridge (a docker mount is NOT hot): `up -d --force-recreate bridge`,

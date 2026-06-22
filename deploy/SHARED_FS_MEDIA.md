@@ -46,8 +46,7 @@ the agent path.**
 by instance means several bridges (or one bridge serving several gateways) never
 collide and each mount is self-documenting. The bridge derives it automatically
 from each served instance's **name** — which it resolves from Convex via that
-instance's per-bridge secret (there is no `OPENCLAW_INSTANCE_NAME` env any more), so
-the path follows the name.
+instance's per-bridge secret, so the path follows the name.
 
 Paths 2 and 3 bind the **same host dir** (path 1) at different container paths —
 that co-location is what makes the file the bridge writes the same file the agent
