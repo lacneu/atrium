@@ -25,6 +25,7 @@ import type * as chats from "../chats.js";
 import type * as compat from "../compat.js";
 import type * as crons from "../crons.js";
 import type * as dev from "../dev.js";
+import type * as deviceIdentity from "../deviceIdentity.js";
 import type * as documentAttachments from "../documentAttachments.js";
 import type * as feedback from "../feedback.js";
 import type * as files from "../files.js";
@@ -107,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   compat: typeof compat;
   crons: typeof crons;
   dev: typeof dev;
+  deviceIdentity: typeof deviceIdentity;
   documentAttachments: typeof documentAttachments;
   feedback: typeof feedback;
   files: typeof files;

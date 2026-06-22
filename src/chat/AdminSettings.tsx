@@ -973,21 +973,23 @@ function BridgeSecretRow({ instance }: { instance: Instance }) {
             ? `${m.settings_secret_configured()} · ${row!.prefix}…${row!.lastFour}`
             : m.settings_secret_unset()}
         </Badge>
-        <Button size="sm" onClick={() => void doMint()} disabled={busy}>
-          {isSet
-            ? m.settings_bridge_secret_rotate()
-            : m.settings_bridge_secret_generate()}
-        </Button>
-        {isSet ? (
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={() => void doRevoke()}
-            disabled={busy}
-          >
-            {m.settings_bridge_secret_revoke()}
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => void doMint()} disabled={busy}>
+            {isSet
+              ? m.settings_bridge_secret_rotate()
+              : m.settings_bridge_secret_generate()}
           </Button>
-        ) : null}
+          {isSet ? (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void doRevoke()}
+              disabled={busy}
+            >
+              {m.settings_bridge_secret_revoke()}
+            </Button>
+          ) : null}
+        </div>
       </div>
       {minted ? (
         <div className="oc-bridgesecret__reveal">
@@ -1030,10 +1032,19 @@ function SecretRow({
 }) {
   const setSecret = useAction(api.instanceSecrets.setInstanceSecret);
   const clear = useMutation(api.instanceSecrets.clearInstanceSecret);
+  const generateDevice = useAction(api.deviceIdentity.generateDeviceIdentity);
   const toast = useToast();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  // Non-secret pairing info revealed after a server-side generate (id + publicKey). The
+  // private key is minted + stored encrypted server-side and NEVER returned to the browser.
+  const [generated, setGenerated] = useState<{
+    id: string;
+    publicKey: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
   const isSet = updatedAt !== null;
+  const canGenerate = field === "deviceIdentity";
   const label =
     field === "token"
       ? m.settings_secret_token()
@@ -1047,6 +1058,10 @@ function SecretRow({
     try {
       await setSecret({ instanceId, field, plaintext: value });
       setValue(""); // never keep the plaintext around
+      // A manual replace supersedes any just-generated identity: drop its stale pairing
+      // command so the admin never approves a device that is no longer stored.
+      setGenerated(null);
+      setCopied(false);
       toast.success(m.settings_secret_saved());
     } catch (err) {
       toast.error(m.settings_secret_save_failed(), err);
@@ -1060,6 +1075,9 @@ function SecretRow({
     setBusy(true);
     try {
       await clear({ instanceId, field });
+      // The stored identity is gone -> a previously shown pairing command is now stale.
+      setGenerated(null);
+      setCopied(false);
       toast.success(m.settings_secret_cleared());
     } catch (err) {
       toast.error(m.settings_secret_save_failed(), err);
@@ -1068,8 +1086,38 @@ function SecretRow({
     }
   }
 
+  async function doGenerate() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await generateDevice({ instanceId });
+      setGenerated(res); // only id + publicKey come back (private key stays server-side)
+      setCopied(false);
+      toast.success(m.settings_secret_generated_title());
+    } catch (err) {
+      toast.error(m.settings_secret_generate_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The pairing command for the freshly-generated device (the id is non-secret).
+  const pairCmd = generated ? `openclaw devices approve ${generated.id}` : "";
+  async function copyPair() {
+    if (!pairCmd) return;
+    try {
+      await navigator.clipboard.writeText(pairCmd);
+      setCopied(true);
+    } catch {
+      // best-effort; the command stays visible to copy manually
+    }
+  }
+
   return (
     <Field label={label}>
+      {canGenerate ? (
+        <p className="oc-admin__hint">{m.settings_secret_generate_hint()}</p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={isSet ? "outline" : "secondary"}>
           {isSet ? m.settings_secret_configured() : m.settings_secret_unset()}
@@ -1077,7 +1125,7 @@ function SecretRow({
         <Input
           type="password"
           autoComplete="off"
-          className="flex-1 min-w-40"
+          className="flex-1 min-w-32"
           value={value}
           placeholder={
             isSet
@@ -1086,24 +1134,62 @@ function SecretRow({
           }
           onChange={(e) => setValue(e.target.value)}
         />
-        <Button
-          size="sm"
-          onClick={() => void save()}
-          disabled={busy || value.trim().length === 0}
-        >
-          {m.settings_secret_set()}
-        </Button>
-        {isSet ? (
+        {/* Keep the action buttons together: as ONE flex item they wrap to the next
+            line as a block (mobile) instead of a single button dropping alone. */}
+        <div className="flex items-center gap-2">
           <Button
             size="sm"
-            variant="destructive"
-            onClick={() => void doClear()}
-            disabled={busy}
+            onClick={() => void save()}
+            disabled={busy || value.trim().length === 0}
           >
-            {m.settings_secret_clear()}
+            {m.settings_secret_set()}
           </Button>
-        ) : null}
+          {canGenerate ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void doGenerate()}
+              disabled={busy}
+            >
+              {m.settings_secret_generate()}
+            </Button>
+          ) : null}
+          {isSet ? (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => void doClear()}
+              disabled={busy}
+            >
+              {m.settings_secret_clear()}
+            </Button>
+          ) : null}
+        </div>
       </div>
+      {generated ? (
+        <div className="oc-bridgesecret__reveal">
+          <p className="text-sm font-medium">
+            {m.settings_secret_generated_title()}
+          </p>
+          <p className="oc-admin__hint">{m.settings_secret_pair_hint()}</p>
+          <div className="oc-sa__minted-box">
+            <code className="oc-sa__minted-plain">{pairCmd}</code>
+            <Button variant="outline" size="sm" onClick={() => void copyPair()}>
+              {copied ? m.serviceaccounts_copied() : m.serviceaccounts_copy()}
+            </Button>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setGenerated(null);
+              setCopied(false);
+            }}
+          >
+            {m.settings_bridge_secret_reveal_done()}
+          </Button>
+        </div>
+      ) : null}
     </Field>
   );
 }

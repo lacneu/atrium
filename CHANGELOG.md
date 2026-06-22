@@ -8,6 +8,19 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.6.1] — Generate a device identity from the UI
+
+Convenience release. No breaking changes — additive.
+
+- **"Generate" button for the gateway device identity.** The Credentials dialog
+  (Settings → Agents → Instances) now mints the Ed25519 operator device for you: click
+  **Generate** beside the device-identity field and Atrium creates the key server-side,
+  stores it encrypted, and shows the `openclaw devices approve <id>` command to pair it on
+  the gateway — no more running the `generate-device-identity.mjs` CLI. The private key is
+  generated and kept server-side and never reaches the browser. The credential rows also
+  lay out cleanly on small/mobile screens — the action buttons stay together instead of one
+  wrapping onto its own line.
+
 ## [0.6.0] — One bridge, many gateways: gateway config moves to Convex
 
 Breaking release. The bridge no longer reads its gateway URL or credentials from the

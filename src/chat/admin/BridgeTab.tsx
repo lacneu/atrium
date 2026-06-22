@@ -84,8 +84,9 @@ import { ConnectionsTable } from "./ConnectionsTable";
 // (reachability + version — there is one bridge), then one self-contained card
 // per downstream provider (OpenClaw, later Hermes) bundling that provider's
 // connections + compatibility + per-instance config. A provider card appears
-// only when that provider is actually present (no dead Hermes UI). Non-secret
-// only — tokens / device identity never leave the bridge env.
+// only when that provider is actually present (no dead Hermes UI). This tab shows
+// NON-secret status only; the operator token + device identity are managed (encrypted)
+// under Settings -> Agents -> Instances -> Credentials, never displayed here.
 
 type Health = NonNullable<ReturnType<typeof useBridgeHealth>>;
 function useBridgeHealth() {
