@@ -95,6 +95,12 @@ export const setInstanceSecret = action({
       field,
       secret,
     });
+    // Nudge the bridge to take the new credential into account NOW (resolve + connect ->
+    // pairing) instead of at the next self-heal poll. Fire-and-forget: scheduling never
+    // fails the write, and a down bridge is caught by its own poll.
+    await ctx.scheduler.runAfter(0, internal.instanceSync.pokeInstanceBridge, {
+      instanceId,
+    });
     return { ok: true };
   },
 });

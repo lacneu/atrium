@@ -188,6 +188,50 @@ describe("startCredentialRefresh (boot self-heal)", () => {
     refresh.stop();
   });
 
+  it("a poke DURING an in-flight pass triggers a FRESH follow-up pass (not coalesced away)", async () => {
+    // The exact race the user hit: a /refresh-credentials poke lands while a scheduled
+    // pass is already running. It must NOT fold into that stale pass (which may have
+    // already checked the just-saved secret) — it must run another pass after it.
+    const sched = fakeScheduler();
+    let calls = 0;
+    let openTheGate: () => void = () => {};
+    let signalPass1: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      openTheGate = r;
+    });
+    const pass1Entered = new Promise<void>((r) => {
+      signalPass1 = r;
+    });
+    const resolveOne = vi.fn(async (): Promise<ResolveOneResult> => {
+      calls += 1;
+      if (calls === 1) {
+        signalPass1(); // deterministic: pass 1 has entered resolveOne and is gated
+        await gate;
+      }
+      return { ok: false, reason: "unreachable" };
+    });
+    const refresh = startCredentialRefresh({
+      pending: ["s"],
+      resolveOne,
+      register: () => "registered",
+      intervalMs: 1_000,
+      onIssues: () => {},
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+
+    const p1 = refresh.tick(); // starts pass 1 (gated)
+    await pass1Entered; // pass 1 is now in flight, blocked on the gate
+    const p2 = refresh.tick(); // poke DURING pass 1
+    await Promise.resolve();
+    expect(resolveOne).toHaveBeenCalledTimes(1); // serialized: pass 2 has NOT started yet
+    openTheGate();
+    await Promise.all([p1, p2]);
+    expect(resolveOne).toHaveBeenCalledTimes(2); // pass 1 + a fresh pass 2 for the poke
+
+    refresh.stop();
+  });
+
   it("stop() clears the pending retry and halts further passes", async () => {
     const sched = fakeScheduler();
     const resolveOne = vi.fn(

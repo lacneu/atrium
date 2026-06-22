@@ -908,8 +908,55 @@ function InstanceSecretsDialog({
         <div className="oc-bridgesecret">
           <BridgeSecretRow instance={instance} />
         </div>
+        <InstanceSyncButton instance={instance} />
       </DialogContent>
     </Dialog>
+  );
+}
+
+// "Sync now" for one instance: pokes the bridge to take just-saved credentials into
+// account immediately (resolve + connect -> pairing) and pulls the gateway's agents into
+// Convex at once — so an admin finishes setup right after approving the pairing instead
+// of waiting for the discovery cron (~2 min). Mirrors the credentials are set already.
+function InstanceSyncButton({ instance }: { instance: Instance }) {
+  const forceSync = useAction(api.instanceSync.forceInstanceSync);
+  const toast = useToast();
+  const [syncing, setSyncing] = useState(false);
+
+  async function doSync() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const res = await forceSync({ instanceId: instance._id });
+      // Honest 3-state feedback (the action does NOT throw on a non-success): only claim
+      // "Synced" when agents were actually applied; "no_agents" = the bridge answered but
+      // nothing came back (pair the device OR check the instance config); "unreachable" =
+      // no serving bridge.
+      if (res.status === "synced") toast.success(m.settings_sync_done());
+      else if (res.status === "no_agents")
+        toast.success(m.settings_sync_no_agents());
+      else toast.error(m.settings_sync_failed());
+    } catch (err) {
+      toast.error(m.settings_sync_failed(), err);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className="oc-form">
+      <p className="oc-admin__hint">{m.settings_sync_hint()}</p>
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => void doSync()}
+          disabled={syncing}
+        >
+          {syncing ? m.settings_sync_running() : m.settings_sync_now()}
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -96,6 +96,11 @@ export const generateDeviceIdentity = action({
       field: "deviceIdentity",
       secret,
     });
+    // Nudge the bridge to connect NOW so the operator pairing request appears in seconds
+    // (fire-and-forget; never fails the generate, and a down bridge self-heals later).
+    await ctx.scheduler.runAfter(0, internal.instanceSync.pokeInstanceBridge, {
+      instanceId,
+    });
     return { id: identity.id, publicKey: identity.publicKey };
   },
 });

@@ -32,6 +32,7 @@ import type * as files from "../files.js";
 import type * as groups from "../groups.js";
 import type * as http from "../http.js";
 import type * as instanceSecrets from "../instanceSecrets.js";
+import type * as instanceSync from "../instanceSync.js";
 import type * as integrations_config from "../integrations/config.js";
 import type * as integrations_enrich from "../integrations/enrich.js";
 import type * as integrations_langfuse from "../integrations/langfuse.js";
@@ -115,6 +116,7 @@ declare const fullApi: ApiFromModules<{
   groups: typeof groups;
   http: typeof http;
   instanceSecrets: typeof instanceSecrets;
+  instanceSync: typeof instanceSync;
   "integrations/config": typeof integrations_config;
   "integrations/enrich": typeof integrations_enrich;
   "integrations/langfuse": typeof integrations_langfuse;

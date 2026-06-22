@@ -11,6 +11,7 @@ import {
   internalQuery,
   mutation,
   query,
+  type ActionCtx,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
@@ -201,68 +202,87 @@ export const pollAgentDiscovery = internalAction({
     });
 
     for (const { name: instanceName, url: base } of targets) {
-      try {
-        const res = await fetch(
-          `${base}/agents?instance=${encodeURIComponent(instanceName)}`,
-          { method: "GET", headers: { Authorization: sharedSecret } },
-        );
-        if (!res.ok) {
-          await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
-            instanceName,
-            error: `http_${res.status}`,
-          });
-          continue;
-        }
-        const body = (await res.json()) as {
-          agents?: Array<Record<string, unknown>>;
-          count?: number;
-        };
-        const list = Array.isArray(body.agents) ? body.agents : [];
-        // Raw gateway agent count (pre-normalization) from a NEW bridge; null when
-        // the bridge is old (no `count`) — then we can't disambiguate, fail closed.
-        const rawCount = typeof body.count === "number" ? body.count : null;
-        const agents = list
-          .map((a) => ({
-            agentId: String(a.agentId ?? ""),
-            displayName: typeof a.displayName === "string" ? a.displayName : null,
-            emoji: typeof a.emoji === "string" ? a.emoji : null,
-            model: typeof a.model === "string" ? a.model : null,
-            isDefaultOnInstance: a.isDefaultOnInstance === true,
-          }))
-          .filter((a) => a.agentId.length > 0);
-        if (agents.length === 0) {
-          // GENUINELY empty gateway (new bridge confirms rawCount===0): apply the
-          // empty discovery so deleted agents flip to presentInLastOk=false —
-          // otherwise we keep routing to a deleted agent (Codex P2). Otherwise fail
-          // CLOSED (serve last-good): rawCount===null = old bridge (can't tell);
-          // rawCount>0 = shape-drift (gateway had agents, all dropped — MAJOR 1).
-          if (rawCount === 0) {
-            await ctx.runMutation(internal.agents.applyDiscovery, {
-              instanceName,
-              agents: [],
-              allowEmpty: true,
-            });
-          } else {
-            await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
-              instanceName,
-              error: rawCount === null ? "empty_discovery" : "shape_drift",
-            });
-          }
-          continue;
-        }
-        await ctx.runMutation(internal.agents.applyDiscovery, {
-          instanceName,
-          agents,
-        });
-      } catch {
-        await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
-          instanceName,
-          error: "unreachable",
-        });
-      }
+      await discoverInstanceAgents(ctx, instanceName, base, sharedSecret);
     }
   },
 });
+
+/**
+ * Discover + ingest ONE instance's agents from its bridge `/agents`, applying the SAME
+ * resilient fail-closed policy as the cron (a shape-drift / old-bridge response serves
+ * last-good; a genuinely empty new-bridge response flips deleted agents out). Shared by
+ * the cron loop AND the on-demand "force sync" (forceInstanceSync) so the manual path is
+ * scoped to ONE instance — never waiting on or mutating other instances. NEVER throws;
+ * records the failure. Returns the outcome for the manual caller: `reached` is false ONLY
+ * on a transport error (bridge unreachable); `synced` is true ONLY when discovery actually
+ * APPLIED (agents found, or a genuinely-empty new-bridge response) — false when it
+ * recorded a failure (HTTP error / not-paired / shape-drift). So the UI can tell "synced"
+ * from "bridge answered but could not sync yet (pair the device first)".
+ */
+export async function discoverInstanceAgents(
+  ctx: ActionCtx,
+  instanceName: string,
+  base: string,
+  sharedSecret: string,
+): Promise<{ synced: boolean; reached: boolean; agentCount: number }> {
+  try {
+    const res = await fetch(
+      `${base}/agents?instance=${encodeURIComponent(instanceName)}`,
+      { method: "GET", headers: { Authorization: sharedSecret } },
+    );
+    if (!res.ok) {
+      await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+        instanceName,
+        error: `http_${res.status}`,
+      });
+      return { synced: false, reached: true, agentCount: 0 };
+    }
+    const body = (await res.json()) as {
+      agents?: Array<Record<string, unknown>>;
+      count?: number;
+    };
+    const list = Array.isArray(body.agents) ? body.agents : [];
+    // Raw gateway agent count (pre-normalization) from a NEW bridge; null when the bridge
+    // is old (no `count`) — then we can't disambiguate, fail closed.
+    const rawCount = typeof body.count === "number" ? body.count : null;
+    const agents = list
+      .map((a) => ({
+        agentId: String(a.agentId ?? ""),
+        displayName: typeof a.displayName === "string" ? a.displayName : null,
+        emoji: typeof a.emoji === "string" ? a.emoji : null,
+        model: typeof a.model === "string" ? a.model : null,
+        isDefaultOnInstance: a.isDefaultOnInstance === true,
+      }))
+      .filter((a) => a.agentId.length > 0);
+    if (agents.length === 0) {
+      // GENUINELY empty gateway (new bridge confirms rawCount===0): apply the empty
+      // discovery so deleted agents flip to presentInLastOk=false — otherwise we keep
+      // routing to a deleted agent (Codex P2). Otherwise fail CLOSED (serve last-good):
+      // rawCount===null = old bridge (can't tell); rawCount>0 = shape-drift.
+      if (rawCount === 0) {
+        await ctx.runMutation(internal.agents.applyDiscovery, {
+          instanceName,
+          agents: [],
+          allowEmpty: true,
+        });
+        return { synced: true, reached: true, agentCount: 0 }; // genuinely empty -> applied
+      }
+      await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+        instanceName,
+        error: rawCount === null ? "empty_discovery" : "shape_drift",
+      });
+      return { synced: false, reached: true, agentCount: 0 };
+    }
+    await ctx.runMutation(internal.agents.applyDiscovery, { instanceName, agents });
+    return { synced: true, reached: true, agentCount: agents.length };
+  } catch {
+    await ctx.runMutation(internal.agents.recordDiscoveryFailure, {
+      instanceName,
+      error: "unreachable",
+    });
+    return { synced: false, reached: false, agentCount: 0 };
+  }
+}
 
 /** Internal: the configured instance names (for the poller loop). */
 export const listInstanceNames = internalQuery({

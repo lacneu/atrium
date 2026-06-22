@@ -49,8 +49,8 @@ export interface CredentialRefreshDeps {
 }
 
 export interface CredentialRefresh {
-  /** Run ONE pass now (boot's first pass + the unit-test entry point). Resolves when the
-   *  pass finishes; it also (re)schedules the next pass while anything stays pending. */
+  /** Run a pass now (boot's first pass + the on-demand poke). Resolves after a pass that
+   *  STARTED at or after this call — so a poke always re-checks the just-saved secret. */
   tick: () => Promise<void>;
   /** Stop the loop (graceful shutdown). Idempotent. */
   stop: () => void;
@@ -132,22 +132,54 @@ export function startCredentialRefresh(
     }
   };
 
+  // Re-arm the single retry timer. CLEARS any existing one first so repeated pokes never
+  // stack multiple timers all resolving the same secrets every interval.
   const schedule = (): void => {
+    if (timer !== null) {
+      clearTimer(timer);
+      timer = null;
+    }
     if (stopped || pending.length === 0) return;
     timer = setTimer(() => {
       void tick();
     }, deps.intervalMs);
   };
 
-  const tick = async (): Promise<void> => {
-    if (stopped) return;
+  // Serialize passes (never two overlapping), while guaranteeing every tick() resolves
+  // only after a pass that STARTS at or after the call. So an on-demand poke that lands
+  // mid-pass gets a FRESH follow-up pass (re-checking the just-saved secret), never the
+  // stale in-flight one — without ever running two passes concurrently. `running` is set
+  // synchronously in tick() so two calls in one event-loop turn can't both start a drain.
+  let running = false;
+  let waiters: Array<() => void> = [];
+  const drain = async (): Promise<void> => {
     try {
-      await onePass();
+      do {
+        // Take the waiters registered BEFORE this pass starts; resolve them when it ends.
+        // Waiters added DURING the pass roll into the next iteration (a fresh pass).
+        const batch = waiters;
+        waiters = [];
+        try {
+          await onePass();
+        } finally {
+          emitIssues();
+        }
+        for (const w of batch) w();
+      } while (waiters.length > 0 && !stopped);
     } finally {
-      // Always reflect the latest state + (re)schedule, even if a pass threw.
-      emitIssues();
+      running = false;
       schedule();
     }
+  };
+
+  const tick = (): Promise<void> => {
+    if (stopped) return Promise.resolve();
+    const done = new Promise<void>((resolve) => waiters.push(resolve));
+    if (!running) {
+      running = true;
+      void drain();
+    }
+    return done;
   };
 
   return {

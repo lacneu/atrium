@@ -88,12 +88,18 @@ async function main(): Promise<void> {
   const health = new HealthRegistry(Date.now());
   // Mutable so the self-heal loop can refresh it; the server reads it live for /health.
   let configIssues: ConfigIssue[] = [];
+  // Declared before the server so `triggerRefresh` can close over it (assigned below);
+  // the closure reads the live value at call time (when /refresh-credentials is hit).
+  let refresh: CredentialRefresh | null = null;
   const server = createBridgeServer({
     shared,
     served,
     registry,
     health,
     getConfigIssues: () => configIssues,
+    // Convex pokes POST /refresh-credentials to make the bridge pick up a just-saved
+    // credential NOW (resolve + connect -> pairing) instead of waiting for the poll.
+    triggerRefresh: () => refresh?.tick() ?? Promise.resolve(),
   });
 
   // A listen/bind failure must FAIL FAST so the supervisor restarts and the failure
@@ -106,6 +112,9 @@ async function main(): Promise<void> {
   // Build + register a resolved instance. Returns 'collision' (kept pending) without
   // building anything, 'duplicate' if already served, else 'registered'.
   const register = (data: InstanceData): RegisterOutcome => {
+    // Already served: a redundant duplicate secret (or an unchanged re-resolve). Rotating
+    // a SERVED instance's credentials hot is deliberately NOT handled here (it is racy with
+    // in-flight connections) — it takes effect on the next bridge recreate. See README.
     if (served.has(data.instanceName)) return "duplicate";
     const config = buildInstanceConfig(shared, data);
     // A new instance must not share a final media dir with an already-served one (in
@@ -134,7 +143,6 @@ async function main(): Promise<void> {
   // The self-heal loop OWNS all credential resolution (boot + retry are one path). With
   // no secrets there is nothing to resolve — the bridge still serves /health, surfacing
   // the misconfig (a missing BRIDGE_INSTANCE_SECRETS is an env change → needs a restart).
-  let refresh: CredentialRefresh | null = null;
   if (shared.bridgeInstanceSecrets.length === 0) {
     configIssues = [{ reason: "no_secrets" }];
     console.warn(

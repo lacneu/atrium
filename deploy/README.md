@@ -70,8 +70,13 @@ Instances): set its **gateway URL**, enter its **operator token + device identit
 under **Credentials** (stored encrypted), and **mint a per-bridge secret**. Put that
 secret in the bridge's `BRIDGE_INSTANCE_SECRETS`; the bridge then resolves the
 instance by its secret and self-declares it under Settings → Bridge →
-Compatibility. Agents appear within ~2 min (a discovery cron) or immediately when
-you send the first message.
+Compatibility. Setting or generating the device identity nudges the bridge to connect
+right away, so the operator **pairing request appears at the gateway within seconds**
+(approve it there: `openclaw devices approve <id>`). Then click **Synchroniser
+maintenant** in the Credentials dialog to pull the discovered agents in immediately —
+otherwise a discovery cron does it within ~2 min. (Rotating an ALREADY-configured
+instance's operator token or device identity takes effect after a bridge recreate —
+`docker compose up -d --no-deps --force-recreate bridge`.)
 
 **Multiple gateways?** Supported, two ways:
 

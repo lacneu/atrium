@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.6.2] — Faster device onboarding: instant pairing + a "Synchroniser" button
+
+Convenience release. No breaking changes — additive.
+
+- **Faster pairing + a "Synchroniser maintenant" button — no waiting for the cron.**
+  Setting or generating a credential now nudges the bridge to take it into account
+  immediately (it resolves the instance and connects to the gateway), so the operator
+  **pairing request appears within seconds** instead of on the next self-heal poll. After
+  approving the pairing on the gateway, click **Synchroniser maintenant** in the
+  Credentials dialog to pull the discovered agents into Atrium at once (otherwise the
+  discovery cron does it within ~2 min) — finishing the instance setup without the wait.
+
 ## [0.6.1] — Generate a device identity from the UI
 
 Convenience release. No breaking changes — additive.

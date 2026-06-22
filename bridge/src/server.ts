@@ -1298,6 +1298,10 @@ export interface BridgeServerDeps {
    *  /health so an operator sees WHY an instance is not served WITHOUT reading bridge
    *  logs. Additive + non-secret (reason + instance name, never the secret/token). */
   getConfigIssues?: () => ConfigIssue[];
+  /** Run an immediate credential-resolution pass (the boot self-heal loop's tick). Used
+   *  by `POST /refresh-credentials` so Convex can make the bridge pick up a just-saved
+   *  credential NOW instead of waiting for the poll. No-op when no loop is running. */
+  triggerRefresh?: () => Promise<void>;
 }
 
 /**
@@ -1314,7 +1318,8 @@ export interface BridgeServerDeps {
  *   POST /config-defaults -> authenticated gateway chat-defaults get/set
  */
 export function createBridgeServer(deps: BridgeServerDeps): Server {
-  const { shared, served, registry, health, getConfigIssues } = deps;
+  const { shared, served, registry, health, getConfigIssues, triggerRefresh } =
+    deps;
   // PER-INSTANCE caches (one bridge, N gateways): the last gateway version +
   // maxPayload seen for EACH served instance, so /health and /capabilities report
   // each gateway honestly even when no chat session is live (lazy bridge / restart).
@@ -1521,6 +1526,53 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (req.url === "/refresh-credentials" ||
+        req.url?.startsWith("/refresh-credentials?"))
+    ) {
+      // On-demand uptake: Convex pokes this right after an admin sets/generates a
+      // credential, so the bridge resolves the (now-configured) instance and connects to
+      // its gateway NOW — triggering the operator pairing request (or warming an
+      // already-paired instance) instead of waiting for the self-heal poll. Authenticated
+      // like /send (it can open a gateway connection).
+      const provided = req.headers["authorization"];
+      if (
+        typeof provided !== "string" ||
+        !constantTimeEqual(provided, shared.bridgeSharedSecret)
+      ) {
+        sendJson(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      const instanceName = new URL(
+        req.url ?? "/refresh-credentials",
+        "http://bridge",
+      ).searchParams.get("instance");
+      // Resolve any not-yet-served secrets NOW (serialized with the loop), so a
+      // just-configured instance becomes served + connectable immediately.
+      await triggerRefresh?.();
+      const bundle = instanceName ? served.get(instanceName) : undefined;
+      // If the instance is now served AND has no live session, open a discovery
+      // connection to trigger the operator handshake (pairing) immediately. FIRE-AND-
+      // FORGET so the poke returns fast; a NOT_PAIRED here is EXPECTED (the operator must
+      // approve on the gateway) and must never surface as an error.
+      if (
+        bundle &&
+        !registry.listLive().some((t) => t.instanceName === instanceName)
+      ) {
+        void discoverAgents(bundle.config, noteHandshakeFor(instanceName!)).catch(
+          (err) => {
+            console.log(
+              `[refresh] discovery connect for ${instanceName} (non-fatal):`,
+              (err as Error)?.message ?? err,
+            );
+          },
+        );
+      }
+      sendJson(res, 200, { ok: true, served: bundle !== undefined });
       return;
     }
 
