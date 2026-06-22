@@ -109,11 +109,26 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
     meta: {
       instance: resolved.instanceName,
       fields: Object.keys(credentials).sort(),
+      // Non-secret gateway config rides along; the audit stays VALUES-FREE (a
+      // gatewayUrl host can be mildly sensitive) — record only presence.
+      hasGatewayUrl: resolved.gatewayUrl.length > 0,
     },
   });
 
   return new Response(
-    JSON.stringify({ instanceName: resolved.instanceName, credentials }),
+    JSON.stringify({
+      instanceName: resolved.instanceName,
+      // Non-secret gateway config so the bridge self-configures its connection
+      // from Convex (no OPENCLAW_GATEWAY_URL env). The SECRET fields stay in
+      // `credentials` (decrypted from instanceSecrets above).
+      gateway: {
+        url: resolved.gatewayUrl,
+        version: resolved.gatewayVersion,
+        httpUrl: resolved.gatewayHttpUrl,
+        kind: resolved.kind,
+      },
+      credentials,
+    }),
     {
       status: 200,
       headers: {

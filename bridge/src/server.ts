@@ -23,14 +23,13 @@ import {
 } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
-import type { BridgeConfig } from "./config.js";
+import type { BridgeConfig, SharedConfig } from "./config.js";
 import {
   idempotencyKey,
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
 import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
 import { base64FitsFrame } from "./core/attachment-limits.js";
-import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import {
   parseInboundConfig,
   type InboundInstanceConfig,
@@ -62,6 +61,7 @@ import type {
   BridgeSession,
   SessionRouting,
   LiveTarget,
+  InstanceBundle,
 } from "./session.js";
 import {
   defaultsApplied,
@@ -250,12 +250,14 @@ export function isInstanceMismatch(
 /** Project any inbound body onto the session registry's routing shape. */
 function toRouting(
   b: BodyRouting & { chatId: string; openclawChatId: string | null },
+  instanceName: string,
 ): SessionRouting {
   return {
     chatId: b.chatId,
     openclawChatId: b.openclawChatId,
     agentId: b.agentId,
     canonical: b.canonical,
+    instanceName,
   };
 }
 
@@ -1206,56 +1208,91 @@ export interface EnrichedHealthSnapshot extends Omit<
    *  attachment ceiling, so Convex + the composer derive the same cap instead of
    *  hardcoding one. From a live session, else the last-seen fallback, else null. */
   maxPayload: number | null;
-  targets: (TargetHealth & { gatewayVersion: string | null })[];
+  targets: (TargetHealth & {
+    gatewayVersion: string | null;
+    /** This instance's OWN gateway frame limit (capped at the body cap) — so a bridge
+     *  serving instances with DIFFERENT maxPayloads publishes each per target, and the
+     *  Convex poller keeps them distinct instead of copying one URL-level value. */
+    maxPayload: number | null;
+  })[];
 }
 
 export function enrichHealthSnapshot(
   snapshot: HealthSnapshot,
   live: LiveTarget[],
-  fallbackMaxPayload: number | null = null,
+  // PER-INSTANCE last-seen frame limits (instanceName -> maxPayload), so an IDLE
+  // target (no live session) falls back to ITS OWN gateway's cap — NOT a global value
+  // (which would publish another instance's limit on a multi-instance bridge).
+  fallbackByInstance: Map<string, number> = new Map(),
   httpBodyCap: number | null = null,
 ): EnrichedHealthSnapshot {
-  const versionByCanonical = new Map<string, string | null>();
-  for (const t of live) versionByCanonical.set(t.canonical, t.gatewayVersion);
-  // Mono-tenant: every live session shares the one gateway's maxPayload — take the
-  // first non-null, else the last-seen fallback (so an idle poll still reports it).
-  const gatewayMaxPayload =
-    (live.find((t) => t.maxPayload !== null)?.maxPayload ?? null) ??
-    fallbackMaxPayload;
-  // The inbound frame must fit BOTH the gateway WS frame AND the bridge's OWN HTTP
-  // body cap (the Convex->bridge /send POST carries the base64-inflated payload).
-  // Publish the binding MINIMUM so consumers derive a cap that never trips a 413 at
-  // readBody before the frame guard runs (a gateway maxPayload above our body cap
-  // would otherwise advertise a deliverable size the POST can't even carry).
-  const maxPayload =
-    gatewayMaxPayload === null
+  // Key live sessions by instanceName:canonical (two instances may share a canonical,
+  // so canonical alone is ambiguous on a multi-instance bridge).
+  const liveKey = (instanceName: string | null, canonical: string): string =>
+    `${instanceName ?? ""}:${canonical}`;
+  const versionByKey = new Map<string, string | null>();
+  const payloadByKey = new Map<string, number | null>();
+  for (const t of live) {
+    versionByKey.set(liveKey(t.instanceName, t.canonical), t.gatewayVersion);
+    payloadByKey.set(liveKey(t.instanceName, t.canonical), t.maxPayload);
+  }
+  // Cap a gateway frame at the bridge's OWN HTTP body cap (the Convex->bridge /send
+  // POST carries the base64-inflated payload): publish the binding MINIMUM so consumers
+  // never advertise a size the POST can't carry (413 at readBody before the frame guard).
+  const capToBody = (gw: number | null): number | null =>
+    gw === null
       ? null
       : httpBodyCap === null
-        ? gatewayMaxPayload
-        : Math.min(gatewayMaxPayload, httpBodyCap);
+        ? gw
+        : Math.min(gw, httpBodyCap);
+  // Top-level cap (consumers WITHOUT per-target context, e.g. the global composer
+  // gate): the CONSERVATIVE MIN across every known per-instance frame (live sessions +
+  // last-seen caches). Taking the first live frame would let a big-limit instance's
+  // size sail past while a smaller-limit instance is idle, and the small gateway then
+  // refuses the file at dispatch. Per-target precision lives on each target below.
+  const allCaps = [
+    ...live
+      .map((t) => t.maxPayload)
+      .filter((n): n is number => typeof n === "number"),
+    ...fallbackByInstance.values(),
+  ];
+  const maxPayload = capToBody(allCaps.length ? Math.min(...allCaps) : null);
   return {
     ...snapshot,
     bridgeVersion: BRIDGE_VERSION,
     protocolVersion: PROTOCOL_VERSION,
     maxPayload,
-    targets: snapshot.targets.map((t) => ({
-      ...t,
-      gatewayVersion: versionByCanonical.get(t.canonical) ?? null,
-    })),
+    targets: snapshot.targets.map((t) => {
+      const k = liveKey(t.instanceName, t.canonical);
+      // This instance's own live frame, else its OWN last-seen cap, else null (capped).
+      const own =
+        payloadByKey.get(k) ??
+        (t.instanceName !== null
+          ? (fallbackByInstance.get(t.instanceName) ?? null)
+          : null);
+      return {
+        ...t,
+        gatewayVersion: versionByKey.get(k) ?? null,
+        maxPayload: capToBody(own),
+      };
+    }),
   };
 }
 
+/** Max time /capabilities waits on a per-instance one-shot version discovery before
+ *  returning with the cached/fallback version — so a slow/down gateway can't delay the
+ *  shared endpoint for the healthy instances (the discovery keeps running in the bg). */
+const CAPABILITIES_DISCOVERY_BUDGET_MS = 4000;
+
 export interface BridgeServerDeps {
-  config: BridgeConfig;
+  /** Gateway-agnostic shared config (auth secret, body cap). */
+  shared: SharedConfig;
+  /** The instances this bridge serves, keyed by instanceName (one bridge, N gateways).
+   *  Each bundle carries its instance's config + writer + hot media provider. */
+  served: Map<string, InstanceBundle>;
   registry: SessionRegistry;
   /** Tracks per-target connection health for the /health endpoint. */
   health: HealthRegistry;
-  /**
-   * Hot-swappable outbound media fetcher; `/send` applies the in-band config.
-   * OPTIONAL: defaults to a provider built from `config` (the boot behaviour) so a
-   * test or a minimal embedder need not wire it.
-   */
-  mediaProvider?: MediaFetcherProvider;
 }
 
 /**
@@ -1272,49 +1309,47 @@ export interface BridgeServerDeps {
  *   POST /config-defaults -> authenticated gateway chat-defaults get/set
  */
 export function createBridgeServer(deps: BridgeServerDeps): Server {
-  const { config, registry, health } = deps;
-  // Default to a boot-config provider when not wired (tests / minimal embedders).
-  const mediaProvider = deps.mediaProvider ?? new MediaFetcherProvider(config);
-  // Non-secret host:port computed once. The health target now reflects the
-  // ROUTED identity (the agent/canonical from the body we actually dispatched to)
-  // — honest liveness, no longer a static env claim. Keyed by canonical so the
-  // entry count stays bounded on a mono-instance bridge.
-  const gatewayHost = gatewayHostOf(config.openclawGatewayUrl);
-  // Last gateway version seen on ANY connection (discovery / operator / live).
-  // Process-lifetime, per-server closure (NOT module-level — test servers must
-  // stay isolated). Feeds the served-instance fallback target in /capabilities
-  // so a supported gateway is never gated as "unknown version" just because no
-  // chat session happens to be live at the compat poll (BUG-1).
-  let lastGatewayVersion: string | null = null;
-  const noteGatewayVersion = (v: string | null): void => {
-    if (typeof v === "string" && v.length > 0) lastGatewayVersion = v;
+  const { shared, served, registry, health } = deps;
+  // PER-INSTANCE caches (one bridge, N gateways): the last gateway version +
+  // maxPayload seen for EACH served instance, so /health and /capabilities report
+  // each gateway honestly even when no chat session is live (lazy bridge / restart).
+  // Keyed by instanceName (NOT a single closure — instance B being down must not
+  // strand instance A's version/cap). Per-server (test isolation).
+  const lastGatewayVersion = new Map<string, string>();
+  const lastMaxPayload = new Map<string, number>();
+  const noteGatewayVersion = (instanceName: string, v: string | null): void => {
+    if (typeof v === "string" && v.length > 0) lastGatewayVersion.set(instanceName, v);
   };
-  // Same idea for the gateway's maxPayload (the inbound-attachment ceiling): cache
-  // the last-seen value so an idle /health poll still reports it (the lazy bridge
-  // holds no socket at rest), letting Convex + the composer derive the cap.
-  let lastMaxPayload: number | null = null;
-  const noteMaxPayload = (n: number | null): void => {
-    if (typeof n === "number" && n > 0) lastMaxPayload = n;
+  const noteMaxPayload = (instanceName: string, n: number | null): void => {
+    if (typeof n === "number" && n > 0) lastMaxPayload.set(instanceName, n);
   };
-  // Capture BOTH from any operator handshake (incl. a short /agents or /capabilities
-  // discovery), so an idle/just-restarted bridge publishes the version AND the
-  // inbound-attachment cap without waiting for a live chat session.
-  const noteHandshake = (conn: OpenClawConnection): void => {
-    noteGatewayVersion(conn.gatewayVersion);
-    noteMaxPayload(conn.maxPayload);
+  // Capture BOTH from any operator handshake for a SPECIFIC instance (incl. a short
+  // /agents or /capabilities discovery), so an idle/just-restarted bridge publishes
+  // that instance's version + inbound cap without waiting for a live chat session.
+  const noteHandshakeFor =
+    (instanceName: string) =>
+    (conn: OpenClawConnection): void => {
+      noteGatewayVersion(instanceName, conn.gatewayVersion);
+      noteMaxPayload(instanceName, conn.maxPayload);
+    };
+  const gatewayHostFor = (instanceName: string): string => {
+    const bundle = served.get(instanceName);
+    return bundle ? gatewayHostOf(bundle.config.openclawGatewayUrl) : "";
   };
-  // In-flight memo for the /capabilities one-shot version discovery: concurrent
-  // unauthenticated GET /capabilities (the 5-min compat poll + any other caller)
-  // must SHARE one discovery, not each open its own operator connection that can
-  // hang to the WS connect timeout when the gateway is slow/down. Cleared when it
-  // settles, so a later poll retries; concurrency never piles up connections.
-  let versionDiscoveryInFlight: Promise<void> | null = null;
-  const targetRef = (agentId: string, canonical: string): TargetRef => ({
-    key: canonical,
+  // In-flight memo for the /capabilities one-shot version discovery, PER INSTANCE:
+  // concurrent unauthenticated polls share one discovery per gateway, never piling
+  // up connections; a slow/down gateway B never blocks A's discovery.
+  const versionDiscoveryInFlight = new Map<string, Promise<void>>();
+  const targetRef = (
+    agentId: string,
+    canonical: string,
+    instanceName: string,
+  ): TargetRef => ({
+    key: `${instanceName}:${canonical}`,
     canonical,
     agentId,
-    gatewayHost,
-    instanceName: config.instanceName,
+    gatewayHost: gatewayHostFor(instanceName),
+    instanceName,
   });
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch((err: unknown) => {
@@ -1336,7 +1371,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Additive compat fields: bridgeVersion + protocolVersion + maxPayload at
       // the top, gatewayVersion per target (from the live session's handshake).
       const live = registry.listLive();
-      for (const t of live) noteMaxPayload(t.maxPayload); // keep the idle fallback fresh
+      for (const t of live) noteMaxPayload(t.instanceName, t.maxPayload); // keep the idle fallback fresh
+      // Pass the PER-INSTANCE last-seen caps so an idle target falls back to its OWN
+      // gateway's frame (not a global value). The top-level maxPayload is derived
+      // inside (live frame, else the min across instances) for context-free consumers.
       sendJson(
         res,
         200,
@@ -1344,7 +1382,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           health.snapshot(),
           live,
           lastMaxPayload,
-          config.maxBodyBytes,
+          shared.maxBodyBytes,
         ),
       );
       return;
@@ -1354,70 +1392,75 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Non-secret provider capability descriptor (incl. agentDiscovery). The app
       // caches this to adapt its UI per provider. Unauthenticated like /health.
 
-      // Refresh the version + maxPayload fallbacks from any currently-live session.
-      for (const t of registry.listLive()) {
-        noteGatewayVersion(t.gatewayVersion);
-        noteMaxPayload(t.maxPayload);
+      // Refresh each instance's version + maxPayload from its currently-live sessions.
+      const live = registry.listLive();
+      for (const t of live) {
+        noteGatewayVersion(t.instanceName, t.gatewayVersion);
+        noteMaxPayload(t.instanceName, t.maxPayload);
       }
-      // SELF-SUFFICIENT version capture (BUG-1 fragility fix): lastGatewayVersion
-      // is in-memory (reset on restart) and otherwise only set by /agents
-      // discovery or a send. If it is STILL null and no live session can supply
-      // one, do a ONE-SHOT discovery here so the served-instance target carries a
-      // real version. Without this, the 5-min compat poll landing right after a
-      // bridge restart (before the 2-min /agents cron repopulates the closure)
-      // returns an empty/version-less target -> the frontend gates AgentFiles /
-      // ChatDefaults off ("version gateway inconnue"). Non-fatal: a failed
-      // discovery just preserves the prior behavior (live targets / empty).
-      if (lastGatewayVersion === null && registry.listLive().length === 0) {
-        // Dedup concurrent callers onto ONE discovery (see versionDiscoveryInFlight).
-        if (versionDiscoveryInFlight === null) {
-          versionDiscoveryInFlight = discoverAgents(config, noteHandshake)
-            .then(() => undefined)
-            .catch((err) => {
-              console.error(
-                "[capabilities] one-shot version discovery failed (non-fatal):",
-                (err as Error)?.message ?? err,
-              );
-            })
-            .finally(() => {
-              versionDiscoveryInFlight = null;
-            });
-        }
-        await versionDiscoveryInFlight;
-      }
+      // SELF-SUFFICIENT version capture (BUG-1), PER SERVED INSTANCE: if an instance's
+      // version is still unknown AND it has no live session, one-shot discover it
+      // (deduped per instance) so its target carries a real version instead of being
+      // gated "unknown". A slow/down gateway B never blocks A — discoveries run
+      // concurrently, each BOUNDED by a budget so a down gateway's connect timeout
+      // cannot delay /capabilities for the healthy instances. A bounded-out discovery
+      // keeps running in the background (it settles + populates the cache for the next
+      // poll); a failure is non-fatal for that instance only.
+      await Promise.all(
+        [...served.entries()].map(async ([name, bundle]) => {
+          if (lastGatewayVersion.has(name) || live.some((t) => t.instanceName === name))
+            return;
+          let inflight = versionDiscoveryInFlight.get(name);
+          if (!inflight) {
+            inflight = discoverAgents(bundle.config, noteHandshakeFor(name))
+              .then(() => undefined)
+              .catch((err) => {
+                console.error(
+                  `[capabilities] one-shot version discovery failed for ${name} (non-fatal):`,
+                  (err as Error)?.message ?? err,
+                );
+              })
+              .finally(() => versionDiscoveryInFlight.delete(name));
+            versionDiscoveryInFlight.set(name, inflight);
+          }
+          // Bound the await: return with the cached/fallback version rather than wait
+          // out a down gateway's connect timeout (the inflight keeps running).
+          await Promise.race([
+            inflight,
+            new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, CAPABILITIES_DISCOVERY_BUDGET_MS);
+              if (typeof timer.unref === "function") timer.unref();
+            }),
+          ]);
+        }),
+      );
 
+      // One target set per served instance (live wins; per-instance fallback fills the
+      // no-session gap). Convex resolves version-gated capabilities per instance from
+      // these targets (capabilitiesForInstance), so the top-level instanceName/version
+      // are only meaningful for a single-instance bridge (null when serving many).
+      const targets = [...served.entries()].flatMap(([name, bundle]) =>
+        buildCapabilityTargets(
+          live.filter((t) => t.instanceName === name),
+          name,
+          lastGatewayVersion.get(name) ?? bundle.config.gatewayVersionFallback ?? null,
+        ),
+      );
+      const names = [...served.keys()];
+      const soleName = names.length === 1 ? names[0] : null;
+      const soleVersion = soleName
+        ? (lastGatewayVersion.get(soleName) ??
+          served.get(soleName)!.config.gatewayVersionFallback ??
+          null)
+        : null;
       sendJson(res, 200, {
-        // The instance this bridge serves (null when undeclared). The app caches
-        // this to correlate capabilities + the M2 routing guard.
-        instanceName: config.instanceName,
-        // The best-known version of the SINGLE gateway this bridge serves,
-        // reported UNCONDITIONALLY at the top level (independent of any live
-        // session or OPENCLAW_INSTANCE_NAME). Convex OWNS instance identity (it
-        // knows the served instance via BRIDGE_INSTANCE_NAME), so it attributes +
-        // resolves the version-gated capabilities itself — the bridge no longer
-        // needs to echo its own instance name for AgentFiles/ChatDefaults to
-        // resolve. Same precedence as the targets: live/discovered > configured.
-        gatewayVersion:
-          lastGatewayVersion ?? config.gatewayVersionFallback ?? null,
+        instanceName: soleName,
+        gatewayVersion: soleVersion,
         capabilities: openclawCapabilities(),
-        // Compat manifest (additive): the single source of truth for bridge/
-        // protocol versions + per-provider validated capability tables, plus
-        // the version-resolved view of every LIVE session.
         bridgeVersion: BRIDGE_VERSION,
         protocolVersion: PROTOCOL_VERSION,
         compat: COMPAT_MANIFEST,
-        // Live targets win; the served-instance fallback fills the no-session
-        // gap (see buildCapabilityTargets). Fallback PRECEDENCE: a version
-        // captured from a live session/discovery (lastGatewayVersion) wins over
-        // the operator-configured OPENCLAW_GATEWAY_VERSION — so the configured
-        // value is just a deterministic floor for a fresh/idle bridge whose
-        // discovery hasn't (or can't) capture the real version yet, and it
-        // self-corrects the instant a real connection reports server.version.
-        targets: buildCapabilityTargets(
-          registry.listLive(),
-          config.instanceName,
-          lastGatewayVersion ?? config.gatewayVersionFallback ?? null,
-        ),
+        targets,
       });
       return;
     }
@@ -1432,21 +1475,27 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const provided = req.headers["authorization"];
       if (
         typeof provided !== "string" ||
-        !constantTimeEqual(provided, config.bridgeSharedSecret)
+        !constantTimeEqual(provided, shared.bridgeSharedSecret)
       ) {
         sendJson(res, 401, { ok: false, error: "unauthorized" });
         return;
       }
-      // mono-tenant: `?instance` is echoed for the poller's convenience but the
-      // single configured gateway is always used.
+      // `?instance` SELECTS which served gateway to discover (one bridge, N gateways).
       const instanceName = new URL(
         req.url ?? "/agents",
         "http://bridge",
       ).searchParams.get("instance");
+      const bundle = instanceName ? served.get(instanceName) : undefined;
+      if (!bundle) {
+        // The poller asked for an instance this bridge does not serve (or omitted it):
+        // refuse rather than discover the wrong gateway.
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
       try {
         const { agents, rawCount } = await discoverAgents(
-          config,
-          noteHandshake,
+          bundle.config,
+          noteHandshakeFor(instanceName!),
         );
         // `count` (raw gateway agent count) lets the Convex poller distinguish a
         // genuinely empty gateway from normalizer shape-drift (agents cache P2).
@@ -1487,7 +1536,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     const provided = req.headers["authorization"];
     if (
       typeof provided !== "string" ||
-      !constantTimeEqual(provided, config.bridgeSharedSecret)
+      !constantTimeEqual(provided, shared.bridgeSharedSecret)
     ) {
       sendJson(res, 401, { ok: false, error: "unauthorized" });
       return;
@@ -1495,7 +1544,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
 
     let raw: string;
     try {
-      raw = await readBody(req, config.maxBodyBytes);
+      raw = await readBody(req, shared.maxBodyBytes);
     } catch {
       // Structured `{error:{code}}` (like the 502 path) so Convex's readErrorCode
       // surfaces an honest cause instead of a generic failed dispatch. Normally
@@ -1510,13 +1559,15 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      if (isInstanceMismatch(config.instanceName, patch.instanceName)) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      const patchInstance = patch.instanceName;
+      const patchBundle = patchInstance ? served.get(patchInstance) : undefined;
+      if (!patchInstance || !patchBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
       try {
-        const session = await registry.acquire(toRouting(patch));
-        await performPatch(session, patch, registry.getWriter());
+        const session = await registry.acquire(toRouting(patch, patchInstance));
+        await performPatch(session, patch, patchBundle.writer);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         console.error("bridge /patch failed:", (err as Error)?.message ?? err);
@@ -1531,12 +1582,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      if (isInstanceMismatch(config.instanceName, reset.instanceName)) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      const resetInstance = reset.instanceName;
+      if (!resetInstance || !served.has(resetInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
       try {
-        const session = await registry.acquire(toRouting(reset));
+        const session = await registry.acquire(toRouting(reset, resetInstance));
         await performReset(session);
         sendJson(res, 200, { ok: true });
       } catch (err) {
@@ -1554,12 +1606,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      if (isInstanceMismatch(config.instanceName, compact.instanceName)) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      const compactInstance = compact.instanceName;
+      if (!compactInstance || !served.has(compactInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
       try {
-        const session = await registry.acquire(toRouting(compact));
+        const session = await registry.acquire(toRouting(compact, compactInstance));
         await performCompact(session);
         sendJson(res, 200, { ok: true });
       } catch (err) {
@@ -1579,17 +1632,18 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      if (isInstanceMismatch(config.instanceName, body.instanceName)) {
-        // Same guard as /reset (P2-3): never answer for an instance this
-        // bridge does not serve.
-        sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      const afInstance = body.instanceName;
+      const afBundle = afInstance ? served.get(afInstance) : undefined;
+      if (!afInstance || !afBundle) {
+        // Never answer for an instance this bridge does not serve.
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
       try {
         const result = await withOperatorConnection(
-          config,
+          afBundle.config,
           (conn) => performAgentFilesOp(conn, body),
-          noteHandshake,
+          noteHandshakeFor(afInstance),
         );
         sendJson(res, result.status, result.body);
       } catch (err) {
@@ -1609,17 +1663,18 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      if (isInstanceMismatch(config.instanceName, body.instanceName)) {
-        // Same guard as /reset (P2-3): the global config belongs to ONE
-        // gateway — refuse a body that claims a different instance.
-        sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      const cdInstance = body.instanceName;
+      const cdBundle = cdInstance ? served.get(cdInstance) : undefined;
+      if (!cdInstance || !cdBundle) {
+        // Refuse a body that claims an instance this bridge does not serve.
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
       try {
         const result = await withOperatorConnection(
-          config,
+          cdBundle.config,
           (conn) => performConfigDefaultsOp(conn, body),
-          noteHandshake,
+          noteHandshakeFor(cdInstance),
         );
         sendJson(res, result.status, result.body);
       } catch (err) {
@@ -1628,7 +1683,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           // The patch may have APPLIED and only the response was lost to a
           // config-triggered gateway restart — reconnect and confirm before
           // reporting failure (see confirmDefaultsAfterRestart).
-          const confirmed = await confirmDefaultsAfterRestart(config, body);
+          const confirmed = await confirmDefaultsAfterRestart(cdBundle.config, body);
           if (confirmed !== null) {
             console.error(
               "bridge /config-defaults: write confirmed after gateway restart",
@@ -1664,16 +1719,28 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // bridge can WRITE its inbound dir + READ its outbound dir for the legs in
       // shared-fs mode. There is no gateway fs API, so the AGENT-side container
       // mount is NOT checked here (the response notes this). NON-secret.
-      let mvBody: { inboundMediaMode?: unknown; mediaMode?: unknown };
+      let mvBody: {
+        instanceName?: unknown;
+        inboundMediaMode?: unknown;
+        mediaMode?: unknown;
+      };
       try {
         mvBody = JSON.parse(raw) as typeof mvBody;
       } catch {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
+      const mvInstance =
+        typeof mvBody.instanceName === "string" ? mvBody.instanceName : null;
+      const mvBundle = mvInstance ? served.get(mvInstance) : undefined;
+      if (!mvBundle) {
+        // The dirs to check are per-instance — refuse without a served instance.
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
       const result = await validateSharedFs({
-        inboundDir: config.inboundMediaDir,
-        outboundDir: config.mediaOutboundDir,
+        inboundDir: mvBundle.config.inboundMediaDir,
+        outboundDir: mvBundle.config.mediaOutboundDir,
         inboundSharedFs: mvBody.inboundMediaMode === "shared-fs",
         outboundSharedFs: mvBody.mediaMode === "shared-fs",
         now: Date.now(),
@@ -1687,57 +1754,54 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       sendJson(res, 400, { ok: false, error: "invalid body" });
       return;
     }
-    if (isInstanceMismatch(config.instanceName, body.instanceName)) {
+    const sendInstance = body.instanceName;
+    const bundle = sendInstance ? served.get(sendInstance) : undefined;
+    if (!sendInstance || !bundle) {
       // A Convex routing misconfig (claims an instance this bridge does not
-      // serve) — refuse loudly with a curated code, never answer from the wrong
-      // gateway. Convex surfaces it as a failed dispatch (errorCode).
-      sendJson(res, 409, { ok: false, error: { code: "instance_mismatch" } });
+      // serve, or none) — refuse loudly with a curated code, never answer from the
+      // wrong gateway. Convex surfaces it as a failed dispatch (errorCode).
+      sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
       return;
     }
+    const cfg = bundle.config;
 
     // Non-PHI routed-target record (agent/instance/canonical/chat are non-secret
     // names — never the text/token): the operational "which agent did this turn
     // route to" line, and the live-e2e discriminator for the body-routing fix.
     console.log(
-      `bridge /send routed instance=${body.instanceName ?? config.instanceName ?? "-"} ` +
+      `bridge /send routed instance=${sendInstance} ` +
         `agent=${body.agentId} canonical=${body.canonical} chat=${body.chatId}`,
     );
 
     try {
-      // Apply the per-instance config IN-BAND before the turn runs (D-B: process-
-      // global, last-write-wins). Rebuilds the outbound media fetcher only if the
+      // Apply the per-instance config IN-BAND before the turn runs (D-B: per-instance
+      // last-write-wins). Rebuilds THIS instance's outbound media fetcher only if the
       // mode/cap changed; the rehydration knob is read inside performSend.
-      mediaProvider.applyConfig(body.config);
-      // Shared-fs inbound config: dirs are env (per-instance by Model M), the cap is
-      // hot (body.config.mediaMaxMb → mediaMaxBytes, else the boot default).
+      bundle.mediaProvider.applyConfig(body.config);
+      // Shared-fs inbound config: dirs are derived per-instance, the cap is hot
+      // (body.config.mediaMaxMb → mediaMaxBytes, else the per-instance default).
       const inboundCfg: InboundMediaConfig = {
         // The bridge WRITES to its own mount; the agent READS at the agent-mount
-        // (per-instance override, else env). These differ when bridge + gateway
-        // mount the shared volume at different points.
-        inboundDir: config.inboundMediaDir,
-        agentMount: body.config?.inboundAgentMount ?? config.inboundAgentMount,
-        maxBytes: body.config?.mediaMaxBytes ?? config.mediaMaxBytes,
+        // (per-instance override, else the instance default). These differ when
+        // bridge + gateway mount the shared volume at different points.
+        inboundDir: cfg.inboundMediaDir,
+        agentMount: body.config?.inboundAgentMount ?? cfg.inboundAgentMount,
+        maxBytes: body.config?.mediaMaxBytes ?? cfg.mediaMaxBytes,
       };
       // Inject the outbound delivery instruction unless outbound media is OFF (then
       // a generated file could not be hosted anyway). Effective mode = the in-band
-      // per-instance config, else the bridge's boot default. The delivery path is
-      // the AGENT-visible outbound mount (where the agent WRITES) — NOT the bridge's
-      // read dir (which may be a host path the container can't write).
-      const effectiveMediaMode = body.config?.mediaMode ?? config.mediaMode;
+      // per-instance config, else this instance's default. The delivery path is the
+      // AGENT-visible outbound mount (where the agent WRITES) — NOT the bridge's read
+      // dir (which may be a host path the container can't write).
+      const effectiveMediaMode = body.config?.mediaMode ?? cfg.mediaMode;
       const deliveryDir =
         effectiveMediaMode === "off"
           ? null
-          : (body.config?.outboundAgentMount ?? config.mediaOutboundAgentMount);
-      const session = await registry.acquire(toRouting(body));
-      await performSend(
-        session,
-        body,
-        registry.getWriter(),
-        inboundCfg,
-        deliveryDir,
-      );
+          : (body.config?.outboundAgentMount ?? cfg.mediaOutboundAgentMount);
+      const session = await registry.acquire(toRouting(body, sendInstance));
+      await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
       // A real send proves connection + the ROUTED agent answered.
-      health.recordOk(targetRef(body.agentId, body.canonical));
+      health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       sendJson(res, 200, { ok: true });
     } catch (err) {
       // A per-send upstream failure is reported but does not crash the bridge.
@@ -1758,7 +1822,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // (can't reach/auth the gateway) flips the target to `error`. Either way the
       // 502 + code below still drive the per-chat failDispatch bubble, the trace,
       // and the anomaly — the detail/alert path is unchanged.
-      const ref = targetRef(body.agentId, body.canonical);
+      const ref = targetRef(body.agentId, body.canonical, sendInstance);
       if (faultDomain(code) === "downstream") {
         health.recordDownstreamReject(ref, code);
       } else {

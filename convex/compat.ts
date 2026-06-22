@@ -34,8 +34,10 @@ import {
   normalizeCapabilitiesBody,
   summarizeCompat,
   type CompatSummary,
+  type NormalizedCapabilities,
 } from "./lib/compat";
 import { resolveTargetForChat } from "./routing";
+import { resolveHealthPollTargets } from "./lib/bridgeRouting";
 
 const COMPAT_KEY = "singleton";
 
@@ -53,41 +55,70 @@ async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeCompat"> | null> {
 export const pollBridgeCompat = internalAction({
   args: {},
   handler: async (ctx) => {
-    const bridgeUrl = process.env.BRIDGE_URL;
-    if (!bridgeUrl) {
+    // Poll EACH served instance's bridge (same per-instance targets the health poller
+    // uses) and MERGE their /capabilities into the singleton — so an instance reached
+    // by its own `instances.bridgeUrl` (not the env BRIDGE_URL) still has its compat
+    // collected. One bridge serving N instances is polled once (its /capabilities
+    // already carries every served target). Backward-compatible: a single env
+    // BRIDGE_URL with no per-instance bridgeUrl runs exactly once as before.
+    const instances = await ctx.runQuery(internal.agents.listInstancesForPoll, {});
+    const pollTargets = resolveHealthPollTargets(instances, {
+      envUrl: process.env.BRIDGE_URL?.trim() || null,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+    });
+    if (pollTargets.length === 0) {
       await ctx.runMutation(internal.compat.recordCompatFailure, {
         error: "not_configured",
       });
       return;
     }
-    try {
-      const res = await fetch(`${bridgeUrl.replace(/\/$/, "")}/capabilities`, {
-        method: "GET",
-      });
-      if (!res.ok) {
-        await ctx.runMutation(internal.compat.recordCompatFailure, {
-          error: `http_${res.status}`,
-        });
-        return;
+
+    const mergedTargets: NormalizedCapabilities["targets"] = [];
+    const seenInstance = new Set<string | null>();
+    let bridgeVersion: string | null = null;
+    let protocolVersion: number | null = null;
+    let compat: NormalizedCapabilities["compat"] = null;
+    let anyReachable = false;
+    let lastError = "unreachable";
+
+    for (const { name, url } of pollTargets) {
+      try {
+        const res = await fetch(`${url}/capabilities`, { method: "GET" });
+        if (!res.ok) {
+          lastError = `http_${res.status}`;
+          continue; // this bridge is down this cycle; others may be up
+        }
+        const body: unknown = await res.json();
+        // `name` forces attribution only when this URL serves ONE instance; for a
+        // shared bridge (name=null) the body's per-target instanceName is trusted.
+        const n = normalizeCapabilitiesBody(body, name);
+        anyReachable = true;
+        if (bridgeVersion === null) bridgeVersion = n.bridgeVersion;
+        if (protocolVersion === null) protocolVersion = n.protocolVersion;
+        if (compat === null) compat = n.compat;
+        for (const t of n.targets) {
+          // Dedupe across bridges by instance (first reachable wins).
+          if (seenInstance.has(t.instanceName)) continue;
+          seenInstance.add(t.instanceName);
+          mergedTargets.push(t);
+        }
+      } catch {
+        lastError = "unreachable";
       }
-      const body: unknown = await res.json();
-      // Defensive normalization of the network body; a LEGACY bridge (no
-      // additive fields) lands as nulls + empty targets — stored as-is so the
-      // readers can apply the legacy policy. BRIDGE_INSTANCE_NAME (the instance
-      // THIS single bridge serves — Convex owns instance identity) lets the
-      // normalizer attribute + resolve the served instance from the bridge's
-      // top-level gatewayVersion, so the version-gated UI resolves even with no
-      // live session and no OPENCLAW_INSTANCE_NAME on the bridge.
-      const normalized = normalizeCapabilitiesBody(
-        body,
-        process.env.BRIDGE_INSTANCE_NAME ?? null,
-      );
-      await ctx.runMutation(internal.compat.upsertBridgeCompat, normalized);
-    } catch {
-      await ctx.runMutation(internal.compat.recordCompatFailure, {
-        error: "unreachable",
-      });
     }
+
+    if (!anyReachable) {
+      await ctx.runMutation(internal.compat.recordCompatFailure, {
+        error: lastError,
+      });
+      return;
+    }
+    await ctx.runMutation(internal.compat.upsertBridgeCompat, {
+      bridgeVersion,
+      protocolVersion,
+      compat,
+      targets: mergedTargets,
+    });
   },
 });
 

@@ -141,8 +141,10 @@ bridge:
   pullPolicy: IfNotPresent
   replicas: 1
   port: 8787
-  # -- The instance name THIS bridge serves (must match a Convex instances.name
-  #    and the BRIDGE_INSTANCE_NAME pushed into Convex env).
+  # -- The instance name pushed into the Convex deployment env as BRIDGE_INSTANCE_NAME
+  #    by the bootstrap Job (must match a Convex instances.name). The bridge container
+  #    no longer takes an instance name in env — it resolves each served instance from
+  #    Convex via the per-bridge secret(s) in BRIDGE_INSTANCE_SECRETS.
   instanceName: "primary"
   # NOTE: media MODE (gateway-http | shared-fs | off), the per-file size CAP, the
   # agent-visible mount PATHS and session rehydration are PER-INSTANCE settings
@@ -175,14 +177,12 @@ bridge:
   affinity: {}
   podAnnotations: {}
 
-# -- Your EXTERNAL OpenClaw gateway (NOT deployed by this chart).
-openclaw:
-  # -- ws[s]:// URL of your OpenClaw gateway.
-  gatewayUrl: "wss://gateway.example.com"
-  # -- [gateway-http media mode] Override the assistant-media HTTP base ONLY if the
-  # gateway serves it on a DIFFERENT host/port than gatewayUrl (e.g. a separate
-  # ingress). Empty => derived from gatewayUrl (ws->http, wss->https, same host:port).
-  gatewayHttpUrl: ""
+# Your EXTERNAL OpenClaw gateway(s) are NOT deployed by this chart, and are no longer
+# configured here: each instance's gateway URL + version + HTTP override and its
+# operator token + Ed25519 device identity live in Convex (Settings -> Agents ->
+# Instances; credentials stored encrypted). The bridge fetches them at boot via the
+# per-bridge secret(s) in BRIDGE_INSTANCE_SECRETS (see secrets.values below) and
+# decrypts them with ATRIUM_SECRET_KEY on the Convex deployment.
 
 # =============================================================================
 # Service / Ingress (PUBLIC routing for the frontend only).
@@ -256,18 +256,13 @@ secrets:
     # --- shared bridge <-> Convex secrets (same value in both scopes) ---
     BRIDGE_INGEST_SECRET: ""
     BRIDGE_SHARED_SECRET: ""
-    # --- bridge -> OpenClaw gateway credentials ---
-    # token + device identity are OPTIONAL: blank => "UI mode" (creds stored
-    # encrypted in Convex via Settings -> Agents -> Instances -> Credentials, fetched
-    # at boot via BRIDGE_INSTANCE_SECRET below; requires ATRIUM_SECRET_KEY). Set them
-    # here for "env mode". See README "Gateway credentials: env vs UI-managed".
-    OPENCLAW_TOKEN: ""
-    # Ed25519 device identity JSON (single line).
-    OPENCLAW_DEVICE_IDENTITY: ""
-    # [UI mode only] per-bridge secret minted in the Credentials dialog; binds this
-    # bridge to its instance so it fetches ONLY that gateway's encrypted creds. NOT
-    # the shared BRIDGE_INGEST_SECRET. Blank in env mode.
-    BRIDGE_INSTANCE_SECRET: ""
+    # --- bridge -> gateway: per-bridge secret(s) ---
+    # COMMA-separated, ONE per Convex instance this bridge serves. Each is minted in
+    # the instance's Credentials dialog (Settings -> Agents -> Instances) and unlocks
+    # ONLY that instance's encrypted gateway credentials. NOT the shared
+    # BRIDGE_INGEST_SECRET. REQUIRED: the bridge has nothing to serve without one. The
+    # gateway URL + credentials themselves live in Convex (encrypted), not here.
+    BRIDGE_INSTANCE_SECRETS: ""
     # --- Convex DEPLOYMENT env (pushed by the bootstrap Job) ---
     # Authoritative sign-in gate — comma-separated allowed email domains. The
     # FIRST sign-in from an allowed domain becomes admin. MUST be set before
@@ -288,7 +283,8 @@ secrets:
     # Master key encrypting gateway credentials at rest in Convex (base64 of 32
     # random bytes; `openssl rand -base64 32`). Same model as n8n's encryption key
     # — a Secret value, NEVER in the DB. Back it up; losing it makes stored
-    # credentials unrecoverable. Blank = the UI credential feature stays inert.
+    # credentials unrecoverable. REQUIRED: the bridge fetches its gateways' encrypted
+    # credentials from Convex and cannot decrypt them without it.
     ATRIUM_SECRET_KEY: ""
     # Optional trace shipping (leave blank to disable). Langfuse host = LANGFUSE_HOST.
     LANGFUSE_PUBLIC_KEY: ""

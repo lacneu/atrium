@@ -174,33 +174,51 @@ volume — which is exactly the point.)
 ## F. Instances & agent discovery
 
 ### Settings → Instances shows "No agents discovered"
-- **Cause #1 (most common): the instance NAME doesn't match what the bridge
-  serves.** The bridge serves the single instance named by `OPENCLAW_INSTANCE_NAME`
-  (it self-declares it under Settings → Bridge → Compatibility). If you create an
-  instance with a different name, the discovery poll asks the bridge for a name it
-  doesn't serve → zero agents.
-  - **Fix:** the instance name in Settings → Instances must equal
-    `OPENCLAW_INSTANCE_NAME` (and `BRIDGE_INSTANCE_NAME`). Recreate it with the
-    exact name (e.g. `primary`).
+- **Cause #1 (most common): the bridge isn't serving this instance.** The bridge
+  serves only the instances whose per-bridge secrets are listed in
+  `BRIDGE_INSTANCE_SECRETS` (it self-declares each under Settings → Bridge →
+  Compatibility). If this instance's secret isn't in that list — or wasn't minted —
+  the bridge has no gateway URL/creds for it and discovers nothing.
+  - **Fix:** in Settings → Agents → Instances, set this instance's gateway URL +
+    credentials, **mint its per-bridge secret**, add that secret to
+    `BRIDGE_INSTANCE_SECRETS`, and recreate the bridge. Its boot log reports how many
+    instances it is serving (see the `instance_not_served` entry below).
 - **Cause #2: the discovery hasn't run yet.** Agent discovery is a **cron that runs
   every ~2 minutes** (`agents.pollAgentDiscovery`), and the bridge connects to the
   gateway **lazily**. A freshly-added instance shows "never probed" until the next
   run. Wait ~2 min, or send a message (which solicits the bridge immediately).
 - **Cause #3: the bridge can't reach the gateway, or the gateway has no agent.**
-  - **Diagnose:** the bridge container logs (`<project>-bridge`) — can it reach
-    `OPENCLAW_GATEWAY_URL`? Are `OPENCLAW_TOKEN` / `OPENCLAW_DEVICE_IDENTITY`
-    valid? Does the gateway actually have an agent defined?
+  - **Diagnose:** the bridge container logs (`<project>-bridge`) — can it reach the
+    instance's **gateway URL configured in Convex**? Did its credentials decrypt and
+    the operator connection authenticate? Does the gateway actually have an agent
+    defined? (Gateway URL + token + device identity all come from the instance's
+    Convex config now, not bridge env.)
 
-### An instance's "Gateway URL" field seems to do nothing (single-gateway deployments)
-- **By design (current limitation).** This deployment is **mono-gateway**: the
-  bridge reads ONE `OPENCLAW_GATEWAY_URL` from its environment and routes every
-  session to it. The per-instance `gatewayUrl` in the UI is **not yet honored** by
-  the bridge (multi-gateway / multi-instance is a planned phase). So today:
-  - **Multi-AGENT** (many agents on one gateway) — **works**; agents are discovered
-    and assigned to users.
-  - **Multi-INSTANCE** (several different gateways) — **not yet**. Only the
-    instance whose name matches `OPENCLAW_INSTANCE_NAME` is live; its `gatewayUrl`
-    field is informational.
+### An instance's "Gateway URL" field — where it takes effect
+- The per-instance **gateway URL** (and version / HTTP override) is configured in
+  Settings → Agents → Instances and is what the bridge **actually uses** — it fetches
+  it (with the instance's credentials) from Convex at boot via the per-bridge secret.
+  - **Multi-AGENT** (many agents on one gateway) — works; agents are discovered and
+    assigned to users.
+  - **Multi-INSTANCE** (several different gateways) — works: one bridge can serve
+    several instances (list several secrets in `BRIDGE_INSTANCE_SECRETS`), or run one
+    bridge per gateway. Give each instance its own **Bridge URL** when you run more
+    than one bridge.
+
+### A chat fails with a `409 instance_not_served` from the bridge
+- **Cause:** the chat's instance is **not** one this bridge serves. A bridge serves
+  only the instances whose per-bridge secrets are in `BRIDGE_INSTANCE_SECRETS`. Either
+  the instance's secret is missing from that list, or it **failed to resolve at boot**
+  (revoked, mistyped, or its credentials couldn't be decrypted — e.g.
+  `ATRIUM_SECRET_KEY` is wrong/absent on the Convex deployment).
+- **Diagnose:** the bridge **boot log** prints how many it resolved, e.g.
+  `serving N instance(s)`. If your instance is missing there, its secret didn't
+  resolve.
+- **Fix:** ensure the instance's per-bridge secret is in this bridge's
+  `BRIDGE_INSTANCE_SECRETS` (re-mint it in Settings → Agents → Instances →
+  Credentials if needed), confirm `ATRIUM_SECRET_KEY` is set on the Convex deployment,
+  recreate the bridge, and check the boot log again. If you run several bridges, also
+  confirm the instance's **Bridge URL** points at the bridge that serves it.
 
 ---
 

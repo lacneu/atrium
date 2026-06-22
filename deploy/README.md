@@ -63,59 +63,71 @@ Re-run on **every release**: the functions change, so they must be re-pushed.
 This split exists because Convex (self-hosted) keeps its function env in the
 deployment, not in the container. The bootstrap step bridges your `.env` into it.
 
-## Gotcha 3: the instance name must match the bridge
+## Gotcha 3: configure each gateway as an instance in Convex
 
-After deploying, add your gateway as an **instance** (Settings → Instances) whose
-**name is exactly `OPENCLAW_INSTANCE_NAME`** (= `BRIDGE_INSTANCE_NAME`). The bridge
-serves that one name and self-declares it under Settings → Bridge → Compatibility;
-an instance with any other name discovers **zero agents**. Agents then appear
-within ~2 min (a discovery cron) or immediately when you send the first message.
+After deploying, add your gateway as an **instance** (Settings → Agents →
+Instances): set its **gateway URL**, enter its **operator token + device identity**
+under **Credentials** (stored encrypted), and **mint a per-bridge secret**. Put that
+secret in the bridge's `BRIDGE_INSTANCE_SECRETS`; the bridge then resolves the
+instance by its secret and self-declares it under Settings → Bridge →
+Compatibility. Agents appear within ~2 min (a discovery cron) or immediately when
+you send the first message.
 
-**Multiple gateways?** Supported. Add one **instance per gateway** (Settings →
-Agents → Instances), give each its own **Bridge URL**, and run **one bridge
-container per gateway** (Model M) — each with its own `OPENCLAW_INSTANCE_NAME`,
-port, gateway URL/token/device-identity. Dispatch routes each instance's chats to
-its own bridge by that Bridge URL; an instance with no Bridge URL falls back to the
-env `BRIDGE_URL`. A worked two-gateway example (with shared-fs media) is in
-[SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md).
+**Multiple gateways?** Supported, two ways:
 
-## Gateway credentials: env vs UI-managed
+- **One bridge, many gateways.** List several per-bridge secrets in
+  `BRIDGE_INSTANCE_SECRETS` (comma-separated, one per instance) and the same bridge
+  serves them all — fetching each one's gateway URL + credentials from Convex.
+- **One bridge per gateway.** Run a separate bridge container per gateway, each with
+  its own secret, port and Convex **Bridge URL**, routing each instance's chats to
+  its own bridge.
 
-Each bridge needs its gateway's **operator token** and **Ed25519 device identity**.
-There are two sources, resolved **per credential at bridge boot** (Convex-first,
-then env):
+**As soon as you serve more than one instance** (either layout), give EACH instance
+its own **Bridge URL** (Settings → Agents → Instances → Bridge URL) — for the
+one-bridge case, point them ALL at that bridge (e.g. `http://bridge:8787`). Convex
+dispatch only falls back to the env `BRIDGE_URL` for the *sole or env-named* instance
+(so a second instance never silently routes to the wrong gateway in the
+one-bridge-per-gateway layout); an extra instance left without a Bridge URL is
+reported `not_configured` rather than dispatched. A worked one-bridge-two-instances
+example (with shared-fs media) is in [SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md).
 
-- **Env mode (default).** Put `OPENCLAW_TOKEN` and `OPENCLAW_DEVICE_IDENTITY` in
-  the bridge's container env (`.env` / chart values). Nothing else to do.
-- **UI mode.** Store them **encrypted at rest in Convex** and let the bridge fetch
-  them at boot. Operators add/rotate credentials from the web UI — no secrets in
-  the bridge env, no redeploy to change a token. Requires `ATRIUM_SECRET_KEY` on
-  the Convex deployment (the master key that encrypts them; see `.env.example`
-  section B). Gateway credentials are stored AES-256-GCM-encrypted in the
-  `instanceSecrets` table — never as plaintext.
+## Gateway credentials come from Convex
 
-**Switching an instance to UI mode** (e.g. migrating an existing env-mode bridge):
+Each gateway's **URL**, **version**, optional **HTTP override**, **operator token**
+and **Ed25519 device identity** are configured in Convex (**Settings → Agents →
+Instances**; the token + device identity under **Credentials**, stored
+AES-256-GCM-encrypted in the `instanceSecrets` table, never plaintext). The bridge
+reads **none** of these from its environment — it fetches them at boot. Operators
+add and rotate credentials from the web UI; no secrets live in the bridge env, and
+no redeploy is needed to change a token (a rotation takes effect on the **next
+bridge restart**).
+
+The irreducible env anchor is the **per-bridge secret** — one per served instance,
+listed in `BRIDGE_INSTANCE_SECRETS`. This is **not** zero-ops: each served gateway
+still needs its own secret in the bridge env. Decryption also requires
+`ATRIUM_SECRET_KEY` on the Convex deployment (the master key that encrypts the
+credentials; see `.env.example` section B). A per-bridge secret binds the bridge to
+**its** instance, so it can only fetch **that** instance's credentials (it is **not**
+the shared `BRIDGE_INGEST_SECRET`). If a credential is missing from Convex, or a
+secret fails to resolve, the bridge fails fast with a clear error.
+
+**Setting up an instance:**
 
 1. Set `ATRIUM_SECRET_KEY` on the Convex deployment if not already (back it up —
    losing it makes stored credentials unrecoverable). For compose, fill it in
    `.env` section B and re-run `./bootstrap-env.sh`.
-2. **Settings → Agents → Instances → (your instance) → Credentials**: enter the
-   operator token and device identity. They are write-only (a stored value is
-   never shown again — only “Configuré”).
+2. **Settings → Agents → Instances → (your instance)**: set its **gateway URL** (and
+   version / HTTP override if needed) and its **Bridge URL** (the bridge that serves
+   it). Under **Credentials**, enter the operator token and device identity. They are
+   write-only (a stored value is never shown again — only “Configuré”).
 3. In the same dialog, under **“Secret du bridge”**, **mint** a per-bridge secret.
    It is shown **once** — copy it.
-4. Put that value in the bridge env as **`BRIDGE_INSTANCE_SECRET`**, and **blank
-   out** `OPENCLAW_TOKEN` / `OPENCLAW_DEVICE_IDENTITY` (compose accepts them empty).
+4. In the bridge env, set **`BRIDGE_INSTANCE_SECRETS`** to that secret (or a
+   comma-separated list for several instances). The bridge reads NO gateway env —
+   gateway URL + version + credentials all come from Convex.
 5. Recreate the bridge: `docker compose up -d --no-deps --force-recreate bridge`.
    On boot it fetches the decrypted credentials from Convex over the authenticated
-   channel and connects. If a credential is missing from **both** Convex and env,
-   the bridge fails fast with a clear error.
-
-`BRIDGE_INSTANCE_SECRET` is per-bridge and binds it to **its** instance, so a
-bridge can only fetch **its own** gateway's credentials (it is **not** the shared
-`BRIDGE_INGEST_SECRET`). **Rotating** a UI-stored credential takes effect on the
-**next bridge restart**. To revert to env mode, set the env vars again and remove
-`BRIDGE_INSTANCE_SECRET` (or revoke the secret in the Credentials dialog).
+   channel and connects. The boot log reports how many instances it is serving.
 
 ## Hardening
 
@@ -128,7 +140,8 @@ the SOC2 control mapping in [`compliance/`](../compliance/)):
   (lose it and every Convex-stored credential is unrecoverable), the Convex auth
   keys (`JWT_PRIVATE_KEY`/`JWKS`), and the Convex instance secret.
 - Generate strong, unique server-to-server secrets (`openssl rand -hex 32`); mint a
-  **distinct per-bridge** credential-fetch secret for each bridge.
+  **distinct per-bridge** credential-fetch secret for each served instance (in
+  `BRIDGE_INSTANCE_SECRETS`), so each unlocks only its own gateway's credentials.
 - Mount the gateway media directory **read-only** into the bridge.
 - Terminate TLS upstream (reverse proxy / ingress) and ensure WebSocket upgrade
   support for the bridge ↔ gateway connection.
@@ -145,7 +158,7 @@ filesystem, works when Atrium and the gateway are on different hosts. For
 **large** uploads (video/audio/big docs past the WebSocket frame ceiling), enable
 **shared-fs** — Atrium and the gateway share the gateway's media dirs on disk. The
 full setup, the four-path model, the per-instance mount convention, a worked
-two-gateway example and a deterministic install procedure are in
+one-bridge-two-instances example and a deterministic install procedure are in
 **[SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md)**.
 
 ## Docker Compose

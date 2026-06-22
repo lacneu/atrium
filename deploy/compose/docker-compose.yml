@@ -5,9 +5,11 @@
 #   stateful  : convex-backend (self-hosted Convex + SQLite) + convex-dashboard
 #   stateless : frontend (static) + bridge (talks to your OpenClaw gateway)
 #
-# Bring your own OpenClaw gateway (set OPENCLAW_GATEWAY_URL). Public HTTPS routing
-# (browser → frontend, OAuth callbacks, the Convex public origins) is handled by
-# YOUR reverse proxy / ingress — this compose only publishes host ports.
+# Bring your own OpenClaw gateway: its URL + credentials are configured in Convex
+# (Settings -> Agents -> Instances), and the bridge fetches them at boot via the
+# per-bridge secret(s) in BRIDGE_INSTANCE_SECRETS. Public HTTPS routing (browser ->
+# frontend, OAuth callbacks, the Convex public origins) is handled by YOUR reverse
+# proxy / ingress — this compose only publishes host ports.
 #
 # The convex-backend image is a GENERIC, EMPTY backend — it ships none of this
 # app's code. `bootstrap-env.sh` (run from a full repo checkout) makes it usable:
@@ -86,50 +88,58 @@ services:
     ports:
       - "${BRIDGE_PORT:-8787}:8787"
     environment:
-      # YOUR OpenClaw gateway (external to this stack).
-      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:?ws[s]:// URL of your OpenClaw gateway}
-      # token + device identity are OPTIONAL here: blank => the bridge fetches them
-      # (decrypted) from Convex at boot using BRIDGE_INSTANCE_SECRET below ("UI
-      # mode"). Set them here for the simpler "env mode". See .env.example + the
-      # "UI-managed gateway credentials" section of deploy/README.md.
-      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
-      - OPENCLAW_DEVICE_IDENTITY=${OPENCLAW_DEVICE_IDENTITY:-}
-      # [UI mode] per-bridge secret minted in Settings -> Agents -> Instances ->
-      # Credentials; binds this bridge to its instance so it fetches ONLY that
-      # gateway's encrypted creds. Blank in env mode.
-      - BRIDGE_INSTANCE_SECRET=${BRIDGE_INSTANCE_SECRET:-}
-      - OPENCLAW_INSTANCE_NAME=${OPENCLAW_INSTANCE_NAME:?the instance name this bridge serves}
+      # Per-bridge secret(s): COMMA-separated, ONE per Convex instance this bridge
+      # serves. Each secret is minted in Settings -> Agents -> Instances ->
+      # Credentials ("Secret du bridge"), resolves 1:1 to its instance, and unlocks
+      # ONLY that instance's encrypted gateway credentials (isolation per secret).
+      # The bridge fetches each instance's gateway URL + version + HTTP override +
+      # decrypted token + device identity from Convex at boot using these secrets —
+      # there is NO gateway env any more (no OPENCLAW_GATEWAY_URL / _TOKEN /
+      # _DEVICE_IDENTITY / _INSTANCE_NAME). Decryption needs ATRIUM_SECRET_KEY on the
+      # CONVEX deployment (see .env.example section B). DEFAULTS EMPTY on purpose: the
+      # bootstrap order is `docker compose up -d` FIRST, THEN mint the per-bridge
+      # secret(s) in the UI (Settings -> Agents -> Instances -> Credentials) and set
+      # this — so `up` must not hard-fail on a blank value. The bridge then fails fast
+      # at boot with a clear "no instances to serve" error until it is set + recreated.
+      # ONE bridge, MANY gateways: list several secrets to serve several instances, e.g.
+      #   BRIDGE_INSTANCE_SECRETS=<olivier-secret>,<jerome-secret>
+      # then add a pair of media mounts per served instance (see the shared-fs block).
+      # REQUIRED for the multi-gateway case: set EACH Convex instance's Bridge URL
+      # (Settings -> Agents -> Instances -> Bridge URL) to THIS bridge — e.g. all to
+      # http://bridge:8787. Convex dispatch falls back to the deployment BRIDGE_URL only
+      # for the SOLE/served instance (to avoid cross-routing in the one-bridge-per-gateway
+      # topology), so a second instance without its own Bridge URL would be `not_configured`.
+      - BRIDGE_INSTANCE_SECRETS=${BRIDGE_INSTANCE_SECRETS:-}
       # Convex .site origin — SERVICE NAME (same network), no host IP needed.
       - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
       - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET:?shared with the Convex deployment env}
       - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET:?shared with the Convex deployment env}
       # Media transport MODE, per-file size CAP, agent-visible mount PATHS and
-      # session rehydration are PER-INSTANCE settings configured in Atrium ->
-      # Settings -> Agents -> Bridge (applied HOT, in-band on each send, no restart)
-      # — NOT env vars here. The bridge defaults to gateway-http (fetch bytes over
-      # HTTP from the gateway's assistant-media endpoint; NO shared filesystem needed)
-      # until the first send carries the instance config. For shared-fs, only the
-      # per-bridge DEPLOY-TIME plumbing below lives here (a docker mount can't be hot).
+      # session rehydration are PER-INSTANCE settings configured in Atrium -> Settings
+      # -> Agents -> Bridge (applied HOT, in-band on each send, no restart) — NOT env
+      # vars here. (The gateway URL + version + gateway-http HTTP override come from
+      # Convex at boot, see above.) The bridge defaults to gateway-http
+      # (fetch bytes over HTTP from the gateway's assistant-media endpoint; NO shared
+      # filesystem needed) until the first send carries the instance config. For
+      # shared-fs, only the per-instance DEPLOY-TIME plumbing below lives here (a docker
+      # mount can't be hot).
       #
-      # [shared-fs] The dirs the BRIDGE reads/writes auto-derive from
-      # OPENCLAW_INSTANCE_NAME (above): `/home/node/.openclaw/media/<instance>/
-      # {outbound,inbound}`. Keying by instance keeps every per-gateway bridge's
-      # mount distinct + self-documenting (Model M — one bridge per gateway). The
-      # `volumes:` mount target below MUST equal that derived path (it does, via the
-      # same ${OPENCLAW_INSTANCE_NAME}); a mismatch is the #1 shared-fs misconfig:
-      # ENOENT, every file silently undeliverable (the "Vérifier les chemins" button
-      # surfaces it). These are the BRIDGE-side paths, NOT the gateway's — the
-      # agent-visible mount stays flat `/home/node/.openclaw/media/{outbound,inbound}`
-      # (what the gateway exposes + openclaw.json `file-transfer.allowReadPaths`
-      # whitelists; do NOT key it). Override only if you mount elsewhere:
-      # OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR. Full guide + worked
-      # multi-gateway example: deploy/SHARED_FS_MEDIA.md.
+      # [shared-fs] The dirs the BRIDGE reads/writes auto-derive from each served
+      # instance's NAME (resolved from Convex via its per-bridge secret, NOT env):
+      # `/home/node/.openclaw/media/<instance>/{outbound,inbound}`. Keying by instance
+      # keeps EACH served gateway's mount distinct + self-documenting, so one bridge can
+      # serve several instances. The `volumes:` mount target below MUST equal that
+      # derived path (use the LITERAL instance name — there is no OPENCLAW_INSTANCE_NAME
+      # env to interpolate); a mismatch is the #1 shared-fs misconfig: ENOENT, every file
+      # silently undeliverable (the "Vérifier les chemins" button surfaces it). These are
+      # the BRIDGE-side paths, NOT the gateway's — the agent-visible mount stays flat
+      # `/home/node/.openclaw/media/{outbound,inbound}` (what the gateway exposes +
+      # openclaw.json `file-transfer.allowReadPaths` whitelists; do NOT key it). When a
+      # bridge serves a SINGLE instance you may override with OPENCLAW_MEDIA_OUTBOUND_DIR
+      # / OPENCLAW_INBOUND_DIR (process-global — do NOT use them with several instances).
+      # Full guide + worked one-bridge-two-instances example: deploy/SHARED_FS_MEDIA.md.
       # [shared-fs] Reap staged inbound files older than this (> the longest turn).
       - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
-      # [gateway-http mode] Optional override: set ONLY if the gateway serves the
-      # assistant-media HTTP endpoint on a DIFFERENT host/port than the WS URL
-      # (e.g. a separate ingress). Blank => derived from OPENCLAW_GATEWAY_URL.
-      - OPENCLAW_GATEWAY_HTTP_URL=${OPENCLAW_GATEWAY_HTTP_URL:-}
       # [gateway-http mode] Connection timeout (ms): bounds the media meta-probe +
       # response headers so a non-responsive gateway can't stall a turn (the body
       # then streams at the upload's pace). Default 60s.
@@ -155,22 +165,27 @@ services:
     #      `<root>/instances/<name>/.openclaw/media/{outbound,inbound}`:
     #        mkdir -p <root>/instances/<name>/.openclaw/media/{inbound,outbound}
     #        chown -R <uid>:<gid> <root>/instances/<name>/.openclaw/media
-    #   4. Uncomment the `volumes:` and point each HOST source at those dirs. The mount
-    #      TARGET is keyed by ${OPENCLAW_INSTANCE_NAME} so it equals the bridge's
-    #      auto-derived OPENCLAW_*_DIR. Outbound is :ro (bridge only reads agent
-    #      output); inbound is rw (bridge writes staged files).
+    #   4. Uncomment the `volumes:` block and point each HOST source at those dirs. The
+    #      mount TARGET is keyed by the LITERAL instance name so it equals the bridge's
+    #      auto-derived dir (there is no OPENCLAW_INSTANCE_NAME env to interpolate now).
+    #      Outbound is :ro (bridge only reads agent output); inbound is rw (bridge writes
+    #      staged files).
     #   5. Recreate the bridge (a docker mount is NOT hot): `up -d --force-recreate bridge`,
     #      then click "Vérifier les chemins" in the per-instance config modal.
     #
-    # Under Model M (one bridge per gateway) each bridge mounts ITS instance's dirs.
-    # MULTIPLE gateways? Run one bridge container PER gateway — each with its own
-    # OPENCLAW_INSTANCE_NAME, host dirs, port and Convex `instances.bridgeUrl`. The
-    # instance-keyed target below keeps their internal paths distinct. Full worked
-    # 2-gateway example: deploy/SHARED_FS_MEDIA.md.
+    # One bridge can serve SEVERAL gateways: list several secrets in
+    # BRIDGE_INSTANCE_SECRETS and mount EACH served instance's host dirs, keyed by that
+    # instance's literal name. The example below serves two instances (`olivier`,
+    # `jerome`) from one bridge. (Running one bridge container per gateway also still
+    # works — give each its own secret, host dirs, port and Convex `instances.bridgeUrl`.)
+    # A bridge process has ONE `user:`, so all served gateways must share that uid:gid
+    # (or use a default ACL on the host dirs). Full worked example: deploy/SHARED_FS_MEDIA.md.
     # user: "${BRIDGE_RUN_AS_UID:?gateway uid:gid, e.g. 1000017:1000011}"
     # volumes:
-    #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to this instance's media/outbound dir}:/home/node/.openclaw/media/${OPENCLAW_INSTANCE_NAME}/outbound:ro
-    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to this instance's media/inbound dir}:/home/node/.openclaw/media/${OPENCLAW_INSTANCE_NAME}/inbound
+    #   - ${OLIVIER_MEDIA_OUTBOUND_HOST_DIR:?host path to olivier's media/outbound dir}:/home/node/.openclaw/media/olivier/outbound:ro
+    #   - ${OLIVIER_INBOUND_HOST_DIR:?host path to olivier's media/inbound dir}:/home/node/.openclaw/media/olivier/inbound
+    #   - ${JEROME_MEDIA_OUTBOUND_HOST_DIR:?host path to jerome's media/outbound dir}:/home/node/.openclaw/media/jerome/outbound:ro
+    #   - ${JEROME_INBOUND_HOST_DIR:?host path to jerome's media/inbound dir}:/home/node/.openclaw/media/jerome/inbound
     # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
     # Convex (it reaches convex-backend by service DNS only on ingest, with
     # retry), so a hard depends_on would needlessly couple their lifecycles and

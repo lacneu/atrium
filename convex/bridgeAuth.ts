@@ -135,14 +135,25 @@ export const listBridgeAuthStatus = query({
  * INTERNAL: resolve a presented bridge secret HASH to the instance it authenticates.
  * The verification primitive 3b's decrypt endpoint will use — the caller hashes the
  * presented secret (async crypto in the httpAction) and passes the hash here. Returns
- * the bound instance (id + name) or null. NEVER exposes the hash/secret.
+ * the bound instance (id + name + its NON-SECRET gateway config) or null. NEVER exposes
+ * the hash/secret. The gateway config (url/version/httpUrl/kind) rides along so the
+ * bridge can self-configure its gateway connection from Convex (no env) — the secret
+ * fields stay in `instanceSecrets`, fetched separately by the decrypt endpoint.
  */
 export const resolveBridgeInstanceBySecretHash = internalQuery({
   args: { hash: v.string() },
   handler: async (
     ctx,
     { hash },
-  ): Promise<{ authId: Id<"bridgeAuth">; instanceId: Id<"instances">; instanceName: string } | null> => {
+  ): Promise<{
+    authId: Id<"bridgeAuth">;
+    instanceId: Id<"instances">;
+    instanceName: string;
+    gatewayUrl: string;
+    gatewayVersion: string | null;
+    gatewayHttpUrl: string | null;
+    kind: "openclaw" | "hermes";
+  } | null> => {
     const row = await ctx.db
       .query("bridgeAuth")
       .withIndex("by_hash", (q) => q.eq("hashedSecret", hash))
@@ -150,7 +161,15 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
     if (row === null) return null;
     const inst = await ctx.db.get(row.instanceId);
     if (inst === null) return null; // tolerate a dangling row (instance deleted)
-    return { authId: row._id, instanceId: row.instanceId, instanceName: inst.name };
+    return {
+      authId: row._id,
+      instanceId: row.instanceId,
+      instanceName: inst.name,
+      gatewayUrl: inst.gatewayUrl,
+      gatewayVersion: inst.gatewayVersion ?? null,
+      gatewayHttpUrl: inst.gatewayHttpUrl ?? null,
+      kind: inst.kind ?? "openclaw",
+    };
   },
 });
 

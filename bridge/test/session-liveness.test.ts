@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 
 import { SessionRegistry, IDLE_SESSION_TTL_SECONDS } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
+import { servedMap } from "./helpers/served.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 
@@ -90,7 +91,7 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
       async () => fakeConn() as never,
     );
     const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
     // Let the consumer loop reach its first (null-timeout) frame wait.
     await vi.advanceTimersByTimeAsync(0);
@@ -196,7 +197,7 @@ describe("Session consume loop — crash self-heal (Mars robustness)", () => {
     );
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { writer } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => 1000);
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
 
     const s = await reg.acquire(ROUTING);
     await new Promise((r) => setTimeout(r, 5)); // loop reaches its frame wait
@@ -218,7 +219,7 @@ describe("Session consume loop — crash self-heal (Mars robustness)", () => {
     );
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => 1000);
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
 
     const s = await reg.acquire(ROUTING);
     await new Promise((r) => setTimeout(r, 5));
@@ -246,7 +247,7 @@ describe("Session consume loop — crash self-heal (Mars robustness)", () => {
       new Promise<void>((r) => {
         releaseFinalize = r;
       });
-    const reg = new SessionRegistry(config, writer, () => 1000);
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
 
     const s = await reg.acquire(ROUTING);
     await new Promise((r) => setTimeout(r, 5));
@@ -269,7 +270,7 @@ describe("Session consume loop — history recovery survives a wake (review #14 
     const conn = fakeConnRecording();
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
     // Routing chosen so the session key matches the fixture, else the normalizer
     // filters the replayed frames as foreign-session.
     const s = await reg.acquire({
@@ -316,7 +317,7 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
     const conn = fakeConn();
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING); // lastActivityAt = start (seconds)
     // At exactly 15 min idle: NOT yet reaped (strictly greater).
     expect(reg.reapStaleSessions(start + fifteenMinutes)).toBe(0);
@@ -332,7 +333,7 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
     const conn = fakeConn();
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
     await reg.acquire(ROUTING);
     conn.close(); // the gateway dropped it -> a husk that would otherwise linger
     expect(reg.reapStaleSessions(now)).toBe(1); // reaped now, not after the TTL
@@ -344,7 +345,7 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
     const conn = fakeConn();
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer } = fakeWriter();
-    const reg = new SessionRegistry(config, writer, () => now);
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
     await reg.acquire(ROUTING);
     now = 1000 + IDLE_SESSION_TTL_SECONDS - 1;
     await reg.acquire(ROUTING); // a fresh send touches lastActivityAt = now

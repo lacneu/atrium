@@ -14,6 +14,7 @@ const REF: TargetRef = {
   canonical: "u-testuser01",
   agentId: "main",
   gatewayHost: "192.0.2.10:18789",
+  instanceName: "primary",
 };
 
 describe("gatewayHostOf", () => {
@@ -240,7 +241,7 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     // Per-target: every legacy field intact + the additive gatewayVersion.
     const before = plain.targets[0]!;
     const after = enriched.targets[0]!;
-    expect(after).toEqual({ ...before, gatewayVersion: null });
+    expect(after).toEqual({ ...before, gatewayVersion: null, maxPayload: null });
   });
 
   test("maps gatewayVersion from the live session sharing the canonical", () => {
@@ -248,7 +249,7 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     h.recordOk(REF);
     h.recordOk({ ...REF, key: "u-bob", canonical: "u-bob" });
     const enriched = enrichHealthSnapshot(h.snapshot(), [
-      { canonical: "u-testuser01", agentId: "main", gatewayVersion: "2026.6.5", maxPayload: 26214400 },
+      { canonical: "u-testuser01", agentId: "main", instanceName: "primary", gatewayVersion: "2026.6.5", maxPayload: 26214400 },
     ]);
     const byKey = new Map(enriched.targets.map((t) => [t.key, t]));
     expect(byKey.get("u-testuser01")!.gatewayVersion).toBe("2026.6.5");
@@ -256,6 +257,38 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     expect(byKey.get("u-bob")!.gatewayVersion).toBeNull();
     // The gateway's maxPayload is surfaced at the top level (inbound cap source).
     expect(enriched.maxPayload).toBe(26214400);
+  });
+
+  test("per-instance maxPayload: each target carries its OWN gateway frame (codex P2)", () => {
+    // One bridge, two instances with DIFFERENT maxPayloads. Each target must carry its
+    // instance's own frame so the Convex poller keeps them distinct (not one URL value
+    // copied onto all). Regression guard: keyed by instance:canonical, NOT canonical.
+    const h = new HealthRegistry(0, () => 1);
+    h.recordOk({ ...REF, key: "olivier:u", canonical: "u", instanceName: "olivier" });
+    h.recordOk({ ...REF, key: "jerome:u", canonical: "u", instanceName: "jerome" });
+    const enriched = enrichHealthSnapshot(h.snapshot(), [
+      { canonical: "u", agentId: "main", instanceName: "olivier", gatewayVersion: "2026.6.5", maxPayload: 26214400 },
+      { canonical: "u", agentId: "main", instanceName: "jerome", gatewayVersion: "2026.6.5", maxPayload: 52428800 },
+    ]);
+    const byKey = new Map(enriched.targets.map((t) => [t.instanceName, t]));
+    // Same canonical "u" on both instances, but each target gets its OWN frame.
+    expect(byKey.get("olivier")!.maxPayload).toBe(26214400);
+    expect(byKey.get("jerome")!.maxPayload).toBe(52428800);
+  });
+
+  test("top-level maxPayload is the CONSERVATIVE MIN across all known caps (codex P2)", () => {
+    // A BIG-limit instance is live while a SMALL-limit instance is idle (only in the
+    // per-instance fallback map). The top-level cap (context-free composer gate) must
+    // be the SMALL one — taking the first live frame would let files through that the
+    // small gateway refuses. Regression guard.
+    const h = new HealthRegistry(0, () => 1);
+    h.recordOk({ ...REF, key: "big:u", canonical: "u", instanceName: "big" });
+    const enriched = enrichHealthSnapshot(
+      h.snapshot(),
+      [{ canonical: "u", agentId: "main", instanceName: "big", gatewayVersion: null, maxPayload: 52428800 }],
+      new Map([["small", 10 * 1024 * 1024]]), // a smaller idle instance
+    );
+    expect(enriched.maxPayload).toBe(10 * 1024 * 1024); // MIN, not the 50MiB live frame
   });
 
   // Codex P2: the published cap must fit BOTH the gateway WS frame AND the bridge's
@@ -270,16 +303,16 @@ describe("enrichHealthSnapshot (additive compat fields)", () => {
     // Gateway frame BIGGER than our body cap -> publish the body cap.
     const big = enrichHealthSnapshot(
       h.snapshot(),
-      [{ canonical: "u-testuser01", agentId: "main", gatewayVersion: null, maxPayload: FIFTY }],
-      null,
+      [{ canonical: "u-testuser01", agentId: "main", instanceName: "primary", gatewayVersion: null, maxPayload: FIFTY }],
+      new Map(),
       BODY,
     );
     expect(big.maxPayload).toBe(BODY);
     // Gateway frame SMALLER than the body cap -> publish the gateway frame.
     const small = enrichHealthSnapshot(
       h.snapshot(),
-      [{ canonical: "u-testuser01", agentId: "main", gatewayVersion: null, maxPayload: 26214400 }],
-      null,
+      [{ canonical: "u-testuser01", agentId: "main", instanceName: "primary", gatewayVersion: null, maxPayload: 26214400 }],
+      new Map(),
       BODY,
     );
     expect(small.maxPayload).toBe(26214400);

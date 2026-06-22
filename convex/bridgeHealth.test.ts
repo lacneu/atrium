@@ -6,7 +6,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { internal, api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
 import { normalizeTarget, computeAvailability } from "./bridgeHealth";
@@ -131,7 +131,7 @@ function doc(p: {
   checkedAt: number;
   lastError?: string;
   maxPayload?: number | null;
-  targets?: { state: string }[];
+  targets?: { state: string; instanceName?: string; maxPayload?: number }[];
 }): Doc<"bridgeHealth"> {
   return {
     _id: "x" as Doc<"bridgeHealth">["_id"],
@@ -195,6 +195,60 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
     expect(a.available).toBe(true);
     expect(a.degraded).toBe(false);
     expect(a.reason).toBeNull();
+  });
+
+  test("per-instance scope: one gateway down does NOT degrade the other (one bridge, N gateways)", () => {
+    // olivier connected, jerome erroring, on ONE bridge. Scoping by olivier must show
+    // NOT degraded; by jerome, degraded; the global view (no scope) IS degraded.
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400,
+      targets: [
+        { state: "connected", instanceName: "olivier", maxPayload: 26214400 },
+        { state: "error", instanceName: "jerome", maxPayload: 52428800 },
+      ],
+    });
+    expect(computeAvailability(d, NOW, "olivier").degraded).toBe(false);
+    expect(computeAvailability(d, NOW, "jerome").degraded).toBe(true);
+    expect(computeAvailability(d, NOW).degraded).toBe(true); // global = any target error
+    // available stays the GLOBAL bridge-reachable gate for every scope (no lockout).
+    expect(computeAvailability(d, NOW, "jerome").available).toBe(true);
+  });
+
+  test("per-instance maxInboundBytes uses THAT instance's gateway frame, not the doc MIN", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400, // doc-level MIN (global)
+      targets: [
+        { state: "connected", instanceName: "olivier", maxPayload: 26214400 },
+        { state: "connected", instanceName: "jerome", maxPayload: 52428800 },
+      ],
+    });
+    // jerome's bigger frame yields a bigger cap than the global MIN-derived one.
+    const jerome = computeAvailability(d, NOW, "jerome").maxInboundBytes;
+    const global = computeAvailability(d, NOW).maxInboundBytes;
+    expect(jerome).toBe(maxRawInboundBytes(52428800));
+    expect(global).toBe(maxRawInboundBytes(26214400));
+    expect(jerome!).toBeGreaterThan(global!);
+  });
+
+  test("an instance with NO target yet (idle) falls back to the conservative doc cap, NOT null", () => {
+    // Idle bridge / just restarted: a chat's instance has no /health target yet.
+    // computeAvailability(chatId->instanceName) must NOT return null (the composer
+    // treats null as fail-open and lets oversized files through to fail at dispatch);
+    // it falls back to the doc-level MIN. Regression guard (codex P2).
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      maxPayload: 26214400, // doc-level conservative cap
+      targets: [{ state: "connected", instanceName: "jerome", maxPayload: 52428800 }],
+    });
+    // "olivier" has no target -> must still get the conservative doc cap, not null.
+    expect(computeAvailability(d, NOW, "olivier").maxInboundBytes).toBe(
+      maxRawInboundBytes(26214400),
+    );
   });
 
   test("unreachable -> unavailable with the poll reason", () => {
@@ -279,5 +333,60 @@ describe("upsertBridgeHealth (cron write path)", () => {
     // still a single singleton row
     const all = await t.run((ctx) => ctx.db.query("bridgeHealth").collect());
     expect(all).toHaveLength(1);
+  });
+});
+
+describe("getBridgeAvailability (ownership-scoped, one bridge / N gateways)", () => {
+  const mkTarget = (instanceName: string, state: string) => ({
+    key: `${instanceName}:u`,
+    instanceName,
+    canonical: "u",
+    agentId: "main",
+    gatewayHost: "h:1",
+    state,
+    lastOkAt: null,
+    lastErrorCode: null,
+    lastErrorAt: null,
+    attempts: 1,
+    okCount: state === "connected" ? 1 : 0,
+    errorCount: state === "error" ? 1 : 0,
+  });
+
+  test("scopes to the CALLER's OWN chat instance; a third party's chatId is NOT used", async () => {
+    const t = convexTest(schema, modules);
+    const { a, b, chatA } = await t.run(async (ctx) => {
+      const a = await ctx.db.insert("users", {});
+      const b = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: a, role: "admin" });
+      await ctx.db.insert("profiles", { userId: b, role: "admin" });
+      // jerome connected, olivier erroring -> GLOBAL degraded, jerome-scoped NOT.
+      await ctx.db.insert("bridgeHealth", {
+        key: "singleton",
+        reachable: true,
+        checkedAt: 1,
+        maxPayload: null,
+        targets: [mkTarget("jerome", "connected"), mkTarget("olivier", "error")],
+      });
+      const chatA = await ctx.db.insert("chats", {
+        userId: a,
+        instanceName: "jerome",
+        updatedAt: 1,
+      });
+      return { a, b, chatA };
+    });
+    const asA = t.withIdentity({ subject: `${a}|s` });
+    const asB = t.withIdentity({ subject: `${b}|s` });
+    // A OWNS chatA (jerome) -> scoped to jerome -> NOT degraded.
+    expect(
+      (await asA.query(api.bridgeHealth.getBridgeAvailability, { chatId: chatA }))
+        .degraded,
+    ).toBe(false);
+    // B does NOT own chatA -> the chat's instance is IGNORED -> GLOBAL view ->
+    // degraded (olivier erroring). Regression guard: without the ownership check B
+    // would read A's chat and get the jerome-scoped (false) verdict.
+    expect(
+      (await asB.query(api.bridgeHealth.getBridgeAvailability, { chatId: chatA }))
+        .degraded,
+    ).toBe(true);
   });
 });

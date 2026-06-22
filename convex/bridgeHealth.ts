@@ -22,6 +22,7 @@ import { PERMISSIONS } from "./lib/rbac";
 import { bridgeHealthTarget } from "./schema";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
 import { resolveHealthPollTargets } from "./lib/bridgeRouting";
+import { resolveTargetForChat } from "./routing";
 
 const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
@@ -50,6 +51,7 @@ export function normalizeTarget(raw: unknown): {
   lastDownstreamRejectAt: number | null;
   downstreamRejectCount: number;
   gatewayVersion: string | null;
+  maxPayload: number | null;
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
@@ -90,6 +92,10 @@ export function normalizeTarget(raw: unknown): {
     // gateway's version, so the connection row shows it per instance (the compat
     // poller is a singleton and can't).
     gatewayVersion: str(o.gatewayVersion),
+    // Per-instance frame limit: a bridge serving instances with DIFFERENT maxPayloads
+    // reports each target's own cap, so the poller keeps them distinct (not one
+    // URL-level value copied onto every target). null on a pre-this-release bridge.
+    maxPayload: num(o.maxPayload),
   };
 }
 
@@ -119,6 +125,11 @@ export interface Availability {
 export function computeAvailability(
   doc: Doc<"bridgeHealth"> | null,
   now: number,
+  // When given, `degraded` + `maxInboundBytes` reflect ONLY this instance's targets
+  // (one bridge, N gateways): instance B's gateway being down must not show instance
+  // A as degraded, and A's inbound cap is A's gateway frame, not the doc-wide MIN.
+  // `available` stays the GLOBAL bridge-reachable gate (no per-instance lockout).
+  instanceName?: string | null,
 ): Availability {
   if (doc === null)
     return {
@@ -130,7 +141,11 @@ export function computeAvailability(
       maxInboundBytes: null,
     };
   const stale = now - doc.checkedAt > STALE_MS;
-  const anyTargetError = doc.targets.some((t) => t.state === "error");
+  const scoped =
+    instanceName != null
+      ? doc.targets.filter((t) => t.instanceName === instanceName)
+      : doc.targets;
+  const anyTargetError = scoped.some((t) => t.state === "error");
   // GLOBAL availability gates ONLY on "the bridge process is reachable AND the
   // poller is fresh". A SINGLE agent/target in `error` must NOT grey out the
   // composer for EVERY user/chat — that was a global-readonly DEADLOCK: one agent's
@@ -144,6 +159,18 @@ export function computeAvailability(
     : stale
       ? "stale"
       : null;
+  // Per-instance cap = that instance's OWN gateway frame (a scoped target's
+  // maxPayload). When the instance has no target yet (idle bridge / just restarted,
+  // before a send creates one) fall back to the doc-level value (the conservative MIN
+  // across instances) — NEVER null, else the composer treats it as fail-open and lets
+  // an oversized file through to fail later at dispatch.
+  const docMaxPayload =
+    typeof doc.maxPayload === "number" ? doc.maxPayload : null;
+  const scopedMaxPayload =
+    instanceName != null
+      ? (scoped.find((t) => typeof t.maxPayload === "number")?.maxPayload ??
+        docMaxPayload)
+      : docMaxPayload;
   return {
     known: true,
     available,
@@ -152,9 +179,7 @@ export function computeAvailability(
     checkedAt: doc.checkedAt,
     // Derived from the gateway-announced maxPayload — never a hardcoded size.
     maxInboundBytes:
-      typeof doc.maxPayload === "number"
-        ? maxRawInboundBytes(doc.maxPayload)
-        : null,
+      scopedMaxPayload !== null ? maxRawInboundBytes(scopedMaxPayload) : null,
   };
 }
 
@@ -224,9 +249,15 @@ export const pollBridgeHealth = internalAction({
           .filter((t): t is NonNullable<typeof t> => t !== null)
           // When we KNOW the instance (per-instance bridgeUrl, or the served name),
           // FORCE it (never trust the body to attribute another instance); when name
-          // is null (env bridge, no served name) keep the bridge's self-reported one
-          // (backward-compat). Always tag this instance's frame limit.
-          .map((t) => ({ ...t, instanceName: name ?? t.instanceName, maxPayload: mp }));
+          // is null (one bridge / N instances, or env bridge) keep the bridge's
+          // self-reported per-target instanceName. PREFER the target's OWN frame limit
+          // (a bridge serving instances with different maxPayloads), falling back to
+          // the URL-level value when a pre-this-release bridge omits it.
+          .map((t) => ({
+            ...t,
+            instanceName: name ?? t.instanceName,
+            maxPayload: t.maxPayload ?? mp,
+          }));
         allTargets.push(...its);
       } catch {
         lastError = "unreachable";
@@ -295,12 +326,32 @@ export const getBridgeHealth = query({
   },
 });
 
-/** Any active user: light availability projection for the chat composer gate. */
+/** Any active user: light availability projection for the chat composer gate. An
+ *  optional chatId scopes `degraded` + the inbound cap to THAT chat's gateway (one
+ *  bridge, N gateways) — instance B's gateway down must not grey out A's composer,
+ *  and A's upload cap is A's gateway frame. Omitted → the global view (admin badge).
+ *  instanceName is non-secret routing metadata; resolved from the chat's own row. */
 export const getBridgeAvailability = query({
-  args: {},
-  handler: async (ctx): Promise<Availability> => {
-    await requireActive(ctx);
-    return computeAvailability(await readDoc(ctx), Date.now());
+  args: { chatId: v.optional(v.id("chats")) },
+  handler: async (ctx, { chatId }): Promise<Availability> => {
+    const { userId } = await requireActive(ctx);
+    let instanceName: string | null = null;
+    if (chatId) {
+      const chat = await ctx.db.get(chatId);
+      // Only scope by a chat the CALLER owns — never read a third party's chat to
+      // expose its instance's state/capacity (parity with the per-chat access gate).
+      // Scope to the instance dispatch ACTUALLY routes to. resolveTargetForChat is the
+      // authority: it honors chat.instanceName when the binding is valid, but REBINDS
+      // to another instance when the bound agent was deleted/revoked — so the resolver
+      // wins, with chat.instanceName only as a last resort (resolver found no target).
+      if (chat && chat.userId === userId) {
+        instanceName =
+          (await resolveTargetForChat(ctx, chat, userId)).target?.instanceName ??
+          chat.instanceName ??
+          null;
+      }
+    }
+    return computeAvailability(await readDoc(ctx), Date.now(), instanceName);
   },
 });
 

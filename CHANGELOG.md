@@ -8,6 +8,38 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.6.0] — One bridge, many gateways: gateway config moves to Convex
+
+Breaking release. The bridge no longer reads its gateway URL or credentials from the
+environment — they come from Convex, per a per-bridge secret. In exchange, a single
+bridge can now serve several gateways/instances at once, and one gateway being down no
+longer affects the others. Existing env-only deployments must migrate (steps below).
+
+- **One bridge can serve multiple gateways.** A bridge is no longer pinned to a single
+  gateway (the old "one bridge per gateway" model). List several per-bridge secrets and it
+  serves several Convex instances at once — fetching each one's gateway URL, version, HTTP
+  override and decrypted credentials from Convex. Running one bridge per gateway is still
+  supported; it is just no longer required.
+- **BREAKING: the bridge no longer reads gateway env.** `OPENCLAW_GATEWAY_URL`,
+  `OPENCLAW_GATEWAY_VERSION`, `OPENCLAW_GATEWAY_HTTP_URL`, `OPENCLAW_TOKEN`,
+  `OPENCLAW_DEVICE_IDENTITY` and `OPENCLAW_INSTANCE_NAME` are gone from the bridge
+  environment. Each instance's gateway URL + version + HTTP override, and its operator
+  token + Ed25519 device identity, are configured in Convex (Settings → Agents →
+  Instances, with credentials stored AES-256-GCM-encrypted) and fetched at boot. This
+  needs `ATRIUM_SECRET_KEY` on the Convex deployment to decrypt them.
+- **`BRIDGE_INSTANCE_SECRETS` (per-bridge secrets list).** The bridge env takes a
+  comma-separated list of per-bridge secrets, one per served instance; each is minted in
+  the instance's Credentials dialog and unlocks only that instance's encrypted credentials
+  (isolation preserved per secret).
+- **Per-instance availability.** Each served gateway connects independently — one gateway
+  being unreachable degrades only its own instance instead of the whole bridge.
+- **Breaking — env-only bridges no longer connect.** Configure each gateway in Convex:
+  in Settings → Agents → Instances set its gateway URL + Bridge URL, enter the operator
+  token + device identity under Credentials, and mint a per-bridge secret; set
+  `ATRIUM_SECRET_KEY` on the Convex deployment; set `BRIDGE_INSTANCE_SECRETS` (the minted
+  secret, or a comma-separated list for several instances) on the bridge — it reads NO
+  gateway env. See `deploy/README.md`.
+
 ## [0.5.0] — UI-managed gateway credentials, mid-turn queue, document attachments & delegated groups
 
 Feature release. No breaking changes — everything is additive and existing env-based

@@ -5,10 +5,91 @@
 import { describe, it, expect } from "vitest";
 import {
   loadConfig,
+  loadSharedConfig,
+  buildInstanceConfig,
+  findMediaDirCollision,
   deriveHttpBase,
   mediaInstanceSegment,
   ConfigError,
 } from "../src/config.js";
+
+const sharedEnv = {
+  CONVEX_HTTP_ACTIONS_URL: "http://convex.invalid",
+  BRIDGE_INGEST_SECRET: "i",
+  BRIDGE_SHARED_SECRET: "s",
+  BRIDGE_INSTANCE_SECRETS: "sec",
+} as NodeJS.ProcessEnv;
+const inst = {
+  instanceName: "olivier",
+  gatewayUrl: "ws://gw:18790",
+  token: "t",
+  deviceIdentity: { id: "d", publicKey: "p", privateKey: "k" },
+  gatewayVersion: null,
+  gatewayHttpUrl: null,
+  kind: "openclaw" as const,
+};
+
+describe("buildInstanceConfig: media dir derivation + overrides", () => {
+  it("derives per-instance dirs from the instance name (no override)", () => {
+    const c = buildInstanceConfig(loadSharedConfig({ ...sharedEnv }), inst);
+    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/olivier/outbound");
+    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/olivier/inbound");
+  });
+
+  it("an explicit OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override WINS (Helm bridge.media.enabled)", () => {
+    // Regression guard (codex P2): without honoring the override the bridge would
+    // scan/write the derived path, NOT the mounted one -> shared-fs breaks.
+    const shared = loadSharedConfig({
+      ...sharedEnv,
+      OPENCLAW_MEDIA_OUTBOUND_DIR: "/mnt/out",
+      OPENCLAW_INBOUND_DIR: "/mnt/in",
+    });
+    const c = buildInstanceConfig(shared, inst);
+    expect(c.mediaOutboundDir).toBe("/mnt/out");
+    expect(c.inboundMediaDir).toBe("/mnt/in");
+  });
+});
+
+describe("findMediaDirCollision (boot guard, codex P2)", () => {
+  const ic = (instanceName: string, out: string, inb: string) => ({
+    instanceName,
+    mediaOutboundDir: out,
+    inboundMediaDir: inb,
+  });
+
+  it("distinct per-instance dirs -> no collision", () => {
+    expect(
+      findMediaDirCollision([
+        ic("olivier", "/m/olivier/out", "/m/olivier/in"),
+        ic("jerome", "/m/jerome/out", "/m/jerome/in"),
+      ]),
+    ).toBeNull();
+  });
+
+  it("a single dir override applied to MANY instances collides", () => {
+    // Both instances got OPENCLAW_MEDIA_OUTBOUND_DIR=/mnt/out -> same outbound dir.
+    const c = findMediaDirCollision([
+      ic("olivier", "/mnt/out", "/m/olivier/in"),
+      ic("jerome", "/mnt/out", "/m/jerome/in"),
+    ]);
+    expect(c?.dir).toBe("/mnt/out");
+    expect([c?.a, c?.b]).toContain("olivier/outbound");
+    expect([c?.a, c?.b]).toContain("jerome/outbound");
+  });
+
+  it("two instance names normalizing to the SAME segment collide", () => {
+    // mediaInstanceSegment maps both "a/b" and "a_b" -> "a_b".
+    const seg = mediaInstanceSegment("a/b");
+    expect(seg).toBe(mediaInstanceSegment("a_b"));
+    const dir = `/home/node/.openclaw/media/${seg}/outbound`;
+    expect(
+      findMediaDirCollision([
+        ic("a/b", dir, "/x/in1"),
+        ic("a_b", dir, "/x/in2"),
+      ]),
+    ).not.toBeNull();
+  });
+});
 
 const baseEnv = {
   OPENCLAW_GATEWAY_URL: "ws://gw.invalid:18790",

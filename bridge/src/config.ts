@@ -389,4 +389,179 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   }
 }
 
+// ── Multi-instance boot (one bridge, N Convex-configured gateways) ───────────
+//
+// The PRODUCTION boot path (index.ts) no longer reads gateway env at all: gateway
+// URL/version/httpUrl + the creds come ONLY from Convex, fetched per per-bridge
+// secret. `loadConfig` above stays the LEGACY single-instance / test-fixture
+// builder (it still reads env); it is NOT the boot path.
+
+/**
+ * Gateway-agnostic config shared by every served instance, plus the bootstrap
+ * anchors. Built once from env; combined with each instance's Convex-fetched
+ * gateway data by `buildInstanceConfig` into a full per-instance BridgeConfig.
+ */
+export interface SharedConfig {
+  convexHttpActionsUrl: string;
+  convexIngestSecret: string;
+  bridgeSharedSecret: string;
+  port: number;
+  maxBodyBytes: number;
+  inboundTtlMs: number;
+  mediaFetchTimeoutMs: number;
+  /** Default outbound media mode/cap until an in-band per-instance config overrides. */
+  mediaModeDefault: BridgeConfig["mediaMode"];
+  mediaMaxBytesDefault: number;
+  /** AGENT-visible (gateway) media mounts — flat + identical across instances. */
+  mediaOutboundAgentMount: string;
+  inboundAgentMount: string;
+  /** Explicit bridge-side media dir OVERRIDES (OPENCLAW_MEDIA_OUTBOUND_DIR /
+   *  OPENCLAW_INBOUND_DIR), null when unset. When set they WIN over the per-instance
+   *  derived path — for a single-instance bridge whose deploy mounts an explicit path
+   *  (e.g. Helm `bridge.media.enabled`). For a MULTI-instance bridge leave them unset
+   *  and rely on the per-instance derived dirs (a single override can't fit N instances). */
+  mediaOutboundDirOverride: string | null;
+  inboundMediaDirOverride: string | null;
+  /** Per-bridge secrets, one per served instance (the irreducible env anchor). */
+  bridgeInstanceSecrets: string[];
+}
+
+/** Per-instance gateway data fetched from Convex (`/bridge/credentials`). */
+export interface InstanceData {
+  instanceName: string;
+  gatewayUrl: string;
+  token: string;
+  deviceIdentity: DeviceIdentity;
+  gatewayVersion: string | null;
+  gatewayHttpUrl: string | null;
+  kind: "openclaw" | "hermes";
+}
+
+/** Parse the comma/space-separated per-bridge secrets list (BRIDGE_INSTANCE_SECRETS),
+ *  one per served instance. Trimmed, de-duplicated, empties dropped. */
+function parseSecretsList(listName: string): string[] {
+  const raw = (process.env[listName] ?? "").trim();
+  const seen = new Set<string>();
+  for (const part of raw.split(/[,\s]+/)) {
+    const s = part.trim();
+    if (s) seen.add(s);
+  }
+  return [...seen];
+}
+
+/** Load the gateway-agnostic shared config + the per-bridge secret list. Throws on a
+ *  missing shared requirement (Convex URL / ingest+shared secrets). Does NOT read any
+ *  gateway env (D1 hard break). */
+export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedConfig {
+  const prev = process.env;
+  process.env = env;
+  try {
+    return {
+      convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
+      convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
+      bridgeSharedSecret: requireEnv("BRIDGE_SHARED_SECRET"),
+      port: parseIntEnv("BRIDGE_PORT", 8787),
+      maxBodyBytes: parseIntEnv("BRIDGE_MAX_BODY_BYTES", 33_554_432),
+      inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
+      mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
+      mediaModeDefault: parseMediaMode("OPENCLAW_MEDIA_MODE"),
+      mediaMaxBytesDefault: parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
+      mediaOutboundAgentMount: optionalEnv(
+        "OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT",
+        `${MEDIA_ROOT}/outbound`,
+      ),
+      inboundAgentMount: optionalEnv(
+        "OPENCLAW_INBOUND_AGENT_MOUNT",
+        `${MEDIA_ROOT}/inbound`,
+      ),
+      mediaOutboundDirOverride: optionalEnvOrNull("OPENCLAW_MEDIA_OUTBOUND_DIR"),
+      inboundMediaDirOverride: optionalEnvOrNull("OPENCLAW_INBOUND_DIR"),
+      bridgeInstanceSecrets: parseSecretsList("BRIDGE_INSTANCE_SECRETS"),
+    };
+  } finally {
+    process.env = prev;
+  }
+}
+
+/**
+ * Combine the shared config with ONE instance's Convex-fetched gateway data into a
+ * full BridgeConfig (what Session/RunManager/media consume unchanged). The bridge's
+ * own media dirs are derived per-instance from the instance name (so multiple served
+ * instances never collide); the AGENT-visible mounts stay flat (shared). A
+ * malformed gatewayVersion is dropped to undefined (conservative no-version policy).
+ */
+export function buildInstanceConfig(
+  shared: SharedConfig,
+  inst: InstanceData,
+): BridgeConfig {
+  // An explicit env override (deploy mounts a specific path, e.g. Helm
+  // bridge.media.enabled) WINS over the per-instance derived path; else derive
+  // `${MEDIA_ROOT}/<instance>/{outbound,inbound}` so multiple served instances never
+  // collide.
+  const seg = mediaInstanceSegment(inst.instanceName);
+  const outboundDir =
+    shared.mediaOutboundDirOverride ??
+    (seg ? `${MEDIA_ROOT}/${seg}/outbound` : `${MEDIA_ROOT}/outbound`);
+  const inboundDir =
+    shared.inboundMediaDirOverride ??
+    (seg ? `${MEDIA_ROOT}/${seg}/inbound` : `${MEDIA_ROOT}/inbound`);
+  const version =
+    inst.gatewayVersion && /^\d+\.\d+\.\d+$/.test(inst.gatewayVersion)
+      ? inst.gatewayVersion
+      : undefined;
+  return {
+    openclawGatewayUrl: inst.gatewayUrl,
+    openclawToken: inst.token,
+    deviceIdentity: inst.deviceIdentity,
+    bridgeInstanceSecret: null, // the secret is a shared-config anchor, not per-config
+    instanceName: inst.instanceName,
+    gatewayVersionFallback: version,
+    mediaOutboundDir: outboundDir,
+    mediaOutboundAgentMount: shared.mediaOutboundAgentMount,
+    mediaMaxBytes: shared.mediaMaxBytesDefault,
+    mediaMode: shared.mediaModeDefault,
+    gatewayHttpBase: deriveHttpBase(inst.gatewayHttpUrl || inst.gatewayUrl),
+    mediaFetchTimeoutMs: shared.mediaFetchTimeoutMs,
+    inboundMediaDir: inboundDir,
+    inboundAgentMount: shared.inboundAgentMount,
+    inboundTtlMs: shared.inboundTtlMs,
+    convexHttpActionsUrl: shared.convexHttpActionsUrl,
+    convexIngestSecret: shared.convexIngestSecret,
+    bridgeSharedSecret: shared.bridgeSharedSecret,
+    port: shared.port,
+    maxBodyBytes: shared.maxBodyBytes,
+  };
+}
+
+/**
+ * Detect two FINAL media dirs that collide across served instances (outbound OR
+ * inbound, any instance). A single `OPENCLAW_MEDIA_OUTBOUND_DIR`/`OPENCLAW_INBOUND_DIR`
+ * override applied to N instances gives them all the SAME dir; two instance names that
+ * normalize to the same path segment also collide. In shared-fs that shares one disk
+ * namespace across instances — an outbound scan or inbound staging could then
+ * cross-attach/expose another instance's files. The boot refuses it. Pure + exported
+ * for tests. Returns the first collision (the two claimants + the dir) or null.
+ */
+export function findMediaDirCollision(
+  instances: Array<{
+    instanceName: string;
+    mediaOutboundDir: string;
+    inboundMediaDir: string;
+  }>,
+): { dir: string; a: string; b: string } | null {
+  const seen = new Map<string, string>(); // dir -> "<instance>/<kind>" that claimed it
+  for (const inst of instances) {
+    for (const [kind, dir] of [
+      ["outbound", inst.mediaOutboundDir],
+      ["inbound", inst.inboundMediaDir],
+    ] as const) {
+      const claimant = `${inst.instanceName}/${kind}`;
+      const prior = seen.get(dir);
+      if (prior !== undefined) return { dir, a: prior, b: claimant };
+      seen.set(dir, claimant);
+    }
+  }
+  return null;
+}
+
 export { ConfigError };

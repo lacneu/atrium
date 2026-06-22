@@ -1,9 +1,10 @@
 {{- /*
-Bridge — connects to your EXTERNAL OpenClaw gateway (values) and POSTs ingest
-events to Convex. It reaches the Convex .site endpoint by SERVICE DNS
-(CONVEX_HTTP_ACTIONS_URL = http://<release>-convex-backend:3211) — never a host
-IP. Optional read-only media mount (existingClaim or hostPath) for outbound
-media streamed from the gateway.
+Bridge — connects to your EXTERNAL OpenClaw gateway(s) and POSTs ingest events to
+Convex. Each served gateway's URL + credentials come from Convex (fetched at boot
+via the per-bridge secret(s) in BRIDGE_INSTANCE_SECRETS), not values. It reaches the
+Convex .site endpoint by SERVICE DNS (CONVEX_HTTP_ACTIONS_URL =
+http://<release>-convex-backend:3211) — never a host IP. Optional read-only media
+mount (existingClaim or hostPath) for outbound media streamed from the gateway.
 */ -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -40,42 +41,23 @@ spec:
             - name: http
               containerPort: {{ .Values.bridge.port }}
           env:
-            # --- your EXTERNAL OpenClaw gateway (values) ---
-            - name: OPENCLAW_GATEWAY_URL
-              value: {{ .Values.openclaw.gatewayUrl | quote }}
-            {{- if .Values.openclaw.gatewayHttpUrl }}
-            # gateway-http media base override (gateway's HTTP endpoint on a
-            # different host/port than the WS URL). Omitted => derived from gatewayUrl.
-            - name: OPENCLAW_GATEWAY_HTTP_URL
-              value: {{ .Values.openclaw.gatewayHttpUrl | quote }}
-            {{- end }}
-            - name: OPENCLAW_INSTANCE_NAME
-              value: {{ .Values.bridge.instanceName | quote }}
-            # token + device identity are OPTIONAL: leave them blank to use UI mode
-            # (creds stored encrypted in Convex, fetched at boot via
-            # BRIDGE_INSTANCE_SECRET below). `optional: true` so the pod starts even
-            # when an external existingSecret omits these keys. See README
-            # "Gateway credentials: env vs UI-managed".
-            - name: OPENCLAW_TOKEN
+            # --- gateway config comes from Convex (no gateway env here) ---
+            # Each served instance's gateway URL + version + HTTP override AND its
+            # operator token + Ed25519 device identity are configured in Convex
+            # (Settings -> Agents -> Instances; credentials stored encrypted) and the
+            # bridge fetches them at boot via the per-bridge secret(s) below. Decryption
+            # needs ATRIUM_SECRET_KEY on the Convex deployment.
+            #
+            # Per-bridge secret(s): COMMA-separated, ONE per Convex instance this bridge
+            # serves; each minted in the instance's Credentials dialog and unlocking ONLY
+            # that instance's encrypted creds. The bridge needs at least one (it fails
+            # fast at boot with a clear error otherwise). Wired OPTIONAL so a missing key
+            # does not block pod start before the bridge surfaces its own clear error.
+            - name: BRIDGE_INSTANCE_SECRETS
               valueFrom:
                 secretKeyRef:
                   name: {{ include "atrium.secretName" . }}
-                  key: OPENCLAW_TOKEN
-                  optional: true
-            - name: OPENCLAW_DEVICE_IDENTITY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "atrium.secretName" . }}
-                  key: OPENCLAW_DEVICE_IDENTITY
-                  optional: true
-            # [UI mode] per-bridge secret minted in Settings -> Agents -> Instances
-            # -> Credentials; binds this bridge to its instance so it fetches ONLY
-            # that gateway's encrypted creds. Blank/absent in env mode.
-            - name: BRIDGE_INSTANCE_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "atrium.secretName" . }}
-                  key: BRIDGE_INSTANCE_SECRET
+                  key: BRIDGE_INSTANCE_SECRETS
                   optional: true
             # --- Convex .site endpoint by SERVICE DNS (no host IP) ---
             - name: CONVEX_HTTP_ACTIONS_URL

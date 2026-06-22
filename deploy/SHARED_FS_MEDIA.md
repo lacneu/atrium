@@ -43,9 +43,11 @@ to read its own files unless you also edited every `openclaw.json`. So **never k
 the agent path.**
 
 **Why path 3 (bridge) is keyed.** The bridge's own mount point is free. Keying it
-by instance means several per-gateway bridges never collide on a shared host and
-each container's mount is self-documenting. The bridge derives it automatically
-from `OPENCLAW_INSTANCE_NAME` — you set the name, the path follows.
+by instance means several bridges (or one bridge serving several gateways) never
+collide and each mount is self-documenting. The bridge derives it automatically
+from each served instance's **name** — which it resolves from Convex via that
+instance's per-bridge secret (there is no `OPENCLAW_INSTANCE_NAME` env any more), so
+the path follows the name.
 
 Paths 2 and 3 bind the **same host dir** (path 1) at different container paths —
 that co-location is what makes the file the bridge writes the same file the agent
@@ -62,23 +64,33 @@ and runs as uid **`<UID>:<GID>`**:
 |------|-------|
 | Host outbound dir | `<H>/media/outbound` |
 | Host inbound dir | `<H>/media/inbound` |
-| Bridge env: instance name | `OPENCLAW_INSTANCE_NAME=<I>` |
+| Bridge env: per-bridge secret | `BRIDGE_INSTANCE_SECRETS` includes `<I>`'s secret |
 | Bridge env: run-as uid | `user: "<UID>:<GID>"` (match the gateway) |
 | Bridge mount (outbound) | `<H>/media/outbound  →  /home/node/.openclaw/media/<I>/outbound  :ro` |
 | Bridge mount (inbound) | `<H>/media/inbound  →  /home/node/.openclaw/media/<I>/inbound` |
-| Atrium UI | Settings → Agents → Bridge → Configure `<I>` → Outbound **and** Inbound = `shared-fs` |
+| Atrium UI | Settings → Agents → Instances: set `<I>`'s gateway URL + credentials, mint its secret; Settings → Agents → Bridge → Configure `<I>` → Outbound **and** Inbound = `shared-fs` |
 
-The bridge auto-derives its read/write dirs from `OPENCLAW_INSTANCE_NAME`, so they
-**equal** the mount targets above with no extra env. (Override only if you mount
-elsewhere: `OPENCLAW_MEDIA_OUTBOUND_DIR` / `OPENCLAW_INBOUND_DIR`.)
+The bridge auto-derives its read/write dirs from the instance **name** it resolves
+from Convex (via `<I>`'s per-bridge secret), so they **equal** the literal mount
+targets above with no extra env. Override only when a bridge serves a **single**
+instance (the overrides are process-global): `OPENCLAW_MEDIA_OUTBOUND_DIR` /
+`OPENCLAW_INBOUND_DIR`.
 
 ---
 
-## Worked example — two gateways `alpha` and `beta`
+## Worked example — one bridge, two gateways `alpha` and `beta`
 
 A host runs two OpenClaw gateways. Each keeps its state under
-`/srv/openclaw/instances/<name>/.openclaw` and runs as `1000:1000`. We run **one
-bridge container per gateway** (Model M).
+`/srv/openclaw/instances/<name>/.openclaw` and runs as `1000:1000`. We serve **both
+from a single bridge container** by listing both per-bridge secrets in
+`BRIDGE_INSTANCE_SECRETS` and mounting both instances' dirs. (Running one bridge
+container per gateway also works — give each its own secret, port, host dirs and
+Convex `bridgeUrl`.)
+
+> A bridge process has **one** `user:`. Serving several gateways from one bridge
+> therefore requires they share a uid:gid (the case here, both `1000:1000`) — or a
+> default ACL `setfacl -d -m o::rX` on the host dirs. If two gateways run as
+> different uids and you can't ACL, run one bridge per gateway instead.
 
 **Resolved paths (literal — copy these):**
 
@@ -88,8 +100,7 @@ bridge container per gateway** (Model M).
 | Host inbound | `/srv/openclaw/instances/alpha/.openclaw/media/inbound` | `/srv/openclaw/instances/beta/.openclaw/media/inbound` |
 | Bridge outbound target | `/home/node/.openclaw/media/alpha/outbound` | `/home/node/.openclaw/media/beta/outbound` |
 | Bridge inbound target | `/home/node/.openclaw/media/alpha/inbound` | `/home/node/.openclaw/media/beta/inbound` |
-| Bridge port | `8787` | `8788` |
-| Convex `instances.bridgeUrl` | `http://<host>:8787` | `http://<host>:8788` |
+| Convex `instances.bridgeUrl` | `http://<host>:8787` | `http://<host>:8787` (same bridge) |
 
 **Create the host dirs first, owned by the gateway uid** (else the mount
 auto-creates them root-owned and the agent can't read):
@@ -101,19 +112,20 @@ for I in alpha beta; do
 done
 ```
 
-**Two bridge services** (one per gateway):
+**One bridge service serving both gateways:**
 
 ```yaml
 services:
-  bridge-alpha:
-    image: ghcr.io/lacneu/atrium-bridge:0.4.2
-    user: "1000:1000"                       # = the gateway uid
+  bridge:
+    image: ghcr.io/lacneu/atrium-bridge:0.6.0
+    user: "1000:1000"                       # = the shared gateway uid
     ports: ["8787:8787"]
     environment:
-      - OPENCLAW_GATEWAY_URL=wss://alpha.example.com
-      - OPENCLAW_TOKEN=${ALPHA_TOKEN}
-      - OPENCLAW_DEVICE_IDENTITY=${ALPHA_DEVICE_IDENTITY}
-      - OPENCLAW_INSTANCE_NAME=alpha        # ← derives /home/node/.openclaw/media/alpha/{outbound,inbound}
+      # One secret per served instance, minted in each instance's Credentials dialog.
+      # Each unlocks ONLY its instance's encrypted gateway URL + creds (fetched from
+      # Convex at boot). The instance NAMES below — alpha, beta — are what the bridge
+      # resolves from those secrets, and what keys the mount targets.
+      - BRIDGE_INSTANCE_SECRETS=${ALPHA_BRIDGE_SECRET},${BETA_BRIDGE_SECRET}
       - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
       - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET}
       - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET}
@@ -121,48 +133,36 @@ services:
     volumes:
       - /srv/openclaw/instances/alpha/.openclaw/media/outbound:/home/node/.openclaw/media/alpha/outbound:ro
       - /srv/openclaw/instances/alpha/.openclaw/media/inbound:/home/node/.openclaw/media/alpha/inbound
-
-  bridge-beta:
-    image: ghcr.io/lacneu/atrium-bridge:0.4.2
-    user: "1000:1000"
-    ports: ["8788:8787"]                    # distinct host port
-    environment:
-      - OPENCLAW_GATEWAY_URL=wss://beta.example.com
-      - OPENCLAW_TOKEN=${BETA_TOKEN}
-      - OPENCLAW_DEVICE_IDENTITY=${BETA_DEVICE_IDENTITY}
-      - OPENCLAW_INSTANCE_NAME=beta
-      - CONVEX_HTTP_ACTIONS_URL=http://convex-backend:3211
-      - BRIDGE_INGEST_SECRET=${BRIDGE_INGEST_SECRET}
-      - BRIDGE_SHARED_SECRET=${BRIDGE_SHARED_SECRET}
-      - BRIDGE_PORT=8787                     # in-container port is always 8787
-    volumes:
       - /srv/openclaw/instances/beta/.openclaw/media/outbound:/home/node/.openclaw/media/beta/outbound:ro
       - /srv/openclaw/instances/beta/.openclaw/media/inbound:/home/node/.openclaw/media/beta/inbound
 ```
 
-Then in Atrium: **Settings → Agents → Instances** add `alpha` (bridgeUrl
-`http://<host>:8787`) and `beta` (bridgeUrl `http://<host>:8788`); **Settings →
+Then in Atrium: **Settings → Agents → Instances** add `alpha` and `beta`, set each
+one's **gateway URL + credentials**, mint each one's **per-bridge secret** (used
+above), and set both `bridgeUrl` to this bridge (`http://<host>:8787`); **Settings →
 Agents → Bridge → Configure** each → Outbound + Inbound = `shared-fs`.
 
 ---
 
 ## Procedure (deterministic — for a person or an AI installer)
 
-Per gateway you want on shared-fs, with its `<I>`, `<H>`, `<UID>:<GID>`,
-`<HOSTPORT>`:
+Per gateway you want on shared-fs, with its `<I>`, `<H>`, `<UID>:<GID>` and the
+bridge's `<HOSTPORT>`:
 
 1. **Create + own the host dirs.**
    `mkdir -p <H>/media/{inbound,outbound} && chown -R <UID>:<GID> <H>/media`
-2. **Run a bridge container for `<I>`** with `user: "<UID>:<GID>"`,
-   `OPENCLAW_INSTANCE_NAME=<I>`, its own `<HOSTPORT>:8787`, the gateway
-   URL/token/device-identity, the Convex `.site` URL + the two bridge secrets, and
-   the two bind mounts:
+2. **Register the instance in Convex** (Settings → Agents → Instances): name = `<I>`
+   **exactly**, set its **gateway URL + credentials**, mint its **per-bridge
+   secret**, and `bridgeUrl = http://<host>:<HOSTPORT>`.
+3. **Add `<I>` to the bridge** serving it: include its per-bridge secret in
+   `BRIDGE_INSTANCE_SECRETS`, set `user: "<UID>:<GID>"`, and add the two bind mounts
+   (literal `<I>` in the target):
    - `<H>/media/outbound : /home/node/.openclaw/media/<I>/outbound : ro`
    - `<H>/media/inbound  : /home/node/.openclaw/media/<I>/inbound`
-3. **Register the instance in Convex** (Settings → Agents → Instances): name = `<I>`
-   **exactly**, `bridgeUrl = http://<host>:<HOSTPORT>`.
+   (One bridge can carry several instances — list several secrets and several mount
+   pairs; or run a dedicated bridge per gateway on its own `<HOSTPORT>:8787`.)
 4. **Recreate the bridge** (a docker mount is not hot):
-   `docker compose up -d --force-recreate bridge-<I>`
+   `docker compose up -d --force-recreate bridge`
 5. **Flip the modes** (hot, no restart): Settings → Agents → Bridge → Configure
    `<I>` → Outbound = `shared-fs`, Inbound = `shared-fs`, set `mediaMaxMb` high
    enough for your largest file.
@@ -209,16 +209,26 @@ Per gateway you want on shared-fs, with its `<I>`, `<H>`, `<UID>:<GID>`,
   stays flat by design (see “the one rule”).
 - **Use simple instance names (`[A-Za-z0-9._-]`).** The bridge sanitizes the name
   into one path segment; a `/` or odd character would make the bridge's derived dir
-  and the compose `${OPENCLAW_INSTANCE_NAME}` mount disagree → silent ENOENT. Plain
-  names (which also match the Convex `instances.name`) avoid it.
+  and your literal compose mount target disagree → silent ENOENT. Plain names (which
+  match the Convex `instances.name` the bridge resolves) avoid it.
 
 ---
 
-## Model-M assumption (read this if you have many gateways)
+## One bridge or many? (read this if you have several gateways)
 
-This design is **one bridge container per gateway**. A bridge process serves **one**
-instance’s media (`OPENCLAW_INSTANCE_NAME` is process-global), so N gateways = N
-bridge containers, each with its own name, port, host dirs and Convex `bridgeUrl`.
-The instance-keyed bridge path keeps their internal mounts distinct even on a shared
-host. A *single* bridge serving several gateways is **not** how this works — don't
-try to mount multiple instances into one bridge.
+A bridge can serve **one or many** gateways. Each served instance is keyed by its
+name (resolved from Convex via its per-bridge secret), so a single bridge keeps every
+instance's media in a distinct `/home/node/.openclaw/media/<instance>/{outbound,inbound}`
+subtree — list one secret and one mount pair per instance.
+
+Two practical limits push you toward **one bridge per gateway** in some setups:
+
+- **`user:` is per-process.** All instances on one bridge share its uid:gid (fine
+  when the gateways do too, or with a default ACL on the host dirs). Gateways on
+  different uids that you can't ACL need separate bridges.
+- **`OPENCLAW_MEDIA_OUTBOUND_DIR` / `OPENCLAW_INBOUND_DIR` are process-global.** They
+  only make sense for a single-instance bridge; with several instances rely on the
+  auto-derived keyed paths and don't set them.
+
+When you do run one bridge per gateway, give each its own per-bridge secret, host
+dirs, port (`<HOSTPORT>:8787`) and Convex `bridgeUrl`.

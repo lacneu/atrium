@@ -97,18 +97,33 @@ export function resolveHealthPollTargets(
   instances: Array<{ name: string; bridgeUrl: string | null }>,
   env: { envUrl: string | null; served: string | null },
 ): Array<{ name: string | null; url: string }> {
-  const out: Array<{ name: string | null; url: string }> = [];
-  const seen = new Set<string>();
-  const add = (name: string | null, raw: string): void => {
-    const url = raw.trim().replace(/\/$/, "");
-    if (url.length === 0 || seen.has(url)) return;
-    seen.add(url);
-    out.push({ name, url });
+  const norm = (raw: string): string => raw.trim().replace(/\/$/, "");
+  // Group the DISTINCT instance NAMES served by each bridge URL. A URL serving ONE
+  // distinct instance (Model M) is polled with that name FORCED; a URL serving MANY
+  // (one bridge, N gateways) is polled ONCE with name=null so the bridge's OWN
+  // per-target instanceName is trusted — forcing one name would relabel the others.
+  // The env BRIDGE_URL is just ANOTHER claimant on its URL: an explicit instance whose
+  // bridgeUrl equals BRIDGE_URL AND an env-served instance share that URL -> both names
+  // join the group -> name=null (the bridge-reported names win), never one relabel.
+  const byUrl = new Map<string, Set<string>>();
+  const order: string[] = [];
+  const claim = (url: string, name: string | null): void => {
+    if (url.length === 0) return;
+    if (!byUrl.has(url)) {
+      byUrl.set(url, new Set());
+      order.push(url); // ensures the URL is polled even with no nameable claimant
+    }
+    if (name) byUrl.get(url)!.add(name);
   };
   for (const inst of instances) {
     const own = inst.bridgeUrl?.trim();
-    if (own) add(inst.name, own);
+    if (own) claim(norm(own), inst.name);
   }
-  if (env.envUrl) add(env.served, env.envUrl);
+  if (env.envUrl) claim(norm(env.envUrl), env.served);
+  const out: Array<{ name: string | null; url: string }> = [];
+  for (const url of order) {
+    const names = [...byUrl.get(url)!];
+    out.push({ name: names.length === 1 ? names[0]! : null, url });
+  }
   return out;
 }

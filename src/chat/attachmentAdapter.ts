@@ -107,7 +107,8 @@ export function createConvexAttachmentAdapter(
       try {
         const avail = await convex.query(
           api.bridgeHealth.getBridgeAvailability,
-          {},
+          // Scope the inbound cap to THIS chat's gateway (one bridge, N gateways).
+          chatId ? { chatId: chatId as Id<"chats"> } : {},
         );
         maxInboundBytes = avail?.maxInboundBytes ?? null;
       } catch {

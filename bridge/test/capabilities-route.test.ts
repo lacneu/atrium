@@ -12,10 +12,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import type { BridgeConfig } from "../src/config.js";
-import type { ConvexWriter } from "../src/convex-writer.js";
 import { HealthRegistry } from "../src/core/health.js";
 import { SessionRegistry } from "../src/session.js";
 import { buildCapabilityTargets, createBridgeServer } from "../src/server.js";
+import { servedMap, sharedFromConfig } from "./helpers/served.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG = JSON.parse(
@@ -51,7 +51,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
 
   beforeAll(async () => {
     // GET routes never call the writer; a structural stub is enough.
-    const registry = new SessionRegistry(CONFIG, {} as ConvexWriter);
+    const registry = new SessionRegistry(servedMap(CONFIG));
     health = new HealthRegistry(1000, () => 2000);
     health.recordOk({
       key: "u-alice",
@@ -60,7 +60,12 @@ describe("GET /capabilities + /health (compat surface)", () => {
       gatewayHost: "gateway.example.org:18789",
       instanceName: "primary",
     });
-    server = createBridgeServer({ config: CONFIG, registry, health });
+    server = createBridgeServer({
+      shared: sharedFromConfig(CONFIG),
+      served: servedMap(CONFIG),
+      registry,
+      health,
+    });
     await new Promise<void>((res) => server.listen(0, res));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });
@@ -184,6 +189,7 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   const LIVE = (gatewayVersion: string | null, canonical = "u-alice") => ({
     canonical,
     agentId: "main",
+    instanceName: "primary",
     gatewayVersion,
     maxPayload: null,
   });
@@ -292,10 +298,12 @@ describe("GET /capabilities with a configured gateway-version fallback", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const registry = new SessionRegistry(CONFIG, {} as ConvexWriter); // no live session
+    const cfg = { ...CONFIG, gatewayVersionFallback: "2026.6.5" };
+    const registry = new SessionRegistry(servedMap(cfg)); // no live session
     const health = new HealthRegistry(1000, () => 2000);
     server = createBridgeServer({
-      config: { ...CONFIG, gatewayVersionFallback: "2026.6.5" },
+      shared: sharedFromConfig(cfg),
+      served: servedMap(cfg),
       registry,
       health,
     });

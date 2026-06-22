@@ -230,4 +230,48 @@ describe("resolveHealthPollTargets", () => {
       }),
     ).toEqual([]);
   });
+
+  test("ONE bridge serving TWO instances (same bridgeUrl) → polled ONCE with name=null", () => {
+    // The poller must trust the /health targets' OWN instanceName (each carries it);
+    // forcing one instance's name would relabel the other's targets. So a shared url
+    // is polled once with name=null. Regression guard: forcing names[0] would give
+    // name:"olivier" and mislabel jerome's targets.
+    expect(
+      resolveHealthPollTargets(
+        [
+          { name: "olivier", bridgeUrl: "http://bridge:8787" },
+          { name: "jerome", bridgeUrl: "http://bridge:8787" },
+        ],
+        { envUrl: null, served: null },
+      ),
+    ).toEqual([{ name: null, url: "http://bridge:8787" }]);
+  });
+
+  test("two instances on DISTINCT bridges keep their forced names (Model M)", () => {
+    expect(
+      resolveHealthPollTargets(
+        [
+          { name: "olivier", bridgeUrl: "http://b-olivier:8787" },
+          { name: "jerome", bridgeUrl: "http://b-jerome:8787" },
+        ],
+        { envUrl: null, served: null },
+      ),
+    ).toEqual([
+      { name: "olivier", url: "http://b-olivier:8787" },
+      { name: "jerome", url: "http://b-jerome:8787" },
+    ]);
+  });
+
+  test("explicit instance URL == env BRIDGE_URL, ANOTHER instance env-served on it -> name=null", () => {
+    // olivier declares bridgeUrl=http://b; jerome relies on the env BRIDGE_URL=http://b
+    // (BRIDGE_INSTANCE_NAME=jerome). BOTH are served by that one bridge -> polled ONCE
+    // with name=null so /health's own per-target names win. Regression guard (codex P2):
+    // dropping the env claimant would force "olivier" and relabel jerome's targets.
+    expect(
+      resolveHealthPollTargets([{ name: "olivier", bridgeUrl: "http://b:8787" }], {
+        envUrl: "http://b:8787",
+        served: "jerome",
+      }),
+    ).toEqual([{ name: null, url: "http://b:8787" }]);
+  });
 });

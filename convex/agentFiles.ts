@@ -20,7 +20,7 @@
 // `BRIDGE_SHARED_SECRET` Authorization header from deployment env. There is no
 // per-instance bridge registry yet (Phase 2b deferred) — `instanceName` rides in
 // the body and the bridge REFUSES a name it does not serve (409
-// `instance_mismatch`, the same guard as /reset — red-team P2-3).
+// `instance_not_served`, the membership guard — red-team P2-3).
 //
 // These are PUBLIC actions invoked by the browser, so unlike the scheduled
 // dispatch actions they THROW on failure (the caller renders the error); error
@@ -137,8 +137,11 @@ async function postBridge(
   path: string,
   body: Record<string, unknown>,
   timeoutMs: number = BRIDGE_TIMEOUT_MS,
+  // The instance's OWN bridge URL when it has one (Model M); else the deployment
+  // default. Lets per-instance admin ops reach the bridge that actually serves them.
+  bridgeUrlOverride?: string | null,
 ): Promise<{ status: number; data: unknown }> {
-  const bridgeUrl = process.env.BRIDGE_URL;
+  const bridgeUrl = bridgeUrlOverride?.trim() || process.env.BRIDGE_URL;
   const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
   if (!bridgeUrl || !sharedSecret) {
     throw new Error(
@@ -223,6 +226,24 @@ export const checkAdminAccess = internalQuery({
   handler: async (ctx): Promise<null> => {
     await requirePermission(ctx, PERMISSIONS.ADMIN_MANAGE);
     return null;
+  },
+});
+
+/** The per-instance bridge URL (instances.bridgeUrl) for an instance name, or null
+ *  when unset/unknown — so the config-defaults actions POST to the SELECTED instance's
+ *  OWN bridge (Model M: instances behind separate bridgeUrl) rather than the
+ *  deployment-wide BRIDGE_URL (which would 409 instance_not_served). */
+export const bridgeUrlForInstance = internalQuery({
+  args: { instanceName: v.string() },
+  handler: async (ctx, { instanceName }): Promise<string | null> => {
+    // first() not unique(): `instances.name` is not schema-unique and other routing
+    // paths stay resilient to a duplicate row by taking the first — a dup must not
+    // throw here and break agent-files/chat-defaults for an otherwise-routable instance.
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    return inst?.bridgeUrl?.trim() || null;
   },
 });
 
@@ -335,11 +356,16 @@ export const listAgentFiles = action({
       internal.agentFiles.checkFilesReadAccess,
       { instanceName, agentId },
     );
-    const { status, data } = await postBridge("/agent-files", {
-      op: "list",
-      instanceName,
-      agentId,
-    });
+    const bridgeUrl = await ctx.runQuery(
+      internal.agentFiles.bridgeUrlForInstance,
+      { instanceName },
+    );
+    const { status, data } = await postBridge(
+      "/agent-files",
+      { op: "list", instanceName, agentId },
+      undefined,
+      bridgeUrl,
+    );
     requireOkStatus(status, "agent-files list");
     return { files: filterFilesForRole(parseFileList(data), access.isAdmin) };
   },
@@ -366,12 +392,16 @@ export const getAgentFile = action({
     if (!access.isAdmin && !isRulesFile(name)) {
       throw new Error(`Forbidden: file not readable: ${name}`);
     }
-    const { status, data } = await postBridge("/agent-files", {
-      op: "get",
-      instanceName,
-      agentId,
-      name,
-    });
+    const bridgeUrl = await ctx.runQuery(
+      internal.agentFiles.bridgeUrlForInstance,
+      { instanceName },
+    );
+    const { status, data } = await postBridge(
+      "/agent-files",
+      { op: "get", instanceName, agentId, name },
+      undefined,
+      bridgeUrl,
+    );
     requireOkStatus(status, "agent-files get");
     const file = (data as { file?: unknown })?.file as
       | Record<string, unknown>
@@ -422,14 +452,23 @@ export const setAgentFile = action({
         `Invalid content: exceeds ${MAX_AGENT_FILE_CHARS} characters`,
       );
     }
-    const { status, data } = await postBridge("/agent-files", {
-      op: "set",
-      instanceName,
-      agentId,
-      name,
-      content,
-      baseUpdatedAtMs: baseUpdatedAtMs ?? null,
-    });
+    const bridgeUrl = await ctx.runQuery(
+      internal.agentFiles.bridgeUrlForInstance,
+      { instanceName },
+    );
+    const { status, data } = await postBridge(
+      "/agent-files",
+      {
+        op: "set",
+        instanceName,
+        agentId,
+        name,
+        content,
+        baseUpdatedAtMs: baseUpdatedAtMs ?? null,
+      },
+      undefined,
+      bridgeUrl,
+    );
     if (status === 409) {
       // Stable, detectable CAS-conflict code (the editor re-gets + re-diffs).
       throw new Error("conflict: file changed since load");
@@ -479,6 +518,8 @@ export const compactSession = action({
         canonical: routing.target.canonical,
       },
       COMPACT_TIMEOUT_MS,
+      // The dispatch routing already resolved this instance's bridge (Model M).
+      routing.bridgeUrl,
     );
     requireOkStatus(status, "compact");
     await ctx.runMutation(internal.agentFiles.auditFromAction, {
@@ -506,7 +547,15 @@ async function resolveInstanceClaim(
     internal.agents.listInstanceNames,
     {},
   );
-  return names.length === 1 ? names[0] : null;
+  // Sole instance (or none) -> use it (mono-instance: the bridge's only gateway).
+  if (names.length <= 1) return names[0] ?? null;
+  // MULTIPLE instances + no explicit choice: FAIL CLOSED. Silently targeting names[0]
+  // could READ or (worse) WRITE the defaults of the WRONG gateway. The Defaults UI
+  // passes an explicit instanceName when several instances are configured (its instance
+  // picker), so this throw only guards a caller that forgot to.
+  throw new Error(
+    "multiple instances configured: specify instanceName for chat defaults",
+  );
 }
 
 /** Admin-only read of the gateway's global chat defaults (CONF-4d, deflated A7). */
@@ -515,10 +564,17 @@ export const getChatDefaults = action({
   handler: async (ctx, { instanceName }): Promise<unknown> => {
     await ctx.runQuery(internal.agentFiles.checkAdminAccess, {});
     const claim = await resolveInstanceClaim(ctx, instanceName);
-    const { status, data } = await postBridge("/config-defaults", {
-      op: "get",
-      ...(claim !== null ? { instanceName: claim } : {}),
-    });
+    const bridgeUrl = claim
+      ? await ctx.runQuery(internal.agentFiles.bridgeUrlForInstance, {
+          instanceName: claim,
+        })
+      : null;
+    const { status, data } = await postBridge(
+      "/config-defaults",
+      { op: "get", ...(claim !== null ? { instanceName: claim } : {}) },
+      undefined,
+      bridgeUrl,
+    );
     requireOkStatus(status, "config-defaults get");
     return data;
   },
@@ -551,6 +607,11 @@ export const setChatDefaults = action({
       throw new Error("Invalid: nothing to set");
     }
     const claim = await resolveInstanceClaim(ctx, instanceName);
+    const bridgeUrl = claim
+      ? await ctx.runQuery(internal.agentFiles.bridgeUrlForInstance, {
+          instanceName: claim,
+        })
+      : null;
     const { status } = await postBridge(
       "/config-defaults",
       {
@@ -560,6 +621,7 @@ export const setChatDefaults = action({
         ...(claim !== null ? { instanceName: claim } : {}),
       },
       CONFIG_DEFAULTS_SET_TIMEOUT_MS,
+      bridgeUrl,
     );
     requireOkStatus(status, "config-defaults set");
     await ctx.runMutation(internal.agentFiles.auditFromAction, {

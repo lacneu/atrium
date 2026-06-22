@@ -17,6 +17,8 @@ import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
 import { resolveTargetForChat } from "./routing";
 import { requireRealUserId, getProfile } from "./lib/access";
+import { loadLocalCrypto } from "./lib/crypto/keyProvider";
+import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1100,5 +1102,207 @@ export const reset = mutation({
       }
     }
     return { deleted };
+  },
+});
+
+// ── DEV-ONLY: seed a bench instance for the PURE-CONVEX bridge path ──────────
+// The real setInstanceSecret / mintBridgeSecret are admin-gated (uncallable via
+// `npx convex run` without an identity). For the one-bridge-N-gateways live bench
+// these mirror them UNGATED (assertDev + the live allowlist): upsert the instance's
+// gatewayUrl, store the encrypted operator token + Ed25519 device identity, and mint
+// a per-bridge secret. Returns the plaintext secret to put in BRIDGE_INSTANCE_SECRETS.
+
+/** Internal: create/get the bench instance row + set its gatewayUrl (no admin gate). */
+export const _ensureSeedInstance = internalMutation({
+  args: { instanceName: v.string(), gatewayUrl: v.string() },
+  handler: async (ctx, { instanceName, gatewayUrl }): Promise<Id<"instances">> => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const existing = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, { gatewayUrl });
+      return existing._id;
+    }
+    return await ctx.db.insert("instances", {
+      name: instanceName,
+      gatewayUrl,
+      displayName: instanceName,
+    });
+  },
+});
+
+/** Internal: persist the encrypted creds + the per-bridge secret hash (no admin gate). */
+export const _storeSeedCreds = internalMutation({
+  args: {
+    instanceId: v.id("instances"),
+    tokenSecret: encryptedSecretValidator,
+    deviceSecret: encryptedSecretValidator,
+    hashedSecret: v.string(),
+    prefix: v.string(),
+    lastFour: v.string(),
+  },
+  handler: async (
+    ctx,
+    { instanceId, tokenSecret, deviceSecret, hashedSecret, prefix, lastFour },
+  ) => {
+    assertDev();
+    const upsertSecret = async (
+      field: "token" | "deviceIdentity",
+      secret: typeof tokenSecret,
+    ) => {
+      const existing = await ctx.db
+        .query("instanceSecrets")
+        .withIndex("by_instance_field", (q) =>
+          q.eq("instanceId", instanceId).eq("field", field),
+        )
+        .unique();
+      if (existing) await ctx.db.patch(existing._id, { secret, updatedAt: Date.now() });
+      else
+        await ctx.db.insert("instanceSecrets", {
+          instanceId,
+          field,
+          secret,
+          updatedAt: Date.now(),
+        });
+    };
+    await upsertSecret("token", tokenSecret);
+    await upsertSecret("deviceIdentity", deviceSecret);
+    // One active per-bridge secret per instance — replace any prior.
+    for (const row of await ctx.db
+      .query("bridgeAuth")
+      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
+      .collect())
+      await ctx.db.delete(row._id);
+    // createdBy needs a user; use the first profile's user (dev box has one).
+    const anyProfile = await ctx.db.query("profiles").first();
+    await ctx.db.insert("bridgeAuth", {
+      instanceId,
+      hashedSecret,
+      prefix,
+      lastFour,
+      createdAt: Date.now(),
+      createdBy: anyProfile?.userId ?? ("seed" as Id<"users">),
+    });
+  },
+});
+
+export const seedInstanceCreds = action({
+  args: {
+    instanceName: v.string(),
+    gatewayUrl: v.string(),
+    token: v.string(),
+    deviceIdentity: v.string(), // inline JSON {id, publicKey, privateKey}
+  },
+  handler: async (
+    ctx,
+    { instanceName, gatewayUrl, token, deviceIdentity },
+  ): Promise<{ secret: string }> => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const instanceId = await ctx.runMutation(internal.dev._ensureSeedInstance, {
+      instanceName,
+      gatewayUrl,
+    });
+    const { encryptCipher } = loadLocalCrypto();
+    const tokenSecret = await encryptCipher.encrypt(token, `${instanceId}:token`);
+    const deviceSecret = await encryptCipher.encrypt(
+      deviceIdentity,
+      `${instanceId}:deviceIdentity`,
+    );
+    const generated = generateApiKey();
+    const hashedSecret = await hashKey(generated.plaintext);
+    await ctx.runMutation(internal.dev._storeSeedCreds, {
+      instanceId,
+      tokenSecret,
+      deviceSecret,
+      hashedSecret,
+      prefix: generated.prefix,
+      lastFour: generated.lastFour,
+    });
+    return { secret: generated.plaintext };
+  },
+});
+
+// DEV-ONLY concurrency probe (one bridge, N gateways): create K chats bound to the
+// given (instance, agent) pairs for one owner and fire ALL their dispatches at once
+// (scheduler.runAfter(0)), so the bridge handles concurrent turns on the SAME instance
+// and across DIFFERENT instances. Each chat is independent (own session key) — the
+// oracle is dev:inspectChat per returned chatId: every chat must get ITS OWN assistant
+// reply, none crossed onto another, and the bridge must stay healthy.
+export const concurrencyProbe = mutation({
+  args: {
+    ownerEmail: v.string(),
+    sends: v.array(
+      v.object({
+        instanceName: v.string(),
+        agentId: v.string(),
+        text: v.string(),
+      }),
+    ),
+  },
+  handler: async (
+    ctx,
+    { ownerEmail, sends },
+  ): Promise<Array<{ chatId: Id<"chats">; instanceName: string }>> => {
+    assertDev();
+    const profile = (await ctx.db.query("profiles").take(500)).find(
+      (p) => p.email === ownerEmail,
+    );
+    if (!profile) throw new Error(`no profile for ${ownerEmail} (routeUser it first)`);
+    const userId = profile.userId;
+    const now = Date.now();
+    const out: Array<{ chatId: Id<"chats">; instanceName: string }> = [];
+    for (const s of sends) {
+      assertDevInstance(s.instanceName);
+      // Ensure the routing grant exists (membership = dispatch authorization).
+      const grants = await ctx.db
+        .query("userAgents")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      if (
+        !grants.some(
+          (g) => g.instanceName === s.instanceName && g.agentId === s.agentId,
+        )
+      ) {
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: s.instanceName,
+          agentId: s.agentId,
+          isDefault: false,
+          source: "manual",
+          createdAt: now,
+        });
+      }
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        title: `probe ${s.instanceName}`,
+        instanceName: s.instanceName,
+        agentId: s.agentId,
+        updatedAt: now,
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user",
+        status: "complete",
+        text: s.text,
+        updatedAt: now,
+      });
+      const outboxId = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: `probe-${messageId}`,
+        messageId,
+        text: s.text,
+        attachmentIds: [],
+        status: "pending",
+      });
+      await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
+      out.push({ chatId, instanceName: s.instanceName });
+    }
+    return out;
   },
 });

@@ -29,9 +29,24 @@ async function seedAdmin(t: TestConvex<typeof schema>) {
     return admin;
   });
 }
-async function seedInstance(t: TestConvex<typeof schema>, name: string) {
+async function seedInstance(
+  t: TestConvex<typeof schema>,
+  name: string,
+  gateway: Partial<{
+    gatewayUrl: string;
+    gatewayVersion: string;
+    gatewayHttpUrl: string;
+    kind: "openclaw" | "hermes";
+  }> = {},
+) {
   return await t.run((ctx) =>
-    ctx.db.insert("instances", { name, gatewayUrl: `ws://${name}` }),
+    ctx.db.insert("instances", {
+      name,
+      gatewayUrl: gateway.gatewayUrl ?? `ws://${name}`,
+      ...(gateway.gatewayVersion ? { gatewayVersion: gateway.gatewayVersion } : {}),
+      ...(gateway.gatewayHttpUrl ? { gatewayHttpUrl: gateway.gatewayHttpUrl } : {}),
+      ...(gateway.kind ? { kind: gateway.kind } : {}),
+    }),
   );
 }
 
@@ -76,6 +91,7 @@ describe("/bridge/credentials end-to-end", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as {
       instanceName: string;
+      gateway: { url: string; version: string | null; httpUrl: string | null; kind: string };
       credentials: Record<string, string>;
     };
     // ISOLATION: beta's secret resolves to beta and returns ONLY beta's creds —
@@ -86,6 +102,53 @@ describe("/bridge/credentials end-to-end", () => {
       '{"id":"b","publicKey":"bpk","privateKey":"bpem"}',
     );
     expect(JSON.stringify(body)).not.toContain("primary-token-SECRET");
+    // The bridge self-configures its gateway from this response (no env): beta's
+    // OWN gatewayUrl, never primary's.
+    expect(body.gateway.url).toBe("ws://beta");
+  });
+
+  test("the response carries the resolved instance's NON-SECRET gateway config (url/version/httpUrl/kind)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const beta = await seedInstance(t, "beta", {
+      gatewayUrl: "wss://beta.example.org/ws",
+      gatewayVersion: "2026.6.5",
+      gatewayHttpUrl: "https://beta.example.org/media",
+      kind: "hermes",
+    });
+    const secret = await as(t, admin).action(api.bridgeAuth.mintBridgeSecret, {
+      instanceId: beta,
+    });
+    const res = await get(t, `Bearer ${secret.plaintext}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      gateway: { url: string; version: string | null; httpUrl: string | null; kind: string };
+    };
+    expect(body.gateway).toEqual({
+      url: "wss://beta.example.org/ws",
+      version: "2026.6.5",
+      httpUrl: "https://beta.example.org/media",
+      kind: "hermes",
+    });
+  });
+
+  test("gateway version/httpUrl default to null and kind to openclaw when unset", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const beta = await seedInstance(t, "beta"); // only gatewayUrl
+    const secret = await as(t, admin).action(api.bridgeAuth.mintBridgeSecret, {
+      instanceId: beta,
+    });
+    const res = await get(t, `Bearer ${secret.plaintext}`);
+    const body = (await res.json()) as {
+      gateway: { url: string; version: string | null; httpUrl: string | null; kind: string };
+    };
+    expect(body.gateway).toEqual({
+      url: "ws://beta",
+      version: null,
+      httpUrl: null,
+      kind: "openclaw",
+    });
   });
 
   test("no / unknown Bearer secret -> 401, no credentials", async () => {

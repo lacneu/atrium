@@ -18,10 +18,10 @@ import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import type { BridgeConfig } from "../src/config.js";
-import type { ConvexWriter } from "../src/convex-writer.js";
 import { HealthRegistry } from "../src/core/health.js";
 import { SessionRegistry } from "../src/session.js";
 import { createBridgeServer } from "../src/server.js";
+import { servedMap, sharedFromConfig } from "./helpers/served.js";
 
 const CAP = 4096;
 
@@ -71,9 +71,14 @@ describe("POST /send body cap", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const registry = new SessionRegistry(CONFIG, {} as ConvexWriter);
+    const registry = new SessionRegistry(servedMap(CONFIG));
     const health = new HealthRegistry(1000, () => 2000);
-    server = createBridgeServer({ config: CONFIG, registry, health });
+    server = createBridgeServer({
+      shared: sharedFromConfig(CONFIG),
+      served: servedMap(CONFIG),
+      registry,
+      health,
+    });
     await new Promise<void>((res) => server.listen(0, res));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });

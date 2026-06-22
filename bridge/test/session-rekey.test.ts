@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
+import type { InstanceBundle } from "../src/session.js";
+import { servedMap } from "./helpers/served.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 
 /** Minimal fake connection: never yields a frame; completes only on close.
@@ -59,7 +61,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(
       async () => fakeConn() as never,
     );
-    const reg = new SessionRegistry(config, {} as never);
+    const reg = new SessionRegistry(servedMap(config, {} as never));
     const s = await reg.acquire({
       chatId: "c1",
       openclawChatId: "oc1",
@@ -74,7 +76,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     const connect = vi
       .spyOn(OpenClawConnection, "connect")
       .mockImplementation(async () => fakeConn() as never);
-    const reg = new SessionRegistry(config, {} as never);
+    const reg = new SessionRegistry(servedMap(config, {} as never));
     const r = { chatId: "c1", openclawChatId: "oc1", agentId: "agent-a", canonical: "alice" };
     const a = await reg.acquire(r);
     const b = await reg.acquire(r);
@@ -87,7 +89,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     const connect = vi
       .spyOn(OpenClawConnection, "connect")
       .mockImplementation(async () => fakeConn() as never);
-    const reg = new SessionRegistry(config, {} as never);
+    const reg = new SessionRegistry(servedMap(config, {} as never));
     const first = await reg.acquire({
       chatId: "c1",
       openclawChatId: "oc1",
@@ -114,7 +116,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
       conns.push(c);
       return c as never;
     });
-    const reg = new SessionRegistry(config, {} as never);
+    const reg = new SessionRegistry(servedMap(config, {} as never));
     await reg.acquire({
       chatId: "c1",
       openclawChatId: "oc1",
@@ -141,13 +143,47 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     const connect = vi
       .spyOn(OpenClawConnection, "connect")
       .mockImplementation(async () => fakeConn() as never);
-    const reg = new SessionRegistry(config, {} as never);
+    const reg = new SessionRegistry(servedMap(config, {} as never));
     const r = { chatId: "c1", openclawChatId: null, agentId: "agent-a", canonical: "alice" };
     const a = await reg.acquire(r);
     a.connection.close();
     const b = await reg.acquire(r);
     expect(b).not.toBe(a);
     expect(connect).toHaveBeenCalledTimes(2);
+    reg.closeAll();
+  });
+
+  it("RE-ROUTES (new session, right gateway) when the SAME chat+agent routes to a DIFFERENT instance", async () => {
+    // One bridge, two gateways exposing the SAME agent ids -> identical sessionKey.
+    // The cached session is bound to instance A's connection; a later turn routing the
+    // SAME chat to instance B must NOT reuse it (that would answer from the wrong
+    // gateway). Regression guard: WITHOUT the instanceName check in acquire, `b === a`
+    // and only gwA is ever connected.
+    const urls: string[] = [];
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async (url: string) => {
+        urls.push(url);
+        return fakeConn() as never;
+      },
+    );
+    const mk = (name: string, url: string): InstanceBundle => ({
+      config: { ...config, instanceName: name, openclawGatewayUrl: url },
+      writer: {} as never,
+      mediaProvider: {} as never,
+    });
+    const reg = new SessionRegistry(
+      new Map<string, InstanceBundle>([
+        ["olivier", mk("olivier", "ws://gw-a")],
+        ["jerome", mk("jerome", "ws://gw-b")],
+      ]),
+    );
+    const base = { chatId: "c1", openclawChatId: "oc1", agentId: "alice", canonical: "u" };
+    const a = await reg.acquire({ ...base, instanceName: "olivier" });
+    const b = await reg.acquire({ ...base, instanceName: "jerome" });
+    expect(b).not.toBe(a); // re-keyed on the instance change, not reused
+    expect(a.connection.isClosed).toBe(true); // stale (wrong-gateway) session closed
+    expect(b.instanceName).toBe("jerome");
+    expect(urls).toEqual(["ws://gw-a", "ws://gw-b"]); // each routed to its OWN gateway
     reg.closeAll();
   });
 });

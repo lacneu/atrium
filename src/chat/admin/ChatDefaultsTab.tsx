@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAction, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../convexApi";
@@ -15,6 +15,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/components/ui/toast";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { KnobSegmented } from "../KnobRow";
 import { capitalize } from "../sessionKnobs";
 import {
@@ -22,7 +29,7 @@ import {
   parseChatDefaults,
   type ChatDefaultsView,
 } from "./chatDefaultsView";
-import { snapshotTabGate } from "../capabilities";
+import { instanceTabGate, type InstanceCompat } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import "./confTabs.css";
 
@@ -52,29 +59,68 @@ export function ChatDefaultsTab() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Capability gate (VCOMPAT-C): the tab is admin-only, so reading the full
-  // compat snapshot (bridge.read via the admin wildcard) is always allowed.
-  // The write targets the bridge's DEFAULT-instance resolution, hence the
-  // snapshot-level gate (see snapshotTabGate).
-  const snapshot = useQuery(api.compat.getBridgeCompat, {});
-  const gate = snapshotTabGate(snapshot, "configDefaults");
-  const gateBlocked = gate === "loading" ? null : gate.blocked;
+  // Chat defaults are PER-GATEWAY (one bridge, N instances): pick which instance to
+  // read/write. With several configured, the server fails closed without an explicit
+  // instanceName (never silently edits the wrong gateway) — so we always pass one.
+  const instances = useQuery(api.admin.listInstances, {}) as
+    | Array<{ name: string }>
+    | undefined;
+  const [instanceName, setInstanceName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!instances || instances.length === 0) return;
+    if (!instanceName || !instances.some((i) => i.name === instanceName)) {
+      setInstanceName(instances[0].name);
+    }
+  }, [instances, instanceName]);
+  const multiInstance = (instances?.length ?? 0) > 1;
+  // Loaded but EMPTY (fresh deployment, or all instances deleted): there is nothing to
+  // configure — show an actionable hint, never an indefinite spinner (instanceName stays
+  // null so the gate would otherwise hang on "loading" forever).
+  const noInstances = instances !== undefined && instances.length === 0;
 
+  // Capability gate scoped to the SELECTED instance (NOT the global snapshot): a
+  // compatible chosen gateway must not be blocked just because ANOTHER configured
+  // instance is absent/incompatible. Loading until the instance is resolved.
+  const compatForInstance = useQuery(
+    api.compat.forInstance,
+    instanceName ? { instanceName } : "skip",
+  ) as InstanceCompat | undefined;
+  const gate = instanceName
+    ? instanceTabGate(compatForInstance, "configDefaults")
+    : "loading";
+  const gateBlocked = gate === "loading" ? null : gate.blocked;
+  // The explicit claim to send: required (and selectable) when several instances exist;
+  // omitted for the sole-instance case (the server resolves the only gateway).
+  const claimArg = useMemo(
+    () => (multiInstance && instanceName ? { instanceName } : {}),
+    [multiInstance, instanceName],
+  );
+
+  // Guard against a stale-load race: switching instance while a previous getDefaults is
+  // in flight must NOT let the slow OLD-gateway response land under the NEW instanceName
+  // (it would show — and potentially save — the wrong gateway's defaults). Only the
+  // latest load applies its result.
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setState({ status: "loading" });
     try {
-      const current = parseChatDefaults(await getDefaults({}));
+      const current = parseChatDefaults(await getDefaults(claimArg));
+      if (loadSeq.current !== seq) return; // superseded by a newer instance selection
       setState({ status: "done", current });
       setDraft(current);
     } catch {
+      if (loadSeq.current !== seq) return;
       setState({ status: "error" });
     }
-  }, [getDefaults]);
+  }, [getDefaults, claimArg]);
   useEffect(() => {
-    // No bridge round-trip while the compat verdict is pending or negative.
+    // No bridge round-trip while the compat verdict is pending or negative, or before
+    // the instance to target is resolved (multi-instance).
     if (gateBlocked !== false) return;
+    if (multiInstance && !instanceName) return;
     void load();
-  }, [load, gateBlocked]);
+  }, [load, gateBlocked, multiInstance, instanceName]);
 
   const current = state.status === "done" ? state.current : null;
   const thinkingChanged =
@@ -90,8 +136,10 @@ export function ChatDefaultsTab() {
   async function save() {
     setSaving(true);
     try {
-      // Send ONLY the changed fields — an untouched knob must not be rewritten.
+      // Send ONLY the changed fields — an untouched knob must not be rewritten. The
+      // explicit instance claim targets THIS gateway (never a silent first).
       await setDefaults({
+        ...claimArg,
         ...(thinkingChanged
           ? { thinkingDefault: draft.thinkingDefault as string }
           : {}),
@@ -125,7 +173,35 @@ export function ChatDefaultsTab() {
     <div className="oc-cdefaults">
       <p className="oc-admin__hint">{m.cdefaults_desc()}</p>
 
-      {gate === "loading" ? (
+      {multiInstance && instanceName ? (
+        // Several gateways: defaults are PER-INSTANCE — choose which one explicitly
+        // (the server fails closed without a claim, never edits the wrong gateway).
+        <div className="oc-cdefaults__row">
+          <span className="oc-cdefaults__label">{m.afiles_instance_label()}</span>
+          <Select
+            value={instanceName}
+            onValueChange={(v) => setInstanceName(v)}
+            disabled={saving}
+          >
+            <SelectTrigger size="sm" aria-label={m.afiles_instance_label()}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(instances ?? []).map((i) => (
+                <SelectItem key={i.name} value={i.name}>
+                  {i.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
+
+      {noInstances ? (
+        <p className="oc-admin__hint" role="status">
+          {m.bridge_config_no_instances()}
+        </p>
+      ) : gate === "loading" ? (
         <p className="oc-admin__hint">{m.common_loading()}</p>
       ) : gate.blocked ? (
         // Whole-tab gate: disabled-and-EXPLAINED — the admin must understand

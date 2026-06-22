@@ -403,7 +403,9 @@ function ChatThread({
   // user never sends a message that cannot reach the agent. Fail-open: while
   // health is unknown (undefined / known:false) we do NOT block. The
   // failDispatch error bubble remains the backstop for a send that slips through.
-  const avail = useQuery(api.bridgeHealth.getBridgeAvailability, {});
+  const avail = useQuery(api.bridgeHealth.getBridgeAvailability, {
+    chatId: chatId as Id<"chats">,
+  });
   const unavailable = avail && !avail.available ? avail : null;
   useFocusMessage(chatId, focusMessageId);
   return (

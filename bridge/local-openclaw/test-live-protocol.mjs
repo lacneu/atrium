@@ -295,7 +295,7 @@ await check("C11 /patch: clears outside the allowlist -> 400", async () => {
   assertEq(status, 400, "status");
 });
 
-await check("C12 instance guard: foreign instanceName -> 409 instance_mismatch", async () => {
+await check("C12 instance guard: foreign instanceName -> 409 instance_not_served", async () => {
   const p = await post("/patch", {
     chatId: CHAT,
     agentId,
@@ -304,7 +304,7 @@ await check("C12 instance guard: foreign instanceName -> 409 instance_mismatch",
     sessionSettings: { thinkingLevel: "low" },
   });
   assertEq(p.status, 409, "/patch status");
-  assertEq(p.json.error.code, "instance_mismatch", "/patch code");
+  assertEq(p.json.error.code, "instance_not_served", "/patch code");
   const c = await post("/config-defaults", {
     op: "get",
     instanceName: "not-this-bridge",

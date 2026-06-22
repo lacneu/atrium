@@ -16,7 +16,22 @@ import { extractMessageToolReplies } from "./providers/openclaw/history-recovery
 import type { ConvexWriter } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import type { BridgeConfig } from "./config.js";
+import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
+
+/**
+ * Everything needed to serve ONE instance: its full per-instance config (gateway
+ * URL + creds + media dirs), its Convex writer (with that instance's media fetcher
+ * baked in), its hot media provider and its deterministic outbound scan. One bridge
+ * holds a Map<instanceName, InstanceBundle> (one bridge, N gateways) — keeping the
+ * per-instance-ness in the bundle leaves Session/RunManager/writer unchanged.
+ */
+export interface InstanceBundle {
+  config: BridgeConfig;
+  writer: ConvexWriter;
+  mediaProvider: MediaFetcherProvider;
+  outboundScan?: OutboundScan;
+}
 
 /** A monotonic clock in SECONDS (matches the normalizer's time unit). */
 export type Clock = () => number;
@@ -34,11 +49,17 @@ export interface SessionRouting {
   openclawChatId: string | null;
   agentId: string;
   canonical: string;
+  /** Which served instance this turn routes to (selects the gateway + creds). The
+   *  server always sets it (from the guarded body); when omitted, a bridge serving a
+   *  SINGLE instance falls back to that one. */
+  instanceName?: string;
 }
 
 export interface BridgeSession {
   readonly chatId: string;
   readonly sessionKey: string;
+  /** The served instance (gateway) this session is bound to (one bridge, N gateways). */
+  readonly instanceName: string;
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
   readonly clock: Clock;
@@ -58,6 +79,8 @@ export interface BridgeSession {
 export interface LiveTarget {
   canonical: string;
   agentId: string;
+  /** Which served instance (gateway) this session belongs to (one bridge, N gateways). */
+  instanceName: string;
   gatewayVersion: string | null;
   /** Gateway WS frame limit (policy.maxPayload) from this session's handshake —
    *  the authoritative inbound-attachment ceiling, surfaced for /health. */
@@ -69,6 +92,7 @@ class Session implements BridgeSession {
   readonly sessionKey: string;
   readonly agentId: string;
   readonly canonical: string;
+  readonly instanceName: string;
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
   readonly clock: Clock;
@@ -89,7 +113,7 @@ class Session implements BridgeSession {
   constructor(
     chatId: string,
     sessionKey: string,
-    routing: { agentId: string; canonical: string },
+    routing: { agentId: string; canonical: string; instanceName: string },
     connection: OpenClawConnection,
     writer: ConvexWriter,
     clock: Clock,
@@ -99,6 +123,7 @@ class Session implements BridgeSession {
     this.sessionKey = sessionKey;
     this.agentId = routing.agentId;
     this.canonical = routing.canonical;
+    this.instanceName = routing.instanceName;
     this.connection = connection;
     this.runManager = new RunManager(chatId, sessionKey, writer, outboundScan);
     this.clock = clock;
@@ -352,13 +377,18 @@ export class SessionRegistry {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
-    private readonly config: BridgeConfig,
-    private readonly writer: ConvexWriter,
+    // The instances this bridge serves, keyed by instanceName. Each bundle carries
+    // its own gateway config + writer + media — `acquire` picks the bundle for the
+    // turn's routed instance (one bridge, N gateways).
+    private readonly served: Map<string, InstanceBundle>,
     private readonly clock: Clock = defaultClock,
-    // Deterministic outbound-media scan (see core/outbound-scan), threaded to each
-    // session's TurnSink. Optional: omitted by tests / minimal embedders.
-    private readonly outboundScan?: OutboundScan,
   ) {}
+
+  /** The bundle serving `instanceName`, or undefined when this bridge does not serve
+   *  it (the server's membership guard rejects before acquire is reached). */
+  getBundle(instanceName: string): InstanceBundle | undefined {
+    return this.served.get(instanceName);
+  }
 
   /** Start the idle-session sweeper on first use (lazy, so pure-helper tests that
    *  never acquire don't spin a timer). The interval is unref'd — it never keeps
@@ -391,9 +421,10 @@ export class SessionRegistry {
     return reaped;
   }
 
-  /** The Convex writer (read seam for session re-hydration in performSend). */
-  getWriter(): ConvexWriter {
-    return this.writer;
+  /** The Convex writer for an instance (read seam for session re-hydration in
+   *  performSend). Undefined when the instance is not served. */
+  getWriter(instanceName: string): ConvexWriter | undefined {
+    return this.served.get(instanceName)?.writer;
   }
 
   async acquire(routing: SessionRouting): Promise<BridgeSession> {
@@ -405,24 +436,35 @@ export class SessionRegistry {
     // the key changed we must close the stale one (else its consumer loop keeps
     // writing to the same chat under the old agent → leak + cross-write).
     const sessionKey = buildSessionKey(openclawChatId ?? chatId, agentId, canonical);
+    // The routed instance is ALSO part of a session's identity (one bridge, N
+    // gateways): a chat whose routed instance changes (a chat with no stored
+    // instanceName re-resolves per turn, and two gateways can expose the SAME agent
+    // ids → identical sessionKey) must NOT reuse the cached session bound to the OLD
+    // gateway's connection. Re-key on an instance change so create() picks the right
+    // bundle. (Sole-instance fallback mirrors create().)
+    const effectiveInstance =
+      routing.instanceName ??
+      (this.served.size === 1 ? [...this.served.keys()][0] : undefined);
+    const matches = (s: Session): boolean =>
+      s.sessionKey === sessionKey && s.instanceName === effectiveInstance;
 
     const existing = this.sessions.get(chatId);
-    if (existing && !existing.connection.isClosed && existing.sessionKey === sessionKey) {
+    if (existing && !existing.connection.isClosed && matches(existing)) {
       existing.lastActivityAt = this.clock(); // a send keeps it warm (not idle)
       return existing;
     }
-    // A closed, missing, OR re-keyed session: drop (closing if still open) and
-    // (re)connect, deduping concurrent acquisitions for the same chat.
+    // A closed, missing, OR re-keyed (incl. re-routed) session: drop (closing if
+    // still open) and (re)connect, deduping concurrent acquisitions for the same chat.
     if (existing) {
       if (!existing.connection.isClosed) existing.close();
       this.sessions.delete(chatId);
     }
     const pending = this.inflight.get(chatId);
     if (pending) {
-      // Honor an in-flight create only if it targets the SAME key; otherwise wait
-      // for it to settle, then recurse so the re-key is applied.
+      // Honor an in-flight create only if it targets the SAME key + instance;
+      // otherwise wait for it to settle, then recurse so the re-key is applied.
       return pending.then((s) =>
-        s.sessionKey === sessionKey ? s : this.acquire(routing),
+        matches(s) ? s : this.acquire(routing),
       );
     }
     const promise = this.create(chatId, sessionKey, routing).finally(() => {
@@ -437,23 +479,40 @@ export class SessionRegistry {
     sessionKey: string,
     routing: SessionRouting,
   ): Promise<Session> {
-    // Credentials are RESOLVED ONCE AT BOOT (index.ts: Convex per-bridge secret,
-    // env fallback) and populated onto `config` — non-null here by construction (a
-    // missing credential fails the bridge at boot). A rotation takes effect on the
-    // next bridge restart (documented limitation; lazy-per-connect is a follow-up).
+    // Pick the bundle for THIS turn's routed instance (selects the gateway + creds +
+    // writer + outbound scan). The server's membership guard ran first, so the bundle
+    // is present; we still throw a clear error if not (never connect with the wrong
+    // instance's config). Credentials were RESOLVED AT BOOT from Convex and are
+    // non-null by construction (a secret with missing creds is skipped at boot).
+    const bundle =
+      (routing.instanceName
+        ? this.served.get(routing.instanceName)
+        : undefined) ??
+      (this.served.size === 1 ? [...this.served.values()][0] : undefined);
+    if (!bundle) {
+      throw new Error(
+        `instance not served: ${routing.instanceName ?? "(unspecified)"}`,
+      );
+    }
+    const instanceName =
+      routing.instanceName ?? bundle.config.instanceName ?? "";
     const connection = await OpenClawConnection.connect(
-      this.config.openclawGatewayUrl,
-      this.config.openclawToken!,
-      this.config.deviceIdentity!,
+      bundle.config.openclawGatewayUrl,
+      bundle.config.openclawToken!,
+      bundle.config.deviceIdentity!,
     );
     const session = new Session(
       chatId,
       sessionKey,
-      { agentId: routing.agentId, canonical: routing.canonical },
+      {
+        agentId: routing.agentId,
+        canonical: routing.canonical,
+        instanceName,
+      },
       connection,
-      this.writer,
+      bundle.writer,
       this.clock,
-      this.outboundScan,
+      bundle.outboundScan,
     );
     session.startConsumer();
     this.sessions.set(chatId, session);
@@ -471,6 +530,7 @@ export class SessionRegistry {
       out.push({
         canonical: session.canonical,
         agentId: session.agentId,
+        instanceName: session.instanceName,
         gatewayVersion: session.connection.gatewayVersion,
         maxPayload: session.connection.maxPayload,
       });

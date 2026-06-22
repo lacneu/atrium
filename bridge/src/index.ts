@@ -6,7 +6,7 @@
 // `--env-file=.env`, so secrets load from bridge/.env. Equivalent to
 // `node --env-file=.env dist/index.js`.
 
-import { loadConfig } from "./config.js";
+import { loadSharedConfig, findMediaDirCollision } from "./config.js";
 import { HttpConvexWriter } from "./convex-writer.js";
 import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { CredentialResolver } from "./core/credential-resolver.js";
@@ -14,7 +14,7 @@ import { startInboundReaper } from "./core/inbound-reaper.js";
 import { scanAndHostOutbound } from "./core/outbound-scan.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { HealthRegistry } from "./core/health.js";
-import { SessionRegistry } from "./session.js";
+import { SessionRegistry, type InstanceBundle } from "./session.js";
 import { createBridgeServer } from "./server.js";
 import {
   installProcessSafetyNet,
@@ -22,58 +22,91 @@ import {
 } from "./core/safety-net.js";
 
 async function main(): Promise<void> {
-  // Fail fast on missing/invalid env before opening any socket.
-  const config = loadConfig();
+  // Gateway config is Convex-only (D1): the bridge reads ONLY the gateway-agnostic
+  // shared config + its per-bridge secret list from env, then fetches each served
+  // instance's gateway URL + creds from Convex. Fail fast if nothing to serve.
+  const shared = loadSharedConfig();
+  if (shared.bridgeInstanceSecrets.length === 0) {
+    throw new Error(
+      "no instances to serve: set BRIDGE_INSTANCE_SECRETS (one per-bridge secret " +
+        "per Convex instance) — gateway URL + credentials are configured in Convex",
+    );
+  }
 
-  // Step 3b: resolve the gateway credentials ONCE at boot — Convex (per-bridge
-  // secret) first, env fallback per field — and populate `config`. A rotation takes
-  // effect on the next restart (lazy-per-connect is a follow-up). If neither Convex
-  // nor env provides a required credential, resolve() throws and the bridge fails to
-  // boot (fail-fast) rather than running unauthenticatable.
-  const credentialResolver = new CredentialResolver({
-    convexHttpActionsUrl: config.convexHttpActionsUrl,
-    bridgeInstanceSecret: config.bridgeInstanceSecret,
-    // Confirm the secret's PROVEN instance equals the one this bridge serves —
-    // a mismatch means a misconfigured secret; its credentials are refused.
-    expectedInstanceName: config.instanceName,
-    envToken: config.openclawToken,
-    envDeviceIdentity: config.deviceIdentity,
+  // Resolve EVERY served instance from Convex (per-bridge secret -> instance +
+  // gateway config + decrypted creds). Partial-failure tolerant (D4): a bad secret
+  // is skipped, never blocks the healthy instances.
+  const resolver = new CredentialResolver({
+    convexHttpActionsUrl: shared.convexHttpActionsUrl,
+    bridgeInstanceSecrets: shared.bridgeInstanceSecrets,
+    shared,
     onWarn: (msg) => console.warn(`[credentials] ${msg}`),
   });
-  const creds = await credentialResolver.resolve();
-  config.openclawToken = creds.token;
-  config.deviceIdentity = creds.deviceIdentity;
-
-  // Hot-swappable outbound media fetcher (D-E): the provider holds the current
-  // fetcher and rebuilds it when /send applies a per-instance mediaMode/mediaMaxMb
-  // change; the writer reads it lazily so async outbound media reflects the change.
-  const mediaProvider = new MediaFetcherProvider(config);
-  const writer = new HttpConvexWriter({
-    convexHttpActionsUrl: config.convexHttpActionsUrl,
-    ingestSecret: config.convexIngestSecret,
-    getFetcher: () => mediaProvider.current(),
-  });
-  // DETERMINISTIC outbound media: at each turn's finalize, host any file the agent
-  // dropped in the outbound dir — independent of whether it emitted a MEDIA: line
-  // (the LLM is unreliable about it). Only active in shared-fs outbound mode (the
-  // bridge has a local mount to scan); a no-op otherwise.
-  const outboundScan: OutboundScan = (messageId, sinceMs, hosted) =>
-    scanAndHostOutbound(
-      {
-        writer,
-        dir: config.mediaOutboundDir,
-        // HOT cap (not the boot config.mediaMaxBytes): match what the current fetcher
-        // would accept after a per-instance mediaMaxMb change.
-        maxBytes: mediaProvider.currentMaxBytes(),
-        enabled: () => mediaProvider.currentMode() === "shared-fs",
-      },
-      messageId,
-      sinceMs,
-      hosted,
+  const { served: configs, failures } = await resolver.resolveAll();
+  if (configs.size === 0) {
+    throw new Error(
+      `no instances resolved from Convex (${failures.length} secret(s) failed): ` +
+        "configure each instance in Convex (gateway URL + credentials + a minted " +
+        "per-bridge secret) and set BRIDGE_INSTANCE_SECRETS",
     );
-  const registry = new SessionRegistry(config, writer, undefined, outboundScan);
+  }
+
+  // Refuse a config where two served instances share a final media dir (a single dir
+  // override applied to many, or names normalizing to the same segment) — in shared-fs
+  // that cross-attaches files between gateways. Fail fast with a clear, actionable error.
+  const collision = findMediaDirCollision(
+    [...configs.values()].map((c) => ({
+      instanceName: c.instanceName ?? "?",
+      mediaOutboundDir: c.mediaOutboundDir,
+      inboundMediaDir: c.inboundMediaDir,
+    })),
+  );
+  if (collision) {
+    throw new Error(
+      `media dir collision: ${collision.a} and ${collision.b} both resolve to ` +
+        `"${collision.dir}". For a multi-instance bridge, remove the single ` +
+        `OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override (per-instance dirs ` +
+        `are derived from the instance name) or rename the colliding instances; in ` +
+        `shared-fs a shared dir would cross-attach files between gateways.`,
+    );
+  }
+
+  // Build one self-contained bundle per served instance: its hot media provider, a
+  // Convex writer with that instance's media fetcher baked in, and the deterministic
+  // outbound scan over that instance's dir. Keeping the per-instance-ness here leaves
+  // the Session/RunManager/writer code unchanged.
+  const bundles = new Map<string, InstanceBundle>();
+  for (const [name, config] of configs) {
+    const mediaProvider = new MediaFetcherProvider(config);
+    const writer = new HttpConvexWriter({
+      convexHttpActionsUrl: config.convexHttpActionsUrl,
+      ingestSecret: config.convexIngestSecret,
+      getFetcher: () => mediaProvider.current(),
+    });
+    const outboundScan: OutboundScan = (messageId, sinceMs, hosted) =>
+      scanAndHostOutbound(
+        {
+          writer,
+          dir: config.mediaOutboundDir,
+          maxBytes: mediaProvider.currentMaxBytes(),
+          enabled: () => mediaProvider.currentMode() === "shared-fs",
+        },
+        messageId,
+        sinceMs,
+        hosted,
+      );
+    bundles.set(name, { config, writer, mediaProvider, outboundScan });
+    // Reap stale shared-fs inbound files for THIS instance's dir (the bridge owns it).
+    startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
+  }
+  console.log(
+    `bridge serving ${bundles.size} instance(s): [${[...bundles.keys()].join(", ")}]` +
+      (failures.length ? ` (${failures.length} secret(s) skipped)` : ""),
+  );
+
+  const registry = new SessionRegistry(bundles);
   const health = new HealthRegistry(Date.now());
-  const server = createBridgeServer({ config, registry, health, mediaProvider });
+  const server = createBridgeServer({ shared, served: bundles, registry, health });
 
   // A listen/bind failure must FAIL FAST so the supervisor restarts and the failure
   // surfaces: an ASYNC `error` event (EADDRINUSE / EACCES) is claimed here and
@@ -82,12 +115,11 @@ async function main(): Promise<void> {
   // net is NOT armed until we are actually listening (below).
   installServerFailFast(server);
 
-  // Reap stale shared-fs inbound files (Phase 3) — the bridge owns this dir's
-  // lifecycle. Unref'd, so it never holds the process open during shutdown.
-  startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
+  // (Stale shared-fs inbound files are reaped per-instance, started above when each
+  // bundle is built — each instance owns its own inbound dir.)
 
-  server.listen(config.port, () => {
-    console.log(`bridge listening on :${config.port}`);
+  server.listen(shared.port, () => {
+    console.log(`bridge listening on :${shared.port}`);
     // Arm the last-resort net ONLY now, with a live listener: a stray RUNTIME error
     // must never take the bridge down, while every BOOT-phase error above still
     // fails fast (uncaught -> exit -> restart) rather than being swallowed.
