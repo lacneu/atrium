@@ -21,7 +21,10 @@ import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { bridgeHealthTarget } from "./schema";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
-import { resolveHealthPollTargets } from "./lib/bridgeRouting";
+import {
+  resolveBridgeUrlForDispatch,
+  resolveHealthPollTargets,
+} from "./lib/bridgeRouting";
 import { resolveTargetForChat } from "./routing";
 
 const HEALTH_KEY = "singleton";
@@ -385,5 +388,92 @@ export const maxPayloadInternal = internalQuery({
       }
     }
     return doc.maxPayload ?? null;
+  },
+});
+
+/**
+ * A CLEAR per-instance health view (instance <-> bridge <-> gateway) for the API/MCP:
+ * is a bridge configured to serve it, is it available/degraded + why, the gateway version
+ * + last error, and the agent-discovery state (count + freshness). Read-only aggregation
+ * of the poller-maintained caches (health 1min / agents 2min / compat 5min) — no live
+ * bridge call. Gated `bridge.read` at the route.
+ */
+export const bridgeStatusInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const doc = await readDoc(ctx);
+    const instances = await ctx.db.query("instances").collect();
+    const served = process.env.BRIDGE_INSTANCE_NAME ?? null;
+    const isSole = instances.length === 1;
+    const rows = [];
+    for (const inst of instances) {
+      const avail = computeAvailability(doc, now, inst.name);
+      // A bridge is reachable for this instance iff it has its own bridgeUrl, or is the
+      // env-served / sole instance — the same scoped routing dispatch + sync use.
+      const bridgeUrlConfigured =
+        resolveBridgeUrlForDispatch(
+          { bridgeUrl: inst.bridgeUrl },
+          { instanceName: inst.name, served, isSole },
+        ) !== undefined;
+      const target =
+        doc?.targets.find((t) => t.instanceName === inst.name) ?? null;
+      const discovery = await ctx.db
+        .query("instanceDiscovery")
+        .withIndex("by_instance", (q) => q.eq("instanceName", inst.name))
+        .first();
+      const agents = await ctx.db
+        .query("agents")
+        .withIndex("by_instance", (q) => q.eq("instanceName", inst.name))
+        .collect();
+      // PER-INSTANCE health, derived from the HEALTH DOC ONLY (NOT the global
+      // `computeAvailability.available`, which stays true whenever ANY bridge answers, and
+      // NOT the agents discovery, whose lastPollAt is deliberately NOT bumped on a no-change
+      // success — so it can't measure freshness). The health poll runs every minute and
+      // ALWAYS bumps `checkedAt`, so it is the one reliable current signal. `stale` is
+      // checked BEFORE the error branches so a snapshot too old to trust (e.g. a wedged
+      // poller after a target went into error) reads `stale`, never a frozen `error`.
+      // `degraded`/`maxInboundBytes` from computeAvailability are already instance-scoped;
+      // the discovery fields below are exposed RAW (last-good), not used for this verdict.
+      const health: "no_bridge_url" | "error" | "ok" | "stale" | "unknown" =
+        ((): "no_bridge_url" | "error" | "ok" | "stale" | "unknown" => {
+          if (!bridgeUrlConfigured) return "no_bridge_url";
+          // A FAILED agents poll is a RELIABLE per-instance failure signal: failures
+          // always bump the discovery row (only a no-change SUCCESS skips the write), and
+          // a recovery flips lastPollOk back to true. It is doc-independent, so it catches
+          // the multi-bridge case where THIS instance's bridge is down but another answers
+          // (global doc.reachable stays true, no target for this instance).
+          if (discovery?.lastPollOk === false) return "error";
+          if (doc === null) return "unknown"; // no health telemetry yet
+          // Staleness is checked BEFORE the target/reachable branches so a snapshot too old
+          // to trust (e.g. a wedged poller after a target went into error) reads `stale`,
+          // never a frozen `error`/`ok`. checkedAt is bumped on EVERY poll, so it is the
+          // one reliable freshness measure (unlike discovery.lastPollAt).
+          if (now - doc.checkedAt > STALE_MS) return "stale";
+          if (!doc.reachable) return "error";
+          if (target?.state === "error") return "error";
+          if (target?.state === "connected") return "ok";
+          // Fresh + reachable but no per-instance target (idle, or just configured): no
+          // current positive confirmation. The raw discovery/agent fields below clarify;
+          // we do NOT promote a no-change-stale discovery success to `ok` here.
+          return "unknown";
+        })();
+      rows.push({
+        instanceName: inst.name,
+        displayName: inst.displayName ?? inst.name,
+        bridgeUrlConfigured,
+        health,
+        degraded: avail.degraded,
+        gatewayVersion: target?.gatewayVersion ?? null,
+        gatewayState: target?.state ?? null,
+        lastErrorCode: target?.lastErrorCode ?? null,
+        maxInboundBytes: avail.maxInboundBytes,
+        agentCount: agents.filter((a) => a.presentInLastOk).length,
+        agentsLastOkAt: discovery?.lastOkAt ?? null,
+        discoveryOk: discovery?.lastPollOk ?? null,
+        discoveryError: discovery?.error ?? null,
+      });
+    }
+    return rows;
   },
 });

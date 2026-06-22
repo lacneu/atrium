@@ -204,6 +204,12 @@ export const reconcileChatInput = {
     .describe("The chat id whose stuck stream to reconcile (required)."),
 } as const;
 
+export const syncInstanceInput = {
+  instance: z
+    .string()
+    .describe("The instance NAME to force-sync (required)."),
+} as const;
+
 /** Build a query string from defined values only (Bearer is never in the URL). */
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams();
@@ -236,6 +242,20 @@ export function getCompat(
   options?: ApiFetchOptions,
 ): Promise<unknown> {
   return apiFetch(config, "/compat", {}, options);
+}
+
+/**
+ * GET /api/v1/bridge-status — a CLEAR per-instance bridge<->gateway health view: per
+ * instance `bridgeUrlConfigured`, `available`/`degraded` + `reason`, `gatewayVersion` +
+ * `gatewayState`/`lastErrorCode`, `agentCount` + discovery freshness. Requires
+ * `bridge.read`. The fast "what's wrong with my instances" check — e.g. an instance with
+ * `bridgeUrlConfigured:false` is exactly why a sync returns `no_bridge_url`.
+ */
+export function bridgeStatus(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, "/bridge-status", {}, options);
 }
 
 /**
@@ -318,6 +338,27 @@ export function reconcileChat(
     config,
     "/reconcile-chat",
     { method: "POST", body: JSON.stringify({ chatId: args.chatId }) },
+    options,
+  );
+}
+
+/**
+ * POST /api/v1/instances/sync — force an instance sync: poke the bridge (resolve creds +
+ * connect -> pairing) then pull THAT instance's agents into Atrium NOW, instead of waiting
+ * for the discovery cron. Requires `selfheal` (the admin + agent service-account roles).
+ * Returns `{ status, agents, detail }` — `status` is the exact outcome (synced | no_agents
+ * | no_bridge_url | unreachable | unauthorized | not_served | deploy_misconfigured) and
+ * `detail` is a plain-English explanation an agent can act on.
+ */
+export function syncInstance(
+  config: Config,
+  args: { instance: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/instances/sync",
+    { method: "POST", body: JSON.stringify({ instance: args.instance }) },
     options,
   );
 }

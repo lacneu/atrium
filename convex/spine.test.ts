@@ -116,9 +116,17 @@ describe("observability spine", () => {
       );
       expect(roleHasPermission(agentPerms, PERMISSIONS.ADMIN_MANAGE)).toBe(false);
 
+      // The "Synchroniser maintenant" force-sync (POST /api/v1/instances/sync) gates on
+      // `selfheal` — so it is reachable by admin (wildcard) + the AGENT role, but NOT the
+      // read-only observer. This is the server-side proof of "la synchro uniquement admin
+      // et agent" (the route mirrors /api/v1/reconcile-chat's selfheal gate).
+      expect(roleHasPermission(agentPerms, PERMISSIONS.SELF_HEAL)).toBe(true);
+      expect(roleHasPermission(observerPerms, PERMISSIONS.SELF_HEAL)).toBe(false);
+
       // admin is the wildcard superset -> every permission.
       const adminPerms = await permissionsForRoleKey(ctx, "admin");
       expect(roleHasPermission(adminPerms, PERMISSIONS.ADMIN_MANAGE)).toBe(true);
+      expect(roleHasPermission(adminPerms, PERMISSIONS.SELF_HEAL)).toBe(true);
       expect(roleHasPermission(adminPerms, PERMISSIONS.TRACES_READ)).toBe(true);
 
       // unknown role -> empty set -> no permissions (least privilege).

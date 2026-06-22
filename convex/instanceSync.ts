@@ -21,8 +21,38 @@
 import { action, internalAction, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { discoverInstanceAgents } from "./agents";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
+
+/** The outcome of a force-sync. The UI maps these to localized `m.*` toasts; the API/MCP
+ *  (which has no i18n) gets the matching `SYNC_STATUS_DETAIL` English explanation. */
+export type SyncStatus =
+  | "synced"
+  | "no_agents"
+  | "no_bridge_url"
+  | "deploy_misconfigured"
+  | "unreachable"
+  | "unauthorized"
+  | "not_served";
+
+/** Stable, server-side English detail per status — so an agent calling the API can ACT
+ *  on the result without a message catalog (advisor: the MCP consumer has no i18n). */
+export const SYNC_STATUS_DETAIL: Record<SyncStatus, string> = {
+  synced: "Agents synced from the gateway.",
+  no_agents:
+    "The bridge serves this instance but returned no agents — pair the device on the gateway (or check the instance config), then sync again.",
+  no_bridge_url:
+    "No bridge serves this instance — set its Bridge URL (Settings -> Agents -> Instances).",
+  deploy_misconfigured:
+    "BRIDGE_SHARED_SECRET is missing on the Convex deployment.",
+  unreachable:
+    "The bridge did not respond — check it is running and its URL is correct.",
+  unauthorized:
+    "The bridge rejected authentication — BRIDGE_SHARED_SECRET is out of sync between Convex and the bridge.",
+  not_served:
+    "The bridge does not serve this instance — its secret must be in BRIDGE_INSTANCE_SECRETS and its credentials must be valid.",
+};
 
 /** Resolve an instance's name + the bridge URL that actually serves it (scoped exactly
  *  like the pollers). null bridgeUrl => this bridge does not serve the instance (do not
@@ -91,60 +121,47 @@ export const pokeInstanceBridge = internalAction({
   },
 });
 
+/** Resolve an instance NAME -> its id (`.first()`: `instances.name` is not schema-unique).
+ *  For the API/MCP route, which works with human-friendly names; null when unknown. */
+export const instanceIdByName = internalQuery({
+  args: { name: v.string() },
+  handler: async (ctx, { name }): Promise<Id<"instances"> | null> => {
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", name))
+      .first();
+    return inst?._id ?? null;
+  },
+});
+
 /**
- * Admin: force an immediate sync for ONE instance — poke its bridge (resolve + connect ->
- * pairing) AND pull THAT instance's agents into Convex now, so an admin completes setup
- * right after approving the pairing instead of waiting for the discovery cron. SCOPED to
- * the target: never polls or mutates other instances. Returns a SPECIFIC `status` so the
- * UI can tell the admin exactly what to fix instead of a generic "sync failed":
- *   - `synced`          — agents applied.
- *   - `no_agents`       — bridge serves the instance but returned no agents (the device is
- *                         likely not paired yet — approve it on the gateway, then re-sync).
- *   - `no_bridge_url`   — no bridge serves this instance (set its Bridge URL).
- *   - `deploy_misconfigured` — BRIDGE_SHARED_SECRET missing on the Convex deployment.
- *   - `unreachable`     — the bridge did not respond (down / wrong URL).
- *   - `unauthorized`    — the bridge rejected auth (BRIDGE_SHARED_SECRET mismatch).
- *   - `not_served`      — bridge up but does not serve this instance (its per-bridge secret
- *                         is not in BRIDGE_INSTANCE_SECRETS, or its creds don't resolve).
+ * Shared sync logic (NO auth) — force an immediate sync for ONE instance: poke its bridge
+ * (resolve + connect -> pairing) AND pull THAT instance's agents into Convex now. SCOPED
+ * to the target: never polls or mutates other instances. Called by BOTH the admin UI
+ * action (forceInstanceSync) and the selfheal-gated API route, so they behave identically.
+ * Returns a SPECIFIC `status` (see SyncStatus) so callers report the exact cause + fix.
  */
-export const forceInstanceSync = action({
+export const runInstanceSync = internalAction({
   args: { instanceId: v.id("instances") },
   handler: async (
     ctx,
     { instanceId },
-  ): Promise<{
-    status:
-      | "synced"
-      | "no_agents"
-      | "no_bridge_url"
-      | "deploy_misconfigured"
-      | "unreachable"
-      | "unauthorized"
-      | "not_served";
-    agents: number;
-  }> => {
-    // Admin gate (reuse the agent-files admin check — an internal query, since an action
-    // ctx cannot call requireAdmin directly).
-    await ctx.runQuery(internal.agentFiles.checkAdminAccess, {});
+  ): Promise<{ status: SyncStatus; agents: number }> => {
     const target = await ctx.runQuery(internal.instanceSync.syncTargetInternal, {
       instanceId,
     });
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
-    if (!sharedSecret) {
-      return { status: "deploy_misconfigured", agents: 0 };
-    }
-    // No bridge serves this instance: it has no own bridgeUrl and is not the env-served /
-    // sole instance — the #1 setup miss (set the instance's Bridge URL).
+    if (!sharedSecret) return { status: "deploy_misconfigured", agents: 0 };
+    // No bridge serves this instance: no own bridgeUrl and not the env-served / sole
+    // instance — the #1 setup miss (set the instance's Bridge URL).
     if (target === null || target.bridgeUrl === null) {
       return { status: "no_bridge_url", agents: 0 };
     }
     const base = target.bridgeUrl.replace(/\/$/, "");
     // BEST-EFFORT: resolve any pending creds + connect (-> pairing if not yet paired). Its
     // result is intentionally NOT used to classify — a transient refresh hiccup must not
-    // block a SERVED instance from syncing. The /agents discovery below is authoritative.
+    // block a SERVED instance. The /agents discovery below is the authoritative check.
     await pokeBridge(target.instanceName, target.bridgeUrl);
-    // Pull ONLY this instance's agents (scoped; same discovery as the cron) — this is the
-    // authoritative check: it confirms the bridge serves the instance AND reaches the gateway.
     const disc = await discoverInstanceAgents(ctx, target.instanceName, base, sharedSecret);
     if (disc.synced) return { status: "synced", agents: disc.agentCount };
     if (!disc.reached) return { status: "unreachable", agents: 0 };
@@ -152,5 +169,21 @@ export const forceInstanceSync = action({
     if (disc.httpStatus === 409) return { status: "not_served", agents: 0 };
     // Reached + served, but no agents applied — the device is not paired yet.
     return { status: "no_agents", agents: 0 };
+  },
+});
+
+/** Admin (UI "Synchroniser maintenant"): gate on the admin role, then run the shared sync. */
+export const forceInstanceSync = action({
+  args: { instanceId: v.id("instances") },
+  handler: async (
+    ctx,
+    { instanceId },
+  ): Promise<{ status: SyncStatus; agents: number }> => {
+    // Admin gate (reuse the agent-files admin check — an internal query, since an action
+    // ctx cannot call requireAdmin directly).
+    await ctx.runQuery(internal.agentFiles.checkAdminAccess, {});
+    return await ctx.runAction(internal.instanceSync.runInstanceSync, {
+      instanceId,
+    });
   },
 });

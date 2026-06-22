@@ -27,6 +27,9 @@ import {
   reconcileChat,
   reconcileChatInput,
   getCompat,
+  bridgeStatus,
+  syncInstance,
+  syncInstanceInput,
   getIntegrations,
   getKpi,
   getKpiInput,
@@ -121,6 +124,22 @@ function main(): void {
   );
 
   server.registerTool(
+    "bridge_status",
+    {
+      title: "Per-instance bridge/gateway health",
+      description:
+        "A CLEAR per-instance bridge<->gateway health view (GET /bridge-status). " +
+        "Requires bridge.read. Per instance: bridgeUrlConfigured, a health verdict " +
+        "(ok|error|stale|unknown|no_bridge_url, from THIS instance's own signals — not the " +
+        "global bridge state) + degraded, gatewayVersion + gatewayState/lastErrorCode, " +
+        "agentCount + discovery freshness. The fast 'what's wrong with my instances' check " +
+        "— e.g. bridgeUrlConfigured:false is exactly why a sync returns no_bridge_url.",
+      inputSchema: {},
+    },
+    async () => run(() => bridgeStatus(config)),
+  );
+
+  server.registerTool(
     "get_integrations",
     {
       title: "Observability integration status (Opik / Langfuse)",
@@ -195,6 +214,22 @@ function main(): void {
       inputSchema: reconcileChatInput,
     },
     async (args) => run(() => reconcileChat(config, args)),
+  );
+
+  server.registerTool(
+    "sync_instance",
+    {
+      title: "Force an instance sync (resolve creds + pull agents)",
+      description:
+        "Force-sync ONE instance (POST /instances/sync): poke the bridge (resolve creds " +
+        "+ connect -> pairing) then pull that instance's agents into Atrium NOW, instead " +
+        "of waiting for the discovery cron. Requires `selfheal` (admin + agent service " +
+        "roles). Returns { status, agents, detail }: status is the exact outcome (synced " +
+        "| no_agents | no_bridge_url | unreachable | unauthorized | not_served | " +
+        "deploy_misconfigured) and detail is a plain-English explanation to act on.",
+      inputSchema: syncInstanceInput,
+    },
+    async (args) => run(() => syncInstance(config, args)),
   );
 
   server.registerTool(

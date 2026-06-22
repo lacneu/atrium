@@ -15,12 +15,15 @@
  *       [--to T] [--status S] [--severity S] [--source S] [--kind K]
  *   atrium query-openclaw [--question TEXT]
  *   atrium report-anomaly --kind K --severity S --message M [--correlation-id ID]
+ *   atrium bridge-status
+ *   atrium sync --instance NAME
  *
  * --from/--to accept epoch ms OR a Grafana relative token (e.g. now-24h, now).
  */
 
 import { ApiError, resolveConfig, type Config } from "./config.js";
 import {
+  bridgeStatus,
   getCompat,
   getKpi,
   health,
@@ -28,6 +31,7 @@ import {
   listTraces,
   queryOpenClaw,
   reportAnomaly,
+  syncInstance,
 } from "./tools.js";
 
 interface ParsedArgs {
@@ -76,6 +80,8 @@ const USAGE = `atrium — thin CLI over the /api/v1 observability surface
 Commands:
   health                              GET  /health
   compat                              GET  /compat            (bridge.read)
+  bridge-status                       GET  /bridge-status     (bridge.read)
+  sync --instance NAME                POST /instances/sync    (selfheal)
   traces [--limit N] [--q TEXT] [--from T] [--to T] [--kind K] [--status CODE]
          [--status-class 2xx|4xx|5xx] [--direction D] [--principal-type T]
          [--role-key K] [--correlation-id ID]
@@ -108,6 +114,15 @@ async function dispatch(
       return health(config);
     case "compat":
       return getCompat(config);
+    case "bridge-status":
+      return bridgeStatus(config);
+    case "sync": {
+      const instance = str(flags.instance);
+      if (!instance) {
+        throw new Error("sync requires --instance NAME");
+      }
+      return syncInstance(config, { instance });
+    }
     case "traces": {
       const statusClass = str(flags["status-class"]);
       if (

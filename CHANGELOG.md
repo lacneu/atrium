@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.6.4] — MCP/CLI: per-instance health view + force-sync (admin + agent)
+
+Convenience release. No breaking changes — additive.
+
+- **A clear per-instance bridge/gateway health view, over the API/MCP/CLI.** New key-authed
+  `bridge_status` (GET `/api/v1/bridge-status`, requires `bridge.read`; `atrium
+  bridge-status` on the CLI) shows, per instance: whether a Bridge URL is configured, a
+  per-instance health verdict (`ok` / `error` / `stale` / `unknown` / `no_bridge_url`,
+  derived from THIS instance's own signals — never the global bridge state) plus a
+  `degraded` flag, gateway version + last error, agent count + discovery freshness — the
+  fast "what's wrong with my instances" check (e.g. `bridgeUrlConfigured: false` is exactly
+  why a sync returns `no_bridge_url`).
+- **Force a sync from the API/MCP/CLI — admin + agent only.** New `sync_instance` (POST
+  `/api/v1/instances/sync`, requires `selfheal`; `atrium sync --instance NAME`) is the
+  twin of the UI "Synchroniser" button: it pokes the bridge and pulls the instance's
+  agents now, returning the exact outcome plus a plain-English `detail`. Gated by
+  `selfheal`, which only the **admin** and **agent** service-account roles carry (never the
+  read-only observer).
+
 ## [0.6.3] — "Synchroniser" tells you WHY it failed
 
 Convenience release. No breaking changes — additive.

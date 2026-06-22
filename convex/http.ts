@@ -13,6 +13,7 @@ import { ingest } from "./bridge_ingest";
 import { instanceCredentials } from "./bridge_credentials";
 import { authenticateApiKey, principalHasPermission } from "./lib/apiAuth";
 import { PERMISSIONS } from "./lib/rbac";
+import { SYNC_STATUS_DETAIL } from "./instanceSync";
 import { parseRange } from "./lib/timeRange";
 import type { Filter } from "./lib/filters";
 import { enrichTraceByCorrelation } from "./integrations/enrich";
@@ -882,6 +883,131 @@ http.route({
     });
 
     return apiJson({ ok: true, ...summary });
+  }),
+});
+
+// Per-instance bridge<->gateway health (key-authed). A CLEAR status view for an operator
+// or an agent's self-supervision: is a bridge configured for the instance, available /
+// degraded + why, gateway version + last error, agent-discovery freshness. Mirrors
+// /api/v1/compat: authenticate -> require bridge.read -> record an api.call trace -> return.
+http.route({
+  path: "/api/v1/bridge-status",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.BRIDGE_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/bridge-status",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: bridge.read" },
+        403,
+      );
+    }
+    const instances = await ctx.runQuery(
+      internal.bridgeHealth.bridgeStatusInternal,
+      {},
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/bridge-status",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, instances });
+  }),
+});
+
+// Force an instance sync (key-authed; selfheal = admin + the agent service-account role,
+// NOT observer). The API/MCP twin of the admin "Synchroniser" button: poke the bridge
+// (resolve + connect -> pairing) + pull the instance's agents NOW. Mirrors
+// /api/v1/reconcile-chat (the other selfheal-gated bounded-corrective WRITE). Returns the
+// SPECIFIC status + an English `detail` (the MCP consumer has no i18n) so an agent can act.
+http.route({
+  path: "/api/v1/instances/sync",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/instances/sync",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    // Instance NAME via ?instance= (API-friendly) or a JSON body { instance }.
+    const url = new URL(request.url);
+    let name = strParam(url, "instance");
+    if (name === undefined) {
+      try {
+        const body = (await request.json()) as { instance?: unknown };
+        if (typeof body.instance === "string") name = body.instance;
+      } catch {
+        /* no/invalid body — fall through to the required-arg check */
+      }
+    }
+    if (!name) {
+      return apiJson({ ok: false, error: "instance is required" }, 400);
+    }
+    // .first() (name not schema-unique); unknown name -> clean 404, never run on null.
+    const instanceId = await ctx.runQuery(
+      internal.instanceSync.instanceIdByName,
+      { name },
+    );
+    if (instanceId === null) {
+      return apiJson({ ok: false, error: `unknown instance: ${name}` }, 404);
+    }
+    const result = await ctx.runAction(
+      internal.instanceSync.runInstanceSync,
+      { instanceId },
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/instances/sync",
+      method: "POST",
+      status: 200, // the API call + action ran; the sync outcome is in `status` below
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({
+      ok: true,
+      status: result.status,
+      agents: result.agents,
+      detail: SYNC_STATUS_DETAIL[result.status],
+    });
   }),
 });
 
