@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.8.2] — Lighter observability writes under load
+
+Corrective release. No breaking changes, no schema migration.
+
+- **No more one-trace-row-per-streaming-delta.** Each streaming frame
+  (appendDelta/setSnapshot) used to write a `traceEvents` row on the ingest path —
+  dozens per reply — which bloated the trace table, contended (write-conflicts) with
+  the anomaly/KPI scans of that same table, and added a synchronous write to every
+  frame's acknowledgment. Per-delta progress is no longer traced; the turn lifecycle
+  stays observable via the start + finalize traces (status + final text length) and
+  the dispatch / error / media traces. This lowers backend write pressure during a
+  reply — most noticeable on a resource-constrained self-hosted backend sharing a box
+  with other load. Convex-only: `npx convex deploy` applies it without rebuilding any
+  image. (Diagnosed from prod telemetry: the underlying slowness was the self-hosted
+  Convex backend hitting the NAS's physical limits while the box was also busy; this
+  change reduces Atrium's own footprint, it does not add capacity.)
+  - *Operator note:* the `openclaw.ingest` observability metric/trace volume drops
+    ~10× per reply (it was dominated by per-delta rows). This is a metric-semantics
+    change, not a real traffic decrease — don't read the step-down as a regression.
+
 ## [0.8.1] — Fix a "too many system operations" error; lighter streaming writes
 
 Corrective release. No breaking changes, no schema migration.

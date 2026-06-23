@@ -209,20 +209,18 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ messageId });
     }
+    // The per-delta stream ops (appendDelta/setSnapshot) are the HIGH-FREQUENCY hot
+    // path: a single turn emits dozens of them. We deliberately do NOT write a
+    // traceEvents row per delta -- that write amplification bloats the traceEvents
+    // table, contends (OCC) with the detectAnomalies/kpi scans of the same `by_at`
+    // range, and adds a synchronous write to every delta's ack on a backend that may
+    // be resource-constrained. The turn lifecycle stays observable via startAssistant
+    // + finalize (which records status + final textLen) + dispatch/error traces;
+    // per-delta progress is intentionally not traced.
     case "appendDelta": {
       await ctx.runMutation(internal.stream.appendDelta, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
-      });
-      await traceIngest(ctx, {
-        kind: "openclaw.ingest",
-        correlationId: body.messageId,
-        meta: {
-          op: body.op,
-          messageId: body.messageId,
-          textLen: body.text.length,
-          ok: true,
-        },
       });
       return json({ ok: true });
     }
@@ -230,16 +228,6 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
-      });
-      await traceIngest(ctx, {
-        kind: "openclaw.ingest",
-        correlationId: body.messageId,
-        meta: {
-          op: body.op,
-          messageId: body.messageId,
-          textLen: body.text.length,
-          ok: true,
-        },
       });
       return json({ ok: true });
     }

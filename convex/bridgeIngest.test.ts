@@ -165,6 +165,29 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(traces[0].principalType).toBe("system");
     expect(traces[0].direction).toBe("inbound");
   });
+
+  test("write-amplification: per-delta appendDelta/setSnapshot apply the stream op but write NO trace", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "appendDelta", messageId, text: "Hel" });
+    await post(t, { op: "appendDelta", messageId, text: "lo" });
+    await post(t, { op: "setSnapshot", messageId, text: "Hello world" });
+
+    // The stream ops APPLIED (liveText reflects the deltas + the snapshot)...
+    const live = await t.run(
+      async (ctx) => (await ctx.db.get(messageId))?.liveText,
+    );
+    expect(live).toBe("Hello world");
+
+    // ...but NONE of these high-frequency deltas wrote an openclaw.ingest trace
+    // (the write-amplification fix — only startAssistant/finalize/parts are traced).
+    // Robust to whether the seed emitted any trace: assert no per-delta op appears.
+    const traces = await tracesByKind(t, "openclaw.ingest");
+    const ops = traces.map((tr) => JSON.parse(tr.meta ?? "{}").op);
+    expect(ops).not.toContain("appendDelta");
+    expect(ops).not.toContain("setSnapshot");
+  });
 });
 
 describe("bridge_ingest httpAction: Bearer gate (every reject reason)", () => {
