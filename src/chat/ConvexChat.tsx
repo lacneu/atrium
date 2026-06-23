@@ -29,7 +29,7 @@ import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
-import { pickLogoUrl, brandInitials } from "@/lib/brandLogo";
+import { pickLogoUrl, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
   AssistantIdentityContext,
@@ -187,12 +187,19 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const showTools = ui.showTools;
 
   // Resolve the assistant identity ONCE (see AssistantIdentityContext): the
-  // charte graphique drives the AVATAR (logo follows the SAME server-resolved
-  // theme mode so it never desyncs from the applied CSS), and the responding
-  // AGENT drives the NAME (multi-agent only — single-agent falls back to the
-  // brand label). getChatAgent is the SAME subscription the header chip uses.
+  // charte graphique drives the AVATAR, and the responding AGENT drives the NAME
+  // (multi-agent only — single-agent falls back to the brand label). getChatAgent
+  // is the SAME subscription the header chip uses.
+  //
+  // The avatar TILE paints the logo on `--primary` (see .oc-msg__avatar /
+  // .oc-emptystate__avatar), NOT the page background — so its logo variant must
+  // match `--primary`'s polarity, not the page light/dark mode (a dark `--primary`
+  // needs the dark-mode logo even while the page is light). `avatarLogoMode`
+  // derives that from the active chart's own primary / primary-foreground tokens
+  // for the resolved page mode (system-safe: brandMode is the client-resolved one).
   const brandMode = useResolvedMode(me?.resolvedThemeMode);
   const brand = me?.resolvedChartBrand;
+  const chartTokens = me?.resolvedChartTokens;
   const agentInfo = useQuery(
     api.agents.getChatAgent,
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
@@ -200,15 +207,21 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const agent = agentInfo?.multiAgent ? agentInfo.agent : null;
   const assistantIdentity = useMemo<AssistantIdentity>(() => {
     const label = brand?.label ?? "Atrium";
+    const colors = chartTokens?.colors?.[brandMode];
+    const avatarMode = avatarLogoMode(
+      colors?.primary,
+      colors?.["primary-foreground"],
+      brandMode,
+    );
     return {
       label,
-      logoUrl: pickLogoUrl(brand, brandMode),
+      logoUrl: pickLogoUrl(brand, avatarMode),
       isDefault: brand?.isDefault ?? true,
       initials: brandInitials(label),
       agentName: agent?.displayName ?? agent?.agentId ?? null,
       agentEmoji: agent?.emoji ?? null,
     };
-  }, [brand, brandMode, agent]);
+  }, [brand, brandMode, chartTokens, agent]);
   // OPTIMISTIC (shared updater — see uiPrefOptimistic.ts): the toggle flips in the
   // local getMe cache IMMEDIATELY; the write + its getMe-invalidation cascade run
   // in the background instead of blocking the click.

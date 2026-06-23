@@ -1358,6 +1358,35 @@ export const deleteAgentsByInstance = mutation({
   },
 });
 
+// Create N chats owned by a given user (the load harness provisions a subscriber's
+// chats AFTER it learns the user's id from getMe). Optionally bind each to a seeded
+// (instance, agent) so getChatAgent resolves a provider kind. Returns the chatIds so
+// the harness can drive synthetic /bridge/ingest streams into them. Dev-gated.
+export const seedChatsForUser = mutation({
+  args: {
+    userId: v.id("users"),
+    count: v.number(),
+    instanceName: v.optional(v.string()),
+    agentId: v.optional(v.string()),
+  },
+  handler: async (ctx, { userId, count, instanceName, agentId }) => {
+    assertDev();
+    const now = Date.now();
+    const chatIds: Id<"chats">[] = [];
+    for (let i = 0; i < count; i++) {
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        title: `loadtest ${i}`,
+        updatedAt: now,
+        ...(instanceName ? { instanceName } : {}),
+        ...(agentId ? { agentId } : {}),
+      });
+      chatIds.push(chatId);
+    }
+    return { chatIds };
+  },
+});
+
 // A fresh user with NO groups and NO direct grants -> enrichUserAgents resolves
 // the ALL pool (every discovered+present agent). Returns the userId so the probe
 // below can measure that exact path. Dev-gated.
