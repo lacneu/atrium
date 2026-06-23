@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.8.1] — Fix a "too many system operations" error; lighter streaming writes
+
+Corrective release. No breaking changes, no schema migration.
+
+- **Fixes a "too many system operations" error on chat pages.** Resolving a user's
+  agents (the header chip, the sidebar lock state, and the new-chat picker all share
+  one enrichment path) read every agent with a separate indexed query; on a deployment
+  with many discovered agents that could exceed the backend's per-query budget and
+  surface as "Une erreur est survenue" on a chat URL. The groupless "all agents" set —
+  the one that grows with the catalogue — is now resolved in a single batched read,
+  while restricted/group users keep their already-small per-grant reads. Convex-only:
+  a `npx convex deploy` applies it without rebuilding any image.
+- **Streaming writes less to the backend.** While a reply streams, the bridge now sends
+  only the NEW text when a frame extends the previous one, instead of re-writing the
+  whole message on every frame — cutting per-turn write load on the Convex backend
+  (markedly lighter for agents that stream by re-sending full snapshots each frame). The
+  streamed text is byte-identical and the "still alive" heartbeat is preserved; this only
+  changes how the text reaches the backend, easing pressure on resource-constrained
+  self-hosted deployments.
+
 ## [0.8.0] — Users list shows each member's agents at a glance
 
 Polish release. No breaking changes, no schema migration.

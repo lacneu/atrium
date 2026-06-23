@@ -1112,10 +1112,25 @@ export function resolveAgentForChat(
 type AgentContext = {
   instanceByName: Map<string, Doc<"instances">>;
   discoveryByInstance: Map<string, Doc<"instanceDiscovery">>;
+  // Present DISCOVERED agents keyed by grantKey, loaded in ONE collect so
+  // agentDisplay resolves them WITHOUT a per-grant `by_instance_agent` point read.
+  // This is the load-bearing fix for the prod "too many system operations" timeout
+  // on listMyAgents/listChats/getChatAgent: a groupless user's effective set is the
+  // whole all-pool (N agents), and enriching it was N sequential point reads on a
+  // saturated backend. A grant NOT present here (a deleted/manual/absent agent --
+  // few) still falls back to the exact same point read in agentDisplay.
+  agentByKey: Map<string, Doc<"agents">>;
 };
 
 async function loadAgentContext(
   ctx: QueryCtx | MutationCtx,
+  // Preload the present-agent pool into agentByKey. ONLY worth it when the caller
+  // will enrich MANY agents (a groupless user's all-pool) -- there, one collect
+  // beats N point reads. For a FEW grants (a restricted/group user, the raw-grants
+  // editor) it would collect the WHOLE pool to serve a handful, RE-introducing the
+  // unbounded read this fix removes (Codex P2) -- so those callers pass false and
+  // agentDisplay point-reads each (bounded by the small grant count).
+  preloadPresentAgents = false,
 ): Promise<AgentContext> {
   const instances = await ctx.db.query("instances").collect();
   const discovery = await ctx.db.query("instanceDiscovery").collect();
@@ -1133,7 +1148,26 @@ async function loadAgentContext(
       discoveryByInstance.set(d.instanceName, d);
     }
   }
-  return { instanceByName, discoveryByInstance };
+  // Present discovered agents in ONE indexed collect (by_source_present is ordered
+  // _creationTime-ascending within (discovered,true), so keep-FIRST on a duplicate
+  // key mirrors `by_instance_agent .first()` exactly -- same row agentDisplay's point
+  // read would pick). applyDiscovery keeps one row per (instance,agentId), so a
+  // collision is the rare defensively-tolerated duplicate. Skipped unless the caller
+  // enriches the all-pool (else a few-grant caller would over-read the whole pool).
+  const agentByKey = new Map<string, Doc<"agents">>();
+  if (preloadPresentAgents) {
+    const presentAgents = await ctx.db
+      .query("agents")
+      .withIndex("by_source_present", (q) =>
+        q.eq("source", "discovered").eq("presentInLastOk", true),
+      )
+      .collect();
+    for (const a of presentAgents) {
+      const key = grantKey(a.instanceName, a.agentId);
+      if (!agentByKey.has(key)) agentByKey.set(key, a);
+    }
+  }
+  return { instanceByName, discoveryByInstance, agentByKey };
 }
 
 /** Shared display + resolution-state for one agent ref. State priority (mirrors
@@ -1156,12 +1190,18 @@ async function agentDisplay(
   kind: "openclaw" | "hermes";
   state: EnrichedUserAgent["state"];
 }> {
-  const agent = await ctx.db
-    .query("agents")
-    .withIndex("by_instance_agent", (q) =>
-      q.eq("instanceName", instanceName).eq("agentId", agentId),
-    )
-    .first();
+  // Present discovered agents are pre-loaded in cx.agentByKey (ONE collect for the
+  // whole enrichment, not a point read per grant). Only a non-present grant
+  // (deleted/manual/absent -- few) reaches the indexed fallback, whose `.first()`
+  // semantics cx.agentByKey already mirrors for the present case.
+  const agent =
+    cx.agentByKey.get(grantKey(instanceName, agentId)) ??
+    (await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .first());
   const instance = cx.instanceByName.get(instanceName) ?? null;
   const discovery = cx.discoveryByInstance.get(instanceName) ?? null;
   let state: EnrichedUserAgent["state"] = "ok";
@@ -1186,7 +1226,12 @@ export async function enrichUserAgents(
   // in by_user order with the same isDefault, so the loop below — and therefore
   // the whole output (agents, default, states) — is identical to pre-P2.
   const grants = await getEffectiveGrants(ctx, userId);
-  const cx = await loadAgentContext(ctx);
+  // The all-pool (a groupless user with no direct restriction) is the ONLY set big
+  // enough to need the batched preload; via:"all" marks exactly those entries.
+  const cx = await loadAgentContext(
+    ctx,
+    grants.some((g) => g.via === "all"),
+  );
   const out: EnrichedUserAgent[] = [];
   for (const r of grants) {
     const d = await agentDisplay(ctx, r.instanceName, r.agentId, cx);
@@ -1358,7 +1403,9 @@ export const listAgentPoolForUser = query({
     const profile = await ctx.db.get(profileId);
     if (profile === null) throw new Error("Not found: profile");
     const { inGroup, pool } = await getAgentPool(ctx, profile.userId);
-    const cx = await loadAgentContext(ctx);
+    // A groupless user's pool IS the all-pool (many) -> batch; a group pool is
+    // curated (few) -> point-read.
+    const cx = await loadAgentContext(ctx, !inGroup);
     const agents = [];
     for (const p of pool) {
       const d = await agentDisplay(ctx, p.instanceName, p.agentId, cx);

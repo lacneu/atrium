@@ -981,3 +981,93 @@ describe("admin.listUsers — Agents column is opt-in (withAgents)", () => {
     expect(on.find((r) => r.userId === adminId)?.agentCount).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// enrichUserAgents (the shared core of listMyAgents / listChats / getChatAgent)
+// pre-loads present discovered agents in ONE collect (loadAgentContext.agentByKey)
+// instead of a per-grant point read -- the fix for the prod "too many system
+// operations" timeout on a groupless user whose effective set is the whole all-pool.
+// This guards that the batched MAP path (present agents) and the point-read FALLBACK
+// (a deleted/absent grant, NOT in the map) still derive IDENTICAL display + state.
+// ---------------------------------------------------------------------------
+describe("enrichUserAgents batched agent resolution (map path + point-read fallback)", () => {
+  test("all-pool user resolves via the batched map; a direct deleted grant resolves via the point-read fallback — same display + state", async () => {
+    const t = convexTest(schema, modules);
+    // userAll: NO group, NO direct grant -> effective set = the all-pool (via:"all")
+    // -> loadAgentContext PRELOADS present agents -> agentDisplay reads the MAP.
+    const userAll = await seedUser(t, "all");
+    // userDirect: NO group, direct grants -> via:"user" -> preload OFF -> agentDisplay
+    // POINT-READS each (the bounded path, incl. the deleted-grant fallback).
+    const userDirect = await seedUser(t, "direct");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "prod",
+        gatewayUrl: "ws://prod",
+        kind: "openclaw" as const,
+      });
+      await ctx.db.insert("instanceDiscovery", {
+        instanceName: "prod",
+        lastPollAt: 1,
+        lastPollOk: true,
+        lastOkAt: 1,
+      });
+      // PRESENT -> in by_source_present -> the all-pool + the batched map.
+      await ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "alive",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        displayName: "Alive",
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      // GATEWAY-DELETED (presentInLastOk:false) -> NOT in the map / not in the all-pool.
+      await ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "gone",
+        source: "discovered" as const,
+        presentInLastOk: false,
+        displayName: "Gone",
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      // userDirect grants both (a no-group direct set keeps even the deleted one).
+      await ctx.db.insert("userAgents", {
+        userId: userDirect,
+        instanceName: "prod",
+        agentId: "alive",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: userDirect,
+        instanceName: "prod",
+        agentId: "gone",
+        isDefault: false,
+        source: "manual" as const,
+        createdAt: 2,
+      });
+    });
+
+    // MAP path: the all-pool user sees the present agent, resolved from the preload.
+    const viaMap = await t
+      .withIdentity({ subject: `${userAll}|session` })
+      .query(api.agents.listMyAgents, {});
+    expect(viaMap.map((a) => a.agentId)).toEqual(["alive"]); // gone is not present
+    expect(viaMap[0].state).toBe("ok");
+    expect(viaMap[0].displayName).toBe("Alive");
+
+    // FALLBACK path: the direct-grant user point-reads — IDENTICAL result for the
+    // present agent, plus the deleted grant correctly derives state "deleted".
+    const viaPointRead = await t
+      .withIdentity({ subject: `${userDirect}|session` })
+      .query(api.agents.listMyAgents, {});
+    const alive = viaPointRead.find((a) => a.agentId === "alive");
+    const gone = viaPointRead.find((a) => a.agentId === "gone");
+    expect(alive?.state).toBe("ok"); // same as the map path
+    expect(alive?.displayName).toBe("Alive");
+    expect(gone?.state).toBe("deleted"); // map miss / preload off -> fallback
+    expect(gone?.displayName).toBe("Gone");
+  });
+});

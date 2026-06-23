@@ -514,3 +514,232 @@ describe("per-message chains + write timeout + delta cap (never-falls)", () => {
     vi.useRealTimers();
   });
 });
+
+// A fetch fake that resolves immediately + records the parsed op bodies. Lets a
+// SEQUENCE of awaited writes run without manual release (the ordering under test
+// here is the snapshot->op decision, not backpressure).
+function autoFetch() {
+  const sent: SentOp[] = [];
+  const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+    sent.push(JSON.parse(init.body) as SentOp);
+    return { ok: true, json: async () => ({}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, sent };
+}
+
+// Reconstruct the server-side liveText from the posted ops, EXACTLY as Convex
+// does (appendDelta -> append, setSnapshot -> replace). The whole point of the
+// optimization is that this stays byte-identical to the snapshots fed in.
+function liveTextOf(sent: SentOp[]): string {
+  let t = "";
+  for (const op of sent) {
+    if (op.op === "appendDelta") t += op.text ?? "";
+    else if (op.op === "setSnapshot") t = op.text ?? "";
+  }
+  return t;
+}
+
+describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => {
+  test("a snapshot that STRICTLY EXTENDS the last write goes out as a SUFFIX delta", async () => {
+    const { fetchImpl, sent } = autoFetch();
+    const w = writerWith(fetchImpl);
+    await w.setSnapshot("m1", "Hello");
+    await w.setSnapshot("m1", "Hello world");
+    await w.setSnapshot("m1", "Hello world!");
+    // Only the new bytes each time — never the full 2KB re-write.
+    expect(sent).toEqual([
+      { op: "appendDelta", messageId: "m1", text: "Hello" },
+      { op: "appendDelta", messageId: "m1", text: " world" },
+      { op: "appendDelta", messageId: "m1", text: "!" },
+    ]);
+    // …and the reconstructed liveText is identical to the last snapshot.
+    expect(liveTextOf(sent)).toBe("Hello world!");
+  });
+
+  test("a snapshot identical to the last write still WRITES (full setSnapshot) to keep the watchdog heartbeat", async () => {
+    const { fetchImpl, sent } = autoFetch();
+    const w = writerWith(fetchImpl);
+    await w.setSnapshot("m1", "abc");
+    await w.setSnapshot("m1", "abc"); // byte-identical re-send (seen live)
+    // NOT skipped: a skipped write would stop bumping `updatedAt`, and
+    // reconcileStuckStreams reaps a `streaming` message stale >12min. The identical
+    // frame falls to a full setSnapshot (stream.ts re-stamps updatedAt).
+    expect(sent).toEqual([
+      { op: "appendDelta", messageId: "m1", text: "abc" }, // first: suffix from empty
+      { op: "setSnapshot", messageId: "m1", text: "abc" }, // identical: re-stamp
+    ]);
+    expect(liveTextOf(sent)).toBe("abc");
+  });
+
+  test("a NON-extension snapshot (revision/shrink) falls back to a full setSnapshot", async () => {
+    const { fetchImpl, sent } = autoFetch();
+    const w = writerWith(fetchImpl);
+    await w.setSnapshot("m1", "the quick brown fox");
+    await w.setSnapshot("m1", "the quick red fox"); // diverges at "red" -> not a prefix
+    expect(sent[1]).toEqual({
+      op: "setSnapshot",
+      messageId: "m1",
+      text: "the quick red fox",
+    });
+    expect(liveTextOf(sent)).toBe("the quick red fox");
+  });
+
+  test("a snapshot extending DELTAS already streamed emits only the new suffix", async () => {
+    const { fetchImpl, sent } = autoFetch();
+    const w = writerWith(fetchImpl);
+    await w.appendDelta("m1", "ab"); // buffered; setSnapshot's flush drains it first
+    await w.setSnapshot("m1", "abcd");
+    expect(sent).toEqual([
+      { op: "appendDelta", messageId: "m1", text: "ab" },
+      { op: "appendDelta", messageId: "m1", text: "cd" },
+    ]);
+    expect(liveTextOf(sent)).toBe("abcd");
+  });
+
+  test("end-to-end: a realistic snapshot stream reconstructs the exact final text", async () => {
+    const { fetchImpl, sent } = autoFetch();
+    const w = writerWith(fetchImpl);
+    // extend, extend, identical, extend, revise, extend.
+    for (const s of [
+      "Si par", // appendDelta "Si par"   (suffix from empty)
+      "Si par ces", // appendDelta " ces"
+      "Si par ces", // setSnapshot (identical -> heartbeat)
+      "Si par ces documents", // appendDelta " documents"
+      "Si par CES documents", // setSnapshot (revision: not a prefix)
+      "Si par CES documents tu", // appendDelta " tu"
+    ]) {
+      await w.setSnapshot("m1", s);
+    }
+    // The extensions stay tiny suffix deltas; only the identical + the revision are
+    // full setSnapshots. The reconstructed liveText is byte-exact regardless.
+    expect(sent.filter((o) => o.op === "setSnapshot")).toHaveLength(2);
+    expect(sent.filter((o) => o.op === "appendDelta")).toHaveLength(4);
+    expect(liveTextOf(sent)).toBe("Si par CES documents tu");
+  });
+
+  test("CONTENTION: a snapshot extending an IN-FLIGHT delta stays byte-exact when posts settle in order", async () => {
+    const { fetchImpl, sent, release, inFlight } = controlledFetch();
+    const w = writerWith(fetchImpl, 5);
+    // Delta "ab" buffered, then flushed -> POST#1 goes in flight (HELD).
+    await w.appendDelta("m1", "ab");
+    await tick(15);
+    expect(sent.map((s) => s.text)).toEqual(["ab"]);
+    expect(inFlight()).toBe(1);
+    // While POST#1 is still in flight, a snapshot that extends the (not-yet-acked)
+    // text is requested. setSnapshot's own flushDelta + the per-message chain force
+    // it to run AFTER POST#1 settles, so confirmedText is "ab" when it diffs.
+    const snap = w.setSnapshot("m1", "abcd");
+    release(); // POST#1 ("ab") acks -> confirmedText = "ab"
+    await tick(0);
+    release(); // POST#2 (the suffix) acks
+    await snap;
+    expect(sent).toEqual([
+      { op: "appendDelta", messageId: "m1", text: "ab" },
+      { op: "appendDelta", messageId: "m1", text: "cd" }, // suffix, not "abcd"
+    ]);
+    expect(liveTextOf(sent)).toBe("abcd");
+  });
+
+  test("FAILURE: after a failed suffix the NEXT snapshot FULL-REPLACES (appendDelta is not idempotent)", async () => {
+    const { fetchImpl, sent, release, fail } = controlledFetch();
+    const w = writerWith(fetchImpl, 5);
+    const p0 = w.setSnapshot("m1", "ab"); // POST#1 (appendDelta "ab" from empty), held
+    await tick(0);
+    release(); // acks -> confirmedText = "ab"
+    await p0;
+
+    // Next snapshot extends -> suffix "cd"; its post FAILS. A timeout is NOT proof
+    // the mutation didn't land server-side.
+    const p = w.setSnapshot("m1", "abcd").then(
+      () => "ok",
+      () => "threw",
+    );
+    await tick(0);
+    fail(); // the suffix post rejects
+    expect(await p).toBe("threw"); // the caller sees the error (this.post propagates)
+
+    // The next snapshot must NOT re-send a suffix (that could DOUBLE "cd" if the
+    // failed delta actually applied). It full-replaces, correcting liveText whether
+    // or not "cd" landed.
+    const p2 = w.setSnapshot("m1", "abcdef");
+    await tick(0);
+    release(); // the full-snapshot post acks
+    await p2;
+    expect(sent.at(-1)).toEqual({
+      op: "setSnapshot",
+      messageId: "m1",
+      text: "abcdef",
+    });
+    // Worst case (the failed "cd" DID apply): liveText = "ab"+"cd" then replaced ->
+    // exactly "abcdef". No doubling.
+    expect(liveTextOf(sent)).toBe("abcdef");
+  });
+
+  test("FAILURE (delta flush): a failed appendDelta FLUSH also forces the next snapshot to full-replace", async () => {
+    // The first POST (the delta flush) fails; everything after succeeds.
+    const sent: SentOp[] = [];
+    let i = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      sent.push(JSON.parse(init.body) as SentOp);
+      if (i++ === 0) {
+        throw Object.assign(new Error("ingest down"), { name: "Error" });
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl, 5);
+
+    await w.appendDelta("m1", "ab");
+    await tick(15); // timer flush posts appendDelta("ab") -> FAILS (re-buffer + resync)
+    // A snapshot extends the (ambiguously-applied) prefix. Because the flush failed,
+    // it must NOT trust confirmedText and emit a suffix — it full-replaces.
+    await w.setSnapshot("m1", "abcd");
+    expect(sent.at(-1)).toEqual({
+      op: "setSnapshot",
+      messageId: "m1",
+      text: "abcd",
+    });
+    // Even if the failed "ab" applied AND the retry re-applied it (doubling), the
+    // full setSnapshot corrects liveText to exactly "abcd".
+    expect(liveTextOf(sent)).toBe("abcd");
+  });
+
+  test("FAILURE (full snapshot): a failed full setSnapshot also forces the next snapshot to full-replace", async () => {
+    const { fetchImpl, sent, release, fail } = controlledFetch();
+    const w = writerWith(fetchImpl, 5);
+    const p0 = w.setSnapshot("m1", "abc"); // appendDelta "abc" from empty, held
+    await tick(0);
+    release();
+    await p0; // confirmedText = "abc"
+
+    // An identical frame takes the FULL setSnapshot branch (heartbeat) — and FAILS.
+    const p = w.setSnapshot("m1", "abc").then(
+      () => "ok",
+      () => "threw",
+    );
+    await tick(0);
+    fail();
+    expect(await p).toBe("threw");
+
+    // The next frame extends "abc". Without the resync flag it would go out as a
+    // suffix onto a liveText the failed (maybe-applied) snapshot already touched; it
+    // must full-replace instead (the full branch's failure must also set resync).
+    const p2 = w.setSnapshot("m1", "abcd");
+    await tick(0);
+    release();
+    await p2;
+    expect(sent.at(-1)).toEqual({
+      op: "setSnapshot",
+      messageId: "m1",
+      text: "abcd",
+    });
+  });
+
+  test("per-message state (incl. the new confirmedText) is evicted on finalize", async () => {
+    const { fetchImpl } = autoFetch();
+    const w = writerWith(fetchImpl);
+    await w.setSnapshot("m1", "hello");
+    expect(w.hasMessageState("m1")).toBe(true);
+    await w.finalize("m1", "complete", "hello", null);
+    expect(w.hasMessageState("m1")).toBe(false);
+  });
+});

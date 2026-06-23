@@ -281,6 +281,22 @@ export class HttpConvexWriter implements ConvexWriter {
   private flushTimer = new Map<string, NodeJS.Timeout>();
   // One-shot "this message's deltas were capped" marker (log once per message).
   private deltaCapped = new Set<string>();
+  // The text Convex's `liveText` CURRENTLY holds for a message (== the sum of
+  // flushed deltas, or the last snapshot). Lets setSnapshot send only the new
+  // SUFFIX as a delta when a snapshot STRICTLY EXTENDS what we already wrote --
+  // turning a stream of full ~2KB snapshot re-writes into a few bytes per frame on a
+  // write-constrained backend, with an IDENTICAL final `liveText`. Updated ONLY on
+  // a SUCCESSFUL post (flushDelta append + setSnapshot), so it never diverges from
+  // the server (a post-backpressure trimmed liveText makes the next snapshot fail
+  // the prefix test -> a full setSnapshot corrects it). Evicted with forgetMessage.
+  private confirmedText = new Map<string, string>();
+  // Messages whose last SUFFIX appendDelta post FAILED. appendDelta is NOT
+  // idempotent, and a timeout/lost-response is NOT proof the mutation didn't apply
+  // server-side -> re-extending from the old prefix could DOUBLE the suffix. So the
+  // next snapshot for such a message is forced to a FULL (idempotent) setSnapshot,
+  // which corrects liveText whether or not the failed delta landed. Cleared once a
+  // full snapshot resyncs; evicted with forgetMessage.
+  private pendingResync = new Set<string>();
   // PER-MESSAGE serialization chains: ordering is load-bearing only WITHIN a
   // message (a flush timer firing concurrently with a snapshot/finalize must not
   // scramble that message's ingest order). A SINGLE global chain (the old design)
@@ -329,6 +345,8 @@ export class HttpConvexWriter implements ConvexWriter {
       this.chains.has(messageId) ||
       this.pendingDelta.has(messageId) ||
       this.deltaCapped.has(messageId) ||
+      this.confirmedText.has(messageId) ||
+      this.pendingResync.has(messageId) ||
       this.flushTimer.has(messageId)
     );
   }
@@ -343,6 +361,8 @@ export class HttpConvexWriter implements ConvexWriter {
     }
     this.pendingDelta.delete(messageId);
     this.deltaCapped.delete(messageId);
+    this.confirmedText.delete(messageId);
+    this.pendingResync.delete(messageId);
     this.chains.delete(messageId);
   }
 
@@ -451,6 +471,13 @@ export class HttpConvexWriter implements ConvexWriter {
       const postStart = Date.now();
       try {
         await this.doPost({ op: "appendDelta", messageId, text });
+        // liveText now == prior + this delta. Track it so a later snapshot can be
+        // diffed to a suffix (only AFTER the post succeeds — a failure re-buffers
+        // the text below, so the server never received it).
+        this.confirmedText.set(
+          messageId,
+          (this.confirmedText.get(messageId) ?? "") + text,
+        );
         // Per-flush timing (~1 line per backend round-trip while streaming): the
         // production diagnostic that separates "backend slow" (high postMs),
         // "queue starved" (high waitedMs) and "gateway delivered late" (no flush
@@ -469,14 +496,65 @@ export class HttpConvexWriter implements ConvexWriter {
             ? merged.slice(merged.length - MAX_PENDING_DELTA_CHARS)
             : merged,
         );
+        // A timed-out / lost-response append MAY have applied server-side; the
+        // re-buffered retry would then DOUBLE it. confirmedText (success-only) tracks
+        // a single copy, so a later snapshot must NOT trust the prefix and emit a
+        // suffix — force the next snapshot to a full (idempotent) setSnapshot that
+        // corrects any such doubling. (Finalize's full text is the same backstop for
+        // a pure-delta stream that never snapshots.)
+        this.pendingResync.add(messageId);
         throw err;
       }
     });
   }
 
   async setSnapshot(messageId: string, text: string): Promise<void> {
-    await this.flushDelta(messageId); // ordering: drain deltas first
-    await this.post({ op: "setSnapshot", messageId, text });
+    await this.flushDelta(messageId); // ordering: drain deltas first (-> confirmedText current)
+    // WRITE REDUCTION: many gateways stream by re-sending the WHOLE text each frame
+    // (full ~2KB snapshots), which on a write-constrained backend is wasteful. When
+    // the new snapshot STRICTLY EXTENDS what `liveText` already holds, send only the
+    // new suffix as a delta (a few bytes) instead of the whole text; otherwise (a
+    // revision/shrink, or a backpressure-trimmed liveText whose prefix the full text
+    // no longer matches) write the full snapshot, which also CORRECTS liveText.
+    //
+    // We NEVER skip a write: an identical frame falls to the else and re-stamps the
+    // message. Both Convex handlers patch `updatedAt` (stream.ts appendDelta AND
+    // setSnapshot), so EVERY frame keeps bumping the heartbeat reconcileStuckStreams
+    // relies on -- skipping identical frames would let a slow-but-alive turn (model
+    // re-sending the same partial text) be reaped as stream_orphaned after 12min.
+    // `liveText` ends byte-identical to `text` either way. flushDelta + the turn-sink's
+    // per-message ordering make this read-then-post race-free; confirmedText advances
+    // ONLY after a SUCCESSFUL post (this.post propagates the rejection), so a failed
+    // write leaves it at `prev` and the next snapshot re-extends with no gap.
+    const prev = this.confirmedText.get(messageId) ?? "";
+    const canSuffix =
+      !this.pendingResync.has(messageId) &&
+      text.length > prev.length &&
+      text.startsWith(prev);
+    try {
+      if (canSuffix) {
+        await this.post({
+          op: "appendDelta",
+          messageId,
+          text: text.slice(prev.length),
+        });
+      } else {
+        await this.post({ op: "setSnapshot", messageId, text });
+      }
+    } catch (err) {
+      // ANY timed-out / lost-response write MAY have applied server-side. appendDelta
+      // is not idempotent (re-extending from `prev` could double), and even a
+      // maybe-applied full setSnapshot leaves confirmedText behind so a later suffix
+      // could double onto it. Force the NEXT snapshot to a full (idempotent)
+      // setSnapshot that corrects liveText either way; confirmedText is NOT advanced
+      // (we rethrow before the set below).
+      this.pendingResync.add(messageId);
+      throw err;
+    }
+    // Success: liveText == text. A full snapshot here also resyncs any prior
+    // ambiguity, so clear the flag.
+    this.pendingResync.delete(messageId);
+    this.confirmedText.set(messageId, text);
   }
 
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
