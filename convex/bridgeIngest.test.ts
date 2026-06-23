@@ -332,6 +332,25 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     const m = await t.run((ctx) => ctx.db.get(messageId));
     expect(m?.text).toBe("streamed answer"); // recovered from the row, not lost
   });
+
+  // Deploy-cutover finalize: a turn streaming across the upgrade carries its partial on
+  // the legacy `liveText` with NO row. finalize must fall back to that liveText (the
+  // `stRow?.text ?? message.liveText ?? message.text` chain) and clear liveText — the
+  // empty-text test above only covers the row branch, not this legacy one.
+  test("finalize with EMPTY text falls back to legacy liveText when there is no row", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t); // streaming, NO row
+    await t.run((ctx) =>
+      ctx.db.patch(messageId, { liveText: "streamed before deploy" }),
+    );
+
+    await post(t, { op: "finalize", messageId, status: "complete", text: "" });
+
+    const m = await t.run((ctx) => ctx.db.get(messageId));
+    expect(m?.status).toBe("complete");
+    expect(m?.text).toBe("streamed before deploy"); // recovered from liveText
+    expect(m?.liveText).toBeUndefined(); // legacy field cleared on finalize
+  });
 });
 
 describe("bridge_ingest httpAction: Bearer gate (every reject reason)", () => {

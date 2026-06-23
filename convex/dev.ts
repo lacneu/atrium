@@ -16,6 +16,7 @@ import { generateApiKey, hashKey } from "./lib/apikeys";
 import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
 import { resolveTargetForChat } from "./routing";
+import { enrichUserAgents } from "./agents";
 import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
@@ -1304,5 +1305,103 @@ export const concurrencyProbe = mutation({
       out.push({ chatId, instanceName: s.instanceName });
     }
     return out;
+  },
+});
+
+// ── DEV-ONLY: load-test seeding + the all-pool scaling probe (Phase 0) ───────
+// Bulk-seed a large agent catalogue under one instance so the all-pool path (a
+// groupless, grantless user's enrichUserAgents) can be measured at CATALOGUE
+// SCALE against the real self-hosted backend -- the ONLY place Convex's
+// per-function caps (32k docs scanned / 16 MiB / 4,096 db calls) are enforced.
+// Rows are inert (discovered + present, no creds, no dispatch). BLIND insert (no
+// per-row existence read -- that would itself burn the 4,096 read cap during the
+// seed); re-running ADDS more, so use a fresh instanceName per measurement or
+// dev:reset. `offset` lets a caller batch past the 16k-writes-per-mutation cap.
+export const seedAgentCatalogue = mutation({
+  args: {
+    instanceName: v.string(),
+    count: v.number(),
+    offset: v.optional(v.number()),
+  },
+  handler: async (ctx, { instanceName, count, offset }) => {
+    assertDev();
+    const base = offset ?? 0;
+    const now = Date.now();
+    for (let i = 0; i < count; i++) {
+      await ctx.db.insert("agents", {
+        instanceName,
+        agentId: `bench-${base + i}`,
+        source: "discovered",
+        presentInLastOk: true,
+        isDefaultOnInstance: false,
+        firstSeenAt: now,
+        lastSeenAt: now,
+      });
+    }
+    return { inserted: count, base };
+  },
+});
+
+// Tear down a seeded catalogue (pairs with seedAgentCatalogue). Bounded per call
+// (<=8000, under the 16k-writes-per-mutation cap); call repeatedly while moreLikely.
+export const deleteAgentsByInstance = mutation({
+  args: { instanceName: v.string(), max: v.optional(v.number()) },
+  handler: async (ctx, { instanceName, max }) => {
+    assertDev();
+    const limit = max ?? 8000;
+    const rows = await ctx.db
+      .query("agents")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .take(limit);
+    for (const r of rows) await ctx.db.delete(r._id);
+    return { deleted: rows.length, moreLikely: rows.length === limit };
+  },
+});
+
+// A fresh user with NO groups and NO direct grants -> enrichUserAgents resolves
+// the ALL pool (every discovered+present agent). Returns the userId so the probe
+// below can measure that exact path. Dev-gated.
+export const makeGrantlessUser = mutation({
+  args: {},
+  handler: async (ctx) => {
+    assertDev();
+    const userId = await ctx.db.insert("users", {});
+    await ctx.db.insert("profiles", {
+      userId,
+      role: "user" as const,
+      canonical: `loadtest-${userId}`,
+    });
+    return { userId };
+  },
+});
+
+// Resolve enrichUserAgents for one user and report the SHAPE of the work (count +
+// whether it used the all-pool). Timing is measured EXTERNALLY: Date.now() is
+// frozen within a Convex transaction, so wall-clock the `npx convex run` call
+// and/or read the convex dev execution log. A cap blow surfaces as a thrown error
+// from the run, not a return value -- that IS the signal.
+export const enrichProbe = query({
+  args: { userId: v.optional(v.id("users")) },
+  handler: async (ctx, { userId }) => {
+    assertDev();
+    let uid = userId;
+    if (!uid) {
+      const p = await ctx.db.query("profiles").first();
+      uid = p?.userId;
+    }
+    if (!uid) return { ok: false as const, reason: "no profile" };
+    const grants = await enrichUserAgents(ctx, uid);
+    return {
+      ok: true as const,
+      userId: uid,
+      agentCount: grants.length,
+      viaAll: grants.length > 0 && grants.every((g) => g.via === "all"),
+      sample: grants.slice(0, 2).map((g) => ({
+        instanceName: g.instanceName,
+        agentId: g.agentId,
+        via: g.via,
+        state: g.state,
+      })),
+    };
   },
 });

@@ -710,24 +710,32 @@ async function resolveGroupPool(
  *  become globally bindable: createChat + dispatch authorize against this set).
  *  The EXPENSIVE full agents scan, so callers load it LAZILY -- only when a
  *  groupless user has NO direct restriction. Ordered (instanceName, agentId). */
-async function loadAllAgentsPool(
+/** ONE indexed collect of the assignable pool: DISCOVERED + PRESENT agents (the
+ *  no-group regime, by design, is "every discovered agent"). Narrowed via
+ *  by_source_present so it never scans manual/deleted rows or the whole table.
+ *  Returned in the index's NATURAL order so a caller building a keep-FIRST
+ *  `(instanceName,agentId)` map mirrors `by_instance_agent.first()` exactly. Shared
+ *  by the all-pool grant resolution, the display-context preload, AND the all-pool
+ *  default election so a groupless user's enrichment reads this set ONCE, not 2-3x:
+ *  the double read previously hit Convex's 32,000 docs-scanned cap at ~16k agents
+ *  (a deployment with a very large catalogue should still scope users into groups). */
+async function collectPresentAgents(
   ctx: QueryCtx | MutationCtx,
-): Promise<PoolEntry[]> {
-  // The no-group regime is, by design, "every discovered agent", so this is NOT
-  // capped/truncated (a cap would make agents beyond it invisible + unbindable, and
-  // could even read-only existing chats). It IS narrowed to the relevant rows via
-  // by_source_present -- only DISCOVERED (assignable) + PRESENT (not gateway-deleted)
-  // -- so it never scans manual/deleted rows or the whole table, and it only runs on
-  // the hot paths for a groupless user with NO direct restriction (the cascade
-  // resolves everyone else without it). Operationally, a deployment with a very
-  // large catalogue should scope users into groups rather than leave them groupless.
-  const all = await ctx.db
+): Promise<Doc<"agents">[]> {
+  return await ctx.db
     .query("agents")
     .withIndex("by_source_present", (q) =>
       q.eq("source", "discovered").eq("presentInLastOk", true),
     )
     .collect();
-  all.sort((a, b) =>
+}
+
+/** PURE transform (no DB read): present-agent docs -> ordered all-pool entries.
+ *  Sorts a COPY so the caller's natural-order docs (for the keep-first display map)
+ *  are never mutated. NOT capped/truncated -- a cap would make agents beyond it
+ *  invisible + unbindable (and could read-only existing chats). */
+function poolFromPresentAgents(all: Doc<"agents">[]): PoolEntry[] {
+  const sorted = [...all].sort((a, b) =>
     a.instanceName !== b.instanceName
       ? a.instanceName < b.instanceName
         ? -1
@@ -738,12 +746,18 @@ async function loadAllAgentsPool(
           ? 1
           : 0,
   );
-  return all.map((a) => ({
+  return sorted.map((a) => ({
     instanceName: a.instanceName,
     agentId: a.agentId,
     via: "all" as const,
     defaultRank: a.isDefaultOnInstance === true ? 0 : null,
   }));
+}
+
+async function loadAllAgentsPool(
+  ctx: QueryCtx | MutationCtx,
+): Promise<PoolEntry[]> {
+  return poolFromPresentAgents(await collectPresentAgents(ctx));
 }
 
 /** The POOL a user may be granted agents FROM (group agents if in any group, else
@@ -752,10 +766,18 @@ async function loadAllAgentsPool(
 export async function getAgentPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
-): Promise<{ inGroup: boolean; pool: PoolEntry[] }> {
+): Promise<{
+  inGroup: boolean;
+  pool: PoolEntry[];
+  // The present-agent docs collected for the all-pool (null for an in-group user),
+  // so a caller that also needs display fields reuses this read instead of a second
+  // collect (the same dedupe as enrichUserAgents).
+  presentDocs: Doc<"agents">[] | null;
+}> {
   const { existingGroups, pool } = await resolveGroupPool(ctx, userId);
-  if (existingGroups > 0) return { inGroup: true, pool };
-  return { inGroup: false, pool: await loadAllAgentsPool(ctx) };
+  if (existingGroups > 0) return { inGroup: true, pool, presentDocs: null };
+  const docs = await collectPresentAgents(ctx);
+  return { inGroup: false, pool: poolFromPresentAgents(docs), presentDocs: docs };
 }
 
 /** THE cascade resolver. The effective set of agents a user may use:
@@ -769,10 +791,10 @@ export async function getAgentPool(
  *  set > the pool's marked default (group.isDefault by lowest groupId/agentId, or
  *  the all-pool native default) > the instance native default > first
  *  deterministic. Deletion is IGNORED here (resolve-time skips deleted). */
-export async function getEffectiveGrants(
+async function getEffectiveGrantsWithPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
-): Promise<EffectiveGrant[]> {
+): Promise<{ grants: EffectiveGrant[]; presentDocs: Doc<"agents">[] | null }> {
   const direct = await ctx.db
     .query("userAgents")
     .withIndex("by_user", (q) => q.eq("userId", userId))
@@ -815,13 +837,23 @@ export async function getEffectiveGrants(
     if (inGroup && !out.some((g) => g.isDefault)) {
       out[0]!.isDefault = true;
     }
-    return out;
+    return { grants: out, presentDocs: null };
   }
 
   // No direct restriction (or in-group with EVERY direct grant out-of-pool): the
   // WHOLE pool, with ONE elected default by precedence. The all-pool is scanned HERE
-  // (lazily) -- only reached for a groupless user with no direct grants.
-  const pool = inGroup ? groupPool : await loadAllAgentsPool(ctx);
+  // (lazily) -- only reached for a groupless user with no direct grants -- and the
+  // collected docs are RETURNED so enrichUserAgents reuses them for the display map
+  // (loadAgentContext) instead of a SECOND by_source_present collect (the read that
+  // previously doubled the docs-scanned count and hit the 32k cap at ~16k agents).
+  let presentDocs: Doc<"agents">[] | null = null;
+  let pool: PoolEntry[];
+  if (inGroup) {
+    pool = groupPool;
+  } else {
+    presentDocs = await collectPresentAgents(ctx);
+    pool = poolFromPresentAgents(presentDocs);
+  }
   const out: EffectiveGrant[] = pool.map((p) => ({
     instanceName: p.instanceName,
     agentId: p.agentId,
@@ -845,9 +877,16 @@ export async function getEffectiveGrants(
         bestRank = p.defaultRank;
       }
     }
-    // Tier 2: instance NATIVE default among the pool (covers a GROUP pool where no
-    // group marked any default -- defaultRank is all null).
-    if (chosen === null) {
+    // Tier 2: instance NATIVE default among the pool -- ONLY for a GROUP pool, where
+    // defaultRank encodes `group.isDefault` (NOT `isDefaultOnInstance`), so this
+    // point-read lookup adds a DISTINCT signal Tier 1 didn't cover. SKIPPED for the
+    // all-pool: there defaultRank ALREADY == `isDefaultOnInstance` (set in
+    // poolFromPresentAgents), so Tier 1 found any native default; a Tier-2 pass would
+    // re-read the same field, find nothing new, and fall to Tier 3 anyway -- but at
+    // the cost of N point reads that blow the 4,096-call cap for a default-less
+    // catalogue. Skipping it is byte-identical AND removes that cliff. Group pools
+    // are small (bounded), so the point reads there stay safe.
+    if (chosen === null && inGroup) {
       for (const g of out) {
         const agent = await ctx.db
           .query("agents")
@@ -866,7 +905,18 @@ export async function getEffectiveGrants(
     if (chosen) chosen.isDefault = true;
   }
 
-  return out;
+  return { grants: out, presentDocs };
+}
+
+/** The effective grant SET -- the wrapper used everywhere the pool DOCS aren't
+ *  needed (routing, the chat-creation gate, agentFiles, the sorted header view).
+ *  enrichUserAgents + the admin pool editor use the *WithPool variant so they can
+ *  reuse the single all-pool collect for the display map instead of re-reading it. */
+export async function getEffectiveGrants(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<EffectiveGrant[]> {
+  return (await getEffectiveGrantsWithPool(ctx, userId)).grants;
 }
 
 /**
@@ -1131,6 +1181,11 @@ async function loadAgentContext(
   // unbounded read this fix removes (Codex P2) -- so those callers pass false and
   // agentDisplay point-reads each (bounded by the small grant count).
   preloadPresentAgents = false,
+  // OPTIONAL: the present-agent docs the caller ALREADY collected for the all-pool
+  // (getEffectiveGrantsWithPool / getAgentPool). Passing them is the dedupe -- the
+  // display map is built from that SAME read instead of a second by_source_present
+  // collect. Same docs, same index order, so the keep-FIRST map is identical.
+  presentDocs?: Doc<"agents">[],
 ): Promise<AgentContext> {
   const instances = await ctx.db.query("instances").collect();
   const discovery = await ctx.db.query("instanceDiscovery").collect();
@@ -1156,12 +1211,7 @@ async function loadAgentContext(
   // enriches the all-pool (else a few-grant caller would over-read the whole pool).
   const agentByKey = new Map<string, Doc<"agents">>();
   if (preloadPresentAgents) {
-    const presentAgents = await ctx.db
-      .query("agents")
-      .withIndex("by_source_present", (q) =>
-        q.eq("source", "discovered").eq("presentInLastOk", true),
-      )
-      .collect();
+    const presentAgents = presentDocs ?? (await collectPresentAgents(ctx));
     for (const a of presentAgents) {
       const key = grantKey(a.instanceName, a.agentId);
       if (!agentByKey.has(key)) agentByKey.set(key, a);
@@ -1225,12 +1275,14 @@ export async function enrichUserAgents(
   // Consume the shared union (P2): with NO groups this is the user's direct rows
   // in by_user order with the same isDefault, so the loop below — and therefore
   // the whole output (agents, default, states) — is identical to pre-P2.
-  const grants = await getEffectiveGrants(ctx, userId);
-  // The all-pool (a groupless user with no direct restriction) is the ONLY set big
-  // enough to need the batched preload; via:"all" marks exactly those entries.
+  // WithPool returns the all-pool docs it collected (non-null IFF the all-pool was
+  // taken — the only set big enough to need the batched preload), so the display map
+  // reuses that SAME read instead of a second by_source_present collect.
+  const { grants, presentDocs } = await getEffectiveGrantsWithPool(ctx, userId);
   const cx = await loadAgentContext(
     ctx,
-    grants.some((g) => g.via === "all"),
+    presentDocs !== null,
+    presentDocs ?? undefined,
   );
   const out: EnrichedUserAgent[] = [];
   for (const r of grants) {
@@ -1402,10 +1454,11 @@ export const listAgentPoolForUser = query({
     await requireAdmin(ctx);
     const profile = await ctx.db.get(profileId);
     if (profile === null) throw new Error("Not found: profile");
-    const { inGroup, pool } = await getAgentPool(ctx, profile.userId);
-    // A groupless user's pool IS the all-pool (many) -> batch; a group pool is
-    // curated (few) -> point-read.
-    const cx = await loadAgentContext(ctx, !inGroup);
+    const { inGroup, pool, presentDocs } = await getAgentPool(ctx, profile.userId);
+    // A groupless user's pool IS the all-pool (many) -> batch, reusing the SAME docs
+    // getAgentPool already collected (no second by_source_present read); a group pool
+    // is curated (few) -> point-read.
+    const cx = await loadAgentContext(ctx, !inGroup, presentDocs ?? undefined);
     const agents = [];
     for (const p of pool) {
       const d = await agentDisplay(ctx, p.instanceName, p.agentId, cx);

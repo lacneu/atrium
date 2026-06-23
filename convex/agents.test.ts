@@ -409,6 +409,148 @@ describe("enrichUserAgents state priority (Codex P2 — deleted wins over stale)
   });
 });
 
+// The Phase-0 dedupe: a groupless user's all-pool is collected ONCE (shared by
+// the grant set, the display map, and the default election) instead of 2-3x. These
+// pin that the cascade SEMANTICS are unchanged across the regimes the refactor
+// touches — the cross-check the read-dedupe must not silently alter (the
+// duplicate-key case is the one that would catch a routing/display desync).
+describe("all-pool single-collect dedupe — cascade semantics preserved", () => {
+  const present = (
+    instanceName: string,
+    agentId: string,
+    extra: {
+      displayName?: string;
+      isDefaultOnInstance?: boolean;
+    } = {},
+  ) => ({
+    instanceName,
+    agentId,
+    source: "discovered" as const,
+    presentInLastOk: true,
+    firstSeenAt: 1,
+    lastSeenAt: 1,
+    ...extra,
+  });
+  const asUser = (t: ReturnType<typeof convexTest>, userId: string) =>
+    t.withIdentity({ subject: `${userId}|session` });
+
+  test("groupless+grantless: the WHOLE all-pool, native default elected (Tier 1)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "a" });
+      await ctx.db.insert("agents", present("prod", "alice"));
+      await ctx.db.insert("agents", present("prod", "bob", { isDefaultOnInstance: true }));
+      await ctx.db.insert("agents", present("prod", "carol"));
+      await ctx.db.insert("instanceDiscovery", {
+        instanceName: "prod",
+        lastPollAt: 1,
+        lastPollOk: true,
+        lastOkAt: 1,
+      });
+      return uid;
+    });
+    const agents = await asUser(t, userId).query(api.agents.listMyAgents, {});
+    expect(agents.map((a) => a.agentId).sort()).toEqual(["alice", "bob", "carol"]);
+    expect(agents.every((a) => a.via === "all")).toBe(true);
+    expect(agents.find((a) => a.isDefault)?.agentId).toBe("bob"); // native default
+  });
+
+  test("groupless+grantless, NO native default: Tier 3 picks the first (Tier 2 skipped, byte-identical)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "a" });
+      // No agent is isDefaultOnInstance -> the OLD code looped a point read per agent
+      // (Tier 2) and found none; the new code skips that loop and falls to Tier 3.
+      await ctx.db.insert("agents", present("prod", "alice"));
+      await ctx.db.insert("agents", present("prod", "zed"));
+      return uid;
+    });
+    const agents = await asUser(t, userId).query(api.agents.listMyAgents, {});
+    // Deterministic pool order is (instanceName, agentId) asc -> "alice" first.
+    expect(agents.find((a) => a.isDefault)?.agentId).toBe("alice");
+  });
+
+  test("direct grant RESTRICTS to exactly that agent (all-pool not used)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "a" });
+      await ctx.db.insert("agents", present("prod", "alice"));
+      await ctx.db.insert("agents", present("prod", "bob", { isDefaultOnInstance: true }));
+      await ctx.db.insert("userAgents", {
+        userId: uid,
+        instanceName: "prod",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: 1,
+      });
+      return uid;
+    });
+    const agents = await asUser(t, userId).query(api.agents.listMyAgents, {});
+    expect(agents.map((a) => a.agentId)).toEqual(["alice"]); // NOT the all-pool
+    expect(agents[0]!.via).toBe("user");
+  });
+
+  test("in-group, no group-marked default: Tier 2 STILL elects the instance-native default", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "a" });
+      await ctx.db.insert("agents", present("prod", "alice"));
+      await ctx.db.insert("agents", present("prod", "bob", { isDefaultOnInstance: true }));
+      const groupId = await ctx.db.insert("groups", {
+        key: "g1",
+        name: "G1",
+        createdBy: uid,
+        createdAt: 1,
+      });
+      await ctx.db.insert("groupMembers", { groupId, userId: uid, joinedAt: 1 });
+      // Neither group agent is the GROUP default -> defaultRank all null -> Tier 2
+      // point-reads the instance-native default (the path KEPT for group pools).
+      await ctx.db.insert("groupAgents", {
+        groupId,
+        instanceName: "prod",
+        agentId: "alice",
+        isDefault: false,
+        createdAt: 1,
+      });
+      await ctx.db.insert("groupAgents", {
+        groupId,
+        instanceName: "prod",
+        agentId: "bob",
+        isDefault: false,
+        createdAt: 1,
+      });
+      return uid;
+    });
+    const agents = await asUser(t, userId).query(api.agents.listMyAgents, {});
+    expect(agents.map((a) => a.agentId).sort()).toEqual(["alice", "bob"]);
+    expect(agents.find((a) => a.isDefault)?.agentId).toBe("bob"); // native default via Tier 2
+  });
+
+  test("duplicate-key agent: display resolves to the FIRST by_source_present row (keep-first preserved)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "a" });
+      // Two rows, SAME (instanceName, agentId) -- the defensively-tolerated duplicate.
+      // Inserted first->second; by_source_present is _creationTime asc, so keep-FIRST
+      // must pick "first" (mirrors by_instance_agent.first() that routing uses). A
+      // desync here would badge/route the wrong duplicate.
+      await ctx.db.insert("agents", present("prod", "dup", { displayName: "first" }));
+      await ctx.db.insert("agents", present("prod", "dup", { displayName: "second" }));
+      return uid;
+    });
+    const agents = await asUser(t, userId).query(api.agents.listMyAgents, {});
+    const dup = agents.filter((a) => a.agentId === "dup");
+    expect(dup.length).toBeGreaterThan(0);
+    expect(dup.every((a) => a.displayName === "first")).toBe(true); // never "second"
+  });
+});
+
 describe("deleteInstance cascade (Codex P2 — no orphan grants)", () => {
   // Filter in JS — a `t: ReturnType<typeof convexTest>` PARAMETER loses the
   // inferred data model, so `withIndex("by_instance")` fails `npx convex

@@ -117,6 +117,53 @@ describe("chatStateInternal", () => {
     expect(byKind.provenance).toEqual({ kind: "provenance" }); // presence only
   });
 
+  // Post-split, a streaming message's heartbeat + live length live on the streamingText
+  // ROW, not the (empty) message doc. chatStateInternal must derive stuckStreaming,
+  // ageSeconds and textLenBucket from the ROW. This pins the `live ? live.* : mDoc.*`
+  // branch the sentinel test above does NOT exercise (it has no row, so it only hits the
+  // mDoc fallback). A regression to reading mDoc here would report an active stream as
+  // empty + stuck. Also re-proves the no-leak contract for the row's text.
+  test("derives heartbeat + textLen from the streamingText ROW (not the empty message doc), no leak", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const mid = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "", // the real new-model shape: doc text is empty while streaming
+        // STALE doc heartbeat — if the derivation read THIS it would report stuck.
+        runId: "webchat-run-live",
+        updatedAt: Date.now() - 30 * 60 * 1000,
+      });
+      // The live text + a FRESH heartbeat are on the row. 50 chars -> "1-100" bucket;
+      // an empty-doc regression would bucket as 0. The sentinel proves no text leak.
+      await ctx.db.insert("streamingText", {
+        messageId: mid,
+        chatId: cid,
+        text: "SENTINEL_LIVETEXT " + "x".repeat(32), // 50 chars total
+        updatedAt: Date.now(),
+      });
+      return cid;
+    });
+
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+
+    // The row's live text NEVER leaks (only its bucketed length is emitted).
+    expect(JSON.stringify(state)).not.toContain("SENTINEL_LIVETEXT");
+
+    const msg = state.messages[0]!;
+    // FRESH row heartbeat wins over the STALE doc updatedAt -> not stuck, generating.
+    expect(msg.stuckStreaming).toBe(false);
+    expect(msg.runStatusKind).toBe("generating"); // streaming + hasText (from the row)
+    // Length comes from the row (50), not the empty doc (which would not be "1-100").
+    expect(msg.textLenBucket).toBe("1-100");
+  });
+
   test("L2: surfaces attachedDocCount + documentary kind + pendingDocFetch age, never a reference", async () => {
     const t = convexTest(schema, modules);
     const { convId, docId } = await t.run(async (ctx) => {

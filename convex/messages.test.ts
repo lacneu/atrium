@@ -273,4 +273,147 @@ describe("listByChat / getStreamingText live-text split", () => {
       .query(api.messages.getStreamingText, { chatId: "not-an-id" });
     expect(empty).toEqual([]);
   });
+
+  // Deploy-cutover graceful render: a message MID-STREAM across the upgrade to the split
+  // carries its partial on the legacy `liveText` and has NO streamingText row. loadChatView
+  // reads `liveText ?? text` for a streaming message, so listByChat still renders that
+  // partial instead of showing it empty until its next delta/finalize. Guards the
+  // CHANGELOG claim "replies already streaming across the deploy are handled gracefully".
+  test("listByChat renders a LEGACY streaming message's liveText when it has no row", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        liveText: "legacy mid-stream text", // pre-split partial, NO streamingText row
+        updatedAt: 1,
+      });
+      return { userId, chatId, messageId };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const view = await as.query(api.messages.listByChat, { chatId });
+    const msg = view.find((m) => m._id === messageId);
+    expect(msg?.status).toBe("streaming");
+    expect(msg?.text).toBe("legacy mid-stream text"); // liveText fallback, not ""
+  });
+});
+
+// The streamingText row must be deleted WITH its message on every removal path, or
+// getStreamingText would resurface the live text of a message the user deleted. The
+// per-delta write path makes this easy to forget, so pin both removal paths.
+describe("streamingText row removal on delete / cascade", () => {
+  test("deleteMessage truncation drops a LATER streaming message's row (no orphan)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, questionId, streamingId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 2,
+        instanceName: "prod",
+      });
+      // A user question, then its in-flight (streaming) assistant reply with a row.
+      const questionId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "question",
+        updatedAt: 1,
+      });
+      const streamingId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "r",
+        updatedAt: 2,
+      });
+      await ctx.db.insert("streamingText", {
+        messageId: streamingId,
+        chatId,
+        text: "in-flight partial",
+        updatedAt: 2,
+      });
+      return { userId, questionId, streamingId };
+    });
+
+    // Deleting the question truncates forward, removing the later streaming reply too.
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.messages.deleteMessage, { messageId: questionId });
+
+    await t.run(async (ctx) => {
+      expect(await ctx.db.get(streamingId)).toBeNull(); // the reply was truncated...
+      const orphan = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", streamingId))
+        .first();
+      expect(orphan).toBeNull(); // ...and its live-text row went with it
+    });
+  });
+
+  test("deleteChat cascade drops a streaming message's row (no orphan)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "r",
+        updatedAt: 1,
+      });
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "in-flight partial",
+        updatedAt: 1,
+      });
+      return { userId, chatId, messageId };
+    });
+
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.chats.deleteChat, { chatId });
+
+    await t.run(async (ctx) => {
+      const orphan = await ctx.db
+        .query("streamingText")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect();
+      expect(orphan).toEqual([]); // no streamingText row survives the chat delete
+    });
+  });
 });
