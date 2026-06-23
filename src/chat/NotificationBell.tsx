@@ -302,6 +302,11 @@ function ReportItem({
           {it.answered ? m.notif_answered() : m.notif_pending()}
         </span>
       </div>
+      {/* When the report was submitted (its frozen snapshot timestamp), mirroring
+          the `oc-notif__when` line on the notifications above. */}
+      <div className="oc-notif__when">
+        {new Date(it.at).toLocaleString(getLocale())}
+      </div>
       {it.thread.length > 0 ? (
         <div className="oc-notif__thread">
           {it.thread.map((msg, i) => (
