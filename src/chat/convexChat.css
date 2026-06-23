@@ -766,9 +766,17 @@
   border-radius: 50%;
   background: var(--primary);
   color: var(--primary-foreground);
+  /* Inset the (trimmed, edge-to-edge) logo so its corners aren't clipped by the
+     circular tile; the round badge stays, the logo sits centered within it. */
+  padding: 0.4rem;
   font-weight: 700;
   font-size: 0.95rem;
   overflow: hidden;
+}
+/* The logo inside the round welcome badge is NOT itself circle-clipped (padding
+   already keeps it inside the tile), so a near-square mark keeps its corners. */
+.oc-emptystate__avatar .oc-avatar__img {
+  border-radius: 0;
 }
 .oc-emptystate__title {
   margin: 0;
@@ -1421,6 +1429,9 @@
   color: var(--primary-foreground);
   display: grid;
   place-items: center;
+  /* Breathing room so a now-trimmed (edge-to-edge) logo doesn't clip on the
+     rounded corners. The brand mark / initials are sized independently below. */
+  padding: 0.16rem;
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: -0.02em;

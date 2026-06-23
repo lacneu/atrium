@@ -404,13 +404,19 @@ function ChartLogoControl({ chart }: { chart: MyChart }) {
   const urlFor = (mode: "light" | "dark") =>
     mode === "light" ? chart.logoLightUrl : chart.logoDarkUrl;
 
-  // Normalize (any format -> bounded WebP, optionally inverted) -> upload -> attach.
-  async function uploadFor(mode: "light" | "dark", source: Blob, invert = false) {
+  // Normalize (any format -> trimmed, bounded WebP) -> upload -> attach. When
+  // `variantFor` is set the source is the OTHER mode's logo and we derive a
+  // high-contrast variant for `variantFor` (see processLogoImage).
+  async function uploadFor(
+    mode: "light" | "dark",
+    source: Blob,
+    variantFor?: "light" | "dark",
+  ) {
     if (chart.chartId === undefined) return;
     setError(null);
     setBusy(true);
     try {
-      const webp = await processLogoImage(source, { invert });
+      const webp = await processLogoImage(source, variantFor ? { variantFor } : {});
       // Send the normalized WebP BYTES; the server stores them itself (a single-use,
       // server-minted storageId), so there is no client-provided storage id that
       // could be aliased/replayed onto another resource.
@@ -453,7 +459,7 @@ function ChartLogoControl({ chart }: { chart: MyChart }) {
     setBusy(true);
     try {
       const blob = await (await fetch(sourceUrl)).blob();
-      await uploadFor(targetMode, blob, true);
+      await uploadFor(targetMode, blob, targetMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

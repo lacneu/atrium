@@ -7,6 +7,14 @@
 // canvas re-encode + client resize (Cloudinary/PQINA), re-encode to neutralize
 // payloads (OWASP secure upload), SVG → raster to remove XSS surface (DOMPurify/SVG).
 import { m } from "@/paraglide/messages.js";
+import {
+  alphaBoundingBox,
+  silhouetteIsAlphaDefined,
+  recolorToInk,
+  invertRgb,
+  LIGHT_INK,
+  DARK_INK,
+} from "./logoPixels";
 
 const MAX_INPUT_BYTES = 12 * 1024 * 1024; // reject absurd inputs before decoding
 const MAX_W = 480; // fit box (handles wordmark logos; topbar shows it small)
@@ -23,14 +31,21 @@ type Decoded = {
 /** Options for {@link processLogoImage}. */
 export type ProcessLogoOptions = {
   /**
-   * Invert RGB (preserving alpha) to PROPOSE the opposite-mode variant. For the
-   * common monochrome brand mark this flips dark↔light ink cleanly; for a colored
-   * logo it is a hue-shifted starting suggestion the user can replace.
+   * Derive the variant for the OPPOSITE theme `mode` from this source logo. When
+   * the logo's shape is alpha-defined (a transparent-background mark) we recolor
+   * it to a flat high-contrast ink — near-white for `"dark"`, near-black for
+   * `"light"` — so it reads on the target background (incl. the mid-tone
+   * `--primary` avatar tile). For a logo that carries its OWN opaque background we
+   * fall back to RGB inversion, which never collapses to a solid block. A proposal
+   * the user can always replace with a real upload.
    */
-  invert?: boolean;
+  variantFor?: "light" | "dark";
 };
 
-/** Decode + downscale + (optionally invert) + re-encode to a bounded WebP Blob. */
+/**
+ * Decode + downscale + trim transparent margins + (optionally derive a variant) +
+ * re-encode to a bounded WebP Blob.
+ */
 export async function processLogoImage(
   file: Blob,
   opts: ProcessLogoOptions = {},
@@ -61,20 +76,39 @@ export async function processLogoImage(
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(source, 0, 0, w, h);
-    if (opts.invert) {
-      const data = ctx.getImageData(0, 0, w, h);
-      const px = data.data;
-      for (let i = 0; i < px.length; i += 4) {
-        px[i] = 255 - px[i]; // R
-        px[i + 1] = 255 - px[i + 1]; // G
-        px[i + 2] = 255 - px[i + 2]; // B
-        // px[i + 3] (alpha) preserved
+
+    // Trim fully-transparent margins so the LOGO CONTENT (not its empty padding)
+    // is what fills its container — fixes off-centering in the square avatar tile
+    // and uses the full width of the top-bar strip. No-op for an opaque image.
+    const drawn = ctx.getImageData(0, 0, w, h);
+    const box = alphaBoundingBox(drawn.data, w, h) ?? { x: 0, y: 0, width: w, height: h };
+    const out = document.createElement("canvas");
+    out.width = box.width;
+    out.height = box.height;
+    const octx = out.getContext("2d");
+    if (!octx) throw new Error(m.charts_logo_err_process());
+    octx.drawImage(
+      canvas,
+      box.x, box.y, box.width, box.height,
+      0, 0, box.width, box.height,
+    );
+
+    // Derive the opposite-mode variant: a flat ink recolor of the alpha silhouette
+    // (guaranteed contrast on any background), falling back to RGB inversion when
+    // the image is its own opaque rectangle so we never emit a solid block.
+    if (opts.variantFor) {
+      const data = octx.getImageData(0, 0, box.width, box.height);
+      if (silhouetteIsAlphaDefined(data.data, box.width, box.height)) {
+        recolorToInk(data.data, opts.variantFor === "dark" ? LIGHT_INK : DARK_INK);
+      } else {
+        invertRgb(data.data);
       }
-      ctx.putImageData(data, 0, 0);
+      octx.putImageData(data, 0, 0);
     }
+
     const blob =
-      (await canvasToBlob(canvas, "image/webp", WEBP_QUALITY)) ??
-      (await canvasToBlob(canvas, "image/png"));
+      (await canvasToBlob(out, "image/webp", WEBP_QUALITY)) ??
+      (await canvasToBlob(out, "image/png"));
     if (!blob) throw new Error(m.charts_logo_err_encode());
     return blob;
   } finally {
