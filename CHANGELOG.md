@@ -8,6 +8,31 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.9.1] — Correct avatar logo for dark-primary charts; lighter agent resolution at scale
+
+Corrective release. No breaking changes, no schema migration.
+
+- **The chat avatar now shows the right logo variant for a custom charte's colors.**
+  The avatar tile paints the brand logo on the chart's *primary* color — not the page
+  background — so a charte whose primary is dark (e.g. a terracotta brand) shown while
+  the app is in light mode displayed the light-background logo on a dark tile (and the
+  reverse in dark mode). The logo variant now follows the primary color's own polarity
+  (read from the chart's primary / primary-foreground tokens), so it always matches the
+  tile, in every page mode. Only affects custom charts with an uploaded logo — the
+  default Atrium mark is unchanged. Frontend-only: rebuild the frontend image.
+- **Resolving a groupless user's agents stays within the backend's limits on a large
+  catalogue.** For a user in no group with no per-user selection, the effective set is
+  "every discovered agent", and that pool was read from the database *twice* per
+  resolution — once to list the agents, once to load their display details — on the chat
+  list, the header chip, and the agent picker. On a deployment with a very large agent
+  catalogue (thousands of agents) that double read could exceed Convex's per-query
+  document limit and fail those views; it also doubled the read cost at every size. The
+  pool is now read once and reused (and a redundant default-election scan was removed),
+  which roughly doubles the headroom before the limit and halves the read work per
+  resolution. Convex-only: `npx convex deploy` applies it without rebuilding any image.
+  (Most deployments are nowhere near this size — discovered agents are few — but the fix
+  is cheap and removes the cliff.)
+
 ## [0.9.0] — Streaming a reply no longer re-renders the whole conversation per token
 
 Performance release. No breaking change. Adds a `streamingText` table — a plain
