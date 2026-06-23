@@ -8,6 +8,21 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.8.0] — Users list shows each member's agents at a glance
+
+Polish release. No breaking changes, no schema migration.
+
+- **Settings → Users now shows each member's available agents in the list.** The new
+  Agents column displays the agents a user can actually reach — their cascade-resolved
+  set (their groups' agents, the whole pool when they belong to no group, or their
+  per-user selection) — as a compact, sortable set of chips. You can audit who can use
+  what at a glance without opening each user, and it mirrors the Groups list's agents
+  column so the two admin lists read the same way.
+- **Per-user agent management moved into the row's actions menu.** "Manage agents" is
+  now the first entry of each user's "…" menu (alongside Rename / View as / Delete),
+  instead of a separate button in the row — the same pattern the Groups list already
+  uses, so managing a user and managing a group now behave identically.
+
 ## [0.7.0] — Agent access by group, read-only chats, clearer tool output
 
 Feature release. **One behavior change to know before you deploy:** how a user's

@@ -15,6 +15,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { getEffectiveGrants, effectiveAgentsForUsers } from "./agents";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -813,5 +814,170 @@ describe("deleteInstance purges groupAgents", () => {
     expect(remaining.length).toBe(1); // prod's purged
     expect(remaining[0].instanceName).toBe("other"); // other's intact
     expect(remaining[0].agentId).toBe("bob");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CROSS-CHECK: effectiveAgentsForUsers (the batched helper feeding the admin
+// users list's Agents column) re-implements the cascade SET in ONE pass. It must
+// agree, SET-for-set and COUNT-for-count, with getEffectiveGrants (the routing
+// source of truth) for EVERY user. A test asserting the two never drift is the
+// discriminating one: an ISOLATED test of the helper would share the helper's own
+// assumptions and pass even if both were wrong the same way (e.g. a slipped
+// present-predicate or a regime mistake). Covers the 3 regimes + a restriction
+// that empties to the pool + a dangling membership + the present-boundary.
+// ---------------------------------------------------------------------------
+describe("effectiveAgentsForUsers vs getEffectiveGrants (no drift)", () => {
+  test("count + agent SET identical for every user across all regimes", async () => {
+    const t = convexTest(schema, modules);
+    const adminId = await seedAdmin(t);
+    const as = t.withIdentity({ subject: `${adminId}|session` });
+
+    // Agents — displayName OMITTED so the helper's label falls back to the agentId,
+    // making its preview directly comparable to getEffectiveGrants' agentIds. a1 is
+    // the instance native default; `dead` is present:false -> in NO all-pool.
+    await t.run(async (ctx) => {
+      const A = (
+        instanceName: string,
+        agentId: string,
+        presentInLastOk: boolean,
+        isDefaultOnInstance = false,
+      ) =>
+        ctx.db.insert("agents", {
+          instanceName,
+          agentId,
+          source: "discovered" as const,
+          presentInLastOk,
+          isDefaultOnInstance,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      await A("prod", "a1", true, true);
+      await A("prod", "a2", true);
+      await A("prod", "a3", true);
+      await A("lab", "b1", true);
+      await A("prod", "dead", false); // excluded from the all-pool by BOTH paths
+    });
+
+    const u1 = await seedUser(t, "u1-nogroup-nodirect"); // -> all-pool
+    const u2 = await seedUser(t, "u2-nogroup-direct"); //   -> direct {a1,a2}
+    const u3 = await seedUser(t, "u3-group-nodirect"); //   -> group pool {a1,a2}
+    const u4 = await seedUser(t, "u4-group-restrict"); //   -> restricted {a1}
+    const u5 = await seedUser(t, "u5-group-outofpool"); //  -> pool (direct out-of-pool)
+    const u6 = await seedUser(t, "u6-dangling-direct"); //  -> direct {a3} (group gone)
+
+    // Direct grants (raw inserts; the <=1-default invariant kept by hand).
+    await t.run(async (ctx) => {
+      const D = (
+        userId: typeof u1,
+        instanceName: string,
+        agentId: string,
+        isDefault: boolean,
+        createdAt: number,
+      ) =>
+        ctx.db.insert("userAgents", {
+          userId,
+          instanceName,
+          agentId,
+          isDefault,
+          source: "manual" as const,
+          createdAt,
+        });
+      await D(u2, "prod", "a1", true, 1);
+      await D(u2, "prod", "a2", false, 2);
+      await D(u4, "prod", "a1", true, 1);
+      await D(u5, "lab", "b1", true, 1); // OUT of G1's pool -> restriction empties
+      await D(u6, "prod", "a3", true, 1);
+    });
+
+    // Group G1 shares a1 + a2; u3/u4/u5 are members.
+    const g1 = await as.mutation(api.groups.createGroup, { name: "G1" });
+    for (const u of [u3, u4, u5])
+      await as.mutation(api.groups.addMember, { groupId: g1, userId: u });
+    await as.mutation(api.groups.assignAgentToGroup, {
+      groupId: g1,
+      instanceName: "prod",
+      agentId: "a1",
+    });
+    await as.mutation(api.groups.assignAgentToGroup, {
+      groupId: g1,
+      instanceName: "prod",
+      agentId: "a2",
+    });
+
+    // u6: a DANGLING membership (group row deleted, the membership left behind) ->
+    // BOTH paths must drop to the no-group regime (never strip the direct grant).
+    const g2 = await as.mutation(api.groups.createGroup, { name: "G2" });
+    await as.mutation(api.groups.addMember, { groupId: g2, userId: u6 });
+    await t.run((ctx) => ctx.db.delete(g2));
+
+    const users = [u1, u2, u3, u4, u5, u6];
+
+    // Compute BOTH over the SAME seeded state, in one ctx.
+    const { perGrant, batched } = await t.run(async (ctx) => {
+      const perGrant: Record<string, string[]> = {};
+      for (const u of users) {
+        const grants = await getEffectiveGrants(ctx, u);
+        perGrant[u] = grants.map((g) => g.agentId);
+      }
+      const map = await effectiveAgentsForUsers(ctx, users);
+      const batched: Record<string, { count: number; preview: string[] }> = {};
+      for (const u of users) batched[u] = map.get(u)!;
+      return { perGrant, batched };
+    });
+
+    const setOf = (xs: string[]) => [...new Set(xs)].sort();
+
+    for (const u of users) {
+      const truth = setOf(perGrant[u]);
+      const got = batched[u];
+      // count == the cascade set size — the STRONG discriminator: any regime slip
+      // (e.g. an over-counted all-pool, or a dropped restriction) changes COUNT.
+      expect(got.count, `count for ${u}`).toBe(truth.length);
+      // membership identical (labels == agentIds in this fixture).
+      expect(setOf(got.preview), `set for ${u}`).toEqual(truth);
+    }
+
+    // ANCHOR each regime with HARDCODED expectations, so the cross-check cannot be
+    // satisfied by BOTH implementations agreeing on a WRONG set.
+    expect(setOf(perGrant[u1])).toEqual(["a1", "a2", "a3", "b1"]); // all-pool, no dead
+    expect(setOf(perGrant[u2])).toEqual(["a1", "a2"]); // direct
+    expect(setOf(perGrant[u3])).toEqual(["a1", "a2"]); // group pool
+    expect(setOf(perGrant[u4])).toEqual(["a1"]); // restricted to the in-pool direct
+    expect(setOf(perGrant[u5])).toEqual(["a1", "a2"]); // direct out-of-pool -> pool
+    expect(setOf(perGrant[u6])).toEqual(["a3"]); // dangling -> no-group direct
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Agents column is OPT-IN on the shared admin.listUsers query: only the users
+// MANAGEMENT list requests it. Generic consumers (a user picker) must NOT pay the
+// per-user pool reads nor be invalidated by agent changes they do not show -- so
+// without withAgents the column data is left UNCOMPUTED (agentCount === null, a
+// distinct signal from "0 agents").
+// ---------------------------------------------------------------------------
+describe("admin.listUsers — Agents column is opt-in (withAgents)", () => {
+  test("off -> agentCount null (uncomputed); on -> the cascade-resolved count + preview", async () => {
+    const t = convexTest(schema, modules);
+    const adminId = await seedAdmin(t);
+    const as = t.withIdentity({ subject: `${adminId}|session` });
+    const alice = await seedUser(t, "alice");
+    await seedLiveAgent(t, "prod", "a1"); // displayName -> "A1"
+    await seedLiveAgent(t, "prod", "a2"); // displayName -> "A2"
+
+    // OFF (default): the column is NOT computed -> null, never a misleading 0.
+    const off = await as.query(api.admin.listUsers, {});
+    expect(off.every((r) => r.agentCount === null)).toBe(true);
+    expect(off.every((r) => r.agents.length === 0)).toBe(true);
+
+    // ON: both the admin AND alice are groupless with no direct grant -> the WHOLE
+    // all-pool (there is NO "admin sees everything" bypass; an admin resolves like
+    // any user). Proves the flag actually drives the computation.
+    const on = await as.query(api.admin.listUsers, { withAgents: true });
+    const aliceRow = on.find((r) => r.canonical === "alice");
+    expect(aliceRow?.agentCount).toBe(2);
+    expect([...(aliceRow?.agents ?? [])].sort()).toEqual(["A1", "A2"]);
+    expect(on.find((r) => r.userId === alice)?.agentCount).toBe(2);
+    expect(on.find((r) => r.userId === adminId)?.agentCount).toBe(2);
   });
 });

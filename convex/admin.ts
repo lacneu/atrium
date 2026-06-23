@@ -16,6 +16,7 @@ import {
 } from "./lib/instanceConfig";
 import { recordAudit } from "./lib/audit";
 import { cascadeDeleteChat } from "./chats";
+import { effectiveAgentsForUsers } from "./agents";
 import {
   isUiPrefKey,
   UI_PREF_SYSTEM_GATE,
@@ -58,8 +59,15 @@ const roleValidator = v.union(
 // --- Users ------------------------------------------------------------------
 
 export const listUsers = query({
-  args: { filter: v.optional(filterValidator) },
-  handler: async (ctx, { filter }) => {
+  // `withAgents` is OPT-IN: only the users MANAGEMENT list (the Agents column) needs
+  // the per-user effective agent set. Other consumers (e.g. a user picker) call
+  // listUsers WITHOUT it, so they neither pay the per-user pool reads nor get
+  // invalidated by agent changes they do not display (Codex P2).
+  args: {
+    filter: v.optional(filterValidator),
+    withAgents: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { filter, withAgents }) => {
     await requireAdmin(ctx);
     // Bounded: take the most recent N profiles. (Admin user lists are small;
     // paginate later if a deployment grows large.)
@@ -74,9 +82,30 @@ export const listUsers = query({
       // Granted per-tab Settings permissions (for the grant editor; admins hold
       // every permission via the wildcard regardless of this field).
       extraPermissions: p.extraPermissions ?? [],
+      // Effective agents available to this user (cascade-resolved). null = NOT
+      // requested (withAgents off) so a consumer never mistakes it for "0 agents".
+      agentCount: null as number | null,
+      agents: [] as string[],
     }));
-    // Filter in-memory over the bounded view set (the per-resource subset).
-    return applyFilter(views, filter, USERS_FILTER_CFG);
+    // Filter FIRST (q/role do not depend on agents), so the agent computation runs
+    // ONLY over the displayed subset -- never the full 500 (Codex P2).
+    const filtered = applyFilter(views, filter, USERS_FILTER_CFG);
+    // Skip the helper entirely on an empty result set: an unmatched search must not
+    // pay the all-pool read (nor stay subscribed to agent changes it shows none of).
+    if (withAgents && filtered.length > 0) {
+      const agentsByUser = await effectiveAgentsForUsers(
+        ctx,
+        filtered.map((u) => u.userId),
+      );
+      for (const u of filtered) {
+        const ag = agentsByUser.get(u.userId);
+        if (ag) {
+          u.agentCount = ag.count;
+          u.agents = ag.preview;
+        }
+      }
+    }
+    return filtered;
   },
 });
 

@@ -870,6 +870,145 @@ export async function getEffectiveGrants(
 }
 
 /**
+ * Effective agent SET per user, batched for the admin users list (the Agents
+ * column). Mirrors getEffectiveGrants' cascade SET -- NOT its default election (the
+ * column needs the set + a preview, not the elected default):
+ *   in any group -> direct grants INSIDE the group pool, else the whole group pool
+ *   no group     -> direct grants, else EVERY present discovered agent (all-pool)
+ *
+ * BOUNDED reads (NEVER a full-table collect): calling getEffectiveGrants per row
+ * would re-run loadAllAgentsPool's all-pool scan for every groupless user (N times),
+ * but the naive batch's mirror -- collecting the whole agents/userAgents/
+ * groupMembers/groupAgents tables -- is just as unsafe: it ties this list query to
+ * unbounded historical rows (deleted agents, grants/groups of NON-visible users) and
+ * re-runs on any unrelated change to them (Codex P2). So instead:
+ *   - the all-pool is read ONCE via by_source_present (present discovered only -- the
+ *     SAME index loadAllAgentsPool uses; its rows also carry every present agent's
+ *     displayName for the labels);
+ *   - direct grants + memberships are read PER VISIBLE USER via by_user;
+ *   - only the groups those users actually belong to are read (get + by_group).
+ * Reads scale with what is DISPLAYED, not with deployment history.
+ *
+ * Label fallback: a granted agent that is absent from the all-pool (deleted/manual)
+ * has no discovered displayName, so it renders by agentId (taken from the grant row)
+ * -- present agents always resolve to their displayName. A discriminating test
+ * cross-checks this helper's set against getEffectiveGrants directly.
+ *
+ * Returns count + a label-sorted, capped preview keyed by userId (string).
+ */
+export async function effectiveAgentsForUsers(
+  ctx: QueryCtx | MutationCtx,
+  userIds: Id<"users">[],
+): Promise<Map<string, { count: number; preview: string[] }>> {
+  const PREVIEW_CAP = 24;
+
+  // 1. All-pool ONCE via the present-discovered index (NOT a full agents scan).
+  //    These rows ARE every present discovered agent, so they also supply the
+  //    displayName labels for the whole pool + any present granted agent.
+  const allPoolRows = await ctx.db
+    .query("agents")
+    .withIndex("by_source_present", (q) =>
+      q.eq("source", "discovered").eq("presentInLastOk", true),
+    )
+    .collect();
+  const displayByKey = new Map<string, string>();
+  const agentIdByKey = new Map<string, string>(); // label fallback for absent rows
+  const allPoolKeys: string[] = [];
+  for (const a of allPoolRows) {
+    const key = grantKey(a.instanceName, a.agentId);
+    allPoolKeys.push(key);
+    agentIdByKey.set(key, a.agentId);
+    if (a.displayName) displayByKey.set(key, a.displayName);
+  }
+
+  // 2. Direct grants + memberships, BOUNDED to the visible users (by_user). Reads
+  //    are independent, so run them in parallel; the Maps are only consumed after
+  //    every read settles (no read-during-write).
+  const directByUser = new Map<string, string[]>();
+  const groupIdsByUser = new Map<string, Id<"groups">[]>();
+  await Promise.all(
+    userIds.map(async (userId) => {
+      const direct = await ctx.db
+        .query("userAgents")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      const keys: string[] = [];
+      for (const ua of direct) {
+        const key = grantKey(ua.instanceName, ua.agentId);
+        agentIdByKey.set(key, ua.agentId);
+        keys.push(key);
+      }
+      directByUser.set(userId as string, keys);
+      const mems = await ctx.db
+        .query("groupMembers")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      groupIdsByUser.set(
+        userId as string,
+        mems.map((m) => m.groupId),
+      );
+    }),
+  );
+
+  // 3. Only the DISTINCT groups those users belong to -> existence (dangling check)
+  //    + their shared pool, read by_group (never the whole groupAgents table).
+  const distinctGroups = new Map<string, Id<"groups">>();
+  for (const gids of groupIdsByUser.values())
+    for (const g of gids) distinctGroups.set(g as string, g);
+  const existingGroupIds = new Set<string>();
+  const agentsByGroup = new Map<string, string[]>();
+  await Promise.all(
+    [...distinctGroups.values()].map(async (groupId) => {
+      const group = await ctx.db.get(groupId);
+      if (group === null) return; // dangling membership -> group not existing
+      existingGroupIds.add(groupId as string);
+      const shared = await ctx.db
+        .query("groupAgents")
+        .withIndex("by_group", (q) => q.eq("groupId", groupId))
+        .collect();
+      const keys: string[] = [];
+      for (const ga of shared) {
+        const key = grantKey(ga.instanceName, ga.agentId);
+        agentIdByKey.set(key, ga.agentId);
+        keys.push(key);
+      }
+      agentsByGroup.set(groupId as string, keys);
+    }),
+  );
+
+  const labelOf = (key: string): string =>
+    displayByKey.get(key) ?? agentIdByKey.get(key) ?? key;
+
+  // 4. Per-user cascade SET (in-memory).
+  const out = new Map<string, { count: number; preview: string[] }>();
+  for (const userId of userIds) {
+    const uid = userId as string;
+    const direct = directByUser.get(uid) ?? [];
+    // EXISTING-group memberships only: a dangling membership (deleted group) never
+    // flips the user in-group with an empty pool -- mirrors resolveGroupPool.
+    const memberGroups = (groupIdsByUser.get(uid) ?? []).filter((g) =>
+      existingGroupIds.has(g as string),
+    );
+
+    let effective: string[];
+    if (memberGroups.length > 0) {
+      const poolSet = new Set<string>();
+      for (const g of memberGroups)
+        for (const k of agentsByGroup.get(g as string) ?? []) poolSet.add(k);
+      const restricted = direct.filter((k) => poolSet.has(k));
+      effective = restricted.length > 0 ? restricted : [...poolSet];
+    } else {
+      effective = direct.length > 0 ? direct : allPoolKeys;
+    }
+
+    const uniq = [...new Set(effective)];
+    const labels = uniq.map(labelOf).sort((a, b) => a.localeCompare(b));
+    out.set(uid, { count: uniq.length, preview: labels.slice(0, PREVIEW_CAP) });
+  }
+  return out;
+}
+
+/**
  * Resolve a DOCUMENTARY agent the user is ENTITLED to (L2 "Joindre les documents").
  * Intersects the user's effective grants (the dispatch-time authorization boundary —
  * NEVER a global agent) with the agents whose effective type includes "documentary",

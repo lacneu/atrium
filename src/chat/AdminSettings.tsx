@@ -37,7 +37,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import { Server } from "lucide-react";
 import { DataTableShell } from "./admin/DataTableShell";
+import { DetailChips } from "./admin/DetailChips";
 import { InstanceConfigDialog, type Instance } from "./admin/BridgeTab";
 import { EntitySheet } from "./admin/EntitySheet";
 import { useToast } from "@/components/ui/toast";
@@ -298,6 +300,8 @@ export function UsersTab() {
       q: q || undefined,
       role: role === ALL ? undefined : role,
     },
+    // This is the users MANAGEMENT list -> request the per-user Agents column data.
+    withAgents: true,
   });
   const me = useQuery(api.me.getMe, { host: APP_HOST });
   const setRole = useMutation(api.admin.setRole);
@@ -417,12 +421,25 @@ export function UsersTab() {
       rows={users}
       emptyHint={m.settings_users_empty()}
       rowActions={(u) => {
-        // Rename is allowed on EVERY row (incl. the admin's own — harmless).
+        // Agent assignment + rename are allowed on EVERY row (incl. the admin's
+        // own): an admin is also a chat user and needs >=1 agent to start a
+        // conversation (there is NO server-side "admin uses all agents" bypass).
+        // The manage-agents action is the primary one (first), mirroring the
+        // groups list's "Manage" -- the Agents column itself is a read-only preview.
         const actions: {
           label: string;
           onSelect: () => void;
           variant?: "default" | "destructive";
         }[] = [
+          {
+            label: m.settings_manage_agents(),
+            onSelect: () =>
+              setAccessFor({
+                profileId: u._id,
+                label:
+                  u.email || u.name || u.canonical || u.userId.slice(0, 8),
+              }),
+          },
           {
             label: m.settings_rename_user(),
             onSelect: () => void onRenameUser(u),
@@ -516,26 +533,19 @@ export function UsersTab() {
             ),
         },
         {
-          // Agents are assignable to EVERY user, admins included: an admin is
-          // also a chat user and needs >=1 agent to start a conversation (there
-          // is NO server-side "admin uses all agents" bypass — Codex P2).
+          // The EFFECTIVE agents available to this user (cascade-resolved server
+          // side: group pool / all-pool / direct restriction). A read-only chip
+          // preview + total, like the groups list's #agents column; assignment
+          // moved to the kebab's manage-agents action.
           header: m.settings_col_agents(),
           cell: (u) => (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 font-normal"
-              onClick={() =>
-                setAccessFor({
-                  profileId: u._id,
-                  label:
-                    u.email || u.name || u.canonical || u.userId.slice(0, 8),
-                })
-              }
-            >
-              {m.settings_manage_agents()}
-            </Button>
+            <DetailChips
+              icon={<Server size={12} aria-hidden />}
+              total={u.agentCount ?? 0}
+              items={u.agents.map((a) => ({ label: a }))}
+            />
           ),
+          sort: (u) => u.agentCount ?? 0,
         },
       ]}
     />
