@@ -565,6 +565,52 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
     expect(res?.agent?.state).toBe("ok");
   });
 
+  test("READ-ONLY: a chat bound to an existing agent the user is NOT entitled to → readOnly, agent null (NEVER silently re-routed)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);
+    // "ghost" EXISTS as a discovered agent but is NOT granted (the admin narrowed
+    // the user's set) -> a restriction, not a purge.
+    await t.run((ctx) =>
+      ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "ghost",
+        source: "discovered",
+        presentInLastOk: true,
+        displayName: "GHOST",
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      }),
+    );
+    const chatId = await mkChat({ agentId: "ghost" });
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    expect(res?.readOnly).toBe(true);
+    // It must NOT fall back to the default "main" (a silent agent swap) — the chat
+    // is LOCKED. Delete the read-only branch and this resolves to main, proving the
+    // assertion discriminates.
+    expect(res?.agent).toBeNull();
+  });
+
+  test("PURGED agent (bound agent no longer EXISTS) → NOT read-only; falls back (the deleted-agent path)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);
+    // "purged" was removed from the gateway AND its grants cascaded away -> no agent
+    // row. The chat must NOT lock; it falls back to the default (rebind), exactly
+    // like any deleted agent (distinguishing a purge from a restriction).
+    const chatId = await mkChat({ agentId: "purged" });
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    expect(res?.readOnly).toBe(false);
+    expect(res?.agent?.agentId).toBe("main"); // the default fallback
+  });
+
+  test("a chat bound to an entitled agent is NOT read-only", async () => {
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);
+    const chatId = await mkChat({ agentId: "bob" });
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    expect(res?.readOnly).toBe(false);
+    expect(res?.agent?.agentId).toBe("bob");
+  });
+
   test("multi-agent, UNBOUND chat: chip shows the DEFAULT (what the next turn binds to)", async () => {
     const t = convexTest(schema, modules);
     const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);

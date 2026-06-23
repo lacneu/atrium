@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { m } from "@/paraglide/messages.js";
 import {
+  formatToolResult,
   toolActivitySummary,
+  toolOutcomeLabel,
   toolPreview,
   type ToolActivityPart,
 } from "./toolActivityView";
@@ -106,5 +109,127 @@ describe("toolPreview (one-line header preview of a tool's input)", () => {
     expect(toolPreview("raw string input", undefined)).toBe("raw string input");
     expect(toolPreview({ unknownKey: 1 }, undefined)).toBe("");
     expect(toolPreview(undefined, undefined)).toBe("");
+  });
+});
+
+describe("formatToolResult", () => {
+  it("classifies a bare exec envelope as an OUTCOME (the stdout is not sent)", () => {
+    // The verified 2026.6.5/2026.6.8 bash result: envelope-only, no stdout.
+    const v = formatToolResult({
+      status: "completed",
+      exitCode: 0,
+      durationMs: 15,
+    });
+    expect(v).toEqual({
+      kind: "outcome",
+      status: "completed",
+      exitCode: 0,
+      durationMs: 15,
+    });
+  });
+
+  it("treats a string result as real text output", () => {
+    expect(formatToolResult("hello\nworld")).toEqual({
+      kind: "text",
+      text: "hello\nworld",
+    });
+  });
+
+  it("keeps a RICH object (web_search) as full JSON, never an outcome", () => {
+    const v = formatToolResult({
+      status: "completed",
+      query: "x",
+      queries: ["x"],
+    });
+    expect(v.kind).toBe("json");
+    // Delete the discriminator -> the non-envelope key still forces json (proves
+    // the test isn't passing on the `status` key alone).
+    expect(formatToolResult({ queries: ["x"] }).kind).toBe("json");
+  });
+
+  it("does NOT treat a non-exec result lacking exitCode as an outcome (renders its JSON)", () => {
+    // A non-exec tool whose result merely happens to be {status} / {status,
+    // durationMs} must show its real JSON, NOT a misleading exec outcome.
+    expect(formatToolResult({ status: "completed" }).kind).toBe("json");
+    expect(
+      formatToolResult({ status: "completed", durationMs: 5 }).kind,
+    ).toBe("json");
+    // ...but the real exec envelope (with exitCode) IS an outcome.
+    expect(
+      formatToolResult({ status: "completed", exitCode: 0, durationMs: 5 }).kind,
+    ).toBe("outcome");
+  });
+
+  it("is forward-compatible: an envelope WITH stdout shows it (json), not an outcome", () => {
+    // If a FUTURE gateway adds the stdout alongside the envelope, the extra key
+    // must surface the real output rather than collapse to the outcome line.
+    const v = formatToolResult({
+      status: "completed",
+      exitCode: 0,
+      durationMs: 15,
+      output: "the real stdout",
+    });
+    expect(v.kind).toBe("json");
+    expect(v.kind === "json" && v.text.includes("the real stdout")).toBe(true);
+  });
+});
+
+// Assert via the i18n functions (not accented literals) so the source stays
+// ASCII (the i18n ratchet) AND the test is locale-independent: it pins the BRANCH
+// (completed vs failed head) + the inclusion/omission of exit & duration, not the
+// French spelling (which the messages/ files + the parity test already cover).
+describe("toolOutcomeLabel", () => {
+  it("SUCCESS branch: completed head + exit + duration, in order", () => {
+    const label = toolOutcomeLabel({
+      status: "completed",
+      exitCode: 0,
+      durationMs: 15,
+    });
+    expect(label.startsWith(m.tools_outcome_completed())).toBe(true);
+    expect(label).not.toContain(m.tools_outcome_failed());
+    expect(label).toContain(m.tools_outcome_exit({ code: 0 })); // "exit 0"
+    expect(label).toContain(m.tools_outcome_ms({ ms: 15 })); // "15 ms"
+  });
+
+  it("FAILURE branch (status failed, exit != 0): failed head, null duration omitted", () => {
+    const label = toolOutcomeLabel({
+      status: "failed",
+      exitCode: 1,
+      durationMs: null,
+    });
+    expect(label.startsWith(m.tools_outcome_failed())).toBe(true);
+    expect(label).toContain(m.tools_outcome_exit({ code: 1 }));
+    expect(label).not.toContain(" ms"); // duration omitted when null
+  });
+
+  it("exitCode 0 forces SUCCESS even when status is not 'completed'", () => {
+    const label = toolOutcomeLabel({ status: "x", exitCode: 0, durationMs: 3 });
+    expect(label.startsWith(m.tools_outcome_completed())).toBe(true);
+  });
+
+  it("a NON-ZERO exitCode is FAILURE even when status is 'completed' (the call finished, the command failed)", () => {
+    const label = toolOutcomeLabel({
+      status: "completed",
+      exitCode: 1,
+      durationMs: 3,
+    });
+    expect(label.startsWith(m.tools_outcome_failed())).toBe(true);
+  });
+
+  it("falls back to status only when there is NO exitCode", () => {
+    expect(
+      toolOutcomeLabel({
+        status: "completed",
+        exitCode: null,
+        durationMs: null,
+      }).startsWith(m.tools_outcome_completed()),
+    ).toBe(true);
+    expect(
+      toolOutcomeLabel({
+        status: "failed",
+        exitCode: null,
+        durationMs: null,
+      }).startsWith(m.tools_outcome_failed()),
+    ).toBe(true);
   });
 });

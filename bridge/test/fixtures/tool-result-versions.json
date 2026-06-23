@@ -1,0 +1,89 @@
+{
+  "_about": "Real captured bash tool start+result frames per OpenClaw version, REBUILT to only the fields the normalizer reads and fully ANONYMIZED (no session/user ids, commands or paths) -- the result envelope is kept VERBATIM from the live capture (the contract). Pins that the operator stream carries ONLY the {status,exitCode,durationMs} envelope (no stdout). A future version that adds stdout fails the contract test.",
+  "session_key": "agent:main:webchat:chat:test:contract",
+  "run_id": "webchat-contract-run",
+  "versions": {
+    "2026.6.5": [
+      {
+        "type": "event",
+        "event": "agent",
+        "payload": {
+          "sessionKey": "agent:main:webchat:chat:test:contract",
+          "runId": "webchat-contract-run",
+          "stream": "tool",
+          "data": {
+            "type": "tool",
+            "name": "bash",
+            "phase": "start",
+            "toolCallId": "call_contract",
+            "args": {
+              "command": "echo placeholder"
+            }
+          }
+        }
+      },
+      {
+        "type": "event",
+        "event": "agent",
+        "payload": {
+          "sessionKey": "agent:main:webchat:chat:test:contract",
+          "runId": "webchat-contract-run",
+          "stream": "tool",
+          "data": {
+            "type": "tool",
+            "name": "bash",
+            "phase": "result",
+            "toolCallId": "call_contract",
+            "isError": false,
+            "result": {
+              "status": "completed",
+              "exitCode": 0,
+              "durationMs": 1
+            }
+          }
+        }
+      }
+    ],
+    "2026.6.8": [
+      {
+        "type": "event",
+        "event": "agent",
+        "payload": {
+          "sessionKey": "agent:main:webchat:chat:test:contract",
+          "runId": "webchat-contract-run",
+          "stream": "tool",
+          "data": {
+            "type": "tool",
+            "name": "bash",
+            "phase": "start",
+            "toolCallId": "call_contract",
+            "args": {
+              "command": "echo placeholder"
+            }
+          }
+        }
+      },
+      {
+        "type": "event",
+        "event": "agent",
+        "payload": {
+          "sessionKey": "agent:main:webchat:chat:test:contract",
+          "runId": "webchat-contract-run",
+          "stream": "tool",
+          "data": {
+            "type": "tool",
+            "name": "bash",
+            "phase": "result",
+            "toolCallId": "call_contract",
+            "isError": false,
+            "result": {
+              "status": "completed",
+              "exitCode": 0,
+              "durationMs": 15
+            }
+          }
+        }
+      }
+    ]
+  }
+}

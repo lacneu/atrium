@@ -34,6 +34,7 @@ import {
   Pencil,
   Trash2,
   FolderPlus,
+  Lock,
   Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -86,6 +87,10 @@ export type ChatRow = {
   // The bridge this chat routes to (bound instance, else the user's default).
   // Drives the self-hiding provider badge (shown only when chats span >1 kind).
   providerKind: "openclaw" | "hermes" | null;
+  // The chat is bound to an agent the user is no longer entitled to (admin
+  // narrowed their set) -> READ-ONLY. Marks the row with a lock so the user
+  // understands why that chat can't be sent to.
+  readOnly: boolean;
 };
 type Project = { _id: Id<"projects">; name: string; collapsed: boolean };
 
@@ -636,6 +641,14 @@ function ChatItem({
         <button className="oc-chatitem__label" onClick={() => onSelect(chat._id)}>
           {chat.title || m.sidebar_untitled()}
         </button>
+        {chat.readOnly ? (
+          <span
+            className="oc-chatitem__readonly"
+            title={m.sidebar_readonly_label()}
+          >
+            <Lock size={12} aria-label={m.sidebar_readonly_label()} />
+          </span>
+        ) : null}
         {showProviderBadge && chat.providerKind ? (
           // Self-hiding: the parent only sets showProviderBadge when chats span
           // >1 bridge. Fades on hover (like the age) to make room for the kebab.

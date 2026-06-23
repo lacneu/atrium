@@ -59,6 +59,7 @@ import {
   Bot,
   Server,
   LoaderCircle,
+  Lock,
   Paperclip,
   Image as ImageIcon,
   X,
@@ -407,6 +408,13 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const unavailable = avail && !avail.available ? avail : null;
+  // READ-ONLY: the chat is bound to an agent the user is no longer entitled to
+  // (an admin narrowed their set). Lock the composer + show a reason so the user
+  // understands WHY they cannot send (the dispatch also enforces it server-side).
+  const agentInfo = useQuery(api.agents.getChatAgent, {
+    chatId: chatId as Id<"chats">,
+  });
+  const readOnly = agentInfo?.readOnly === true;
   useFocusMessage(chatId, focusMessageId);
   return (
     <ThreadPrimitive.Root className="oc-thread">
@@ -432,11 +440,15 @@ function ChatThread({
           <span>{m.chat_latest_messages()}</span>
         </ThreadPrimitive.ScrollToBottom>
       </ThreadPrimitive.If>
-      {unavailable ? <BridgeUnavailableBanner /> : null}
+      {readOnly ? (
+        <ChatReadOnlyBanner />
+      ) : unavailable ? (
+        <BridgeUnavailableBanner />
+      ) : null}
       <Composer
         showTools={showTools}
         onToggleTools={onToggleTools}
-        unavailable={unavailable !== null}
+        unavailable={unavailable !== null || readOnly}
       />
     </ThreadPrimitive.Root>
   );
@@ -450,6 +462,19 @@ function BridgeUnavailableBanner() {
     <div className="oc-chat-banner oc-chat-banner--error" role="status">
       <CircleAlert size={16} aria-hidden />
       <span>{m.chat_unavailable_banner()}</span>
+    </div>
+  );
+}
+
+// READ-ONLY notice: the chat is bound to an agent the user is no longer entitled
+// to (an admin narrowed their agent set). Unlike the bridge banner, the reason IS
+// actionable by the user (start a new chat with an available agent), so it is
+// stated plainly.
+function ChatReadOnlyBanner() {
+  return (
+    <div className="oc-chat-banner oc-chat-banner--error" role="status">
+      <Lock size={16} aria-hidden />
+      <span>{m.chat_readonly_banner()}</span>
     </div>
   );
 }

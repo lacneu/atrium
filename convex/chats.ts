@@ -10,6 +10,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
@@ -59,22 +60,23 @@ const chatColorValidator = v.union(
   v.null(),
 );
 
-// Authorize a (user, instance, agent) chat binding against the user's userAgents
-// (red-team B / IDOR): the bridge will route by these names, so Convex is the
-// SOLE authorization point. Returns silently if authorized; throws otherwise.
+// Authorize a (user, instance, agent) chat binding against the user's EFFECTIVE
+// agent set (red-team B / IDOR): the bridge routes by these names, so Convex is
+// the SOLE authorization point. Uses getEffectiveGrants — the SAME cascade set the
+// dispatch (resolveTargetForChat) and the picker (listMyAgents) use — so any agent
+// the user can SEE in the picker (direct grant, group-shared, or — for a groupless
+// user — every agent via the all-pool) can be bound; an out-of-set agent throws.
 async function requireAgentMembership(
   ctx: MutationCtx,
   userId: Id<"users">,
   instanceName: string,
   agentId: string,
 ) {
-  const row = await ctx.db
-    .query("userAgents")
-    .withIndex("by_user_instance_agent", (q) =>
-      q.eq("userId", userId).eq("instanceName", instanceName).eq("agentId", agentId),
-    )
-    .first();
-  if (row === null) {
+  const grants = await getEffectiveGrants(ctx, userId);
+  const ok = grants.some(
+    (g) => g.instanceName === instanceName && g.agentId === agentId,
+  );
+  if (!ok) {
     throw new Error("Forbidden: agent not assigned to this user");
   }
 }

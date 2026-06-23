@@ -5,7 +5,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
-import { AGENT_TYPE_CODES } from "../../convex/lib/agentTypes";
+import { AGENT_TYPE_CODES, resolveAgentTypes } from "../../convex/lib/agentTypes";
 import { UserAccessSheet } from "./admin/UserAccessSheet";
 import { Input } from "@/components/ui/input";
 import {
@@ -1365,9 +1365,65 @@ function InstanceAgentsDialog({
     api.agents.listAgentsForInstance,
     open && instanceName ? { instanceName } : "skip",
   );
-  const setEnabled = useMutation(api.agents.setAgentEnabled);
-  const setDefault = useMutation(api.agents.setInstanceDefaultAgent);
-  const setTypes = useMutation(api.agents.setAgentTypes);
+  // Optimistic updates: a checkbox/type/default toggle reflects INSTANTLY in the
+  // open dialog (the user clicks several rapidly) instead of waiting a full
+  // mutation + reactive-refetch round-trip. Each patches THIS dialog's own query
+  // (listAgentsForInstance, keyed by instanceName) and the server reconciles on
+  // return. We project ONLY the directly-toggled field — never the server's
+  // ">=1-enabled => 1-default" reassignment (the default badge reconciles a beat
+  // later; replicating that invariant client-side would be fragile duplication).
+  const setEnabled = useMutation(
+    api.agents.setAgentEnabled,
+  ).withOptimisticUpdate((store, { instanceName, agentId, enabled }) => {
+    const cur = store.getQuery(api.agents.listAgentsForInstance, {
+      instanceName,
+    });
+    if (!cur) return;
+    store.setQuery(
+      api.agents.listAgentsForInstance,
+      { instanceName },
+      {
+        ...cur,
+        agents: cur.agents.map((a) =>
+          a.agentId === agentId ? { ...a, enabled } : a,
+        ),
+      },
+    );
+  });
+  const setDefault = useMutation(
+    api.agents.setInstanceDefaultAgent,
+  ).withOptimisticUpdate((store, { instanceName, agentId }) => {
+    const cur = store.getQuery(api.agents.listAgentsForInstance, {
+      instanceName,
+    });
+    if (!cur) return;
+    store.setQuery(
+      api.agents.listAgentsForInstance,
+      { instanceName },
+      { ...cur, defaultAgentId: agentId },
+    );
+  });
+  const setTypes = useMutation(api.agents.setAgentTypes).withOptimisticUpdate(
+    (store, { instanceName, agentId, types }) => {
+      const cur = store.getQuery(api.agents.listAgentsForInstance, {
+        instanceName,
+      });
+      if (!cur) return;
+      // The query returns EFFECTIVE types (resolveAgentTypes: empty -> default),
+      // so project the SAME derivation or the type chips flicker on reconcile.
+      const effective = resolveAgentTypes(types);
+      store.setQuery(
+        api.agents.listAgentsForInstance,
+        { instanceName },
+        {
+          ...cur,
+          agents: cur.agents.map((a) =>
+            a.agentId === agentId ? { ...a, types: effective } : a,
+          ),
+        },
+      );
+    },
+  );
   const removeAgent = useMutation(api.agents.removeInstanceAgent);
   const confirm = useConfirm();
   const toast = useToast();

@@ -24,7 +24,11 @@ export interface ChatResolution {
   /** When set, persist this binding onto the chat (unbound chat resolved to the
    *  default, OR the bound agent was deleted on the gateway → re-bind). */
   rebind: { instanceName: string; agentId: string } | null;
-  failReason: "no_agent" | null;
+  /** `no_agent`: the user has no usable agent at all. `agent_restricted`: the
+   *  chat is bound to an agent the user is NO LONGER entitled to (admin narrowed
+   *  their set) — the chat is READ-ONLY, never silently re-routed to a different
+   *  agent (the user's explicit choice). */
+  failReason: "no_agent" | "agent_restricted" | null;
 }
 
 /** Is this (instance, agent) DELETED on the gateway? `agents.presentInLastOk` is
@@ -68,9 +72,12 @@ export async function resolveTargetForChat(
   // preserving the exact pre-P2 "absent row + successful poll => still served"
   // semantics that `state` cannot reconstruct.
   const uas = await getEffectiveGrants(ctx, userId);
-  if (uas.length === 0) {
-    return { target: null, rebind: null, failReason: "no_agent" };
-  }
+  // NOTE: no early `uas.length === 0 -> no_agent` shortcut. A chat bound to a
+  // PRESENT agent the user is no longer entitled to must classify as
+  // agent_restricted (read-only) EVEN when the admin removed the user's last grant
+  // (uas empty) -- so the dispatch reason matches the UI's read-only state. The
+  // bound block below handles that; pickFallback returns null for an empty uas, so
+  // an unbound/gone chat still ends in `no_agent`.
 
   const asTarget = (
     u: { instanceName: string; agentId: string },
@@ -102,14 +109,36 @@ export async function resolveTargetForChat(
     const member = uas.find(
       (u) => u.instanceName === chat.instanceName && u.agentId === chat.agentId,
     );
-    if (member && !(await isDeleted(ctx, member.instanceName, member.agentId))) {
-      return {
-        target: asTarget(member, "chat-binding"),
-        rebind: null,
-        failReason: null,
-      };
+    if (member) {
+      if (!(await isDeleted(ctx, member.instanceName, member.agentId))) {
+        return {
+          target: asTarget(member, "chat-binding"),
+          rebind: null,
+          failReason: null,
+        };
+      }
+      // In the effective set but DELETED on the gateway → fall through to a
+      // present fallback (the agent is gone, not restricted).
+    } else {
+      // NOT in the user's effective set. RESTRICTION (the agent is still PRESENT --
+      // an admin narrowed the user's access -> READ-ONLY, never silently re-routed)
+      // vs GONE: a purge (removeInstanceAgent deleted the row) OR a gateway deletion
+      // (the row survives with presentInLastOk:false until a manual purge). Both
+      // "gone" cases fall through to the fallback/rebind like any deleted agent, so
+      // the restriction applies ONLY when the agent is present.
+      const boundInstance = chat.instanceName;
+      const boundAgent = chat.agentId;
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", boundInstance).eq("agentId", boundAgent),
+        )
+        .first();
+      if (row !== null && row.presentInLastOk !== false) {
+        return { target: null, rebind: null, failReason: "agent_restricted" };
+      }
+      // Gone (purged or gateway-deleted) -> fall through to a present fallback.
     }
-    // revoked or deleted → fall through to a present fallback.
   }
 
   const fb = await pickFallback();

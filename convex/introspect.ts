@@ -21,7 +21,7 @@ import {
   type Role,
 } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
-import { enrichUserAgents } from "./agents";
+import { enrichUserAgents, type AgentVia } from "./agents";
 import { availableChartsForUser, type ChartVia } from "./charts";
 
 /** A short display label for a user (email / name / id tail). Admin-only view,
@@ -80,7 +80,7 @@ export const introspectUser = query({
       instanceName: string;
       agentId: string;
       displayName: string | null;
-      via: "user" | { group: string };
+      via: AgentVia;
       isDefault: boolean;
       state: "ok" | "deleted" | "stale" | "unknown";
     }>;

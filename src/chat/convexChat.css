@@ -1879,6 +1879,30 @@
 .oc-tool__body {
   padding-top: 0.15rem;
 }
+/* Exec OUTCOME line: a bash/exec result is only the envelope (status/exit/
+   duration) — the gateway does not transmit stdout on the operator stream
+   (verified 2026.6.5 + 2026.6.8). Render it as a clear outcome instead of
+   misleading raw JSON; the note states the stdout was not transmitted. */
+.oc-tool__outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 0.1rem;
+  font-size: 0.8rem;
+}
+.oc-tool__outcome-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--foreground);
+}
+.oc-tool--error .oc-tool__outcome-label {
+  color: var(--destructive);
+}
+.oc-tool__outcome-note {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
 .oc-tool__name {
   font-weight: 600;
   flex: 0 0 auto;
@@ -2725,6 +2749,14 @@
 /* Bridge badge — only rendered when conversations span >1 provider. A small,
    low-key pill; a subtle per-bridge tint helps tell them apart at a glance
    without shouting. */
+/* Lock marker on a read-only chat (its bound agent is no longer available to the
+   user). Muted + flex-stable, sits between the title and the bridge badge. */
+.oc-chatitem__readonly {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted-foreground);
+}
 .oc-chatitem__bridge {
   flex-shrink: 0;
   font-size: 0.62rem;

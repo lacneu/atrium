@@ -483,12 +483,55 @@ export const listChats = query({
     // chat is mapped purely. The frontend shows the badge ONLY when chats span >1
     // kind (invisible until Hermes).
     const agents = await enrichUserAgents(ctx, userId);
-    const kindOf = (c: { instanceName?: string; agentId?: string }) =>
-      resolveAgentForChat(agents, c)?.kind ?? null;
+    const active = chats.filter((c) => !c.archived);
 
-    return chats
-      .filter((c) => !c.archived)
-      .map((c) => ({
+    // For chats bound to an agent NOT in the effective set, the sidebar lock must
+    // match the dispatch: read-only only when the agent still EXISTS (a restriction)
+    // vs gone/purged (fallback). Look up the DISTINCT out-of-set bound agents ONCE
+    // (typically 0-few) so this stays bounded on the listChats hot path.
+    // Collision-free key (length-prefixed instanceName), so an instanceName or
+    // agentId containing "/" can never make two distinct pairs share a key (which
+    // would desync the sidebar lock from the dispatch/getChatAgent read-only state).
+    const agentKey = (instanceName: string, agentId: string) =>
+      `${instanceName.length}:${instanceName}/${agentId}`;
+    const effectiveKeys = new Set(
+      agents.map((a) => agentKey(a.instanceName, a.agentId)),
+    );
+    const toCheck = new Map<string, { instanceName: string; agentId: string }>();
+    for (const c of active) {
+      if (c.instanceName && c.agentId) {
+        const key = agentKey(c.instanceName, c.agentId);
+        if (!effectiveKeys.has(key)) {
+          toCheck.set(key, {
+            instanceName: c.instanceName,
+            agentId: c.agentId,
+          });
+        }
+      }
+    }
+    const existsKeys = new Set<string>();
+    for (const [key, { instanceName, agentId }] of toCheck) {
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", instanceName).eq("agentId", agentId),
+        )
+        .first();
+      // PRESENT only (not gateway-deleted): a presentInLastOk:false row is "gone"
+      // (falls back), same as the dispatch.
+      if (row !== null && row.presentInLastOk !== false) existsKeys.add(key);
+    }
+
+    return active.map((c) => {
+      // ONE resolution per chat: the provider kind for the bridge badge AND whether
+      // the chat is READ-ONLY (bound to an agent the user is no longer entitled to,
+      // but that still exists) so the sidebar can mark it.
+      const boundAgentExists =
+        c.instanceName && c.agentId
+          ? existsKeys.has(agentKey(c.instanceName, c.agentId))
+          : false;
+      const resolved = resolveAgentForChat(agents, c, boundAgentExists);
+      return {
         _id: c._id as Id<"chats">,
         title: c.title,
         updatedAt: c.updatedAt,
@@ -496,8 +539,10 @@ export const listChats = query({
         sortKey: c.sortKey ?? 0,
         pinned: c.pinned ?? false,
         color: c.color ?? null,
-        providerKind: kindOf(c),
-      }));
+        providerKind: resolved.agent?.kind ?? null,
+        readOnly: resolved.readOnly,
+      };
+    });
   },
 });
 

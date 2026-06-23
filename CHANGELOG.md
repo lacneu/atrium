@@ -8,6 +8,43 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.7.0] — Agent access by group, read-only chats, clearer tool output
+
+Feature release. **One behavior change to know before you deploy:** how a user's
+available agents are decided moved from additive to a *cascade* (below) — a user who
+already had per-user agent grants may see their list narrow, and a chat bound to an
+agent that is no longer theirs becomes read-only. Ships a Convex schema migration
+(a new index, applied by `npx convex deploy`).
+
+- **Agent visibility is now a cascade, scoped by group.** A user who belongs to one
+  or more groups sees exactly their groups' shared agents; a user in no group sees
+  every discovered agent; and a per-user selection in Settings → Users *restricts*
+  within that set (select none = the whole pool, select some = exactly those).
+  Previously a user's agents were the *union* of their direct grants and their
+  groups'. Groups are now the way to scope which agents a member can use — e.g. per
+  tenant; a member left in no group sees everything.
+- **A chat bound to an agent you can no longer use is now READ-ONLY, not silently
+  re-routed.** When an admin narrows your agents, a conversation pinned to a
+  now-unavailable (but still-present) agent locks its composer and tells you why, and
+  the sidebar marks it with a lock — instead of quietly answering from a *different*
+  agent mid-conversation. A genuinely removed/deleted agent still falls back to your
+  default as before. Enforced server-side on send and on regenerate.
+- **Tool cards show a clear outcome instead of misleading raw JSON.** A bash/exec
+  tool now renders "Done · exit 0 · 15 ms" (or a failure) plus a note that the
+  gateway does not transmit the command's stdout to the chat — rather than dumping
+  the `{status, exitCode, durationMs}` envelope as if it were the whole output.
+  (Verified against OpenClaw 2026.6.5 and 2026.6.8 from captured frames, with a
+  versioned contract test that flags a future version which DOES send the output.)
+- **The per-user Access editor offers the right agents.** It now lists the user's
+  pool (their groups' agents, or all agents when they have no group) to select
+  within, and still surfaces any out-of-group direct grant (badged) so an admin can
+  manage it.
+- **"Bridge URL" is no longer mislabeled "optional".** The field routes an instance
+  and falls back to the deployment `BRIDGE_URL` only for the sole / served instance;
+  the label and hint now say so.
+- **Agent enable/type toggles apply instantly.** Settings → Agents checkboxes use an
+  optimistic update, so they no longer lag a round-trip before reflecting the change.
+
 ## [0.6.4] — MCP/CLI: per-instance health view + force-sync (admin + agent)
 
 Convenience release. No breaking changes — additive.

@@ -177,6 +177,8 @@ const DISPATCH_FAILURE_MESSAGE: Record<string, string> = {
     "Le service de chat n’est pas encore configuré. Contactez votre administrateur. (réf. bridge-config)",
   no_agent:
     "Aucun agent ne vous est assigné. Contactez votre administrateur pour qu’il vous en attribue un. (réf. no-agent)",
+  agent_restricted:
+    "Cet agent ne vous est plus disponible : votre accès aux agents a été modifié. Démarrez un nouveau chat avec un agent disponible. (réf. agent-restricted)",
   send_failed:
     "Le service de chat est momentanément indisponible. Réessayez ; si le problème persiste, contactez votre administrateur. (réf. bridge)",
 };
@@ -206,6 +208,7 @@ export const failDispatch = internalMutation({
     reason: v.union(
       v.literal("not_configured"),
       v.literal("no_agent"),
+      v.literal("agent_restricted"),
       v.literal("send_failed"),
     ),
     // The curated non-PHI gateway code (when known) — lets us pick a finer,
@@ -567,20 +570,27 @@ export const dispatch = internalAction({
       return;
     }
 
-    // No agent assigned (and no legacy valve) -> cannot pick an agent. Mark failed
-    // with a clear, actionable message rather than send to a wrong/absent target.
+    // No routable target. Distinguish WHY: `agent_restricted` = the chat is bound
+    // to an agent the user is no longer entitled to (READ-ONLY enforcement — never
+    // a silent re-route); otherwise `no_agent` = the user has no usable agent. Both
+    // mark the turn failed with a clear, actionable message instead of dispatching
+    // to a wrong/absent target.
     if (routing.target === null) {
-      console.error("bridge.dispatch: no agent assigned for user");
+      const reason =
+        routing.failReason === "agent_restricted"
+          ? "agent_restricted"
+          : "no_agent";
+      console.error(`bridge.dispatch: ${reason} for user`);
       await ctx.runMutation(internal.bridge.failDispatch, {
         outboxId,
-        reason: "no_agent",
+        reason,
       });
       await traceDispatch(ctx, {
         outboxId,
         chatId: row.chatId,
         dispatchStatus: "failed",
-        reason: "no_agent",
-        errorCode: "NO_AGENT",
+        reason,
+        errorCode: reason === "agent_restricted" ? "AGENT_RESTRICTED" : "NO_AGENT",
       });
       return;
     }
@@ -946,7 +956,11 @@ export const dispatchReset = internalAction({
     // NOTHING (the silent failure we forbid — reported live). A plain reset (no
     // regenerate) has nothing to surface.
     const failRegen = async (
-      reason: "not_configured" | "no_agent" | "send_failed",
+      reason:
+        | "not_configured"
+        | "no_agent"
+        | "agent_restricted"
+        | "send_failed",
     ) => {
       if (regenerateOutboxId) {
         await ctx.runMutation(internal.bridge.failDispatch, {
@@ -967,8 +981,14 @@ export const dispatchReset = internalAction({
       userId,
     });
     if (!routing || routing.target === null) {
-      console.error("bridge.dispatchReset: no agent assigned for user");
-      await failRegen("no_agent");
+      // Same distinction as the normal dispatch: a chat whose agent the user is no
+      // longer entitled to fails READ-ONLY (agent_restricted), not "no_agent".
+      const reason =
+        routing && routing.failReason === "agent_restricted"
+          ? "agent_restricted"
+          : "no_agent";
+      console.error(`bridge.dispatchReset: ${reason} for user`);
+      await failRegen(reason);
       return;
     }
     // Per-instance bridge endpoint (Model M), else env BRIDGE_URL fallback.

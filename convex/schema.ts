@@ -383,7 +383,11 @@ export default defineSchema({
     lastSeenAt: v.number(), // last successful poll that INCLUDED it
   })
     .index("by_instance", ["instanceName"])
-    .index("by_instance_agent", ["instanceName", "agentId"]),
+    .index("by_instance_agent", ["instanceName", "agentId"])
+    // Bounded scan of the no-group all-pool: only DISCOVERED (assignable) +
+    // PRESENT (not gateway-deleted) rows, capped, on the listChats/getChatAgent hot
+    // paths (see loadAllAgentsPool) -- so deleted/manual rows never consume the cap.
+    .index("by_source_present", ["source", "presentInLastOk"]),
 
   // The M:N join: which agents a user may use. user↔instance is DERIVED from this
   // (no second grant table). INVARIANT: exactly one isDefault === true WHENEVER

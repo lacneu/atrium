@@ -7,7 +7,12 @@ import {
   Copy,
   Check,
 } from "lucide-react";
-import { toolPreview } from "./toolActivityView";
+import { m } from "@/paraglide/messages.js";
+import {
+  formatToolResult,
+  toolOutcomeLabel,
+  toolPreview,
+} from "./toolActivityView";
 
 // Small copy button for a tool's input/output block. Hover-revealed in the
 // block's top-right (the standard code-copy affordance); flips to a check for a
@@ -82,6 +87,10 @@ export function ToolCard({
   const phase = phaseClass(status?.type, hasResult);
   const inputText = argsText ?? pretty(args);
   const preview = toolPreview(args, argsText);
+  // Classify the result so a bare exec OUTCOME envelope (no stdout -- the gateway
+  // does not transmit it; see formatToolResult) renders as a clear outcome line
+  // instead of misleading raw JSON, while real text/rich results show in full.
+  const out = hasResult ? formatToolResult(result) : null;
 
   // Agent-plan-style status glyph (neutral — NO loud green check; the "completed"
   // text already carries the state). running = spinner, error = alert, otherwise
@@ -122,12 +131,21 @@ export function ToolCard({
             </div>
           </details>
         ) : null}
-        {hasResult ? (
+        {out && out.kind === "outcome" ? (
+          <div className="oc-tool__outcome">
+            <span className="oc-tool__outcome-label">
+              {toolOutcomeLabel(out)}
+            </span>
+            <span className="oc-tool__outcome-note">
+              {m.tools_output_not_transmitted()}
+            </span>
+          </div>
+        ) : out ? (
           <details className="oc-tool__io" open>
             <summary>output</summary>
             <div className="oc-tool__prewrap">
-              <pre className="oc-tool__pre">{pretty(result)}</pre>
-              <CopyButton text={pretty(result)} />
+              <pre className="oc-tool__pre">{out.text}</pre>
+              <CopyButton text={out.text} />
             </div>
           </details>
         ) : null}

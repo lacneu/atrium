@@ -178,14 +178,20 @@ describe("resolveTargetForChat", () => {
     expect(r.rebind).toEqual({ instanceName: "prod", agentId: "bob" });
   });
 
-  test("revoked binding (no longer in userAgents) → default + rebind", async () => {
+  test("revoked binding (agent no longer in the user's set) → READ-ONLY agent_restricted, NEVER a silent re-route", async () => {
     const t = convexTest(schema, modules);
     const uid = await seedUser(t);
-    await seedUA(t, uid, "prod", "bob", true); // only bob assigned now
+    await seedUA(t, uid, "prod", "bob", true); // only bob assigned now (no group)
+    await seedAgent(t, "prod", "alice", true); // alice still EXISTS, just not granted
     const chat = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
     const r = await resolve(t, chat, uid);
-    expect(r.target?.agentId).toBe("bob");
-    expect(r.rebind).toEqual({ instanceName: "prod", agentId: "bob" });
+    // The user is no longer entitled to "alice" (which still exists): the chat is
+    // READ-ONLY. It must NOT silently re-route to "bob" (a different agent
+    // mid-conversation) — the explicit product decision. Delete the agent_restricted
+    // branch and this flips back to target=bob/rebind, proving it discriminates.
+    expect(r.target).toBeNull();
+    expect(r.rebind).toBeNull();
+    expect(r.failReason).toBe("agent_restricted");
   });
 
   test("unbound legacy chat → default + rebind (stable next turn)", async () => {
@@ -261,6 +267,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     const uid = await seedUser(t);
     await seedUA(t, uid, "prod", "alice", true);
     await seedAgent(t, "prod", "alice", true);
+    await seedAgent(t, "prod", "ghost", true); // exists but NOT granted -> restricted
     await seedDiscovery(t, "prod", true);
 
     // (1) honored binding → the provider thread id is preserved (continuity).
@@ -276,7 +283,9 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     expect(r1?.rebind).toBeNull();
     expect(r1?.openclawChatId).toBe("thread-1");
 
-    // (2) revoked binding (agent ∉ userAgents) → rebind → stale provider id dropped.
+    // (2) revoked binding (agent ∉ the user's set) → READ-ONLY: no target, no
+    // rebind, agent_restricted. The chat is NOT silently re-routed to a different
+    // agent — so there is nothing to rebind and no provider-id swap.
     const revoked = await makeChat(t, uid, {
       instanceName: "prod",
       agentId: "ghost",
@@ -286,8 +295,9 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       chatId: revoked._id,
       userId: uid as never,
     });
-    expect(r2?.rebind).not.toBeNull();
-    expect(r2?.openclawChatId).toBeNull();
+    expect(r2?.target).toBeNull();
+    expect(r2?.rebind).toBeNull();
+    expect(r2?.failReason).toBe("agent_restricted");
   });
 
   test("bindChatTarget clears the stale provider id when it rebinds to a new agent", async () => {

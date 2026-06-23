@@ -326,15 +326,20 @@ describe("agents union via groups", () => {
       return p!._id;
     });
 
-    // The UNION read (listMyAgents) sees BOTH — proving "shared" really IS
-    // reachable and is being FILTERED, not just absent.
-    const union = await t
+    // The EFFECTIVE read (listMyAgents) follows the CASCADE: the member is IN a
+    // group, so their pool is the group's agents ("shared"); the direct grant
+    // "direct" is OUTSIDE the group, so the in-group restriction drops it — the
+    // member sees only "shared". (A direct grant WITHIN the group would narrow to
+    // it; one outside the group has no effect.)
+    const effective = await t
       .withIdentity({ subject: `${memberId}|session` })
       .query(api.agents.listMyAgents, {});
-    expect(union.map((a) => a.agentId).sort()).toEqual(["direct", "shared"]);
+    expect(effective.map((a) => a.agentId).sort()).toEqual(["shared"]);
 
-    // The EDITOR returns DIRECT ONLY: the inherited "shared" is excluded; the
-    // direct grant keeps via="user" and its isDefault star.
+    // The EDITOR reads RAW direct rows (NOT the effective cascade), so the admin
+    // can still MANAGE the out-of-group direct grant: it shows "direct" with
+    // via="user" and its isDefault star, even though the cascade dropped it from
+    // the member's effective set.
     const editor = await as.query(api.agents.listUserAgents, { profileId });
     expect(editor.length).toBe(1);
     expect(editor[0].agentId).toBe("direct");
@@ -372,7 +377,27 @@ describe("agents union via groups", () => {
     expect(editor).toEqual([]);
   });
 
-  test("PRECEDENCE: direct default A + group default B → effective default = A; B stays via=group, isDefault=false", async () => {
+  test("NO group + NO direct grants → the member sees EVERY discovered agent (the unconstrained default)", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "free");
+    // Three discovered agents across instances; the user has no group, no grant.
+    await seedLiveAgent(t, "prod", "alpha");
+    await seedLiveAgent(t, "prod", "beta");
+    await seedLiveAgent(t, "lab", "gamma");
+    const agents = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.agents.listMyAgents, {});
+    // Unconstrained: all three, each via "all". (Pre-cascade a groupless user with
+    // no direct grants got an EMPTY set — the discriminating new behavior.)
+    expect(agents.map((a) => a.agentId).sort()).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(agents.every((a) => a.via === "all")).toBe(true);
+  });
+
+  test("CASCADE: a direct grant WITHIN the group narrows to it; the group's own default is moot", async () => {
     const t = convexTest(schema, modules);
     const adminId = await seedAdmin(t);
     const memberId = await seedUser(t, "member");
@@ -380,7 +405,24 @@ describe("agents union via groups", () => {
     await seedLiveAgent(t, "prod", "a-direct", { displayName: "A" });
     await seedLiveAgent(t, "prod", "b-group", { displayName: "B" });
 
-    // Direct grant A, marked default.
+    // Group GB shares BOTH agents; B is marked the GROUP default.
+    const groupId = await as.mutation(api.groups.createGroup, { name: "GB" });
+    await as.mutation(api.groups.addMember, { groupId, userId: memberId });
+    for (const agentId of ["a-direct", "b-group"]) {
+      await as.mutation(api.groups.assignAgentToGroup, {
+        groupId,
+        instanceName: "prod",
+        agentId,
+      });
+    }
+    await t.run(async (ctx) => {
+      const ga = (await ctx.db.query("groupAgents").collect()).find(
+        (g) => g.agentId === "b-group",
+      )!;
+      await ctx.db.patch(ga._id, { isDefault: true }); // group default = B
+    });
+
+    // The member DIRECTLY selects A (which IS within the group pool), as default.
     await t.run((ctx) =>
       ctx.db.insert("userAgents", {
         userId: memberId,
@@ -391,34 +433,16 @@ describe("agents union via groups", () => {
         createdAt: 1,
       }),
     );
-    // Group B with its OWN default flag set on the shared agent.
-    const groupId = await as.mutation(api.groups.createGroup, { name: "GB" });
-    await as.mutation(api.groups.addMember, { groupId, userId: memberId });
-    await as.mutation(api.groups.assignAgentToGroup, {
-      groupId,
-      instanceName: "prod",
-      agentId: "b-group",
-    });
-    await t.run(async (ctx) => {
-      const ga = (await ctx.db.query("groupAgents").collect())[0];
-      await ctx.db.patch(ga._id, { isDefault: true }); // group default = B
-    });
-    const key = (await as.query(api.groups.listGroups, {})).find(
-      (g) => g._id === groupId,
-    )!.key;
 
+    // CASCADE: the direct selection RESTRICTS within the group pool, so the member
+    // sees ONLY A. B is dropped — once the user narrows, the group's own default is
+    // moot (the discriminating fact: union semantics would still surface B).
     const agents = await t
       .withIdentity({ subject: `${memberId}|session` })
       .query(api.agents.listMyAgents, {});
-    const a = agents.find((g) => g.agentId === "a-direct")!;
-    const b = agents.find((g) => g.agentId === "b-group")!;
-    // Direct default wins (hasDirectDefault → election skipped entirely).
-    expect(a.isDefault).toBe(true);
-    expect(a.via).toBe("user");
-    // B keeps its group provenance and is NOT the effective default — the
-    // discriminating assertion (a precedence bug would flip B to default).
-    expect(b.isDefault).toBe(false);
-    expect(b.via).toEqual({ group: key });
+    expect(agents.map((g) => g.agentId)).toEqual(["a-direct"]);
+    expect(agents[0].isDefault).toBe(true);
+    expect(agents[0].via).toBe("user");
   });
 
   test("ELECTION Tier 1: NO direct default + a group default B → B is the effective default (group default wins, no direct override)", async () => {

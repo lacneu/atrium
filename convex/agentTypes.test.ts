@@ -179,9 +179,33 @@ describe("documentaryAvailable (L2 capability gate — entitlement)", () => {
     const as = await setup(t, ["documentary"], { deleted: true });
     expect(await as.query(api.agents.documentaryAvailable, {})).toBeNull();
   });
-  test("null when a documentary agent exists but is NOT granted (entitlement)", async () => {
+  test("null when a documentary agent exists but is OUTSIDE the user's set (entitlement)", async () => {
     const t = convexTest(schema, modules);
     const as = await setup(t, ["documentary"], { grant: false });
+    // Under the cascade a user with NO restriction at all sees EVERY agent, so to
+    // test "not entitled" we must give them a restriction that EXCLUDES the
+    // documentary agent: a direct grant on a different (conversational) agent. The
+    // documentary "doc" exists but is not in their effective set -> not available.
+    await t.run(async (ctx) => {
+      const uid = (await ctx.db.query("profiles").collect())[0].userId;
+      await ctx.db.insert("agents", {
+        instanceName: "primary",
+        agentId: "conv",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+        types: ["conversational"],
+      });
+      await ctx.db.insert("userAgents", {
+        userId: uid,
+        instanceName: "primary",
+        agentId: "conv",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+    });
     expect(await as.query(api.agents.documentaryAvailable, {})).toBeNull();
   });
 });

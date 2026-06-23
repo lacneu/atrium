@@ -8,17 +8,18 @@ import { m } from "@/paraglide/messages.js";
 // The backend (introspect.test.ts) already pins that the data carries each `via`
 // shape; these helpers pin that the UI maps each shape to the right label.
 
-/** How a user reaches an agent: a direct grant, or inherited from a group. */
-export type AgentVia = "user" | { group: string };
+/** How a user reaches an agent: a direct grant, inherited from a group, or
+ *  "all" -- the user belongs to no group and so sees every discovered agent. */
+export type AgentVia = "user" | "all" | { group: string };
 
 /** How a user reaches a chart: an org-wide common chart, their own imported
  *  ("owner") chart, or one shared to a group they belong to. */
 export type ChartVia = "common" | "owner" | { group: string };
 
 export function agentViaLabel(via: AgentVia): string {
-  return via === "user"
-    ? m.access_via_direct()
-    : m.access_via_group({ group: via.group });
+  if (via === "user") return m.access_via_direct();
+  if (via === "all") return m.access_via_all();
+  return m.access_via_group({ group: via.group });
 }
 
 export function chartViaLabel(via: ChartVia): string {
