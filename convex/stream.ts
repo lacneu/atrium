@@ -109,6 +109,17 @@ export const startAssistant = internalMutation({
       text: "",
       updatedAt: now,
     });
+    // Create the live-text row WITH the message (one atomic mutation), so the
+    // INVARIANT "streaming message <=> streamingText row exists" holds from t0 —
+    // the watchdog (which ranges streamingText by heartbeat) can see a turn that
+    // gets stuck BEFORE its first delta, and per-delta writes only touch this row,
+    // never the messages doc (so loadChatView stops re-running per delta).
+    await ctx.db.insert("streamingText", {
+      messageId,
+      chatId,
+      text: "",
+      updatedAt: now,
+    });
     await ctx.db.patch(chatId, { updatedAt: now });
     await traceStream(ctx, {
       phase: "start",
@@ -121,39 +132,77 @@ export const startAssistant = internalMutation({
   },
 });
 
-// Append incremental text (message.delta). A2: patch the UN-INDEXED `liveText`,
-// NOT `text` — the per-flush patch is still the reactive primitive (listByChat
-// re-runs, assistant-ui re-renders token-by-token) but it no longer re-indexes
-// the `text` search index every flush. `text` is written once at finalize.
+// The streamingText row for a message (the live-text home). `.first()` (not
+// `.unique()`): the by_message invariant is one row, but the STREAMING write path
+// must never throw on a stray duplicate — it updates the first and keeps flowing.
+async function streamingRow(ctx: MutationCtx, messageId: Id<"messages">) {
+  return await ctx.db
+    .query("streamingText")
+    .withIndex("by_message", (q) => q.eq("messageId", messageId))
+    .first();
+}
+
+// Append incremental text (message.delta). Writes the LIVE-TEXT ROW, not the
+// `messages` doc — so the heavy loadChatView (which reads `messages`) does NOT
+// re-run on every delta; only the cheap getStreamingText query does. `updatedAt`
+// here is the streaming heartbeat. `messages.text` is written once at finalize.
 export const appendDelta = internalMutation({
   args: {
     messageId: v.id("messages"),
     text: v.string(),
   },
   handler: async (ctx, { messageId, text }) => {
-    const message = await ctx.db.get(messageId);
-    if (message === null) {
-      throw new Error("appendDelta: message not found");
+    const now = Date.now();
+    const row = await streamingRow(ctx, messageId);
+    if (row === null) {
+      // Defensive: startAssistant creates the row, but a delta arriving without
+      // one (a race / a message MID-STREAM across the deploy to this version) still
+      // streams — create it, deriving chatId from the message. PRESERVE any legacy
+      // `liveText` prefix already streamed pre-deploy, else this delta would orphan
+      // it and a no-text finalize would lose everything streamed before the deploy.
+      const message = await ctx.db.get(messageId);
+      if (message === null) throw new Error("appendDelta: message not found");
+      // A late delta for an ALREADY-FINISHED turn (finalize/watchdog deleted the row
+      // and set a terminal status) must NOT recreate a row: no finalize will run
+      // again to delete it, so it would leak a phantom live row that getStreamingText
+      // returns forever. Drop it — the turn is over (mirrors addPart's status guard).
+      if (message.status !== "streaming") return;
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId: message.chatId,
+        text: (message.liveText ?? "") + text,
+        updatedAt: now,
+      });
+      return;
     }
-    await ctx.db.patch(messageId, {
-      liveText: (message.liveText ?? "") + text,
-      updatedAt: Date.now(),
-    });
+    await ctx.db.patch(row._id, { text: row.text + text, updatedAt: now });
   },
 });
 
-// Replace the full streaming text (message.snapshot). A2: into `liveText`.
+// Replace the full streaming text (message.snapshot). Same live-text-row target.
 export const setSnapshot = internalMutation({
   args: {
     messageId: v.id("messages"),
     text: v.string(),
   },
   handler: async (ctx, { messageId, text }) => {
-    const message = await ctx.db.get(messageId);
-    if (message === null) {
-      throw new Error("setSnapshot: message not found");
+    const now = Date.now();
+    const row = await streamingRow(ctx, messageId);
+    if (row === null) {
+      const message = await ctx.db.get(messageId);
+      if (message === null) throw new Error("setSnapshot: message not found");
+      // See appendDelta: never recreate a row for a finished turn (no finalize will
+      // delete it again) — a late snapshot for a terminal message is dropped.
+      if (message.status !== "streaming") return;
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId: message.chatId,
+        text,
+        updatedAt: now,
+      });
+      return;
     }
-    await ctx.db.patch(messageId, { liveText: text, updatedAt: Date.now() });
+    await ctx.db.patch(row._id, { text, updatedAt: now });
   },
 });
 
@@ -171,6 +220,25 @@ export const addPart = internalMutation({
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("addPart: message not found");
+    }
+    // Heartbeat: a turn streaming ONLY tool/media/reasoning parts (no text deltas)
+    // must still refresh its live-text row, else the watchdog (which keys off that
+    // row's updatedAt) would reap an actively-working turn as stuck. Bump if present;
+    // create (preserving any legacy liveText) for a pre-deploy/race message with no
+    // row yet. Does NOT touch the message doc — loadChatView re-runs on the part
+    // INSERT below (the parts changed) regardless, so no extra per-text-delta churn.
+    if (message.status === "streaming") {
+      const liveRow = await streamingRow(ctx, messageId);
+      if (liveRow !== null) {
+        await ctx.db.patch(liveRow._id, { updatedAt: Date.now() });
+      } else {
+        await ctx.db.insert("streamingText", {
+          messageId,
+          chatId: message.chatId,
+          text: message.liveText ?? "",
+          updatedAt: Date.now(),
+        });
+      }
     }
     const existing = await ctx.db
       .query("messageParts")
@@ -224,15 +292,22 @@ export const finalize = internalMutation({
     // ONCE here, and CLEAR `liveText` (so listByChat now reads `text`). Prefer the
     // normalizer's final text; fall back to whatever streamed into `liveText` (so
     // a final with no explicit text never wipes a streamed reply).
+    // The live text now lives in the streamingText row; `message.liveText` is only
+    // a fallback for a message that was mid-stream across a deploy to this version.
+    const stRow = await streamingRow(ctx, messageId);
+    const streamedText = stRow?.text ?? message.liveText ?? message.text;
     const finalText =
-      text !== undefined && text !== "" ? text : (message.liveText ?? message.text);
+      text !== undefined && text !== "" ? text : streamedText;
     await ctx.db.patch(messageId, {
       status,
       text: finalText,
-      liveText: undefined, // clear the live field (optional → field removed)
+      liveText: undefined, // clear the legacy live field (optional → field removed)
       ...(error !== undefined ? { error } : {}),
       updatedAt: Date.now(),
     });
+    // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
+    // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
+    if (stRow !== null) await ctx.db.delete(stRow._id);
     // The finalized text length — never the text itself.
     const finalLen = finalText.length;
     await traceStream(ctx, {

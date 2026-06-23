@@ -182,10 +182,15 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           role: message.role,
           status: message.status,
           runId: message.runId,
-          // A2 streaming: while streaming, the live tokens are in the un-indexed
-          // `liveText`; at finalize the authoritative copy is in `text` and
-          // `liveText` is cleared. Surface one `text` the client renders verbatim
-          // (token-by-token live, then final) — no frontend change needed.
+          // The live streaming tokens of a CURRENT-version turn live in the
+          // `streamingText` table (read by the cheap getStreamingText), so this heavy
+          // view does not re-run per delta — the frontend overlays them by id. The
+          // `liveText ?? text` fallback is for a message that was MID-STREAM across
+          // the deploy to the split: its tokens are still on the legacy `liveText`
+          // and it has no streamingText row, so without this it would render empty
+          // until its next delta/finalize. SAFE for the perf goal: the new write path
+          // never writes `liveText` per delta (it writes streamingText), so reading it
+          // here cannot reintroduce a per-delta re-run.
           text:
             message.status === "streaming"
               ? (message.liveText ?? message.text)
@@ -228,6 +233,35 @@ export const listByChat = query({
 });
 
 /**
+ * The LIVE streaming text for a chat's in-flight assistant turn(s) — the CHEAP,
+ * high-frequency companion to `listByChat`. The bridge's per-delta writes land in
+ * `streamingText` (not the `messages` doc), so THIS query re-runs token-by-token
+ * while the heavy `listByChat`/`loadChatView` does NOT (it only re-runs when the
+ * message set / parts change). The frontend overlays each row onto its streaming
+ * message by `messageId`. Owner-scoped (same IDOR guard as listByChat); a stable
+ * empty array for a malformed/deleted/foreign chat. Typically 0-1 rows (one
+ * in-flight turn per chat); bounded by the chat's streaming set regardless.
+ */
+export const getStreamingText = query({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    const { userId } = await requireActive(ctx);
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return [];
+    const chat = await ctx.db.get(id);
+    if (chat === null) return [];
+    if (chat.userId !== userId) {
+      throw new Error("Forbidden: chat not owned by user");
+    }
+    const rows = await ctx.db
+      .query("streamingText")
+      .withIndex("by_chat", (q) => q.eq("chatId", id))
+      .collect();
+    return rows.map((r) => ({ messageId: r.messageId, text: r.text }));
+  },
+});
+
+/**
  * Diagnostic chat-state inspector behind the key-authed GET /api/v1/chat-state.
  *
  * SAME FUNCTIONS AS THE CLIENT: it consumes loadChatView (the EXACT data path
@@ -253,9 +287,24 @@ export const chatStateInternal = internalQuery({
     // SAME data path as the client.
     const view = await loadChatView(ctx, id);
     const now = Date.now();
+    // The streaming HEARTBEAT + live length live on streamingText now (not the
+    // message doc, whose updatedAt is frozen at the turn's start during streaming).
+    // Read them so the stuck-stream + length signals stay accurate.
+    const streamRows = await ctx.db
+      .query("streamingText")
+      .withIndex("by_chat", (q) => q.eq("chatId", id))
+      .collect();
+    const streamByMsg = new Map(streamRows.map((r) => [r.messageId, r]));
     const messages = view.map((mDoc) => {
-      const ageMs = now - mDoc.updatedAt;
-      const hasText = (mDoc.text?.length ?? 0) > 0;
+      const live =
+        mDoc.status === "streaming" ? streamByMsg.get(mDoc._id) : undefined;
+      // For a streaming message use the live-text row's heartbeat/length; else the
+      // message doc (a finalized message, or a streaming one missing its row in the
+      // rare race, falls back to the doc).
+      const effectiveUpdatedAt = live ? live.updatedAt : mDoc.updatedAt;
+      const ageMs = now - effectiveUpdatedAt;
+      const effectiveLen = live ? live.text.length : (mDoc.text?.length ?? 0);
+      const hasText = effectiveLen > 0;
       // Redacted structural parts (allowlist) — presence/type/order, never bytes.
       const parts = mDoc.parts.map((p) => {
         switch (p.kind) {
@@ -288,9 +337,9 @@ export const chatStateInternal = internalQuery({
         role: mDoc.role,
         status: mDoc.status,
         runId: mDoc.runId ?? null,
-        updatedAt: mDoc.updatedAt,
+        updatedAt: effectiveUpdatedAt,
         ageSeconds: Math.round(ageMs / 1000),
-        textLenBucket: textLenBucket(mDoc.text?.length ?? 0),
+        textLenBucket: textLenBucket(effectiveLen),
         // Prefer the STORED stable code (set by failDispatch) so a dispatch failure
         // is classified precisely; fall back to normalizing the error text (the
         // path for gateway/stream errors that only carry a text reason).
@@ -602,6 +651,13 @@ export const deleteMessage = mutation({
         .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
         .collect();
       for (const d of docs) await ctx.db.delete(d._id);
+      // Live-text row (present iff this message is mid-stream — a later streaming
+      // turn truncated by deleting an earlier message): drop it with the message.
+      const live = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .collect();
+      for (const s of live) await ctx.db.delete(s._id);
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }

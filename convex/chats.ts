@@ -292,6 +292,12 @@ export async function cascadeDeleteChat(
       .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
       .collect();
     for (const d of docs) await ctx.db.delete(d._id);
+    // Live-text row (present iff the message is mid-stream) — drop it with the message.
+    const live = await ctx.db
+      .query("streamingText")
+      .withIndex("by_message", (q) => q.eq("messageId", m._id))
+      .collect();
+    for (const s of live) await ctx.db.delete(s._id);
     await ctx.db.delete(m._id);
   }
   // Purge the chat's NON-TERMINAL outbox — `pending` (in-flight) AND `queued`

@@ -190,3 +190,87 @@ describe("listChats providerKind (sidebar bridge badge)", () => {
     expect(rows[0].providerKind).toBe("openclaw"); // the fallback bridge, NOT dead Hermes
   });
 });
+
+// The live-text split (0.9.0): a streaming message's live text lives in
+// `streamingText` (read by the cheap getStreamingText), NOT in the heavy
+// listByChat/loadChatView view — so the latter no longer re-runs per delta.
+describe("listByChat / getStreamingText live-text split", () => {
+  test("listByChat carries message.text (empty while streaming); getStreamingText carries the live text", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      });
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "live tokens…",
+        updatedAt: 2,
+      });
+      return { userId, chatId, messageId };
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+
+    // The heavy view does NOT carry the live text -> reading it is not invalidated
+    // by per-delta writes (which only touch streamingText).
+    const view = await as.query(api.messages.listByChat, { chatId });
+    const msg = view.find((m) => m._id === messageId);
+    expect(msg?.status).toBe("streaming");
+    expect(msg?.text).toBe(""); // NOT "live tokens…"
+
+    // The cheap query carries the live text, keyed by messageId for the stitch.
+    const live = await as.query(api.messages.getStreamingText, { chatId });
+    expect(live).toEqual([{ messageId, text: "live tokens…" }]);
+  });
+
+  test("getStreamingText is owner-scoped (foreign chat throws) and empty for a malformed id", async () => {
+    const t = convexTest(schema, modules);
+    const { ownerId, chatId, otherId } = await t.run(async (ctx) => {
+      const ownerId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: ownerId,
+        role: "user" as const,
+        canonical: "owner",
+      });
+      const otherId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: otherId,
+        role: "user" as const,
+        canonical: "other",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId: ownerId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      return { ownerId, chatId, otherId };
+    });
+    // A foreign user is rejected (IDOR guard, same as listByChat).
+    await expect(
+      t
+        .withIdentity({ subject: `${otherId}|session` })
+        .query(api.messages.getStreamingText, { chatId }),
+    ).rejects.toThrow(/Forbidden/);
+    // A malformed id is a clean empty array, never a throw.
+    const empty = await t
+      .withIdentity({ subject: `${ownerId}|session` })
+      .query(api.messages.getStreamingText, { chatId: "not-an-id" });
+    expect(empty).toEqual([]);
+  });
+});

@@ -831,12 +831,24 @@ function ExportMenu({
   const convex = useConvex();
 
   async function run(format: "md" | "json"): Promise<void> {
-    const rows = (await convex.query(api.messages.listByChat, {
-      chatId: chatId as Id<"chats">,
-    })) as ConvexMessageView[];
+    // listByChat now carries only the persisted text; a turn still streaming has
+    // its live tokens in the companion getStreamingText. Overlay it so exporting
+    // MID-STREAM captures exactly what the user sees in the thread (not an empty body).
+    const [rows, liveRows] = await Promise.all([
+      convex.query(api.messages.listByChat, {
+        chatId: chatId as Id<"chats">,
+      }) as Promise<ConvexMessageView[]>,
+      convex.query(api.messages.getStreamingText, {
+        chatId: chatId as Id<"chats">,
+      }) as Promise<{ messageId: string; text: string }[]>,
+    ]);
+    const liveByMsg = new Map(liveRows.map((r) => [r.messageId, r.text]));
     const messages: ExportMessage[] = rows.map((m) => ({
       role: m.role,
-      text: m.text,
+      text:
+        m.status === "streaming"
+          ? (liveByMsg.get(m._id as string) ?? m.text)
+          : m.text,
       createdAt: m.updatedAt ?? m._creationTime,
       parts: m.parts.map((p) => ({
         kind: p.kind,

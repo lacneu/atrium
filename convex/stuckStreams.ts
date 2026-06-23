@@ -70,7 +70,10 @@ export const reconcileChatStuckStreams = internalMutation({
     if (id === null) return { ok: false as const, error: "bad chatId", reconciled: 0 };
     const now = Date.now();
     const cutoff = now - RECONCILE_MIN_AGE_MS;
-    // Most-recent messages only — a stuck stream is the in-flight (last) turn.
+    // Most-recent messages only — a stuck stream is the in-flight (last) turn. The
+    // staleness is decided by heartbeat = max(live-text row, message), so a legacy
+    // pre-split stream (no row) is still covered and an actively-streaming one (recent
+    // row) is left alone.
     const recent = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", id))
@@ -78,12 +81,23 @@ export const reconcileChatStuckStreams = internalMutation({
       .take(50);
     let reconciled = 0;
     for (const msg of recent) {
-      if (msg.status !== "streaming" || msg.updatedAt >= cutoff) continue;
-      // Preserve text/parts; flip ONLY the lifecycle so isRunning releases.
+      if (msg.status !== "streaming") continue;
+      const row = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", msg._id))
+        .first();
+      const heartbeat = Math.max(row?.updatedAt ?? 0, msg.updatedAt);
+      if (heartbeat >= cutoff) continue; // recent activity = actively streaming
+      // Preserve the partial text (row for current, legacy liveText for pre-split),
+      // flip the lifecycle so isRunning releases, and delete the heartbeat row in the
+      // SAME mutation (atomic → invariant preserved).
+      const preserved = (row?.text ?? "") || (msg.liveText ?? "");
       await ctx.db.patch(msg._id, {
         status: "error",
         error: STUCK_STREAM_ERROR_CODE,
+        ...(preserved ? { text: preserved } : {}),
       });
+      if (row) await ctx.db.delete(row._id);
       await writeTraceEvent(ctx, {
         kind: "assistant.reconcile",
         direction: "internal",
@@ -95,8 +109,8 @@ export const reconcileChatStuckStreams = internalMutation({
         meta: JSON.stringify({
           reason: "deliberate_reconcile",
           messageId: msg._id,
-          ageSeconds: Math.round((now - msg.updatedAt) / 1000),
-          hadText: (msg.text?.length ?? 0) > 0,
+          ageSeconds: Math.round((now - heartbeat) / 1000),
+          hadText: preserved.length > 0,
         }),
       });
       reconciled++;
@@ -127,26 +141,44 @@ export const reconcileStuckStreams = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
     const cutoff = now - STALE_STREAM_MS;
-    // Range EXACTLY the streaming set ordered by updatedAt, stopping at the
-    // cutoff — never a full-table scan (bounded by the index + .take).
-    const stale = await ctx.db
-      .query("messages")
-      .withIndex("by_status_updated", (q) =>
-        q.eq("status", "streaming").lt("updatedAt", cutoff),
-      )
+    // The streaming HEARTBEAT lives on the streamingText row's `updatedAt` (the bridge
+    // bumps it on every delta / part). Range THOSE rows: a row untouched for >cutoff
+    // means its turn stopped being fed. Crucially, an actively-streaming turn has a
+    // FRESH row → it falls outside this range → it is never read, so a long-but-live
+    // turn cannot occupy a batch slot (no head-of-line blocking). Every row in range
+    // is actionable. Index + .take → never a full scan.
+    const staleRows = await ctx.db
+      .query("streamingText")
+      .withIndex("by_updated", (q) => q.lt("updatedAt", cutoff))
       .take(BATCH);
 
     // Chats whose in-flight turn we ended this pass → drain their queues AFTER the
     // loop (a chat with >1 stale stream must be fully flipped before isChatBusy is
     // re-evaluated, else the drain would see a still-streaming sibling and skip).
     const touchedChats = new Set<Id<"chats">>();
-    for (const msg of stale) {
-      // Preserve text/parts; flip ONLY the lifecycle so isRunning releases.
+    let reaped = 0;
+    for (const row of staleRows) {
+      const msg = await ctx.db.get(row.messageId);
+      // Orphan row whose message is already terminal (a phantom from a late delta
+      // racing finalize, or a pre-fix leak): no finalize will ever delete it. Clean it
+      // up here so getStreamingText stops returning it forever; not a reap (there is
+      // nothing to recover — the turn already ended cleanly).
+      if (msg === null || msg.status !== "streaming") {
+        await ctx.db.delete(row._id);
+        continue;
+      }
+      // Flip the lifecycle so isRunning releases, preserve the partial streamed text
+      // (row first, then a legacy pre-split `liveText`), and delete the heartbeat row
+      // in the SAME mutation (atomic → the row-iff-streaming invariant holds).
+      const preserved = row.text || (msg.liveText ?? "");
       await ctx.db.patch(msg._id, {
         status: "error",
         error: STUCK_STREAM_ERROR_CODE,
+        ...(preserved ? { text: preserved } : {}),
       });
+      await ctx.db.delete(row._id);
       touchedChats.add(msg.chatId);
+      reaped++;
       await writeTraceEvent(ctx, {
         kind: "assistant.reconcile",
         direction: "internal",
@@ -158,8 +190,8 @@ export const reconcileStuckStreams = internalMutation({
         meta: JSON.stringify({
           reason: "missing_finalize",
           messageId: msg._id,
-          ageSeconds: Math.round((now - msg.updatedAt) / 1000),
-          hadText: (msg.text?.length ?? 0) > 0,
+          ageSeconds: Math.round((now - row.updatedAt) / 1000),
+          hadText: preserved.length > 0,
         }),
       });
       // If this stale stream is a documentary FETCH turn, release its stuck lock too.
@@ -171,15 +203,16 @@ export const reconcileStuckStreams = internalMutation({
       await drainNextQueued(ctx, chatId);
     }
 
-    // Drain a backlog without exceeding mutation limits (mirrors purgeOldTraces):
-    // a full batch means more stale rows may remain.
-    if (stale.length === BATCH) {
+    // Reschedule when we PROCESSED a full batch — every row in range is actionable
+    // (reaped or cleaned), so a full batch means more stale rows likely remain; the
+    // ones we handled are deleted, so the next read can't loop on them (converges).
+    if (staleRows.length === BATCH) {
       await ctx.scheduler.runAfter(
         0,
         internal.stuckStreams.reconcileStuckStreams,
         {},
       );
     }
-    return { reconciled: stale.length };
+    return { reconciled: reaped };
   },
 });

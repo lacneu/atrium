@@ -833,6 +833,31 @@ export default defineSchema({
     part: messagePart,
   }).index("by_message", ["messageId"]),
 
+  // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
+  // doc on purpose. The per-delta append/snapshot writes land here; the heavy
+  // `loadChatView` reads the `messages` docs (NOT this table), so it no longer
+  // re-runs + re-ships the whole window on every streaming delta — the dominant
+  // backend cost when many users stream concurrently (O(streamers × window ×
+  // deltas)). A cheap `getStreamingText` query reads this per delta instead.
+  //
+  // INVARIANT (transactional): a row exists for a message IFF that message is
+  // `status:"streaming"`. startAssistant creates it (empty) WITH the message;
+  // finalize deletes it WITH the lifecycle flip; the watchdog reap deletes it WITH
+  // the error flip — all in one atomic mutation each, so the two tables never
+  // desync. `updatedAt` is the streaming HEARTBEAT (the watchdog + chat-state read
+  // it here, since the message's own updatedAt no longer moves during a turn).
+  streamingText: defineTable({
+    messageId: v.id("messages"),
+    chatId: v.id("chats"),
+    text: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_message", ["messageId"])
+    .index("by_chat", ["chatId"])
+    // The stuck-stream watchdog ranges by heartbeat (updatedAt < cutoff) — every
+    // row here is by definition a streaming message, so no status column is needed.
+    .index("by_updated", ["updatedAt"]),
+
   // Owner-scoped DENORMALIZATION of every file/media `messagePart`, so a user's
   // files are listable (Settings → Fichiers) WITHOUT iterating chats → messages →
   // parts (`messageParts` is only indexed `by_message`, and `part.kind` can't be

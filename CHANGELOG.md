@@ -8,6 +8,36 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.9.0] — Streaming a reply no longer re-renders the whole conversation per token
+
+Performance release. No breaking change. Adds a `streamingText` table — a plain
+`npx convex deploy` applies it; there is no manual migration, and replies already
+streaming across the deploy are handled gracefully (their text is preserved).
+
+- **The live, token-by-token text of a reply now lives in its own table instead of on
+  the message.** Previously every streamed token rewrote the assistant message, and the
+  one heavy query that renders the open conversation (the most-recent-messages window)
+  re-ran on each token — re-reading the whole window AND re-resolving a fresh signed
+  download URL for every attachment in it, on every token. On a busy reply with files in
+  view that was dozens to hundreds of full re-renders per turn. Now the streaming text is
+  written to a dedicated row that the heavy query does not read, so it re-runs only when
+  the message set actually changes (turn start and turn end); a tiny companion query
+  carries just the live text and is the only thing that updates per token. The text you
+  see is byte-identical and arrives just as live — the backend simply does far less work
+  per token, which is most noticeable as smoother streaming and lower load on a
+  resource-constrained self-hosted backend. This completes the streaming-load work begun
+  in 0.8.1/0.8.2 (which cut what was *written* per frame); 0.9.0 cuts what was *re-read
+  and re-rendered* per frame.
+  - *Scope:* this targets latency *while a reply streams* in an open chat. It does not
+    change the chat-list/sidebar query, so it is not a fix for sidebar load time.
+  - *Deploy:* `npx convex deploy` + rebuild the frontend image. The bridge is unchanged.
+    Let any in-flight replies finish before upgrading: a reply interrupted at the exact
+    moment of the upgrade has no live-text row for the watchdog to find, so it may stay
+    "thinking" and need a manual delete (any chat the per-chat reconcile is run on still
+    recovers normally). New replies after the upgrade are unaffected.
+  - The stuck-stream watchdog continues to recover an abandoned reply (its "still alive"
+    heartbeat now follows the live-text row), so a dropped stream still self-heals.
+
 ## [0.8.2] — Lighter observability writes under load
 
 Corrective release. No breaking changes, no schema migration.

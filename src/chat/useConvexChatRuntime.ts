@@ -110,6 +110,17 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
   ) as ConvexMessageView[] | undefined;
 
+  // The CHEAP live-text companion. The bridge's per-delta writes land in the
+  // streamingText table, read here, so the heavy listByChat above does NOT re-run
+  // on every token (it only re-runs when the message set / parts change). We
+  // overlay each row's text onto its streaming message below. A finalize patches
+  // the message AND deletes the row in ONE mutation, so Convex delivers both query
+  // updates from a single consistent snapshot — the live→final handoff never flickers.
+  const streamingRows = useQuery(
+    api.messages.getStreamingText,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  ) as { messageId: Id<"messages">; text: string }[] | undefined;
+
   const attachmentAdapter = useMemo(
     () =>
       createConvexAttachmentAdapter(
@@ -120,7 +131,25 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     [convex, toast, chatId],
   );
 
-  const list = useMemo(() => messages ?? [], [messages]);
+  // Overlay the live streaming text onto its message (keyed by messageId — robust
+  // to >1 in-flight stream, e.g. a mid-turn queue). Only while the message is
+  // STILL streaming: once listByChat reports it `complete`, we show the
+  // authoritative message.text and ignore any (possibly stale) live row — the
+  // status-keyed handoff that keeps the transition seamless.
+  const list = useMemo(() => {
+    const base = messages ?? [];
+    if (!streamingRows || streamingRows.length === 0) return base;
+    // Key by the raw string id: getStreamingText returns the branded Id<"messages">
+    // while ConvexMessageView carries our loose ConvexId — same value at runtime.
+    const liveByMsg = new Map<string, string>(
+      streamingRows.map((r) => [r.messageId as string, r.text]),
+    );
+    return base.map((msg) =>
+      msg.status === "streaming" && liveByMsg.has(msg._id as string)
+        ? { ...msg, text: liveByMsg.get(msg._id as string)! }
+        : msg,
+    );
+  }, [messages, streamingRows]);
   const lastRole = list.length > 0 ? list[list.length - 1].role : null;
   const anyStreaming = list.some((m) => m.status === "streaming");
 

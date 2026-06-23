@@ -174,9 +174,16 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     await post(t, { op: "appendDelta", messageId, text: "lo" });
     await post(t, { op: "setSnapshot", messageId, text: "Hello world" });
 
-    // The stream ops APPLIED (liveText reflects the deltas + the snapshot)...
+    // The stream ops APPLIED — the live text lives in the streamingText row now
+    // (NOT message.liveText / the messages doc, so loadChatView isn't churned)...
     const live = await t.run(
-      async (ctx) => (await ctx.db.get(messageId))?.liveText,
+      async (ctx) =>
+        (
+          await ctx.db
+            .query("streamingText")
+            .withIndex("by_message", (q) => q.eq("messageId", messageId))
+            .first()
+        )?.text,
     );
     expect(live).toBe("Hello world");
 
@@ -187,6 +194,143 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     const ops = traces.map((tr) => JSON.parse(tr.meta ?? "{}").op);
     expect(ops).not.toContain("appendDelta");
     expect(ops).not.toContain("setSnapshot");
+  });
+
+  test("streaming lifecycle: startAssistant creates the live-text row; deltas update it WITHOUT churning the message doc; finalize sets message.text + deletes the row", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      return await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+    });
+    const startRes = await post(t, { op: "startAssistant", chatId, runId: "r1" });
+    const { messageId } = (await startRes.json()) as {
+      messageId: Id<"messages">;
+    };
+    const rowOf = () =>
+      t.run((ctx) =>
+        ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .first(),
+      );
+    const msg = () => t.run((ctx) => ctx.db.get(messageId));
+
+    // startAssistant created the row (empty); the messages doc text stays "" — the
+    // live text never lands on the doc loadChatView reads (the whole point).
+    expect((await rowOf())?.text).toBe("");
+    expect((await msg())?.text).toBe("");
+
+    await post(t, { op: "appendDelta", messageId, text: "Hel" });
+    await post(t, { op: "setSnapshot", messageId, text: "Hello there" });
+    expect((await rowOf())?.text).toBe("Hello there");
+    expect((await msg())?.text).toBe(""); // messages doc UNCHANGED during streaming
+
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "complete",
+      text: "Hello there!",
+    });
+    const final = await msg();
+    expect(final?.status).toBe("complete");
+    expect(final?.text).toBe("Hello there!");
+    expect(await rowOf()).toBeNull(); // INVARIANT: row deleted with the flip
+  });
+
+  // THE perf invariant (subscription split): loadChatView (read by the heavy,
+  // window-wide `listByChat`) reads `messages` + `messageParts`, NEVER
+  // `streamingText`. So a turn's text deltas — the dominant high-frequency churn —
+  // must leave loadChatView's ENTIRE read-set byte-identical, which is what makes
+  // `listByChat` provably NOT re-run per token. Asserting the whole message doc
+  // (not just .text) + messageParts are deep-equal across K deltas locks that:
+  // if NOTHING loadChatView reads changes, the reactive query cannot fire.
+  test("text deltas leave loadChatView's read-set (messages doc + messageParts) byte-identical — listByChat is delta-stable", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      return await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+    });
+    const { messageId } = (await (
+      await post(t, { op: "startAssistant", chatId, runId: "r1" })
+    ).json()) as { messageId: Id<"messages"> };
+
+    const readSet = () =>
+      t.run(async (ctx) => ({
+        msg: await ctx.db.get(messageId),
+        parts: await ctx.db
+          .query("messageParts")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .collect(),
+      }));
+
+    // Snapshot loadChatView's read-set right after the message exists, then drive
+    // many text deltas (mix of appendDelta + setSnapshot, the two text ops).
+    const before = await readSet();
+    for (let i = 0; i < 5; i++) {
+      await post(t, { op: "appendDelta", messageId, text: `tok${i} ` });
+    }
+    await post(t, { op: "setSnapshot", messageId, text: "tok0 tok1 tok2 tok3 tok4 final" });
+    const after = await readSet();
+
+    // The ENTIRE message doc is unchanged (updatedAt included — no doc patch at all)
+    // and no parts were inserted: loadChatView's read-set never moved.
+    expect(after.msg).toEqual(before.msg);
+    expect(after.parts).toEqual(before.parts);
+
+    // The text DID accumulate — it just lives on the streamingText row (read only by
+    // the cheap getStreamingText), proving the data was relocated, not lost.
+    const liveRow = await t.run((ctx) =>
+      ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .first(),
+    );
+    expect(liveRow?.text).toBe("tok0 tok1 tok2 tok3 tok4 final");
+  });
+
+  test("finalize with EMPTY final text recovers the streamingText row's accumulated text", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      return await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+    });
+    const { messageId } = (await (
+      await post(t, { op: "startAssistant", chatId })
+    ).json()) as { messageId: Id<"messages"> };
+    await post(t, { op: "appendDelta", messageId, text: "streamed " });
+    await post(t, { op: "appendDelta", messageId, text: "answer" });
+    // Empty final text (e.g. an error/aborted turn that produced no final event):
+    // finalize must fall back to the accumulated live text, not wipe it.
+    await post(t, { op: "finalize", messageId, status: "complete", text: "" });
+    const m = await t.run((ctx) => ctx.db.get(messageId));
+    expect(m?.text).toBe("streamed answer"); // recovered from the row, not lost
   });
 });
 
@@ -279,5 +423,89 @@ describe("bridge_ingest httpAction: mediaTrace diagnostic + malformed input", ()
     const res = await post(t, { op: "noSuchOp" });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false, error: "unknown op" });
+  });
+});
+
+describe("streamingText split — migration & heartbeat edge cases", () => {
+  // P2a: a message mid-stream across the deploy carries legacy `liveText` but no
+  // streamingText row; the first post-deploy appendDelta must KEEP that prefix.
+  test("appendDelta on a legacy-liveText message (no row) preserves the prefix", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await t.run((ctx) => ctx.db.patch(messageId, { liveText: "before deploy " }));
+
+    await post(t, { op: "appendDelta", messageId, text: "after" });
+
+    const row = await t.run(async (ctx) =>
+      (
+        await ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .first()
+      )?.text,
+    );
+    expect(row).toBe("before deploy after"); // prefix preserved, not orphaned
+  });
+
+  // P2b: a turn streaming ONLY parts (no text deltas) must keep its heartbeat fresh
+  // via addPart, else the watchdog (which keys off streamingText.updatedAt) reaps it.
+  test("addPart refreshes the streaming heartbeat (a parts-only turn isn't seen as stuck)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    // A row whose heartbeat is STALE (as if the last text delta was long ago).
+    await t.run((ctx) =>
+      ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial",
+        updatedAt: 1,
+      }),
+    );
+
+    await post(t, {
+      op: "addPart",
+      messageId,
+      part: { kind: "tool", name: "exec", phase: "completed" },
+    });
+
+    const after = await t.run(async (ctx) =>
+      (
+        await ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .first()
+      )?.updatedAt,
+    );
+    expect(after).toBeGreaterThan(1); // heartbeat bumped by the (text-less) part
+  });
+
+  // A late delta racing finalize: finalize already deleted the row + set a terminal
+  // status, then a retried appendDelta/setSnapshot arrives. It must NOT recreate a
+  // row — no finalize will run again to delete it, so it would leak a phantom live row
+  // that getStreamingText returns forever. The op is dropped (turn already ended).
+  test("a late appendDelta after finalize does NOT recreate a phantom streamingText row", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    // Simulate the finished turn: terminal status, no streamingText row.
+    await t.run((ctx) =>
+      ctx.db.patch(messageId, { status: "complete", text: "final answer" }),
+    );
+
+    // A retried frame arrives after the turn ended — accepted (200) but a no-op.
+    const res = await post(t, { op: "appendDelta", messageId, text: "late tokens" });
+    expect(res.status).toBe(200);
+    await post(t, { op: "setSnapshot", messageId, text: "late snapshot" });
+
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .first();
+      expect(row).toBeNull(); // no phantom row created for a finished turn
+      // The finalized message is untouched (the late frames never reach the doc).
+      const msg = await ctx.db.get(messageId);
+      expect(msg?.status).toBe("complete");
+      expect(msg?.text).toBe("final answer");
+    });
   });
 });
