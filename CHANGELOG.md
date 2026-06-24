@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.2] — Each LightRAG source document shows the content it contributed
+
+Contract clarification. No breaking changes, no schema migration, no UI change.
+
+- **The Sources panel now shows the retrieved content (and score) of each source
+  document a synthesizing retriever returned — not just an opaque id.** The provenance
+  contract now specifies that, for a synthesizing retriever (LightRAG), a `documents`
+  item's `text` carries the **per-document retrieved source content** (and a `score`
+  when the retriever provides one), so a user sees the material the RAG actually pulled
+  for each source — exactly what was missing when a document appeared as only a
+  `gdrive/<id>`. This pairs with **openclaw-knowledge 3.2.11**, which emits it; Atrium's
+  Sources card already rendered an item's excerpt + relevance bar, so this is a contract
+  + published-schema (`GET /api/v1/schemas/provenance.v1`) clarification, not a UI
+  change. The verbatim, truncated injected context stays a separate **Context** item —
+  the two are complementary, and because the per-document content is a distinct field it
+  is not subject to the context-blob truncation. *Deploy: `npx convex deploy` (refreshes
+  the served schema); no frontend or bridge change.*
+
 ## [0.10.1] — Diagnose a Sources panel from the observability API
 
 Maintenance release — observability only. No breaking changes, no schema migration, no

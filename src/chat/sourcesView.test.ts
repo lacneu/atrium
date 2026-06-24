@@ -250,6 +250,25 @@ describe("LightRAG reference items (3.2.8: file_name + type, no text/score)", ()
     expect(entry.item.score).toBeUndefined(); // → no relevance bar
     expect(isFindableDocument(entry)).toBe(true); // → reserved "origine" slot (L2 target)
   });
+
+  test("3.2.11: a reference WITH retrieved content + score renders excerpt + relevance bar", () => {
+    // The plugin now surfaces the per-document retrieved content as text + a score, so
+    // the user sees the source material the RAG pulled (not just the id). The card must
+    // render the excerpt and the relevance bar — and the item stays a findable document.
+    const ref = documentsPart([
+      {
+        file_name: "rapport-q3.pdf",
+        type: "hybrid",
+        text: "Le chiffre d'affaires du T3 a progressé de 12 %.",
+        score: 0.87,
+      },
+    ]);
+    const [entry] = sourceEntries([ref], "documents");
+    expect(entry.item.text).toBe("Le chiffre d'affaires du T3 a progressé de 12 %.");
+    expect(entry.item.score).toBe(0.87);
+    expect(isFindableDocument(entry)).toBe(true);
+    expect(isContextExcerpt(entry)).toBe(false); // a real findable document, not the blob
+  });
 });
 
 describe("anonymized production turn (LightRAG hybrid: bare docs + context + memory)", () => {

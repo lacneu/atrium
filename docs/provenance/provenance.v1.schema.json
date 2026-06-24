@@ -74,7 +74,7 @@
         "collection": { "type": "string", "maxLength": 300 },
         "date": { "type": "string", "maxLength": 300 },
         "score": { "type": "number" },
-        "text": { "type": "string", "maxLength": 2000, "description": "The injected excerpt (level \"full\" only). NEVER the retrieved-but-not-injected text of a non-injected source." }
+        "text": { "type": "string", "maxLength": 2000, "description": "The source excerpt (level \"full\" only). For a verbatim-injected source (pgvector) it is the injected chunk; for a synthesizing retriever (LightRAG) a document item's text is the per-document RETRIEVED source content the user should see (complementary to the context:true blob). Never fabricated." }
       }
     }
   }

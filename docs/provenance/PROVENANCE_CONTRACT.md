@@ -66,9 +66,13 @@ is used by BOTH the UI and the server attach gate so they never disagree:
 ### Item fields
 
 `id`, `file_name`, `context`, `type` (free-form / retrieval mode — NOT a discriminator),
-`collection`, `date`, `score`, `text`. `text` is the **injected** excerpt and only at
-the operator's `full` level; never copy a retrieved-but-not-injected source's text into
-it. See the schema for bounds (24 items, 2000-char text, 300-char strings).
+`collection`, `date`, `score`, `text`. `text` is the source excerpt, only at the
+operator's `full` level. What it holds depends on the retriever: for a **verbatim-
+injected** source (pgvector) it is the injected chunk; for a **synthesizing** retriever
+(LightRAG — see below) a document item's `text` is the **retrieved source content per
+document** (the material the graph synthesized from), shown so the user sees what the RAG
+pulled for each source. Never fabricate it. See the schema for bounds (24 items,
+2000-char text, 300-char strings).
 
 ## Levels (operator opt-in)
 
@@ -83,3 +87,12 @@ documents from the retriever's attribution **even if the injected context was tr
 — the attribution is "sources that fed the graph", not "sources whose text survived
 injection". (This is the fix for the prod bug where a 92%-truncated context dropped every
 real source and left only the opaque blob.)
+
+Each source document item SHOULD also carry, at `full`, the **retrieved content** the
+retriever pulled for that document (in its `text`) and a `score` when the retriever
+provides one — so the user sees the actual source material per document, not just an
+opaque id. This per-document content is deliberately distinct from, and complementary
+to, the `context: true` blob: the blob is the verbatim (often truncated) injection the
+LLM saw; the per-document `text` is the richer retrieved source — and because it is a
+separate field, it is **not** subject to the context-blob truncation, so the user sees
+each document's relevant content even when the injected blob was heavily truncated.
