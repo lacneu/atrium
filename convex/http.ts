@@ -20,6 +20,7 @@ import { enrichTraceByCorrelation } from "./integrations/enrich";
 import { langfuseConfig, opikConfig } from "./integrations/config";
 import { assessChat } from "./lib/diagnose";
 import { listSchemas, getSchema } from "./lib/schemaRegistry";
+import { DEPLOYED_VERSION } from "./version";
 
 const http = httpRouter();
 
@@ -122,6 +123,18 @@ http.route({
   handler: httpAction(async () => {
     return apiJson({ ok: true, ts: Date.now() });
   }),
+});
+
+// Deployed-functions VERSION. PUBLIC (no auth, no PHI) — self-reports the version of
+// the Convex functions bundled by the last `npx convex deploy`. The bridge/frontend
+// ship their version in their Docker image, but the Convex functions are pushed by a
+// SEPARATE manual step; this route makes that otherwise-invisible version checkable
+// (`curl <convex-site>/api/v1/version`), so a forgotten `convex deploy` surfaces as a
+// mismatch with the image versions instead of a silent failure.
+http.route({
+  path: "/api/v1/version",
+  method: "GET",
+  handler: httpAction(async () => publicJson({ ok: true, version: DEPLOYED_VERSION })),
 });
 
 // Published CONTRACT schemas (provenance/v1 + future). PUBLIC (no auth): these are the

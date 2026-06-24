@@ -60,9 +60,15 @@ describe("provenancePartStructure (SOC2 diagnostic shape)", () => {
     // relevance bar / excerpt for them, and an operator can see exactly that here.
     const docs = s.items.filter((i) => i.kind === "document");
     expect(docs).toHaveLength(4);
-    expect(docs.every((i) => i.hasFileName && !i.hasScore)).toBe(true);
+    expect(
+      docs.every(
+        (i) => i.present.includes("file_name") && !i.present.includes("score"),
+      ),
+    ).toBe(true);
     const ctx = s.items.filter((i) => i.kind === "context");
-    expect(ctx).toEqual([{ kind: "context", hasFileName: false, hasScore: false }]);
+    expect(ctx).toHaveLength(1);
+    expect(ctx[0]!.present).not.toContain("file_name");
+    expect(ctx[0]!.present).not.toContain("score");
   });
 
   test("a memory report: items classify as memory; route unknown folds to 'other'", () => {
@@ -71,8 +77,18 @@ describe("provenancePartStructure (SOC2 diagnostic shape)", () => {
     expect(s.source).toBe("hindsight");
     expect(s.retrievalRoute).toBe("other"); // "hindsight" is not a known RETRIEVAL route
     expect(s.items).toEqual([
-      { kind: "memory", hasFileName: false, hasScore: true },
-      { kind: "memory", hasFileName: false, hasScore: true },
+      {
+        kind: "memory",
+        hasFileName: false,
+        hasScore: true,
+        present: ["id", "type", "score"],
+      },
+      {
+        kind: "memory",
+        hasFileName: false,
+        hasScore: true,
+        present: ["id", "type", "score"],
+      },
     ]);
   });
 
@@ -92,20 +108,29 @@ describe("provenancePartStructure (SOC2 diagnostic shape)", () => {
       group: "documents",
       retrieval: { route: "lightrag" },
       items: [
-        { file_name: "gdrive/SECRET_FILE_ID_42", score: 0.9123, type: "hybrid" },
+        {
+          file_name: "gdrive/SECRET_FILE_ID_42",
+          title: "SECRET_DOC_NAME",
+          score: 0.9123,
+          type: "hybrid",
+        },
         { id: "lightrag-context", context: true, text: "SECRET_INJECTED_TEXT" },
       ],
     });
     const serialized = JSON.stringify(planted);
     expect(serialized).not.toContain("SECRET_FILE_ID_42");
+    expect(serialized).not.toContain("SECRET_DOC_NAME"); // title VALUE never reflected
     expect(serialized).not.toContain("SECRET_INJECTED_TEXT");
     expect(serialized).not.toContain("0.9123");
     expect(serialized).not.toContain("hybrid"); // raw emitter `type` is never reflected
-    // But the structural signal IS present.
+    // But the structural signal IS present — `present` lists the field NAMES (never the
+    // values), incl. "title" (THE diagnostic for "the readable name reached Convex").
     expect(planted.items[0]).toEqual({
       kind: "document",
       hasFileName: true,
       hasScore: true,
+      present: ["type", "score", "file_name", "title"],
     });
+    expect(planted.items[0]!.present).toContain("title");
   });
 });

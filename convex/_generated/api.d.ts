@@ -87,6 +87,7 @@ import type * as send from "../send.js";
 import type * as stream from "../stream.js";
 import type * as stuckStreams from "../stuckStreams.js";
 import type * as uploads from "../uploads.js";
+import type * as version from "../version.js";
 
 import type {
   ApiFromModules,
@@ -174,6 +175,7 @@ declare const fullApi: ApiFromModules<{
   stream: typeof stream;
   stuckStreams: typeof stuckStreams;
   uploads: typeof uploads;
+  version: typeof version;
 }>;
 
 /**

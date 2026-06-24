@@ -11,6 +11,7 @@
 // SURGICALLY — it does not rewrite the dependency tree, so it is safe across
 // platforms (no optional-dep / WASM-binding churn, unlike `npm install`).
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -36,4 +37,21 @@ for (const dir of targets) {
     { cwd, stdio: "inherit" },
   );
 }
+
+// The Convex functions carry no package.json version of their own (they are pushed by
+// `npx convex deploy`, not built into an image), so stamp the lockstep version into the
+// DEPLOYED_VERSION constant that /api/v1/version serves. Keeps the deployed-functions
+// version in lockstep with the bridge/frontend image versions.
+const convexVersionPath = join(repoRoot, "convex", "version.ts");
+const convexVersionSrc = readFileSync(convexVersionPath, "utf8");
+const stampedConvexVersion = convexVersionSrc.replace(
+  /export const DEPLOYED_VERSION = "[^"]*";/,
+  `export const DEPLOYED_VERSION = "${version}";`,
+);
+if (stampedConvexVersion === convexVersionSrc && !convexVersionSrc.includes(`"${version}"`)) {
+  console.error("set-version: could not stamp convex/version.ts (DEPLOYED_VERSION not found)");
+  process.exit(1);
+}
+writeFileSync(convexVersionPath, stampedConvexVersion);
+
 console.log(`\nAll artifacts set to ${version}.`);

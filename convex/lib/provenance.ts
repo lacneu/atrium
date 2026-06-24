@@ -17,6 +17,8 @@ export interface ProvenanceItemLike {
   score?: number;
   text?: string;
   file_name?: string;
+  /** Human display name for a document item (provenance/v1, additive). */
+  title?: string;
   collection?: string;
   /** Explicit discriminator (provenance/v1, ADDITIVE): a documents-group item MAY set
    *  `context: true` to declare it is a SYNTHESIZED context excerpt with no openable
@@ -102,10 +104,33 @@ function allowlistedLabel(
   return known.has(value) ? value : "other";
 }
 
+/** The known provenance item fields, in a stable order. A new field added to the
+ *  contract appears in `present` automatically — the structure never needs per-field
+ *  edits to stay a COMPLETE debug signal. Field NAMES only; never values (SOC2). */
+export const KNOWN_ITEM_FIELDS = [
+  "id",
+  "type",
+  "date",
+  "score",
+  "text",
+  "file_name",
+  "title",
+  "collection",
+  "context",
+] as const;
+
 export interface ProvenanceItemStructure {
   kind: ProvenanceItemKind;
+  /** Kept for the published get_chat_state contract (consumers diagnose e.g.
+   *  "kind document + hasScore:false"). Subsumed by `present` but additive on purpose. */
   hasFileName: boolean;
   hasScore: boolean;
+  /** The KNOWN item fields actually present (non-empty) on this item — field NAMES only,
+   *  never values. THE complete content-free debug signal: one `get_chat_state` call shows
+   *  exactly which provenance fields reached Convex, so a missing `title` / `text` /
+   *  `score` is visible immediately, for THIS field and any future one. Additive to the
+   *  booleans above (which stay for backward compatibility). */
+  present: string[];
 }
 
 export interface ProvenancePartStructure {
@@ -135,6 +160,10 @@ export function provenancePartStructure(
       kind: provenanceItemKind(item, part.group),
       hasFileName: Boolean(item.file_name),
       hasScore: typeof item.score === "number",
+      present: KNOWN_ITEM_FIELDS.filter((f) => {
+        const v = (item as Record<string, unknown>)[f];
+        return v !== undefined && v !== null && v !== "";
+      }),
     })),
   };
   const source = allowlistedLabel(part.source, KNOWN_PROVENANCE_SOURCES);

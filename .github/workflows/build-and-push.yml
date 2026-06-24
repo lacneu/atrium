@@ -93,7 +93,10 @@ jobs:
           file: docker/Dockerfile
           push: true
           # No VITE_CONVEX_URL build-arg: the image is origin-agnostic; the URL
-          # is injected at run time via /config.json.
+          # is injected at run time via /config.json. ATRIUM_VERSION (the computed
+          # lockstep version) is stamped into the image env + served /version.json.
+          build-args: |
+            ATRIUM_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -140,5 +143,7 @@ jobs:
           context: bridge
           file: bridge/Dockerfile
           push: true
+          build-args: |
+            ATRIUM_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

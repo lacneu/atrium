@@ -8,6 +8,34 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.5] — See what is actually deployed, and which provenance fields reached Convex
+
+Operability release. No breaking changes, no schema migration.
+
+- **Every layer now self-reports its version — including the Convex functions.** The
+  bridge and frontend ship their version baked into a Docker image, but the Convex
+  functions are pushed by a SEPARATE step (`npx convex deploy`) that rebuilding images
+  and restarting containers does NOT perform — so a forgotten function deploy was
+  invisible until a feature silently failed. Now:
+  - **`GET /api/v1/version`** (public, no auth, no PHI) returns the deployed Convex
+    functions' version — `curl <convex-site>/api/v1/version`.
+  - The **frontend image** serves **`/version.json`** (`curl <frontend-host>/version.json`)
+    and carries **`ATRIUM_VERSION`** in its env (`docker exec <c> env | grep ATRIUM_VERSION`);
+    it previously surfaced no version anywhere.
+  - The **bridge image** carries **`ATRIUM_VERSION`** in its env too (it already
+    self-reported via `/compat`).
+  - `scripts/set-version.mjs` stamps the Convex version constant in lockstep with the
+    image versions, so a mismatch between layers makes a missed deploy obvious at a glance.
+- **The Sources diagnostic now shows exactly which provenance fields reached Convex.**
+  The `get_chat_state` structure gains an additive, content-free **`present`** list per
+  item — the KNOWN field NAMES that are set (e.g. `["file_name","title","text"]`), never
+  any value. One observability call now reveals whether a document carried its `title`,
+  `score`, or excerpt through the pipeline, instead of having to infer it. The existing
+  `hasFileName` / `hasScore` booleans are unchanged (kept for the published contract).
+
+*Deploy: `npx convex deploy` (from the repo root — the step image rebuilds skip) +
+rebuild the frontend AND bridge images.*
+
 ## [0.10.4] — A LightRAG source document shows its readable name, not an opaque id
 
 Feature release. No breaking changes, no schema migration (the stored provenance item

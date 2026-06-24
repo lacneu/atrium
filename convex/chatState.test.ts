@@ -77,6 +77,7 @@ describe("chatStateInternal", () => {
           items: [
             {
               file_name: "SENTINEL_PROVFILENAME.pdf",
+              title: "SENTINEL_PROVTITLE",
               score: 0.7777,
               type: "SENTINEL_PROVTYPE",
             },
@@ -104,6 +105,7 @@ describe("chatStateInternal", () => {
       "SENTINEL_PROVSOURCE",
       "SENTINEL_PROVITEM",
       "SENTINEL_PROVFILENAME",
+      "SENTINEL_PROVTITLE",
       "SENTINEL_PROVTYPE",
       "0.7777", // the score VALUE — only the hasScore boolean may survive
     ]) {
@@ -141,8 +143,18 @@ describe("chatStateInternal", () => {
         itemCount: 2,
         hasExcerpts: true,
         items: [
-          { kind: "document", hasFileName: true, hasScore: true },
-          { kind: "context", hasFileName: false, hasScore: false },
+          // `present` lists the field NAMES that reached Convex (never values). "title"
+          // here is THE diagnostic for "the readable name reached Convex" — if a real
+          // document's present[] lacks "title", the emitting plugin isn't sending it.
+          // (The context item's text was stripped by the compact projection, so "text"
+          // is absent from present[]; the part-level hasExcerpts:true still proves it.)
+          {
+            kind: "document",
+            hasFileName: true,
+            hasScore: true,
+            present: ["type", "score", "file_name", "title"],
+          },
+          { kind: "context", hasFileName: false, hasScore: false, present: [] },
         ],
       },
     });
