@@ -416,12 +416,16 @@ function ChartLogoControl({ chart }: { chart: MyChart }) {
     setError(null);
     setBusy(true);
     try {
-      const webp = await processLogoImage(source, variantFor ? { variantFor } : {});
+      const { blob: webp, hasAlpha } = await processLogoImage(
+        source,
+        variantFor ? { variantFor } : {},
+      );
       // Send the normalized WebP BYTES; the server stores them itself (a single-use,
       // server-minted storageId), so there is no client-provided storage id that
-      // could be aliased/replayed onto another resource.
+      // could be aliased/replayed onto another resource. `hasAlpha` lets the avatar
+      // mask an alpha logo for guaranteed contrast (else it shows as a plain <img>).
       const bytes = await webp.arrayBuffer();
-      await setChartLogo({ chartId: chart.chartId, bytes, mode });
+      await setChartLogo({ chartId: chart.chartId, bytes, mode, hasAlpha });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

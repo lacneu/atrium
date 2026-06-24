@@ -1450,6 +1450,15 @@
   object-fit: contain;
   border-radius: inherit;
 }
+/* Alpha-defined logo painted as a SILHOUETTE in the tile's foreground colour, so
+   it auto-contrasts with the --primary tile in BOTH modes from a single asset
+   (same principle as the bundled Atrium mark's currentColor). The logo URL comes
+   in via the --oc-logo-url custom property; mask uses only its alpha. */
+.oc-avatar__img--mask {
+  background-color: var(--primary-foreground);
+  -webkit-mask: var(--oc-logo-url) center / contain no-repeat;
+  mask: var(--oc-logo-url) center / contain no-repeat;
+}
 .oc-msg__avatar .oc-avatar__mark {
   width: 1.1rem;
   height: 1.1rem;

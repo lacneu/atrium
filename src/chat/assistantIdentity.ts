@@ -15,6 +15,9 @@ export type AssistantIdentity = {
   // Avatar (charte graphique).
   label: string;
   logoUrl: string | null;
+  // True => render logoUrl as a silhouette MASK in --primary-foreground (auto
+  // contrast on the --primary tile, both modes); false => plain <img>.
+  logoMasked: boolean;
   isDefault: boolean;
   initials: string;
   // Responding agent (null = single-agent → use the brand label as the name).
@@ -25,6 +28,7 @@ export type AssistantIdentity = {
 export const DEFAULT_IDENTITY: AssistantIdentity = {
   label: "Atrium",
   logoUrl: null,
+  logoMasked: false,
   isDefault: true,
   initials: "A",
   agentName: null,

@@ -16,6 +16,7 @@ import {
 const base: AssistantIdentity = {
   label: "Atrium",
   logoUrl: null,
+  logoMasked: false,
   isDefault: true,
   initials: "A",
   agentName: null,

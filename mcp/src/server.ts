@@ -164,7 +164,12 @@ function main(): void {
         "Per-message lifecycle of one chat (GET /chat-state). Key must have " +
         "traces.read. METADATA ONLY (no message text). Exposes a stuck-streaming " +
         "turn: a message with status 'streaming' + large ageSeconds " +
-        "(stuckStreaming:true) = the bridge never relayed its finalize frame.",
+        "(stuckStreaming:true) = the bridge never relayed its finalize frame. Each " +
+        "provenance part carries a SOC2-safe `structure` (per-item kind " +
+        "document|context|memory + hasFileName/hasScore booleans, itemCount, " +
+        "hasExcerpts, allowlisted source/retrievalRoute) — diagnose a Sources panel " +
+        "issue ('documents show no score/excerpt' = a bare lightrag attribution turn: " +
+        "kind document + hasScore:false) without any content.",
       inputSchema: getChatStateInput,
     },
     async (args) => run(() => getChatState(config, args)),

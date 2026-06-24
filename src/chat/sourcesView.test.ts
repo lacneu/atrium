@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ProvenancePartView } from "./convexTypes";
+import { ANON_PROVENANCE_PARTS } from "../../convex/lib/provenance.fixtures";
 import {
   entryTitle,
   groupLabel,
@@ -248,5 +249,39 @@ describe("LightRAG reference items (3.2.8: file_name + type, no text/score)", ()
     expect(entry.item.text).toBeUndefined(); // → no excerpt / no "Voir plus"
     expect(entry.item.score).toBeUndefined(); // → no relevance bar
     expect(isFindableDocument(entry)).toBe(true); // → reserved "origine" slot (L2 target)
+  });
+});
+
+describe("anonymized production turn (LightRAG hybrid: bare docs + context + memory)", () => {
+  // The real shape captured in prod (admin@ataraxis, 2026-06-23), anonymized: 4 bare
+  // attribution documents + 1 synthesized context blob + 2 recalled memories. Pins the
+  // exact "documents show no score/excerpt, only the context carries text" rendering the
+  // user flagged — so a regression in classification or item plumbing fails here.
+  const parts = ANON_PROVENANCE_PARTS as unknown as ProvenancePartView[];
+  const docEntries = sourceEntries(parts, "documents");
+
+  test("summarizes the real shape: 2 memory · 4 documents · 1 context", () => {
+    expect(summarizeProvenance(parts)).toEqual({
+      memory: 2,
+      documents: 4,
+      context: 1,
+    });
+  });
+
+  test("the 4 LightRAG documents are findable but carry NO score and NO excerpt", () => {
+    const docs = docEntries.filter((e) => isFindableDocument(e));
+    expect(docs).toHaveLength(4);
+    for (const e of docs) {
+      expect(e.item.score).toBeUndefined(); // → no relevance bar
+      expect(e.item.text).toBeUndefined(); // → no excerpt / no "Voir plus"
+      expect(itemMeta(e.item)).toEqual(["hybrid"]); // type chip only
+    }
+  });
+
+  test("the context blob is a non-findable excerpt that DOES carry text", () => {
+    const ctx = docEntries.filter((e) => isContextExcerpt(e));
+    expect(ctx).toHaveLength(1);
+    expect(ctx[0]!.item.text).toBeTruthy();
+    expect(isFindableDocument(ctx[0]!)).toBe(false); // not attachable
   });
 });

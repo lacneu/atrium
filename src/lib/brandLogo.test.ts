@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   pickLogoUrl,
+  pickAvatarLogo,
   avatarLogoMode,
   oklchLightness,
   brandInitials,
@@ -97,6 +98,49 @@ describe("avatarLogoMode", () => {
     expect(avatarLogoMode(undefined, undefined, "light")).toBe("light");
     expect(avatarLogoMode(undefined, undefined, "dark")).toBe("dark");
     expect(avatarLogoMode("oklch(0.5 0.1 34)", "#fff", "light")).toBe("light");
+  });
+});
+
+describe("pickAvatarLogo", () => {
+  it("MASKS an alpha-defined logo (guaranteed contrast, color-agnostic)", () => {
+    const brand = {
+      logoLightUrl: "L",
+      logoDarkUrl: "D",
+      logoLightHasAlpha: true,
+      logoDarkHasAlpha: true,
+    };
+    // Masked in both polarities; URL is color-agnostic (prefers light).
+    expect(pickAvatarLogo(brand, "light")).toEqual({ url: "L", masked: true });
+    expect(pickAvatarLogo(brand, "dark")).toEqual({ url: "L", masked: true });
+  });
+
+  it("prefers an alpha variant even if the OTHER mode's logo lacks alpha", () => {
+    const brand = {
+      logoLightUrl: "L",
+      logoDarkUrl: "D",
+      logoLightHasAlpha: false,
+      logoDarkHasAlpha: true,
+    };
+    expect(pickAvatarLogo(brand, "light")).toEqual({ url: "D", masked: true });
+  });
+
+  it("falls back to a plain <img> (polarity-picked) for an OPAQUE logo — the guard", () => {
+    // No alpha anywhere: masking would paint a solid block, so we must NOT mask.
+    const brand = {
+      logoLightUrl: "L",
+      logoDarkUrl: "D",
+      logoLightHasAlpha: false,
+      logoDarkHasAlpha: false,
+    };
+    expect(pickAvatarLogo(brand, "light")).toEqual({ url: "L", masked: false });
+    expect(pickAvatarLogo(brand, "dark")).toEqual({ url: "D", masked: false });
+  });
+
+  it("returns null when no logo is uploaded (caller shows mark/initials)", () => {
+    expect(pickAvatarLogo(undefined, "light")).toBeNull();
+    expect(
+      pickAvatarLogo({ logoLightUrl: null, logoDarkUrl: null }, "dark"),
+    ).toBeNull();
   });
 });
 

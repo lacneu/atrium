@@ -60,3 +60,87 @@ export function isFindableDocumentItem(
 ): boolean {
   return provenanceItemKind(item, group) === "document";
 }
+
+// ===========================================================================
+// SOC2-safe provenance STRUCTURE — the diagnostic shape behind GET
+// /api/v1/chat-state (surfaced by the MCP). The reactive client path and the
+// owner-scoped getProvenanceParts carry VALUES (file_name, text, score); the
+// key-authed observability surface must not. This derivation emits only
+// Atrium-DERIVED kinds, a bounded-enum group, ALLOWLISTED source/route, counts,
+// and presence BOOLEANS — never a value, never raw emitter free-text. It exists
+// so an operator can diagnose e.g. "the document items carry no score and no
+// excerpt" (a bare LightRAG attribution turn) without seeing any content.
+// ===========================================================================
+
+/** The provenance PART fields the structure derivation reads — a structural subset of
+ *  the stored/compacted provenance messagePart (convex/messages.ts ClientPart). */
+export interface ProvenancePartLike {
+  source?: string;
+  group: ProvenanceGroup;
+  hasExcerpts?: boolean;
+  injected?: { truncated?: boolean };
+  retrieval?: { route?: string };
+  items: ProvenanceItemLike[];
+}
+
+/** Reporting-source families Atrium recognizes; an unknown emitter `source` folds to
+ *  "other" so the structure never reflects arbitrary emitter free-text. */
+const KNOWN_PROVENANCE_SOURCES = new Set(["knowledge", "hindsight"]);
+/** Retrieval routes Atrium recognizes. The route discriminates whether a bare document
+ *  is EXPECTED: pgvector items carry a per-chunk score + excerpt, LightRAG attribution
+ *  references are file_name-only by design — so "documents with no score" is normal for
+ *  `lightrag` but a regression for `pgvector`. */
+const KNOWN_RETRIEVAL_ROUTES = new Set(["lightrag", "pgvector"]);
+
+/** Pass a value through only if it is in the known set, else fold to "other" — never
+ *  reflect raw emitter free-text on the SOC2 surface. Absent stays absent. */
+function allowlistedLabel(
+  value: string | undefined,
+  known: Set<string>,
+): string | undefined {
+  if (value === undefined) return undefined;
+  return known.has(value) ? value : "other";
+}
+
+export interface ProvenanceItemStructure {
+  kind: ProvenanceItemKind;
+  hasFileName: boolean;
+  hasScore: boolean;
+}
+
+export interface ProvenancePartStructure {
+  group: ProvenanceGroup;
+  source?: string;
+  retrievalRoute?: string;
+  itemCount: number;
+  /** At least one item carried an injected excerpt (part-level — never which/how much). */
+  hasExcerpts: boolean;
+  truncated?: boolean;
+  items: ProvenanceItemStructure[];
+}
+
+/** SOC2-safe STRUCTURE of one provenance part (see the block comment above). */
+export function provenancePartStructure(
+  part: ProvenancePartLike,
+): ProvenancePartStructure {
+  const out: ProvenancePartStructure = {
+    group: part.group,
+    itemCount: part.items.length,
+    // Robust to both the COMPACTED part (text stripped, `hasExcerpts` flag set) and a
+    // raw part still carrying item text (the test fixtures) — either proves an excerpt.
+    hasExcerpts:
+      part.hasExcerpts === true ||
+      part.items.some((i) => typeof i.text === "string" && i.text.length > 0),
+    items: part.items.map((item) => ({
+      kind: provenanceItemKind(item, part.group),
+      hasFileName: Boolean(item.file_name),
+      hasScore: typeof item.score === "number",
+    })),
+  };
+  const source = allowlistedLabel(part.source, KNOWN_PROVENANCE_SOURCES);
+  if (source !== undefined) out.source = source;
+  const route = allowlistedLabel(part.retrieval?.route, KNOWN_RETRIEVAL_ROUTES);
+  if (route !== undefined) out.retrievalRoute = route;
+  if (part.injected?.truncated === true) out.truncated = true;
+  return out;
+}

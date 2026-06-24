@@ -549,6 +549,13 @@ export default defineSchema({
     // alone (custom). See convex/charts.ts (setChartLogo / resolveChartView).
     logoLightStorageId: v.optional(v.id("_storage")),
     logoDarkStorageId: v.optional(v.id("_storage")),
+    // Whether each uploaded logo is ALPHA-defined (a transparent-background
+    // silhouette) vs an opaque rectangle. Computed at upload (processLogoImage).
+    // The chat avatar masks an alpha logo in `--primary-foreground` (guaranteed
+    // contrast on the `--primary` tile, both modes); an opaque logo can't be
+    // silhouetted, so it falls back to a plain <img>. Absent => treated as opaque.
+    logoLightHasAlpha: v.optional(v.boolean()),
+    logoDarkHasAlpha: v.optional(v.boolean()),
     createdBy: v.id("users"),
     createdAt: v.number(),
   })

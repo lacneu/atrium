@@ -46,10 +46,14 @@ export type ProcessLogoOptions = {
  * Decode + downscale + trim transparent margins + (optionally derive a variant) +
  * re-encode to a bounded WebP Blob.
  */
+/** Result of {@link processLogoImage}: the encoded blob + whether it is an alpha
+ * silhouette (so the caller can record it for the avatar's mask-vs-img choice). */
+export type ProcessedLogo = { blob: Blob; hasAlpha: boolean };
+
 export async function processLogoImage(
   file: Blob,
   opts: ProcessLogoOptions = {},
-): Promise<Blob> {
+): Promise<ProcessedLogo> {
   if (!file.type.startsWith("image/")) {
     throw new Error(m.charts_logo_err_not_image());
   }
@@ -106,11 +110,16 @@ export async function processLogoImage(
       octx.putImageData(data, 0, 0);
     }
 
+    // Whether the FINAL image is an alpha silhouette (a recolor preserves alpha, so
+    // this reflects the source either way) — recorded so the avatar can mask it.
+    const finalData = octx.getImageData(0, 0, box.width, box.height);
+    const hasAlpha = silhouetteIsAlphaDefined(finalData.data, box.width, box.height);
+
     const blob =
       (await canvasToBlob(out, "image/webp", WEBP_QUALITY)) ??
       (await canvasToBlob(out, "image/png"));
     if (!blob) throw new Error(m.charts_logo_err_encode());
-    return blob;
+    return { blob, hasAlpha };
   } finally {
     cleanup();
   }

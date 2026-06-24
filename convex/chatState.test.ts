@@ -70,7 +70,18 @@ describe("chatStateInternal", () => {
           pluginId: "lightrag",
           source: "SENTINEL_PROVSOURCE.pdf",
           group: "documents" as const,
-          items: [{ text: "SENTINEL_PROVITEM" }],
+          retrieval: { route: "lightrag" },
+          // A findable DOCUMENT item (file_name + score) and a CONTEXT excerpt (text).
+          // The SOC2 structure must expose their KINDS + presence booleans, never the
+          // file_name string, the score number, the raw emitter `type`, or the text.
+          items: [
+            {
+              file_name: "SENTINEL_PROVFILENAME.pdf",
+              score: 0.7777,
+              type: "SENTINEL_PROVTYPE",
+            },
+            { text: "SENTINEL_PROVITEM" },
+          ],
         },
       });
       return cid;
@@ -92,6 +103,9 @@ describe("chatStateInternal", () => {
       "SENTINEL_MIMEPARAM",
       "SENTINEL_PROVSOURCE",
       "SENTINEL_PROVITEM",
+      "SENTINEL_PROVFILENAME",
+      "SENTINEL_PROVTYPE",
+      "0.7777", // the score VALUE — only the hasScore boolean may survive
     ]) {
       expect(serialized).not.toContain(sentinel);
     }
@@ -114,7 +128,24 @@ describe("chatStateInternal", () => {
       hasFilename: true,
     });
     expect(byKind.reasoning).toEqual({ kind: "reasoning" }); // presence only
-    expect(byKind.provenance).toEqual({ kind: "provenance" }); // presence only
+    // Provenance now carries the SOC2-safe STRUCTURE (kinds + booleans + counts +
+    // allowlisted labels) — the diagnostic signal that lets the MCP see "this turn's
+    // documents carry no score" without any content. The sentinel source folded to
+    // "other"; no file_name / score / text / raw `type` survived (asserted above).
+    expect(byKind.provenance).toEqual({
+      kind: "provenance",
+      structure: {
+        group: "documents",
+        source: "other",
+        retrievalRoute: "lightrag",
+        itemCount: 2,
+        hasExcerpts: true,
+        items: [
+          { kind: "document", hasFileName: true, hasScore: true },
+          { kind: "context", hasFileName: false, hasScore: false },
+        ],
+      },
+    });
   });
 
   // Post-split, a streaming message's heartbeat + live length live on the streamingText

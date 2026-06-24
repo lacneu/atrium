@@ -8,6 +8,39 @@ export type BrandLogos = {
   logoDarkUrl?: string | null;
 };
 
+// BrandLogos plus the per-mode alpha flags (whether each logo is a transparent
+// silhouette) — what the chat avatar needs to choose mask vs <img>.
+export type BrandLogosWithAlpha = BrandLogos & {
+  logoLightHasAlpha?: boolean | null;
+  logoDarkHasAlpha?: boolean | null;
+};
+
+// How the chat AVATAR should render the brand logo on its `--primary` tile.
+// `masked` => paint the logo's silhouette in `--primary-foreground` (the contrast
+// color the chart guarantees against `--primary`), so it reads in BOTH modes from a
+// single asset, colour-agnostic — exactly how the bundled Atrium mark already works
+// via currentColor. This needs an ALPHA silhouette; an opaque logo can't be masked
+// (it would become a solid block), so it falls back to a plain <img> that carries
+// its own background. Returns null when no logo is uploaded (caller shows the
+// mark / initials).
+export function pickAvatarLogo(
+  brand: BrandLogosWithAlpha | undefined,
+  fallbackMode: "light" | "dark",
+): { url: string; masked: boolean } | null {
+  if (!brand) return null;
+  // Mask ignores colour, so ANY alpha-defined variant works (same silhouette);
+  // prefer light then dark for determinism.
+  const alphaUrl =
+    (brand.logoLightHasAlpha && brand.logoLightUrl) ||
+    (brand.logoDarkHasAlpha && brand.logoDarkUrl) ||
+    null;
+  if (alphaUrl) return { url: alphaUrl, masked: true };
+  // No alpha logo: show an opaque logo as-is, picking the mode that best contrasts
+  // with the tile (the caller passes the avatar polarity, not the page mode).
+  const url = pickLogoUrl(brand, fallbackMode);
+  return url ? { url, masked: false } : null;
+}
+
 export function pickLogoUrl(
   brand: BrandLogos | undefined,
   mode: "light" | "dark",

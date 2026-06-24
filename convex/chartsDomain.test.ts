@@ -489,9 +489,12 @@ describe("setChartLogo (server-side store)", () => {
       chartId,
       bytes: PNG_MAGIC(),
       mode: "light",
+      hasAlpha: true,
     });
     const stored = await t.run((ctx) => ctx.db.get(chartId));
     expect(stored?.logoLightStorageId).toBeDefined();
+    // The client-computed alpha flag is persisted (drives the avatar's mask path).
+    expect(stored?.logoLightHasAlpha).toBe(true);
     // The id is server-minted -> a real blob exists behind it. (The PNG-vs-WebP
     // Content-Type DERIVATION itself is pinned directly by the detectLogoMime tests
     // below; convex-test's storage emulator does not record a blob's contentType,
@@ -521,10 +524,14 @@ describe("setChartLogo (server-side store)", () => {
       chartId,
       bytes: webpBytes,
       mode: "dark",
+      hasAlpha: false,
     });
     // The WebP sniff branch accepts it -> a blob is minted + attached for dark.
-    const id = (await t.run((ctx) => ctx.db.get(chartId)))?.logoDarkStorageId;
+    const stored = await t.run((ctx) => ctx.db.get(chartId));
+    const id = stored?.logoDarkStorageId;
     expect(id).toBeDefined();
+    // An opaque logo records hasAlpha:false -> the avatar will use <img>, not mask.
+    expect(stored?.logoDarkHasAlpha).toBe(false);
     expect(await t.run((ctx) => ctx.storage.getUrl(id!))).not.toBeNull();
   });
 
@@ -548,6 +555,7 @@ describe("setChartLogo (server-side store)", () => {
         chartId,
         bytes: PNG_MAGIC(),
         mode: "light",
+        hasAlpha: true,
       }),
     ).rejects.toThrow(/forbidden|not your/i);
     // Authorization fails BEFORE any blob is minted -> the chart has no logo.
@@ -573,6 +581,7 @@ describe("setChartLogo (server-side store)", () => {
         chartId,
         bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer, // not WebP/PNG
         mode: "light",
+        hasAlpha: true,
       }),
     ).rejects.toThrow(/non valide|format/i);
     // Rejected at the sniff -> nothing stored on the chart.
@@ -597,6 +606,7 @@ describe("setChartLogo (server-side store)", () => {
         chartId,
         bytes: new Uint8Array(1024 * 1024 + 1).buffer, // > MAX_LOGO_BYTES
         mode: "light",
+        hasAlpha: true,
       }),
     ).rejects.toThrow(/volumineuse/i);
     // Rejected before any store -> no logo on the chart.

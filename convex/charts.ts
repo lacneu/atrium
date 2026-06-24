@@ -404,6 +404,10 @@ export type ChartBrand = {
   label: string;
   logoLightUrl: string | null;
   logoDarkUrl: string | null;
+  // Whether each logo is an alpha silhouette (mask-able for the auto-contrast
+  // avatar) vs an opaque image (plain <img> fallback). See schema `charts`.
+  logoLightHasAlpha: boolean;
+  logoDarkHasAlpha: boolean;
   isDefault: boolean;
 };
 
@@ -412,6 +416,8 @@ export const DEFAULT_BRAND: ChartBrand = {
   label: "Atrium",
   logoLightUrl: null,
   logoDarkUrl: null,
+  logoLightHasAlpha: false,
+  logoDarkHasAlpha: false,
   isDefault: true,
 };
 
@@ -445,7 +451,16 @@ export async function resolveChartView(
     tokens: (custom.tokens as ChartTokens | undefined) ?? null,
     // Custom chart: its own label; per-mode logos ONLY if uploaded (else label
     // alone -- isDefault:false tells the client NOT to fall back to the Atrium mark).
-    brand: { label: custom.name, logoLightUrl, logoDarkUrl, isDefault: false },
+    // hasAlpha drives the avatar's mask-vs-img choice; absent (pre-flag logo) =>
+    // false => plain <img> (safe: re-upload sets the flag and enables the mask).
+    brand: {
+      label: custom.name,
+      logoLightUrl,
+      logoDarkUrl,
+      logoLightHasAlpha: logoLightUrl ? (custom.logoLightHasAlpha ?? false) : false,
+      logoDarkHasAlpha: logoDarkUrl ? (custom.logoDarkHasAlpha ?? false) : false,
+      isDefault: false,
+    },
   };
 }
 
@@ -1404,8 +1419,13 @@ export const assertCanSetChartLogo = internalQuery({
  * another single-use logo blob. RBAC = authorizeChartWrite.
  */
 export const persistChartLogo = internalMutation({
-  args: { chartId: v.id("charts"), storageId: v.id("_storage"), mode: logoMode },
-  handler: async (ctx, { chartId, storageId, mode }) => {
+  args: {
+    chartId: v.id("charts"),
+    storageId: v.id("_storage"),
+    mode: logoMode,
+    hasAlpha: v.boolean(),
+  },
+  handler: async (ctx, { chartId, storageId, mode, hasAlpha }) => {
     const actor = await getActor(ctx);
     const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
     const prev =
@@ -1414,8 +1434,8 @@ export const persistChartLogo = internalMutation({
     await ctx.db.patch(
       chart._id,
       mode === "light"
-        ? { logoLightStorageId: storageId }
-        : { logoDarkStorageId: storageId },
+        ? { logoLightStorageId: storageId, logoLightHasAlpha: hasAlpha }
+        : { logoDarkStorageId: storageId, logoDarkHasAlpha: hasAlpha },
     );
     await auditImpersonated(ctx, actor, "chart.setLogo", {
       resource: "chart",
@@ -1437,8 +1457,16 @@ export const persistChartLogo = internalMutation({
  * rendered via <img src>, so it can never execute script regardless.
  */
 export const setChartLogo = action({
-  args: { chartId: v.id("charts"), bytes: v.bytes(), mode: logoMode },
-  handler: async (ctx, { chartId, bytes, mode }) => {
+  args: {
+    chartId: v.id("charts"),
+    bytes: v.bytes(),
+    mode: logoMode,
+    // Computed client-side (processLogoImage): is the image an alpha silhouette?
+    // Optional (default false) so an older client still uploads cleanly during a
+    // rollout — the logo then renders as a plain <img> until re-uploaded.
+    hasAlpha: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { chartId, bytes, mode, hasAlpha }) => {
     // Authorize BEFORE storing so an unauthorized caller never mints an orphan blob.
     await ctx.runQuery(internal.charts.assertCanSetChartLogo, { chartId });
     if (bytes.byteLength > MAX_LOGO_BYTES) {
@@ -1456,6 +1484,7 @@ export const setChartLogo = action({
       chartId,
       storageId,
       mode,
+      hasAlpha: hasAlpha ?? false,
     });
   },
 });
@@ -1473,8 +1502,8 @@ export const removeChartLogo = mutation({
       await ctx.db.patch(
         chart._id,
         mode === "light"
-          ? { logoLightStorageId: undefined }
-          : { logoDarkStorageId: undefined },
+          ? { logoLightStorageId: undefined, logoLightHasAlpha: undefined }
+          : { logoDarkStorageId: undefined, logoDarkHasAlpha: undefined },
       );
       await auditImpersonated(ctx, actor, "chart.removeLogo", {
         resource: "chart",

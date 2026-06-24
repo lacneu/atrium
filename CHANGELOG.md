@@ -8,6 +8,21 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.1] — Diagnose a Sources panel from the observability API
+
+Maintenance release — observability only. No breaking changes, no schema migration, no
+user-facing UI change.
+
+- **The diagnostic chat-state API now explains a Sources panel without exposing its
+  content.** Each provenance part in `GET /api/v1/chat-state` (and the `get_chat_state`
+  MCP tool) now carries a SOC2-safe `structure`: per-item kind (document/context/memory)
+  + `hasFileName`/`hasScore` booleans, item counts, and an allowlisted source/route —
+  never a file name, excerpt, or score value. An operator can now diagnose, for example,
+  "this reply's documents carry no relevance score" (a bare LightRAG-attribution turn —
+  expected, since LightRAG attributes source files without a per-reference score) straight
+  from the observability surface, instead of from a screenshot. *Deploy: `npx convex
+  deploy` + republish the MCP package.*
+
 ## [0.10.0] — A published provenance contract, and correct Sources for synthesized context
 
 Feature + corrective release. No breaking changes, no schema migration (the stored

@@ -26,6 +26,7 @@ import {
   normalizeMessageErrorCode,
   mimeTypeBase,
 } from "./lib/chatRenderState";
+import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
@@ -332,7 +333,15 @@ export const chatStateInternal = internalQuery({
           case "reasoning":
             return { kind: "reasoning" as const }; // presence only — never .text
           case "provenance":
-            return { kind: "provenance" as const }; // presence only — never source/items
+            // SOC2-safe STRUCTURE (convex/lib/provenance.ts): Atrium-derived item
+            // kinds + presence booleans + allowlisted group/source/route + counts —
+            // NEVER a file_name / excerpt / score VALUE. Lets the MCP diagnose e.g.
+            // "the document items carry no score and no excerpt" (a bare LightRAG
+            // attribution turn) without exposing any content.
+            return {
+              kind: "provenance" as const,
+              structure: provenancePartStructure(p),
+            };
           default:
             return { kind: "unknown" as const };
         }

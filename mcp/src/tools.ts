@@ -282,7 +282,9 @@ export function getIntegrations(
  * GET /api/v1/chat-state — per-message lifecycle of one chat (METADATA ONLY: no
  * text). Requires `traces.read`. Exposes the stuck-streaming signal: a message
  * `status:"streaming"` with a large `ageSeconds` (`stuckStreaming:true`) is a
- * turn whose finalize frame the bridge never relayed.
+ * turn whose finalize frame the bridge never relayed. A provenance part also
+ * carries a SOC2-safe `structure` (per-item kind + hasFileName/hasScore booleans,
+ * counts, allowlisted source/route) for diagnosing the Sources panel content-free.
  */
 export function getChatState(
   config: Config,

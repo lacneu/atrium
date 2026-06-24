@@ -20,6 +20,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { useQuery, useMutation, useConvex } from "convex/react";
@@ -29,7 +30,7 @@ import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
-import { pickLogoUrl, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
+import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
   AssistantIdentityContext,
@@ -163,7 +164,18 @@ function BrandAvatar({ className }: { className: string }) {
   return (
     <div className={className} aria-hidden>
       {id.logoUrl ? (
-        <img className="oc-avatar__img" src={id.logoUrl} alt="" />
+        id.logoMasked ? (
+          // Silhouette masked in --primary-foreground: auto-contrast on the tile in
+          // both modes (color-agnostic), from the single uploaded logo.
+          <span
+            className="oc-avatar__img oc-avatar__img--mask"
+            style={
+              { "--oc-logo-url": `url("${id.logoUrl}")` } as CSSProperties
+            }
+          />
+        ) : (
+          <img className="oc-avatar__img" src={id.logoUrl} alt="" />
+        )
       ) : id.isDefault ? (
         <AtriumMark className="oc-avatar__mark" />
       ) : (
@@ -192,11 +204,14 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // is the SAME subscription the header chip uses.
   //
   // The avatar TILE paints the logo on `--primary` (see .oc-msg__avatar /
-  // .oc-emptystate__avatar), NOT the page background — so its logo variant must
-  // match `--primary`'s polarity, not the page light/dark mode (a dark `--primary`
-  // needs the dark-mode logo even while the page is light). `avatarLogoMode`
-  // derives that from the active chart's own primary / primary-foreground tokens
-  // for the resolved page mode (system-safe: brandMode is the client-resolved one).
+  // .oc-emptystate__avatar), NOT the page background. For guaranteed contrast in
+  // BOTH modes from a SINGLE asset, an alpha-defined logo is rendered as a
+  // SILHOUETTE masked in `--primary-foreground` (the contrast colour the chart
+  // guarantees against `--primary`) — colour-agnostic, exactly how the bundled
+  // Atrium mark already auto-contrasts via currentColor. An opaque logo can't be
+  // silhouetted, so it falls back to a plain <img>; `avatarLogoMode` then picks the
+  // variant whose polarity best contrasts with the tile (system-safe: brandMode is
+  // the client-resolved mode, and `--primary` itself flips per mode).
   const brandMode = useResolvedMode(me?.resolvedThemeMode);
   const brand = me?.resolvedChartBrand;
   const chartTokens = me?.resolvedChartTokens;
@@ -213,9 +228,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       colors?.["primary-foreground"],
       brandMode,
     );
+    const avatar = pickAvatarLogo(brand, avatarMode);
     return {
       label,
-      logoUrl: pickLogoUrl(brand, avatarMode),
+      logoUrl: avatar?.url ?? null,
+      logoMasked: avatar?.masked ?? false,
       isDefault: brand?.isDefault ?? true,
       initials: brandInitials(label),
       agentName: agent?.displayName ?? agent?.agentId ?? null,
