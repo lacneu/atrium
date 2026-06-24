@@ -219,6 +219,81 @@ export const seedChat = mutation({
   },
 });
 
+// Dev-only: seed a chat whose assistant reply carries a LightRAG provenance part in the
+// EXACT shape the openclaw-knowledge plugin emits at 3.2.11 — document items that carry
+// their per-document RETRIEVED content as `text` (the fix for "documents show only an
+// id, no text") plus the synthesized context blob. Lets a human SEE the Sources panel
+// render each document's excerpt locally, before trusting the live gateway path.
+export const seedProvenanceDemo = mutation({
+  args: { canonical: v.optional(v.string()) },
+  handler: async (ctx, { canonical }) => {
+    assertDev();
+    const profiles = await ctx.db.query("profiles").take(500);
+    const owner = canonical
+      ? profiles.find((p) => p.canonical === canonical)
+      : (profiles.find((p) => p.role === "admin") ?? profiles[0]);
+    if (!owner) return { ok: false, reason: "no profile" };
+    const userId = owner.userId;
+    const now = Date.now();
+
+    const chatId = await ctx.db.insert("chats", {
+      userId,
+      title: "LightRAG — contenu par document (3.2.11)",
+      archived: false,
+      sortKey: -2000,
+      updatedAt: now,
+    });
+    await ctx.db.insert("messages", {
+      chatId,
+      userId,
+      role: "user",
+      status: "complete",
+      text: "Que peux-tu me dire sur le deploiement d'Helios ?",
+      updatedAt: now,
+    });
+    const asstId = await ctx.db.insert("messages", {
+      chatId,
+      userId,
+      role: "assistant",
+      status: "complete",
+      text: "Le deploiement d'Helios se fait en trois etapes reversibles. (reponse de demonstration — voir les Sources a droite : chaque document affiche maintenant son contenu recupere.)",
+      updatedAt: now + 1,
+    });
+    await ctx.db.insert("messageParts", {
+      messageId: asstId,
+      order: 0,
+      part: {
+        kind: "provenance" as const,
+        v: 1,
+        pluginId: "openclaw-knowledge",
+        source: "knowledge",
+        group: "documents" as const,
+        injected: { chars: 4000, position: "system_append", truncated: true },
+        retrieval: { route: "lightrag", lightragMode: "hybrid" },
+        items: [
+          {
+            file_name: "guide-deploiement-helios.md",
+            type: "hybrid",
+            text: "Le deploiement d'Helios se fait en trois etapes : preparation de l'environnement, application des migrations, puis bascule du trafic. Chaque etape est reversible ; un rollback restaure l'etat precedent sans perte de donnees.",
+          },
+          {
+            file_name: "faq-helios.md",
+            type: "hybrid",
+            text: "Q : Helios supporte-t-il le multi-tenant ? R : Oui, chaque tenant est isole par schema, sans partage de donnees.",
+          },
+          {
+            id: "lightrag-context",
+            type: "hybrid",
+            context: true,
+            text: 'Knowledge Graph Data (Entity): {"entity":"Helios","type":"concept","description":"Plateforme de deploiement multi-tenant."} (blob synthetise, tronque a 4000 caracteres)',
+          },
+        ],
+      },
+    });
+    return { ok: true, chatId };
+  },
+});
+
 // --- Observability spine: dev-gated service account + API key minting --------
 //
 // LIVE-VERIFY HELPER. The real mint path (apiKeys.mintApiKey) is an action that

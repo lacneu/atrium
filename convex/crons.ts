@@ -27,6 +27,18 @@ crons.cron(
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 
+// Backend-latency probe: every 5 minutes, time a fixed, identity-free, content-free
+// READ and record its server-side execution latency (-> convex.probe.latency.avg_ms
+// rollup). Fixed cadence makes it traffic-independent, so the latency trend is
+// attributable to the BACKEND — a clean apples-to-apples NAS<->Convex-Cloud before/
+// after. ~12 samples/hour. See convex/metricsProbe.ts.
+crons.interval(
+  "backend latency probe",
+  { minutes: 5 },
+  internal.metricsProbe.runLatencyProbe,
+  {},
+);
+
 // Outbound trace shipping (increment 5): every 5 minutes, flush NEW trace events
 // to whichever vendors (Langfuse/Opik) are configured via deployment env. A
 // vendor with no env is a per-vendor no-op; the action never throws into the

@@ -49,6 +49,10 @@ export const KPI_METRICS = {
   OPENCLAW_INGEST: "openclaw.ingest",
   CHAT_SEND: "chat.send",
   ASSISTANT_STREAM_ERRORS: "assistant.stream.errors",
+  // Server-side query EXECUTION latency from the synthetic probe (metricsProbe.ts)
+  // — a backend-load proxy that is comparable across a NAS↔Cloud migration
+  // (fixed-cadence, traffic-independent). NOT full client-perceived latency.
+  CONVEX_PROBE_LATENCY_AVG_MS: "convex.probe.latency.avg_ms",
 } as const;
 
 /** The hour bucket an event belongs to, e.g. 1717336800000 -> "2026-06-02T14". */
@@ -65,6 +69,8 @@ type BucketAgg = {
   openclawIngest: number;
   chatSend: number;
   streamErrors: number;
+  probeLatencySum: number;
+  probeLatencyCount: number;
 };
 
 function emptyAgg(): BucketAgg {
@@ -76,6 +82,8 @@ function emptyAgg(): BucketAgg {
     openclawIngest: 0,
     chatSend: 0,
     streamErrors: 0,
+    probeLatencySum: 0,
+    probeLatencyCount: 0,
   };
 }
 
@@ -125,6 +133,14 @@ function accumulate(agg: BucketAgg, row: Doc<"traceEvents">): void {
     }
     case "assistant.stream": {
       if (isStreamError(row)) agg.streamErrors += 1;
+      break;
+    }
+    case "convex.probe": {
+      // Synthetic backend-latency probe (metricsProbe.ts): average its latencyMs.
+      if (row.latencyMs !== undefined) {
+        agg.probeLatencySum += row.latencyMs;
+        agg.probeLatencyCount += 1;
+      }
       break;
     }
     default:
@@ -177,6 +193,10 @@ export const rollupKpis = internalMutation({
         agg.apiLatencyCount > 0
           ? Math.round(agg.apiLatencySum / agg.apiLatencyCount)
           : 0;
+      const avgProbeLatency =
+        agg.probeLatencyCount > 0
+          ? Math.round(agg.probeLatencySum / agg.probeLatencyCount)
+          : 0;
       const metricValues: Array<[string, number]> = [
         [KPI_METRICS.API_CALLS, agg.apiCalls],
         [KPI_METRICS.API_ERRORS, agg.apiErrors],
@@ -184,6 +204,7 @@ export const rollupKpis = internalMutation({
         [KPI_METRICS.OPENCLAW_INGEST, agg.openclawIngest],
         [KPI_METRICS.CHAT_SEND, agg.chatSend],
         [KPI_METRICS.ASSISTANT_STREAM_ERRORS, agg.streamErrors],
+        [KPI_METRICS.CONVEX_PROBE_LATENCY_AVG_MS, avgProbeLatency],
       ];
       for (const [metric, value] of metricValues) {
         await upsertRollup(ctx, bucket, metric, value);

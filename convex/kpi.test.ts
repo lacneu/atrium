@@ -79,6 +79,12 @@ describe("kpi rollups", () => {
         kind: "assistant.stream",
         meta: JSON.stringify({ phase: "start", streamStatus: "streaming" }),
       },
+      // 3 backend-latency probe samples (150/250/350 -> avg 250). A probe row
+      // WITHOUT latencyMs must NOT skew the average (count stays 3).
+      { at: now, kind: "convex.probe", latencyMs: 150 },
+      { at: now, kind: "convex.probe", latencyMs: 250 },
+      { at: now, kind: "convex.probe", latencyMs: 350 },
+      { at: now, kind: "convex.probe" },
     ];
 
     await t.run(async (ctx) => {
@@ -104,6 +110,8 @@ describe("kpi rollups", () => {
     expect(first.get(KPI_METRICS.OPENCLAW_INGEST)).toBe(2);
     expect(first.get(KPI_METRICS.CHAT_SEND)).toBe(4);
     expect(first.get(KPI_METRICS.ASSISTANT_STREAM_ERRORS)).toBe(2);
+    // Probe latency averages ONLY the rows that carry latencyMs (150/250/350).
+    expect(first.get(KPI_METRICS.CONVEX_PROBE_LATENCY_AVG_MS)).toBe(250);
 
     // Idempotency: a second overlapping run REPLACES (never doubles) the values.
     await t.mutation(internal.kpi.rollupKpis, {});
@@ -114,5 +122,6 @@ describe("kpi rollups", () => {
     expect(second.get(KPI_METRICS.ASSISTANT_STREAM_ERRORS)).toBe(2);
     expect(second.get(KPI_METRICS.API_ERRORS)).toBe(1);
     expect(second.get(KPI_METRICS.API_LATENCY_AVG_MS)).toBe(200);
+    expect(second.get(KPI_METRICS.CONVEX_PROBE_LATENCY_AVG_MS)).toBe(250);
   });
 });
