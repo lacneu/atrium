@@ -130,11 +130,13 @@ http.route({
 // ship their version in their Docker image, but the Convex functions are pushed by a
 // SEPARATE manual step; this route makes that otherwise-invisible version checkable
 // (`curl <convex-site>/api/v1/version`), so a forgotten `convex deploy` surfaces as a
-// mismatch with the image versions instead of a silent failure.
+// mismatch with the image versions instead of a silent failure. NO-STORE (apiJson, like
+// /health): a deployment-verification check must never read a stale cached value right
+// after a deploy, so it is deliberately not cacheable.
 http.route({
   path: "/api/v1/version",
   method: "GET",
-  handler: httpAction(async () => publicJson({ ok: true, version: DEPLOYED_VERSION })),
+  handler: httpAction(async () => apiJson({ ok: true, version: DEPLOYED_VERSION })),
 });
 
 // Published CONTRACT schemas (provenance/v1 + future). PUBLIC (no auth): these are the

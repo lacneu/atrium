@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.6] — The deployed-Convex version is honest from a plain `npx convex deploy`
+
+Corrective release. Fixes the version diagnostic shipped in 0.10.5. No schema migration.
+
+- **`/api/v1/version` now reports the real deployed version without any extra step.** In
+  0.10.5 the Convex version constant lagged the release (it was meant to be stamped at
+  deploy), so a normal `npx convex deploy` from the release tree served the *previous*
+  version — a false mismatch with the 0.10.6 images, the exact thing the endpoint is
+  meant to catch. The Convex functions are pushed manually from the COMMITTED tree (not a
+  CI-built image), so the version is now committed in lockstep AT the release version:
+  `scripts/set-version.mjs` bumps every artifact together (root, bridge, mcp, and the
+  Convex `DEPLOYED_VERSION`) during release prep. A plain `npx convex deploy` from the
+  release tree now serves the correct version, and a forgotten deploy still stands out as
+  a mismatch with the image versions.
+
+*Deploy: `npx convex deploy` (from the repo root) + rebuild the frontend AND bridge
+images. No separate version-stamp step — the committed tree already carries 0.10.6.*
+
 ## [0.10.5] — See what is actually deployed, and which provenance fields reached Convex
 
 Operability release. No breaking changes, no schema migration.
@@ -33,8 +51,9 @@ Operability release. No breaking changes, no schema migration.
   `score`, or excerpt through the pipeline, instead of having to infer it. The existing
   `hasFileName` / `hasScore` booleans are unchanged (kept for the published contract).
 
-*Deploy: `npx convex deploy` (from the repo root — the step image rebuilds skip) +
-rebuild the frontend AND bridge images.*
+*Deploy: from the repo root, `node scripts/set-version.mjs <version> && npx convex deploy`
+(stamp THEN deploy, so the served version matches the code — the step image rebuilds
+skip) + rebuild the frontend AND bridge images.*
 
 ## [0.10.4] — A LightRAG source document shows its readable name, not an opaque id
 

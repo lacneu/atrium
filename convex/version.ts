@@ -10,6 +10,11 @@
 // route keeps returning the OLD value -- a mismatch with the bridge/frontend image
 // versions makes the missed deploy obvious in one check.
 //
-// Kept in lockstep with the other artifacts by scripts/set-version.mjs (which stamps
-// it from the release tag). Bump alongside the CHANGELOG when preparing a release.
-export const DEPLOYED_VERSION = "0.10.5";
+// Kept in LOCKSTEP with the bridge/frontend/mcp versions by scripts/set-version.mjs.
+// Do NOT hand-edit. Unlike those (whose version is stamped into a CI-built image), the
+// Convex functions are pushed by a MANUAL `npx convex deploy` from the COMMITTED tree —
+// so this constant is committed AT the release version (set-version is run during
+// release prep, bumping every artifact together). That keeps a plain `npx convex deploy`
+// from the release tree honest: /api/v1/version reports the real deployed version, and a
+// forgotten deploy stands out as a mismatch with the image versions.
+export const DEPLOYED_VERSION = "0.10.6";
