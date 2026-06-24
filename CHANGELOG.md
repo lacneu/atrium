@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.7] — "Joindre les documents" delivers files again (a clean session per fetch)
+
+Corrective release. Fixes the documentary "attach source documents" action, which had
+started returning only "Source introuvable". No schema migration.
+
+- **Each documentary fetch now runs in a CLEAN session, so the agent reliably delivers
+  the files.** "Joindre les documents" dispatches a fetch turn to a hidden, reused
+  documentary chat. That single gateway session accumulated every prior fetch's
+  references, files and tool runs; live data showed the agent delivering on a clean
+  first turn, then returning ZERO files once the session was polluted (every reference →
+  "Source introuvable"). Two changes give each fetch a fresh slate:
+  - the gateway **session is rotated per fetch** (a fetch-specific routing id), so the
+    agent never inherits a previous fetch's context;
+  - **rehydration is disabled for documentary chats** — the bridge no longer re-prepends
+    the hidden chat's prior turns (which would have re-polluted the rotated session).
+  One hidden chat row is still reused (no chat churn); only the agent's working context
+  resets. *Deploy: `npx convex deploy` — the fix is Convex-only; image rebuilds on the
+  tag only re-stamp the version for lockstep.*
+
 ## [0.10.6] — The deployed-Convex version is honest from a plain `npx convex deploy`
 
 Corrective release. Fixes the version diagnostic shipped in 0.10.5. No schema migration.

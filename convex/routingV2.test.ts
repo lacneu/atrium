@@ -300,6 +300,35 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     expect(r2?.failReason).toBe("agent_restricted");
   });
 
+  test("getChatRouting forces rehydration OFF for a documentary chat (stateless fetch), not for normal chats", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedAgent(t, "prod", "alice", true);
+    await seedDiscovery(t, "prod", true);
+
+    const normal = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
+    const rNormal = await t.query(internal.bridge.getChatRouting, {
+      chatId: normal._id,
+      userId: uid as never,
+    });
+    // A normal chat keeps the bridge's own rehydration behavior — no forced override.
+    expect(rNormal?.configOverrides?.rehydration).toBeUndefined();
+
+    const doc = await makeChat(t, uid, {
+      instanceName: "prod",
+      agentId: "alice",
+      kind: "documentary",
+    });
+    const rDoc = await t.query(internal.bridge.getChatRouting, {
+      chatId: doc._id,
+      userId: uid as never,
+    });
+    // A documentary fetch is stateless → rehydration forced OFF, so the bridge never
+    // re-prepends prior fetch turns (which would defeat the rotated fresh session).
+    expect(rDoc?.configOverrides?.rehydration).toBe(false);
+  });
+
   test("bindChatTarget clears the stale provider id when it rebinds to a new agent", async () => {
     const t = convexTest(schema, modules);
     const uid = await seedUser(t);

@@ -191,6 +191,11 @@ describe("attachDocuments dispatch", () => {
     );
     expect(hidden?.agentId).toBe("doc");
     expect(hidden?.pendingFetch?.sourceMessageId).toBe(sourceMessageId);
+    // FRESH gateway session per fetch: openclawChatId is rotated to a fetch-specific value
+    // so the bridge's buildSessionKey derives a NEW session — the documentary agent never
+    // inherits a prior fetch's accumulated context. A regression that drops the rotation
+    // leaves openclawChatId undefined.
+    expect(hidden?.openclawChatId).toMatch(/^documentary:/);
     // A documentary outbox was queued for dispatch.
     const outbox = await t.run((ctx) =>
       ctx.db
@@ -201,6 +206,56 @@ describe("attachDocuments dispatch", () => {
         .first(),
     );
     expect(outbox).not.toBeNull();
+  });
+
+  test("rotates the gateway session (openclawChatId) per fetch — no context accumulation across attaches", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sourceMessageId } = await setup(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const hiddenSession = async () =>
+      (
+        await t.run((ctx) =>
+          ctx.db
+            .query("chats")
+            .filter((q) => q.eq(q.field("kind"), "documentary"))
+            .first(),
+        )
+      )?.openclawChatId;
+
+    await as.mutation(api.documentAttachments.attachDocuments, {
+      sourceMessageId,
+      items: [{ entryKey: "k|guide", reference: "guide.md" }],
+    });
+    const session1 = await hiddenSession();
+    expect(session1).toMatch(/^documentary:/);
+
+    // Release the in-flight lock (the first fetch settled): clear pendingFetch AND drain
+    // the pending outbox so isChatBusy is false, letting a second attach dispatch.
+    const hidden = await t.run((ctx) =>
+      ctx.db
+        .query("chats")
+        .filter((q) => q.eq(q.field("kind"), "documentary"))
+        .first(),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.patch(hidden!._id, { pendingFetch: undefined });
+      const pending = await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", hidden!._id).eq("status", "pending"),
+        )
+        .collect();
+      for (const o of pending) await ctx.db.delete(o._id);
+    });
+
+    await as.mutation(api.documentAttachments.attachDocuments, {
+      sourceMessageId,
+      items: [{ entryKey: "k|faq", reference: "faq.md" }],
+    });
+    const session2 = await hiddenSession();
+    // THE guarantee: each fetch runs in its OWN session — the second never reuses the first.
+    expect(session2).toMatch(/^documentary:/);
+    expect(session2).not.toBe(session1);
   });
 
   test("two cards with the SAME file_name but different entryKey → TWO rows (only the checked cards)", async () => {

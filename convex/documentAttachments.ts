@@ -248,8 +248,6 @@ export const attachDocuments = mutation({
     // correct even if that fetch later fails). correlate restores it on success.
     await recomputeAttachedDocCount(ctx, sourceMessageId);
 
-    await ctx.db.patch(hidden._id, { pendingFetch: { sourceMessageId, createdAt: now } });
-
     // The agent fetches each distinct FILE once (multiple cards may share a file).
     const refs = [...new Set(selected.map((s) => s.reference))];
 
@@ -262,6 +260,20 @@ export const attachDocuments = mutation({
       status: "complete" as const,
       text,
       updatedAt: now,
+    });
+
+    // FRESH gateway session per fetch. The documentary agent is a stateless utility
+    // ("resolve these refs -> deliver these files"), but the hidden chat is REUSED, so its
+    // single gateway session accumulated EVERY prior fetch's refs/files/tool-runs. Live
+    // data showed the agent delivering media on a clean first turn, then returning ZERO
+    // media once the session was polluted (mediaReturned:0, all "not_found"). Rotating
+    // openclawChatId makes the bridge's buildSessionKey(openclawChatId ?? chatId, ...)
+    // derive a NEW sessionKey per fetch, so each runs in a CLEAN session — like that first
+    // turn. Keyed by THIS fetch's message id (always unique); the Convex chat row stays
+    // (no chat-row churn), only the gateway session resets.
+    await ctx.db.patch(hidden._id, {
+      pendingFetch: { sourceMessageId, createdAt: now },
+      openclawChatId: `documentary:${msgId}`,
     });
     const outboxId = await ctx.db.insert("outbox", {
       chatId: hidden._id,

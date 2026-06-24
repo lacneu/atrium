@@ -333,7 +333,16 @@ export const getChatRouting = internalQuery({
       // shadowed by a Convex default on every /send (which would force e.g. an
       // env-configured shared-fs/off bridge back to gateway-http).
       config: resolveInstanceConfig(instance?.config),
-      configOverrides: instance?.config ?? null,
+      // A DOCUMENTARY fetch is stateless ("resolve these refs -> deliver these files").
+      // attachDocuments rotates openclawChatId for a fresh GATEWAY session, but the bridge
+      // also REHYDRATES by chatId — it would re-prepend this hidden chat's PRIOR fetch turns
+      // and defeat the clean-session guarantee (re-injecting old refs -> still not_found).
+      // Force rehydration OFF for documentary dispatches (the bridge reads body.config
+      // .rehydration), while keeping the instance's other overrides intact.
+      configOverrides:
+        chat.kind === "documentary"
+          ? { ...(instance?.config ?? {}), rehydration: false }
+          : (instance?.config ?? null),
     };
   },
 });
