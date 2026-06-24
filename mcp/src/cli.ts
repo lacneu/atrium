@@ -26,8 +26,10 @@ import {
   bridgeStatus,
   getCompat,
   getKpi,
+  getSchema,
   health,
   listAnomalies,
+  listSchemas,
   listTraces,
   queryOpenClaw,
   reportAnomaly,
@@ -81,6 +83,8 @@ Commands:
   health                              GET  /health
   compat                              GET  /compat            (bridge.read)
   bridge-status                       GET  /bridge-status     (bridge.read)
+  schemas                             GET  /schemas           (public)
+  schema --id NAME                    GET  /schemas/:id       (public)
   sync --instance NAME                POST /instances/sync    (selfheal)
   traces [--limit N] [--q TEXT] [--from T] [--to T] [--kind K] [--status CODE]
          [--status-class 2xx|4xx|5xx] [--direction D] [--principal-type T]
@@ -116,6 +120,15 @@ async function dispatch(
       return getCompat(config);
     case "bridge-status":
       return bridgeStatus(config);
+    case "schemas":
+      return listSchemas(config);
+    case "schema": {
+      const id = str(flags.id);
+      if (!id) {
+        throw new Error("schema requires --id NAME (e.g. --id provenance.v1)");
+      }
+      return getSchema(config, { id });
+    }
     case "sync": {
       const instance = str(flags.instance);
       if (!instance) {

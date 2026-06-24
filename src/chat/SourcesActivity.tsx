@@ -15,6 +15,7 @@ import {
   Download,
   FileText,
   LoaderCircle,
+  Network,
   Search,
   Sparkles,
   X,
@@ -28,6 +29,10 @@ import { useToast, errorMessage } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import type { ProvenancePartView } from "./convexTypes";
 import {
+  entryTitle,
+  hasProvenance,
+  isContextExcerpt,
+  isFindableDocument,
   itemMeta,
   itemTitle,
   sourceEntries,
@@ -75,7 +80,11 @@ export function SourcesActivity() {
   );
   const panel = useContext(SourcesPanelContext);
   const summary = summarizeProvenance(compactParts);
-  if (compactParts.length === 0 || summary.memory + summary.documents === 0) {
+  // Show the chip whenever ANY provenance exists — including a reply whose only
+  // provenance is a synthesized CONTEXT excerpt (a LightRAG turn that returned no
+  // per-file references): hasProvenance() counts context too, else that message
+  // would have no way to open the panel and see its context source.
+  if (compactParts.length === 0 || !hasProvenance(summary)) {
     return null;
   }
   const isActive = panel?.activeMessageId === messageId && messageId !== undefined;
@@ -154,6 +163,7 @@ export function SourcesPanelContent({
   const [query, setQuery] = useState("");
   // Both sections COLLAPSED by default (progressive disclosure). DOCUMENTS first.
   const [openDocs, setOpenDocs] = useState(false);
+  const [openContext, setOpenContext] = useState(false);
   const [openMem, setOpenMem] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
@@ -161,12 +171,27 @@ export function SourcesPanelContent({
   useEffect(() => {
     setQuery("");
     setOpenDocs(false);
+    setOpenContext(false);
     setOpenMem(false);
     setSelected(new Set());
   }, [messageId]);
 
+  // Documents split: FINDABLE sources (file_name → openable/attachable) vs
+  // synthesized CONTEXT excerpts (no file_name, e.g. LightRAG's whole-graph blob)
+  // shown for transparency but never attachable (the attach would send a non-file
+  // reference like "lightrag-context" the documentary agent can never resolve).
   const docEntries = useMemo(
-    () => sourceEntries(parts, "documents").filter((e) => sourceMatchesQuery(e, query)),
+    () =>
+      sourceEntries(parts, "documents").filter(
+        (e) => isFindableDocument(e) && sourceMatchesQuery(e, query),
+      ),
+    [parts, query],
+  );
+  const contextEntries = useMemo(
+    () =>
+      sourceEntries(parts, "documents").filter(
+        (e) => isContextExcerpt(e) && sourceMatchesQuery(e, query),
+      ),
     [parts, query],
   );
   const memEntries = useMemo(
@@ -197,7 +222,10 @@ export function SourcesPanelContent({
   // `selected` only ever holds document keys). References = the document titles
   // (file_name) handed to the documentary agent.
   const selectedDocs = useMemo(
-    () => sourceEntries(parts, "documents").filter((e) => selected.has(e.key)),
+    () =>
+      sourceEntries(parts, "documents").filter(
+        (e) => isFindableDocument(e) && selected.has(e.key),
+      ),
     [parts, selected],
   );
   const canAttach = docAvail != null && selectedDocs.length > 0 && !fetchInFlight;
@@ -276,6 +304,19 @@ export function SourcesPanelContent({
               attachmentByKey={attachmentByKey}
             />
             <SourceSection
+              icon={<Network size={14} aria-hidden />}
+              label={m.sources_group_context()}
+              count={contextEntries.length}
+              expanded={openContext}
+              onToggle={() => setOpenContext((o) => !o)}
+              entries={contextEntries}
+              selectable={false}
+              selected={selected}
+              onToggle1={toggle}
+              onToggleAll={(on) => setMany(contextEntries.map((e) => e.key), on)}
+              attachmentByKey={attachmentByKey}
+            />
+            <SourceSection
               icon={<Brain size={14} aria-hidden />}
               label={m.sources_group_memory()}
               count={memEntries.length}
@@ -288,7 +329,9 @@ export function SourcesPanelContent({
               onToggleAll={(on) => setMany(memEntries.map((e) => e.key), on)}
               attachmentByKey={attachmentByKey}
             />
-            {docEntries.length === 0 && memEntries.length === 0 ? (
+            {docEntries.length === 0 &&
+            contextEntries.length === 0 &&
+            memEntries.length === 0 ? (
               <p className="oc-sources-panel__empty">{m.sources_no_results()}</p>
             ) : null}
           </>
@@ -445,7 +488,9 @@ function SourceCard({
 
   const meta = itemMeta(item);
   const score = typeof item.score === "number" ? Math.max(0, Math.min(1, item.score)) : null;
-  const isDocument = entry.group === "documents";
+  // Only a FINDABLE document (file_name) gets the "Source d'origine" slot — a
+  // context excerpt has no external source file to open/attach.
+  const isDocument = isFindableDocument(entry);
   return (
     <div className={`oc-srccard${selectable && selected ? " is-selected" : ""}`}>
       {selectable ? (
@@ -454,7 +499,7 @@ function SourceCard({
         </label>
       ) : null}
       <div className="oc-srccard__body">
-        <div className="oc-srccard__title">{itemTitle(item)}</div>
+        <div className="oc-srccard__title">{entryTitle(entry)}</div>
         {meta.length > 0 || score !== null ? (
           <div className="oc-srccard__meta">
             {meta.map((chip) => (

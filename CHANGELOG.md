@@ -8,6 +8,38 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.0] — A published provenance contract, and correct Sources for synthesized context
+
+Feature + corrective release. No breaking changes, no schema migration (the stored
+provenance part gains one optional field).
+
+- **The chat Sources panel now separates real source documents from synthesized
+  context.** A LightRAG reply's knowledge-graph context was surfaced as a findable
+  "document" named `lightrag-context` — counted as a document, and offering a
+  "Source d'origine" fetch that could never resolve (it is not a real file). A
+  synthesized context excerpt is now shown under its own **Context** section: labeled
+  clearly, never attachable, and not counted as a document; real source documents stay
+  findable + attachable. The reply whose only provenance is context still shows the
+  Sources chip. The companion fix that makes the *real* LightRAG source documents
+  reappear (instead of only the opaque blob) ships in the openclaw-knowledge plugin
+  3.2.10+. *Deploy: `npx convex deploy` + rebuild the frontend AND bridge images.*
+- **A published, versioned provenance contract — any plugin can surface its sources in
+  Atrium.** What a context-injecting OpenClaw plugin emits (provenance/v1) is now an
+  explicit JSON Schema with one shared classification rule, so a third-party plugin
+  author can conform to it and it can no longer silently drift from what the UI and the
+  server accept. A new endpoint serves the registered schemas — `GET /api/v1/schemas`
+  (list) and `GET /api/v1/schemas/<id>` (one) — **public and cacheable**, like public
+  API docs; the same is surfaced by the MCP tools `list_schemas` / `get_schema` and the
+  CLI `atrium schemas` / `atrium schema --id provenance.v1`. The registry is extensible:
+  publishing a future contract schema is one entry. *Deploy: `npx convex deploy` +
+  republish the MCP package.*
+- **An uploaded charte logo is auto-trimmed and split into light/dark variants.** Logo
+  processing now trims surrounding transparency and derives the light- vs dark-mode
+  variant from the image itself, so a custom chart's brand logo renders correctly on its
+  avatar tile in both page modes. *Frontend-only.*
+- **Notifications show when each was submitted.** The notification bell now displays the
+  submission timestamp. *Frontend-only.*
+
 ## [0.9.1] — Correct avatar logo for dark-primary charts; lighter agent resolution at scale
 
 Corrective release. No breaking changes, no schema migration.

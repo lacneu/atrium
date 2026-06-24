@@ -102,6 +102,9 @@ export interface ProvenanceItemView {
   text?: string;
   file_name?: string;
   collection?: string;
+  /** Additive (provenance/v1): a documents-group item declaring itself a synthesized
+   *  CONTEXT excerpt (no openable source) — see convex/lib/provenance.ts. */
+  context?: boolean;
 }
 
 /**

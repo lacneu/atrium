@@ -72,6 +72,10 @@ async function setup(
           { file_name: "guide.md" },
           { file_name: "faq.md" },
           { file_name: "missing.md" },
+          // A synthesized CONTEXT excerpt (no file_name) — must NOT be attachable.
+          { id: "lightrag-context", type: "hybrid", text: "graph" },
+          // EXPLICIT context:true even WITH a file_name — the flag wins; not attachable.
+          { file_name: "ctx-with-name.md", context: true },
         ],
       },
     });
@@ -109,6 +113,39 @@ describe("attachDocuments dispatch", () => {
       sourceMessageId,
     });
     expect(rows.length).toBe(0);
+  });
+
+  test("rejects a CONTEXT excerpt's id (no file_name) — server enforces non-attachability", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sourceMessageId } = await setup(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    // A direct (non-UI) caller submits the context blob's id. The server allows ONLY
+    // findable documents (file_name), so this is dropped → no dispatched fetch for a
+    // non-file reference the documentary agent could never resolve.
+    await expect(
+      as.mutation(api.documentAttachments.attachDocuments, {
+        sourceMessageId,
+        items: [{ entryKey: "k|ctx", reference: "lightrag-context" }],
+      }),
+    ).rejects.toThrow(/no_references/);
+    const rows = await as.query(api.documentAttachments.getDocumentAttachments, {
+      sourceMessageId,
+    });
+    expect(rows.length).toBe(0);
+  });
+
+  test("rejects an EXPLICIT context:true item even when it carries a file_name", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sourceMessageId } = await setup(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    // The provenance has { file_name: "ctx-with-name.md", context: true } — the
+    // explicit flag wins over the file_name, so the server must not attach it.
+    await expect(
+      as.mutation(api.documentAttachments.attachDocuments, {
+        sourceMessageId,
+        items: [{ entryKey: "k|cn", reference: "ctx-with-name.md" }],
+      }),
+    ).rejects.toThrow(/no_references/);
   });
 
   test("a MIX of valid + forbidden references queues ONLY the valid ones", async () => {

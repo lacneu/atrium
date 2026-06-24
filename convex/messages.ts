@@ -74,6 +74,11 @@ type ClientPart =
         text?: string;
         file_name?: string;
         collection?: string;
+        // Additive (provenance/v1): documents-group synthesized context excerpt —
+        // carried through to the client so the Sources view classifies it (see
+        // convex/lib/provenance.ts). Text is stripped by compactProvenancePart; this
+        // metadata flag is not.
+        context?: boolean;
       }[];
     };
 

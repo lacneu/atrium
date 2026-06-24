@@ -28,6 +28,7 @@ import { resolveDocumentaryTarget } from "./agents";
 import { writeTraceEvent } from "./observability";
 import { stripGatewayMediaId } from "./lib/mediaName";
 import { isChatBusy } from "./lib/outboxQueue";
+import { isFindableDocumentItem } from "./lib/provenance";
 
 /** Max document references one fetch may request (matches the panel's bounds). */
 export const MAX_DOC_REFS = 24;
@@ -157,10 +158,14 @@ export const attachDocuments = mutation({
     // references that ACTUALLY appeared as DOCUMENT sources in THIS reply. Without
     // this, a modified client could submit an arbitrary `reference` and make the
     // documentary agent fetch a file outside the shown sources. Build the allowed set
-    // from the message's stored provenance (documents group) and drop anything not in
-    // it. The reference mirrors src/chat/sourcesView.ts itemTitle (file_name, else id,
-    // else type) — for documents this is the file_name. The client-chosen `entryKey`
-    // stays a UI correlation label (harmless once the reference is validated).
+    // from the message's stored provenance and drop anything not in it. ONLY a
+    // FINDABLE document source counts: a documents-group item WITH a file_name (the
+    // real file the documentary agent fetches). A documents-group item WITHOUT a
+    // file_name is a synthesized CONTEXT excerpt (e.g. LightRAG's "lightrag-context"
+    // blob) with no file to fetch — it must NOT be attachable even for a direct
+    // (non-UI) caller, else the agent is dispatched a non-file reference it can never
+    // resolve. This mirrors the client rule (src/chat/sourcesView.ts isFindableDocument)
+    // on the trust boundary. The client-chosen `entryKey` stays a UI correlation label.
     const provParts = await ctx.db
       .query("messageParts")
       .withIndex("by_message", (q) => q.eq("messageId", sourceMessageId))
@@ -169,8 +174,12 @@ export const attachDocuments = mutation({
     for (const { part } of provParts) {
       if (part.kind !== "provenance" || part.group !== "documents") continue;
       for (const item of part.items) {
-        const ref = item.file_name ?? item.id ?? item.type;
-        if (ref) allowedRefs.add(ref);
+        // THE shared rule (convex/lib/provenance): only a FINDABLE document is
+        // attachable — a context excerpt (explicit `context:true`, or no file_name)
+        // is excluded, even if a caller bypasses the UI.
+        if (item.file_name && isFindableDocumentItem(item, part.group)) {
+          allowedRefs.add(item.file_name);
+        }
       }
     }
 

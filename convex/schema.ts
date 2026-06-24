@@ -92,6 +92,9 @@ export const messagePart = v.union(
         text: v.optional(v.string()),
         file_name: v.optional(v.string()),
         collection: v.optional(v.string()),
+        // Additive (provenance/v1): a documents-group item declaring itself a
+        // synthesized CONTEXT excerpt (no openable source) — see convex/lib/provenance.
+        context: v.optional(v.boolean()),
       }),
     ),
   }),

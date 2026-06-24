@@ -24,7 +24,10 @@ export const MAX_PART_JSON_CHARS = 32_000;
 export const MAX_PROVENANCE_PARTS_PER_TURN = 8;
 
 /** One retrieved item. Memory items use id/type/date; document items use
- *  file_name/collection; both may carry score and (level "full") text. */
+ *  file_name/collection; both may carry score and (level "full") text. A
+ *  documents-group item may set `context:true` (provenance/v1, additive) to declare
+ *  it a SYNTHESIZED context excerpt (no openable source file) — see
+ *  docs/provenance/PROVENANCE_CONTRACT.md + convex/lib/provenance.ts. */
 export interface ProvenanceItem {
   id?: string;
   type?: string;
@@ -33,6 +36,7 @@ export interface ProvenanceItem {
   text?: string;
   file_name?: string;
   collection?: string;
+  context?: boolean;
 }
 
 /** Mirrors convex/schema.ts messagePart `provenance` variant. */
@@ -87,6 +91,9 @@ function parseItem(raw: unknown): ProvenanceItem | null {
   if (text !== undefined) item.text = text;
   if (fileName !== undefined) item.file_name = fileName;
   if (collection !== undefined) item.collection = collection;
+  // Additive discriminator: ONLY a literal `true` is accepted (a context excerpt);
+  // any other value is dropped, like every other off-shape field on this boundary.
+  if (o.context === true) item.context = true;
   // An item must carry at least ONE identifying field — an empty object is
   // noise, never a source the user could act on.
   return Object.keys(item).length > 0 ? item : null;

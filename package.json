@@ -63,6 +63,7 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "ajv": "^8.20.0",
     "convex-test": "^0.0.53",
     "shadcn": "^4.10.0",
     "typescript": "^6.0.3",

@@ -19,6 +19,7 @@ import type { Filter } from "./lib/filters";
 import { enrichTraceByCorrelation } from "./integrations/enrich";
 import { langfuseConfig, opikConfig } from "./integrations/config";
 import { assessChat } from "./lib/diagnose";
+import { listSchemas, getSchema } from "./lib/schemaRegistry";
 
 const http = httpRouter();
 
@@ -100,12 +101,55 @@ function apiJson(value: unknown, status = 200): Response {
   });
 }
 
+/** PUBLIC, cacheable JSON for the published-contract routes (/api/v1/schemas). Unlike
+ *  the observability `apiJson` (no-store), these carry no PHI/secrets and are versioned
+ *  public docs, so a CDN/ReDoc/browser may cache them. Still nosniff. */
+function publicJson(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "public, max-age=300",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 // Liveness probe. No auth, no PHI — just confirms the deployment serves the API.
 http.route({
   path: "/api/v1/health",
   method: "GET",
   handler: httpAction(async () => {
     return apiJson({ ok: true, ts: Date.now() });
+  }),
+});
+
+// Published CONTRACT schemas (provenance/v1 + future). PUBLIC (no auth): these are the
+// machine-readable contracts an integration author validates against — served like
+// public API docs (a future ReDoc surface lives next to them). No PHI, no secrets, and
+// versioned/immutable, so the response is CACHEABLE (unlike the no-store observability
+// routes). The MCP/CLI surface them too (they send a key; it is simply ignored here).
+http.route({
+  path: "/api/v1/schemas",
+  method: "GET",
+  handler: httpAction(async () => publicJson({ ok: true, schemas: listSchemas() })),
+});
+
+http.route({
+  pathPrefix: "/api/v1/schemas/",
+  method: "GET",
+  handler: httpAction(async (_ctx, request) => {
+    const id = decodeURIComponent(
+      new URL(request.url).pathname.slice("/api/v1/schemas/".length),
+    );
+    const entry = getSchema(id);
+    if (!entry) return publicJson({ ok: false, error: `unknown schema: ${id}` }, 404);
+    return publicJson({
+      ok: true,
+      id: entry.id,
+      version: entry.version,
+      schema: entry.schema,
+    });
   }),
 });
 

@@ -33,9 +33,12 @@ import {
   getIntegrations,
   getKpi,
   getKpiInput,
+  getSchema,
+  getSchemaInput,
   health,
   listAnomalies,
   listAnomaliesInput,
+  listSchemas,
   listTraces,
   listTracesInput,
   queryOpenClaw,
@@ -165,6 +168,33 @@ function main(): void {
       inputSchema: getChatStateInput,
     },
     async (args) => run(() => getChatState(config, args)),
+  );
+
+  server.registerTool(
+    "list_schemas",
+    {
+      title: "List published contract schemas",
+      description:
+        "The machine-readable CONTRACT schemas an integration author can conform to " +
+        "(GET /schemas). Metadata only (id, title, version, category) — provenance/v1 " +
+        "today, more as the surface grows. PUBLIC (no key required). Use get_schema to " +
+        "fetch one.",
+      inputSchema: {},
+    },
+    async () => run(() => listSchemas(config)),
+  );
+
+  server.registerTool(
+    "get_schema",
+    {
+      title: "Get a published contract schema",
+      description:
+        "One contract schema's JSON by registry id (GET /schemas/:id), e.g. " +
+        "\"provenance.v1\" — validate a plugin's emitted reports against it. PUBLIC " +
+        "(no key required). 404 for an unknown id.",
+      inputSchema: getSchemaInput,
+    },
+    async (args) => run(() => getSchema(config, args)),
   );
 
   server.registerTool(

@@ -161,6 +161,22 @@ describe("parseProvenanceReport (bounded, field-by-field)", () => {
     expect(parseProvenanceReport({ ...MEMORY_REPORT, items: [{}] })).toBeNull(); // no identifying field
   });
 
+  it("parses the additive `context` flag (true preserved, non-true dropped)", () => {
+    const base = { v: 1, pluginId: "p", source: "knowledge", kind: "documents" };
+    // The synthesized context excerpt declares context:true (provenance/v1).
+    const withCtx = parseProvenanceReport({
+      ...base,
+      items: [{ id: "lightrag-context", context: true }],
+    });
+    expect(withCtx!.items[0]!.context).toBe(true);
+    // Trust boundary: ONLY a literal true is honored; any other value is dropped.
+    const offShape = parseProvenanceReport({
+      ...base,
+      items: [{ file_name: "a.md", context: "yes" }],
+    });
+    expect(offShape!.items[0]!.context).toBeUndefined();
+  });
+
   it("BOUNDS: caps items, truncates text, refuses oversized totals", () => {
     const many = {
       ...MEMORY_REPORT,

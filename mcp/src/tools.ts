@@ -165,6 +165,12 @@ export const getChatStateInput = {
   ),
 } as const;
 
+export const getSchemaInput = {
+  id: z.string().describe(
+    "The schema registry id (from list_schemas), e.g. \"provenance.v1\" (required).",
+  ),
+} as const;
+
 export const getTraceEnrichmentInput = {
   correlationId: z
     .string()
@@ -284,6 +290,32 @@ export function getChatState(
   options?: ApiFetchOptions,
 ): Promise<unknown> {
   return apiFetch(config, `/chat-state${qs({ chatId: args.chatId })}`, {}, options);
+}
+
+/**
+ * GET /api/v1/schemas — the published CONTRACT schemas an integration author can
+ * conform to (provenance/v1 today; more as the surface grows). Metadata list (id,
+ * title, version, category). PUBLIC (no key required). The discovery step before
+ * fetching one schema with get_schema.
+ */
+export function listSchemas(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, "/schemas", {}, options);
+}
+
+/**
+ * GET /api/v1/schemas/:id — one published contract schema's JSON (e.g.
+ * "provenance.v1"), to validate a plugin's emitted reports against. PUBLIC (no key
+ * required). 404 for an unknown id.
+ */
+export function getSchema(
+  config: Config,
+  args: { id: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, `/schemas/${encodeURIComponent(args.id)}`, {}, options);
 }
 
 /**

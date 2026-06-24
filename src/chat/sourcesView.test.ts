@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { ProvenancePartView } from "./convexTypes";
 import {
+  entryTitle,
   groupLabel,
-  isDocumentEntry,
+  hasProvenance,
+  isContextExcerpt,
+  isFindableDocument,
   itemMeta,
   itemTitle,
   orderedParts,
@@ -43,30 +46,68 @@ describe("summarizeProvenance", () => {
         documentsPart([{ file_name: "a.pdf" }]),
         memoryPart([{ id: "m3" }]),
       ]),
-    ).toEqual({ memory: 3, documents: 1 });
+    ).toEqual({ memory: 3, documents: 1, context: 0 });
+  });
+
+  test("a documents item with NO file_name counts as CONTEXT, not a document", () => {
+    // The LightRAG blob: { id: "lightrag-context", type: "hybrid", text: ... } —
+    // a synthesized context excerpt, not a findable source. It must NOT inflate the
+    // documents count (the prod bug: "DOCUMENTS · 1" naming a non-document).
+    expect(
+      summarizeProvenance([
+        documentsPart([
+          { file_name: "real.pdf" },
+          { id: "lightrag-context", type: "hybrid", text: "graph…" },
+        ]),
+      ]),
+    ).toEqual({ memory: 0, documents: 1, context: 1 });
   });
 
   test("no parts -> zero counts (the component renders nothing)", () => {
-    expect(summarizeProvenance([])).toEqual({ memory: 0, documents: 0 });
+    expect(summarizeProvenance([])).toEqual({
+      memory: 0,
+      documents: 0,
+      context: 0,
+    });
+  });
+});
+
+describe("hasProvenance (Sources chip visibility)", () => {
+  test("true when ANY group is non-empty — including CONTEXT-only", () => {
+    // A LightRAG reply with no per-file references is all context: the chip must
+    // still show, else the panel (and the context source) is unreachable.
+    expect(hasProvenance(summarizeProvenance([
+      documentsPart([{ id: "lightrag-context", type: "hybrid", text: "g" }]),
+    ]))).toBe(true);
+    expect(hasProvenance({ memory: 0, documents: 1, context: 0 })).toBe(true);
+    expect(hasProvenance({ memory: 2, documents: 0, context: 0 })).toBe(true);
+  });
+  test("false only when everything is empty", () => {
+    expect(hasProvenance({ memory: 0, documents: 0, context: 0 })).toBe(false);
+    expect(hasProvenance(summarizeProvenance([]))).toBe(false);
   });
 });
 
 describe("summaryLabel (every plural branch)", () => {
   test("singular memory only", () => {
-    expect(summaryLabel({ memory: 1, documents: 0 })).toBe("1 souvenir");
+    expect(summaryLabel({ memory: 1, documents: 0, context: 0 })).toBe("1 souvenir");
   });
   test("plural memory only", () => {
-    expect(summaryLabel({ memory: 3, documents: 0 })).toBe("3 souvenirs");
+    expect(summaryLabel({ memory: 3, documents: 0, context: 0 })).toBe("3 souvenirs");
   });
   test("singular documents only", () => {
-    expect(summaryLabel({ memory: 0, documents: 1 })).toBe("1 document");
+    expect(summaryLabel({ memory: 0, documents: 1, context: 0 })).toBe("1 document");
   });
   test("plural documents only", () => {
-    expect(summaryLabel({ memory: 0, documents: 4 })).toBe("4 documents");
+    expect(summaryLabel({ memory: 0, documents: 4, context: 0 })).toBe("4 documents");
   });
-  test("both groups joined with a separator", () => {
-    expect(summaryLabel({ memory: 2, documents: 1 })).toBe(
-      "2 souvenirs · 1 document",
+  test("singular / plural context", () => {
+    expect(summaryLabel({ memory: 0, documents: 0, context: 1 })).toBe("1 contexte");
+    expect(summaryLabel({ memory: 0, documents: 0, context: 2 })).toBe("2 contextes");
+  });
+  test("all three groups joined with a separator", () => {
+    expect(summaryLabel({ memory: 2, documents: 1, context: 1 })).toBe(
+      "2 souvenirs · 1 document · 1 contexte",
     );
   });
 });
@@ -163,12 +204,35 @@ describe("sourceMatchesQuery", () => {
   });
 });
 
-describe("isDocumentEntry", () => {
-  test("true for documents, false for memory (asymmetric origin slot)", () => {
+describe("isFindableDocument / isContextExcerpt / entryTitle", () => {
+  test("findable: documents-group item WITH file_name (asymmetric origin slot)", () => {
     const [doc] = sourceEntries([documentsPart([{ file_name: "a.md" }])], "documents");
     const [mem] = sourceEntries([memoryPart([{ id: "m1", text: "x" }])], "memory");
-    expect(isDocumentEntry(doc)).toBe(true);
-    expect(isDocumentEntry(mem)).toBe(false);
+    expect(isFindableDocument(doc)).toBe(true);
+    expect(isContextExcerpt(doc)).toBe(false);
+    expect(isFindableDocument(mem)).toBe(false); // memory has no file referent
+  });
+
+  test("the LightRAG blob (documents-group, NO file_name) is CONTEXT, not findable", () => {
+    // The exact prod shape: { id: "lightrag-context", type: "hybrid", text: ... }.
+    // It must NOT be findable (no "Source d'origine" → no broken documentary fetch),
+    // and entryTitle gives a friendly label instead of the raw "lightrag-context".
+    const [blob] = sourceEntries(
+      [documentsPart([{ id: "lightrag-context", type: "hybrid", text: "graph…" }])],
+      "documents",
+    );
+    expect(isFindableDocument(blob)).toBe(false); // ← kills the broken attach
+    expect(isContextExcerpt(blob)).toBe(true);
+    expect(entryTitle(blob)).not.toBe("lightrag-context"); // friendly label
+    expect(entryTitle(blob)).toBe("Contexte du graphe de connaissances");
+  });
+
+  test("entryTitle of a real document is its file_name (unchanged)", () => {
+    const [doc] = sourceEntries(
+      [documentsPart([{ file_name: "rapport-q3.pdf", type: "hybrid" }])],
+      "documents",
+    );
+    expect(entryTitle(doc)).toBe("rapport-q3.pdf");
   });
 });
 
@@ -183,6 +247,6 @@ describe("LightRAG reference items (3.2.8: file_name + type, no text/score)", ()
     expect(itemMeta(entry.item)).toEqual(["hybrid"]); // type only; no date/collection/score
     expect(entry.item.text).toBeUndefined(); // → no excerpt / no "Voir plus"
     expect(entry.item.score).toBeUndefined(); // → no relevance bar
-    expect(isDocumentEntry(entry)).toBe(true); // → reserved "origine" slot (L2 target)
+    expect(isFindableDocument(entry)).toBe(true); // → reserved "origine" slot (L2 target)
   });
 });

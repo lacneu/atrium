@@ -3,6 +3,9 @@ import type {
   ProvenanceItemView,
   ProvenancePartView,
 } from "./convexTypes";
+// THE single classification rule, shared with the server attach gate
+// (convex/documentAttachments.ts) so the UI and the trust boundary never drift.
+import { provenanceItemKind } from "../../convex/lib/provenance";
 
 // Pure projections for the per-message "Sources" affordance (provenance/v1 —
 // docs/PROVENANCE_CONTRACT.md). Mirrors the toolActivityView idiom: every
@@ -16,19 +19,38 @@ import type {
 export interface SourcesSummary {
   /** Total MEMORY items (conversational recall) across parts. */
   memory: number;
-  /** Total DOCUMENT items (documentary retrieval) across parts. */
+  /** FINDABLE document items (a documents-group item WITH a file_name — a real
+   *  source the documentary agent can open/attach). */
   documents: number;
+  /** Synthesized CONTEXT excerpts (a documents-group item with NO file_name, e.g.
+   *  LightRAG's whole-graph blob): shown as provenance, but with no external
+   *  source document to open/attach — so it is NOT counted as a "document". This
+   *  documents-no-file_name → context rule is also the backward-compat default of
+   *  the normalized contract (Phase 2). */
+  context: number;
 }
 
 export function summarizeProvenance(
   parts: ProvenancePartView[],
 ): SourcesSummary {
-  const summary: SourcesSummary = { memory: 0, documents: 0 };
+  const summary: SourcesSummary = { memory: 0, documents: 0, context: 0 };
   for (const part of parts) {
-    if (part.group === "memory") summary.memory += part.items.length;
-    else summary.documents += part.items.length;
+    for (const item of part.items) {
+      const kind = provenanceItemKind(item, part.group);
+      if (kind === "memory") summary.memory += 1;
+      else if (kind === "document") summary.documents += 1;
+      else summary.context += 1;
+    }
   }
   return summary;
+}
+
+/** Whether a reply has ANY provenance worth a Sources chip — memory, findable
+ *  documents, OR a synthesized context excerpt. A context-only reply (a LightRAG
+ *  turn that returned no per-file references) MUST still surface the chip, else
+ *  the user can never open the panel to see its context source. */
+export function hasProvenance(summary: SourcesSummary): boolean {
+  return summary.memory + summary.documents + summary.context > 0;
 }
 
 /** "2 souvenirs · 1 document" — every plural branch has its own message. */
@@ -46,6 +68,13 @@ export function summaryLabel(summary: SourcesSummary): string {
       summary.documents === 1
         ? m.sources_documents_one()
         : m.sources_documents_plural({ count: summary.documents }),
+    );
+  }
+  if (summary.context > 0) {
+    segments.push(
+      summary.context === 1
+        ? m.sources_context_one()
+        : m.sources_context_plural({ count: summary.context }),
     );
   }
   return segments.join(" · ");
@@ -128,7 +157,7 @@ export function sourceMatchesQuery(entry: SourceEntry, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (q === "") return true;
   const hay = [
-    itemTitle(entry.item),
+    entryTitle(entry),
     entry.item.text ?? "",
     ...itemMeta(entry.item),
   ]
@@ -137,8 +166,29 @@ export function sourceMatchesQuery(entry: SourceEntry, query: string): boolean {
   return hay.includes(q);
 }
 
-/** A document item has a real external referent (→ L2 "open the source"); a
- *  memory item does not. Drives the asymmetric "Source d'origine" slot. */
-export function isDocumentEntry(entry: SourceEntry): boolean {
-  return entry.group === "documents";
+/** A FINDABLE document: a documents-group item WITH a real file referent
+ *  (file_name) the documentary agent can open/attach — it drives the asymmetric
+ *  "Source d'origine" slot + the selectable checkbox. A documents-group item with
+ *  NO file_name is a synthesized CONTEXT excerpt (e.g. LightRAG's whole-graph
+ *  blob), which has no external source to open — so it must NOT offer the slot
+ *  (the attach would send a non-file reference like "lightrag-context" the agent
+ *  can never resolve). Memory items also have no file referent. */
+export function isFindableDocument(entry: SourceEntry): boolean {
+  return provenanceItemKind(entry.item, entry.group) === "document";
+}
+
+/** A synthesized context excerpt (a documents-group item declaring `context:true`,
+ *  or — backward-compat — one with no file_name). Shown for transparency, but never
+ *  attachable. */
+export function isContextExcerpt(entry: SourceEntry): boolean {
+  return provenanceItemKind(entry.item, entry.group) === "context";
+}
+
+/** Card title. A context excerpt gets a friendly label — its raw id is an
+ *  internal sentinel (e.g. "lightrag-context") that reads as a fake document
+ *  name; everything else uses the best identifying field (itemTitle). */
+export function entryTitle(entry: SourceEntry): string {
+  return isContextExcerpt(entry)
+    ? m.sources_context_title()
+    : itemTitle(entry.item);
 }

@@ -3,8 +3,11 @@ import { z } from "zod";
 import {
   getKpi,
   getKpiInput,
+  getSchema,
+  getSchemaInput,
   listAnomalies,
   listAnomaliesInput,
+  listSchemas,
   listTraces,
   listTracesInput,
   queryOpenClaw,
@@ -36,6 +39,30 @@ function fakeFetch() {
 function bodyOf(init: RequestInit | undefined): Record<string, unknown> {
   return JSON.parse(String(init?.body)) as Record<string, unknown>;
 }
+
+describe("schema registry tools wire format", () => {
+  it("list_schemas GETs /schemas", async () => {
+    const { impl, calls } = fakeFetch();
+    await listSchemas(CONFIG, { fetchImpl: impl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("http://127.0.0.1:3213/api/v1/schemas");
+    expect(calls[0]!.init?.method).not.toBe("POST");
+  });
+
+  it("get_schema GETs /schemas/:id (url-encoded id)", async () => {
+    const { impl, calls } = fakeFetch();
+    await getSchema(CONFIG, { id: "provenance.v1" }, { fetchImpl: impl });
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/schemas/provenance.v1",
+    );
+  });
+
+  it("get_schema input requires a non-empty id", () => {
+    const schema = z.object(getSchemaInput);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ id: "provenance.v1" }).success).toBe(true);
+  });
+});
 
 describe("queryOpenClaw wire format (H1)", () => {
   it("POSTs { question, payload } — never prompt/chatId/runId/params", async () => {
