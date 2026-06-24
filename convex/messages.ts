@@ -74,6 +74,10 @@ type ClientPart =
         score?: number;
         text?: string;
         file_name?: string;
+        // Additive (provenance/v1): human display name for a document item. Carried to
+        // the client as metadata (not stripped by compactProvenancePart); the Sources
+        // view shows it as the title while file_name stays the retrieval/attach key.
+        title?: string;
         collection?: string;
         // Additive (provenance/v1): documents-group synthesized context excerpt —
         // carried through to the client so the Sources view classifies it (see

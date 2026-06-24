@@ -35,6 +35,9 @@ export interface ProvenanceItem {
   score?: number;
   text?: string;
   file_name?: string;
+  /** Human DISPLAY name for a document item (provenance/v1, additive). The UI shows it
+   *  instead of file_name; file_name stays the stable retrieval/attach key. */
+  title?: string;
   collection?: string;
   context?: boolean;
 }
@@ -83,6 +86,7 @@ function parseItem(raw: unknown): ProvenanceItem | null {
   const score = num(o.score);
   const text = str(o.text, MAX_ITEM_TEXT_CHARS);
   const fileName = str(o.file_name);
+  const title = str(o.title);
   const collection = str(o.collection);
   if (id !== undefined) item.id = id;
   if (type !== undefined) item.type = type;
@@ -90,13 +94,16 @@ function parseItem(raw: unknown): ProvenanceItem | null {
   if (score !== undefined) item.score = score;
   if (text !== undefined) item.text = text;
   if (fileName !== undefined) item.file_name = fileName;
+  if (title !== undefined) item.title = title;
   if (collection !== undefined) item.collection = collection;
   // Additive discriminator: ONLY a literal `true` is accepted (a context excerpt);
   // any other value is dropped, like every other off-shape field on this boundary.
   if (o.context === true) item.context = true;
-  // An item must carry at least ONE identifying field — an empty object is
-  // noise, never a source the user could act on.
-  return Object.keys(item).length > 0 ? item : null;
+  // An item must carry at least ONE IDENTIFYING field — an empty object is noise,
+  // never a source the user could act on. `title` is display-only metadata for a
+  // document (it has no stable ref of its own), so a title-ONLY item is dropped.
+  const { title: _title, ...identifying } = item;
+  return Object.keys(identifying).length > 0 ? item : null;
 }
 
 /**

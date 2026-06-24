@@ -29,12 +29,13 @@ import { useToast, errorMessage } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import type { ProvenancePartView } from "./convexTypes";
 import {
+  attachReference,
   entryTitle,
   hasProvenance,
   isContextExcerpt,
   isFindableDocument,
   itemMeta,
-  itemTitle,
+  itemSubId,
   sourceEntries,
   sourceMatchesQuery,
   summarizeProvenance,
@@ -219,8 +220,9 @@ export function SourcesPanelContent({
 
   // Selection is DOCUMENT-only: the single bulk action is "Joindre les documents"
   // (memory sources have no fetchable file, so memory cards render no checkbox and
-  // `selected` only ever holds document keys). References = the document titles
-  // (file_name) handed to the documentary agent.
+  // `selected` only ever holds document keys). The reference handed to the documentary
+  // agent is the item's `file_name` — the STABLE retrieval key (e.g. the gdrive id) the
+  // server's attach gate allows — NOT the human `title` (which is display-only).
   const selectedDocs = useMemo(
     () =>
       sourceEntries(parts, "documents").filter(
@@ -241,7 +243,8 @@ export function SourcesPanelContent({
         sourceMessageId: messageId as Id<"messages">,
         items: selectedDocs.map((e) => ({
           entryKey: e.key,
-          reference: itemTitle(e.item),
+          // The retrieval key the server allows (file_name), never the display title.
+          reference: attachReference(e.item),
         })),
       });
       toast.success(m.sources_attach_dispatched());
@@ -500,6 +503,15 @@ function SourceCard({
       ) : null}
       <div className="oc-srccard__body">
         <div className="oc-srccard__title">{entryTitle(entry)}</div>
+        {isDocument && itemSubId(entry.item) ? (
+          // The stable underlying reference (e.g. the gdrive id) kept visible under the
+          // human title, so the user sees — and can search/cite — the real document ref.
+          // Only for a FINDABLE document — never a context excerpt (whose file_name is
+          // not an openable/citable ref even if a title is present).
+          <div className="oc-srccard__subid" title={itemSubId(entry.item)}>
+            {itemSubId(entry.item)}
+          </div>
+        ) : null}
         {meta.length > 0 || score !== null ? (
           <div className="oc-srccard__meta">
             {meta.map((chip) => (

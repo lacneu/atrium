@@ -91,6 +91,9 @@ export const messagePart = v.union(
         score: v.optional(v.number()),
         text: v.optional(v.string()),
         file_name: v.optional(v.string()),
+        // Human DISPLAY name for a document item (provenance/v1, additive). The UI shows
+        // it instead of file_name; file_name stays the stable retrieval/attach key.
+        title: v.optional(v.string()),
         collection: v.optional(v.string()),
         // Additive (provenance/v1): a documents-group item declaring itself a
         // synthesized CONTEXT excerpt (no openable source) — see convex/lib/provenance.

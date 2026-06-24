@@ -101,6 +101,9 @@ export interface ProvenanceItemView {
   score?: number;
   text?: string;
   file_name?: string;
+  /** Additive (provenance/v1): human display name for a document item. Shown as the
+   *  title instead of file_name; file_name stays the retrieval/attach/search key. */
+  title?: string;
   collection?: string;
   /** Additive (provenance/v1): a documents-group item declaring itself a synthesized
    *  CONTEXT excerpt (no openable source) — see convex/lib/provenance.ts. */

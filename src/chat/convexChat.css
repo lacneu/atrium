@@ -4919,6 +4919,16 @@
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
+/* The stable underlying reference (e.g. gdrive id) shown under a human title — muted,
+   monospace, and clamped so it stays a discreet secondary line. */
+.oc-srccard__subid {
+  margin-top: 0.1rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+}
 .oc-srccard__meta {
   display: flex;
   flex-wrap: wrap;

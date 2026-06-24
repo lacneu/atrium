@@ -68,7 +68,8 @@
       ],
       "properties": {
         "id": { "type": "string", "maxLength": 300, "description": "Stable item id (memory items; a context blob's sentinel)." },
-        "file_name": { "type": "string", "maxLength": 300, "description": "The openable source file/path. PRESENT ⟹ a findable document (unless `context:true`)." },
+        "file_name": { "type": "string", "maxLength": 300, "description": "The openable source file/path AND the stable retrieval/attach/search key. PRESENT ⟹ a findable document (unless `context:true`). For LightRAG this is the gdrive `file_source`." },
+        "title": { "type": "string", "maxLength": 300, "description": "Optional human DISPLAY name for a document item. When present the UI shows it as the heading instead of `file_name` (which stays the retrieval key, kept visible as a sub-line). Use it when `file_name` is an opaque id but a readable name is known." },
         "context": { "const": true, "description": "Declares a SYNTHESIZED context excerpt (no openable source), e.g. LightRAG's whole-graph blob. Only meaningful in a `documents` report. Only the literal `true` is honored." },
         "type": { "type": "string", "maxLength": 300, "description": "Free-form item type / retrieval mode (e.g. the LightRAG query mode). NOT a kind discriminator." },
         "collection": { "type": "string", "maxLength": 300 },

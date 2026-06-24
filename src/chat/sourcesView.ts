@@ -80,9 +80,27 @@ export function summaryLabel(summary: SourcesSummary): string {
   return segments.join(" · ");
 }
 
-/** Display title for one retrieved item, by best identifying field. */
+/** Display title for one retrieved item, by best identifying field. `title` (the human
+ *  document name, provenance/v1) wins when present; otherwise `file_name` — which, for a
+ *  LightRAG document, is the gdrive retrieval key shown when no readable name was found. */
 export function itemTitle(item: ProvenanceItemView): string {
-  return item.file_name ?? item.id ?? item.type ?? m.sources_item_untitled();
+  return (
+    item.title ?? item.file_name ?? item.id ?? item.type ?? m.sources_item_untitled()
+  );
+}
+
+/** The stable underlying identifier shown UNDER the title when a human `title` replaced
+ *  it (the gdrive `file_name`) — kept so the user sees, and can search, the real ref. */
+export function itemSubId(item: ProvenanceItemView): string | undefined {
+  return item.title && item.file_name ? item.file_name : undefined;
+}
+
+/** The reference handed to the documentary agent when attaching a document — the STABLE
+ *  retrieval key (`file_name`, e.g. a gdrive id) the server's attach gate allows, NEVER
+ *  the display `title`. A findable document always has a file_name; the fallback only
+ *  guards a malformed item. */
+export function attachReference(item: ProvenanceItemView): string {
+  return item.file_name ?? itemTitle(item);
 }
 
 /** Compact metadata chips for one item: type, date, collection, score. */
@@ -158,6 +176,9 @@ export function sourceMatchesQuery(entry: SourceEntry, query: string): boolean {
   if (q === "") return true;
   const hay = [
     entryTitle(entry),
+    // The underlying file_name (e.g. the gdrive retrieval key) — kept searchable even
+    // when a human `title` replaced it as the visible heading.
+    entry.item.file_name ?? "",
     entry.item.text ?? "",
     ...itemMeta(entry.item),
   ]

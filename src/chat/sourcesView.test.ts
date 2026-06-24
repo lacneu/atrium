@@ -2,12 +2,14 @@ import { describe, expect, test } from "vitest";
 import type { ProvenancePartView } from "./convexTypes";
 import { ANON_PROVENANCE_PARTS } from "../../convex/lib/provenance.fixtures";
 import {
+  attachReference,
   entryTitle,
   groupLabel,
   hasProvenance,
   isContextExcerpt,
   isFindableDocument,
   itemMeta,
+  itemSubId,
   itemTitle,
   orderedParts,
   sourceEntries,
@@ -37,6 +39,52 @@ const documentsPart = (
   source: "knowledge",
   group: "documents",
   items,
+});
+
+describe("document title vs underlying id (3.2.13: show name, keep id)", () => {
+  test("itemTitle prefers the human title; itemSubId surfaces the kept file_name", () => {
+    const item = {
+      file_name: "gdrive/abc123",
+      title: "Rapport Q3.docx",
+      type: "hybrid",
+    };
+    expect(itemTitle(item)).toBe("Rapport Q3.docx");
+    expect(itemSubId(item)).toBe("gdrive/abc123");
+  });
+
+  test("no title → itemTitle falls back to file_name (the gdrive id), no subId line", () => {
+    const item = { file_name: "gdrive/abc123", type: "hybrid" };
+    expect(itemTitle(item)).toBe("gdrive/abc123");
+    expect(itemSubId(item)).toBeUndefined();
+  });
+
+  test("the kept gdrive id stays SEARCHABLE even behind a human title", () => {
+    const part = documentsPart([
+      { file_name: "gdrive/abc123", title: "Rapport Q3.docx", type: "hybrid" },
+    ]);
+    const [entry] = sourceEntries([part], "documents");
+    expect(sourceMatchesQuery(entry, "Rapport")).toBe(true); // by title
+    expect(sourceMatchesQuery(entry, "abc123")).toBe(true); // by underlying id
+  });
+
+  test("attachReference is the file_name (retrieval key the server allows), NEVER the title", () => {
+    // Regression guard: the documentary-attach reference must stay file_name even when
+    // a human title is shown — else attachDocuments filters it and fails no_references.
+    expect(
+      attachReference({ file_name: "gdrive/abc123", title: "Rapport Q3.docx" }),
+    ).toBe("gdrive/abc123");
+  });
+
+  test("a CONTEXT item with title + file_name is NOT findable (card hides the sub-id)", () => {
+    // context:true wins → not an openable/citable document, so the card gates the
+    // sub-id line on isFindableDocument and must NOT show file_name as a doc ref.
+    const part = documentsPart([
+      { id: "lightrag-context", context: true, file_name: "gdrive/x", title: "Blob" },
+    ]);
+    const [entry] = sourceEntries([part], "documents");
+    expect(isContextExcerpt(entry)).toBe(true);
+    expect(isFindableDocument(entry)).toBe(false);
+  });
 });
 
 describe("summarizeProvenance", () => {

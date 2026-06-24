@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.4] — A LightRAG source document shows its readable name, not an opaque id
+
+Feature release. No breaking changes, no schema migration (the stored provenance item
+gains one optional field).
+
+- **A source document now shows its readable name as the title, while keeping its id.**
+  A LightRAG document used to appear titled by its opaque retrieval key (e.g.
+  `gdrive/<hash>`). When the item now carries a human `title` (provenance/v1, additive —
+  the openclaw-knowledge plugin parses it from the document's `File Name:` metadata
+  header), the Sources panel shows that **name** as the heading and keeps the underlying
+  reference as a muted **sub-line** beneath it. The id stays **searchable** (the search
+  box still matches it) and stays the **stable key** the documentary-attach action and
+  the "Source d'origine" fetch use — so titling a document never breaks selecting or
+  fetching it. A context excerpt (not a findable document) shows no such sub-line. Pairs
+  with **openclaw-knowledge 3.2.13**, which emits the title; documents without a title
+  are unchanged. *Deploy: `npx convex deploy` + rebuild the frontend AND bridge images.*
+
 ## [0.10.3] — Backend-latency probe for traffic-independent perf trends
 
 Observability release. No breaking changes, no schema migration, no UI change.

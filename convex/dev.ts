@@ -238,7 +238,7 @@ export const seedProvenanceDemo = mutation({
 
     const chatId = await ctx.db.insert("chats", {
       userId,
-      title: "LightRAG — contenu par document (3.2.11)",
+      title: "LightRAG — nom + contenu par document (3.2.13)",
       archived: false,
       sortKey: -2000,
       updatedAt: now,
@@ -272,12 +272,16 @@ export const seedProvenanceDemo = mutation({
         retrieval: { route: "lightrag", lightragMode: "hybrid" },
         items: [
           {
-            file_name: "guide-deploiement-helios.md",
+            // REAL prod shape: file_name is the opaque gdrive retrieval key; `title`
+            // is the readable name (the plugin parses it from the content metadata).
+            file_name: "gdrive/a1b2c3d4e5f600112233445566778899",
+            title: "Guide de deploiement Helios.docx",
             type: "hybrid",
             text: "Le deploiement d'Helios se fait en trois etapes : preparation de l'environnement, application des migrations, puis bascule du trafic. Chaque etape est reversible ; un rollback restaure l'etat precedent sans perte de donnees.",
           },
           {
-            file_name: "faq-helios.md",
+            file_name: "gdrive/99887766554433221100ffeeddccbbaa",
+            title: "FAQ Helios.docx",
             type: "hybrid",
             text: "Q : Helios supporte-t-il le multi-tenant ? R : Oui, chaque tenant est isole par schema, sans partage de donnees.",
           },

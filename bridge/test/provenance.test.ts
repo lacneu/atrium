@@ -177,6 +177,24 @@ describe("parseProvenanceReport (bounded, field-by-field)", () => {
     expect(offShape!.items[0]!.context).toBeUndefined();
   });
 
+  it("parses the additive `title` (kept on a document; a title-ONLY item is dropped)", () => {
+    const base = { v: 1, pluginId: "p", source: "knowledge", kind: "documents" };
+    // A real document keeps its display title alongside the file_name retrieval key.
+    const doc = parseProvenanceReport({
+      ...base,
+      items: [{ file_name: "gdrive/abc", title: "Rapport Q3.docx" }],
+    });
+    expect(doc!.items[0]!.title).toBe("Rapport Q3.docx");
+    expect(doc!.items[0]!.file_name).toBe("gdrive/abc");
+    // A title with NO identifying field is display-only noise → the item is dropped,
+    // so the report (now itemless) is rejected entirely.
+    const titleOnly = parseProvenanceReport({
+      ...base,
+      items: [{ title: "orphan name" }],
+    });
+    expect(titleOnly).toBeNull();
+  });
+
   it("BOUNDS: caps items, truncates text, refuses oversized totals", () => {
     const many = {
       ...MEMORY_REPORT,

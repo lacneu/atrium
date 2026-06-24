@@ -65,14 +65,22 @@ is used by BOTH the UI and the server attach gate so they never disagree:
 
 ### Item fields
 
-`id`, `file_name`, `context`, `type` (free-form / retrieval mode — NOT a discriminator),
-`collection`, `date`, `score`, `text`. `text` is the source excerpt, only at the
-operator's `full` level. What it holds depends on the retriever: for a **verbatim-
-injected** source (pgvector) it is the injected chunk; for a **synthesizing** retriever
-(LightRAG — see below) a document item's `text` is the **retrieved source content per
-document** (the material the graph synthesized from), shown so the user sees what the RAG
-pulled for each source. Never fabricate it. See the schema for bounds (24 items,
-2000-char text, 300-char strings).
+`id`, `file_name`, `title`, `context`, `type` (free-form / retrieval mode — NOT a
+discriminator), `collection`, `date`, `score`, `text`.
+
+`file_name` is BOTH the openable source and the **stable retrieval/attach/search key**.
+When it is an opaque id (e.g. LightRAG's gdrive `file_source` like `gdrive/<hash>`),
+set **`title`** to the human document name so the UI shows that as the heading while
+`file_name` stays the key (kept visible as a sub-line, so the id can still be searched
+and the document fetched). A plugin can derive the name from wherever it knows it — e.g.
+parsing a `File Name:` metadata header out of the retrieved content.
+
+`text` is the source excerpt, only at the operator's `full` level. What it holds depends
+on the retriever: for a **verbatim-injected** source (pgvector) it is the injected chunk;
+for a **synthesizing** retriever (LightRAG — see below) a document item's `text` is the
+**retrieved source content per document** (the material the graph synthesized from),
+shown so the user sees what the RAG pulled for each source. Never fabricate it. See the
+schema for bounds (24 items, 2000-char text, 300-char strings).
 
 ## Levels (operator opt-in)
 
