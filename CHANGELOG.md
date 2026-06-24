@@ -8,6 +8,22 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.3] — Backend-latency probe for traffic-independent perf trends
+
+Observability release. No breaking changes, no schema migration, no UI change.
+
+- **A synthetic backend-latency probe now tracks server-side execution latency,
+  independent of traffic.** A fixed-cadence cron (every 5 min) times a representative,
+  identity-free, content-free read (a bounded `messages` window) and records its
+  server-side execution latency, rolled up into a new `convex.probe.latency.avg_ms` KPI.
+  Because the cadence is fixed rather than driven by organic chat traffic (which is far
+  too sparse to form a trend), a change in the trend is attributable to the **backend
+  itself** — giving a clean apples-to-apples before/after for a NAS↔Convex-Cloud
+  migration. Honestly scoped: this is server-side query *execution* latency (a
+  backend-load proxy), NOT full client-perceived latency (network + render are excluded).
+  A failed probe records a high sentinel so the average visibly spikes rather than
+  silently dropping the sample. *Deploy: `npx convex deploy` registers the cron + KPI.*
+
 ## [0.10.2] — Each LightRAG source document shows the content it contributed
 
 Contract clarification. No breaking changes, no schema migration, no UI change.
