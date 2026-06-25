@@ -50,6 +50,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     ingestSecret: config.convexIngestSecret,
+    deltaFlushMs: config.deltaFlushMs,
     getFetcher: () => mediaProvider.current(),
   });
   const outboundScan: OutboundScan = (messageId, sinceMs, hosted) =>

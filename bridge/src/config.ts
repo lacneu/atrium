@@ -157,6 +157,16 @@ export interface BridgeConfig {
    * deployment with `npx convex env set BRIDGE_INGEST_SECRET ...`.
    */
   convexIngestSecret: string;
+  /**
+   * Coalesce window (ms) for streamed text deltas: the writer buffers per-message
+   * deltas and posts ONE `appendDelta` per flush (OPENCLAW_DELTA_FLUSH_MS, default
+   * 150). Each flush makes Convex re-push the full live text to the client, so a
+   * coarser window cuts the redundant re-push bandwidth roughly linearly (50→150 ≈
+   * 3× fewer pushes) at the cost of chunkier updates (Streamdown's `smooth` reveal
+   * keeps the rendered text continuous between flushes). Must stay far under the
+   * 12-min stuck-stream watchdog cutoff.
+   */
+  deltaFlushMs: number;
 
   // --- Inbound (Convex -> bridge) -------------------------------------------
   /**
@@ -377,6 +387,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
       inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
       convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
+      deltaFlushMs: parseIntEnv("OPENCLAW_DELTA_FLUSH_MS", 150),
       bridgeSharedSecret: requireEnv("BRIDGE_SHARED_SECRET"),
       port: parseIntEnv("BRIDGE_PORT", 8787),
       // 32 MiB: clears one base64-encoded 20 MiB attachment (~26.7 MiB) plus the
@@ -404,6 +415,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
 export interface SharedConfig {
   convexHttpActionsUrl: string;
   convexIngestSecret: string;
+  /** Delta coalesce window (ms) — see BridgeConfig.deltaFlushMs. Global tuning. */
+  deltaFlushMs: number;
   bridgeSharedSecret: string;
   port: number;
   maxBodyBytes: number;
@@ -465,6 +478,7 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
     return {
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
       convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
+      deltaFlushMs: parseIntEnv("OPENCLAW_DELTA_FLUSH_MS", 150),
       bridgeSharedSecret: requireEnv("BRIDGE_SHARED_SECRET"),
       port: parseIntEnv("BRIDGE_PORT", 8787),
       maxBodyBytes: parseIntEnv("BRIDGE_MAX_BODY_BYTES", 33_554_432),
@@ -539,6 +553,7 @@ export function buildInstanceConfig(
     inboundTtlMs: shared.inboundTtlMs,
     convexHttpActionsUrl: shared.convexHttpActionsUrl,
     convexIngestSecret: shared.convexIngestSecret,
+    deltaFlushMs: shared.deltaFlushMs,
     bridgeSharedSecret: shared.bridgeSharedSecret,
     port: shared.port,
     maxBodyBytes: shared.maxBodyBytes,

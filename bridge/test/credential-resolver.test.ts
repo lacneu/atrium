@@ -17,6 +17,7 @@ const DEV_JSON = JSON.stringify(DEV);
 const SHARED: SharedConfig = {
   convexHttpActionsUrl: "https://x.convex.site",
   convexIngestSecret: "ingest",
+  deltaFlushMs: 150,
   bridgeSharedSecret: "shared",
   port: 8787,
   maxBodyBytes: 1000,

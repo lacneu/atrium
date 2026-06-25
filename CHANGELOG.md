@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.10] — Streaming re-pushes ~3× less redundant data (coarser delta coalescing)
+
+Network optimization. Bridge-only; no schema migration.
+
+- **The bridge coalesces streamed text deltas over a wider window, cutting redundant
+  live-text re-push.** Convex re-pushes the FULL live text on every streamed flush, so
+  the cumulative bytes a client receives grow O(n²) with reply length (a ~1.8 KB reply
+  pushed ~75× its own size). Widening the bridge's coalesce window from 50 ms to 150 ms
+  posts ⅓ as many flushes → Convex re-pushes ⅓ as often → measured **~3× less** redundant
+  bandwidth (push amplification 75→25 on that reply). The window is tunable via
+  `OPENCLAW_DELTA_FLUSH_MS` (default 150); Streamdown's smooth reveal keeps the rendered
+  text continuous between the coarser flushes, and the heartbeat stays far under the
+  stuck-stream watchdog. This is the low-risk first step; a fundamental incremental-delivery
+  rework (stop re-pushing the full text at all) is held pending whether long replies still
+  lag over the WAN now that 0.10.9 removed the client-side parse cost. *Deploy: rebuild the
+  bridge image (set `OPENCLAW_DELTA_FLUSH_MS` to tune); `npx convex deploy` for the lockstep
+  version (no Convex code changed).*
+
 ## [0.10.9] — Streamed replies render in O(n) at any length, smooth restored
 
 Corrective release. The fundamental fix for the streaming jank the 0.10.8 palliative

@@ -33,6 +33,7 @@ export function sharedFromConfig(config: BridgeConfig): SharedConfig {
   return {
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     convexIngestSecret: config.convexIngestSecret,
+    deltaFlushMs: config.deltaFlushMs,
     bridgeSharedSecret: config.bridgeSharedSecret,
     port: config.port,
     maxBodyBytes: config.maxBodyBytes,

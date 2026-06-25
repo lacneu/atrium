@@ -32,6 +32,7 @@ const CONFIG: BridgeConfig = {
   inboundTtlMs: 1000,
   convexHttpActionsUrl: "http://convex.invalid",
   convexIngestSecret: "i",
+  deltaFlushMs: 150,
   bridgeSharedSecret: "shared-secret",
   port: 0,
   maxBodyBytes: 4096,
