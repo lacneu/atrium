@@ -8,6 +8,31 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.8] — Streaming replies stop slowing down as they grow (palliative)
+
+Corrective release. Fixes the streaming reply that lagged more and more as it got
+longer — visibly janky on long answers, while the OpenClaw Control UI stayed smooth.
+Frontend-only; no schema migration.
+
+- **The streamed markdown is no longer re-parsed from scratch on every token.** The
+  assistant message re-rendered the WHOLE growing reply as markdown on each streamed
+  token — an O(n²) cost that is invisible on short answers and increasingly janks long
+  ones (measured: inter-frame gap 12 ms → 41 ms and dropped frames 2% → 76% across one
+  long reply; plain text of the same length stayed flat, isolating the markdown re-parse
+  as the cause — not the network, the backend, or the model). Two changes cut it:
+  - **the smooth typewriter reveal is turned off** — it re-parsed the full text on every
+    animation frame, multiplying the cost above the token rate. Text now appears
+    chunk-as-it-arrives, closer to the Control UI. *Behaviour change: the gradual
+    letter-by-letter animation is gone.*
+  - **completed markdown blocks are memoized** (per block, keyed by parsed node), so
+    finished paragraphs / lists / code blocks skip re-rendering on later tokens.
+
+  Result on a medium reply: dropped frames **76% → 26%**. This is a **PALLIATIVE** —
+  very long replies still degrade, and the redundant full-text re-push over the socket
+  is untouched; a fundamental incremental-render + incremental-delivery rework follows in
+  the next release. *Deploy: rebuild the frontend image; run `npx convex deploy` so the
+  lockstep version stays honest (no Convex code changed).*
+
 ## [0.10.7] — "Joindre les documents" delivers files again (a clean session per fetch)
 
 Corrective release. Fixes the documentary "attach source documents" action, which had
