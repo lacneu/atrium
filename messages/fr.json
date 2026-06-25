@@ -358,6 +358,7 @@
   "tools_outcome_exit": "exit {code}",
   "tools_outcome_ms": "{ms} ms",
   "tools_output_not_transmitted": "Sortie non transmise par la passerelle",
+  "tools_field_omitted": "Contenu volumineux ({size} Ko) — non affiché ici pour alléger le chargement.",
   "tools_activity_running": "en cours",
   "tools_activity_done": "terminé",
   "tools_activity_expand": "Afficher le détail des appels d'outils",

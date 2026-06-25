@@ -10,6 +10,14 @@ import {
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
+import { m } from "@/paraglide/messages.js";
+
+// A localized "(N KB, not shown here)" note for a part field ELIDED from the window
+// read (loadChatView PART_FIELD_CAP) — shown in place of the omitted output/input/
+// reasoning so the card reads honestly instead of appearing empty.
+function omittedNote(bytes: number | undefined): string {
+  return m.tools_field_omitted({ size: String(Math.round((bytes ?? 0) / 1024)) });
+}
 
 // Maps a Convex `messages` document (joined with its ordered `messageParts`)
 // into the assistant-ui `ThreadMessageLike` shape consumed by
@@ -57,11 +65,16 @@ function toolPartToActivity(
     // Same structural fields ToolCard consumed when assistant-ui routed
     // tool-call content parts to it: `args` (parsed input), `result` (output).
     args: (part.input ?? {}) as Record<string, unknown>,
-    result: part.output,
+    // Oversized output/input are elided from the window read; show the size note in
+    // place of the payload (the full value stays in the DB, not on the hot path).
+    result: part.outputOmitted ? omittedNote(part.outputBytes) : part.output,
     // `argsText` keeps the JSON form available so a tool card can show inputs
     // while the tool is still running.
-    argsText:
-      part.input === undefined ? undefined : safeStringify(part.input),
+    argsText: part.inputOmitted
+      ? omittedNote(part.inputBytes)
+      : part.input === undefined
+        ? undefined
+        : safeStringify(part.input),
     phase: typeof part.phase === "string" ? part.phase : undefined,
   };
 }
@@ -116,7 +129,10 @@ export function convertConvexMessage(
   //    under the reply, never inside the body).
   message.parts.forEach((p, index) => {
     if (isReasoningPart(p)) {
-      content.push({ type: "reasoning", text: p.text } as ContentPart);
+      content.push({
+        type: "reasoning",
+        text: p.textOmitted ? omittedNote(p.textBytes) : (p.text ?? ""),
+      } as ContentPart);
     } else if (isToolPart(p)) {
       toolParts.push(toolPartToActivity(message, index, p));
     } else if (p.kind === "provenance") {

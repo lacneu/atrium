@@ -43,8 +43,14 @@ export type ConvexMessagePartView =
       kind: "tool";
       name: string;
       phase: ToolPhase | string;
+      // input/output are ELIDED from the window read when oversized (loadChatView,
+      // PART_FIELD_CAP) — `*Omitted` + `*Bytes` let the card show a size note.
       input?: unknown;
+      inputOmitted?: boolean;
+      inputBytes?: number;
       output?: unknown;
+      outputOmitted?: boolean;
+      outputBytes?: number;
     }
   | {
       kind: "media";
@@ -63,7 +69,10 @@ export type ConvexMessagePartView =
     }
   | {
       kind: "reasoning";
-      text: string;
+      // `text` elided when oversized (same rationale as tool fields).
+      text?: string;
+      textOmitted?: boolean;
+      textBytes?: number;
     }
   | ProvenancePartView;
 

@@ -45,10 +45,25 @@ const MESSAGE_WINDOW = 200;
 // storage id to a signed URL (`url`) so the browser can render it directly;
 // the raw storageId is intentionally NOT returned.
 type ClientPart =
-  | { kind: "tool"; name: string; phase: string; input?: unknown; output?: unknown }
+  // Oversized `input`/`output` are ELIDED from this window projection (see
+  // PART_FIELD_CAP): a big tool dump (e.g. a 15KB web_search result) re-pushed in
+  // full on every window change stalled the WAN. `*Omitted` + `*Bytes` let the UI
+  // show a "(N KB, not loaded here)" line; the full value stays in the DB.
+  | {
+      kind: "tool";
+      name: string;
+      phase: string;
+      input?: unknown;
+      inputOmitted?: boolean;
+      inputBytes?: number;
+      output?: unknown;
+      outputOmitted?: boolean;
+      outputBytes?: number;
+    }
   | { kind: "media"; url: string | null; filename: string; mimeType: string }
   | { kind: "file"; url: string | null; filename: string; mimeType: string }
-  | { kind: "reasoning"; text: string }
+  // `text` elided when oversized (same rationale as tool fields).
+  | { kind: "reasoning"; text?: string; textOmitted?: boolean; textBytes?: number }
   // Provenance reports (docs/PROVENANCE_CONTRACT.md). The REACTIVE projection
   // is COMPACT: item texts are stripped (Codex review P2 — the window-wide
   // stream must never carry megabytes of excerpts); `hasExcerpts` flags that
@@ -110,6 +125,22 @@ function compactProvenancePart(part: StoredProvenancePart): StoredProvenancePart
   return { ...part, items, ...(hasExcerpts ? { hasExcerpts: true } : {}) };
 }
 
+// Oversized tool/reasoning part fields are ELIDED from the window projection.
+// loadChatView ships the WHOLE MESSAGE_WINDOW and re-runs on any message change
+// (e.g. finalize), so a large field — measured: a single web_search turn carried
+// ~89KB of raw tool `output`, re-pushed in full over the WS on each change —
+// stalled delivery over the WAN. The full value stays in the DB (and in the
+// stored part); only this reactive read drops it, flagged with `*Bytes` so the UI
+// renders a "(N KB, not shown here)" line instead of the payload. Cap chosen from
+// the wire: ordinary tool outputs are ≤~6KB, the pathological dumps are 10–15KB.
+const PART_FIELD_CAP = 8192;
+// Real UTF-8 byte size (what crosses the wire), NOT UTF-16 `.length`: a CJK/emoji
+// field is multi-byte, so `.length` undercounts and would let an oversized payload
+// slip past the cap (and mis-report its size).
+const utf8 = new TextEncoder();
+const fieldBytes = (v: unknown): number =>
+  v === undefined ? 0 : utf8.encode(JSON.stringify(v)).length;
+
 // Shared CORE of the chat view: the EXACT bounded read + per-message part
 // resolution the client renders from. Extracted so the key-authed diagnostic
 // (chatStateInternal) consumes the SAME data path as listByChat — a structural
@@ -147,15 +178,23 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
         const parts: ClientPart[] = [];
         for (const { part } of partDocs) {
           switch (part.kind) {
-            case "tool":
+            case "tool": {
+              // Elide oversized input/output from the window read (see PART_FIELD_CAP).
+              const inBytes = fieldBytes(part.input);
+              const outBytes = fieldBytes(part.output);
               parts.push({
                 kind: "tool",
                 name: part.name,
                 phase: part.phase,
-                input: part.input,
-                output: part.output,
+                ...(inBytes > PART_FIELD_CAP
+                  ? { inputOmitted: true, inputBytes: inBytes }
+                  : { input: part.input }),
+                ...(outBytes > PART_FIELD_CAP
+                  ? { outputOmitted: true, outputBytes: outBytes }
+                  : { output: part.output }),
               });
               break;
+            }
             case "media":
             case "file": {
               // Resolve storage id -> signed URL. Requires a live deployment to
@@ -169,9 +208,15 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               });
               break;
             }
-            case "reasoning":
-              parts.push({ kind: "reasoning", text: part.text });
+            case "reasoning": {
+              const tBytes = fieldBytes(part.text);
+              parts.push(
+                tBytes > PART_FIELD_CAP
+                  ? { kind: "reasoning", textOmitted: true, textBytes: tBytes }
+                  : { kind: "reasoning", text: part.text },
+              );
               break;
+            }
             case "provenance":
               // COMPACT projection (Codex review P2): the reactive stream
               // carries the whole MESSAGE_WINDOW, so shipping the `full`-level
@@ -323,8 +368,11 @@ export const chatStateInternal = internalQuery({
               kind: "tool" as const,
               name: p.name, // base tool name as stored (no instantiated args)
               phase: p.phase ?? null,
-              hasInput: p.input !== undefined,
-              hasOutput: p.output !== undefined,
+              // Account for fields ELIDED by loadChatView (this consumes its view):
+              // an oversized input/output is dropped but flagged, so presence must
+              // OR in the omitted flag — else a big tool reads as having no IO.
+              hasInput: p.input !== undefined || p.inputOmitted === true,
+              hasOutput: p.output !== undefined || p.outputOmitted === true,
             };
           case "media":
           case "file":

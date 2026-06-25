@@ -8,7 +8,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -415,5 +415,126 @@ describe("streamingText row removal on delete / cascade", () => {
         .collect();
       expect(orphan).toEqual([]); // no streamingText row survives the chat delete
     });
+  });
+});
+
+// Window-payload guard (perf): loadChatView ships the WHOLE message window and
+// re-runs on any message change, so a large tool/reasoning field re-pushed in full
+// over the WS stalled delivery over the WAN (measured: one web_search turn = ~89KB
+// of raw `output`). listByChat must ELIDE oversized part fields (flag + byte size),
+// keeping small ones intact. This is the regression guard for that fix.
+describe("listByChat elides oversized part fields from the window", () => {
+  test("big tool output/input + big reasoning omitted (flagged); small kept; window bounded", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "hi",
+        updatedAt: 1,
+      });
+      // 0: tool with a BIG output (> PART_FIELD_CAP 8192) -> output elided
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "tool" as const,
+          name: "web_search",
+          phase: "completed",
+          input: { q: "x" },
+          output: "Z".repeat(20000),
+        },
+      });
+      // 1: tool with a small output -> kept in full
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 1,
+        part: {
+          kind: "tool" as const,
+          name: "calc",
+          phase: "completed",
+          input: { a: 1 },
+          output: "42",
+        },
+      });
+      // 2: tool with a BIG input -> input elided
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 2,
+        part: {
+          kind: "tool" as const,
+          name: "ingest",
+          phase: "completed",
+          input: "Y".repeat(20000),
+        },
+      });
+      // 3: BIG reasoning -> text elided
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 3,
+        part: { kind: "reasoning" as const, text: "R".repeat(20000) },
+      });
+      // 4: CJK output ~9KB UTF-8 but only 3000 UTF-16 units -> must still elide
+      // (the cap counts real bytes, not `.length`).
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 4,
+        part: {
+          kind: "tool" as const,
+          name: "cjk",
+          phase: "completed",
+          output: "好".repeat(3000),
+        },
+      });
+      return { userId, chatId, messageId };
+    });
+
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const view = await as.query(api.messages.listByChat, { chatId });
+    const msg = view.find((m) => m._id === messageId);
+    if (!msg) throw new Error("message not in view");
+    const part = (i: number) => msg.parts[i] as Record<string, unknown>;
+
+    // big output ELIDED: flagged + byte size, NO output payload
+    expect(part(0).outputOmitted).toBe(true);
+    expect(part(0).outputBytes as number).toBeGreaterThan(8192);
+    expect(part(0).output).toBeUndefined();
+    // small output kept in full
+    expect(part(1).output).toBe("42");
+    expect(part(1).outputOmitted).toBeUndefined();
+    // big input ELIDED
+    expect(part(2).inputOmitted).toBe(true);
+    expect(part(2).input).toBeUndefined();
+    // big reasoning ELIDED
+    expect(part(3).textOmitted).toBe(true);
+    expect(part(3).text).toBeUndefined();
+    // CJK: 3000 chars (.length < cap) but ~9KB UTF-8 -> elided (real-byte cap).
+    expect(part(4).outputOmitted).toBe(true);
+    expect(part(4).outputBytes as number).toBeGreaterThan(8192);
+
+    // The whole window payload is BOUNDED — the big fields are NOT in it.
+    expect(JSON.stringify(view).length).toBeLessThan(5000);
+
+    // The SOC2 diagnostic (chatStateInternal) consumes this same elided view; an
+    // elided tool must still report hasOutput (presence flag preserved, not dropped).
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    if (!state.ok) throw new Error("chat-state not ok");
+    const diagTool = state.messages
+      .flatMap((mm) => mm.parts)
+      .find((p) => p.kind === "tool" && p.name === "web_search");
+    expect(diagTool).toMatchObject({ hasInput: true, hasOutput: true });
   });
 });

@@ -358,6 +358,7 @@
   "tools_outcome_exit": "exit {code}",
   "tools_outcome_ms": "{ms} ms",
   "tools_output_not_transmitted": "Output not transmitted by the gateway",
+  "tools_field_omitted": "Large content ({size} KB) — not shown here to keep loading fast.",
   "tools_activity_running": "running",
   "tools_activity_done": "done",
   "tools_activity_expand": "Show tool call details",

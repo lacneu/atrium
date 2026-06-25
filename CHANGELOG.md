@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.13] — Tool-heavy chats stop lagging on the wire (the window no longer ships full tool outputs)
+
+Corrective performance fix. No schema migration.
+
+- **The chat window read no longer re-ships large tool outputs (and reasoning) over the
+  network.** `listByChat`/`loadChatView` returns the whole recent message window and
+  re-runs on any message change (e.g. each turn's finalize). It was including the FULL
+  raw tool `output` for every message — one `web_search` turn alone carried ~89 KB of raw
+  results, and the window re-pushed ~104 KB in full over the WebSocket on every change.
+  Over a WAN this made the streamed reply visibly trail the gateway by several seconds —
+  Atrium had received the text but was still "writing" while those big frames cleared.
+  Now any tool `input`/`output` or `reasoning` text over 8 KB is **elided from the window
+  read** (the full value stays in the database); the message shows a "(N KB — not shown
+  here)" note in its place. The window stays small no matter how tool-heavy the history
+  gets — measured: that 104 KB window drops to ~15 KB. Diagnosis was wire-level (a HAR
+  capture of the Convex sync socket); smooth-reveal and delta cadence were ruled out by
+  measurement first.
+- *Deploy: `npx convex deploy` (the window read changed) + rebuild the frontend image (the
+  card shows the size note).*
+
 ## [0.10.12] — Configure (or remove) the instructions Atrium injects into each turn
 
 Feature release. No breaking changes; the stored config gains one optional field.
