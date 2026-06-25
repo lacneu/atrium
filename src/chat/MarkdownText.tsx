@@ -16,7 +16,9 @@ import { isNavigableHref } from "./markdownLinks";
 //     file"). Render those as plain TEXT — the name stays visible, no broken nav.
 //     (A genuinely downloadable agent file is hosted separately as a media part
 //     with an absolute storage URL, which IS navigable and unaffected here.)
-function AgentAnchor({
+// Exported for testing (the render-level untrusted-link behavior, not just the pure
+// `isNavigableHref` helper).
+export function AgentAnchor({
   href,
   children,
   // Streamdown passes the parsed hast `node` to every component; strip it so it is

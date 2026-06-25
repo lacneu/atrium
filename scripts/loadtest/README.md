@@ -37,8 +37,34 @@ node scripts/loadtest/run.mjs --users 10 --chats 5 --agents 300 --instances 2 --
 
 Flags (all optional): `--users` (R browsers), `--chats` (C per user), `--agents`
 (catalogue size, split across `--instances`), `--instances` (M), `--deltas` (K per
-turn), `--deltaMs` (cadence between deltas), `--settleMs`, and connection overrides
-`--url` / `--site` / `--secret` (default to the local dev ports + `devingest`).
+turn), `--deltaChars` (pad each delta toward a realistic reply size), `--deltaMs`
+(cadence between deltas), `--settleMs`, `--assert` (regression-gate mode, below), and
+connection overrides `--url` / `--site` / `--secret` (default to the local dev ports
++ `devingest`).
+
+## Regression gate (`--assert`) — guard against FUTURE perf regressions
+
+```bash
+node scripts/loadtest/run.mjs --users 3 --chats 3 --agents 6 --instances 1 --deltas 30 --deltaMs 30 --assert
+```
+
+With `--assert` the run prints the usual report, then checks **structural** (count-based,
+not timing-flaky) thresholds and **exits non-zero on a breach** — so a change that
+regresses the streaming perf invariants fails this gate. It is the load-test half of the
+"no perf regressions in future development" guard (the unit-test half lives in
+`convex/bridgeIngest.test.ts` — the 0.9.0 subscription-split read-set invariant). It needs
+the local dev stack (Convex `:3212`/`:3213`), so run it as a **pre-release / on-demand
+gate**, not in the no-backend CI unit run. The thresholds (CFG-relative):
+
+- **push amplification ≤ `deltas*0.6 + 2`** — a reactive query must not re-push more than
+  the full live text per flush (the live-text isolation / 0.9.0 split holding). Baseline ≈ K/2.
+- **re-runs/subscriber ≤ `chats*(deltas+12) + 30`** — a subscriber must re-run only for its
+  OWN chats' turns; a cross-user amplification regression (re-runs scaling with TOTAL chats)
+  trips it. (Verified: injecting the 0.9.0 regression — `appendDelta` also patching the
+  `messages` doc — pushed re-runs/sub from ~104 to ~195 and the gate FAILED, exit 1.)
+- **appendDelta write late/early ratio ≤ 2.5** — catches a per-delta write growing with
+  position (an O(n)/delta → O(n²)/turn write regression).
+- **ingest errors = 0**.
 
 `provision()` is idempotent: it deletes the harness's `lt-inst-*` agents before
 re-seeding, so repeated runs don't accumulate a growing catalogue. It does NOT reset

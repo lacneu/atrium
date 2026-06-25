@@ -40,6 +40,11 @@ const CFG = {
   deltaChars: Number(a.deltaChars ?? 0),
   deltaMs: Number(a.deltaMs ?? 40),
   settleMs: Number(a.settleMs ?? 1500),
+  // --assert turns the run into a REGRESSION GATE: after the report it checks
+  // STRUCTURAL (count-based, not timing-flaky) thresholds and exits non-zero on a
+  // breach, so a future change that regresses the streaming perf invariants fails CI
+  // / the pre-release gate. See the thresholds + rationale at the end of main().
+  assert: a.assert === true || a.assert === "1" || a.assert === "true",
 };
 
 const log = (...m) => console.log(...m);
@@ -248,6 +253,71 @@ async function main() {
   log("========================================");
 
   await Promise.all([admin.client.close(), ...subs.map((s) => s.client.close())]);
+
+  // REGRESSION GATE (--assert). STRUCTURAL thresholds only (count-based, not absolute
+  // timing) so the gate is robust across machines / CI load. Each guards a perf
+  // invariant we measured + want to hold for all future development:
+  //   - push amplification: catches a query re-pushing MORE than the full live text
+  //     per flush (the 0.9.0 split / live-text isolation regressing). Baseline ≈ K/2.
+  //   - re-runs/subscriber: catches cross-user reactive AMPLIFICATION — a subscriber
+  //     must re-run only for its OWN chats' turns, never scale with total system load.
+  //   - appendDelta write flatness: catches a per-delta write growing with position
+  //     (an O(n)/delta → O(n^2)/turn write regression). Relative ratio, generous bound.
+  //   - ingest errors: any limit blow / failure.
+  if (CFG.assert) {
+    const fails = [];
+    // FALSE-PASS guard FIRST: the gate must actually have OBSERVED the streaming. A
+    // broken subscription / wrong --url|--site|--secret / too-slow propagation yields
+    // EMPTY metrics (amp=[], 0 first-deltas/finalizes) that would otherwise read as
+    // PASS — a gate that never ran its checks. Require every driven turn to be fully
+    // observed before trusting the thresholds below.
+    if (
+      amp.length < allChats.length ||
+      firstDeltaSeen < allChats.length ||
+      finalizeSeen < allChats.length
+    ) {
+      fails.push(
+        `incomplete observations: amplification ${amp.length}/${allChats.length}, ` +
+          `first-delta ${firstDeltaSeen}/${allChats.length}, finalize ${finalizeSeen}/${allChats.length} ` +
+          `— the gate could NOT verify its invariants (broken subscription / wrong ` +
+          `--url|--site|--secret / propagation slower than --settleMs). NOT a pass.`,
+      );
+    }
+    const ampMax = amp.length ? Math.max(...amp) : 0;
+    const ampBound = CFG.deltas * 0.6 + 2;
+    if (ampMax > ampBound)
+      fails.push(
+        `push amplification ${ampMax.toFixed(1)} > ${ampBound.toFixed(1)} ` +
+          `(a reactive query re-pushes more than the full live text per flush)`,
+      );
+    // Bound ≈ 1.5× the healthy max (own-chats × per-turn re-runs), so a CROSS-USER
+    // amplification regression (re-runs scaling with TOTAL chats, ~users× higher)
+    // trips it while normal coalescing variance never does.
+    const rerunMax = rerunVals.length ? Math.max(...rerunVals) : 0;
+    const rerunBound = CFG.chats * (CFG.deltas + 12) + 30;
+    if (rerunMax > rerunBound)
+      fails.push(
+        `re-runs/subscriber ${rerunMax} > ${rerunBound} ` +
+          `(cross-user reactive amplification: a subscriber re-runs beyond its OWN chats)`,
+      );
+    const ratio = lm / (em || 1);
+    if (appendLat.length >= 8 && ratio > 2.5)
+      fails.push(
+        `appendDelta write latency late/early ×${ratio.toFixed(2)} > 2.5 ` +
+          `(per-delta write grew with position — O(n)/delta write regression)`,
+      );
+    if (errors.length > 0) fails.push(`ingest errors ${errors.length} > 0`);
+
+    if (fails.length) {
+      log("\nPERF GATE: FAIL ❌");
+      for (const f of fails) log("  - " + f);
+      process.exit(1);
+    }
+    log(
+      "\nPERF GATE: PASS ✓ (push amplification, re-run fan-out, write flatness, " +
+        "ingest errors all within bounds)",
+    );
+  }
 }
 
 main().catch((e) => {

@@ -45,7 +45,13 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
   if (mime.startsWith("image/")) {
     return (
       <figure className="oc-media oc-media--image">
-        <img src={url} alt={name} className="oc-media__img" loading="lazy" />
+        <img
+          src={url}
+          alt={name}
+          className="oc-media__img"
+          loading="lazy"
+          decoding="async"
+        />
         <figcaption className="oc-media__name">{name}</figcaption>
       </figure>
     );

@@ -1466,6 +1466,40 @@ export const seedChatsForUser = mutation({
   },
 });
 
+// Bulk-seed N alternating COMPLETE user/assistant messages into one chat, for
+// perf-testing the long-thread regime (message-list render, scroll, loadChatView
+// read cost) without driving N real turns. Realistic multi-sentence assistant
+// bodies so each row has a representative height. Dev-gated. Inserts are bounded by
+// `count` (keep well under the per-mutation write limit).
+export const seedManyMessages = mutation({
+  args: { chatId: v.id("chats"), count: v.number() },
+  handler: async (ctx, { chatId, count }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) throw new Error("seedManyMessages: chat not found");
+    const now = Date.now();
+    const body =
+      "This is a representative assistant reply with a few sentences of prose so " +
+      "the message has a realistic height in the thread. It mentions a couple of " +
+      "ideas and wraps across multiple lines the way a real answer would. ";
+    for (let i = 0; i < count; i++) {
+      const role = i % 2 === 0 ? ("user" as const) : ("assistant" as const);
+      await ctx.db.insert("messages", {
+        chatId,
+        userId: chat.userId,
+        role,
+        status: "complete" as const,
+        text:
+          role === "user"
+            ? `Question ${i}: how does the thread perform with many messages?`
+            : `Answer ${i}. ${body.repeat(3)}`,
+        updatedAt: now + i,
+      });
+    }
+    return { seeded: count };
+  },
+});
+
 // A fresh user with NO groups and NO direct grants -> enrichUserAgents resolves
 // the ALL pool (every discovered+present agent). Returns the userId so the probe
 // below can measure that exact path. Dev-gated.

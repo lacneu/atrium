@@ -144,6 +144,11 @@ services:
       # response headers so a non-responsive gateway can't stall a turn (the body
       # then streams at the upload's pace). Default 60s.
       - OPENCLAW_MEDIA_FETCH_TIMEOUT_MS=${OPENCLAW_MEDIA_FETCH_TIMEOUT_MS:-60000}
+      # Streamed-text coalesce window (ms): the bridge posts ONE appendDelta per flush;
+      # each flush makes Convex re-push the full live text, so a coarser window cuts that
+      # redundant bandwidth ~linearly (default 150 ≈ 3× less than the old 50). Higher =
+      # less bandwidth, chunkier updates (Streamdown's smooth reveal keeps it readable).
+      - OPENCLAW_DELTA_FLUSH_MS=${OPENCLAW_DELTA_FLUSH_MS:-150}
       - BRIDGE_PORT=8787
     # ── TO ENABLE shared-fs media (deterministic delivery — see below) ──────────
     # shared-fs is the ONLY way to deliver agent-produced files DETERMINISTICALLY:
