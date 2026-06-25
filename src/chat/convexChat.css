@@ -1555,8 +1555,9 @@
 }
 
 /* Markdown (assistant turns) — GitHub-flavored, themed via shadcn tokens.
-   Scoped to the MarkdownTextPrimitive wrapper so only assistant content is
-   affected; user/system stay plain. Matches the Open WebUI reading rhythm. */
+   Scoped to the `.oc-md` markdown wrapper (StreamdownTextPrimitive) so only
+   assistant content is affected; user/system stay plain. Matches the Open WebUI
+   reading rhythm. */
 .oc-md {
   font-size: 0.95rem;
   line-height: 1.65;
@@ -1669,6 +1670,28 @@
 .oc-md th {
   background: var(--muted);
   font-weight: 600;
+}
+/* Streamdown reconciliation: the markdown renderer (StreamdownTextPrimitive) wraps
+ * code blocks and tables in its OWN styled `[data-streamdown]` containers (border,
+ * background, scroll, copy/download controls — Tailwind-sourced via src/index.css).
+ * Neutralize the legacy `.oc-md pre`/`table` framing INSIDE those wrappers so it does
+ * not double up (the extra border/background/padding/scroll otherwise fought the new
+ * controls — see CHANGELOG 0.10.9). Inline code (`.oc-md :not(pre) > code`) and prose
+ * blocks are NOT inside `[data-streamdown]`, so they keep their styling untouched.
+ * Cell borders (`.oc-md th/td`) are kept on purpose (safe default if streamdown does
+ * not border cells). */
+.oc-md [data-streamdown] pre {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+.oc-md [data-streamdown] table {
+  display: table;
+  width: auto;
+  margin: 0;
+  overflow: visible;
 }
 /* Misc */
 .oc-md hr {

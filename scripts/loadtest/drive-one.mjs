@@ -40,11 +40,20 @@ const { messageId } = await ingest(site, secret, {
 });
 let full = "";
 for (let k = 0; k < K; k++) {
-  const text = mode === "md" ? mdFragment(k) : `tok${k} `.padEnd(chars, "x");
+  // mode "code" = ONE growing code block (single markdown block — the worst case for
+  // block-level memoization: the whole block re-parses on every update). Opens the
+  // fence once, then appends lines; stays a single open block for the whole stream.
+  const text =
+    mode === "code"
+      ? (k === 0 ? "```js\n" : "") + `const x${k} = ${k};\n`
+      : mode === "md"
+        ? mdFragment(k)
+        : `tok${k} `.padEnd(chars, "x");
   full += text;
   await ingest(site, secret, { op: "appendDelta", messageId, text });
   if (ms) await sleep(ms);
 }
+if (mode === "code") full += "```\n"; // close the fence for the persisted final text
 console.error(`END=${Date.now()}`);
 // Finalize with the SAME accumulated text so the persisted message matches what
 // streamed (otherwise the final render would differ from the streamed content).

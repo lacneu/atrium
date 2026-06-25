@@ -8,6 +8,34 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.9] — Streamed replies render in O(n) at any length, smooth restored
+
+Corrective release. The fundamental fix for the streaming jank the 0.10.8 palliative
+only softened. Frontend-only; no schema migration.
+
+- **The assistant markdown renderer now parses incrementally, per block.** The reply
+  was re-parsed as a whole markdown document on every streamed token — O(n²) that
+  janked long replies (the 0.10.8 palliative cut it by turning the animation off and
+  memoizing reconcile, but the re-parse itself remained). The renderer moves from
+  `@assistant-ui/react-markdown` to `@assistant-ui/react-streamdown` (Streamdown),
+  which splits the text into independent memoized blocks so only the LAST (growing)
+  block re-parses per token → O(n). Measured (per-frame gap / dropped frames across one
+  long streamed reply): **76% dropped → 6%** at ~4k chars, and a 500-block reply that
+  was catastrophic under the palliative (~88 ms/frame, ~all frames dropped) now holds
+  ~flat (~18 ms, ≤7%). **The smooth typewriter animation is restored** (the 0.10.8
+  palliative had disabled it) — now cheap because the parse is O(n).
+- **Untrusted-link handling is preserved**: agent links still open in a new tab with
+  `rel="noopener noreferrer"`, and non-navigable file paths still render as plain text.
+  HTML in agent output is sanitized by Streamdown's default chain (script tags, inline
+  event handlers, `javascript:`/`data:` URIs, `<iframe>`/`<form>` are neutralized — pinned
+  by a new test). NOTE: unlike the previous renderer (which escaped raw HTML to literal
+  text), Streamdown now PARSES and renders agent HTML *sanitized* — a deliberate,
+  threat-model-reviewed broadening.
+- Code blocks gain a copy/download header (Streamdown's controls). Bundle grows ~108 KB
+  gzip (Streamdown + its sanitizer); it sits on the critical render path, so it is not
+  lazy-loaded. *Deploy: rebuild the frontend image; run `npx convex deploy` so the
+  lockstep version stays honest (no Convex code changed).*
+
 ## [0.10.8] — Streaming replies stop slowing down as they grow (palliative)
 
 Corrective release. Fixes the streaming reply that lagged more and more as it got

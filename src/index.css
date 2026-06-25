@@ -2,6 +2,15 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Streamdown (the assistant markdown renderer, see src/chat/MarkdownText.tsx) ships
+ * its code-block container + copy/download controls as Tailwind utility classes in
+ * its compiled JS. Tailwind v4 does NOT scan node_modules by default, so without this
+ * `@source` those controls render UNSTYLED in the production build (dev JIT hides it).
+ * Path is relative from this file (src/) to the repo-root node_modules. Only the core
+ * package is sourced — the optional @streamdown/{code,math,mermaid,cjk} plugins are
+ * not installed, so their @source lines are deliberately omitted. */
+@source "../node_modules/streamdown/dist/*.js";
+
 @custom-variant dark (&:is(.dark *));
 
 /* P4: typed registration of the runtime chart tokens (defense in depth). A custom
