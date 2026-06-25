@@ -20,7 +20,15 @@
 //     /settings/$tab        shared route for the 4 PARAMLESS tabs
 //                           (roles/integrations/instances/theme)
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Authenticated,
   AuthLoading,
@@ -33,6 +41,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   redirect,
   Outlet,
   useNavigate,
@@ -71,22 +80,13 @@ import {
   type Tab,
   type ParamlessTab,
 } from "./chat/AdminSettings";
-import { ServiceAccountsTab } from "./chat/admin/ServiceAccountsTab";
-import { RolesTab } from "./chat/admin/RolesTab";
-import { GroupsTab } from "./chat/admin/GroupsTab";
-import { TracesTab } from "./chat/admin/TracesTab";
-import { KpiTab } from "./chat/admin/KpiTab";
-import { AnomaliesTab } from "./chat/admin/AnomaliesTab";
-import { IntegrationsTab } from "./chat/admin/IntegrationsTab";
-import { FeedbacksTab } from "./chat/admin/FeedbacksTab";
-import { FilesTab } from "./chat/admin/FilesTab";
-import { AgentFilesTab } from "./chat/admin/AgentFilesTab";
-import { PreferencesTab } from "./chat/admin/PreferencesTab";
-import { ChatDefaultsTab } from "./chat/admin/ChatDefaultsTab";
-import { AccessTab } from "./chat/admin/AccessTab";
-import { BridgeTab } from "./chat/admin/BridgeTab";
 import { SettingsNav, SettingsTabBar } from "./chat/admin/SettingsNav";
-import { ThemeShowroom } from "./chat/ThemeShowroom";
+// BridgeTab stays EAGER for now: AdminSettings (imported eagerly above for
+// PARAMLESS_TABS/visibleTabs) statically pulls InstanceConfigDialog from
+// ./admin/BridgeTab, so a lazy wrapper here would NOT defer it (Rollup keeps it in the
+// initial chunk). It becomes lazy-able once InstancesTab (the InstanceConfigDialog
+// consumer) is extracted from the AdminSettings barrel (Phase 2).
+import { BridgeTab } from "./chat/admin/BridgeTab";
 import {
   tracesSearchSchema,
   auditSearchSchema,
@@ -118,6 +118,49 @@ import { useApplyLocale, type Locale } from "@/lib/useLocale";
 import type { ChartTokens } from "../convex/lib/charts";
 import { useSidebarLayout } from "@/lib/useSidebarLayout";
 import { Link, useMatchRoute } from "@tanstack/react-router";
+
+// Admin/settings tab COMPONENTS are lazy-loaded: they + their data-table/filter deps
+// are ~217 KB gzip (~40% of the bundle) chat users never need before first paint.
+// Route-level tabs use lazyRouteComponent (in the route tree below); these paramless
+// tabs (rendered in SettingsParamlessScreen) use React.lazy under a Suspense boundary.
+// The tabs still in the AdminSettings barrel (Users/Instances/Audit) + BridgeTab
+// (coupled to it via InstanceConfigDialog) stay eager until Phase 2.
+const RolesTab = lazy(() =>
+  import("./chat/admin/RolesTab").then((m) => ({ default: m.RolesTab })),
+);
+const GroupsTab = lazy(() =>
+  import("./chat/admin/GroupsTab").then((m) => ({ default: m.GroupsTab })),
+);
+const IntegrationsTab = lazy(() =>
+  import("./chat/admin/IntegrationsTab").then((m) => ({
+    default: m.IntegrationsTab,
+  })),
+);
+const FeedbacksTab = lazy(() =>
+  import("./chat/admin/FeedbacksTab").then((m) => ({ default: m.FeedbacksTab })),
+);
+const FilesTab = lazy(() =>
+  import("./chat/admin/FilesTab").then((m) => ({ default: m.FilesTab })),
+);
+const AgentFilesTab = lazy(() =>
+  import("./chat/admin/AgentFilesTab").then((m) => ({ default: m.AgentFilesTab })),
+);
+const PreferencesTab = lazy(() =>
+  import("./chat/admin/PreferencesTab").then((m) => ({
+    default: m.PreferencesTab,
+  })),
+);
+const ChatDefaultsTab = lazy(() =>
+  import("./chat/admin/ChatDefaultsTab").then((m) => ({
+    default: m.ChatDefaultsTab,
+  })),
+);
+const AccessTab = lazy(() =>
+  import("./chat/admin/AccessTab").then((m) => ({ default: m.AccessTab })),
+);
+const ThemeShowroom = lazy(() =>
+  import("./chat/ThemeShowroom").then((m) => ({ default: m.ThemeShowroom })),
+);
 
 // Top-bar brand from the active chart, with a logo per theme mode. `isDefault` =
 // the app's own identity (native / builtin) → show the bundled Atrium mark. A
@@ -770,8 +813,7 @@ function SettingsIndexRedirect() {
 
 // Paramless tab dispatcher: the four tabs that carry no search params share one
 // `$tab` route. The param is validated to the closed set (catch → "roles").
-function SettingsParamlessScreen() {
-  const { tab } = useParams({ from: "/settings/$tab" });
+function paramlessTab(tab: string) {
   switch (tab) {
     case "groups":
       return <GroupsTab />;
@@ -799,6 +841,17 @@ function SettingsParamlessScreen() {
     default:
       return <RolesTab />;
   }
+}
+
+function SettingsParamlessScreen() {
+  const { tab } = useParams({ from: "/settings/$tab" });
+  // Suspense boundary for the lazy-loaded paramless tabs (the eager InstancesTab,
+  // still in the AdminSettings barrel, simply renders without suspending).
+  return (
+    <Suspense fallback={<div className="oc-settings__tab-loading" aria-busy="true" />}>
+      {paramlessTab(tab)}
+    </Suspense>
+  );
 }
 
 // Chat route screen: reads the chatId path param + optional `?m` message anchor
@@ -862,7 +915,10 @@ const tracesRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "traces",
   validateSearch: tracesSearchSchema,
-  component: TracesTab,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/TracesTab"),
+    "TracesTab",
+  ),
 });
 const auditRoute = createRoute({
   getParentRoute: () => settingsRoute,
@@ -874,19 +930,25 @@ const anomaliesRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "anomalies",
   validateSearch: anomaliesSearchSchema,
-  component: AnomaliesTab,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/AnomaliesTab"),
+    "AnomaliesTab",
+  ),
 });
 const kpiRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "kpi",
   validateSearch: kpiSearchSchema,
-  component: KpiTab,
+  component: lazyRouteComponent(() => import("./chat/admin/KpiTab"), "KpiTab"),
 });
 const serviceAccountsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "serviceAccounts",
   validateSearch: serviceAccountsSearchSchema,
-  component: ServiceAccountsTab,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/ServiceAccountsTab"),
+    "ServiceAccountsTab",
+  ),
 });
 const usersRoute = createRoute({
   getParentRoute: () => settingsRoute,
