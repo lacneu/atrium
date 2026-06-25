@@ -71,9 +71,6 @@ import { GlobalSearch } from "./chat/GlobalSearch";
 import {
   PARAMLESS_TABS,
   SETTINGS_TAB_REDIRECTS,
-  UsersTab,
-  InstancesTab,
-  AuditTab,
   visibleTabs,
   tabFromPathname,
   pathForTab,
@@ -81,12 +78,6 @@ import {
   type ParamlessTab,
 } from "./chat/AdminSettings";
 import { SettingsNav, SettingsTabBar } from "./chat/admin/SettingsNav";
-// BridgeTab stays EAGER for now: AdminSettings (imported eagerly above for
-// PARAMLESS_TABS/visibleTabs) statically pulls InstanceConfigDialog from
-// ./admin/BridgeTab, so a lazy wrapper here would NOT defer it (Rollup keeps it in the
-// initial chunk). It becomes lazy-able once InstancesTab (the InstanceConfigDialog
-// consumer) is extracted from the AdminSettings barrel (Phase 2).
-import { BridgeTab } from "./chat/admin/BridgeTab";
 import {
   tracesSearchSchema,
   auditSearchSchema,
@@ -123,10 +114,16 @@ import { Link, useMatchRoute } from "@tanstack/react-router";
 // are ~217 KB gzip (~40% of the bundle) chat users never need before first paint.
 // Route-level tabs use lazyRouteComponent (in the route tree below); these paramless
 // tabs (rendered in SettingsParamlessScreen) use React.lazy under a Suspense boundary.
-// The tabs still in the AdminSettings barrel (Users/Instances/Audit) + BridgeTab
-// (coupled to it via InstanceConfigDialog) stay eager until Phase 2.
+// (UsersTab/InstancesTab/AuditTab were extracted from the AdminSettings barrel into
+// their own modules so they could join this set — see those files.)
 const RolesTab = lazy(() =>
   import("./chat/admin/RolesTab").then((m) => ({ default: m.RolesTab })),
+);
+const InstancesTab = lazy(() =>
+  import("./chat/admin/InstancesTab").then((m) => ({ default: m.InstancesTab })),
+);
+const BridgeTab = lazy(() =>
+  import("./chat/admin/BridgeTab").then((m) => ({ default: m.BridgeTab })),
 );
 const GroupsTab = lazy(() =>
   import("./chat/admin/GroupsTab").then((m) => ({ default: m.GroupsTab })),
@@ -924,7 +921,10 @@ const auditRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "audit",
   validateSearch: auditSearchSchema,
-  component: AuditTab,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/AuditTab"),
+    "AuditTab",
+  ),
 });
 const anomaliesRoute = createRoute({
   getParentRoute: () => settingsRoute,
@@ -954,7 +954,10 @@ const usersRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "users",
   validateSearch: usersSearchSchema,
-  component: UsersTab,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/UsersTab"),
+    "UsersTab",
+  ),
 });
 // Legacy tab URL: the retired `uiprefs` admin tab merged into Preferences.
 // A STATIC route (static beats the $tab param route) that hard-redirects, so

@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.11] — Faster first load: admin/settings code is lazy-loaded (~25% smaller initial bundle)
+
+Frontend optimization. No schema migration.
+
+- **The admin/settings tab code no longer ships in the initial chat bundle.** All the
+  Settings tabs (Users, Instances, Bridge, Roles, Groups, Traces, KPI, Anomalies, Audit,
+  Feedbacks, Files, …) and their heavy deps (data tables, filters, instance/gateway config
+  dialogs) are now lazy-loaded on demand — a chat user who never opens Settings never
+  downloads them. The initial JS dropped **~531 → ~399 KB gzip (−25%)**, so first paint /
+  time-to-interactive is faster for everyone. Each tab loads its own small chunk the first
+  time it is opened (route-level via the router, paramless tabs under a Suspense boundary).
+  Internally this split the 1.8k-line `AdminSettings` barrel into a light metadata module
+  plus one file per tab. No behavior change — every tab renders and works exactly as before
+  (verified by type-check, the full test suite, and manual exercise of the instance/config
+  flows).
+- Agent-image attachments now decode off the main thread (`decoding="async"`), a small
+  smoothness win when an image lands mid-stream (on top of the existing `loading="lazy"`).
+- *Deploy: rebuild the frontend image; run `npx convex deploy` for the lockstep version
+  (the only Convex change since 0.10.10 is a dev-gated load-test seeder, inert in prod).*
+
 ## [0.10.10] — Streaming re-pushes ~3× less redundant data (coarser delta coalescing)
 
 Network optimization. Bridge-only; no schema migration.
