@@ -1,6 +1,6 @@
 {
   "name": "atrium-bridge",
-  "version": "0.10.7",
+  "version": "0.10.8",
   "private": true,
   "type": "module",
   "description": "Node/TS bridge for Atrium: holds the persistent operator WebSocket and runs the streaming normalizer that feeds Convex.",
