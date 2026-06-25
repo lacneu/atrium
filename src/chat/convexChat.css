@@ -2686,6 +2686,141 @@
 @media (max-width: 640px) {
   .oc-bridge-config__grid { grid-template-columns: 1fr; }
 }
+
+/* Prompt injections — shared bits reused by the dedicated Injections tab cards. */
+.oc-injection__badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 14%, transparent);
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.oc-injection__foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.oc-injection__ph {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Dedicated full-width Prompt injections tab — roomy, for managing long instruction texts. */
+.oc-injtab {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 64rem;
+  padding: 0.25rem 0.25rem 1.5rem;
+}
+.oc-injtab__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.oc-injtab__picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted-foreground);
+}
+.oc-injtab__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.oc-injcard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.65rem);
+  background: color-mix(in oklch, var(--muted) 35%, transparent);
+}
+.oc-injcard__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+.oc-injcard__text {
+  width: 100%;
+  resize: vertical;
+  min-height: 9rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.5rem);
+  background: var(--background);
+  color: var(--foreground);
+}
+.oc-injcard__text:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.oc-injtab__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.25rem;
+}
+.oc-injcard__btns {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.oc-injcard__phs {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.oc-injcard__ph-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.05rem 0.2rem 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--background);
+}
+.oc-injcard__ph-chip code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  color: var(--foreground);
+}
+.oc-injcard__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius, 0.5rem);
+  background: color-mix(in oklch, var(--primary) 6%, var(--background));
+}
+.oc-injcard__previewtext {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
 .oc-bridge-config__actions {
   display: flex;
   justify-content: flex-end;

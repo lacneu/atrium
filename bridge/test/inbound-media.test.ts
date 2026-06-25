@@ -145,4 +145,27 @@ describe("buildFilesReceivedBlock", () => {
   it("is empty when nothing staged (no empty block)", () => {
     expect(buildFilesReceivedBlock([])).toBe("");
   });
+
+  const ONE = [{ agentPath: "/m/a.pdf", size: 12, mimeType: "application/pdf" }];
+
+  it("DISABLED → no block at all (even with files staged)", () => {
+    expect(
+      buildFilesReceivedBlock(ONE, { enabled: false, template: "ignored {files}" }),
+    ).toBe("");
+  });
+
+  it("ENABLED with a custom template → splices it with {files} filled", () => {
+    const block = buildFilesReceivedBlock(ONE, {
+      enabled: true,
+      template: "Fichiers:\n{files}",
+    });
+    expect(block).toContain("Fichiers:");
+    expect(block).toContain("- /m/a.pdf (12 o, application/pdf)");
+    expect(block).not.toContain("{files}");
+  });
+
+  it("ENABLED but empty template → falls back to the default block (no suppression)", () => {
+    const block = buildFilesReceivedBlock(ONE, { enabled: true, template: "" });
+    expect(block).toBe("\n[FICHIERS REÇUS]\n- /m/a.pdf (12 o, application/pdf)");
+  });
 });

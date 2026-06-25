@@ -34,7 +34,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "agents",
     label: () => m.settings_group_agents(),
-    tabs: ["instances", "agentFiles", "chatDefaults", "bridge"],
+    tabs: ["instances", "agentFiles", "chatDefaults", "bridge", "injections"],
   },
   {
     id: "access",

@@ -6,6 +6,16 @@
 
 import { v } from "convex/values";
 
+import {
+  missingRequiredPlaceholders,
+  PROMPT_INJECTION_KEYS,
+  PROMPT_INJECTIONS,
+  resolveBridgeInjections,
+  type PromptInjectionConfig,
+  type PromptInjectionKey,
+  type ResolvedInjection,
+} from "./promptInjections";
+
 /** Outbound media transport for a turn's agent-produced files. */
 export const MEDIA_MODES = ["gateway-http", "shared-fs", "off"] as const;
 export type MediaMode = (typeof MEDIA_MODES)[number];
@@ -37,7 +47,23 @@ export const instanceConfigValidator = v.object({
   // volume). Used only in shared-fs mode. Non-secret.
   inboundAgentMount: v.optional(v.string()),
   outboundAgentMount: v.optional(v.string()),
+  // Per-injection admin overrides (disable / customize the standing instructions Atrium
+  // splices into a turn — see lib/promptInjections). Sparse: only configured keys. The
+  // key set is validated against the registry in parseInstanceConfig.
+  promptInjections: v.optional(
+    v.record(
+      v.string(),
+      v.object({
+        enabled: v.optional(v.boolean()),
+        template: v.optional(v.string()),
+      }),
+    ),
+  ),
 });
+
+/** Upper bound on a custom injection template (defense against absurd input bloating the
+ *  very context this feature exists to keep small). */
+export const INJECTION_TEMPLATE_MAX_LEN = 4000;
 
 /** Max length for a configured path (defense against absurd input). */
 export const PATH_MAX_LEN = 512;
@@ -66,6 +92,7 @@ export type InstanceConfig = {
   mediaMaxMb?: number;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
+  promptInjections?: PromptInjectionConfig;
 };
 
 /** The complete, dispatch-ready shape (every field present). */
@@ -106,6 +133,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "mediaMaxMb",
     "inboundAgentMount",
     "outboundAgentMount",
+    "promptInjections",
   ]);
   for (const k of Object.keys(o)) {
     if (!allowed.has(k)) return "invalid";
@@ -151,6 +179,68 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
       out[key] = (o[key] as string).trim();
     }
   }
+  if (o.promptInjections !== undefined) {
+    const parsed = parsePromptInjections(o.promptInjections);
+    if (parsed === "invalid") return "invalid";
+    // Drop an empty map so a cleared config doesn't persist `{}`.
+    if (Object.keys(parsed).length > 0) out.promptInjections = parsed;
+  }
+  return out;
+}
+
+/** Strict parse of the per-injection overrides: keys MUST be registry injections; each
+ *  value carries an optional boolean `enabled` and an optional `template` (bounded, and —
+ *  when present — required to keep the injection's placeholders, else a custom edit could
+ *  silently break the instruction). Unknown key / bad type / dropped placeholder = invalid. */
+function parsePromptInjections(
+  raw: unknown,
+): PromptInjectionConfig | "invalid" {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return "invalid";
+  }
+  const known = new Set<string>(PROMPT_INJECTION_KEYS);
+  const out: PromptInjectionConfig = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!known.has(key)) return "invalid";
+    if (typeof val !== "object" || val === null || Array.isArray(val)) {
+      return "invalid";
+    }
+    const o = val as Record<string, unknown>;
+    for (const k of Object.keys(o)) {
+      if (k !== "enabled" && k !== "template") return "invalid";
+    }
+    const entry: { enabled?: boolean; template?: string } = {};
+    if (o.enabled !== undefined) {
+      if (typeof o.enabled !== "boolean") return "invalid";
+      // A non-togglable (core-prompt) injection cannot be disabled — that would leave no
+      // task at all. Only `enabled:true` is a harmless no-op; `false` is rejected.
+      if (!PROMPT_INJECTIONS[key as PromptInjectionKey].togglable && o.enabled === false) {
+        return "invalid";
+      }
+      entry.enabled = o.enabled;
+    }
+    if (o.template !== undefined) {
+      if (
+        typeof o.template !== "string" ||
+        o.template.length > INJECTION_TEMPLATE_MAX_LEN
+      ) {
+        return "invalid";
+      }
+      const t = o.template.trim();
+      // An empty template means "no custom text" (fall back to the default); only a
+      // non-empty custom template must keep its required placeholders.
+      if (t.length > 0) {
+        if (missingRequiredPlaceholders(key as PromptInjectionKey, t).length > 0) {
+          return "invalid";
+        }
+        entry.template = t;
+      }
+    }
+    // Skip an entry that ended up empty (neither a flip nor a custom template).
+    if (entry.enabled !== undefined || entry.template !== undefined) {
+      out[key] = entry;
+    }
+  }
   return out;
 }
 
@@ -169,6 +259,22 @@ export function resolveInstanceConfig(
     outboundAgentMount:
       cfg?.outboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
   };
+}
+
+/** The config Convex SENDS to the bridge on dispatch: the raw transport overrides
+ *  (partial — the bridge fills its OWN env default for any absent field, so a Convex
+ *  default never shadows an env-configured bridge) PLUS the RESOLVED bridge-applied
+ *  prompt injections (full — the bridge cannot resolve them, it lacks the registry). The
+ *  stored sparse `promptInjections` itself is never sent, only its resolution. */
+export type BridgeDispatchConfig = Omit<InstanceConfig, "promptInjections"> & {
+  injections: Record<string, ResolvedInjection>;
+};
+
+export function bridgeDispatchConfig(
+  cfg: InstanceConfig | undefined | null,
+): BridgeDispatchConfig {
+  const { promptInjections, ...transport } = cfg ?? {};
+  return { ...transport, injections: resolveBridgeInjections(promptInjections) };
 }
 
 /** Stable signature (fixed key order) — for "did the applied config change?". */

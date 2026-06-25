@@ -48,6 +48,7 @@ const TAB_I18N: Partial<Record<Tab, () => string>> = {
   groups: () => m.settings_tab_groups(),
   instances: () => m.settings_tab_instances(),
   bridge: () => m.settings_tab_bridge(),
+  injections: () => m.settings_tab_injections(),
   serviceAccounts: () => m.settings_tab_serviceaccounts(),
   roles: () => m.settings_tab_roles(),
   traces: () => m.settings_tab_traces(),

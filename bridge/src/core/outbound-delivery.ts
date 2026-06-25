@@ -8,6 +8,8 @@
 // per-agent AGENTS.md config. Appended to the GATEWAY message only (never the
 // visible Convex text), gated off when outbound media is disabled.
 
+import { fillTemplate, type InboundInjection } from "./instance-config.js";
+
 /**
  * Build the `[LIVRAISON]` instruction telling the agent how to deliver a generated
  * file in THIS webchat channel. `outboundDir` is the dir the bridge's media fetcher
@@ -25,4 +27,34 @@ export function buildDeliveryInstruction(outboundDir: string): string {
       `fichier>. N'utilise PAS de lien markdown vers un chemin local — il ne ` +
       `serait pas cliquable.`,
   ].join("\n");
+}
+
+/**
+ * Splice the `media_delivery` injection onto the gateway-bound `message`. Tri-state on
+ * the resolved injection Convex sent (see InboundInstanceConfig.injections):
+ *   - `enabled:false` (admin disabled — their agents already know to emit `MEDIA:`) →
+ *     NOTHING is appended (the message is returned untouched);
+ *   - `enabled:true` with a usable template → the admin's resolved text, `{outboundDir}` filled;
+ *   - `undefined` (pre-feature Convex) OR a malformed `enabled:true` with an empty template
+ *     → the bridge's own default instruction. A present-but-empty entry must FALL BACK to
+ *     the default, never silently suppress delivery (only an explicit disable suppresses).
+ * Pure + self-contained so the disable path is unit-provable: the returned message must
+ * NOT contain `[LIVRAISON]` (or any delivery text) when disabled.
+ */
+export function applyMediaDeliveryInjection(
+  message: string,
+  outboundDir: string,
+  injection: InboundInjection | undefined,
+): string {
+  let delivery: string | null;
+  if (injection !== undefined && !injection.enabled) {
+    delivery = null; // explicit disable — the only case that suppresses
+  } else if (injection !== undefined && injection.template.length > 0) {
+    delivery =
+      "\n" + fillTemplate(injection.template, { outboundDir: outboundDir.replace(/\/$/, "") });
+  } else {
+    delivery = buildDeliveryInstruction(outboundDir); // absent OR enabled-but-empty
+  }
+  if (delivery === null) return message;
+  return message ? `${message}\n${delivery}` : delivery;
 }

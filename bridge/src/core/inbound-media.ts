@@ -12,6 +12,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { fillTemplate, type InboundInjection } from "./instance-config.js";
 
 /** One inbound tool-read file to stream from Convex storage. */
 export interface InboundReference {
@@ -118,18 +119,35 @@ export async function stageInboundReference(
 /**
  * Build the `[FICHIERS REÇUS]` text block injected into the chat message (mirrors
  * the OpenWebUI pipe). Returns "" when nothing staged (no empty block).
+ *
+ * `inbound_files` injection (tri-state on the resolved injection Convex sent):
+ *   - `enabled:false` (admin disabled) → "" (no block at all);
+ *   - `enabled:true` with a usable template → the admin's text, `{files}` filled;
+ *   - `undefined` (pre-feature Convex) OR a malformed `enabled:true` with an empty template
+ *     → the bridge's own default header + list (a present-but-empty entry falls back, never
+ *     silently drops the block). Only an explicit disable suppresses it.
+ * The per-file list itself is always Atrium-generated; only the surrounding preamble is
+ * configurable.
  */
-export function buildFilesReceivedBlock(staged: StagedInboundFile[]): string {
+export function buildFilesReceivedBlock(
+  staged: StagedInboundFile[],
+  injection?: InboundInjection,
+): string {
   if (staged.length === 0) return "";
-  const lines: string[] = ["", "[FICHIERS REÇUS]"];
-  for (const f of staged) {
-    const bits: string[] = [];
-    if (f.size > 0) bits.push(`${f.size} o`);
-    if (f.mimeType) bits.push(f.mimeType);
-    const suffix = bits.length > 0 ? ` (${bits.join(", ")})` : "";
-    lines.push(`- ${f.agentPath}${suffix}`);
+  const files = staged
+    .map((f) => {
+      const bits: string[] = [];
+      if (f.size > 0) bits.push(`${f.size} o`);
+      if (f.mimeType) bits.push(f.mimeType);
+      const suffix = bits.length > 0 ? ` (${bits.join(", ")})` : "";
+      return `- ${f.agentPath}${suffix}`;
+    })
+    .join("\n");
+  if (injection !== undefined && !injection.enabled) return ""; // explicit disable
+  if (injection !== undefined && injection.template.length > 0) {
+    return "\n" + fillTemplate(injection.template, { files });
   }
-  return lines.join("\n");
+  return ["", "[FICHIERS REÇUS]", files].join("\n"); // absent OR enabled-but-empty
 }
 
 /**

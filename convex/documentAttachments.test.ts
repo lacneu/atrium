@@ -258,6 +258,43 @@ describe("attachDocuments dispatch", () => {
     expect(session2).not.toBe(session1);
   });
 
+  test("documentary_fetch DISABLED → the dispatched prompt is the BARE reference list (no framing)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, sourceMessageId } = await setup(t);
+    // Disable the documentary_fetch injection on the documentary agent's instance.
+    await t.run(async (ctx) => {
+      const inst = await ctx.db
+        .query("instances")
+        .withIndex("by_name", (q) => q.eq("name", "primary"))
+        .first();
+      await ctx.db.patch(inst!._id, {
+        config: { promptInjections: { documentary_fetch: { enabled: false } } },
+      });
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    await as.mutation(api.documentAttachments.attachDocuments, {
+      sourceMessageId,
+      items: [{ entryKey: "k|guide", reference: "guide.md" }],
+    });
+    const hidden = await t.run((ctx) =>
+      ctx.db
+        .query("chats")
+        .filter((q) => q.eq(q.field("kind"), "documentary"))
+        .first(),
+    );
+    const outbox = await t.run((ctx) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", hidden!._id).eq("status", "pending"),
+        )
+        .first(),
+    );
+    // Bare reference list — NONE of the default Atrium framing.
+    expect(outbox!.text).toBe("- guide.md");
+    expect(outbox!.text).not.toContain("Fournis");
+  });
+
   test("two cards with the SAME file_name but different entryKey → TWO rows (only the checked cards)", async () => {
     const t = convexTest(schema, modules);
     const { userId, sourceMessageId } = await setup(t);

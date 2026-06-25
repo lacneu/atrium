@@ -29,6 +29,11 @@ import { writeTraceEvent } from "./observability";
 import { stripGatewayMediaId } from "./lib/mediaName";
 import { isChatBusy } from "./lib/outboxQueue";
 import { isFindableDocumentItem } from "./lib/provenance";
+import {
+  effectiveTemplate,
+  fillTemplate,
+  resolveInjection,
+} from "./lib/promptInjections";
 
 /** Max document references one fetch may request (matches the panel's bounds). */
 export const MAX_DOC_REFS = 24;
@@ -60,16 +65,14 @@ function baseName(path: string): string {
   return stripGatewayMediaId(seg.trim()).toLowerCase();
 }
 
-/** The instruction sent to the documentary agent. Best-effort: the agent must write
- *  the files to its outbound media dir + emit `MEDIA:` per the contract; whether it
- *  CAN resolve a reference to a file is the plugin's capability, not Atrium's. */
-function buildFetchPrompt(refs: readonly string[]): string {
-  return (
-    "Fournis les fichiers source téléchargeables correspondant EXACTEMENT à ces " +
-    "références de documents (un fichier par référence, nommé d'après la référence). " +
-    "Réponds uniquement avec les fichiers, sans commentaire :\n" +
-    refs.map((r) => `- ${r}`).join("\n")
-  );
+/** The instruction sent to the documentary agent — the `documentary_fetch` prompt
+ *  injection (customizable per instance so an admin can tailor the brief to how documents
+ *  are resolved in THEIR environment). `{references}` is filled with the bulleted ref list.
+ *  Best-effort: whether the agent CAN resolve a reference to a file is the gateway's
+ *  capability, not Atrium's. */
+function buildFetchPrompt(refs: readonly string[], template: string): string {
+  const references = refs.map((r) => `- ${r}`).join("\n");
+  return fillTemplate(template, { references });
 }
 
 /** Find (or lazily create) the user's HIDDEN documentary chat, bound to `target`. */
@@ -251,8 +254,22 @@ export const attachDocuments = mutation({
     // The agent fetches each distinct FILE once (multiple cards may share a file).
     const refs = [...new Set(selected.map((s) => s.reference))];
 
+    // Resolve the documentary-fetch prompt injection from the TARGET instance's config
+    // (an admin may have tailored the brief to their environment).
+    const docInstance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+      .first();
+    const docInjection = resolveInjection(
+      "documentary_fetch",
+      docInstance?.config?.promptInjections,
+    );
+    // Disabled → the registry disabled fallback (bare reference list, no Atrium framing);
+    // the gateway's documentary agent supplies the task. Enabled → the configured brief.
+    const fetchTemplate = effectiveTemplate("documentary_fetch", docInjection);
+
     // Dispatch the fetch turn in the hidden chat (separate session, documentary agent).
-    const text = buildFetchPrompt(refs);
+    const text = buildFetchPrompt(refs, fetchTemplate);
     const msgId = await ctx.db.insert("messages", {
       chatId: hidden._id,
       userId,

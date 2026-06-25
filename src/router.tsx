@@ -125,6 +125,11 @@ const InstancesTab = lazy(() =>
 const BridgeTab = lazy(() =>
   import("./chat/admin/BridgeTab").then((m) => ({ default: m.BridgeTab })),
 );
+const PromptInjectionsTab = lazy(() =>
+  import("./chat/admin/PromptInjectionsTab").then((m) => ({
+    default: m.PromptInjectionsTab,
+  })),
+);
 const GroupsTab = lazy(() =>
   import("./chat/admin/GroupsTab").then((m) => ({ default: m.GroupsTab })),
 );
@@ -820,6 +825,8 @@ function paramlessTab(tab: string) {
       return <InstancesTab />;
     case "bridge":
       return <BridgeTab />;
+    case "injections":
+      return <PromptInjectionsTab />;
     case "theme":
       return <ThemeShowroom />;
     case "feedbacks":

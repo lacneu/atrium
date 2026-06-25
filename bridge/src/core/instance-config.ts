@@ -28,6 +28,29 @@ export interface InboundInstanceConfig {
   inboundAgentMount?: string;
   /** Agent-visible outbound mount (where the agent WRITES deliverables). */
   outboundAgentMount?: string;
+  /** RESOLVED prompt injections Convex sends (key -> enabled+template). Convex owns the
+   *  registry + defaults; the bridge only fills placeholders + splices. Tri-state at the
+   *  consumer: a key ABSENT here -> the bridge's own fallback default (pre-feature Convex);
+   *  present + `enabled:false` -> skip; present + `enabled:true` -> use `template`. */
+  injections?: Record<string, InboundInjection>;
+}
+
+/** One resolved injection as received from Convex. */
+export interface InboundInjection {
+  enabled: boolean;
+  template: string;
+}
+
+/** Substitute `{name}` placeholders (mirror of convex lib/promptInjections.fillTemplate).
+ *  An unknown `{name}` is left verbatim so a template never half-renders. */
+export function fillTemplate(
+  template: string,
+  vars: Record<string, string>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) => {
+    const val = vars[name];
+    return val !== undefined ? val : whole;
+  });
 }
 
 /**
@@ -68,6 +91,25 @@ export function parseInboundConfig(raw: unknown): InboundInstanceConfig | null {
   }
   if (typeof o.outboundAgentMount === "string" && o.outboundAgentMount.startsWith("/")) {
     out.outboundAgentMount = o.outboundAgentMount;
+  }
+  if (
+    typeof o.injections === "object" &&
+    o.injections !== null &&
+    !Array.isArray(o.injections)
+  ) {
+    const inj: Record<string, InboundInjection> = {};
+    for (const [k, val] of Object.entries(o.injections as Record<string, unknown>)) {
+      if (typeof val !== "object" || val === null || Array.isArray(val)) continue;
+      const e = (val as Record<string, unknown>).enabled;
+      const t = (val as Record<string, unknown>).template;
+      // Default enabled:true so a malformed entry never silently suppresses an injection;
+      // a missing template -> "" so the consumer falls through to its own default.
+      inj[k] = {
+        enabled: typeof e === "boolean" ? e : true,
+        template: typeof t === "string" ? t : "",
+      };
+    }
+    if (Object.keys(inj).length > 0) out.injections = inj;
   }
   return out;
 }

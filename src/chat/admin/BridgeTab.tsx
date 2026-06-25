@@ -9,7 +9,6 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
-  HelpCircle,
   Loader2,
   MoreVertical,
   Server,
@@ -47,12 +46,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
 import {
   DEFAULT_INSTANCE_CONFIG,
@@ -66,6 +59,7 @@ import {
   formFromConfig,
   type ConfigForm,
 } from "./bridgeConfigForm";
+import { FieldLabel } from "./FieldLabel";
 import { m } from "@/paraglide/messages.js";
 import {
   badgeStateFromVersion,
@@ -520,36 +514,6 @@ export function InstanceConfigDialog({
 // ConfigForm + buildConfigOverride live in ./bridgeConfigForm (pure, unit-tested):
 // "persist ONLY explicit overrides" so a bare Save never shadows the bridge's env.
 
-/** A small `?` help bubble next to a form field label (hover/focus tooltip). */
-function FieldHelp({ text }: { text: string }) {
-  return (
-    <TooltipProvider delayDuration={150}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="oc-field__help"
-            aria-label={text}
-            onClick={(e) => e.preventDefault()}
-          >
-            <HelpCircle aria-hidden />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs text-pretty">{text}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-/** A field label with its help bubble — keeps every field consistent. */
-function FieldLabel({ label, help }: { label: string; help: string }) {
-  return (
-    <span className="oc-field__label">
-      {label}
-      <FieldHelp text={help} />
-    </span>
-  );
-}
 
 /** One leg of the shared-fs path-check result (inbound / outbound). */
 function CheckRow({

@@ -14,6 +14,7 @@ export const TABS = [
   "groups",
   "instances",
   "bridge",
+  "injections",
   "serviceAccounts",
   "roles",
   "access",
@@ -39,6 +40,7 @@ export const PARAMLESS_TABS = [
   "integrations",
   "instances",
   "bridge",
+  "injections",
   "theme",
   "feedbacks",
   "files",
@@ -61,6 +63,8 @@ export const TAB_LABELS: Partial<Record<Tab, string>> = {
   integrations: "Intégrations",
   feedbacks: "Feedbacks",
   bridge: "Bridge",
+  injections: "Injections", // FR fallback; the nav renders m.settings_tab_injections
+
   files: "Fichiers", // FR fallback; the nav renders the i18n label (m.files_tab_label)
   agentFiles: "Fichiers d'agent", // FR fallback; nav renders m.afiles_tab_label
   theme: "Apparence", // FR fallback; nav renders m.appearance_tab_label
@@ -81,6 +85,8 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   groups: "groups.manage",
   instances: "admin.manage",
   bridge: "bridge.read",
+  // Prompt injections are bridge config (write) — admin-only, like Instances/Integrations.
+  injections: "admin.manage",
   serviceAccounts: "admin.manage",
   roles: "admin.manage",
   // Introspection ("who has access to what") reads ANOTHER user's access map, so

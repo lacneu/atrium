@@ -7,6 +7,15 @@ import {
   type InboundMediaMode,
   type MediaMode,
 } from "../../../convex/lib/instanceConfig";
+import {
+  PROMPT_INJECTION_KEYS,
+  PROMPT_INJECTIONS,
+  type PromptInjectionConfig,
+} from "../../../convex/lib/promptInjections";
+
+/** Editor row for one prompt injection: the displayed toggle + the displayed template
+ *  (the custom text, or the registry default when not customized). */
+export type InjectionForm = { enabled: boolean; template: string };
 
 /** The complete editor form shape (every field has a displayed value). */
 export type ConfigForm = {
@@ -16,7 +25,51 @@ export type ConfigForm = {
   mediaMaxMb: number;
   inboundAgentMount: string;
   outboundAgentMount: string;
+  /** Per-injection editor rows, one per registry key (always all present for display). */
+  promptInjections: Record<string, InjectionForm>;
 };
+
+/** Editor rows seeded from the stored (sparse) overrides — every injection shows its
+ *  effective enabled state + its effective text (custom, else the registry default). */
+export function injectionsFromConfig(
+  stored: PromptInjectionConfig | undefined,
+): Record<string, InjectionForm> {
+  const out: Record<string, InjectionForm> = {};
+  for (const key of PROMPT_INJECTION_KEYS) {
+    const ov = stored?.[key];
+    out[key] = {
+      enabled: ov?.enabled ?? true,
+      template:
+        typeof ov?.template === "string" && ov.template.length > 0
+          ? ov.template
+          : PROMPT_INJECTIONS[key].defaultTemplate,
+    };
+  }
+  return out;
+}
+
+/** Build the sparse injections OVERRIDE to persist: per injection, keep `enabled:false`
+ *  only for a togglable injection actually turned off, and `template` only when it is a
+ *  non-empty CUSTOM value (differs from the registry default). An injection at its
+ *  defaults contributes nothing — so a bare Save never freezes the defaults as overrides. */
+export function buildInjectionsOverride(
+  rows: Record<string, InjectionForm>,
+): PromptInjectionConfig {
+  const out: PromptInjectionConfig = {};
+  for (const key of PROMPT_INJECTION_KEYS) {
+    const def = PROMPT_INJECTIONS[key];
+    const row = rows[key];
+    if (!row) continue;
+    const entry: { enabled?: boolean; template?: string } = {};
+    if (def.togglable && row.enabled === false) entry.enabled = false;
+    const t = row.template.trim();
+    if (t.length > 0 && t !== def.defaultTemplate) entry.template = t;
+    if (entry.enabled !== undefined || entry.template !== undefined) {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
 
 /**
  * Fill the editor form from an instance's STORED (partial) config — every unset
@@ -34,6 +87,7 @@ export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
       stored.inboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.inboundAgentMount,
     outboundAgentMount:
       stored.outboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
+    promptInjections: injectionsFromConfig(stored.promptInjections),
   };
 }
 
@@ -50,12 +104,19 @@ export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
  * forcing a value EQUAL to the default as an explicit override is the one case this
  * can't express — rare under Model M, where the bridge env IS the instance's config.
  */
+/** The persisted override: the flat transport fields (sparse) + the sparse prompt-
+ *  injection overrides. Matches the `upsertInstanceConfig` mutation arg / InstanceConfig. */
+export type ConfigOverride = Partial<
+  Omit<ConfigForm, "promptInjections">
+> & { promptInjections?: PromptInjectionConfig };
+
 export function buildConfigOverride(
   form: ConfigForm,
   stored: Partial<ConfigForm>,
-): Partial<ConfigForm> {
-  const out: Partial<ConfigForm> = {};
-  const keep = <K extends keyof ConfigForm>(k: K): void => {
+): ConfigOverride {
+  const out: ConfigOverride = {};
+  type FlatKey = keyof Omit<ConfigForm, "promptInjections">;
+  const keep = <K extends FlatKey>(k: K): void => {
     if (form[k] !== DEFAULT_INSTANCE_CONFIG[k] || stored[k] !== undefined) {
       out[k] = form[k];
     }
@@ -66,5 +127,7 @@ export function buildConfigOverride(
   keep("mediaMaxMb");
   keep("inboundAgentMount");
   keep("outboundAgentMount");
+  const injections = buildInjectionsOverride(form.promptInjections);
+  if (Object.keys(injections).length > 0) out.promptInjections = injections;
   return out;
 }

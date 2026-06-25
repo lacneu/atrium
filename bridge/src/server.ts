@@ -40,7 +40,7 @@ import {
   type InboundMediaConfig,
   type InboundReference,
 } from "./core/inbound-media.js";
-import { buildDeliveryInstruction } from "./core/outbound-delivery.js";
+import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
 import { validateSharedFs } from "./core/media-validate.js";
 import {
   gatewayHostOf,
@@ -796,7 +796,10 @@ async function performSend(
       (name, reason) =>
         console.error(`[inbound-media] dropped ${name}: ${reason}`),
     );
-    const block = buildFilesReceivedBlock(staged);
+    const block = buildFilesReceivedBlock(
+      staged,
+      body.config?.injections?.inbound_files,
+    );
     if (block.length > 0) message = message ? `${message}\n${block}` : block;
   }
 
@@ -806,8 +809,13 @@ async function performSend(
   // that the webchat can't host → "I couldn't attach it" (the reported bug). Mirror
   // of the proven OpenWebUI pipe. Skipped when outbound media is off.
   if (deliveryDir !== null) {
-    const delivery = buildDeliveryInstruction(deliveryDir);
-    message = message ? `${message}\n${delivery}` : delivery;
+    // `media_delivery` injection: the admin's resolved text, the bridge's own default
+    // (pre-feature Convex), or NOTHING when the admin disabled it. See the function.
+    message = applyMediaDeliveryInjection(
+      message,
+      deliveryDir,
+      body.config?.injections?.media_delivery,
+    );
   }
 
   const params: Record<string, unknown> = {

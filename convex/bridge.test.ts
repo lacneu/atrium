@@ -708,15 +708,22 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe("http://instance-host:9999/send"); // per-instance, NOT env
       const body = JSON.parse(init.body as string);
-      // ONLY the admin's stored overrides — NOT the defaults-filled object. Sending
-      // the filled defaults would shadow an env-configured bridge (e.g. force its
-      // OPENCLAW_MEDIA_MODE/MAX_MB/REHYDRATION back to Convex defaults on every send).
-      // The unset fields (rehydration/mediaMaxMb/mounts) are ABSENT so the bridge
-      // keeps its own env default.
-      expect(body.config).toEqual({
+      // The TRANSPORT fields are ONLY the admin's stored overrides — NOT the defaults-
+      // filled object. Sending the filled defaults would shadow an env-configured bridge
+      // (e.g. force its OPENCLAW_MEDIA_MODE/MAX_MB/REHYDRATION back to Convex defaults on
+      // every send). The unset fields (rehydration/mediaMaxMb/mounts) stay ABSENT so the
+      // bridge keeps its own env default. `injections` is the exception: it is always sent
+      // RESOLVED (the bridge can't resolve it without the registry).
+      const { injections, ...transport } = body.config;
+      expect(transport).toEqual({
         mediaMode: "shared-fs",
         inboundMediaMode: "shared-fs",
       });
+      expect(Object.keys(injections).sort()).toEqual([
+        "inbound_files",
+        "media_delivery",
+      ]);
+      expect(injections.media_delivery.enabled).toBe(true);
       const row = await t.run((ctx) => ctx.db.get(outboxId));
       expect(row?.status).toBe("sent");
     } finally {
@@ -799,6 +806,40 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     }
   });
 
+  test("a stored injection DISABLE reaches the wire (resolve → route → dispatch)", async () => {
+    // The feature's #1 use case end-to-end: an admin who disabled `media_delivery` because
+    // their gateway already instructs the agents. Proves the override survives the whole
+    // send path into body.config.injections — a cut wire here would silently no-op while
+    // every isolated unit test stayed green.
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://env-fallback:1";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { promptInjections: { media_delivery: { enabled: false } } },
+      });
+      await t.action(internal.bridge.dispatch, { outboxId });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(init.body as string);
+      expect(body.config.injections.media_delivery.enabled).toBe(false);
+      // A non-disabled injection still ships enabled (the disable is scoped).
+      expect(body.config.injections.inbound_files.enabled).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
   test("falls back to env BRIDGE_URL when the instance has no bridgeUrl (single-bridge path)", async () => {
     const t = convexTest(schema, modules);
     const prevUrl = process.env.BRIDGE_URL;
@@ -815,11 +856,17 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe("http://env-fallback:1/send");
-      // No instance config → NO config override sent (null), so the bridge keeps its
-      // OWN env defaults (not shadowed by Convex defaults on every send). This is the
-      // backward-compat path D-F-b: an env-only-configured bridge is untouched.
+      // No instance config → NO transport override sent, so the bridge keeps its OWN env
+      // defaults (not shadowed by Convex defaults on every send — backward-compat path
+      // D-F-b). `injections` is still present (always resolved + sent); with no override
+      // it carries the registry defaults, which match the bridge's own behavior.
       const body = JSON.parse(init.body as string);
-      expect(body.config).toBeNull();
+      const { injections, ...transport } = body.config;
+      expect(transport).toEqual({}); // no transport overrides
+      expect(Object.keys(injections).sort()).toEqual([
+        "inbound_files",
+        "media_delivery",
+      ]);
     } finally {
       globalThis.fetch = origFetch;
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;

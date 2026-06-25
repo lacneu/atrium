@@ -8,6 +8,34 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.12] — Configure (or remove) the instructions Atrium injects into each turn
+
+Feature release. No breaking changes; the stored config gains one optional field.
+
+- **A new Settings ▸ Agents ▸ Injections tab lets admins adjust or disable the standing
+  instructions Atrium splices into every gateway turn — per instance.** To make features
+  work out of the box, Atrium prepends/appends a few instructions to the message the gateway
+  sees: how to make a generated file downloadable (`MEDIA:` delivery), the "Attach source
+  documents" fetch brief, and the received-files preamble. But if your gateway has ALREADY
+  taught its agents these conventions, re-injecting them only bloats the turn's context for
+  nothing (an extreme case overflowed a documentary fetch to ~260k tokens). The dedicated,
+  full-width tab — roomy enough to manage the long instruction texts — lists instances from
+  their records (NOT live bridge health), so you can configure an instance **before it is
+  connected / made available to users**. Per injection you can:
+  - **disable** it — turn it off when the gateway already instructs the agents. Disabling the
+    documentary-fetch brief sends only the bare reference list (no framing), never an empty
+    turn;
+  - **customize** its text — e.g. tailor the documentary-fetch brief to how documents are
+    reachable in your environment.
+  Each injection carries a **help tooltip explaining its purpose and what breaks if you
+  disable it**; each available **`{variable}` is a chip with its own help bubble** describing
+  what it injects; a **Preview** shows the final text with the variables filled with example
+  values (what the agent receives); a customized entry is flagged with a one-click reset. The
+  list is registry-driven, so future injection points appear automatically. A bare Save never
+  freezes the defaults as overrides (only your explicit changes persist), and a disabled or
+  malformed entry safely falls back to the built-in default rather than silently dropping the
+  instruction. *Deploy: `npx convex deploy` + rebuild the bridge AND frontend images.*
+
 ## [0.10.11] — Faster first load: admin/settings code is lazy-loaded (~25% smaller initial bundle)
 
 Frontend optimization. No schema migration.
