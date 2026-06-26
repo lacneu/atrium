@@ -45,6 +45,10 @@ import {
   queryOpenClawInput,
   reportAnomaly,
   reportAnomalyInput,
+  startDeliveryRecord,
+  stopDeliveryRecord,
+  getDeliveryReport,
+  getDeliveryReportInput,
 } from "./tools.js";
 
 // The MCP server's own version, read from package.json at startup. createRequire
@@ -322,6 +326,47 @@ function main(): void {
       inputSchema: reportAnomalyInput,
     },
     async (args) => run(() => reportAnomaly(config, args)),
+  );
+
+  server.registerTool(
+    "start_delivery_record",
+    {
+      title: "Start delivery-latency recording",
+      description:
+        "Start a delivery-latency recording session (POST /delivery-record/start). " +
+        "Measures the bridge->Convex->frontend streaming pipeline per delta, content-free. " +
+        "Requires selfheal (activation is a privileged write). Returns { sessionId, " +
+        "autoStopAt }; auto-stops after ~10 min. Run a chat turn while active, then " +
+        "get_delivery_report.",
+      inputSchema: {},
+    },
+    async () => run(() => startDeliveryRecord(config)),
+  );
+
+  server.registerTool(
+    "stop_delivery_record",
+    {
+      title: "Stop delivery-latency recording",
+      description:
+        "Stop the active delivery-latency recording (POST /delivery-record/stop). " +
+        "Requires selfheal.",
+      inputSchema: {},
+    },
+    async () => run(() => stopDeliveryRecord(config)),
+  );
+
+  server.registerTool(
+    "get_delivery_report",
+    {
+      title: "Delivery-latency report",
+      description:
+        "Skew-corrected per-segment latency for a recording session (GET /delivery-report): " +
+        "A=bridge->Convex, B=Convex exec, C=Convex->frontend, each p50/p95/max + count. " +
+        "C.count <= A.count by design (the client only observes coalesced states). " +
+        "Requires traces.read. Omit sessionId for the active/latest session.",
+      inputSchema: getDeliveryReportInput,
+    },
+    async (args) => run(() => getDeliveryReport(config, args)),
   );
 
   const transport = new StdioServerTransport();

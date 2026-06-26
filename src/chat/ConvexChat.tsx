@@ -81,6 +81,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { useConvexChatRuntime, type TurnGate } from "./useConvexChatRuntime";
+import { useDeliveryRecorder } from "./useDeliveryRecorder";
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
@@ -187,6 +188,9 @@ function BrandAvatar({ className }: { className: string }) {
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const { runtime, turnGate, queueSend } = useConvexChatRuntime({ chatId });
+  // Delivery-latency recorder, client side (segment C): inert unless a recording is
+  // active (no recTimingId in the stream -> no work). See useDeliveryRecorder.
+  useDeliveryRecorder(chatId);
   // Resolved UI preferences (reactive): the single source for which interface
   // elements render. The composer "Outils" quick toggle writes through the same
   // single path (setUiPref), so it stays consistent with the Préférences panel.

@@ -14,6 +14,10 @@ import {
   queryOpenClawInput,
   reportAnomaly,
   reportAnomalyInput,
+  startDeliveryRecord,
+  stopDeliveryRecord,
+  getDeliveryReport,
+  getDeliveryReportInput,
 } from "../src/tools.js";
 import { type Config } from "../src/config.js";
 
@@ -379,5 +383,47 @@ describe("centralized input schemas (shared by server/cli/tests)", () => {
     for (const key of ["q", "from", "to", "severity", "source", "kind"]) {
       expect(listAnomaliesInput).toHaveProperty(key);
     }
+  });
+});
+
+describe("delivery recorder tools wire format (Phase 4)", () => {
+  it("start_delivery_record POSTs /delivery-record/start", async () => {
+    const { impl, calls } = fakeFetch();
+    await startDeliveryRecord(CONFIG, { fetchImpl: impl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/delivery-record/start",
+    );
+    expect(calls[0]!.init!.method).toBe("POST");
+  });
+
+  it("stop_delivery_record POSTs /delivery-record/stop", async () => {
+    const { impl, calls } = fakeFetch();
+    await stopDeliveryRecord(CONFIG, { fetchImpl: impl });
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/delivery-record/stop",
+    );
+    expect(calls[0]!.init!.method).toBe("POST");
+  });
+
+  it("get_delivery_report GETs /delivery-report with the sessionId query", async () => {
+    const { impl, calls } = fakeFetch();
+    await getDeliveryReport(CONFIG, { sessionId: "sess1" }, { fetchImpl: impl });
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/delivery-report?sessionId=sess1",
+    );
+    expect(calls[0]!.init?.method).not.toBe("POST");
+  });
+
+  it("get_delivery_report omits sessionId when not provided", async () => {
+    const { impl, calls } = fakeFetch();
+    await getDeliveryReport(CONFIG, {}, { fetchImpl: impl });
+    expect(calls[0]!.url).toBe("http://127.0.0.1:3213/api/v1/delivery-report");
+  });
+
+  it("get_delivery_report input accepts an optional sessionId", () => {
+    const schema = z.object(getDeliveryReportInput);
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ sessionId: "x" }).success).toBe(true);
   });
 });

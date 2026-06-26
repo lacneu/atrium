@@ -743,3 +743,126 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     expect(w.hasMessageState("m1")).toBe(false);
   });
 });
+
+// --- Delivery recorder tagging (Phase 2) -----------------------------------
+type Tagged = {
+  op: string;
+  messageId?: string;
+  text?: string;
+  recSessionId?: string;
+  bridgeSentAt?: number;
+  bridgeSkew?: number;
+  sizeBytes?: number;
+};
+
+// fetch fake that resolves immediately; startAssistant returns a recording ack
+// (with the active sessionId) so the writer learns to tag this turn's deltas.
+// Captures every posted body.
+function recordingFetch(rec: {
+  recording: boolean;
+  serverNow?: number;
+  sessionId?: string;
+}) {
+  const sent: Tagged[] = [];
+  const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+    const body = JSON.parse(init.body) as Tagged;
+    sent.push(body);
+    const ack =
+      body.op === "startAssistant"
+        ? {
+            messageId: "m1",
+            rec: {
+              recording: rec.recording,
+              serverNow: rec.serverNow ?? Date.now(),
+              sessionId: rec.recording ? (rec.sessionId ?? "sess-1") : null,
+            },
+          }
+        : { ok: true };
+    return { ok: true, json: async () => ack } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, sent };
+}
+
+describe("delivery recorder tagging (Phase 2)", () => {
+  test("recording turn: deltas carry recSessionId + bridgeSentAt + bridgeSkew + sizeBytes", async () => {
+    const { fetchImpl, sent } = recordingFetch({
+      recording: true,
+      sessionId: "sess-X",
+    });
+    const w = writerWith(fetchImpl, 5);
+    expect(await w.startAssistant("c1", "run-1")).toBe("m1");
+    await w.appendDelta("m1", "hello");
+    await tick(20);
+    const d = sent.find((s) => s.op === "appendDelta");
+    expect(d).toBeDefined();
+    expect(d!.recSessionId).toBe("sess-X"); // the session learned at startAssistant
+    expect(typeof d!.bridgeSentAt).toBe("number");
+    expect(typeof d!.bridgeSkew).toBe("number");
+    expect(d!.sizeBytes).toBe(5);
+  });
+
+  test("non-recording turn: deltas carry NO recorder tags (body unchanged)", async () => {
+    const { fetchImpl, sent } = recordingFetch({ recording: false });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    await w.appendDelta("m1", "hello");
+    await tick(20);
+    const d = sent.find((s) => s.op === "appendDelta");
+    expect(d).toBeDefined();
+    expect(d!.recSessionId).toBeUndefined();
+    expect(d!.bridgeSentAt).toBeUndefined();
+    expect(d!.bridgeSkew).toBeUndefined();
+    expect(d!.sizeBytes).toBeUndefined();
+  });
+
+  test("bridgeSkew = serverClock - bridgeClock (sign), derived from the round-trip", async () => {
+    const serverAhead = 100_000; // pretend the server clock is 100s ahead
+    const { fetchImpl, sent } = recordingFetch({
+      recording: true,
+      serverNow: Date.now() + serverAhead,
+    });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    await w.appendDelta("m1", "x");
+    await tick(20);
+    const d = sent.find((s) => s.op === "appendDelta")!;
+    // skew ~ serverNow - (sentAt + rtt/2); rtt ~0 here -> skew ~ +100s. A sign flip
+    // would yield ~-100s, so this band guards the direction.
+    expect(d.bridgeSkew!).toBeGreaterThan(serverAhead - 2000);
+    expect(d.bridgeSkew!).toBeLessThan(serverAhead + 2000);
+  });
+
+  test("sizeBytes counts UTF-8 bytes, not UTF-16 chars", async () => {
+    const { fetchImpl, sent } = recordingFetch({ recording: true });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    await w.appendDelta("m1", "café"); // 4 chars, 'é' = 2 bytes -> 5 UTF-8 bytes
+    await tick(20);
+    const d = sent.find((s) => s.op === "appendDelta")!;
+    expect(d.sizeBytes).toBe(5); // text.length would wrongly be 4
+  });
+
+  test("a full setSnapshot on a recording turn is tagged", async () => {
+    const { fetchImpl, sent } = recordingFetch({ recording: true });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    await w.appendDelta("m1", "hello");
+    await tick(20);
+    // "goodbye" is NOT a suffix of "hello" -> forces a FULL setSnapshot write.
+    await w.setSnapshot("m1", "goodbye");
+    await tick(20);
+    const snap = sent.find((s) => s.op === "setSnapshot");
+    expect(snap).toBeDefined();
+    expect(snap!.recSessionId).toBe("sess-1");
+    expect(snap!.sizeBytes).toBe(7);
+  });
+
+  test("finalize clears the recorded-turn state (memory bound)", async () => {
+    const { fetchImpl } = recordingFetch({ recording: true });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    expect(w.hasMessageState("m1")).toBe(true);
+    await w.finalize("m1", "complete", "done", null);
+    expect(w.hasMessageState("m1")).toBe(false);
+  });
+});

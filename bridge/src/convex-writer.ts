@@ -115,10 +115,22 @@ export interface SessionMetaReport {
   estimatedCostUsd?: number;
 }
 
+// Delivery-recorder tags, present only while a turn is being recorded (learned once
+// per turn from the startAssistant ack). recSessionId is the turn's recording session
+// (Convex correlates the delta by the timing row's _id and records only if this still
+// matches the active session); bridgeSentAt (t1) + bridgeSkew feed segment A;
+// sizeBytes is the flush size in UTF-8 bytes. See convex/deliveryTiming.ts.
+interface RecTags {
+  recSessionId?: string;
+  bridgeSentAt?: number;
+  bridgeSkew?: number;
+  sizeBytes?: number;
+}
+
 type IngestOp =
   | { op: "startAssistant"; chatId: string; runId: string | null }
-  | { op: "appendDelta"; messageId: string; text: string }
-  | { op: "setSnapshot"; messageId: string; text: string }
+  | ({ op: "appendDelta"; messageId: string; text: string } & RecTags)
+  | ({ op: "setSnapshot"; messageId: string; text: string } & RecTags)
   | {
       op: "addPart";
       messageId: string;
@@ -305,6 +317,17 @@ export class HttpConvexWriter implements ConvexWriter {
   // run independently. Entries are evicted on finalize so the map stays bounded.
   private chains = new Map<string, Promise<unknown>>();
 
+  // Delivery recorder (convex/deliveryTiming.ts). Learned ONCE per turn from the
+  // startAssistant ack — so the per-delta hot path stays free when not recording.
+  //   recTurns : messageId -> the recording sessionId the turn was started under.
+  //              Sent back on each tagged delta so Convex can reject a late delta
+  //              whose session is no longer active (no in-memory seq counter, so a
+  //              bridge restart mid-session can't collide a correlator).
+  //   recSkew  : global clock offset (serverClock - bridgeClock), from the last
+  //              recording startAssistant round-trip; feeds segment A.
+  private readonly recTurns = new Map<string, string>();
+  private recSkew: number | undefined = undefined;
+
   constructor(opts: HttpConvexWriterOptions) {
     this.url = opts.convexHttpActionsUrl.replace(/\/$/, "") + INGEST_PATH;
     this.ingestSecret = opts.ingestSecret;
@@ -347,7 +370,8 @@ export class HttpConvexWriter implements ConvexWriter {
       this.deltaCapped.has(messageId) ||
       this.confirmedText.has(messageId) ||
       this.pendingResync.has(messageId) ||
-      this.flushTimer.has(messageId)
+      this.flushTimer.has(messageId) ||
+      this.recTurns.has(messageId)
     );
   }
 
@@ -364,6 +388,7 @@ export class HttpConvexWriter implements ConvexWriter {
     this.confirmedText.delete(messageId);
     this.pendingResync.delete(messageId);
     this.chains.delete(messageId);
+    this.recTurns.delete(messageId);
   }
 
   private async doPost<T>(body: IngestOp): Promise<T> {
@@ -402,12 +427,37 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async startAssistant(chatId: string, runId: string | null): Promise<string> {
-    const { messageId } = await this.post<{ messageId: string }>({
-      op: "startAssistant",
-      chatId,
-      runId,
-    });
-    return messageId;
+    const sentAt = Date.now();
+    const ack = await this.post<{
+      messageId: string;
+      rec?: { recording: boolean; serverNow: number; sessionId: string | null };
+    }>({ op: "startAssistant", chatId, runId });
+    // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
+    // this turn's deltas with, and derive the bridge<->Convex clock offset from THIS
+    // round-trip:
+    //   skew = serverNow - (sentAt + RTT/2)   (serverClock - bridgeClock)
+    // startAssistant is message-less -> runs without a chain, so the measured RTT is
+    // the real network round-trip (no queue wait).
+    if (ack.rec?.recording && ack.rec.sessionId) {
+      const rtt = Date.now() - sentAt;
+      this.recSkew = ack.rec.serverNow - (sentAt + rtt / 2);
+      this.recTurns.set(ack.messageId, ack.rec.sessionId);
+    }
+    return ack.messageId;
+  }
+
+  /** Delivery-recorder tags for a stream write (session + t1 + skew + UTF-8 size), or
+   *  {} when this turn isn't being recorded -> the op body is byte-identical to before
+   *  and Convex's appendDelta/setSnapshot skip the recorder entirely. */
+  private recTags(messageId: string, text: string): RecTags {
+    const sessionId = this.recTurns.get(messageId);
+    if (sessionId === undefined) return {};
+    return {
+      recSessionId: sessionId,
+      bridgeSentAt: Date.now(),
+      bridgeSkew: this.recSkew,
+      sizeBytes: Buffer.byteLength(text, "utf8"),
+    };
   }
 
   async appendDelta(messageId: string, text: string): Promise<void> {
@@ -470,7 +520,12 @@ export class HttpConvexWriter implements ConvexWriter {
       const waitedMs = Date.now() - enqueuedAt;
       const postStart = Date.now();
       try {
-        await this.doPost({ op: "appendDelta", messageId, text });
+        await this.doPost({
+          op: "appendDelta",
+          messageId,
+          text,
+          ...this.recTags(messageId, text),
+        });
         // liveText now == prior + this delta. Track it so a later snapshot can be
         // diffed to a suffix (only AFTER the post succeeds — a failure re-buffers
         // the text below, so the server never received it).
@@ -533,13 +588,20 @@ export class HttpConvexWriter implements ConvexWriter {
       text.startsWith(prev);
     try {
       if (canSuffix) {
+        const suffix = text.slice(prev.length);
         await this.post({
           op: "appendDelta",
           messageId,
-          text: text.slice(prev.length),
+          text: suffix,
+          ...this.recTags(messageId, suffix),
         });
       } else {
-        await this.post({ op: "setSnapshot", messageId, text });
+        await this.post({
+          op: "setSnapshot",
+          messageId,
+          text,
+          ...this.recTags(messageId, text),
+        });
       }
     } catch (err) {
       // ANY timed-out / lost-response write MAY have applied server-side. appendDelta

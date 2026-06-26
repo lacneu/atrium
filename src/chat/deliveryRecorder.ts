@@ -1,0 +1,63 @@
+// Pure helpers for the client side of the delivery-latency recorder (segment C).
+// Kept free of React/Convex so the dedup + skew math is unit-testable; the side
+// effects (subscription, mutations, refs) live in useDeliveryRecorder.ts. See
+// convex/deliveryTiming.ts for the end-to-end contract.
+
+// A streamingText row as returned by getStreamingText. `recTimingId` (the timing
+// row's id = the end-to-end correlator) is present ONLY while a recording is active.
+export type StreamRow = {
+  messageId: string;
+  text: string;
+  recTimingId?: string;
+  recCommittedAt?: number;
+};
+
+// One frontend timing sample: t4 (browser clock) for a delta's timing row.
+export type ClientSample = {
+  timingId: string;
+  t4: number;
+  clientSkew?: number;
+};
+
+// Clock offset estimate `serverClock - clientClock` (the calibrateClock convention)
+// from a single client-clock round-trip, assuming symmetric latency (NTP-style):
+//   skew = serverNow - (clientSentAt + RTT/2)
+export function skewFromPing(
+  clientSentAt: number,
+  serverNow: number,
+  clientRecvAt: number,
+): number {
+  const rtt = clientRecvAt - clientSentAt;
+  return serverNow - (clientSentAt + rtt / 2);
+}
+
+// Decide what to flush: HOLD everything until the clock is calibrated, so segment C
+// is never persisted across two clocks (Codex review — uncorrected samples can't be
+// fixed later because recordFrontendTiming ignores rows whose t4 is already set).
+// Returns the skew-applied batch, or null to keep waiting (empty queue, or no skew
+// yet — the caller drops the held queue on unmount rather than sending it wrong).
+export function buildFlushBatch(
+  queue: readonly ClientSample[],
+  skew: number | undefined,
+): ClientSample[] | null {
+  if (queue.length === 0 || skew === undefined) return null;
+  return queue.map((s) => ({ ...s, clientSkew: s.clientSkew ?? skew }));
+}
+
+// Stamp t4 = `now` for each row whose recTimingId hasn't been seen yet. Pure: the
+// caller owns `seen` (mutates it after queuing). One sample per DISTINCT recTimingId
+// observed -> maximizes segment-C coverage given Convex coalesces intermediate states.
+export function collectNewSamples(
+  rows: readonly StreamRow[],
+  seen: ReadonlySet<string>,
+  now: number,
+  skew: number | undefined,
+): ClientSample[] {
+  const out: ClientSample[] = [];
+  for (const r of rows) {
+    if (r.recTimingId !== undefined && !seen.has(r.recTimingId)) {
+      out.push({ timingId: r.recTimingId, t4: now, clientSkew: skew });
+    }
+  }
+  return out;
+}

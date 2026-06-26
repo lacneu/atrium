@@ -312,7 +312,17 @@ export const getStreamingText = query({
       .query("streamingText")
       .withIndex("by_chat", (q) => q.eq("chatId", id))
       .collect();
-    return rows.map((r) => ({ messageId: r.messageId, text: r.text }));
+    return rows.map((r) => ({
+      messageId: r.messageId,
+      text: r.text,
+      // In-band delivery-recorder fields, present ONLY while a recording is active
+      // (appendDelta/setSnapshot stamp them) -> zero added payload otherwise. The
+      // frontend reads recTimingId (the timing row's correlator) to stamp t4 and
+      // close segment C (convex/deliveryTiming.ts).
+      ...(r.recTimingId !== undefined
+        ? { recTimingId: r.recTimingId, recCommittedAt: r.recCommittedAt }
+        : {}),
+    }));
   },
 });
 

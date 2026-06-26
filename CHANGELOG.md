@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.14] — Measure streaming delivery latency end-to-end (bridge → Convex → frontend)
+
+A controllable, content-free recorder that times the streaming pipeline per delta, so
+"where does the time go in a slow reply?" has a measured answer instead of a guess. OFF
+by default, with no cost on the streaming hot path until a session is running.
+
+- **Record a session, read a report.** From Settings▸Traces an admin starts a recording;
+  while it is active each streamed delta is timed across three segments — A (bridge →
+  Convex), B (Convex execution), C (Convex → frontend) — correlated end to end and
+  corrected for the three machines' clock offsets. The report shows p50 / p95 / max per
+  segment, so a long reply can be attributed to the model/gateway versus Atrium's own
+  delivery. The same controls are available over the MCP tools (`start_delivery_record`,
+  `stop_delivery_record`, `get_delivery_report`) for diagnosing from outside the browser.
+- **Content-free and safe by default.** Only timestamps and sizes are recorded — never
+  message content. Nothing is recorded unless a session is active, and a session
+  auto-stops after about ten minutes. Starting or stopping a recording is admin-only (or
+  a service account holding `selfheal`); reading a report needs `traces.read`.
+- *Deploy: `npx convex deploy` + rebuild the frontend, bridge and MCP images.*
+
 ## [0.10.13] — Tool-heavy chats stop lagging on the wire (the window no longer ships full tool outputs)
 
 Corrective performance fix. No schema migration.

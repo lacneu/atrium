@@ -582,6 +582,145 @@ http.route({
   }),
 });
 
+// Delivery-latency recorder control (convex/deliveryTiming.ts). Activation is a
+// privileged WRITE -> `selfheal` (the agent's control permission); the report is
+// read-only -> `traces.read`. Mirrors the /api/v1/traces auth + audit spine.
+http.route({
+  path: "/api/v1/delivery-record/start",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/delivery-record/start",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    const res = await ctx.runMutation(
+      internal.deliveryTiming.startDeliveryRecordForAgent,
+      { principalId: principal.id },
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/delivery-record/start",
+      method: "POST",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson(
+      { ok: true, sessionId: res.sessionId, autoStopAt: res.autoStopAt },
+      200,
+    );
+  }),
+});
+
+http.route({
+  path: "/api/v1/delivery-record/stop",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/delivery-record/stop",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    const res = await ctx.runMutation(
+      internal.deliveryTiming.stopDeliveryRecordForAgent,
+      {},
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/delivery-record/stop",
+      method: "POST",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, stopped: res.stopped }, 200);
+  }),
+});
+
+http.route({
+  path: "/api/v1/delivery-report",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/delivery-report",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+    const report = await ctx.runQuery(
+      internal.deliveryTiming.getDeliveryReportInternal,
+      { sessionId: strParam(url, "sessionId") },
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/delivery-report",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, report }, 200);
+  }),
+});
+
 // ===========================================================================
 // Increment 6 — anomalies + heartbeat + OpenClaw query.
 //

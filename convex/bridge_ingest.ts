@@ -100,8 +100,28 @@ function constantTimeEqual(a: string, b: string): boolean {
 // bridge owns the canonical shape).
 type IngestOp =
   | { op: "startAssistant"; chatId: string; runId: string | null }
-  | { op: "appendDelta"; messageId: string; text: string }
-  | { op: "setSnapshot"; messageId: string; text: string }
+  // `rec*` fields are present only while a turn is being recorded (bridge tags the
+  // flush): recSessionId is the turn's recording session (Convex records only if it
+  // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
+  // sizeBytes is the flush size (UTF-8). See convex/deliveryTiming.ts.
+  | {
+      op: "appendDelta";
+      messageId: string;
+      text: string;
+      recSessionId?: string;
+      bridgeSentAt?: number;
+      bridgeSkew?: number;
+      sizeBytes?: number;
+    }
+  | {
+      op: "setSnapshot";
+      messageId: string;
+      text: string;
+      recSessionId?: string;
+      bridgeSentAt?: number;
+      bridgeSkew?: number;
+      sizeBytes?: number;
+    }
   | { op: "addPart"; messageId: string; part: Record<string, unknown> }
   // Outbound media (base64-free, no size ceiling): the bridge asks for an upload
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
@@ -200,6 +220,13 @@ export const ingest = httpAction(async (ctx, request) => {
         chatId: body.chatId as Id<"chats">,
         runId: body.runId ?? undefined,
       });
+      // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
+      // whether to tag this turn's stream writes + a server clock for skew. When OFF
+      // the bridge sends no `seq`, so the delta hot path skips activeRecording.
+      const rec = await ctx.runQuery(
+        internal.deliveryTiming.getActiveRecordingForBridge,
+        {},
+      );
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
         chatId: body.chatId,
@@ -207,7 +234,7 @@ export const ingest = httpAction(async (ctx, request) => {
         correlationId,
         meta: { op: body.op, messageId, ok: true },
       });
-      return json({ messageId });
+      return json({ messageId, rec });
     }
     // The per-delta stream ops (appendDelta/setSnapshot) are the HIGH-FREQUENCY hot
     // path: a single turn emits dozens of them. We deliberately do NOT write a
@@ -221,6 +248,10 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.appendDelta, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        recSessionId: body.recSessionId,
+        bridgeSentAt: body.bridgeSentAt,
+        bridgeSkew: body.bridgeSkew,
+        sizeBytes: body.sizeBytes,
       });
       return json({ ok: true });
     }
@@ -228,6 +259,10 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        recSessionId: body.recSessionId,
+        bridgeSentAt: body.bridgeSentAt,
+        bridgeSkew: body.bridgeSkew,
+        sizeBytes: body.sizeBytes,
       });
       return json({ ok: true });
     }

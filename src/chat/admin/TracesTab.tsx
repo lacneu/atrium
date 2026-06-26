@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
 import { DataTableShell } from "./DataTableShell";
+import { DeliveryRecorderCard } from "./DeliveryRecorderCard";
 import { FilterBar } from "./filters/FilterBar";
 import { AdvancedFilter } from "./filters/AdvancedFilter";
 import { useResolvedRange } from "./filters/TimeRangePicker";
@@ -224,6 +225,8 @@ export function TracesTab() {
 
   return (
     <>
+      <DeliveryRecorderCard />
+
       <p className="oc-admin__hint">
         {m.traces_hint_before()}<strong>{m.traces_hint_redacted()}</strong>{m.traces_hint_after()}{" "}
         <span className="oc-filter__window">

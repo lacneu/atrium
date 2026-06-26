@@ -97,6 +97,11 @@ export const reportAnomalyInput = {
     .describe("Free-form structured, non-PHI evidence."),
 } as const;
 
+export const getDeliveryReportInput = {
+  sessionId: z.string().optional()
+    .describe("Recording session id; omit for the active (or most recent) session."),
+} as const;
+
 /**
  * Time-range token: epoch ms (numeric string) OR a Grafana-style relative
  * token — `now`, or `now-<N><unit>` with unit in s|m|h|d|w (e.g. `now-24h`).
@@ -393,6 +398,56 @@ export function syncInstance(
     config,
     "/instances/sync",
     { method: "POST", body: JSON.stringify({ instance: args.instance }) },
+    options,
+  );
+}
+
+/**
+ * POST /api/v1/delivery-record/start — start a delivery-latency recording session
+ * (measures the bridge->Convex->frontend streaming pipeline, per delta, content-free).
+ * Requires `selfheal` (activation is a privileged write). Returns { sessionId,
+ * autoStopAt }; the session auto-stops after ~10 min.
+ */
+export function startDeliveryRecord(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/delivery-record/start",
+    { method: "POST", body: "{}" },
+    options,
+  );
+}
+
+/** POST /api/v1/delivery-record/stop — stop the active recording. Requires `selfheal`. */
+export function stopDeliveryRecord(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/delivery-record/stop",
+    { method: "POST", body: "{}" },
+    options,
+  );
+}
+
+/**
+ * GET /api/v1/delivery-report — skew-corrected per-segment latency for a recording
+ * session: A=bridge->Convex, B=Convex exec, C=Convex->frontend (p50/p95/max + counts;
+ * C.count <= A.count by design, since the client only observes coalesced states).
+ * Requires `traces.read`. Omit sessionId for the active (or most recent) session.
+ */
+export function getDeliveryReport(
+  config: Config,
+  args: { sessionId?: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    `/delivery-report${qs({ sessionId: args.sessionId })}`,
+    {},
     options,
   );
 }

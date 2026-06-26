@@ -23,8 +23,22 @@ import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
+import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
 import { compareOrder } from "./lib/messageOrder";
+
+// Optional delivery-recorder fields the bridge attaches to a stream write while a
+// turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
+// session the turn was started under — Convex records only when it still matches the
+// ACTIVE session (so a late delta from an old turn can't be mis-filed into a newer
+// session). `bridgeSentAt` (t1) + `bridgeSkew` feed segment A; `sizeBytes` is the
+// flush size (UTF-8). All absent (and ignored) when not recording.
+const recArgs = {
+  recSessionId: v.optional(v.string()),
+  bridgeSentAt: v.optional(v.number()),
+  bridgeSkew: v.optional(v.number()),
+  sizeBytes: v.optional(v.number()),
+};
 
 /**
  * Build the stable per-turn correlationId for an assistant message. Prefers
@@ -150,10 +164,15 @@ export const appendDelta = internalMutation({
   args: {
     messageId: v.id("messages"),
     text: v.string(),
+    ...recArgs,
   },
-  handler: async (ctx, { messageId, text }) => {
-    const now = Date.now();
+  handler: async (ctx, { messageId, text, recSessionId, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+    const now = Date.now(); // t2: Convex received
+    // Only pay the recorder point-read when the bridge actually tagged this delta.
+    const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
     const row = await streamingRow(ctx, messageId);
+    let streamRowId: Id<"streamingText">;
+    let chatId: Id<"chats">;
     if (row === null) {
       // Defensive: startAssistant creates the row, but a delta arriving without
       // one (a race / a message MID-STREAM across the deploy to this version) still
@@ -167,15 +186,40 @@ export const appendDelta = internalMutation({
       // again to delete it, so it would leak a phantom live row that getStreamingText
       // returns forever. Drop it — the turn is over (mirrors addPart's status guard).
       if (message.status !== "streaming") return;
-      await ctx.db.insert("streamingText", {
+      streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
         text: (message.liveText ?? "") + text,
         updatedAt: now,
       });
-      return;
+      chatId = message.chatId;
+    } else {
+      await ctx.db.patch(row._id, { text: row.text + text, updatedAt: now });
+      streamRowId = row._id;
+      chatId = row.chatId;
     }
-    await ctx.db.patch(row._id, { text: row.text + text, updatedAt: now });
+    if (rec !== null && recSessionId === rec.sessionId) {
+      // Session match: this delta belongs to the CURRENTLY active recording.
+      await recordDelta(ctx, {
+        sessionId: rec.sessionId,
+        streamRowId,
+        chatId,
+        t1: bridgeSentAt ?? now,
+        t2: now,
+        bridgeSkew,
+        sizeBytes,
+      });
+    } else if (row !== null && row.recTimingId !== undefined) {
+      // Not recording for THIS session anymore (stopped / auto-stopped / a late delta
+      // from an old turn whose session is no longer active / an untagged delta): drop
+      // the stale in-band markers so getStreamingText stops exposing an old sample.
+      // Self-heals on the first such write; no cost in the steady OFF case (a normal
+      // row has no recTimingId, so this branch never patches).
+      await ctx.db.patch(streamRowId, {
+        recTimingId: undefined,
+        recCommittedAt: undefined,
+      });
+    }
   },
 });
 
@@ -184,25 +228,54 @@ export const setSnapshot = internalMutation({
   args: {
     messageId: v.id("messages"),
     text: v.string(),
+    ...recArgs,
   },
-  handler: async (ctx, { messageId, text }) => {
-    const now = Date.now();
+  handler: async (ctx, { messageId, text, recSessionId, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+    const now = Date.now(); // t2: Convex received
+    const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
     const row = await streamingRow(ctx, messageId);
+    let streamRowId: Id<"streamingText">;
+    let chatId: Id<"chats">;
     if (row === null) {
       const message = await ctx.db.get(messageId);
       if (message === null) throw new Error("setSnapshot: message not found");
       // See appendDelta: never recreate a row for a finished turn (no finalize will
       // delete it again) — a late snapshot for a terminal message is dropped.
       if (message.status !== "streaming") return;
-      await ctx.db.insert("streamingText", {
+      streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
         text,
         updatedAt: now,
       });
-      return;
+      chatId = message.chatId;
+    } else {
+      await ctx.db.patch(row._id, { text, updatedAt: now });
+      streamRowId = row._id;
+      chatId = row.chatId;
     }
-    await ctx.db.patch(row._id, { text, updatedAt: now });
+    if (rec !== null && recSessionId === rec.sessionId) {
+      // Session match: this delta belongs to the CURRENTLY active recording.
+      await recordDelta(ctx, {
+        sessionId: rec.sessionId,
+        streamRowId,
+        chatId,
+        t1: bridgeSentAt ?? now,
+        t2: now,
+        bridgeSkew,
+        sizeBytes,
+      });
+    } else if (row !== null && row.recTimingId !== undefined) {
+      // Not recording for THIS session anymore (stopped / auto-stopped / a late delta
+      // from an old turn whose session is no longer active / an untagged delta): drop
+      // the stale in-band markers so getStreamingText stops exposing an old sample.
+      // Self-heals on the first such write; no cost in the steady OFF case (a normal
+      // row has no recTimingId, so this branch never patches).
+      await ctx.db.patch(streamRowId, {
+        recTimingId: undefined,
+        recCommittedAt: undefined,
+      });
+    }
   },
 });
 

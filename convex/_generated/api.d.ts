@@ -24,6 +24,7 @@ import type * as charts from "../charts.js";
 import type * as chats from "../chats.js";
 import type * as compat from "../compat.js";
 import type * as crons from "../crons.js";
+import type * as deliveryTiming from "../deliveryTiming.js";
 import type * as dev from "../dev.js";
 import type * as deviceIdentity from "../deviceIdentity.js";
 import type * as documentAttachments from "../documentAttachments.js";
@@ -113,6 +114,7 @@ declare const fullApi: ApiFromModules<{
   chats: typeof chats;
   compat: typeof compat;
   crons: typeof crons;
+  deliveryTiming: typeof deliveryTiming;
   dev: typeof dev;
   deviceIdentity: typeof deviceIdentity;
   documentAttachments: typeof documentAttachments;

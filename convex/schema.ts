@@ -864,12 +864,61 @@ export default defineSchema({
     chatId: v.id("chats"),
     text: v.string(),
     updatedAt: v.number(),
+    // Delivery-latency recorder (OFF by default): when a recording session is
+    // active, appendDelta/setSnapshot stamp the deliveryTimings row id (the unique
+    // correlator) + server commit time of the last write here, so getStreamingText
+    // echoes them in-band (~40B) and the frontend can close segment C (Convex->
+    // frontend). Absent when not recording -> zero hot-path payload cost. See
+    // convex/deliveryTiming.ts.
+    recTimingId: v.optional(v.string()),
+    recCommittedAt: v.optional(v.number()),
   })
     .index("by_message", ["messageId"])
     .index("by_chat", ["chatId"])
     // The stuck-stream watchdog ranges by heartbeat (updatedAt < cutoff) — every
     // row here is by definition a streaming message, so no status column is needed.
     .index("by_updated", ["updatedAt"]),
+
+  // --- Delivery-latency recorder (convex/deliveryTiming.ts) -------------------
+  // A controllable, content-free measurement of the bridge -> Convex -> frontend
+  // delivery pipeline. OFF by default (zero hot-path cost). Started/stopped from
+  // Settings>Traces or via MCP; correlated per delta by `seq`; reported skew-
+  // corrected (segments A=bridge->Convex, B=Convex exec, C=Convex->frontend).
+
+  // Singleton switch (key "singleton"). `sessionId` points at the active
+  // deliverySessions row; `autoStopAt` is the safety cutoff (treated as OFF past it).
+  deliveryRecording: defineTable({
+    key: v.string(), // "singleton"
+    enabled: v.boolean(),
+    sessionId: v.optional(v.string()), // active deliverySessions _id (string), or undefined
+    autoStopAt: v.optional(v.number()), // safety auto-stop epoch (now > this => OFF)
+  }).index("by_key", ["key"]),
+
+  // One row per record session (its _id is the sessionId stamped on every timing).
+  deliverySessions: defineTable({
+    startedAt: v.number(),
+    startedBy: v.string(), // "admin:<userId>" | "agent:<serviceAccount>"
+    autoStopAt: v.number(),
+    stoppedAt: v.optional(v.number()),
+  }),
+
+  // One row per recorded delta. CONTENT-FREE: only timestamps + size. The row's
+  // own `_id` IS the end-to-end correlator (echoed in-band as streamingText
+  // .recTimingId) — unique by construction, so it survives a bridge restart / many
+  // bridge processes where an in-memory counter would collide. Timestamps are raw
+  // per-clock epochs; the report applies the skews. t4/clientSkew filled by the
+  // frontend (batched, keyed by this _id).
+  deliveryTimings: defineTable({
+    sessionId: v.string(),
+    chatId: v.id("chats"),
+    t1: v.number(), // bridge sent (bridge clock)
+    t2: v.number(), // Convex received (server clock)
+    t3: v.number(), // Convex committed ~ mutation end (server clock)
+    t4: v.optional(v.number()), // frontend received (browser clock)
+    bridgeSkew: v.optional(v.number()), // serverClock - bridgeClock offset
+    clientSkew: v.optional(v.number()), // serverClock - browserClock offset
+    sizeBytes: v.optional(v.number()),
+  }).index("by_session", ["sessionId"]),
 
   // Owner-scoped DENORMALIZATION of every file/media `messagePart`, so a user's
   // files are listable (Settings → Fichiers) WITHOUT iterating chats → messages →
