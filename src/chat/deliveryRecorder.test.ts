@@ -104,15 +104,17 @@ describe("reportToText", () => {
       count: 180,
       truncated: false,
       segments: {
+        bridge: seg(180, 3, 5, 9),
         A: seg(180, 66.4, 74, 328),
-        B: seg(180, 0, 0, 0),
         C: seg(0, null, null, null),
       },
     };
     const text = reportToText(report);
     expect(text).toContain("session sess-1 (180 deltas)");
+    expect(text).toContain("bridge internal: p50=3 p95=5 max=9 ms (n=180)");
     expect(text).toContain("A bridge->Convex: p50=66 p95=74 max=328 ms (n=180)");
     expect(text).toContain("C Convex->frontend: p50=— p95=— max=— ms (n=0)");
+    expect(text).toContain("B Convex exec: from Convex telemetry"); // B is external
     expect(text).not.toContain("capped"); // not truncated -> no cap note
   });
 
@@ -122,8 +124,8 @@ describe("reportToText", () => {
       count: 10000,
       truncated: true,
       segments: {
+        bridge: seg(10000, 2, 4, 8),
         A: seg(10000, 5, 9, 40),
-        B: seg(10000, 0, 0, 0),
         C: seg(10000, 90, 100, 120),
       },
     };

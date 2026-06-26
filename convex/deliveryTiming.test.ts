@@ -123,9 +123,8 @@ describe("delivery-latency recorder", () => {
     );
     expect(report.segments!.A.max).toBe(expectedAmax);
     expect(report.segments!.A.count).toBe(2);
-    const expectedBmax = Math.max(...rows.map((r) => r.t3 - r.t2));
-    expect(report.segments!.B.max).toBe(expectedBmax);
-    expect(report.segments!.B.max).toBeGreaterThanOrEqual(0);
+    // No B segment: Convex exec is unmeasurable in-app (frozen mutation clock).
+    expect("B" in report.segments!).toBe(false);
     expect(report.segments!.C.count).toBe(0); // no t4 yet
   });
 
@@ -329,19 +328,20 @@ describe("delivery-latency recorder", () => {
     const admin = await seedUser(t, "admin");
     const asAdmin = t.withIdentity({ subject: `${admin}|session` });
     const sessionId = "sess-pct-test";
-    // Controlled rows: B = t3 - t2 = [10,20,30,40] (t2=0).
+    // Controlled rows: bridge-internal = t1 - t0 = [10,20,30,40] (t0=0).
     await t.run(async (ctx) => {
       const chatId = await ctx.db.insert("chats", {
         userId: admin,
         updatedAt: 1,
       });
-      for (const b of [10, 20, 30, 40]) {
+      for (const v of [10, 20, 30, 40]) {
         await ctx.db.insert("deliveryTimings", {
           sessionId,
           chatId,
-          t1: 0,
-          t2: 0,
-          t3: b,
+          t0: 0,
+          t1: v,
+          t2: v,
+          t3: v,
         });
       }
     });
@@ -352,9 +352,9 @@ describe("delivery-latency recorder", () => {
     expect(report.count).toBe(4);
     // Nearest-rank p50 of [10,20,30,40] = idx ceil(0.5*4)-1 = 1 -> 20.
     // The old floor() bug returned idx 2 -> 30, so this assert guards the fix.
-    expect(report.segments!.B.p50).toBe(20);
-    expect(report.segments!.B.p95).toBe(40);
-    expect(report.segments!.B.max).toBe(40);
+    expect(report.segments!.bridge.p50).toBe(20);
+    expect(report.segments!.bridge.p95).toBe(40);
+    expect(report.segments!.bridge.max).toBe(40);
   });
 
   test("agent/MCP path: internal start/report/stop wrappers work without a user identity", async () => {
@@ -622,21 +622,23 @@ describe("delivery recorder — re-analysis hardening", () => {
     const sessionId = "sess-hardening";
     await t.run(async (ctx) => {
       const chatId = await ctx.db.insert("chats", { userId: admin, updatedAt: 1 });
-      // Uncalibrated: no bridgeSkew + no t4 -> A and C excluded, B kept.
+      // Untimed + uncalibrated + open: no t0, no bridgeSkew, no t4 -> bridge, A and C
+      // ALL excluded (no segment can be computed for it).
       await ctx.db.insert("deliveryTimings", {
         sessionId,
         chatId,
         t1: 0,
         t2: 50,
-        t3: 51,
+        t3: 50,
       });
-      // Calibrated + closed: A + B + C all present.
+      // Fully timed: t0 + bridgeSkew + t4 -> bridge, A and C all present.
       await ctx.db.insert("deliveryTimings", {
         sessionId,
         chatId,
-        t1: 0,
+        t0: 10,
+        t1: 14,
         t2: 30,
-        t3: 31,
+        t3: 30,
         bridgeSkew: 10,
         t4: 200,
         clientSkew: 5,
@@ -647,11 +649,13 @@ describe("delivery recorder — re-analysis hardening", () => {
       sessionId,
     });
     expect(report.count).toBe(2);
+    expect(report.segments!.bridge.count).toBe(1); // only the row with t0
+    expect(report.segments!.bridge.max).toBe(4); // t1 14 - t0 10
     expect(report.segments!.A.count).toBe(1); // only the calibrated delta
-    expect(report.segments!.A.max).toBe(20); // 30 - 0 - 10
-    expect(report.segments!.B.count).toBe(2); // both (B never needs a skew)
+    expect(report.segments!.A.max).toBe(6); // t2 30 - t1 14 - skew 10
+    expect("B" in report.segments!).toBe(false); // no Convex-exec segment
     expect(report.segments!.C.count).toBe(1); // only the one with t4
-    expect(report.segments!.C.max).toBe(174); // 200 - 31 + 5
+    expect(report.segments!.C.max).toBe(175); // t4 200 - t3 30 + clientSkew 5
     expect(report.truncated).toBe(false);
   });
 

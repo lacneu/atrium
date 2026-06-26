@@ -750,6 +750,7 @@ type Tagged = {
   messageId?: string;
   text?: string;
   recSessionId?: string;
+  bridgeRecvAt?: number;
   bridgeSentAt?: number;
   bridgeSkew?: number;
   sizeBytes?: number;
@@ -762,11 +763,18 @@ function recordingFetch(rec: {
   recording: boolean;
   serverNow?: number;
   sessionId?: string;
+  failAppends?: number;
 }) {
   const sent: Tagged[] = [];
+  let failsLeft = rec.failAppends ?? 0;
   const fetchImpl = (async (_url: unknown, init: { body: string }) => {
     const body = JSON.parse(init.body) as Tagged;
     sent.push(body);
+    if (body.op === "appendDelta" && failsLeft > 0) {
+      failsLeft--;
+      // Transient ingest failure -> the writer re-buffers + retries the next flush.
+      throw Object.assign(new Error("ingest down"), { name: "Error" });
+    }
     let ack: unknown;
     if (body.op === "startAssistant") {
       ack = {
@@ -788,7 +796,7 @@ function recordingFetch(rec: {
 }
 
 describe("delivery recorder tagging (Phase 2)", () => {
-  test("recording turn: deltas carry recSessionId + bridgeSentAt + bridgeSkew + sizeBytes", async () => {
+  test("recording turn: deltas carry recSessionId + t0 + t1 + bridgeSkew + sizeBytes", async () => {
     const { fetchImpl, sent } = recordingFetch({
       recording: true,
       sessionId: "sess-X",
@@ -800,9 +808,57 @@ describe("delivery recorder tagging (Phase 2)", () => {
     const d = sent.find((s) => s.op === "appendDelta");
     expect(d).toBeDefined();
     expect(d!.recSessionId).toBe("sess-X"); // the session learned at startAssistant
-    expect(typeof d!.bridgeSentAt).toBe("number");
+    expect(typeof d!.bridgeRecvAt).toBe("number"); // t0 (receipt)
+    expect(typeof d!.bridgeSentAt).toBe("number"); // t1 (send)
+    // bridge-internal = t1 - t0 >= 0: the delta was received before it was sent.
+    expect(d!.bridgeSentAt!).toBeGreaterThanOrEqual(d!.bridgeRecvAt!);
     expect(typeof d!.bridgeSkew).toBe("number");
     expect(d!.sizeBytes).toBe(5);
+  });
+
+  test("a failed flush retries with the ORIGINAL t0 (bridge-internal survives backpressure)", async () => {
+    const { fetchImpl, sent } = recordingFetch({
+      recording: true,
+      sessionId: "sess-X",
+      failAppends: 1, // the first appendDelta POST fails -> re-buffer + retry
+    });
+    const w = writerWith(fetchImpl, 5);
+    await w.startAssistant("c1", "run-1");
+    await tick(5); // calibrate resolves
+    await w.appendDelta("m1", "hello");
+    const afterFirstDelta = Date.now(); // t0 must be <= this ("hello" receipt window)
+    await tick(20); // first flush -> fails -> re-buffer + restore t0
+    await w.appendDelta("m1", "world"); // a LATER delta -> schedules the retry flush
+    await tick(20); // retry flush -> succeeds
+    const appends = sent.filter((s) => s.op === "appendDelta");
+    expect(appends.length).toBeGreaterThanOrEqual(2); // the failed one + the retry
+    const retry = appends[appends.length - 1]!;
+    // t0 is preserved across the retry: WITHOUT the catch-path restore, bridgeRecvAt
+    // would be undefined (dropped) or bumped to "world"'s later time (> afterFirstDelta).
+    expect(typeof retry.bridgeRecvAt).toBe("number");
+    expect(retry.bridgeRecvAt!).toBeLessThanOrEqual(afterFirstDelta);
+  });
+
+  test("buffer truncation (backpressure cap) advances t0 so bridge-internal isn't inflated", async () => {
+    const { fetchImpl, sent } = recordingFetch({
+      recording: true,
+      sessionId: "sess-X",
+    });
+    const w = writerWith(fetchImpl, 50);
+    await w.startAssistant("c1", "run-1");
+    await tick(5); // calibrate resolves
+    await w.appendDelta("m1", "x"); // t0 = early (will be in the DISCARDED prefix)
+    const early = Date.now();
+    await tick(10); // < the 50ms flush -> nothing sent yet
+    // Overflow the 256KB cap: the "x" + old prefix is dropped, only the recent tail kept.
+    await w.appendDelta("m1", "Z".repeat(300 * 1024));
+    await tick(60); // flush the capped buffer
+    const d = sent.filter((s) => s.op === "appendDelta").pop();
+    expect(d).toBeDefined();
+    expect(typeof d!.bridgeRecvAt).toBe("number");
+    // Without the truncation reset, bridgeRecvAt would still point at `early` (dropped
+    // content), inflating bridge-internal. The reset advances it past `early`.
+    expect(d!.bridgeRecvAt!).toBeGreaterThan(early);
   });
 
   test("non-recording turn: deltas carry NO recorder tags (body unchanged)", async () => {

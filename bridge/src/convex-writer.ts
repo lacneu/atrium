@@ -118,10 +118,12 @@ export interface SessionMetaReport {
 // Delivery-recorder tags, present only while a turn is being recorded (learned once
 // per turn from the startAssistant ack). recSessionId is the turn's recording session
 // (Convex correlates the delta by the timing row's _id and records only if this still
-// matches the active session); bridgeSentAt (t1) + bridgeSkew feed segment A;
+// matches the active session); bridgeRecvAt (t0) + bridgeSentAt (t1) bound the
+// single-clock bridge-internal segment; bridgeSentAt (t1) + bridgeSkew feed segment A;
 // sizeBytes is the flush size in UTF-8 bytes. See convex/deliveryTiming.ts.
 interface RecTags {
   recSessionId?: string;
+  bridgeRecvAt?: number;
   bridgeSentAt?: number;
   bridgeSkew?: number;
   sizeBytes?: number;
@@ -300,6 +302,10 @@ export class HttpConvexWriter implements ConvexWriter {
   // Per-message pending delta buffer + its flush timer.
   private pendingDelta = new Map<string, string>();
   private flushTimer = new Map<string, NodeJS.Timeout>();
+  // Delivery recorder t0: when the FIRST delta of the current (un-flushed) batch was
+  // received by the writer. Read + cleared on flush; bridge-internal = t1 - t0 (single
+  // bridge clock, no skew). See convex/deliveryTiming.ts.
+  private pendingFirstAt = new Map<string, number>();
   // One-shot "this message's deltas were capped" marker (log once per message).
   private deltaCapped = new Set<string>();
   // The text Convex's `liveText` CURRENTLY holds for a message (== the sum of
@@ -383,6 +389,7 @@ export class HttpConvexWriter implements ConvexWriter {
       this.confirmedText.has(messageId) ||
       this.pendingResync.has(messageId) ||
       this.flushTimer.has(messageId) ||
+      this.pendingFirstAt.has(messageId) ||
       this.recTurns.has(messageId)
     );
   }
@@ -396,6 +403,7 @@ export class HttpConvexWriter implements ConvexWriter {
       this.flushTimer.delete(messageId);
     }
     this.pendingDelta.delete(messageId);
+    this.pendingFirstAt.delete(messageId);
     this.deltaCapped.delete(messageId);
     this.confirmedText.delete(messageId);
     this.pendingResync.delete(messageId);
@@ -498,11 +506,12 @@ export class HttpConvexWriter implements ConvexWriter {
   /** Delivery-recorder tags for a stream write (session + t1 + skew + UTF-8 size), or
    *  {} when this turn isn't being recorded -> the op body is byte-identical to before
    *  and Convex's appendDelta/setSnapshot skip the recorder entirely. */
-  private recTags(messageId: string, text: string): RecTags {
+  private recTags(messageId: string, text: string, recvAt?: number): RecTags {
     const sessionId = this.recTurns.get(messageId);
     if (sessionId === undefined) return {};
     return {
       recSessionId: sessionId,
+      bridgeRecvAt: recvAt, // t0 (omitted on the snapshot path -> no bridge-internal)
       bridgeSentAt: Date.now(),
       bridgeSkew: this.recSkew,
       sizeBytes: Buffer.byteLength(text, "utf8"),
@@ -510,6 +519,10 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async appendDelta(messageId: string, text: string): Promise<void> {
+    // t0: stamp when the first delta of the current (un-flushed) batch arrives.
+    if (!this.pendingFirstAt.has(messageId)) {
+      this.pendingFirstAt.set(messageId, Date.now());
+    }
     let buffered = (this.pendingDelta.get(messageId) ?? "") + text;
     if (buffered.length > MAX_PENDING_DELTA_CHARS) {
       // Sustained backpressure: cap the buffer (keep the most-recent tail) so it
@@ -522,6 +535,10 @@ export class HttpConvexWriter implements ConvexWriter {
         );
       }
       buffered = buffered.slice(buffered.length - MAX_PENDING_DELTA_CHARS);
+      // The discarded PREFIX means the original t0 now points at content that won't be
+      // sent, which would inflate the bridge-internal segment (Codex review). Advance t0
+      // to now so it bounds only the kept (recent) tail.
+      this.pendingFirstAt.set(messageId, Date.now());
     }
     this.pendingDelta.set(messageId, buffered);
     if (this.flushTimer.has(messageId)) {
@@ -563,6 +580,9 @@ export class HttpConvexWriter implements ConvexWriter {
     return this.enqueue(messageId, async () => {
       const text = this.pendingDelta.get(messageId);
       this.pendingDelta.delete(messageId);
+      // Consume this batch's t0 (read + clear; the next delta starts a fresh batch).
+      const recvAt = this.pendingFirstAt.get(messageId);
+      this.pendingFirstAt.delete(messageId);
       if (text === undefined || text === "") {
         return; // everything already carried by an earlier flush — no POST
       }
@@ -573,7 +593,7 @@ export class HttpConvexWriter implements ConvexWriter {
           op: "appendDelta",
           messageId,
           text,
-          ...this.recTags(messageId, text),
+          ...this.recTags(messageId, text, recvAt),
         });
         // liveText now == prior + this delta. Track it so a later snapshot can be
         // diffed to a suffix (only AFTER the post succeeds — a failure re-buffers
@@ -594,12 +614,28 @@ export class HttpConvexWriter implements ConvexWriter {
         // a transient ingest failure loses nothing; the next flush retries. Bounded
         // by appendDelta's MAX_PENDING_DELTA_CHARS cap so a long outage can't OOM.
         const merged = text + (this.pendingDelta.get(messageId) ?? "");
+        const overflowed = merged.length > MAX_PENDING_DELTA_CHARS;
         this.pendingDelta.set(
           messageId,
-          merged.length > MAX_PENDING_DELTA_CHARS
+          overflowed
             ? merged.slice(merged.length - MAX_PENDING_DELTA_CHARS)
             : merged,
         );
+        // Restore this batch's t0 onto the re-buffered text (Codex review). The catch
+        // PREPENDS the failed text, so normally the merged batch's oldest content is the
+        // original one — keep the EARLIEST receipt so the retry's bridge-internal segment
+        // reflects the full wait. BUT if the merge OVERFLOWED, that original prefix was
+        // just dropped, so the old t0 would point at unsent content and inflate the
+        // segment — advance to now instead (bounds only the kept tail).
+        if (overflowed) {
+          this.pendingFirstAt.set(messageId, Date.now());
+        } else if (recvAt !== undefined) {
+          const cur = this.pendingFirstAt.get(messageId);
+          this.pendingFirstAt.set(
+            messageId,
+            cur === undefined ? recvAt : Math.min(cur, recvAt),
+          );
+        }
         // A timed-out / lost-response append MAY have applied server-side; the
         // re-buffered retry would then DOUBLE it. confirmedText (success-only) tracks
         // a single copy, so a later snapshot must NOT trust the prefix and emit a

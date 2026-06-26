@@ -112,6 +112,7 @@ type IngestOp =
       messageId: string;
       text: string;
       recSessionId?: string;
+      bridgeRecvAt?: number;
       bridgeSentAt?: number;
       bridgeSkew?: number;
       sizeBytes?: number;
@@ -121,6 +122,7 @@ type IngestOp =
       messageId: string;
       text: string;
       recSessionId?: string;
+      bridgeRecvAt?: number;
       bridgeSentAt?: number;
       bridgeSkew?: number;
       sizeBytes?: number;
@@ -262,6 +264,7 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
         recSessionId: body.recSessionId,
+        bridgeRecvAt: body.bridgeRecvAt,
         bridgeSentAt: body.bridgeSentAt,
         bridgeSkew: body.bridgeSkew,
         sizeBytes: body.sizeBytes,
@@ -273,6 +276,7 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
         recSessionId: body.recSessionId,
+        bridgeRecvAt: body.bridgeRecvAt,
         bridgeSentAt: body.bridgeSentAt,
         bridgeSkew: body.bridgeSkew,
         sizeBytes: body.sizeBytes,

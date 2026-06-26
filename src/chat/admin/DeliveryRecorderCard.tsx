@@ -287,11 +287,12 @@ function ReportView({
           </tr>
         </thead>
         <tbody>
+          {row(m.delivery_seg_bridge(), seg.bridge)}
           {row(m.delivery_seg_a(), seg.A)}
-          {row(m.delivery_seg_b(), seg.B)}
           {row(m.delivery_seg_c(), seg.C)}
         </tbody>
       </table>
+      <p className="oc-admin__hint">{m.delivery_b_note()}</p>
       {report.truncated ? (
         <p className="oc-admin__hint">{m.delivery_truncated()}</p>
       ) : null}

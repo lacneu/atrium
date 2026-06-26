@@ -31,10 +31,13 @@ import { compareOrder } from "./lib/messageOrder";
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
 // session the turn was started under — Convex records only when it still matches the
 // ACTIVE session (so a late delta from an old turn can't be mis-filed into a newer
-// session). `bridgeSentAt` (t1) + `bridgeSkew` feed segment A; `sizeBytes` is the
-// flush size (UTF-8). All absent (and ignored) when not recording.
+// session). `bridgeRecvAt` (t0, when the bridge received this flush's first delta) +
+// `bridgeSentAt` (t1) bound the single-clock bridge-internal segment; `bridgeSentAt`
+// + `bridgeSkew` feed segment A; `sizeBytes` is the flush size (UTF-8). All absent
+// (and ignored) when not recording.
 const recArgs = {
   recSessionId: v.optional(v.string()),
+  bridgeRecvAt: v.optional(v.number()),
   bridgeSentAt: v.optional(v.number()),
   bridgeSkew: v.optional(v.number()),
   sizeBytes: v.optional(v.number()),
@@ -166,7 +169,7 @@ export const appendDelta = internalMutation({
     text: v.string(),
     ...recArgs,
   },
-  handler: async (ctx, { messageId, text, recSessionId, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+  handler: async (ctx, { messageId, text, recSessionId, bridgeRecvAt, bridgeSentAt, bridgeSkew, sizeBytes }) => {
     const now = Date.now(); // t2: Convex received
     // Only pay the recorder point-read when the bridge actually tagged this delta.
     const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
@@ -204,6 +207,7 @@ export const appendDelta = internalMutation({
         sessionId: rec.sessionId,
         streamRowId,
         chatId,
+        t0: bridgeRecvAt,
         t1: bridgeSentAt ?? now,
         t2: now,
         bridgeSkew,
@@ -230,7 +234,7 @@ export const setSnapshot = internalMutation({
     text: v.string(),
     ...recArgs,
   },
-  handler: async (ctx, { messageId, text, recSessionId, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+  handler: async (ctx, { messageId, text, recSessionId, bridgeRecvAt, bridgeSentAt, bridgeSkew, sizeBytes }) => {
     const now = Date.now(); // t2: Convex received
     const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
     const row = await streamingRow(ctx, messageId);
@@ -260,6 +264,7 @@ export const setSnapshot = internalMutation({
         sessionId: rec.sessionId,
         streamRowId,
         chatId,
+        t0: bridgeRecvAt,
         t1: bridgeSentAt ?? now,
         t2: now,
         bridgeSkew,

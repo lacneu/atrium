@@ -8,6 +8,22 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.17] — Delivery recorder: honest segments (no fake Convex-exec, + bridge-internal)
+
+Follow-up to 0.10.16 after a live run exposed a misleading "B: 0 ms".
+
+- **Removed the fake "Convex exec (B) = 0 ms".** It was a measurement artifact, not a real
+  zero: Convex freezes `Date.now()` within a mutation (determinism), so the two stamps the
+  recorder compared (`t2`, `t3`) were identical by construction → B was always 0. Real Convex
+  execution time (≈17 ms p50 in practice) comes from Convex's own telemetry (insights / log
+  streaming); the report now says so instead of showing a fabricated zero.
+- **New "bridge internal" segment.** The recorder previously started the clock at the bridge's
+  SEND moment; the time from when the bridge received a delta to when it forwarded it was
+  invisible. That hop is single-clock (no skew) and is now measured and reported.
+- The report's segments are now **bridge-internal → A (bridge→Convex) → C (Convex→frontend)**,
+  each shown only when it can be computed; B is annotated as externally sourced.
+- *Deploy: `npx convex deploy` + rebuild the bridge, frontend and MCP images (lockstep 0.10.17).*
+
 ## [0.10.16] — Delivery recorder: accurate bridge→Convex timing + hardening
 
 Corrective + hardening follow-up to the delivery-latency recorder (0.10.14 / 0.10.15).

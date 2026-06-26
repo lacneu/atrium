@@ -910,10 +910,14 @@ export default defineSchema({
   // frontend (batched, keyed by this _id).
   deliveryTimings: defineTable({
     sessionId: v.string(),
+    t0: v.optional(v.number()), // bridge RECEIVED the first delta of this flush (bridge clock)
     chatId: v.id("chats"),
     t1: v.number(), // bridge sent (bridge clock)
     t2: v.number(), // Convex received (server clock)
-    t3: v.number(), // Convex committed ~ mutation end (server clock)
+    // t3 == t2: Convex freezes Date.now() within a mutation, so the exec gap t3-t2 is
+    // structurally 0 — Convex exec time comes from Convex's own telemetry, not here.
+    // Kept as the C-segment server anchor (= the mutation timestamp).
+    t3: v.number(),
     t4: v.optional(v.number()), // frontend received (browser clock)
     bridgeSkew: v.optional(v.number()), // serverClock - bridgeClock offset
     clientSkew: v.optional(v.number()), // serverClock - browserClock offset

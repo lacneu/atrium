@@ -74,15 +74,21 @@ export async function recordDelta(
     sessionId: string;
     streamRowId: Id<"streamingText">;
     chatId: Id<"chats">;
+    t0?: number;
     t1: number;
     t2: number;
     bridgeSkew?: number;
     sizeBytes?: number;
   },
 ): Promise<void> {
-  // Insert first to get the correlator id; t3 is provisional, restamped below.
+  // t3 == t2 deliberately: Convex FREEZES Date.now() for the whole mutation
+  // (determinism), so a post-insert re-stamp would read the SAME value — the old code
+  // did exactly that and measured nothing (segment B was structurally 0). Convex exec
+  // time is sourced from Convex's own telemetry (insights / log streaming), not here.
+  // t3 is kept only as the C-segment server anchor (= the mutation timestamp = t2).
   const timingId = await ctx.db.insert("deliveryTimings", {
     sessionId: args.sessionId,
+    t0: args.t0,
     chatId: args.chatId,
     t1: args.t1,
     t2: args.t2,
@@ -90,18 +96,9 @@ export async function recordDelta(
     bridgeSkew: args.bridgeSkew,
     sizeBytes: args.sizeBytes,
   });
-  // Stamp t3 AFTER the recorder's insert (its dominant write) so that write falls in
-  // segment B (Convex exec) instead of inflating segment C — the frontend observes
-  // this sample only AFTER the mutation commits. (Codex review: a pre-insert t3
-  // charged server-side recorder time to the delivery segment.) RESIDUAL: the two
-  // patches below + the commit still land after t3, so C slightly over-attributes
-  // commit-tail latency — read C as a conservative UPPER BOUND, not a defect. This is
-  // irreducible with in-band correlation (the row _id must exist before recTimingId).
-  const t3 = Date.now();
-  await ctx.db.patch(timingId, { t3 });
   await ctx.db.patch(args.streamRowId, {
     recTimingId: timingId,
-    recCommittedAt: t3,
+    recCommittedAt: args.t2,
   });
 }
 
@@ -367,30 +364,35 @@ async function computeDeliveryReport(
   const truncated = raw.length > REPORT_CAP;
   const rows = truncated ? raw.slice(0, REPORT_CAP) : raw;
 
+  const bridgeVals: number[] = [];
   const aVals: number[] = [];
-  const bVals: number[] = [];
   const cVals: number[] = [];
   const perDelta = rows.map((r) => {
+    // Bridge-internal: receipt of the flush's first delta -> send. Single-clock
+    // (bridge), so NO skew. Absent on a setSnapshot row (no t0) -> excluded.
+    const bridge = r.t0 !== undefined ? r.t1 - r.t0 : undefined;
     // A only when the delta is clock-corrected: a delta recorded before the bridge's
     // calibration completes has no bridgeSkew, and t2 - t1 raw would be off by the
     // full clock offset (garbage). Exclude it rather than pollute A's stats (same as
     // C excludes deltas with no t4 yet).
     const a =
       r.bridgeSkew !== undefined ? r.t2 - r.t1 - r.bridgeSkew : undefined;
-    const b = r.t3 - r.t2;
+    // NOTE: there is NO B (Convex exec) segment — Date.now() is frozen within a Convex
+    // mutation so t3==t2 and an in-app gap is structurally 0. Convex exec time comes
+    // from Convex's own telemetry (insights / log streaming), reported separately.
     // C ADDS clientSkew: t4 is a browser-clock stamp at the LATER endpoint, so
     // converting it to server time (+clientSkew) nets to +. (A's t1 is the earlier
     // endpoint, hence -bridgeSkew.) Do NOT "simplify" the sign to match A.
     const c =
       r.t4 !== undefined ? r.t4 - r.t3 + (r.clientSkew ?? 0) : undefined;
+    if (bridge !== undefined) bridgeVals.push(bridge);
     if (a !== undefined) aVals.push(a);
-    bVals.push(b);
     if (c !== undefined) cVals.push(c);
-    return { id: r._id, a, b, c, sizeBytes: r.sizeBytes };
+    return { id: r._id, bridge, a, c, sizeBytes: r.sizeBytes };
   });
 
-  const total = (x: { a?: number; b: number; c?: number }) =>
-    (x.a ?? 0) + x.b + (x.c ?? 0);
+  const total = (x: { bridge?: number; a?: number; c?: number }) =>
+    (x.bridge ?? 0) + (x.a ?? 0) + (x.c ?? 0);
   const worst = [...perDelta].sort((x, y) => total(y) - total(x)).slice(0, 10);
 
   return {
@@ -398,7 +400,11 @@ async function computeDeliveryReport(
     count: rows.length,
     // Flagged so a very chatty session's capped stats aren't read as complete.
     truncated,
-    segments: { A: segStat(aVals), B: segStat(bVals), C: segStat(cVals) },
+    segments: {
+      bridge: segStat(bridgeVals),
+      A: segStat(aVals),
+      C: segStat(cVals),
+    },
     worst,
   };
 }

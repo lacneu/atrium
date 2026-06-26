@@ -32,7 +32,10 @@ export type DeliveryReport = {
   // True when the session had more rows than the report window cap, so the stats
   // cover only the first slice — surfaced so a capped report isn't read as complete.
   truncated: boolean;
-  segments: { A: SegStat; B: SegStat; C: SegStat } | null;
+  // `bridge` = bridge-internal (receipt -> send, single clock). There is NO B (Convex
+  // exec): it's structurally unmeasurable in-app (frozen mutation clock) and comes from
+  // Convex's own telemetry. A = bridge->Convex, C = Convex->frontend (both skew-corrected).
+  segments: { bridge: SegStat; A: SegStat; C: SegStat } | null;
 };
 export type SessionSummary = {
   sessionId: string;
@@ -53,9 +56,10 @@ export function reportToText(report: DeliveryReport): string {
     `${label}: p50=${ms(s.p50)} p95=${ms(s.p95)} max=${ms(s.max)} ms (n=${s.count})`;
   const lines = [
     head,
+    line("bridge internal", seg.bridge),
     line("A bridge->Convex", seg.A),
-    line("B Convex exec", seg.B),
     line("C Convex->frontend", seg.C),
+    "B Convex exec: from Convex telemetry (not measurable in-app)",
   ];
   if (report.truncated) {
     lines.push(
