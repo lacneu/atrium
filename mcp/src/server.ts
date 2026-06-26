@@ -49,6 +49,9 @@ import {
   stopDeliveryRecord,
   getDeliveryReport,
   getDeliveryReportInput,
+  listDeliverySessions,
+  deleteDeliverySessions,
+  deleteDeliverySessionsInput,
 } from "./tools.js";
 
 // The MCP server's own version, read from package.json at startup. createRequire
@@ -367,6 +370,31 @@ function main(): void {
       inputSchema: getDeliveryReportInput,
     },
     async (args) => run(() => getDeliveryReport(config, args)),
+  );
+
+  server.registerTool(
+    "list_delivery_sessions",
+    {
+      title: "List delivery-latency recording sessions",
+      description:
+        "List recent delivery-latency recording sessions (GET /delivery-sessions): " +
+        "sessionId, startedAt, stoppedAt, startedBy, active. Requires traces.read. " +
+        "Pick a sessionId for get_delivery_report or delete_delivery_sessions.",
+      inputSchema: {},
+    },
+    async () => run(() => listDeliverySessions(config)),
+  );
+
+  server.registerTool(
+    "delete_delivery_sessions",
+    {
+      title: "Delete delivery-latency recording sessions",
+      description:
+        "Delete recording sessions and their timing rows (POST /delivery-record/delete). " +
+        "Requires selfheal. Deleting the active session also stops recording.",
+      inputSchema: deleteDeliverySessionsInput,
+    },
+    async (args) => run(() => deleteDeliverySessions(config, args)),
   );
 
   const transport = new StdioServerTransport();

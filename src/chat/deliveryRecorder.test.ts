@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 import {
   buildFlushBatch,
   collectNewSamples,
+  reportToText,
   skewFromPing,
   type ClientSample,
+  type DeliveryReport,
   type StreamRow,
 } from "./deliveryRecorder";
 
@@ -73,5 +75,35 @@ describe("buildFlushBatch", () => {
       { timingId: "a", t4: 1, clientSkew: 50 }, // was undefined -> back-filled
       { timingId: "b", t4: 2, clientSkew: 50 }, // already set -> kept
     ]);
+  });
+});
+
+describe("reportToText", () => {
+  const seg = (count: number, p50: number | null, p95: number | null, max: number | null) => ({
+    count,
+    p50,
+    p95,
+    max,
+  });
+
+  test("renders a shareable block with rounded ms and per-segment counts", () => {
+    const report: DeliveryReport = {
+      sessionId: "sess-1",
+      count: 180,
+      segments: {
+        A: seg(180, 66.4, 74, 328),
+        B: seg(180, 0, 0, 0),
+        C: seg(0, null, null, null),
+      },
+    };
+    const text = reportToText(report);
+    expect(text).toContain("session sess-1 (180 deltas)");
+    expect(text).toContain("A bridge->Convex: p50=66 p95=74 max=328 ms (n=180)");
+    expect(text).toContain("C Convex->frontend: p50=— p95=— max=— ms (n=0)");
+  });
+
+  test("handles a no-samples report", () => {
+    const report: DeliveryReport = { sessionId: null, count: 0, segments: null };
+    expect(reportToText(report)).toContain("(no samples)");
   });
 });

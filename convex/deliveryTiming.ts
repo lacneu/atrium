@@ -29,6 +29,7 @@ import {
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import { requireActive, requireAdmin, requirePermission } from "./lib/access";
 
 const SINGLETON = "singleton";
@@ -382,4 +383,144 @@ export const getDeliveryReport = query({
 export const getDeliveryReportInternal = internalQuery({
   args: { sessionId: v.optional(v.string()) },
   handler: async (ctx, { sessionId }) => computeDeliveryReport(ctx, sessionId),
+});
+
+// --- Sessions: list + delete -----------------------------------------------
+
+const SESSION_LIST_CAP = 50; // most recent sessions surfaced
+const MAX_DELETE_SESSIONS = 50; // bound a single delete batch
+const TIMING_DELETE_BATCH = 2000; // per-iteration delete page when purging a session
+
+type SessionSummary = {
+  sessionId: string;
+  startedAt: number;
+  stoppedAt: number | null;
+  startedBy: string;
+  active: boolean;
+};
+
+async function listSessionsImpl(ctx: QueryCtx): Promise<SessionSummary[]> {
+  const cfg = await ctx.db
+    .query("deliveryRecording")
+    .withIndex("by_key", (q) => q.eq("key", SINGLETON))
+    .unique();
+  const activeId =
+    cfg?.enabled === true &&
+    cfg.sessionId !== undefined &&
+    (cfg.autoStopAt === undefined || Date.now() <= cfg.autoStopAt)
+      ? cfg.sessionId
+      : undefined;
+  const sessions = await ctx.db
+    .query("deliverySessions")
+    .order("desc")
+    .take(SESSION_LIST_CAP);
+  return sessions.map((s) => ({
+    sessionId: s._id,
+    startedAt: s.startedAt,
+    stoppedAt: s.stoppedAt ?? null,
+    startedBy: s.startedBy,
+    active: s._id === activeId,
+  }));
+}
+
+// Delete is BOUNDED + self-scheduling: a single Convex mutation has transaction
+// limits, so deleting many sessions (or one very active session) all at once would
+// abort and delete nothing (Codex review). Each step drains ONE session's timings by
+// a bounded page; once that session is empty it deletes the row and reschedules for
+// the rest, so the whole job completes across many small mutations.
+export const deleteSessionsStep = internalMutation({
+  args: { sessionIds: v.array(v.string()) },
+  handler: async (ctx, { sessionIds }) => {
+    if (sessionIds.length === 0) return;
+    const [sidStr, ...rest] = sessionIds;
+    // Recording for any to-delete session was already disabled up-front by
+    // scheduleDelete, so no new deltas land during this multi-step purge.
+    const batch = await ctx.db
+      .query("deliveryTimings")
+      .withIndex("by_session", (q) => q.eq("sessionId", sidStr))
+      .take(TIMING_DELETE_BATCH);
+    for (const t of batch) await ctx.db.delete(t._id);
+    if (batch.length === TIMING_DELETE_BATCH) {
+      // More timings remain for this session — keep draining it before moving on.
+      await ctx.scheduler.runAfter(
+        0,
+        internal.deliveryTiming.deleteSessionsStep,
+        { sessionIds },
+      );
+      return;
+    }
+    // Drained: remove the session row (idempotent — skip if already gone, so a
+    // duplicate id / re-delete / concurrent purge can't throw and break the chain,
+    // leaving later sessions unpurged — Codex review), then continue with the rest.
+    const sid = ctx.db.normalizeId("deliverySessions", sidStr);
+    if (sid !== null && (await ctx.db.get(sid)) !== null) {
+      await ctx.db.delete(sid);
+    }
+    if (rest.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.deliveryTiming.deleteSessionsStep,
+        { sessionIds: rest },
+      );
+    }
+  },
+});
+
+// Kick off a bounded, self-scheduling delete of up to MAX_DELETE_SESSIONS sessions.
+// Returns immediately ({ scheduled }); sessions disappear from the reactive list as
+// the steps drain them.
+async function scheduleDelete(
+  ctx: MutationCtx,
+  sessionIds: string[],
+): Promise<{ scheduled: number }> {
+  const ids = [...new Set(sessionIds)].slice(0, MAX_DELETE_SESSIONS);
+  if (ids.length === 0) return { scheduled: 0 };
+  // If the ACTIVE session is anywhere in the batch, stop recording NOW — before any
+  // purge step runs — so no new deltas land while the (possibly multi-step, multi-
+  // session) delete proceeds, even when the active session isn't processed first
+  // (Codex review).
+  const cfg = await ctx.db
+    .query("deliveryRecording")
+    .withIndex("by_key", (q) => q.eq("key", SINGLETON))
+    .unique();
+  if (
+    cfg !== null &&
+    cfg.sessionId !== undefined &&
+    ids.includes(cfg.sessionId)
+  ) {
+    await ctx.db.patch(cfg._id, { enabled: false, sessionId: undefined });
+  }
+  await ctx.scheduler.runAfter(0, internal.deliveryTiming.deleteSessionsStep, {
+    sessionIds: ids,
+  });
+  return { scheduled: ids.length };
+}
+
+// User-authed (Settings UI): list = traces.read; delete = admin (a write).
+export const listDeliverySessions = query({
+  args: {},
+  handler: async (ctx) => {
+    await requirePermission(ctx, "traces.read");
+    return listSessionsImpl(ctx);
+  },
+});
+
+export const deleteDeliverySessions = mutation({
+  args: { sessionIds: v.array(v.string()) },
+  handler: async (ctx, { sessionIds }) => {
+    await requireAdmin(ctx);
+    return scheduleDelete(ctx, sessionIds);
+  },
+});
+
+// Agent/MCP path: the key-authed HTTP routes run these (list = traces.read,
+// delete = selfheal, enforced at the route).
+export const listDeliverySessionsInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => listSessionsImpl(ctx),
+});
+
+export const deleteDeliverySessionsForAgent = internalMutation({
+  args: { sessionIds: v.array(v.string()) },
+  handler: async (ctx, { sessionIds }) => scheduleDelete(ctx, sessionIds),
 });

@@ -102,6 +102,11 @@ export const getDeliveryReportInput = {
     .describe("Recording session id; omit for the active (or most recent) session."),
 } as const;
 
+export const deleteDeliverySessionsInput = {
+  sessionIds: z.array(z.string()).min(1)
+    .describe("Recording session ids to delete (along with their timing rows)."),
+} as const;
+
 /**
  * Time-range token: epoch ms (numeric string) OR a Grafana-style relative
  * token — `now`, or `now-<N><unit>` with unit in s|m|h|d|w (e.g. `now-24h`).
@@ -448,6 +453,35 @@ export function getDeliveryReport(
     config,
     `/delivery-report${qs({ sessionId: args.sessionId })}`,
     {},
+    options,
+  );
+}
+
+/**
+ * GET /api/v1/delivery-sessions — list recent recording sessions (sessionId,
+ * startedAt, stoppedAt, startedBy, active). Requires `traces.read`. Use to pick a
+ * sessionId for get_delivery_report or delete_delivery_sessions.
+ */
+export function listDeliverySessions(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, "/delivery-sessions", {}, options);
+}
+
+/**
+ * POST /api/v1/delivery-record/delete — delete recording sessions and their timing
+ * rows. Requires `selfheal`. Deleting the active session also stops recording.
+ */
+export function deleteDeliverySessions(
+  config: Config,
+  args: { sessionIds: string[] },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/delivery-record/delete",
+    { method: "POST", body: JSON.stringify({ sessionIds: args.sessionIds }) },
     options,
   );
 }

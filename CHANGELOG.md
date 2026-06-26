@@ -8,6 +8,22 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.15] — Delivery recorder: browse & delete sessions, copy a report, full MCP control
+
+Follow-up to 0.10.14's delivery-latency recorder.
+
+- **Browse recorded sessions.** Settings▸Traces now lists past recording sessions; pick
+  one to view its report, and copy a report to the clipboard for sharing.
+- **Delete sessions.** Admins can select one or several recorded sessions and delete them
+  along with their timing rows; deleting the active session also stops recording.
+- **Complete MCP control.** The MCP tool surface now covers the whole lifecycle —
+  `start_delivery_record`, `stop_delivery_record`, `list_delivery_sessions`,
+  `get_delivery_report`, `delete_delivery_sessions` (list/report require `traces.read`;
+  start/stop/delete require `selfheal`).
+- *Deploy: `npx convex deploy` + rebuild the frontend, MCP **and bridge** images. The
+  bridge's code is unchanged here, but its version bumped to 0.10.15 in lockstep, so its
+  image must be rebuilt for its /health & /capabilities to report the release version.*
+
 ## [0.10.14] — Measure streaming delivery latency end-to-end (bridge → Convex → frontend)
 
 A controllable, content-free recorder that times the streaming pipeline per delta, so

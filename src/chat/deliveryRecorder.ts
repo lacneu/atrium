@@ -19,6 +19,43 @@ export type ClientSample = {
   clientSkew?: number;
 };
 
+// Report shapes (mirror convex/deliveryTiming.ts getDeliveryReport / listDeliverySessions).
+export type SegStat = {
+  count: number;
+  p50: number | null;
+  p95: number | null;
+  max: number | null;
+};
+export type DeliveryReport = {
+  sessionId: string | null;
+  count: number;
+  segments: { A: SegStat; B: SegStat; C: SegStat } | null;
+};
+export type SessionSummary = {
+  sessionId: string;
+  startedAt: number;
+  stoppedAt: number | null;
+  startedBy: string;
+  active: boolean;
+};
+
+// Render a report as a compact, shareable plain-text block (for the Copy button).
+// Neutral technical labels — it's data to paste into a bug report, not UI chrome.
+export function reportToText(report: DeliveryReport): string {
+  const ms = (n: number | null): string => (n === null ? "—" : String(Math.round(n)));
+  const head = `delivery latency — session ${report.sessionId ?? "?"} (${report.count} deltas)`;
+  if (report.segments === null) return `${head}\n(no samples)`;
+  const seg = report.segments;
+  const line = (label: string, s: SegStat): string =>
+    `${label}: p50=${ms(s.p50)} p95=${ms(s.p95)} max=${ms(s.max)} ms (n=${s.count})`;
+  return [
+    head,
+    line("A bridge->Convex", seg.A),
+    line("B Convex exec", seg.B),
+    line("C Convex->frontend", seg.C),
+  ].join("\n");
+}
+
 // Clock offset estimate `serverClock - clientClock` (the calibrateClock convention)
 // from a single client-clock round-trip, assuming symmetric latency (NTP-style):
 //   skew = serverNow - (clientSentAt + RTT/2)

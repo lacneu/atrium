@@ -18,6 +18,9 @@ import {
   stopDeliveryRecord,
   getDeliveryReport,
   getDeliveryReportInput,
+  listDeliverySessions,
+  deleteDeliverySessions,
+  deleteDeliverySessionsInput,
 } from "../src/tools.js";
 import { type Config } from "../src/config.js";
 
@@ -425,5 +428,37 @@ describe("delivery recorder tools wire format (Phase 4)", () => {
     const schema = z.object(getDeliveryReportInput);
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ sessionId: "x" }).success).toBe(true);
+  });
+});
+
+describe("delivery sessions list/delete wire format (Phase 5)", () => {
+  it("list_delivery_sessions GETs /delivery-sessions", async () => {
+    const { impl, calls } = fakeFetch();
+    await listDeliverySessions(CONFIG, { fetchImpl: impl });
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/delivery-sessions",
+    );
+    expect(calls[0]!.init?.method).not.toBe("POST");
+  });
+
+  it("delete_delivery_sessions POSTs /delivery-record/delete with sessionIds", async () => {
+    const { impl, calls } = fakeFetch();
+    await deleteDeliverySessions(
+      CONFIG,
+      { sessionIds: ["s1", "s2"] },
+      { fetchImpl: impl },
+    );
+    expect(calls[0]!.url).toBe(
+      "http://127.0.0.1:3213/api/v1/delivery-record/delete",
+    );
+    expect(calls[0]!.init!.method).toBe("POST");
+    expect(bodyOf(calls[0]!.init)).toEqual({ sessionIds: ["s1", "s2"] });
+  });
+
+  it("delete_delivery_sessions input requires a non-empty sessionIds array", () => {
+    const schema = z.object(deleteDeliverySessionsInput);
+    expect(schema.safeParse({ sessionIds: [] }).success).toBe(false);
+    expect(schema.safeParse({ sessionIds: ["s1"] }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
   });
 });

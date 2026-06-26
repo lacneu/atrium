@@ -721,6 +721,113 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/v1/delivery-sessions",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/delivery-sessions",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+    const sessions = await ctx.runQuery(
+      internal.deliveryTiming.listDeliverySessionsInternal,
+      {},
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/delivery-sessions",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, sessions }, 200);
+  }),
+});
+
+http.route({
+  path: "/api/v1/delivery-record/delete",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/delivery-record/delete",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    // Guard a non-object body (valid JSON like null/[]/"x") so reading sessionIds
+    // can't throw into a 500 (Codex review).
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const raw = (body as { sessionIds?: unknown }).sessionIds;
+    const sessionIds = Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === "string")
+      : [];
+    if (sessionIds.length === 0) {
+      return apiJson({ ok: false, error: "sessionIds is required" }, 400);
+    }
+    const res = await ctx.runMutation(
+      internal.deliveryTiming.deleteDeliverySessionsForAgent,
+      { sessionIds },
+    );
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/delivery-record/delete",
+      method: "POST",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson({ ok: true, scheduled: res.scheduled }, 200);
+  }),
+});
+
 // ===========================================================================
 // Increment 6 — anomalies + heartbeat + OpenClaw query.
 //

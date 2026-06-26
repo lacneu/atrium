@@ -7,7 +7,7 @@
 // and the report needs traces.read.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -395,5 +395,126 @@ describe("delivery-latency recorder", () => {
       { sessionId },
     );
     expect(after.count).toBe(1); // still 1 — the post-stop delta was rejected
+  });
+
+  test("list shows sessions; delete purges ALL timings + the session (no ghost report)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    for (const text of ["a", "b", "c"]) {
+      await t.mutation(internal.stream.appendDelta, {
+        messageId,
+        text,
+        recSessionId: sessionId,
+        bridgeSentAt: Date.now(),
+        bridgeSkew: 0,
+      });
+    }
+    await asAdmin.mutation(api.deliveryTiming.stopDeliveryRecord, {});
+
+    const sessions = await asAdmin.query(
+      api.deliveryTiming.listDeliverySessions,
+      {},
+    );
+    expect(sessions.some((s) => s.sessionId === sessionId)).toBe(true);
+
+    // Delete is bounded + self-scheduling. Fake timers must be active WHEN the
+    // mutation schedules (so the convex-test scheduler registers on the mocked clock)
+    // and to drain the recursive steps; scope them to the delete + drain only.
+    vi.useFakeTimers();
+    let res: { scheduled: number };
+    try {
+      res = await asAdmin.mutation(api.deliveryTiming.deleteDeliverySessions, {
+        sessionIds: [sessionId],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(res.scheduled).toBe(1);
+    // No leftover timing rows, and the report for the deleted id is empty (guards the
+    // "delete only removed the first page" regression).
+    expect(await timingRows(t)).toEqual([]);
+    const report = await asAdmin.query(api.deliveryTiming.getDeliveryReport, {
+      sessionId,
+    });
+    expect(report.count).toBe(0);
+  });
+
+  test("deleting the ACTIVE session stops recording (so no new deltas land mid-purge)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    await t.mutation(internal.stream.appendDelta, {
+      messageId,
+      text: "a",
+      recSessionId: sessionId,
+      bridgeSentAt: Date.now(),
+      bridgeSkew: 0,
+    });
+
+    // Delete the ACTIVE session without stopping first.
+    vi.useFakeTimers();
+    try {
+      await asAdmin.mutation(api.deliveryTiming.deleteDeliverySessions, {
+        sessionIds: [sessionId],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const stat = await asAdmin.query(api.deliveryTiming.getDeliveryStatus, {});
+    expect(stat.recording).toBe(false); // the delete stopped the active recording
+    expect(await timingRows(t)).toEqual([]);
+  });
+
+  test("delete is idempotent: a duplicate id, then a re-delete, never throws", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    await t.mutation(internal.stream.appendDelta, {
+      messageId,
+      text: "a",
+      recSessionId: sessionId,
+      bridgeSentAt: Date.now(),
+      bridgeSkew: 0,
+    });
+    await asAdmin.mutation(api.deliveryTiming.stopDeliveryRecord, {});
+
+    vi.useFakeTimers();
+    try {
+      // A duplicate id is deduped to one scheduled job...
+      const res = await asAdmin.mutation(
+        api.deliveryTiming.deleteDeliverySessions,
+        { sessionIds: [sessionId, sessionId] },
+      );
+      expect(res.scheduled).toBe(1);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      // ...and re-deleting the now-gone session must NOT throw (idempotent).
+      await asAdmin.mutation(api.deliveryTiming.deleteDeliverySessions, {
+        sessionIds: [sessionId],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(await timingRows(t)).toEqual([]);
   });
 });
