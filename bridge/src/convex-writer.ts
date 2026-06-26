@@ -511,7 +511,7 @@ export class HttpConvexWriter implements ConvexWriter {
     if (sessionId === undefined) return {};
     return {
       recSessionId: sessionId,
-      bridgeRecvAt: recvAt, // t0 (omitted on the snapshot path -> no bridge-internal)
+      bridgeRecvAt: recvAt, // t0 (delta-flush batch start OR snapshot-frame receipt)
       bridgeSentAt: Date.now(),
       bridgeSkew: this.recSkew,
       sizeBytes: Buffer.byteLength(text, "utf8"),
@@ -649,6 +649,9 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async setSnapshot(messageId: string, text: string): Promise<void> {
+    // t0: this snapshot FRAME's receipt (snapshot-streaming gateways never call
+    // appendDelta, so without this the bridge-internal segment is empty for them).
+    const recvAt = Date.now();
     await this.flushDelta(messageId); // ordering: drain deltas first (-> confirmedText current)
     // WRITE REDUCTION: many gateways stream by re-sending the WHOLE text each frame
     // (full ~2KB snapshots), which on a write-constrained backend is wasteful. When
@@ -678,14 +681,14 @@ export class HttpConvexWriter implements ConvexWriter {
           op: "appendDelta",
           messageId,
           text: suffix,
-          ...this.recTags(messageId, suffix),
+          ...this.recTags(messageId, suffix, recvAt),
         });
       } else {
         await this.post({
           op: "setSnapshot",
           messageId,
           text,
-          ...this.recTags(messageId, text),
+          ...this.recTags(messageId, text, recvAt),
         });
       }
     } catch (err) {

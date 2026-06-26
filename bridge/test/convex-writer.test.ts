@@ -920,6 +920,10 @@ describe("delivery recorder tagging (Phase 2)", () => {
     expect(snap).toBeDefined();
     expect(snap!.recSessionId).toBe("sess-1");
     expect(snap!.sizeBytes).toBe(7);
+    // The snapshot path also carries t0 (its frame receipt) so snapshot-streaming
+    // gateways still get a bridge-internal segment. t0 <= t1.
+    expect(typeof snap!.bridgeRecvAt).toBe("number");
+    expect(snap!.bridgeSentAt!).toBeGreaterThanOrEqual(snap!.bridgeRecvAt!);
   });
 
   test("finalize clears the recorded-turn state (memory bound)", async () => {

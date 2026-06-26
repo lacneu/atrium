@@ -8,6 +8,21 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.18] — Delivery recorder: bridge-internal segment now collects for snapshot streams
+
+Corrective for 0.10.17 — a live run showed the new bridge-internal segment staying empty.
+
+- **`setSnapshot` now carries t0.** 0.10.17 added the bridge-internal segment (frame receipt →
+  send) but only on the delta path (`appendDelta`/flush). Gateways that stream by re-sending the
+  whole text each frame — the common OpenClaw mode — go through `setSnapshot`, which had no t0, so
+  the segment was empty for them. `setSnapshot` now stamps t0 at frame receipt, so bridge-internal
+  collects regardless of streaming mode (delta or snapshot). Scope: t0 is the bridge write-side
+  receipt — accurate in steady state; under sustained backpressure it under-reports the
+  gateway-read backlog (already visible via the per-flush `waitedMs`/`postMs` logs).
+- *Deploy: `npx convex deploy` + REBUILD the bridge, frontend and MCP images (lockstep 0.10.18).
+  The **bridge image MUST be rebuilt** — a bridge predating the t0 work (e.g. a stale 0.10.16/0.10.17
+  image) reports no bridge-internal data at all, which is what left the segment empty.*
+
 ## [0.10.17] — Delivery recorder: honest segments (no fake Convex-exec, + bridge-internal)
 
 Follow-up to 0.10.16 after a live run exposed a misleading "B: 0 ms".
