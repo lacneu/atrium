@@ -18,11 +18,13 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
+import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
 import { compareOrder } from "./lib/messageOrder";
@@ -176,6 +178,13 @@ export const appendDelta = internalMutation({
     const row = await streamingRow(ctx, messageId);
     let streamRowId: Id<"streamingText">;
     let chatId: Id<"chats">;
+    let seq: number;
+    // The SSE chunk: usually an "append" of this delta, but the FIRST chunk for a row that
+    // already carried text (a pre-split `liveText` prefix, or a stream active across the
+    // deploy to chunkSeq) must "replace" with the FULL text so a fresh SSE client gets the
+    // prefix, not just this delta (Codex review).
+    let chunkKind: "append" | "replace";
+    let chunkText: string;
     if (row === null) {
       // Defensive: startAssistant creates the row, but a delta arriving without
       // one (a race / a message MID-STREAM across the deploy to this version) still
@@ -189,18 +198,42 @@ export const appendDelta = internalMutation({
       // again to delete it, so it would leak a phantom live row that getStreamingText
       // returns forever. Drop it — the turn is over (mirrors addPart's status guard).
       if (message.status !== "streaming") return;
+      seq = 1; // 1-based: a fresh SSE cursor of 0 reads from the first chunk (seq > 0)
+      const prefix = message.liveText ?? "";
+      const full = prefix + text;
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
-        text: (message.liveText ?? "") + text,
+        text: full,
         updatedAt: now,
+        chunkSeq: 2,
       });
       chatId = message.chatId;
+      chunkKind = prefix === "" ? "append" : "replace";
+      chunkText = prefix === "" ? text : full;
     } else {
-      await ctx.db.patch(row._id, { text: row.text + text, updatedAt: now });
+      seq = row.chunkSeq ?? 1;
+      const full = row.text + text;
+      await ctx.db.patch(row._id, {
+        text: full,
+        updatedAt: now,
+        chunkSeq: seq + 1,
+      });
       streamRowId = row._id;
       chatId = row.chatId;
+      const firstWithPrefix = row.chunkSeq === undefined && row.text !== "";
+      chunkKind = firstWithPrefix ? "replace" : "append";
+      chunkText = firstWithPrefix ? full : text;
     }
+    // SSE transport (Phase 1): one chunk per stream write (unconditional, independent of
+    // the recorder). See streamChunks schema.
+    await ctx.db.insert("streamChunks", {
+      messageId,
+      chatId,
+      seq,
+      kind: chunkKind,
+      text: chunkText,
+    });
     if (rec !== null && recSessionId === rec.sessionId) {
       // Session match: this delta belongs to the CURRENTLY active recording.
       await recordDelta(ctx, {
@@ -240,24 +273,37 @@ export const setSnapshot = internalMutation({
     const row = await streamingRow(ctx, messageId);
     let streamRowId: Id<"streamingText">;
     let chatId: Id<"chats">;
+    let seq: number;
     if (row === null) {
       const message = await ctx.db.get(messageId);
       if (message === null) throw new Error("setSnapshot: message not found");
       // See appendDelta: never recreate a row for a finished turn (no finalize will
       // delete it again) — a late snapshot for a terminal message is dropped.
       if (message.status !== "streaming") return;
+      seq = 1; // 1-based: a fresh SSE cursor of 0 reads from the first chunk (seq > 0)
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
         text,
         updatedAt: now,
+        chunkSeq: 2,
       });
       chatId = message.chatId;
     } else {
-      await ctx.db.patch(row._id, { text, updatedAt: now });
+      seq = row.chunkSeq ?? 1;
+      await ctx.db.patch(row._id, { text, updatedAt: now, chunkSeq: seq + 1 });
       streamRowId = row._id;
       chatId = row.chatId;
     }
+    // SSE transport (Phase 1): a snapshot is a "replace" chunk (the consumer resets its
+    // accumulated text to it). Unconditional, independent of the recorder.
+    await ctx.db.insert("streamChunks", {
+      messageId,
+      chatId,
+      seq,
+      kind: "replace",
+      text,
+    });
     if (rec !== null && recSessionId === rec.sessionId) {
       // Session match: this delta belongs to the CURRENTLY active recording.
       await recordDelta(ctx, {
@@ -344,6 +390,58 @@ export const addPart = internalMutation({
   },
 });
 
+// SSE transport (Phase 1): bounded, self-scheduling GC of a finished message's stream
+// chunks. A long turn can accumulate hundreds, so delete in batches and reschedule to
+// stay within Convex transaction limits (same idiom as the recorder's purge).
+const CHUNK_GC_BATCH = 2000;
+export const deleteStreamChunksStep = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const batch = await ctx.db
+      .query("streamChunks")
+      .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+      .take(CHUNK_GC_BATCH);
+    for (const c of batch) await ctx.db.delete(c._id);
+    if (batch.length === CHUNK_GC_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        messageId,
+      });
+    }
+  },
+});
+
+// SSE transport (Phase 2): the poll the streaming httpAction runs each tick. Returns the
+// message's chunks AFTER `afterSeq` (the cursor), its lifecycle status, and — once the turn
+// is terminal — the AUTHORITATIVE final text (so the client ends correct even if the chunk
+// GC already raced ahead). Auth: requires an active user that OWNS the chat (IDOR); the
+// httpAction propagates ctx.auth into this runQuery. See openclaw-notes/docs/atrium/convex-http-streaming-transport.md.
+const POLL_CHUNK_CAP = 500;
+export const streamPoll = internalQuery({
+  args: { messageId: v.id("messages"), afterSeq: v.number() },
+  handler: async (ctx, { messageId, afterSeq }) => {
+    const { userId } = await requireActive(ctx);
+    const message = await ctx.db.get(messageId);
+    if (message === null) throw new Error("streamPoll: message not found");
+    await requireOwnedChat(ctx, userId, message.chatId); // IDOR
+    const rows = await ctx.db
+      .query("streamChunks")
+      .withIndex("by_message_seq", (q) =>
+        q.eq("messageId", messageId).gt("seq", afterSeq),
+      )
+      .take(POLL_CHUNK_CAP);
+    const terminal = message.status !== "streaming";
+    return {
+      chunks: rows.map((r) => ({ seq: r.seq, kind: r.kind, text: r.text })),
+      status: message.status,
+      // OMIT finalText (not `undefined`) while streaming: Convex rejects an `undefined`
+      // property in a returned object, which would fail the query for the MAIN active-
+      // stream case — and convex-test does NOT enforce this, so only a real backend (or
+      // the live browser path) catches it (Codex review).
+      ...(terminal ? { finalText: message.text } : {}),
+    };
+  },
+});
+
 // Mark the assistant turn done (message.final). `status` is "complete" on a
 // clean finish, "error" when the normalizer surfaced an error, or "aborted".
 // Optional `text` lets the bridge set the final authoritative text (the
@@ -386,6 +484,11 @@ export const finalize = internalMutation({
     // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
     // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
     if (stRow !== null) await ctx.db.delete(stRow._id);
+    // SSE transport (Phase 1): GC the message's stream chunks (bounded + self-scheduling
+    // — a long turn can accumulate hundreds). Off the lifecycle path; best-effort.
+    await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+      messageId,
+    });
     // The finalized text length — never the text itself.
     const finalLen = finalText.length;
     await traceStream(ctx, {

@@ -1520,4 +1520,162 @@ http.route({
   }),
 });
 
+// ===========================================================================
+// SSE / streamable-HTTP transport (Plan B Phase 2) — the live token stream as a
+// STANDARD Server-Sent-Events response, so the frontend can consume it with a
+// standard streaming runtime (Vercel AI SDK / fetch-stream). Convex stays the
+// entry point + durable store; this only changes the live-delivery transport.
+// See openclaw-notes/docs/atrium/convex-http-streaming-transport.md.
+//
+// GET /api/v1/message-stream?messageId=<id>
+//   Auth: the USER's Convex identity (propagated into streamPoll's runQuery), which
+//         must OWN the chat (IDOR enforced in streamPoll). NOT the /api/v1 service key.
+//   Resume: the `Last-Event-ID` request header carries the last seq seen (else 0); the
+//           stream replays from there (seq is 1-based, so a fresh 0 reads the first chunk).
+//   Events: `id:<seq> data:{kind,text}` per chunk; one `event:final data:{text}` with the
+//           authoritative final text (immune to the chunk GC race); then `event:done`.
+// ===========================================================================
+const SSE_POLL_MS = 100;
+// Self-imposed max lifetime of one SSE connection. A longer turn is fine: the client
+// reconnects with `Last-Event-ID` and resumes from the cursor. Bounds an orphaned poller
+// if the consumer-cancel signal is ever missed.
+const SSE_MAX_MS = 5 * 60 * 1000;
+// The frontend fetch-streams this from a DIFFERENT origin than the Convex `.site`
+// host, with `Authorization` + `Last-Event-ID` headers — non-simple headers, so the
+// browser sends an OPTIONS preflight and requires `Access-Control-Allow-*` on EVERY
+// response (incl. 400/403, else the browser hides the error). No cookies (Bearer
+// token), so reflecting the Origin without `Allow-Credentials` is safe.
+function sseCors(request: Request): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": request.headers.get("Origin") ?? "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Last-Event-ID, Content-Type",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+http.route({
+  path: "/api/v1/message-stream",
+  method: "OPTIONS",
+  handler: httpAction(
+    async (_ctx, request) =>
+      new Response(null, { status: 204, headers: sseCors(request) }),
+  ),
+});
+http.route({
+  path: "/api/v1/message-stream",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const cors = sseCors(request);
+    const url = new URL(request.url);
+    const messageIdRaw = url.searchParams.get("messageId");
+    if (!messageIdRaw) {
+      return new Response("messageId query param required", {
+        status: 400,
+        headers: cors,
+      });
+    }
+    const messageId = messageIdRaw as Id<"messages">;
+    const lastEventId = request.headers.get("Last-Event-ID");
+    let cursor = lastEventId ? Number.parseInt(lastEventId, 10) : 0;
+    if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
+
+    // First poll up-front: validates auth + chat ownership (streamPoll throws on a
+    // missing/forbidden message) BEFORE we commit to a 200 streaming response.
+    let poll: {
+      chunks: { seq: number; kind: "append" | "replace"; text: string }[];
+      status: string;
+      finalText?: string;
+    };
+    try {
+      poll = await ctx.runQuery(internal.stream.streamPoll, {
+        messageId,
+        afterSeq: cursor,
+      });
+    } catch {
+      return new Response("forbidden", { status: 403, headers: cors });
+    }
+
+    const enc = new TextEncoder();
+    // `cancelled` is set when the consumer disconnects/reconnects (the ReadableStream's
+    // cancel() fires) — without it the poll loop would keep hitting streamPoll every
+    // SSE_POLL_MS for an abandoned connection (orphaned pollers pile up on flaky
+    // networks). `deadline` is the belt-and-suspenders bound (Codex review).
+    let cancelled = false;
+    const deadline = Date.now() + SSE_MAX_MS;
+    const stream = new ReadableStream({
+      async start(controller) {
+        const emit = (p: typeof poll) => {
+          if (cancelled) return;
+          for (const c of p.chunks) {
+            controller.enqueue(
+              enc.encode(
+                `id: ${c.seq}\ndata: ${JSON.stringify({ kind: c.kind, text: c.text })}\n\n`,
+              ),
+            );
+            cursor = c.seq;
+          }
+        };
+        emit(poll);
+        // Tail the chunk log until the turn is terminal AND fully drained (the final
+        // chunks persist briefly past finalize until their GC runs). Stop early on
+        // client disconnect (cancelled) or the max-lifetime deadline.
+        while (
+          !cancelled &&
+          Date.now() < deadline &&
+          (poll.status === "streaming" || poll.chunks.length > 0)
+        ) {
+          await new Promise((r) => setTimeout(r, SSE_POLL_MS));
+          if (cancelled) break;
+          try {
+            poll = await ctx.runQuery(internal.stream.streamPoll, {
+              messageId,
+              afterSeq: cursor,
+            });
+          } catch {
+            break; // message deleted / access lost mid-stream — end gracefully
+          }
+          emit(poll);
+        }
+        // Only signal a clean end (final + done) when the TURN actually ended. On a
+        // disconnect or the deadline mid-stream we just close; the client reconnects
+        // with Last-Event-ID and resumes.
+        if (!cancelled && poll.status !== "streaming") {
+          try {
+            if (poll.finalText !== undefined) {
+              controller.enqueue(
+                enc.encode(
+                  `event: final\ndata: ${JSON.stringify({ text: poll.finalText })}\n\n`,
+                ),
+              );
+            }
+            controller.enqueue(enc.encode(`event: done\ndata: {}\n\n`));
+          } catch {
+            /* consumer already gone */
+          }
+        }
+        try {
+          controller.close();
+        } catch {
+          /* already closed/cancelled */
+        }
+      },
+      cancel() {
+        cancelled = true; // consumer disconnected — stop polling
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        ...cors,
+        "Content-Type": "text/event-stream; charset=utf-8",
+        // no-STORE (not no-cache): this stream carries message TEXT (content/PHI), so no
+        // browser/intermediary cache may store it — matches apiJson's no-store (Codex review).
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        Connection: "keep-alive",
+      },
+    });
+  }),
+});
+
 export default http;

@@ -80,6 +80,10 @@ services:
       # Public Convex cloud origin the BROWSER reaches; written into /config.json
       # at boot (the image is origin-agnostic).
       - CONVEX_URL=${CONVEX_CLOUD_ORIGIN:?public https URL for the cloud origin}
+      # Public Convex SITE origin (HTTP actions / .site), also written into /config.json so
+      # the browser's SSE stream fetch (Plan B) targets the right host when cloud + site are
+      # unrelated origins (already validated above by the convex service).
+      - CONVEX_SITE_ORIGIN=${CONVEX_SITE_ORIGIN}
 
   bridge:
     image: ${BRIDGE_IMAGE:-ghcr.io/lacneu/atrium-bridge}:${BRIDGE_TAG:-latest}

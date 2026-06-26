@@ -40,6 +40,11 @@ spec:
             # PUBLIC Convex cloud origin the BROWSER reaches (== convex.cloudOrigin).
             - name: CONVEX_URL
               value: {{ .Values.convex.cloudOrigin | quote }}
+            # PUBLIC Convex SITE origin (HTTP actions / .site) — written into /config.json
+            # so the browser's SSE stream fetch (Plan B) targets the right host when cloud +
+            # site are unrelated origins (as in the values defaults).
+            - name: CONVEX_SITE_ORIGIN
+              value: {{ .Values.convex.siteOrigin | quote }}
           readinessProbe:
             httpGet:
               path: /

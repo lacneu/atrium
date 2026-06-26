@@ -734,6 +734,20 @@ export const deleteMessage = mutation({
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .collect();
       for (const s of live) await ctx.db.delete(s._id);
+      // SSE transport (Phase 1): a message truncated BEFORE its finalize GC ran (e.g. a
+      // still-streaming later turn) leaks its stream chunks (which hold text). Schedule
+      // the bounded purge. Cheap existence check first, so non-streaming messages (the
+      // vast majority — their chunks were already GC'd at finalize) cost ~nothing.
+      if (
+        await ctx.db
+          .query("streamChunks")
+          .withIndex("by_message_seq", (q) => q.eq("messageId", m._id))
+          .first()
+      ) {
+        await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+          messageId: m._id,
+        });
+      }
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }

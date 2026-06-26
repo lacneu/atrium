@@ -872,12 +872,30 @@ export default defineSchema({
     // convex/deliveryTiming.ts.
     recTimingId: v.optional(v.string()),
     recCommittedAt: v.optional(v.number()),
+    // SSE transport (wire-streaming): the NEXT per-message chunk seq to assign — the
+    // monotonic cursor for streamChunks (Last-Event-ID). Server-side state, so it's
+    // restart-safe (unlike a bridge-held counter). See streamChunks below.
+    chunkSeq: v.optional(v.number()),
   })
     .index("by_message", ["messageId"])
     .index("by_chat", ["chatId"])
     // The stuck-stream watchdog ranges by heartbeat (updatedAt < cutoff) — every
     // row here is by definition a streaming message, so no status column is needed.
     .index("by_updated", ["updatedAt"]),
+
+  // Append-only per-message log of streamed text chunks, for the SSE / streamable-HTTP
+  // transport (openclaw-notes/docs/atrium/convex-http-streaming-transport.md). One row per stream
+  // write: appendDelta -> kind "append" (incremental text); setSnapshot -> kind
+  // "replace" (full text — a gateway revision the consumer resets to). `seq` is the
+  // per-message monotonic cursor (from streamingText.chunkSeq). GC'd at finalize.
+  // Holds the message text itself (content), not a trace -> no SOC2 concern.
+  streamChunks: defineTable({
+    messageId: v.id("messages"),
+    chatId: v.id("chats"),
+    seq: v.number(),
+    kind: v.union(v.literal("append"), v.literal("replace")),
+    text: v.string(),
+  }).index("by_message_seq", ["messageId", "seq"]),
 
   // --- Delivery-latency recorder (convex/deliveryTiming.ts) -------------------
   // A controllable, content-free measurement of the bridge -> Convex -> frontend

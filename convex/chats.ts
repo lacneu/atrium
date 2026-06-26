@@ -298,6 +298,18 @@ export async function cascadeDeleteChat(
       .withIndex("by_message", (q) => q.eq("messageId", m._id))
       .collect();
     for (const s of live) await ctx.db.delete(s._id);
+    // SSE transport (Phase 1): purge un-GC'd stream chunks of a mid-stream message
+    // deleted with the chat (they hold text). Bounded GC, scheduled only when present.
+    if (
+      await ctx.db
+        .query("streamChunks")
+        .withIndex("by_message_seq", (q) => q.eq("messageId", m._id))
+        .first()
+    ) {
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        messageId: m._id,
+      });
+    }
     await ctx.db.delete(m._id);
   }
   // Purge the chat's NON-TERMINAL outbox — `pending` (in-flight) AND `queued`

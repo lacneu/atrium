@@ -1,0 +1,101 @@
+import { useEffect, useState } from "react";
+import { useAuthToken } from "@convex-dev/auth/react";
+import { convexSiteUrl } from "@/lib/runtimeConfig";
+import { parseSseBuffer, applySseEvent, EMPTY_SSE_ACCUM } from "./sseStream";
+
+// Phase 3 (behind a flag): a client opts into the SSE / streamable-HTTP transport for the
+// live token stream by setting localStorage `oc_sse` = "1"; otherwise the reactive
+// getStreamingText path is used. A simple dev toggle for now (a proper capability/setting
+// can replace it later). See openclaw-notes/docs/atrium/convex-http-streaming-transport.md.
+export function sseTransportEnabled(): boolean {
+  try {
+    return localStorage.getItem("oc_sse") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Consume the live token stream for `streamingMessageId` over SSE (Plan B). Returns the
+ * accumulated live text, or null when disabled / no streaming message / no auth / no site
+ * URL — the caller then FALLS BACK to the reactive streamingRows text, so the SSE path is
+ * purely additive. Reconnects with `Last-Event-ID` if the server closes mid-turn (its
+ * lifetime deadline); aborts the fetch on unmount or when the streaming message changes.
+ */
+export function useSseStreamingText(
+  streamingMessageId: string | null,
+): string | null {
+  const token = useAuthToken();
+  const [text, setText] = useState<string | null>(null);
+  const enabled = sseTransportEnabled();
+
+  useEffect(() => {
+    const site = convexSiteUrl();
+    if (!enabled || !streamingMessageId || !token || !site) {
+      setText(null);
+      return;
+    }
+    let cancelled = false;
+    const ctrl = new AbortController();
+    let accum = EMPTY_SSE_ACCUM;
+    // Reset to null (NOT "") so the reactive streamingRows fallback keeps showing the
+    // already-live text until the SSE replay delivers the first chunk for THIS message —
+    // else a fresh attach (reload / tab switch / active stream during deploy) would blank
+    // it until the replay catches up (Codex review).
+    setText(null);
+
+    void (async () => {
+      while (!cancelled && !accum.done) {
+        try {
+          const res = await fetch(
+            `${site}/api/v1/message-stream?messageId=${encodeURIComponent(streamingMessageId)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                ...(accum.lastSeq > 0
+                  ? { "Last-Event-ID": String(accum.lastSeq) }
+                  : {}),
+              },
+              signal: ctrl.signal,
+            },
+          );
+          if (!res.ok || !res.body) {
+            // Auth/endpoint failure -> null (NOT "") so the runtime FALLS BACK to the
+            // reactive streamingRows path instead of showing an empty message.
+            setText(null);
+            return;
+          }
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buffer = "";
+          while (!cancelled) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += dec.decode(value, { stream: true });
+            const parsed = parseSseBuffer(buffer);
+            buffer = parsed.rest;
+            for (const ev of parsed.events) accum = applySseEvent(accum, ev);
+            if (!cancelled) setText(accum.text);
+            if (accum.done) break;
+          }
+        } catch {
+          if (cancelled) return; // aborted on unmount/message change
+          // Network error -> fall back to reactive (null) while we back off + reconnect;
+          // a successful reconnect restores the SSE text from lastSeq.
+          setText(null);
+        }
+        if (accum.done || cancelled) break;
+        // Stream ended WITHOUT `done` (server lifetime deadline) -> brief backoff, then
+        // reconnect from lastSeq. The turn is still live; the client resumes seamlessly.
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+  }, [enabled, streamingMessageId, token]);
+
+  return text;
+}

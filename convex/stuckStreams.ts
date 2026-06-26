@@ -98,6 +98,11 @@ export const reconcileChatStuckStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       if (row) await ctx.db.delete(row._id);
+      // SSE transport (Phase 1): GC this message's stream chunks too (finalize's GC
+      // never ran for an orphaned turn). Bounded + self-scheduling; no-op if none.
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        messageId: msg._id,
+      });
       await writeTraceEvent(ctx, {
         kind: "assistant.reconcile",
         direction: "internal",
@@ -165,6 +170,9 @@ export const reconcileStuckStreams = internalMutation({
       // nothing to recover — the turn already ended cleanly).
       if (msg === null || msg.status !== "streaming") {
         await ctx.db.delete(row._id);
+        await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+          messageId: row.messageId,
+        });
         continue;
       }
       // Flip the lifecycle so isRunning releases, preserve the partial streamed text
@@ -177,6 +185,10 @@ export const reconcileStuckStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       await ctx.db.delete(row._id);
+      // SSE transport (Phase 1): GC the reaped message's stream chunks (no finalize ran).
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        messageId: msg._id,
+      });
       touchedChats.add(msg.chatId);
       reaped++;
       await writeTraceEvent(ctx, {

@@ -14,6 +14,7 @@ import {
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
 import { useToast } from "@/components/ui/toast";
+import { useSseStreamingText } from "./useSseStreamingText";
 import { m } from "@/paraglide/messages.js";
 
 // The single source of truth for the chat UI runtime.
@@ -121,6 +122,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
   ) as { messageId: Id<"messages">; text: string }[] | undefined;
 
+  // SSE transport (Phase 3, behind a flag): when enabled, the live text of the active
+  // streaming message comes from the SSE stream (standard fetch-stream) instead of the
+  // reactive streamingText row above. Returns null when disabled/none -> reactive fallback.
+  const sseMessageId =
+    streamingRows && streamingRows.length > 0
+      ? (streamingRows[0].messageId as string)
+      : null;
+  const sseText = useSseStreamingText(sseMessageId);
+
   const attachmentAdapter = useMemo(
     () =>
       createConvexAttachmentAdapter(
@@ -144,12 +154,16 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     const liveByMsg = new Map<string, string>(
       streamingRows.map((r) => [r.messageId as string, r.text]),
     );
-    return base.map((msg) =>
-      msg.status === "streaming" && liveByMsg.has(msg._id as string)
-        ? { ...msg, text: liveByMsg.get(msg._id as string)! }
-        : msg,
-    );
-  }, [messages, streamingRows]);
+    return base.map((msg) => {
+      if (msg.status !== "streaming") return msg;
+      const id = msg._id as string;
+      // SSE transport (Phase 3): when the SSE stream is active for THIS message, its text
+      // wins; otherwise the reactive streamingText row (the default/fallback path).
+      if (sseText !== null && id === sseMessageId) return { ...msg, text: sseText };
+      if (liveByMsg.has(id)) return { ...msg, text: liveByMsg.get(id)! };
+      return msg;
+    });
+  }, [messages, streamingRows, sseText, sseMessageId]);
   const lastRole = list.length > 0 ? list[list.length - 1].role : null;
   const anyStreaming = list.some((m) => m.status === "streaming");
 
