@@ -69,10 +69,16 @@ export function DeliveryRecorderCard() {
 
   const copyReport = () => {
     if (!report) return;
-    void navigator.clipboard?.writeText(reportToText(report)).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    });
+    void navigator.clipboard
+      ?.writeText(reportToText(report))
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {
+        // Clipboard denied / insecure context: no feedback, but never an unhandled
+        // rejection.
+      });
   };
 
   const toggleCheck = (id: string) =>
@@ -124,7 +130,7 @@ export function DeliveryRecorderCard() {
           {status?.startedAt ? (
             <span className="text-muted-foreground">
               {m.delivery_since({
-                time: new Date(status.startedAt).toLocaleTimeString("fr-FR"),
+                time: new Date(status.startedAt).toLocaleTimeString(),
               })}
             </span>
           ) : null}
@@ -197,6 +203,7 @@ function SessionList({
       <ul className="flex flex-col">
         {sessions.map((s) => {
           const isSel = selected === s.sessionId;
+          const label = new Date(s.startedAt).toLocaleString();
           return (
             <li
               key={s.sessionId}
@@ -205,17 +212,18 @@ function SessionList({
               {isAdmin ? (
                 <input
                   type="checkbox"
-                  aria-label={m.delivery_select_session()}
+                  aria-label={`${m.delivery_select_session()} — ${label}`}
                   checked={checked.has(s.sessionId)}
                   onChange={() => onToggleCheck(s.sessionId)}
                 />
               ) : null}
               <button
                 type="button"
+                aria-pressed={isSel}
                 className={`flex-1 truncate text-left ${isSel ? "font-medium" : "text-muted-foreground"}`}
                 onClick={() => onSelect(isSel ? null : s.sessionId)}
               >
-                {new Date(s.startedAt).toLocaleString("fr-FR")}
+                {label}
               </button>
               {s.active ? (
                 <Badge variant="secondary">{m.delivery_badge_active()}</Badge>
@@ -284,6 +292,9 @@ function ReportView({
           {row(m.delivery_seg_c(), seg.C)}
         </tbody>
       </table>
+      {report.truncated ? (
+        <p className="oc-admin__hint">{m.delivery_truncated()}</p>
+      ) : null}
       <p className="oc-admin__hint">{m.delivery_report_note()}</p>
     </>
   );

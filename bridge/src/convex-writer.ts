@@ -129,6 +129,9 @@ interface RecTags {
 
 type IngestOp =
   | { op: "startAssistant"; chatId: string; runId: string | null }
+  // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
+  // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
+  | { op: "calibrate" }
   | ({ op: "appendDelta"; messageId: string; text: string } & RecTags)
   | ({ op: "setSnapshot"; messageId: string; text: string } & RecTags)
   | {
@@ -275,6 +278,12 @@ const WRITE_TIMEOUT_MS = 20_000;
 // net CANNOT catch). The turn's setSnapshot/finalize carries the FULL text, so
 // only intermediate streaming fidelity is trimmed under extreme backpressure.
 const MAX_PENDING_DELTA_CHARS = 256 * 1024;
+// Delivery-recorder clock calibration. Take several samples and keep the min-RTT one
+// (NTP technique: least queuing => most symmetric => least-biased midpoint), and
+// re-arm after a TTL so NTP drift / a noisy one-off sample can't bias segment A for
+// the whole life of a long-running ("Mars") bridge.
+const CALIBRATE_SAMPLES = 5;
+const SKEW_TTL_MS = 5 * 60 * 1000;
 
 export class HttpConvexWriter implements ConvexWriter {
   private readonly url: string;
@@ -323,10 +332,13 @@ export class HttpConvexWriter implements ConvexWriter {
   //              Sent back on each tagged delta so Convex can reject a late delta
   //              whose session is no longer active (no in-memory seq counter, so a
   //              bridge restart mid-session can't collide a correlator).
-  //   recSkew  : global clock offset (serverClock - bridgeClock), from the last
-  //              recording startAssistant round-trip; feeds segment A.
+  //   recSkew  : bridge<->Convex clock offset (serverClock - bridgeClock), measured
+  //              once via the lightweight `calibrate` op (see calibrate()); feeds A.
+  //   calibrating : in-flight guard so calibration fires at most once.
   private readonly recTurns = new Map<string, string>();
   private recSkew: number | undefined = undefined;
+  private skewAt = 0; // bridge-clock time recSkew was measured (for the TTL re-arm)
+  private calibrating = false;
 
   constructor(opts: HttpConvexWriterOptions) {
     this.url = opts.convexHttpActionsUrl.replace(/\/$/, "") + INGEST_PATH;
@@ -427,23 +439,60 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async startAssistant(chatId: string, runId: string | null): Promise<string> {
-    const sentAt = Date.now();
     const ack = await this.post<{
       messageId: string;
-      rec?: { recording: boolean; serverNow: number; sessionId: string | null };
+      rec?: { recording: boolean; sessionId: string | null };
     }>({ op: "startAssistant", chatId, runId });
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
-    // this turn's deltas with, and derive the bridge<->Convex clock offset from THIS
-    // round-trip:
-    //   skew = serverNow - (sentAt + RTT/2)   (serverClock - bridgeClock)
-    // startAssistant is message-less -> runs without a chain, so the measured RTT is
-    // the real network round-trip (no queue wait).
+    // this turn's deltas with, and trigger a one-time clock calibration. The skew is
+    // NOT derived from this round-trip (startAssistant does heavy server work between
+    // receipt and response, which would bias it negative — see calibrate()).
     if (ack.rec?.recording && ack.rec.sessionId) {
-      const rtt = Date.now() - sentAt;
-      this.recSkew = ack.rec.serverNow - (sentAt + rtt / 2);
       this.recTurns.set(ack.messageId, ack.rec.sessionId);
+      void this.calibrate();
     }
     return ack.messageId;
+  }
+
+  /** One-time bridge<->Convex clock calibration via the LIGHTWEIGHT `calibrate` op
+   *  (no server writes), so the measured round-trip is free of mutation time and the
+   *  skew is accurate (a startAssistant-derived skew was biased by ~half its server
+   *  work, pushing segment A negative). serverNow is the server's request-receipt time
+   *  (≈ the round-trip midpoint for symmetric latency):
+   *    skew = serverNow - (sentAt + RTT/2)   (serverClock - bridgeClock)
+   *  Fire-and-forget from startAssistant; resolves long before the first delta (the
+   *  model thinks first). Best-effort: a failure leaves skew unset (A uncorrected) and
+   *  is retried on the next recorded turn. */
+  private async calibrate(): Promise<void> {
+    if (this.calibrating) return;
+    // Re-arm after the TTL so drift on a long-lived bridge is corrected; skip while
+    // a fresh skew is still valid.
+    if (this.recSkew !== undefined && Date.now() - this.skewAt < SKEW_TTL_MS) {
+      return;
+    }
+    this.calibrating = true;
+    try {
+      // Keep the MIN-RTT sample: the least-queued round-trip has the most symmetric
+      // up/down split, so its midpoint estimate is the least biased.
+      let best: { skew: number; rtt: number } | undefined;
+      for (let i = 0; i < CALIBRATE_SAMPLES; i++) {
+        const sentAt = Date.now();
+        const { serverNow } = await this.post<{ serverNow: number }>({
+          op: "calibrate",
+        });
+        const rtt = Date.now() - sentAt;
+        const skew = serverNow - (sentAt + rtt / 2);
+        if (best === undefined || rtt < best.rtt) best = { skew, rtt };
+      }
+      if (best !== undefined) {
+        this.recSkew = best.skew;
+        this.skewAt = Date.now();
+      }
+    } catch {
+      // Keep any prior (stale) skew — better than none; retried next recorded turn.
+    } finally {
+      this.calibrating = false;
+    }
   }
 
   /** Delivery-recorder tags for a stream write (session + t1 + skew + UTF-8 size), or

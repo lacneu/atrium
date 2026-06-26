@@ -88,3 +88,18 @@ are owner-scoped and don't skew per-subscriber metrics). To clear everything,
 
 The `authprobe.mjs` script is a standalone check that anonymous dev auth + bootstrap
 + an authed query work from Node (the foundation the harness builds on).
+
+## Delivery-latency recorder — scale / load coverage
+
+The recorder's scale invariants are covered by deterministic, CI-runnable tests in
+`convex/deliveryTiming.test.ts` (the `scale / load` describe), not by this live harness:
+
+- **Recording is exactly linear** — N tagged deltas under an active session produce
+  exactly N timing rows (no leak, no duplicate); OFF stays at zero under a burst.
+- **Delete drains at scale** — a session with far more than one batch of timings
+  (`TIMING_DELETE_BATCH`) is fully purged across the bounded, self-scheduling delete steps.
+
+For a LIVE per-delta overhead comparison (recording ON vs OFF) you must start a recording
+first (Settings▸Traces, or MCP `start_delivery_record`) so a session is active, then drive
+this harness; an untagged `run.mjs` delta is not recorded, so the recorder path is only
+exercised while a session is active and the bridge is tagging real turns.

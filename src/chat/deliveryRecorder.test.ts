@@ -56,11 +56,11 @@ describe("buildFlushBatch", () => {
   const q = (...s: ClientSample[]): ClientSample[] => s;
 
   test("HOLDS (returns null) while skew is undefined — never flush uncorrected", () => {
-    expect(buildFlushBatch(q({ timingId: "a", t4: 1 }), undefined)).toBeNull();
+    expect(buildFlushBatch(q({ timingId: "a", t4: 1 }), undefined, 500)).toBeNull();
   });
 
   test("returns null for an empty queue", () => {
-    expect(buildFlushBatch([], 50)).toBeNull();
+    expect(buildFlushBatch([], 50, 500)).toBeNull();
   });
 
   test("once calibrated, back-fills the resolved skew onto every held sample", () => {
@@ -70,11 +70,23 @@ describe("buildFlushBatch", () => {
         { timingId: "b", t4: 2, clientSkew: 50 },
       ),
       50,
+      500,
     );
     expect(out).toEqual([
       { timingId: "a", t4: 1, clientSkew: 50 }, // was undefined -> back-filled
       { timingId: "b", t4: 2, clientSkew: 50 }, // already set -> kept
     ]);
+  });
+
+  test("caps at `limit` (head of queue) so the server cap can't silently drop the rest", () => {
+    const queue = Array.from({ length: 5 }, (_, i) => ({
+      timingId: `t${i}`,
+      t4: i,
+    }));
+    const out = buildFlushBatch(queue, 0, 2);
+    expect(out).not.toBeNull();
+    expect(out!.length).toBe(2);
+    expect(out!.map((s) => s.timingId)).toEqual(["t0", "t1"]); // head, in order
   });
 });
 
@@ -90,6 +102,7 @@ describe("reportToText", () => {
     const report: DeliveryReport = {
       sessionId: "sess-1",
       count: 180,
+      truncated: false,
       segments: {
         A: seg(180, 66.4, 74, 328),
         B: seg(180, 0, 0, 0),
@@ -100,10 +113,32 @@ describe("reportToText", () => {
     expect(text).toContain("session sess-1 (180 deltas)");
     expect(text).toContain("A bridge->Convex: p50=66 p95=74 max=328 ms (n=180)");
     expect(text).toContain("C Convex->frontend: p50=— p95=— max=— ms (n=0)");
+    expect(text).not.toContain("capped"); // not truncated -> no cap note
+  });
+
+  test("flags a truncated report (the '+' marker and the cap note)", () => {
+    const report: DeliveryReport = {
+      sessionId: "sess-1",
+      count: 10000,
+      truncated: true,
+      segments: {
+        A: seg(10000, 5, 9, 40),
+        B: seg(10000, 0, 0, 0),
+        C: seg(10000, 90, 100, 120),
+      },
+    };
+    const text = reportToText(report);
+    expect(text).toContain("(10000+ deltas)"); // the + marker
+    expect(text).toContain("capped at 10000 rows"); // the cap note
   });
 
   test("handles a no-samples report", () => {
-    const report: DeliveryReport = { sessionId: null, count: 0, segments: null };
+    const report: DeliveryReport = {
+      sessionId: null,
+      count: 0,
+      truncated: false,
+      segments: null,
+    };
     expect(reportToText(report)).toContain("(no samples)");
   });
 });

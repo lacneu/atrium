@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.10.16] — Delivery recorder: accurate bridge→Convex timing + hardening
+
+Corrective + hardening follow-up to the delivery-latency recorder (0.10.14 / 0.10.15).
+
+- **Segment A (bridge → Convex) is now accurate.** The bridge derived its clock skew by
+  piggybacking the startAssistant round-trip, whose heavy server work biased the estimate
+  and made A read negative. The bridge now calibrates via a dedicated lightweight
+  `calibrate` op (no server writes), takes several samples and keeps the least-queued one,
+  and re-calibrates periodically so a long-running bridge can't drift. The report also
+  excludes any delta recorded before calibration completed rather than show an uncorrected A.
+- **Hardening (from a multi-reviewer audit).** The report card formats dates in the browser
+  locale; the report flags when its window is truncated; the frontend timing batch is
+  server-capped; an auto-stopped session shows its effective stop time; the clipboard copy
+  can't throw; the in-band dedup set is bounded across sessions; minor a11y on the session
+  list. Scale tests added (linear recording, delete-at-scale).
+- *Deploy: `npx convex deploy` + rebuild the bridge, frontend and MCP images (lockstep 0.10.16).*
+
 ## [0.10.15] — Delivery recorder: browse & delete sessions, copy a report, full MCP control
 
 Follow-up to 0.10.14's delivery-latency recorder.

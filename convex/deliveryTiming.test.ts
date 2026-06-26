@@ -518,3 +518,190 @@ describe("delivery-latency recorder", () => {
     expect(await timingRows(t)).toEqual([]);
   });
 });
+
+// --- Scale / load -----------------------------------------------------------
+// Deterministic, CI-runnable load tests for the recorder's scale invariants:
+// recording is exactly linear (N deltas -> N rows, no leak/dup), OFF stays at
+// zero under a burst, and delete drains a session far larger than one batch via
+// the bounded self-scheduling purge.
+describe("delivery recorder — scale / load", () => {
+  test("ON records exactly N rows under a burst; OFF records zero", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+
+    // OFF: a 50-delta burst tagged with a non-active session records nothing.
+    for (let i = 0; i < 50; i++) {
+      await t.mutation(internal.stream.appendDelta, {
+        messageId,
+        text: "x",
+        recSessionId: "not-active",
+        bridgeSentAt: Date.now(),
+        bridgeSkew: 0,
+      });
+    }
+    expect(await timingRows(t)).toEqual([]);
+
+    // ON: an N-delta burst under the active session -> exactly N timing rows.
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    const N = 200;
+    for (let i = 0; i < N; i++) {
+      await t.mutation(internal.stream.appendDelta, {
+        messageId,
+        text: "y",
+        recSessionId: sessionId,
+        bridgeSentAt: Date.now() - 5,
+        bridgeSkew: 0,
+        sizeBytes: 1,
+      });
+    }
+    expect((await timingRows(t)).length).toBe(N); // linear, no leak / no dup
+    const report = await asAdmin.query(api.deliveryTiming.getDeliveryReport, {
+      sessionId,
+    });
+    expect(report.count).toBe(N);
+    expect(report.segments!.A.count).toBe(N);
+  });
+
+  test("delete drains a session far larger than one batch (multi-step purge)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const COUNT = 5000; // > 2 * TIMING_DELETE_BATCH (2000) -> 3 purge steps
+    const sessionId = await t.run(async (ctx) => {
+      const sid = await ctx.db.insert("deliverySessions", {
+        startedAt: 1,
+        startedBy: "test",
+        autoStopAt: 2,
+      });
+      const chatId = await ctx.db.insert("chats", { userId: admin, updatedAt: 1 });
+      for (let i = 0; i < COUNT; i++) {
+        await ctx.db.insert("deliveryTimings", {
+          sessionId: sid,
+          chatId,
+          t1: 0,
+          t2: 0,
+          t3: 1,
+        });
+      }
+      return sid;
+    });
+    expect((await timingRows(t)).length).toBe(COUNT);
+
+    vi.useFakeTimers();
+    try {
+      const res = await asAdmin.mutation(
+        api.deliveryTiming.deleteDeliverySessions,
+        { sessionIds: [sessionId] },
+      );
+      expect(res.scheduled).toBe(1);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // All COUNT rows purged across multiple bounded steps; session + report gone.
+    expect(await timingRows(t)).toEqual([]);
+    const report = await asAdmin.query(api.deliveryTiming.getDeliveryReport, {
+      sessionId,
+    });
+    expect(report.count).toBe(0);
+  });
+});
+
+// --- Re-analysis hardening guards -------------------------------------------
+describe("delivery recorder — re-analysis hardening", () => {
+  test("report excludes A for an uncalibrated delta (no bridgeSkew); keeps B and C", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const sessionId = "sess-hardening";
+    await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId: admin, updatedAt: 1 });
+      // Uncalibrated: no bridgeSkew + no t4 -> A and C excluded, B kept.
+      await ctx.db.insert("deliveryTimings", {
+        sessionId,
+        chatId,
+        t1: 0,
+        t2: 50,
+        t3: 51,
+      });
+      // Calibrated + closed: A + B + C all present.
+      await ctx.db.insert("deliveryTimings", {
+        sessionId,
+        chatId,
+        t1: 0,
+        t2: 30,
+        t3: 31,
+        bridgeSkew: 10,
+        t4: 200,
+        clientSkew: 5,
+      });
+    });
+
+    const report = await asAdmin.query(api.deliveryTiming.getDeliveryReport, {
+      sessionId,
+    });
+    expect(report.count).toBe(2);
+    expect(report.segments!.A.count).toBe(1); // only the calibrated delta
+    expect(report.segments!.A.max).toBe(20); // 30 - 0 - 10
+    expect(report.segments!.B.count).toBe(2); // both (B never needs a skew)
+    expect(report.segments!.C.count).toBe(1); // only the one with t4
+    expect(report.segments!.C.max).toBe(174); // 200 - 31 + 5
+    expect(report.truncated).toBe(false);
+  });
+
+  test("listDeliverySessions derives stoppedAt for an auto-stopped (lapsed) session", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const past = Date.now() - 1000;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("deliverySessions", {
+        startedAt: past - 1000,
+        startedBy: "test",
+        autoStopAt: past, // lapsed, never explicitly stopped
+      });
+    });
+    const sessions = await asAdmin.query(
+      api.deliveryTiming.listDeliverySessions,
+      {},
+    );
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]!.active).toBe(false);
+    expect(sessions[0]!.stoppedAt).toBe(past); // derived from autoStopAt
+  });
+});
+
+// --- Report cap boundary (off-by-one guard) ---------------------------------
+describe("delivery recorder — report cap edge", () => {
+  test("a session with EXACTLY REPORT_CAP rows is NOT flagged truncated", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const CAP = 10000; // = REPORT_CAP in convex/deliveryTiming.ts
+    const sessionId = "sess-cap";
+    await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", { userId: admin, updatedAt: 1 });
+      for (let i = 0; i < CAP; i++) {
+        await ctx.db.insert("deliveryTimings", {
+          sessionId,
+          chatId,
+          t1: 0,
+          t2: 0,
+          t3: 1,
+          bridgeSkew: 0,
+        });
+      }
+    });
+    const report = await asAdmin.query(api.deliveryTiming.getDeliveryReport, {
+      sessionId,
+    });
+    expect(report.count).toBe(CAP);
+    expect(report.truncated).toBe(false); // exactly at cap -> nothing omitted
+  });
+});

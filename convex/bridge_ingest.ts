@@ -100,6 +100,9 @@ function constantTimeEqual(a: string, b: string): boolean {
 // bridge owns the canonical shape).
 type IngestOp =
   | { op: "startAssistant"; chatId: string; runId: string | null }
+  // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
+  // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
+  | { op: "calibrate" }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -184,6 +187,10 @@ type IngestOp =
     };
 
 export const ingest = httpAction(async (ctx, request) => {
+  // Earliest server timestamp (≈ request receipt), captured BEFORE auth/parse so the
+  // delivery recorder's `calibrate` op can return a clean clock reference near the
+  // round-trip midpoint — not biased by any later server work. See convex/deliveryTiming.ts.
+  const receivedAt = Date.now();
   const secret = process.env.BRIDGE_INGEST_SECRET ?? "";
   const header = request.headers.get("authorization") ?? "";
   const expected = `Bearer ${secret}`;
@@ -212,6 +219,11 @@ export const ingest = httpAction(async (ctx, request) => {
   }
 
   switch (body.op) {
+    case "calibrate":
+      // Lightweight clock reference for the delivery recorder (NO writes): serverNow is
+      // the entry timestamp, so the bridge's measured round-trip excludes server work
+      // and yields a clean bridge<->Convex skew. See convex/deliveryTiming.ts.
+      return json({ serverNow: receivedAt });
     case "startAssistant": {
       const correlationId = body.runId
         ? `${body.chatId}:${body.runId}`
@@ -221,8 +233,9 @@ export const ingest = httpAction(async (ctx, request) => {
         runId: body.runId ?? undefined,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
-      // whether to tag this turn's stream writes + a server clock for skew. When OFF
-      // the bridge sends no `seq`, so the delta hot path skips activeRecording.
+      // whether this turn is recorded + under which session. When OFF the bridge sends
+      // no recSessionId, so the delta hot path skips activeRecording. (The clock skew
+      // comes from the separate lightweight `calibrate` op, not from this heavy call.)
       const rec = await ctx.runQuery(
         internal.deliveryTiming.getActiveRecordingForBridge,
         {},

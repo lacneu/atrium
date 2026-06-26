@@ -528,3 +528,19 @@ describe("streamingText split — migration & heartbeat edge cases", () => {
     });
   });
 });
+
+describe("bridge_ingest httpAction: calibrate (delivery recorder clock)", () => {
+  test("authed calibrate -> 200 with a numeric serverNow", async () => {
+    const t = convexTest(schema, modules);
+    const res = await post(t, { op: "calibrate" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { serverNow?: unknown };
+    expect(typeof body.serverNow).toBe("number");
+  });
+
+  test("calibrate without the bridge secret -> 401", async () => {
+    const t = convexTest(schema, modules);
+    const res = await post(t, { op: "calibrate" }, null);
+    expect(res.status).toBe(401);
+  });
+});

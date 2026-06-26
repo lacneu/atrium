@@ -375,6 +375,7 @@
   "delivery_seg_b": "B — Convex exec",
   "delivery_seg_c": "C — Convex → frontend",
   "delivery_report_note": "C is sampled at the browser render rate (≤ A).",
+  "delivery_truncated": "Report capped: stats cover only the first rows of the window.",
   "delivery_copy": "Copy",
   "delivery_copied": "Copied",
   "delivery_delete_selected": "Delete ({n})",

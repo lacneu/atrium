@@ -767,17 +767,21 @@ function recordingFetch(rec: {
   const fetchImpl = (async (_url: unknown, init: { body: string }) => {
     const body = JSON.parse(init.body) as Tagged;
     sent.push(body);
-    const ack =
-      body.op === "startAssistant"
-        ? {
-            messageId: "m1",
-            rec: {
-              recording: rec.recording,
-              serverNow: rec.serverNow ?? Date.now(),
-              sessionId: rec.recording ? (rec.sessionId ?? "sess-1") : null,
-            },
-          }
-        : { ok: true };
+    let ack: unknown;
+    if (body.op === "startAssistant") {
+      ack = {
+        messageId: "m1",
+        rec: {
+          recording: rec.recording,
+          sessionId: rec.recording ? (rec.sessionId ?? "sess-1") : null,
+        },
+      };
+    } else if (body.op === "calibrate") {
+      // The lightweight clock op feeds segment A's skew (not startAssistant anymore).
+      ack = { serverNow: rec.serverNow ?? Date.now() };
+    } else {
+      ack = { ok: true };
+    }
     return { ok: true, json: async () => ack } as unknown as Response;
   }) as unknown as typeof fetch;
   return { fetchImpl, sent };
@@ -815,7 +819,7 @@ describe("delivery recorder tagging (Phase 2)", () => {
     expect(d!.sizeBytes).toBeUndefined();
   });
 
-  test("bridgeSkew = serverClock - bridgeClock (sign), derived from the round-trip", async () => {
+  test("bridgeSkew is derived from the lightweight `calibrate` op (sign + source)", async () => {
     const serverAhead = 100_000; // pretend the server clock is 100s ahead
     const { fetchImpl, sent } = recordingFetch({
       recording: true,
@@ -823,8 +827,13 @@ describe("delivery recorder tagging (Phase 2)", () => {
     });
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
+    await tick(5); // let the fire-and-forget calibrate round-trip resolve
     await w.appendDelta("m1", "x");
     await tick(20);
+    // The bridge MUST calibrate via the dedicated op, not piggyback startAssistant
+    // (which does heavy server work that biased the skew negative — the original bug),
+    // and take MULTIPLE samples (min-RTT pick) rather than trust a single round-trip.
+    expect(sent.filter((s) => s.op === "calibrate").length).toBeGreaterThanOrEqual(2);
     const d = sent.find((s) => s.op === "appendDelta")!;
     // skew ~ serverNow - (sentAt + rtt/2); rtt ~0 here -> skew ~ +100s. A sign flip
     // would yield ~-100s, so this band guards the direction.

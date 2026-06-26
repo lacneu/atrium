@@ -29,6 +29,9 @@ export type SegStat = {
 export type DeliveryReport = {
   sessionId: string | null;
   count: number;
+  // True when the session had more rows than the report window cap, so the stats
+  // cover only the first slice — surfaced so a capped report isn't read as complete.
+  truncated: boolean;
   segments: { A: SegStat; B: SegStat; C: SegStat } | null;
 };
 export type SessionSummary = {
@@ -43,17 +46,23 @@ export type SessionSummary = {
 // Neutral technical labels — it's data to paste into a bug report, not UI chrome.
 export function reportToText(report: DeliveryReport): string {
   const ms = (n: number | null): string => (n === null ? "—" : String(Math.round(n)));
-  const head = `delivery latency — session ${report.sessionId ?? "?"} (${report.count} deltas)`;
+  const head = `delivery latency — session ${report.sessionId ?? "?"} (${report.count}${report.truncated ? "+" : ""} deltas)`;
   if (report.segments === null) return `${head}\n(no samples)`;
   const seg = report.segments;
   const line = (label: string, s: SegStat): string =>
     `${label}: p50=${ms(s.p50)} p95=${ms(s.p95)} max=${ms(s.max)} ms (n=${s.count})`;
-  return [
+  const lines = [
     head,
     line("A bridge->Convex", seg.A),
     line("B Convex exec", seg.B),
     line("C Convex->frontend", seg.C),
-  ].join("\n");
+  ];
+  if (report.truncated) {
+    lines.push(
+      `(report capped at ${report.count} rows — later deltas not included)`,
+    );
+  }
+  return lines.join("\n");
 }
 
 // Clock offset estimate `serverClock - clientClock` (the calibrateClock convention)
@@ -71,14 +80,21 @@ export function skewFromPing(
 // Decide what to flush: HOLD everything until the clock is calibrated, so segment C
 // is never persisted across two clocks (Codex review — uncorrected samples can't be
 // fixed later because recordFrontendTiming ignores rows whose t4 is already set).
-// Returns the skew-applied batch, or null to keep waiting (empty queue, or no skew
-// yet — the caller drops the held queue on unmount rather than sending it wrong).
+// Returns at most `limit` skew-applied samples (the head of the queue), or null to
+// keep waiting (empty queue, or no skew yet — the caller drops the held queue on
+// unmount rather than sending it wrong). `limit` MUST be <= the server's per-call cap
+// (FRONTEND_BATCH_CAP) so the server never silently drops part of the batch; the
+// caller removes only `batch.length` from the queue, so any overflow rides the next
+// flush instead of being lost.
 export function buildFlushBatch(
   queue: readonly ClientSample[],
   skew: number | undefined,
+  limit: number,
 ): ClientSample[] | null {
   if (queue.length === 0 || skew === undefined) return null;
-  return queue.map((s) => ({ ...s, clientSkew: s.clientSkew ?? skew }));
+  return queue
+    .slice(0, limit)
+    .map((s) => ({ ...s, clientSkew: s.clientSkew ?? skew }));
 }
 
 // Stamp t4 = `now` for each row whose recTimingId hasn't been seen yet. Pure: the

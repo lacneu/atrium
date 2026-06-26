@@ -40,6 +40,10 @@ const AUTO_STOP_MS = 10 * 60 * 1000;
 // Upper bound on timing rows pulled into a single report (a 10-min session at a
 // few deltas/sec stays well under this).
 const REPORT_CAP = 10000;
+// Max frontend t4 samples processed per recordFrontendTiming call (each = 2 reads +
+// 1 write). The client batches ~1/s (tens at most); this just caps a hostile/buggy
+// array so the mutation can't reach Convex's transaction limit.
+const FRONTEND_BATCH_CAP = 500;
 
 /**
  * The active recording session, or null when OFF or past its safety auto-stop.
@@ -89,7 +93,10 @@ export async function recordDelta(
   // Stamp t3 AFTER the recorder's insert (its dominant write) so that write falls in
   // segment B (Convex exec) instead of inflating segment C — the frontend observes
   // this sample only AFTER the mutation commits. (Codex review: a pre-insert t3
-  // charged server-side recorder time to the delivery segment.)
+  // charged server-side recorder time to the delivery segment.) RESIDUAL: the two
+  // patches below + the commit still land after t3, so C slightly over-attributes
+  // commit-tail latency — read C as a conservative UPPER BOUND, not a defect. This is
+  // irreducible with in-band correlation (the row _id must exist before recTimingId).
   const t3 = Date.now();
   await ctx.db.patch(timingId, { t3 });
   await ctx.db.patch(args.streamRowId, {
@@ -192,13 +199,18 @@ export const getActiveRecordingForBridge = internalQuery({
   args: {},
   handler: async (ctx) => {
     const rec = await activeRecording(ctx);
+    // The bridge carries `sessionId` back on each tagged delta; Convex records only
+    // when it still matches the active session (so a late delta from a turn started
+    // under an OLD session is never mis-filed into a NEW one). The current bridge
+    // derives the clock skew from the separate lightweight `calibrate` op (this heavy
+    // startAssistant call would bias it). `serverNow` is kept ONLY for rolling-deploy
+    // safety: a pre-calibrate bridge still reads it, so it computes a (biased but
+    // numeric) skew instead of NaN -> bridgeSkew:null -> a rejected delta that would
+    // break a recorded turn mid-deploy. The current bridge ignores this field.
     return {
       recording: rec !== null,
-      serverNow: Date.now(),
-      // The bridge carries this back on each tagged delta; Convex records only when
-      // it still matches the active session (so a late delta from a turn started
-      // under an OLD session is never mis-filed into a NEW one).
       sessionId: rec?.sessionId ?? null,
+      serverNow: Date.now(),
     };
   },
 });
@@ -235,7 +247,10 @@ export const recordFrontendTiming = mutation({
   handler: async (ctx, { samples }) => {
     const { userId } = await requireActive(ctx);
     let patched = 0;
-    for (const s of samples) {
+    // Bound the per-call work (2 reads + 1 write each): the frontend batches ~1/s so
+    // this never bites in practice, but the server must not trust a client array length
+    // (Convex allows up to 8192) and push the mutation to its transaction limit.
+    for (const s of samples.slice(0, FRONTEND_BATCH_CAP)) {
       const id = ctx.db.normalizeId("deliveryTimings", s.timingId);
       if (id === null) continue;
       const row = await ctx.db.get(id);
@@ -333,37 +348,56 @@ async function computeDeliveryReport(
 ) {
   const sid = await resolveSessionId(ctx, sessionId);
   if (sid === null) {
-    return { sessionId: null, count: 0, segments: null, worst: [] };
+    return {
+      sessionId: null,
+      count: 0,
+      truncated: false,
+      segments: null,
+      worst: [],
+    };
   }
-  const rows = await ctx.db
+  // Read ONE past the cap so a session with exactly REPORT_CAP rows (complete) is
+  // distinguished from one with more (truncated); the stats then window to the cap.
+  // by_session is chronological, so the window keeps the EARLIEST rows — the LATEST
+  // deltas are the ones omitted when truncated.
+  const raw = await ctx.db
     .query("deliveryTimings")
     .withIndex("by_session", (q) => q.eq("sessionId", sid))
-    .take(REPORT_CAP);
+    .take(REPORT_CAP + 1);
+  const truncated = raw.length > REPORT_CAP;
+  const rows = truncated ? raw.slice(0, REPORT_CAP) : raw;
 
   const aVals: number[] = [];
   const bVals: number[] = [];
   const cVals: number[] = [];
   const perDelta = rows.map((r) => {
-    const a = r.t2 - r.t1 - (r.bridgeSkew ?? 0);
+    // A only when the delta is clock-corrected: a delta recorded before the bridge's
+    // calibration completes has no bridgeSkew, and t2 - t1 raw would be off by the
+    // full clock offset (garbage). Exclude it rather than pollute A's stats (same as
+    // C excludes deltas with no t4 yet).
+    const a =
+      r.bridgeSkew !== undefined ? r.t2 - r.t1 - r.bridgeSkew : undefined;
     const b = r.t3 - r.t2;
     // C ADDS clientSkew: t4 is a browser-clock stamp at the LATER endpoint, so
     // converting it to server time (+clientSkew) nets to +. (A's t1 is the earlier
     // endpoint, hence -bridgeSkew.) Do NOT "simplify" the sign to match A.
     const c =
       r.t4 !== undefined ? r.t4 - r.t3 + (r.clientSkew ?? 0) : undefined;
-    aVals.push(a);
+    if (a !== undefined) aVals.push(a);
     bVals.push(b);
     if (c !== undefined) cVals.push(c);
     return { id: r._id, a, b, c, sizeBytes: r.sizeBytes };
   });
 
-  const worst = [...perDelta]
-    .sort((x, y) => y.a + y.b + (y.c ?? 0) - (x.a + x.b + (x.c ?? 0)))
-    .slice(0, 10);
+  const total = (x: { a?: number; b: number; c?: number }) =>
+    (x.a ?? 0) + x.b + (x.c ?? 0);
+  const worst = [...perDelta].sort((x, y) => total(y) - total(x)).slice(0, 10);
 
   return {
     sessionId: sid,
     count: rows.length,
+    // Flagged so a very chatty session's capped stats aren't read as complete.
+    truncated,
     segments: { A: segStat(aVals), B: segStat(bVals), C: segStat(cVals) },
     worst,
   };
@@ -417,7 +451,11 @@ async function listSessionsImpl(ctx: QueryCtx): Promise<SessionSummary[]> {
   return sessions.map((s) => ({
     sessionId: s._id,
     startedAt: s.startedAt,
-    stoppedAt: s.stoppedAt ?? null,
+    // An auto-stopped session (lapsed past autoStopAt, never explicitly stopped) has
+    // no stoppedAt; surface its effective stop time so the list doesn't read as
+    // "never stopped" next to active:false.
+    stoppedAt:
+      s.stoppedAt ?? (Date.now() > s.autoStopAt ? s.autoStopAt : null),
     startedBy: s.startedBy,
     active: s._id === activeId,
   }));
