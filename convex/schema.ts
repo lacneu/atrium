@@ -928,6 +928,20 @@ export default defineSchema({
     startedBy: v.string(), // "admin:<userId>" | "agent:<serviceAccount>"
     autoStopAt: v.number(),
     stoppedAt: v.optional(v.number()),
+    // Total recorded deltas (the "samples" column). Incremented per delta in
+    // recordDelta so the sessions list reads it cheaply (no per-session row scan).
+    count: v.optional(v.number()),
+    // Per-session segment p50 summary (ms), computed ONCE shortly after the session stops
+    // (computeSessionRollup) so the list + the evolution KPI read it cheaply — no per-session
+    // timing scan on every list load. Absent until rolled up (active / legacy session);
+    // each p50 is null when that segment had no samples.
+    rollup: v.optional(
+      v.object({
+        bridgeP50: v.union(v.number(), v.null()),
+        aP50: v.union(v.number(), v.null()),
+        cP50: v.union(v.number(), v.null()),
+      }),
+    ),
   }),
 
   // One row per recorded delta. CONTENT-FREE: only timestamps + size. The row's

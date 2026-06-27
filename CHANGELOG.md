@@ -8,6 +8,30 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.12.0] — Delivery recordings: first-class list + evolution KPI
+
+The delivery-latency recorder's session list (Réglages ▸ Observabilité ▸ Traces ▸ Latence de
+livraison ▸ Afficher les enregistrements) becomes a first-class, sortable/filterable table,
+with a trend KPI across recordings. No change to what is recorded (content-free timestamps).
+
+- **Sortable, filterable recordings table.** The bespoke list is now a real table with columns
+  Début / Fin / Échantillons / Démarré par / Statut, all sortable. Above it: a status filter
+  (tous / actif / terminé), a "démarré par" search, and a date-range filter that defaults to
+  "All time" (so opening it never hides older recordings) with a reset.
+- **Per-row context menu + bulk delete.** Each row has a "Voir le détail" action that expands
+  its skew-corrected per-segment report (bridge / A / C) inline, and a "Supprimer" action;
+  multiple recordings can be selected and deleted together. A bulk delete only ever removes
+  rows still visible under the current filters.
+- **Per-recording sample count + segment-p50 rollup.** Each recording now carries its total
+  delta count (the "Échantillons" column) and a segment-p50 summary, computed once shortly
+  after it stops (and refreshed as late frontend samples land), so the list + KPI read it
+  cheaply without rescanning timings on every load.
+- **Evolution KPI.** A compact trend of segment C and A p50 across the recent recordings,
+  read from the per-recording rollup — to see how delivery latency evolves over time.
+- *Deploy: `npx convex deploy` (schema `deliverySessions.count` / `.rollup` + functions) and
+  REBUILD the frontend image. The bridge and MCP have NO code change — rebuild them only for
+  lockstep `/api/v1/version` consistency (0.12.0).*
+
 ## [0.11.1] — Delivery recorder: segment C follows the displayed transport
 
 A diagnostic refinement of the delivery-latency recorder for the SSE transport added in 0.11.0.

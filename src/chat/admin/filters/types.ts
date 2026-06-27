@@ -78,6 +78,9 @@ export const RELATIVE_PRESETS: RelativePreset[] = [
   { label: m.filters_preset_last_7d(), from: "now-7d" },
   { label: m.filters_preset_last_30d(), from: "now-30d" },
   { label: m.filters_preset_last_90d(), from: "now-90d" },
+  // Effectively "all time" (~10y window) — a non-hiding default for short, recent lists
+  // (e.g. the delivery-record sessions) where any narrower default would hide older rows.
+  { label: m.filters_preset_all(), from: "now-520w" },
 ];
 
 /** Format an absolute instant for the trigger label (compact, fr-FR). */

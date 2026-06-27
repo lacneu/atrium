@@ -100,6 +100,20 @@ export async function recordDelta(
     recTimingId: timingId,
     recCommittedAt: args.t2,
   });
+  // Bump the session's total-delta count so the sessions list reads "samples" cheaply
+  // (no per-session row scan). One extra patch on the already-per-delta recording path;
+  // recording is opt-in, so the cost is negligible.
+  const sessionRowId = ctx.db.normalizeId("deliverySessions", args.sessionId);
+  if (sessionRowId !== null) {
+    const session = await ctx.db.get(sessionRowId);
+    // Only increment a session that ALREADY has a count (new sessions init to 0). A legacy
+    // session active across the deploy has no count but pre-existing timings; bumping it to 1
+    // would show a false partial total, so leave it undefined ("-" = unknown) — the report
+    // detail still reflects every row (Codex review).
+    if (session !== null && session.count !== undefined) {
+      await ctx.db.patch(sessionRowId, { count: session.count + 1 });
+    }
+  }
   // Returned so the caller can tag the SSE chunk with the same correlator (the SSE leg
   // closes segment C at the displayed receipt — see streamChunks.recTimingId).
   return timingId;
@@ -116,15 +130,36 @@ async function startRecordingInternal(
 ): Promise<{ sessionId: Id<"deliverySessions">; autoStopAt: number }> {
   const now = Date.now();
   const autoStopAt = now + AUTO_STOP_MS;
-  const sessionId = await ctx.db.insert("deliverySessions", {
-    startedAt: now,
-    startedBy,
-    autoStopAt,
-  });
   const cfg = await ctx.db
     .query("deliveryRecording")
     .withIndex("by_key", (q) => q.eq("key", SINGLETON))
     .unique();
+  // Finalize a PREVIOUS session left lingering without an explicit stop — i.e. one that
+  // AUTO-stopped past AUTO_STOP_MS (stopRecordingInternal never ran, so stoppedAt + its
+  // rollup were never set). Stamp its effective stop time and schedule its rollup so it still
+  // appears in the list/KPI (Codex review).
+  if (cfg?.sessionId !== undefined) {
+    const prevId = ctx.db.normalizeId("deliverySessions", cfg.sessionId);
+    if (prevId !== null) {
+      const prev = await ctx.db.get(prevId);
+      if (prev !== null && prev.stoppedAt === undefined) {
+        await ctx.db.patch(prevId, { stoppedAt: Math.min(now, prev.autoStopAt) });
+        await ctx.scheduler.runAfter(
+          0,
+          internal.deliveryTiming.computeSessionRollup,
+          { sessionId: cfg.sessionId },
+        );
+      }
+    }
+  }
+  const sessionId = await ctx.db.insert("deliverySessions", {
+    startedAt: now,
+    startedBy,
+    autoStopAt,
+    // Initialize to 0 so a brand-new session reads "0" (not yet any delta), reserving the
+    // null/"-" display for genuine LEGACY sessions that predate the counter (Codex review).
+    count: 0,
+  });
   if (cfg === null) {
     await ctx.db.insert("deliveryRecording", {
       key: SINGLETON,
@@ -154,6 +189,12 @@ async function stopRecordingInternal(
         await ctx.db.patch(sid, { stoppedAt: Date.now() });
       }
     }
+    // Compute the segment-p50 rollup for the just-stopped session (the list + KPI read it
+    // cheaply). Scheduled, not inline, so the timing read stays off this mutation; late t4
+    // batches re-schedule it (recordFrontendTiming) so it converges as segment C fills in.
+    await ctx.scheduler.runAfter(0, internal.deliveryTiming.computeSessionRollup, {
+      sessionId: cfg.sessionId,
+    });
   }
   await ctx.db.patch(cfg._id, { enabled: false, sessionId: undefined });
   return { stopped: true };
@@ -247,6 +288,7 @@ export const recordFrontendTiming = mutation({
   handler: async (ctx, { samples }) => {
     const { userId } = await requireActive(ctx);
     let patched = 0;
+    const affected = new Set<string>();
     // Bound the per-call work (2 reads + 1 write each): the frontend batches ~1/s so
     // this never bites in practice, but the server must not trust a client array length
     // (Convex allows up to 8192) and push the mutation to its transaction limit.
@@ -259,6 +301,28 @@ export const recordFrontendTiming = mutation({
       if (chat === null || chat.userId !== userId) continue; // IDOR guard
       await ctx.db.patch(id, { t4: s.t4, clientSkew: s.clientSkew });
       patched++;
+      affected.add(row.sessionId);
+    }
+    // A late t4 batch for an already-stopped session refreshes its segment-p50 rollup so it
+    // CONVERGES as segment-C samples land after stop (the rollup at stop may predate them).
+    // "Stopped" includes an AUTO-stopped session (past autoStopAt without an explicit stop) —
+    // whose last t4s land here after the lapse — so it still gets a rollup (Codex review). The
+    // genuinely active session (autoStopAt in the future) is skipped: its rollup runs at stop.
+    const now = Date.now();
+    for (const sessionId of affected) {
+      const sid = ctx.db.normalizeId("deliverySessions", sessionId);
+      if (sid === null) continue;
+      const session = await ctx.db.get(sid);
+      if (
+        session !== null &&
+        (session.stoppedAt !== undefined || now > session.autoStopAt)
+      ) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.deliveryTiming.computeSessionRollup,
+          { sessionId },
+        );
+      }
     }
     return { patched };
   },
@@ -342,20 +406,10 @@ export const getDeliveryStatus = query({
 
 // Skew-corrected per-segment report for a session. CONTENT-FREE. Shared by the
 // user-authed query (Settings UI) and the key-authed MCP/HTTP path.
-async function computeDeliveryReport(
-  ctx: QueryCtx,
-  sessionId: string | undefined,
-) {
-  const sid = await resolveSessionId(ctx, sessionId);
-  if (sid === null) {
-    return {
-      sessionId: null,
-      count: 0,
-      truncated: false,
-      segments: null,
-      worst: [],
-    };
-  }
+// Read a session's timings (bounded to REPORT_CAP) and compute its per-segment stats +
+// the worst deltas. Shared by the report (getDeliveryReport, a query) and the per-session
+// rollup (computeSessionRollup, a mutation) — hence the QueryCtx | MutationCtx ctx.
+async function computeSessionStats(ctx: QueryCtx | MutationCtx, sid: string) {
   // Read ONE past the cap so a session with exactly REPORT_CAP rows (complete) is
   // distinguished from one with more (truncated); the stats then window to the cap.
   // by_session is chronological, so the window keeps the EARLIEST rows — the LATEST
@@ -399,7 +453,6 @@ async function computeDeliveryReport(
   const worst = [...perDelta].sort((x, y) => total(y) - total(x)).slice(0, 10);
 
   return {
-    sessionId: sid,
     count: rows.length,
     // Flagged so a very chatty session's capped stats aren't read as complete.
     truncated,
@@ -411,6 +464,55 @@ async function computeDeliveryReport(
     worst,
   };
 }
+
+async function computeDeliveryReport(
+  ctx: QueryCtx,
+  sessionId: string | undefined,
+) {
+  const sid = await resolveSessionId(ctx, sessionId);
+  if (sid === null) {
+    return {
+      sessionId: null,
+      count: 0,
+      truncated: false,
+      segments: null,
+      worst: [],
+    };
+  }
+  return { sessionId: sid, ...(await computeSessionStats(ctx, sid)) };
+}
+
+// Compute + store a stopped session's segment-p50 rollup, so the sessions list + the
+// evolution KPI read it cheaply (no per-session timing scan per list load). Idempotent +
+// last-wins: scheduled at stop, at the next start (finalizing a lapsed predecessor), and
+// again as late frontend t4 batches land, so it CONVERGES as segment-C samples arrive. The
+// result is a skew-corrected APPROXIMATION (a tab closed before its final flush leaves a few
+// C samples uncounted) — fine for a trend sparkline.
+//
+// ACCEPTED RESIDUAL: a session that AUTO-stops (lapses past autoStopAt with no explicit stop)
+// AND whose t4s all flushed before the lapse AND is never followed by another recording keeps
+// rollup === null — so it is absent from the KPI TREND. It is NOT lost: it still appears in
+// the list and its detail report (getDeliveryReport reads timings, independent of rollup).
+// Covering it would need a write-on-view or a cron sweep — both disproportionate for a
+// diagnostic orphan, and the data stays fully inspectable. (Same residual class as the
+// SSE-parse-timing bias.) Codex will keep flagging this; it is a deliberate accept.
+export const computeSessionRollup = internalMutation({
+  args: { sessionId: v.string() },
+  handler: async (ctx, { sessionId }) => {
+    const sid = ctx.db.normalizeId("deliverySessions", sessionId);
+    if (sid === null) return; // deleted before the rollup ran
+    const session = await ctx.db.get(sid);
+    if (session === null) return;
+    const { segments } = await computeSessionStats(ctx, sessionId);
+    await ctx.db.patch(sid, {
+      rollup: {
+        bridgeP50: segments.bridge.p50,
+        aP50: segments.A.p50,
+        cP50: segments.C.p50,
+      },
+    });
+  },
+});
 
 // User-authed (Settings UI): gate traces.read.
 export const getDeliveryReport = query({
@@ -440,6 +542,16 @@ type SessionSummary = {
   stoppedAt: number | null;
   startedBy: string;
   active: boolean;
+  // Total recorded deltas, or null for a legacy session predating the counter (its
+  // timings exist but were never counted) — the UI shows "-" rather than a false 0.
+  count: number | null;
+  // Segment p50 summary (ms), or null until the session is rolled up (active / legacy).
+  // Drives the evolution KPI + cheap per-record stats without a per-session timing scan.
+  rollup: {
+    bridgeP50: number | null;
+    aP50: number | null;
+    cP50: number | null;
+  } | null;
 };
 
 async function listSessionsImpl(ctx: QueryCtx): Promise<SessionSummary[]> {
@@ -467,6 +579,10 @@ async function listSessionsImpl(ctx: QueryCtx): Promise<SessionSummary[]> {
       s.stoppedAt ?? (Date.now() > s.autoStopAt ? s.autoStopAt : null),
     startedBy: s.startedBy,
     active: s._id === activeId,
+    // null (not 0) for a legacy session that predates the counter, so the column reads
+    // "-" (unknown) rather than a false 0 vs the report detail (Codex review).
+    count: s.count ?? null,
+    rollup: s.rollup ?? null,
   }));
 }
 

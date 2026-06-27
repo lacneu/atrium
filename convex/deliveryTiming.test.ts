@@ -112,6 +112,83 @@ describe("delivery-latency recorder", () => {
     expect(tagged?.recTimingId).toBe(timings[0]._id);
   });
 
+  test("session count increments per recorded delta; listDeliverySessions returns it", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    for (let i = 0; i < 3; i++) {
+      await t.mutation(internal.stream.appendDelta, {
+        messageId,
+        text: `d${i}`,
+        recSessionId: sessionId,
+        bridgeSentAt: Date.now(),
+        bridgeSkew: 0,
+        sizeBytes: 1,
+      });
+    }
+    const sessions = await asAdmin.query(
+      api.deliveryTiming.listDeliverySessions,
+      {},
+    );
+    expect(sessions.find((s) => s.sessionId === sessionId)?.count).toBe(3);
+  });
+
+  test("session rollup: segment p50s computed at stop, returned by listDeliverySessions", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const admin = await seedUser(t, "admin");
+      const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+      const { messageId } = await seedStreamingMessage(t, admin);
+      const { sessionId } = await asAdmin.mutation(
+        api.deliveryTiming.startDeliveryRecord,
+        {},
+      );
+      const now = Date.now();
+      // Two deltas with bridge (t0) + A (bridgeSkew) data; t2 = now (frozen mutation clock).
+      for (let i = 0; i < 2; i++) {
+        await t.mutation(internal.stream.appendDelta, {
+          messageId,
+          text: `d${i}`,
+          recSessionId: sessionId,
+          bridgeRecvAt: now - 50, // t0 -> bridge = t1 - t0 = 20
+          bridgeSentAt: now - 30, // t1 -> A = t2 - t1 - skew = 30
+          bridgeSkew: 0,
+          sizeBytes: 1,
+        });
+      }
+      // Close segment C (t4) for both timings -> C = t4 - t3 + skew = 100.
+      const timings = await timingRows(t);
+      await asAdmin.mutation(api.deliveryTiming.recordFrontendTiming, {
+        samples: timings.map((r) => ({
+          timingId: r._id,
+          t4: now + 100,
+          clientSkew: 0,
+        })),
+      });
+      // Stop schedules the rollup; run it.
+      await asAdmin.mutation(api.deliveryTiming.stopDeliveryRecord, {});
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const sessions = await asAdmin.query(
+        api.deliveryTiming.listDeliverySessions,
+        {},
+      );
+      const s = sessions.find((x) => x.sessionId === sessionId);
+      expect(s?.rollup).not.toBeNull();
+      expect(s?.rollup?.bridgeP50).toBe(20);
+      expect(s?.rollup?.aP50).toBe(30);
+      expect(s?.rollup?.cP50).toBe(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("active recording: deltas timed, in-band id shipped, report applies the skews", async () => {
     const t = convexTest(schema, modules);
     const admin = await seedUser(t, "admin");

@@ -48,6 +48,15 @@ export type SessionSummary = {
   stoppedAt: number | null;
   startedBy: string;
   active: boolean;
+  // total recorded deltas, or null for a legacy session predating the counter (UI shows "-")
+  count: number | null;
+  // per-session segment p50 summary (ms), or null until rolled up (active / legacy) — drives
+  // the evolution KPI without a per-record report fetch.
+  rollup: {
+    bridgeP50: number | null;
+    aP50: number | null;
+    cP50: number | null;
+  } | null;
 };
 
 // Render a report as a compact, shareable plain-text block (for the Copy button).
