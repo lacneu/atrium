@@ -1,6 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npx convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'node scripts/write-config.mjs && npm run build'",
-  "outputDirectory": "dist",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
