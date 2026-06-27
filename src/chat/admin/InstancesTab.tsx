@@ -38,6 +38,11 @@ import { InstanceConfigDialog, type Instance } from "./BridgeTab";
 import { EntitySheet } from "./EntitySheet";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import {
+  STREAM_TRANSPORTS,
+  DEFAULT_STREAM_TRANSPORT,
+  type StreamTransport,
+} from "../../../convex/lib/instanceConfig";
 
 type InstanceKind = "openclaw" | "hermes";
 type InstanceForm = {
@@ -48,6 +53,8 @@ type InstanceForm = {
   kind: InstanceKind;
   gatewayVersion: string;
   gatewayHttpUrl: string;
+  // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
+  streamTransport: StreamTransport;
 };
 const EMPTY_INSTANCE: InstanceForm = {
   name: "",
@@ -57,6 +64,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   kind: "openclaw",
   gatewayVersion: "",
   gatewayHttpUrl: "",
+  streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
 
 // Which encrypted credential fields apply per provider kind (UI guidance; the
@@ -80,6 +88,7 @@ function formFromInstance(i: Instance): InstanceForm {
     kind: (i.kind ?? "openclaw") as InstanceKind,
     gatewayVersion: i.gatewayVersion ?? "",
     gatewayHttpUrl: i.gatewayHttpUrl ?? "",
+    streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
 }
 
@@ -114,6 +123,7 @@ export function InstancesTab() {
         kind: form.kind,
         gatewayVersion: form.gatewayVersion || undefined,
         gatewayHttpUrl: form.gatewayHttpUrl || undefined,
+        streamTransport: form.streamTransport,
       });
       setForm(EMPTY_INSTANCE);
       setEditId(null);
@@ -296,6 +306,28 @@ export function InstancesTab() {
               value={form.displayName}
               onChange={(e) => setForm({ ...form, displayName: e.target.value })}
             />
+          </Field>
+          <Field label={m.instance_transport()}>
+            <Select
+              value={form.streamTransport}
+              onValueChange={(v) =>
+                setForm({ ...form, streamTransport: v as StreamTransport })
+              }
+            >
+              <SelectTrigger size="sm" className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STREAM_TRANSPORTS.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground">
+              {m.instance_transport_hint()}
+            </span>
           </Field>
           <Field label={m.settings_field_gateway_version()}>
             <Input

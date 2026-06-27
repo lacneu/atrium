@@ -14,7 +14,7 @@ import {
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
 import { useToast } from "@/components/ui/toast";
-import { useSseStreamingText } from "./useSseStreamingText";
+import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { m } from "@/paraglide/messages.js";
 
 // The single source of truth for the chat UI runtime.
@@ -120,7 +120,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const streamingRows = useQuery(
     api.messages.getStreamingText,
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
-  ) as { messageId: Id<"messages">; text: string }[] | undefined;
+  ) as
+    | { messageId: Id<"messages">; text: string; chunkSeq?: number }[]
+    | undefined;
 
   // SSE transport (Phase 3, behind a flag): when enabled, the live text of the active
   // streaming message comes from the SSE stream (standard fetch-stream) instead of the
@@ -129,7 +131,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     streamingRows && streamingRows.length > 0
       ? (streamingRows[0].messageId as string)
       : null;
-  const sseText = useSseStreamingText(sseMessageId);
+  // Phase 4b: the transport is chosen per the chat's gateway INSTANCE
+  // (getChatStreamTransport: "reactive" | "sse"), or forced on by the DEV override for
+  // local testing. The reactive path stays the default + the fallback.
+  const streamTransport = useQuery(
+    api.messages.getChatStreamTransport,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
+  const sseEnabled = streamTransport === "sse" || sseDevOverride();
+  const sse = useSseStreamingText(sseMessageId, sseEnabled);
 
   const attachmentAdapter = useMemo(
     () =>
@@ -151,19 +161,38 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     if (!streamingRows || streamingRows.length === 0) return base;
     // Key by the raw string id: getStreamingText returns the branded Id<"messages">
     // while ConvexMessageView carries our loose ConvexId — same value at runtime.
-    const liveByMsg = new Map<string, string>(
-      streamingRows.map((r) => [r.messageId as string, r.text]),
+    const liveByMsg = new Map<string, { text: string; chunkSeq?: number }>(
+      streamingRows.map((r) => [
+        r.messageId as string,
+        { text: r.text, chunkSeq: r.chunkSeq },
+      ]),
     );
     return base.map((msg) => {
       if (msg.status !== "streaming") return msg;
       const id = msg._id as string;
-      // SSE transport (Phase 3): when the SSE stream is active for THIS message, its text
-      // wins; otherwise the reactive streamingText row (the default/fallback path).
-      if (sseText !== null && id === sseMessageId) return { ...msg, text: sseText };
-      if (liveByMsg.has(id)) return { ...msg, text: liveByMsg.get(id)! };
+      const reactive = liveByMsg.get(id);
+      // SSE transport: when active for THIS message, the SSE text drives the display —
+      // BUT only once it has CAUGHT UP to the reactive frontier seq. A fresh connection
+      // after a mid-stream reload replays from cursor 0, so its lastSeq trails the frontier
+      // briefly; show the reactive text until then (no regression). Once caught up, the SSE
+      // wins even when SHORTER — so a `replace`/snapshot revision is honored over a stale or
+      // lagging reactive row (seq, not length — Codex review). chunkSeq is the NEXT seq, so
+      // the latest written = chunkSeq - 1.
+      // `sse.messageId === sseMessageId` rejects STALE state: the hook resets only after the
+      // next render, so on a chat/turn/transport switch the previous message's text would
+      // otherwise flash on the new one for a frame (Codex review).
+      if (sse !== null && sse.messageId === sseMessageId && id === sseMessageId) {
+        const reactiveFrontier = (reactive?.chunkSeq ?? 1) - 1;
+        const caughtUp = sse.lastSeq >= reactiveFrontier;
+        return {
+          ...msg,
+          text: caughtUp ? sse.text : (reactive?.text ?? sse.text),
+        };
+      }
+      if (reactive !== undefined) return { ...msg, text: reactive.text };
       return msg;
     });
-  }, [messages, streamingRows, sseText, sseMessageId]);
+  }, [messages, streamingRows, sse, sseMessageId]);
   const lastRole = list.length > 0 ? list[list.length - 1].role : null;
   const anyStreaming = list.some((m) => m.status === "streaming");
 

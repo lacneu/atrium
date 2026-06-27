@@ -24,6 +24,15 @@ export type MediaMode = (typeof MEDIA_MODES)[number];
 export const INBOUND_MEDIA_MODES = ["inline", "shared-fs"] as const;
 export type InboundMediaMode = (typeof INBOUND_MEDIA_MODES)[number];
 
+/** Live-stream transport (frontend↔Convex) for an instance's chats: the reactive query
+ *  push (default) or the SSE / streamable-HTTP endpoint. A FRONTEND display choice — it is
+ *  a TOP-LEVEL instance property (`instances.streamTransport`), NOT part of this bridge
+ *  config blob (it is never dispatched to the bridge). See
+ *  openclaw-notes/docs/atrium/convex-http-streaming-transport.md. */
+export const STREAM_TRANSPORTS = ["reactive", "sse"] as const;
+export type StreamTransport = (typeof STREAM_TRANSPORTS)[number];
+export const DEFAULT_STREAM_TRANSPORT: StreamTransport = "reactive";
+
 /** Sanity bounds for the per-file media cap (MiB). 1 MiB .. 4 GiB. */
 export const MEDIA_MAX_MB_MIN = 1;
 export const MEDIA_MAX_MB_MAX = 4096;

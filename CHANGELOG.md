@@ -8,6 +8,35 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.11.0] — Live-stream transport: opt-in SSE / streamable-HTTP per gateway-instance
+
+A second live-stream transport for assistant replies, selectable per gateway-instance. The
+default is UNCHANGED (Convex's native reactive push), so existing chats behave exactly as
+before — the new transport is opt-in.
+
+- **SSE / streamable-HTTP transport (Plan B).** A standard Server-Sent-Events endpoint
+  (`GET /api/v1/message-stream`) streams a reply incrementally over the wire, so non-Convex
+  consumers (mobile, third-party) can read the live stream with standard tooling. Convex stays
+  the entry point and durable store; the stream replays from a resumable cursor (`Last-Event-ID`)
+  and an authoritative `final` event closes it. Backed by an append-only `streamChunks` log,
+  garbage-collected on finalize and on message/chat deletion.
+- **Per-instance transport choice.** Each gateway instance carries a `streamTransport`
+  (`reactive` | `sse`, default `reactive`), edited in **Réglages ▸ Agents ▸ Instances ▸ ⋮ ▸
+  Modifier l'instance**. A chat uses the transport of the instance it is ROUTED to (resolved the
+  same way dispatch routes, so a legacy/unbound chat follows its effective instance). This is a
+  frontend↔Convex display choice and is deliberately NOT part of the bridge config blob.
+- **Seamless coexistence.** With SSE active, the reactive path stays the fallback: the display
+  never regresses during a mid-stream reload (the SSE replay is gated by chunk sequence, not
+  length) and never flashes another conversation's text on a chat/transport switch (the live
+  state is keyed by message id). A failed SSE fetch silently falls back to reactive — no blank
+  messages.
+- *Managed Convex Cloud note: an SSE stream is a long-running action, so the number of CONCURRENT
+  SSE streams is bounded by the plan's concurrent-actions limit (64 Free/Starter, 512 Pro);
+  self-hosted has no such cap. That is why SSE is opt-in and reactive stays the default.*
+- *Deploy: `npx convex deploy` (schema + functions) and REBUILD the frontend image. The bridge
+  and MCP have NO code change this release — rebuild them only for lockstep `/api/v1/version`
+  consistency (0.11.0).*
+
 ## [0.10.18] — Delivery recorder: bridge-internal segment now collects for snapshot streams
 
 Corrective for 0.10.17 — a live run showed the new bridge-internal segment staying empty.

@@ -598,6 +598,9 @@ export const upsertInstance = mutation({
     // gatewayHttpUrl = media HTTP override.
     gatewayVersion: v.optional(v.string()),
     gatewayHttpUrl: v.optional(v.string()),
+    // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
+    // NOT bridge-dispatch config. See schema instances.streamTransport.
+    streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -614,6 +617,7 @@ export const upsertInstance = mutation({
       kind: args.kind ?? "openclaw",
       gatewayVersion: args.gatewayVersion?.trim() || undefined,
       gatewayHttpUrl: args.gatewayHttpUrl?.trim() || undefined,
+      streamTransport: args.streamTransport,
     };
     if (args.instanceId) {
       // The name is the immutable ROUTING KEY: agents, userAgents, chats and

@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
-  MoreVertical,
   Server,
 } from "lucide-react";
 import { api } from "../convexApi";
@@ -40,12 +39,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
 import {
   DEFAULT_INSTANCE_CONFIG,
@@ -295,20 +288,6 @@ function ProviderCard({
   // Connexions are a diagnostic detail → collapsed by default (the card is read
   // mostly to CHECK compatibility, drilled into connections occasionally).
   const [connectionsOpen, setConnectionsOpen] = useState(false);
-  // The per-instance config now opens in a MODAL from each compatibility row's
-  // kebab — keyed by instance NAME (the stable join key across health/instances).
-  const [configInstanceName, setConfigInstanceName] = useState<string | null>(
-    null,
-  );
-  const configInstance =
-    configInstanceName !== null
-      ? (instances.find((i) => i.name === configInstanceName) ?? null)
-      : null;
-  // Only instances that actually have an admin row are configurable — so a compat
-  // row for an instance with no matching row never shows a dead kebab. Empty for
-  // non-admins (their instances query is skipped), which also hides every kebab.
-  const configurableNames = new Set(instances.map((i) => i.name));
-
   return (
     <section className="oc-bridge-provider">
       <header className="oc-bridge-provider__head">
@@ -331,8 +310,6 @@ function ProviderCard({
         compatReachable={compatReachable}
         manifest={manifest}
         instanceRows={instanceRows}
-        canConfigure={(name) => configurableNames.has(name)}
-        onConfigure={setConfigInstanceName}
       />
 
       {/* Connexions — collapsed by default, rendered as a list of rows. */}
@@ -356,14 +333,6 @@ function ProviderCard({
         />
       ) : null}
 
-      {/* Per-instance config modal (admin-only) — opened from a compat row kebab. */}
-      {configInstance ? (
-        <InstanceConfigDialog
-          key={configInstance._id}
-          instance={configInstance}
-          onClose={() => setConfigInstanceName(null)}
-        />
-      ) : null}
     </section>
   );
 }
@@ -380,8 +349,6 @@ function ProviderCompat({
   compatReachable,
   manifest,
   instanceRows,
-  canConfigure,
-  onConfigure,
 }: {
   support: ReturnType<typeof providerSupport> | null;
   compatStatus: "loading" | "nodata" | "ready";
@@ -393,8 +360,6 @@ function ProviderCompat({
     version: string | null;
     state: TargetBadgeState;
   }[];
-  canConfigure: (instanceName: string) => boolean;
-  onConfigure: (instanceName: string) => void;
 }) {
   // Loading / no-data come BEFORE the manifest check, so a still-loading compat
   // never flashes the "legacy bridge" message.
@@ -449,25 +414,6 @@ function ProviderCompat({
               >
                 {targetBadgeLabel(r.state)}
               </Badge>
-              {canConfigure(r.instanceName) ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="oc-compat__target-menu"
-                      aria-label={m.bridge_config_configure()}
-                    >
-                      <MoreVertical size={16} aria-hidden />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => onConfigure(r.instanceName)}>
-                      {m.bridge_config_configure()}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
             </div>
           ))}
         </div>

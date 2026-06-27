@@ -29,6 +29,8 @@ import {
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
+import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { enrichUserAgents, resolveAgentForChat } from "./agents";
@@ -315,6 +317,12 @@ export const getStreamingText = query({
     return rows.map((r) => ({
       messageId: r.messageId,
       text: r.text,
+      // SSE transport (Phase 4): the reactive frontier seq, so the runtime can tell a
+      // REPLAYING SSE connection (its lastSeq is behind this) from one AT the frontier
+      // (>=). That's what lets the SSE win on a `replace`-shrink yet NOT regress during a
+      // reload replay. OMITTED when no chunk is written yet (Convex rejects an undefined
+      // returned property).
+      ...(r.chunkSeq !== undefined ? { chunkSeq: r.chunkSeq } : {}),
       // In-band delivery-recorder fields, present ONLY while a recording is active
       // (appendDelta/setSnapshot stamp them) -> zero added payload otherwise. The
       // frontend reads recTimingId (the timing row's correlator) to stamp t4 and
@@ -323,6 +331,34 @@ export const getStreamingText = query({
         ? { recTimingId: r.recTimingId, recCommittedAt: r.recCommittedAt }
         : {}),
     }));
+  },
+});
+
+// SSE transport (Phase 4b): the live-stream transport CHOSEN for this chat's gateway
+// instance (reactive | sse), so the frontend runtime knows whether to consume the SSE
+// endpoint or stay on the reactive push. Per-instance config (Settings>Agents>Bridge);
+// defaults to reactive when the chat has no instance / no override. Not sensitive (a
+// display preference) but gated to the chat owner; a non-owned/absent chat -> the default.
+export const getChatStreamTransport = query({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    const { userId } = await requireActive(ctx);
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return DEFAULT_STREAM_TRANSPORT;
+    const chat = await ctx.db.get(id);
+    if (chat === null || chat.userId !== userId) return DEFAULT_STREAM_TRANSPORT;
+    // Resolve the SAME routed target as dispatch (resolveTargetForChat: honor the chat's
+    // binding, else the default agent + rebind) rather than the raw chat.instanceName — so a
+    // legacy / unbound / stale-bound chat reads the instance ACTUALLY used (Codex review).
+    // Mirrors getChatInboundPolicy.
+    const res = await resolveTargetForChat(ctx, chat, userId);
+    const instanceName = res.target?.instanceName ?? null;
+    if (instanceName === null) return DEFAULT_STREAM_TRANSPORT;
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    return instance?.streamTransport ?? DEFAULT_STREAM_TRANSPORT;
   },
 });
 

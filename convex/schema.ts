@@ -280,6 +280,11 @@ export default defineSchema({
     // (mediaMode / inboundMediaMode / rehydration / mediaMaxMb). Secrets are NEVER
     // here. Validator shared with admin.upsertInstanceConfig (lib/instanceConfig).
     config: v.optional(instanceConfigValidator),
+    // FRONTEND live-stream transport for this instance's chats (reactive push | SSE).
+    // A frontend↔Convex DISPLAY choice — deliberately a top-level instance PROPERTY (edited
+    // in "Modifier l'instance"), NOT in the bridge `config` blob: it is never dispatched to
+    // the bridge. Absent => reactive (the default). See lib/instanceConfig STREAM_TRANSPORTS.
+    streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
     // Which provider technology backs this instance. OPTIONAL (additive) →
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
