@@ -155,3 +155,49 @@ export async function resolveTargetForChat(
     failReason: null,
   };
 }
+
+/**
+ * Per-TURN routing for the multi-agent router: the user picks the agent for THIS turn.
+ * `chosen === null` → byte-identical legacy chat routing (`resolveTargetForChat`), so a
+ * single-agent chat — including a chat bound to a now-revoked agent — keeps its exact
+ * read-only / fallback semantics. When a turn-agent IS chosen, it is validated against the
+ * user's EFFECTIVE grants (the same dispatch-time IDOR boundary): not entitled →
+ * `agent_restricted` (per-OPTION — the chat itself is not bound/read-only); deleted on the
+ * gateway → `no_agent`; else → the target with NEVER a rebind (a per-turn chat has no
+ * single binding to persist). The client-supplied `chosen` is therefore authorized here at
+ * the trust boundary, not merely filtered in the composer.
+ */
+export async function resolveTargetForTurn(
+  ctx: QueryCtx | MutationCtx,
+  chat: Doc<"chats">,
+  userId: Id<"users">,
+  chosen: { instanceName: string; agentId: string } | null,
+): Promise<ChatResolution> {
+  if (chosen === null) return resolveTargetForChat(ctx, chat, userId);
+
+  const profile = await getProfile(ctx, userId);
+  const canonical = profile?.canonical ?? `u-${userId.slice(0, 10)}`;
+  const uas = await getEffectiveGrants(ctx, userId);
+  const member = uas.find(
+    (u) => u.instanceName === chosen.instanceName && u.agentId === chosen.agentId,
+  );
+  if (!member) {
+    // The user is NOT entitled to the picked agent (admin never granted / revoked it).
+    // Per-option restriction — never silently re-routed to a different agent.
+    return { target: null, rebind: null, failReason: "agent_restricted" };
+  }
+  if (await isDeleted(ctx, member.instanceName, member.agentId)) {
+    // Entitled but gone on the gateway (the composer should have filtered it out).
+    return { target: null, rebind: null, failReason: "no_agent" };
+  }
+  return {
+    target: {
+      instanceName: member.instanceName,
+      agentId: member.agentId,
+      canonical,
+      source: "user-default",
+    },
+    rebind: null,
+    failReason: null,
+  };
+}

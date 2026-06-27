@@ -17,4 +17,4 @@
 // release prep, bumping every artifact together). That keeps a plain `npx convex deploy`
 // from the release tree honest: /api/v1/version reports the real deployed version, and a
 // forgotten deploy stands out as a mismatch with the image versions.
-export const DEPLOYED_VERSION = "0.12.0";
+export const DEPLOYED_VERSION = "0.13.0";

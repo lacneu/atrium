@@ -239,6 +239,13 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           role: message.role,
           status: message.status,
           runId: message.runId,
+          // MULTI-AGENT per-turn routing (read projection only — routing/dispatch is
+          // owned server-side). Which agent THIS turn was addressed to; absent on a
+          // single-agent message. The frontend attributes each reply (inheriting the
+          // preceding user turn's agent for an assistant that lacks its own) and
+          // defaults the composer to the last-used agent.
+          routedInstanceName: message.routedInstanceName,
+          routedAgentId: message.routedAgentId,
           // The live streaming tokens of a CURRENT-version turn live in the
           // `streamingText` table (read by the cheap getStreamingText), so this heavy
           // view does not re-run per delta — the frontend overlays them by id. The
@@ -541,6 +548,18 @@ export const getSessionMeta = query({
     }
     return {
       title: chat.title ?? null,
+      // MULTI-AGENT: has this chat flipped to per-turn routing (a turn was routed to
+      // an agent other than the primary)? Gates the per-message agent chip in the
+      // thread. Read-only projection of the chat flag the dispatch maintains.
+      perTurnRouting: chat.perTurnRouting === true,
+      // MULTI-AGENT: the chat's LAST-ROUTED agent (the dispatch-maintained
+      // `lastRouted*`). Surfaced so the composer can default to the last-used agent
+      // even BEFORE listByChat loads (this loads fast — a single chat-doc read) —
+      // without it, a fast send while messages are still loading would route a
+      // perTurnRouting chat to the primary instead of the last-used agent. Names are
+      // non-secret slugs (read-only projection — routing/dispatch is server-owned).
+      lastRoutedInstanceName: chat.lastRoutedInstanceName ?? null,
+      lastRoutedAgentId: chat.lastRoutedAgentId ?? null,
       sessionMeta: chat.sessionMeta ?? null,
       // The user's explicit write-back intent (reasoning/model). The panel uses
       // it to mark which knob is an override vs inherited; the chip itself reads
@@ -813,6 +832,11 @@ export const deleteMessage = mutation({
     // fresh outbox from that user turn (text + its file attachments). dispatchReset
     // runs it AFTER the gateway reset, so it re-hydrates the truncated history.
     let regenerateOutboxId: Id<"outbox"> | undefined;
+    // MULTI-AGENT: a regenerate must re-route to the SAME agent the regenerated user turn
+    // was addressed to (else a Bob-routed turn would regenerate on the chat's primary, and
+    // the reset would clear the wrong agent's session — codex P2). Carried to BOTH the
+    // regen outbox (re-dispatch routes to it) and dispatchReset (its reset targets it).
+    let regenRoutedAgent: { instanceName: string; agentId: string } | undefined;
     if (wasAssistant) {
       // The now-last message in LOGICAL order (reuse the already-read set, minus the
       // just-truncated tail) — same compareOrder as the truncation + display.
@@ -839,6 +863,13 @@ export const deleteMessage = mutation({
             });
           }
         }
+        regenRoutedAgent =
+          lastUser.routedInstanceName && lastUser.routedAgentId
+            ? {
+                instanceName: lastUser.routedInstanceName,
+                agentId: lastUser.routedAgentId,
+              }
+            : undefined;
         regenerateOutboxId = await ctx.db.insert("outbox", {
           chatId: chat._id,
           userId,
@@ -850,6 +881,7 @@ export const deleteMessage = mutation({
           attachmentIds: attachments.map((a) => a.storageId),
           attachments,
           status: "pending",
+          ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
         });
       }
     }
@@ -861,6 +893,8 @@ export const deleteMessage = mutation({
       chatId: chat._id,
       userId,
       ...(regenerateOutboxId ? { regenerateOutboxId } : {}),
+      // Reset the SAME agent's session the regenerate re-dispatches to (per-turn chats).
+      ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
     });
 
     await ctx.db.patch(chat._id, { updatedAt: Date.now() });

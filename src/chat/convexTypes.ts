@@ -136,6 +136,12 @@ export interface ConvexMessageView {
   status: MessageStatus;
   text: string;
   error?: string;
+  /** MULTI-AGENT per-turn routing: which agent this turn was addressed to (absent on
+   *  a single-agent message). The thread attributes each reply from these (an
+   *  assistant without its own inherits the preceding user turn's agent); the
+   *  composer defaults to the last-used one. See src/chat/perTurnAgent.ts. */
+  routedInstanceName?: string;
+  routedAgentId?: string;
   /** L2: count of ready downloadable document attachments (Sources-chip badge). */
   attachedDocCount?: number;
   updatedAt: number;

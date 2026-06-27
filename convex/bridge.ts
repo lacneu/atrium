@@ -23,7 +23,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { resolveTargetForChat } from "./routing";
+import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
@@ -275,8 +275,16 @@ export const failDispatch = internalMutation({
 // bridge maps instanceName -> token/deviceIdentity from its env; only names
 // cross this boundary, never secrets.
 export const getChatRouting = internalQuery({
-  args: { chatId: v.id("chats"), userId: v.id("users") },
-  handler: async (ctx, { chatId, userId }) => {
+  args: {
+    chatId: v.id("chats"),
+    userId: v.id("users"),
+    // MULTI-AGENT per-turn router: the agent this turn is addressed to (absent = the
+    // chat's primary, the unchanged single-agent path).
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (ctx, { chatId, userId, routedAgent }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       return null;
@@ -284,8 +292,9 @@ export const getChatRouting = internalQuery({
     // Routing v2: resolve from the CHAT's binding (∈ userAgents), with the
     // stale-vs-deleted + default-fallback logic. The returned target is ALWAYS
     // authorized for this user (dispatch-time IDOR defense). `rebind` (when set)
-    // is persisted by the dispatch action before sending.
-    const res = await resolveTargetForChat(ctx, chat, userId);
+    // is persisted by the dispatch action before sending. A per-turn `routedAgent`
+    // resolves to THAT agent (authorized the same way, never rebinding the chat).
+    const res = await resolveTargetForTurn(ctx, chat, userId, routedAgent ?? null);
     // Model M: resolve the routed instance's OWN bridge endpoint + per-instance
     // NON-secret config. Look up the instance row by NAME (the same first()
     // duplicate-name resilience as routing); when there is no target (no_agent) the
@@ -310,7 +319,19 @@ export const getChatRouting = internalQuery({
       // — sending it with the NEW target would resume/reset the wrong agent's
       // session. Start the new agent fresh (the bridge falls back to the Convex
       // chatId as the routing-id segment). Persisted to null by bindChatTarget.
-      openclawChatId: res.rebind ? null : (chat.openclawChatId ?? null),
+      // MULTI-AGENT: a per-turn chat keys on its epoch `routingSegment` (changed only
+      // on an agent switch by beginTurnRouting) so the bridge re-keys — hence rehydrates
+      // — exactly on a switch, and stays warm within a same-agent run. ONLY for an actual
+      // routed send (`routedAgent` present): a no-agent call (dispatchPatch/Reset/compact)
+      // resolves to the chat's binding/default, so it must NOT inherit the last routed
+      // turn's segment (codex P2 — that targeted the primary agent on another agent's
+      // session) and keeps the legacy session id.
+      openclawChatId:
+        chat.perTurnRouting && routedAgent
+          ? (chat.routingSegment ?? null)
+          : res.rebind
+            ? null
+            : (chat.openclawChatId ?? null),
       target: res.target, // null => no agent assigned (failReason no_agent)
       rebind: res.rebind,
       failReason: res.failReason,
@@ -340,10 +361,15 @@ export const getChatRouting = internalQuery({
       // also REHYDRATES by chatId — it would re-prepend this hidden chat's PRIOR fetch turns
       // and defeat the clean-session guarantee (re-injecting old refs -> still not_found).
       // Force rehydration OFF for documentary dispatches, keeping the other overrides intact.
+      // MULTI-AGENT: force rehydration ON for a per-turn chat so a freshly-routed agent
+      // (cold session from the epoch segment) is re-grounded with the FULL thread; the
+      // bridge's own fresh-session gate then SKIPS it on a warm same-agent turn.
       configOverrides:
         chat.kind === "documentary"
           ? { ...bridgeDispatchConfig(instance?.config), rehydration: false }
-          : bridgeDispatchConfig(instance?.config),
+          : chat.perTurnRouting && routedAgent
+            ? { ...bridgeDispatchConfig(instance?.config), rehydration: true }
+            : bridgeDispatchConfig(instance?.config),
     };
   },
 });
@@ -533,6 +559,54 @@ export const bindChatTarget = internalMutation({
   },
 });
 
+// MULTI-AGENT per-turn router: persist the turn's routing BEFORE getChatRouting reads it.
+// Flips the chat to `perTurnRouting` and tracks the last-routed agent. The gateway session
+// is re-keyed ONLY on an agent SWITCH (epoch-on-switch): a fresh `routingSegment` makes the
+// bridge's fresh-session gate rehydrate the newly-routed agent with the FULL thread, while a
+// same-agent run keeps the segment (warm — no re-shipping the whole history every turn).
+export const beginTurnRouting = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    userId: v.id("users"),
+    routedAgent: v.object({ instanceName: v.string(), agentId: v.string() }),
+    turnId: v.id("messages"),
+  },
+  handler: async (ctx, { chatId, userId, routedAgent, turnId }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    // AUTHORIZE before persisting ANY turn state (codex P2): a forged routedAgent — or one
+    // revoked/deleted between sendMessage and dispatch — must NOT reconfigure the chat.
+    // Otherwise the dispatch fails agent_restricted/no_agent but the chat is left with an
+    // invalid per-turn session segment that corrupts every later routing. Resolve the exact
+    // same way the dispatch does; only an entitled, present agent reconfigures the chat.
+    const res = await resolveTargetForTurn(ctx, chat, userId, routedAgent);
+    if (res.target === null) return;
+    // A turn explicitly routed to the chat's OWN primary agent, on a chat that is not yet
+    // multi-agent, is just a normal single-agent turn — do NOT flip perTurnRouting or
+    // re-key (codex P2): that would needlessly fork the warm gateway session and force a
+    // rehydration when the single-agent flow should simply continue.
+    const isToPrimary =
+      routedAgent.agentId === chat.agentId &&
+      routedAgent.instanceName === chat.instanceName;
+    if (!chat.perTurnRouting && isToPrimary) return;
+    // Baseline for "did the agent change?": the previous turn's agent, or — on the first
+    // per-turn turn — the chat's primary binding.
+    const prevAgent = chat.lastRoutedAgentId ?? chat.agentId ?? null;
+    const prevInstance =
+      chat.lastRoutedInstanceName ?? chat.instanceName ?? null;
+    const isSwitch =
+      routedAgent.agentId !== prevAgent ||
+      routedAgent.instanceName !== prevInstance ||
+      !chat.routingSegment;
+    await ctx.db.patch(chatId, {
+      perTurnRouting: true,
+      lastRoutedInstanceName: routedAgent.instanceName,
+      lastRoutedAgentId: routedAgent.agentId,
+      ...(isSwitch ? { routingSegment: `turn:${turnId}` } : {}),
+    });
+  },
+});
+
 export const dispatch = internalAction({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }) => {
@@ -566,9 +640,23 @@ export const dispatch = internalAction({
       return;
     }
 
+    // MULTI-AGENT per-turn router: persist this turn's routing (switch detection + the
+    // epoch session segment) BEFORE getChatRouting reads the chat. Only when the turn
+    // carries an explicit agent (a deliberate per-turn choice); a normal send leaves the
+    // chat single-agent and skips this entirely.
+    if (row.routedAgent && row.messageId) {
+      await ctx.runMutation(internal.bridge.beginTurnRouting, {
+        chatId: row.chatId as Id<"chats">,
+        userId: row.userId as Id<"users">,
+        routedAgent: row.routedAgent,
+        turnId: row.messageId as Id<"messages">,
+      });
+    }
+
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId: row.chatId as Id<"chats">,
       userId: row.userId as Id<"users">,
+      ...(row.routedAgent ? { routedAgent: row.routedAgent } : {}),
     });
 
     // Chat deleted mid-turn -> nothing to dispatch / render.
@@ -958,8 +1046,14 @@ export const dispatchReset = internalAction({
     chatId: v.id("chats"),
     userId: v.id("users"),
     regenerateOutboxId: v.optional(v.id("outbox")),
+    // MULTI-AGENT: the agent the regenerated turn was addressed to, so the RESET targets
+    // that agent's per-turn session (else it would reset the chat's primary session while
+    // the regenerate re-dispatches to a different agent — codex P2).
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
   },
-  handler: async (ctx, { chatId, userId, regenerateOutboxId }) => {
+  handler: async (ctx, { chatId, userId, regenerateOutboxId, routedAgent }) => {
     // A regenerate (assistant-delete) builds a pending outbox row that ONLY this
     // action can drive. Every path that does NOT chain its dispatch must mark that
     // row terminal + surface the cause, else it stays pending and the user sees
@@ -989,6 +1083,7 @@ export const dispatchReset = internalAction({
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId,
       userId,
+      ...(routedAgent ? { routedAgent } : {}),
     });
     if (!routing || routing.target === null) {
       // Same distinction as the normal dispatch: a chat whose agent the user is no

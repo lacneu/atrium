@@ -14,6 +14,15 @@ import {
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
 import { useToast } from "@/components/ui/toast";
+import {
+  isFirstTurn,
+  lastRoutedAgent,
+  resolveEffectiveSelection,
+  resolveMessageAgents,
+  resolveRoutedAgentToSend,
+  type AgentRef,
+} from "./perTurnAgent";
+import type { PickableAgent } from "./AgentPicker";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { useDeliveryRecorder } from "./useDeliveryRecorder";
 import type { SseTimingSample } from "./deliveryRecorder";
@@ -95,6 +104,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         attachedDocCount: undefined, // a user echo never has attachments
         text: args.text,
         updatedAt: now,
+        // MULTI-AGENT: echo the routed agent too, so the in-flight thinking
+        // placeholder attributes to the agent the user just addressed (else
+        // lastRoutedAgent would briefly see the PREVIOUS turn's agent until the
+        // real message lands and corrects it). Keys always present (value
+        // undefined on an unrouted send) to match the query's inferred shape.
+        routedInstanceName: args.routedAgent?.instanceName,
+        routedAgentId: args.routedAgent?.agentId,
         // Attachments reconcile a beat later with their server-signed URL; the
         // instant echo carries the text (the primary case). Empty is fine — the
         // converter renders the text bubble immediately.
@@ -173,6 +189,187 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       ),
     [convex, toast, chatId],
   );
+
+  // MULTI-AGENT per-turn router. The composer routes a turn to a chosen agent and
+  // each reply is attributed to the agent that answered it. Source of truth:
+  //   - getChatAgent → the chat's PRIMARY (resolved) agent + whether the USER has
+  //     more than one agent (`multiAgent`, which gates the composer selector).
+  //   - getSessionMeta → `perTurnRouting`: has the chat actually flipped to
+  //     multi-agent (gates the per-message chip).
+  // Both are deduped by Convex against the same subscriptions ConvexChat holds.
+  const chatAgentInfo = useQuery(
+    api.agents.getChatAgent,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
+  const chatMeta = useQuery(
+    api.messages.getSessionMeta,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
+  // The user's CURRENT entitled agent pool (the composer selector + chip display
+  // names AND — load-bearing — the filter that keeps a revoked/deleted agent from
+  // remaining the default selection). `skip` keeps a no-chat shell from querying.
+  const myAgents = useQuery(
+    api.agents.listMyAgents,
+    chatId ? {} : "skip",
+  ) as PickableAgent[] | undefined;
+  // DISTINGUISH loading (undefined) from a genuinely empty pool ([]): during
+  // loading the selection must NOT be filtered against an empty pool (that would
+  // silently drop a perTurnRouting chat's last-routed agent — see P2-D).
+  const poolLoading = myAgents === undefined;
+  const pool = useMemo(() => myAgents ?? [], [myAgents]);
+  const multiAgent = chatAgentInfo?.multiAgent === true;
+  const perTurnRouting = chatMeta?.perTurnRouting === true;
+  // Routing is allowed only when there is a genuine choice: the user has MORE THAN
+  // ONE entitled agent, OR the chat is already perTurnRouting. A single-agent user
+  // (exactly one agent, not perTurnRouting) must NEVER stamp a routedAgent — an
+  // implicit route would flip the chat to multi-agent + bypass the normal rebind
+  // (P2-C). `multiAgent` is getChatAgent's "user has >1 agent" flag.
+  const canRoute = multiAgent || perTurnRouting;
+  // Stable primary ref (a fresh object each render would churn the routing context
+  // and re-render every consumer per streamed token).
+  const primaryKey = chatAgentInfo?.agent
+    ? `${chatAgentInfo.agent.instanceName}\0${chatAgentInfo.agent.agentId}`
+    : "";
+  const primary = useMemo<AgentRef | null>(
+    () =>
+      chatAgentInfo?.agent
+        ? {
+            instanceName: chatAgentInfo.agent.instanceName,
+            agentId: chatAgentInfo.agent.agentId,
+          }
+        : null,
+    // primaryKey encodes the only fields read; the agent object id is unstable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [primaryKey],
+  );
+
+  // The chat's LAST-ROUTED agent from getSessionMeta (the dispatch-maintained
+  // `lastRouted*`). This loads BEFORE the heavier listByChat, so it is the
+  // last-used agent we can rely on while messages are still loading (P2-E) — a fast
+  // send then still routes a perTurnRouting chat to the last agent, not the primary.
+  const chatLastRoutedKey =
+    chatMeta?.lastRoutedInstanceName && chatMeta?.lastRoutedAgentId
+      ? `${chatMeta.lastRoutedInstanceName}\0${chatMeta.lastRoutedAgentId}`
+      : "";
+  const chatLastRouted = useMemo<AgentRef | null>(
+    () =>
+      chatMeta?.lastRoutedInstanceName && chatMeta?.lastRoutedAgentId
+        ? {
+            instanceName: chatMeta.lastRoutedInstanceName,
+            agentId: chatMeta.lastRoutedAgentId,
+          }
+        : null,
+    // chatLastRoutedKey encodes the only fields read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatLastRoutedKey],
+  );
+
+  // The composer's explicit per-turn pick (null = use the derived default). Reset
+  // on chat switch (the hook is reused across chats, not remounted).
+  const [selectedAgent, setSelectedAgent] = useState<AgentRef | null>(null);
+  useEffect(() => {
+    setSelectedAgent(null);
+  }, [chatId]);
+
+  // DISTINGUISH messages LOADING (undefined, listByChat not yet responded) from a
+  // genuinely EMPTY new chat ([]). While loading we must not treat the chat as
+  // first-turn nor drop the last-routed agent (P2-E) — both would reroute a fast
+  // send to the primary.
+  const messagesLoading = messages === undefined;
+  // Routing derivations read the RAW `messages` (the routed fields live there and
+  // are untouched by the streaming overlay), so they recompute only when the
+  // message SET changes — not per streamed token.
+  const messageAgents = useMemo(
+    () => resolveMessageAgents(messages ?? []),
+    [messages],
+  );
+  // The last-routed agent: prefer the thread (freshest — includes the optimistic
+  // echo of a just-sent turn), fall back to the chat-level `lastRouted*` (which is
+  // available while messages are still loading). `messages` undefined → thread
+  // contributes nothing, so this is exactly the chat-level value during loading.
+  const threadLastRouted = useMemo(
+    () => (messages ? lastRoutedAgent(messages) : null) ?? chatLastRouted,
+    [messages, chatLastRouted],
+  );
+  // Default selection = the thread's last-used agent, else the chat's primary —
+  // gated by canRoute, loading-aware, and pool-filtered (see resolveEffectiveSelection).
+  // Also the placeholder chip's fallback (the in-flight turn's just-routed agent).
+  const defaultAgent = useMemo<AgentRef | null>(
+    () =>
+      resolveEffectiveSelection({
+        selected: null,
+        lastRouted: threadLastRouted,
+        primary,
+        pool,
+        poolLoading,
+        messagesLoading,
+        canRoute,
+      }),
+    [threadLastRouted, primary, pool, poolLoading, messagesLoading, canRoute],
+  );
+  // Effective composer selection: the explicit pick if set, else the thread
+  // default. ONE helper enforces all the edge rules — never for a single-agent user
+  // (canRoute), preserve the last-routed agent while the pool OR messages load, and
+  // drop a stale explicit pick OR stale last-routed once both are known.
+  const effectiveSelected = useMemo<AgentRef | null>(
+    () =>
+      resolveEffectiveSelection({
+        selected: selectedAgent,
+        lastRouted: threadLastRouted,
+        primary,
+        pool,
+        poolLoading,
+        messagesLoading,
+        canRoute,
+      }),
+    [selectedAgent, threadLastRouted, primary, pool, poolLoading, messagesLoading, canRoute],
+  );
+  // First turn? (loading-aware — see isFirstTurn). Drives the send-rule's "never
+  // route turn 1": while messages load this is FALSE (we don't yet know the
+  // history), so an already-perTurnRouting chat is not misread as turn 1.
+  const firstTurn = isFirstTurn(messages);
+  // Has the chat had a user turn yet? Gates the selector (meaningless on turn 1 —
+  // the agent is bound at creation). Loading → false (selector stays disabled until
+  // we know there is a turn). Distinct from `firstTurn` (which is loading-aware for
+  // the SEND decision); here a conservative disable during load is the safe choice.
+  const hasUserTurn = useMemo(
+    () => (messages ?? []).some((mm) => mm.role === "user"),
+    [messages],
+  );
+
+  // onNew / queueSend run from memoized closures; read the live routing inputs via
+  // refs so a selection change never has to rebuild the runtime adapter.
+  const routingRef = useRef<{
+    selected: AgentRef | null;
+    primary: AgentRef | null;
+    perTurnRouting: boolean;
+    isFirstTurn: boolean;
+    canRoute: boolean;
+  }>({
+    selected: null,
+    primary: null,
+    perTurnRouting: false,
+    isFirstTurn: false,
+    canRoute: false,
+  });
+  routingRef.current = {
+    selected: effectiveSelected,
+    primary,
+    perTurnRouting,
+    isFirstTurn: firstTurn,
+    canRoute,
+  };
+  // The routedAgent (if any) to send for a turn — the single-agent-path rule.
+  const computeRoutedAgent = useCallback((): AgentRef | undefined => {
+    const r = routingRef.current;
+    return resolveRoutedAgentToSend({
+      selected: r.selected,
+      primary: r.primary,
+      perTurnRouting: r.perTurnRouting,
+      isFirstTurn: r.isFirstTurn,
+      canRoute: r.canRoute,
+    });
+  }, []);
 
   // Overlay the live streaming text onto its message (keyed by messageId — robust
   // to >1 in-flight stream, e.g. a mid-turn queue). Only while the message is
@@ -286,6 +483,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           mimeType: a.mimeType,
         }));
 
+        // MULTI-AGENT: the agent this turn is routed to, per the single-agent-path
+        // rule (undefined keeps the unchanged single-agent path — never sent on a
+        // normal chat / the very first turn). Authorized + stamped server-side.
+        const routedAgent = computeRoutedAgent();
+
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send
         // gate all engage without waiting on the round-trip. Cleared when the
@@ -302,6 +504,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             text,
             clientMessageId: crypto.randomUUID(),
             attachments,
+            ...(routedAgent ? { routedAgent } : {}),
           });
         } catch (e) {
           // The mutation rejected BEFORE the server accepted the turn (validation,
@@ -318,7 +521,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         attachments: attachmentAdapter,
       },
     };
-  }, [list, isRunning, chatId, sendMessage, attachmentAdapter]);
+  }, [list, isRunning, chatId, sendMessage, attachmentAdapter, computeRoutedAgent]);
 
   // Stable identity: the gate is consumed through context by every message row.
   const turnGate = useMemo<TurnGate>(
@@ -340,11 +543,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     async (text: string): Promise<boolean> => {
       const trimmed = text.trim();
       if (!chatId || trimmed === "") return false;
+      // MULTI-AGENT: a queued follow-up routes by the SAME rule (the chat already
+      // has a turn in flight, so it is never the first turn).
+      const routedAgent = computeRoutedAgent();
       try {
         await sendMessage({
           chatId: chatId as Id<"chats">,
           text,
           clientMessageId: crypto.randomUUID(),
+          ...(routedAgent ? { routedAgent } : {}),
         });
         return true;
       } catch (e) {
@@ -356,8 +563,47 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         return false;
       }
     },
-    [chatId, sendMessage, toast],
+    [chatId, sendMessage, toast, computeRoutedAgent],
   );
 
-  return { runtime: useExternalStoreRuntime(adapter), turnGate, queueSend };
+  // The per-turn router surface the chat UI consumes (composer selector + the
+  // per-message attribution chip). `messageAgents`/`fallbackAgent` resolve WHO
+  // answered each message; `selected`/`setSelected` drive the composer pick.
+  const routing = useMemo(
+    () => ({
+      // The user's entitled pool (selector list + chip display names).
+      pool,
+      multiAgent,
+      perTurnRouting,
+      hasUserTurn,
+      primary,
+      selected: effectiveSelected,
+      setSelected: setSelectedAgent,
+      messageAgents,
+      // The in-flight assistant PLACEHOLDER has a synthetic id absent from
+      // messageAgents — fall back to the just-routed agent so it does not flash
+      // the wrong identity before the real message lands.
+      fallbackAgent: defaultAgent,
+    }),
+    [
+      pool,
+      multiAgent,
+      perTurnRouting,
+      hasUserTurn,
+      primary,
+      effectiveSelected,
+      messageAgents,
+      defaultAgent,
+    ],
+  );
+
+  return {
+    runtime: useExternalStoreRuntime(adapter),
+    turnGate,
+    queueSend,
+    routing,
+  };
 }
+
+/** The per-turn router surface returned by useConvexChatRuntime (see `routing`). */
+export type ChatRouting = ReturnType<typeof useConvexChatRuntime>["routing"];

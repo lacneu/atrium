@@ -702,6 +702,20 @@ export default defineSchema({
     // agent at dispatch (docs/MULTI_AGENT_REDESIGN.md §3.3).
     instanceName: v.optional(v.string()), // -> instances.name
     agentId: v.optional(v.string()), // -> agents.agentId (on instanceName)
+    // MULTI-AGENT per-turn router (additive). A chat starts SINGLE-agent (the binding
+    // above). It flips to `perTurnRouting` the first time a turn is routed to an agent
+    // other than the primary; thereafter every turn carries an explicit agent. To keep
+    // the locked "the called agent sees the FULL thread" guarantee without re-shipping
+    // history every turn, the gateway session is re-keyed ONLY on an agent SWITCH
+    // (epoch-on-switch): `routingSegment` (= `turn:<turnId>`) is the openclawChatId the
+    // bridge keys on; it changes on a switch (so the fresh-session gate rehydrates the
+    // newly-routed agent) and stays stable within a same-agent run (warm, no re-ship).
+    // `lastRouted*` is the previous turn's agent, used to detect the switch. Distinct
+    // from getChatAgent's `multiAgent` (= "the USER has >1 agent available").
+    perTurnRouting: v.optional(v.boolean()),
+    lastRoutedInstanceName: v.optional(v.string()),
+    lastRoutedAgentId: v.optional(v.string()),
+    routingSegment: v.optional(v.string()),
     // L2 ("Joindre les documents"): a HIDDEN, per-user chat that hosts the
     // DOCUMENTARY fetch turns. It routes to a documentary agent in its OWN gateway
     // session (distinct chatId) so the conversational chats are never re-keyed.
@@ -789,6 +803,14 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()), // OpenClaw runId for assistant turns
+    // MULTI-AGENT per-turn routing: which agent THIS turn was routed to — the user
+    // message the user addressed to a specialist, and the assistant reply that answered
+    // it. One visible thread can route different turns to different agents; these record
+    // the per-turn agent so the thread attributes each reply and the composer can default
+    // to the last-used agent. ABSENT/undefined = the chat's primary agent (chat.agentId) —
+    // backward-compatible with every existing single-agent message.
+    routedInstanceName: v.optional(v.string()),
+    routedAgentId: v.optional(v.string()),
     // LOGICAL turn-order key (see lib/messageOrder). Set ONLY on a mid-turn QUEUE
     // follow-up: a SENTINEL while parked (sorts last), re-stamped to the real dispatch
     // time on drain. Unset for idle sends + assistant messages (their _creationTime IS
@@ -1096,6 +1118,13 @@ export default defineSchema({
           mimeType: v.string(),
         }),
       ),
+    ),
+    // MULTI-AGENT per-turn router: the agent the user addressed THIS turn to (absent =
+    // the chat's primary, the unchanged single-agent path). Carried from sendMessage so
+    // the dispatch routes the turn + epochs the session on a switch. Validated at the
+    // dispatch trust boundary (resolveTargetForTurn), not merely in the composer.
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
     status: v.union(
       // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an

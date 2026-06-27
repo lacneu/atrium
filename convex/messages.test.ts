@@ -372,6 +372,62 @@ describe("streamingText row removal on delete / cascade", () => {
     });
   });
 
+  test("deleteMessage regenerate re-routes to the user turn's agent (per-turn chat), not the primary", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, assistantId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 2,
+        instanceName: "prod",
+        agentId: "alice", // chat primary
+        perTurnRouting: true,
+      });
+      // A user turn ROUTED to bob (≠ the primary alice), then its complete reply.
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "q",
+        updatedAt: 1,
+        routedInstanceName: "prod",
+        routedAgentId: "bob",
+      });
+      const assistantId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "a",
+        updatedAt: 2,
+      });
+      return { userId, chatId, assistantId };
+    });
+
+    // Delete the assistant reply → regenerate the bob-routed user turn.
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.messages.deleteMessage, { messageId: assistantId });
+
+    // The regenerate outbox must carry bob (the turn's agent), so the re-dispatch + the
+    // session reset target bob — NOT the chat's primary alice (codex P2).
+    const outbox = await t.run((ctx) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chatId).eq("status", "pending"),
+        )
+        .first(),
+    );
+    expect(outbox?.routedAgent).toEqual({ instanceName: "prod", agentId: "bob" });
+  });
+
   test("deleteChat cascade drops a streaming message's row (no orphan)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, messageId } = await t.run(async (ctx) => {

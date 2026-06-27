@@ -38,6 +38,16 @@ import {
   assistantDisplayName,
   type AssistantIdentity,
 } from "./assistantIdentity";
+import {
+  groupByInstance,
+  filterAgents,
+  type PickableAgent,
+} from "./AgentPicker";
+import {
+  agentRefEquals,
+  findAgentDisplay,
+  type AgentRef,
+} from "./perTurnAgent";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import {
   transcriptToMarkdown,
@@ -63,6 +73,7 @@ import {
   Lock,
   Paperclip,
   Image as ImageIcon,
+  Check,
   X,
 } from "lucide-react";
 import {
@@ -77,10 +88,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
-import { useConvexChatRuntime, type TurnGate } from "./useConvexChatRuntime";
+import {
+  useConvexChatRuntime,
+  type TurnGate,
+  type ChatRouting,
+} from "./useConvexChatRuntime";
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
@@ -155,6 +172,16 @@ const QueueSendContext = createContext<
   ((text: string) => Promise<boolean>) | null
 >(null);
 
+// MULTI-AGENT per-turn router context: the routing surface from the runtime hook
+// (the entitled agent pool + selection + per-message attribution). Null when no
+// chat is mounted. Consumed by the composer's agent selector and the per-message
+// attribution chip.
+type ChatRoutingValue = ChatRouting;
+const ChatRoutingContext = createContext<ChatRoutingValue | null>(null);
+function useChatRouting(): ChatRoutingValue | null {
+  return useContext(ChatRoutingContext);
+}
+
 // The active charte's avatar tile, shared by the assistant message header AND the
 // new-chat welcome (both under AssistantIdentityContext) so the two can't drift:
 // uploaded logo (whole, contain) -> Atrium mark (default) -> initials (custom, no
@@ -186,7 +213,9 @@ function BrandAvatar({ className }: { className: string }) {
 }
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
-  const { runtime, turnGate, queueSend } = useConvexChatRuntime({ chatId });
+  const { runtime, turnGate, queueSend, routing } = useConvexChatRuntime({
+    chatId,
+  });
   // (The delivery-latency recorder now runs INSIDE useConvexChatRuntime, where it can see
   // the active transport + the SSE samples to close segment C on the displayed leg — Phase 5.)
   // Resolved UI preferences (reactive): the single source for which interface
@@ -288,6 +317,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
+      <ChatRoutingContext.Provider value={routing}>
       <UiPrefsContext.Provider value={ui}>
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
@@ -346,6 +376,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>
       </UiPrefsContext.Provider>
+      </ChatRoutingContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
     </AssistantRuntimeProvider>
@@ -638,20 +669,16 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const meta = useQuery(api.messages.getSessionMeta, {
     chatId: chatId as Id<"chats">,
   });
-  // Which agent this conversation is bound to — surfaced ONLY when the user has
-  // more than one agent (server-decided `multiAgent`), so a single-agent user
-  // never sees disambiguation they don't need. Read-only: the binding is
-  // write-once after the first dispatch (swapping forks the gateway session).
-  const agentInfo = useQuery(api.agents.getChatAgent, {
-    chatId: chatId as Id<"chats">,
-  });
   const sm = (meta?.sessionMeta ?? null) as SessionMetaView | null;
   const settings = (meta?.sessionSettings ?? null) as SessionSettingsView;
-  const agent = agentInfo?.multiAgent ? agentInfo.agent : null;
+  // The agent identity is NO LONGER a header chip: the composer's per-turn agent
+  // selector now carries (and disambiguates) the agent + instance, so a header chip
+  // would be redundant. The header keeps the technical chips (model / thinking /
+  // context meter) + title + actions.
   // "Outils" = the technical/analysis layer. When OFF (clean view) the header
   // also sheds its TECHNICAL chips (model, reasoning, token meter) so the eye is
-  // not pulled toward non-vital diagnostics — only IDENTITY (title, agent) and
-  // ACTIONS (export, advanced) remain. model/reasoning stay reachable in Advanced.
+  // not pulled toward non-vital diagnostics — only IDENTITY (title) and ACTIONS
+  // (export, advanced) remain. model/reasoning stay reachable in Advanced.
   const ui = useUiPrefs();
   // "All session settings" Sheet, opened from the popover's footer.
   const [panelOpen, setPanelOpen] = useState(false);
@@ -682,43 +709,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   // non-focusable stand-ins (so the measurer mounts no second popover).
   const renderMeta = (isCompact: boolean, ghost: boolean) => (
     <>
-      {agent ? (
-        <span
-          className={`oc-chip oc-chip--agent${agent.state !== "ok" ? " is-warn" : ""}`}
-          title={
-            m.chat_agent_of_conversation({
-              name: agent.displayName ?? agent.agentId,
-            }) +
-            (agent.inheritedDefault ? m.chat_agent_default_suffix() : "") +
-            (agent.state === "deleted"
-              ? m.chat_agent_deleted_suffix()
-              : agent.state === "stale"
-                ? m.chat_agent_stale_suffix()
-                : "")
-          }
-        >
-          {agent.emoji ? (
-            <span className="oc-chip__emoji" aria-hidden>
-              {agent.emoji}
-            </span>
-          ) : (
-            <Bot size={13} aria-hidden />
-          )}
-          <span className="oc-chip__label">{agent.displayName ?? agent.agentId}</span>
-          {/* When the user's agents span MORE THAN ONE instance, name the bound
-              agent's instance so the same display name on two gateways is not
-              ambiguous. Part of the analysis layer: hidden when "Outils" is OFF. */}
-          {ui.showTools && agentInfo?.multiInstance ? (
-            <span
-              className="oc-chip__instance"
-              title={m.chat_agent_instance_title({ instance: agent.instanceName })}
-            >
-              <Server size={11} aria-hidden />
-              {agent.instanceName}
-            </span>
-          ) : null}
-        </span>
-      ) : null}
       {ui.showTools && !isCompact && sm?.model ? (
         <span
           className="oc-chip oc-chip--info"
@@ -771,14 +761,13 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   );
 
   // Re-measure when anything that changes a measured width changes: the localized
-  // labels, the model/reasoning/agent/instance/title strings, the tools toggle.
+  // labels, the model/reasoning/title strings, the tools toggle. (The agent chip
+  // moved to the composer selector, so it no longer factors into the header width.)
   const measureKey = [
     m.chat_export(),
     m.chat_advanced(),
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
-    agent?.displayName ?? agent?.agentId ?? "",
-    agentInfo?.multiInstance ? (agent?.instanceName ?? "") : "",
     meta?.title ?? "",
     ui.showTools ? "1" : "0",
   ].join("|");
@@ -1331,6 +1320,35 @@ function UserMessage() {
   );
 }
 
+// MULTI-AGENT: the per-message attribution chip — emoji + name of the agent that
+// answered THIS turn. Reuses the header's `.oc-chip--agent` styling so the two
+// read identically. Rendered only in a perTurnRouting chat (see AssistantMessage).
+function MessageAgentChip({
+  pool,
+  agent,
+}: {
+  pool: PickableAgent[];
+  agent: AgentRef;
+}) {
+  const display = findAgentDisplay(pool, agent);
+  const name = display?.displayName ?? agent.agentId;
+  return (
+    <span
+      className="oc-chip oc-chip--agent oc-msg__agent"
+      title={m.chat_agent_answered({ name })}
+    >
+      {display?.emoji ? (
+        <span className="oc-chip__emoji" aria-hidden>
+          {display.emoji}
+        </span>
+      ) : (
+        <Bot size={13} aria-hidden />
+      )}
+      <span className="oc-chip__label">{name}</span>
+    </span>
+  );
+}
+
 // Assistant turn: NO background bubble — content sits on the page background and
 // fills the readable column (Open WebUI style). An avatar + name header carries
 // the identity; RunStatus shows the live status (and hides itself when done).
@@ -1342,6 +1360,35 @@ function AssistantMessage() {
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // MULTI-AGENT: in a perTurnRouting chat each reply names the agent that answered
+  // it (per-message, inheriting the user turn's agent — see perTurnAgent.ts). A
+  // single-agent chat keeps the identity name EXACTLY as before.
+  //   - Message IN the map, resolved → that agent.
+  //   - Message IN the map, null (an unrouted turn, e.g. pre-flip history) → the
+  //     chat's PRIMARY (it answered in the single-agent era).
+  //   - Message ABSENT (the synthetic in-flight placeholder) → the just-routed
+  //     agent, so it does not flash the wrong identity before the real one lands.
+  const routing = useChatRouting();
+  const perMsgAgent =
+    routing && routing.perTurnRouting
+      ? routing.messageAgents.has(messageId)
+        ? (routing.messageAgents.get(messageId) ?? routing.primary)
+        : routing.fallbackAgent
+      : null;
+  // Per-message identity override for RunStatus: the "…{name} is processing…"
+  // long-wait reassurance must name the agent THIS turn is routed to, not the
+  // chat primary. Scoped to RunStatus only — the avatar stays brand-uniform. Falls
+  // back to the chat identity (same object) on a single-agent chat → no change.
+  const pool = routing?.pool;
+  const messageIdentity = useMemo<AssistantIdentity>(() => {
+    if (!perMsgAgent) return identity;
+    const d = findAgentDisplay(pool ?? [], perMsgAgent);
+    return {
+      ...identity,
+      agentName: d?.displayName ?? perMsgAgent.agentId,
+      agentEmoji: d?.emoji ?? null,
+    };
+  }, [perMsgAgent, identity, pool]);
   return (
     <MessagePrimitive.Root
       className="oc-msg oc-msg--assistant"
@@ -1350,12 +1397,18 @@ function AssistantMessage() {
       <BrandAvatar className="oc-msg__avatar" />
       <div className="oc-msg__col">
         <div className="oc-msg__name">
-          {identity.agentEmoji ? (
-            <span className="oc-msg__name-emoji" aria-hidden>
-              {identity.agentEmoji}
-            </span>
-          ) : null}
-          {assistantDisplayName(identity)}
+          {perMsgAgent ? (
+            <MessageAgentChip pool={routing!.pool} agent={perMsgAgent} />
+          ) : (
+            <>
+              {identity.agentEmoji ? (
+                <span className="oc-msg__name-emoji" aria-hidden>
+                  {identity.agentEmoji}
+                </span>
+              ) : null}
+              {assistantDisplayName(identity)}
+            </>
+          )}
         </div>
         <div className="oc-msg__body">
           {/* "Outils" ON = the ANALYSIS view: the grouped tool activity (summary +
@@ -1379,7 +1432,12 @@ function AssistantMessage() {
           ) : (
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
-          <RunStatus />
+          {/* RunStatus reads the assistant identity for its long-wait label; scope
+              it to the per-message routed agent so the reassurance names the right
+              one (the override equals the chat identity on a single-agent chat). */}
+          <AssistantIdentityContext.Provider value={messageIdentity}>
+            <RunStatus />
+          </AssistantIdentityContext.Provider>
         </div>
         {/* Per-message actions, hidden while a turn runs + revealed on hover for
             non-last turns (always shown on the last). Copy + Delete. Deleting an
@@ -1541,6 +1599,147 @@ function QueueSendButton() {
   );
 }
 
+// MULTI-AGENT: inline per-turn agent selector for the composer action bar. Lets a
+// user with more than one agent route the NEXT turn to a chosen specialist within
+// the SAME conversation (the reply is then attributed to it). Reuses AgentPicker's
+// pure helpers (groupByInstance / filterAgents) + the `.oc-agentpicker` list
+// styling. Hidden for a single-agent user (nothing to choose). Disabled until the
+// chat has a first turn: the agent is bound at creation, so turn 1 is never
+// re-routable — matching the single-agent-path rule (never route the first turn).
+function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean }) {
+  const routing = useChatRouting();
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const pool = routing?.pool ?? [];
+  const groups = useMemo(() => groupByInstance(filterAgents(pool, q)), [pool, q]);
+  // Does the entitled pool span MORE THAN ONE instance? When it does the agent name
+  // alone can be ambiguous (the same display name can live on two gateways), so the
+  // trigger also names the selected agent's instance (mirrors the old header chip).
+  const multiInstance = useMemo(
+    () => new Set(pool.map((a) => a.instanceName)).size > 1,
+    [pool],
+  );
+  if (!routing || !routing.multiAgent) return null;
+  const { selected, setSelected, hasUserTurn } = routing;
+  // Disabled until the chat has a first turn (the agent is bound at creation), or
+  // when the composer is unavailable (bridge down / read-only — nothing to send).
+  const disabled = !hasUserTurn || unavailable;
+  const display = findAgentDisplay(pool, selected);
+  const currentName =
+    display?.displayName ?? selected?.agentId ?? m.chat_agent_select_label();
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        if (!disabled) setOpen(o);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="oc-composer__agent"
+          disabled={disabled}
+          title={
+            hasUserTurn
+              ? m.chat_agent_select_title()
+              : m.chat_agent_select_firstturn_hint()
+          }
+          aria-label={m.chat_agent_select_aria()}
+        >
+          {display?.emoji ? (
+            <span className="oc-composer__agent-emoji" aria-hidden>
+              {display.emoji}
+            </span>
+          ) : (
+            <Bot size={15} aria-hidden />
+          )}
+          <span className="oc-composer__agent-name">{currentName}</span>
+          {multiInstance && selected ? (
+            <span
+              className="oc-composer__agent-instance"
+              title={m.chat_agent_instance_title({
+                instance: selected.instanceName,
+              })}
+            >
+              <Server size={11} aria-hidden />
+              {selected.instanceName}
+            </span>
+          ) : null}
+          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="oc-composer__agent-pop p-0">
+        <Input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={m.agentpicker_search_placeholder()}
+          aria-label={m.agentpicker_search_aria_label()}
+          className="oc-agentpicker__search"
+        />
+        <div className="oc-agentpicker__list" role="listbox">
+          {groups.map((g) => (
+            <div key={g.instanceName} className="oc-agentpicker__group">
+              <div className="oc-agentpicker__instance">
+                <Server size={13} aria-hidden />
+                <span>{g.instanceName}</span>
+                <Badge variant="outline" className="oc-agentpicker__kind">
+                  {g.kind}
+                </Badge>
+              </div>
+              {g.agents.map((a) => {
+                const isSel = agentRefEquals(selected, {
+                  instanceName: a.instanceName,
+                  agentId: a.agentId,
+                });
+                return (
+                  <button
+                    key={`${a.instanceName}/${a.agentId}`}
+                    type="button"
+                    role="option"
+                    aria-selected={isSel}
+                    className={`oc-agentpicker__item${isSel ? " is-selected" : ""}`}
+                    disabled={a.state === "deleted"}
+                    title={
+                      a.state === "deleted"
+                        ? m.agentpicker_agent_deleted_title()
+                        : undefined
+                    }
+                    onClick={() => {
+                      setSelected({
+                        instanceName: a.instanceName,
+                        agentId: a.agentId,
+                      });
+                      setOpen(false);
+                      setQ("");
+                    }}
+                  >
+                    <Bot size={15} aria-hidden className="oc-agentpicker__icon" />
+                    <span className="oc-agentpicker__label">
+                      {a.emoji ? `${a.emoji} ` : ""}
+                      {a.displayName ?? a.agentId}
+                    </span>
+                    {a.model ? (
+                      <span className="oc-agentpicker__model">{a.model}</span>
+                    ) : null}
+                    {isSel ? (
+                      <Check
+                        size={14}
+                        aria-hidden
+                        className="oc-agentpicker__default"
+                      />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function Composer({
   showTools,
   onToggleTools,
@@ -1636,6 +1835,9 @@ function Composer({
             <SlidersHorizontal size={15} aria-hidden />
             {m.chat_tools()}
           </button>
+          {/* MULTI-AGENT: per-turn agent selector (self-hides for a single-agent
+              user; disabled until the chat has a first turn, or when unavailable). */}
+          <ComposerAgentSelect unavailable={unavailable} />
         </div>
         <div className="oc-composer__group">
           {voiceInput ? (

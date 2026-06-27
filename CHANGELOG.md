@@ -8,6 +8,28 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.13.0] — Route one conversation to multiple specialized agents, turn by turn
+
+Feature release. No breaking changes; a few optional schema fields are added and the
+single-agent experience is unchanged.
+
+- **A single conversation can now address different specialized agents, turn by turn.** A new
+  agent selector in the composer lets you send each message to the agent best suited for it —
+  switch to a specialist, get its answer, come back to your generalist — all in one thread,
+  with the shared context carried across. Each assistant reply is labelled with the agent that
+  produced it. The selector also shows the instance name when you have agents on more than one
+  gateway, and the now-redundant agent chip was removed from the chat header (the selector
+  carries that information).
+- **The called agent always sees the full conversation.** Switching agents re-grounds the
+  newly-addressed agent with the whole thread so it has the context — but only on a switch,
+  not on every message, so a long multi-agent conversation never re-sends its entire history
+  each turn (which would bloat the model's context).
+- **Single-agent chats are untouched.** A chat that only ever uses one agent behaves exactly
+  as before — no selector, no per-message label, no routing change — and a user with a single
+  agent never sees the selector. Routing to an agent you are not entitled to is refused at the
+  server trust boundary (the turn fails rather than silently switching). *Deploy: `npx convex
+  deploy` + rebuild the frontend image.*
+
 ## [0.12.0] — Delivery recordings: first-class list + evolution KPI
 
 The delivery-latency recorder's session list (Réglages ▸ Observabilité ▸ Traces ▸ Latence de
@@ -18,9 +40,9 @@ with a trend KPI across recordings. No change to what is recorded (content-free 
   Début / Fin / Échantillons / Démarré par / Statut, all sortable. Above it: a status filter
   (tous / actif / terminé), a "démarré par" search, and a date-range filter that defaults to
   "All time" (so opening it never hides older recordings) with a reset.
-- **Per-row context menu + bulk delete.** Each row has a "Voir le détail" action that expands
-  its skew-corrected per-segment report (bridge / A / C) inline, and a "Supprimer" action;
-  multiple recordings can be selected and deleted together. A bulk delete only ever removes
+- **Inline detail toggle + delete.** A leading eye column toggles each row's skew-corrected
+  per-segment report (bridge / A / C) inline. A per-row menu deletes a recording (admins), and
+  multiple recordings can be selected and deleted together — a bulk delete only ever removes
   rows still visible under the current filters.
 - **Per-recording sample count + segment-p50 rollup.** Each recording now carries its total
   delta count (the "Échantillons" column) and a segment-p50 summary, computed once shortly

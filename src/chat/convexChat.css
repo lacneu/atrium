@@ -2205,6 +2205,85 @@
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
+/* MULTI-AGENT: per-turn agent selector trigger. Pill sibling of the Outils toggle
+   (same height/shape), carrying the routed agent's emoji + name + a chevron. The
+   name truncates so a long agent name never blows out the action bar. */
+.oc-composer__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2rem;
+  /* Roomy enough for "Agent · instance" when multi-instance; the name ellipsizes
+     first (the emoji/instance/chevron are flex: 0 0 auto). */
+  max-width: 18rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.oc-composer__agent:hover:not(:disabled) {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.oc-composer__agent:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oc-composer__agent:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.oc-composer__agent-emoji {
+  font-size: 0.95rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.oc-composer__agent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Instance sub-tag on the selector trigger — shown only when the user's agents span
+   more than one instance (disambiguates the same name on two gateways). Muted +
+   hairline-separated, mirroring the old header chip's .oc-chip__instance. */
+.oc-composer__agent-instance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex: 0 0 auto;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 0.35rem;
+  border-left: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+/* Selector popover: the search + grouped list reuse the .oc-agentpicker styling. */
+.oc-composer__agent-pop {
+  width: min(22rem, calc(100vw - 2rem));
+  padding: 0.5rem;
+}
+/* Currently-selected agent row in the selector list (mirrors the picker item but
+   marked active so the current choice is obvious). */
+.oc-agentpicker__item.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 10%, var(--card));
+}
+/* MULTI-AGENT: per-message attribution chip in the assistant name row — reuses
+   .oc-chip--agent; just align it on the avatar's optical midline like the name. */
+.oc-msg__agent {
+  align-self: center;
+}
 /* Circular send / stop. */
 .oc-composer__send,
 .oc-composer__stop {

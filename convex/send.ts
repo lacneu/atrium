@@ -50,6 +50,13 @@ export const sendMessage = mutation({
         }),
       ),
     ),
+    // MULTI-AGENT per-turn router: the agent the user addressed THIS turn to. Absent =
+    // the chat's primary agent (the unchanged single-agent path). The composer sends it
+    // only for a deliberate per-turn agent choice; the dispatch authorizes it at the
+    // trust boundary (resolveTargetForTurn) and stamps it for per-message attribution.
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
   },
   handler: async (ctx, args) => {
     const { userId, actor } = await requireActive(ctx);
@@ -122,6 +129,14 @@ export const sendMessage = mutation({
       text: args.text,
       updatedAt: now,
       ...(busy ? { orderTime: QUEUED_ORDER_SENTINEL } : {}),
+      // Per-turn routing: record which agent this user turn is addressed to (drives the
+      // per-message agent chip + the composer's "last-used agent" default).
+      ...(args.routedAgent
+        ? {
+            routedInstanceName: args.routedAgent.instanceName,
+            routedAgentId: args.routedAgent.agentId,
+          }
+        : {}),
     });
 
     // Attach uploaded files as ordered parts on the user message so they render
@@ -170,6 +185,8 @@ export const sendMessage = mutation({
       // Busy chat → park as `queued` (the drainer dispatches it later); idle chat
       // → `pending` and dispatch now.
       status: busy ? "queued" : "pending",
+      // Per-turn routing target, read back by the dispatch.
+      ...(args.routedAgent ? { routedAgent: args.routedAgent } : {}),
     });
 
     // 6. Schedule the dispatch ONLY for an idle chat. A queued row is dispatched

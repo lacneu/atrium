@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { APP_HOST } from "@/lib/appHost";
 import { api } from "../convexApi";
 import {
@@ -226,6 +226,34 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
         emptyHint={m.delivery_no_sessions()}
         columns={[
           {
+            // Leading toggle column: an eye that expands/collapses the row's detail report
+            // inline (replaces the context-menu "view detail" entry). No header / no sort.
+            header: "",
+            className: "w-8",
+            cell: (r) => (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={
+                  expandedId === r.sessionId
+                    ? m.delivery_action_hide_detail()
+                    : m.delivery_action_detail()
+                }
+                onClick={() =>
+                  setExpandedId((id) =>
+                    id === r.sessionId ? null : r.sessionId,
+                  )
+                }
+              >
+                {expandedId === r.sessionId ? (
+                  <EyeOff size={15} aria-hidden />
+                ) : (
+                  <Eye size={15} aria-hidden />
+                )}
+              </Button>
+            ),
+          },
+          {
             header: m.delivery_col_start(),
             sort: (r) => r.startedAt,
             cell: (r) => (
@@ -271,25 +299,18 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
               ),
           },
         ]}
-        rowActions={(r) => [
-          {
-            label:
-              expandedId === r.sessionId
-                ? m.delivery_action_hide_detail()
-                : m.delivery_action_detail(),
-            onSelect: () =>
-              setExpandedId((id) => (id === r.sessionId ? null : r.sessionId)),
-          },
-          ...(isAdmin
-            ? [
+        // Detail moved to the leading eye column; the context menu now only deletes (admins).
+        rowActions={
+          isAdmin
+            ? (r) => [
                 {
                   label: m.delivery_action_delete(),
                   variant: "destructive" as const,
                   onSelect: () => del([r.sessionId]),
                 },
               ]
-            : []),
-        ]}
+            : undefined
+        }
         bulkActions={
           isAdmin
             ? [
