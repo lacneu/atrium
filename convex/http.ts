@@ -1583,7 +1583,12 @@ http.route({
     // First poll up-front: validates auth + chat ownership (streamPoll throws on a
     // missing/forbidden message) BEFORE we commit to a 200 streaming response.
     let poll: {
-      chunks: { seq: number; kind: "append" | "replace"; text: string }[];
+      chunks: {
+        seq: number;
+        kind: "append" | "replace";
+        text: string;
+        recTimingId?: string;
+      }[];
       status: string;
       finalText?: string;
     };
@@ -1608,10 +1613,14 @@ http.route({
         const emit = (p: typeof poll) => {
           if (cancelled) return;
           for (const c of p.chunks) {
+            // recTimingId rides the chunk ONLY during a recording (Phase 5: the client
+            // stamps t4 at this receipt to close segment C on the SSE leg).
+            const data =
+              c.recTimingId !== undefined
+                ? { kind: c.kind, text: c.text, recTimingId: c.recTimingId }
+                : { kind: c.kind, text: c.text };
             controller.enqueue(
-              enc.encode(
-                `id: ${c.seq}\ndata: ${JSON.stringify({ kind: c.kind, text: c.text })}\n\n`,
-              ),
+              enc.encode(`id: ${c.seq}\ndata: ${JSON.stringify(data)}\n\n`),
             );
             cursor = c.seq;
           }

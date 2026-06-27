@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.11.1] — Delivery recorder: segment C follows the displayed transport
+
+A diagnostic refinement of the delivery-latency recorder for the SSE transport added in 0.11.0.
+No user-facing behavior change (the recorder is opt-in, off by default).
+
+- **Segment C measures the path the user saw first.** It now closes at `min(reactive receipt,
+  SSE receipt)` per delta — the first appearance across the two coexisting legs: the reactive leg
+  on short streams, the SSE leg on long ones (where the reactive full-text re-push lags and SSE
+  wins the display). It never loses a sample if a leg replays/fails, and a reload's SSE replay
+  (chunks below the displayed frontier) is excluded so it can't overwrite earlier measurements.
+  The recorder correlator rides the SSE chunk ONLY during an active recording (zero cost
+  otherwise). Segment C remains a skew-corrected APPROXIMATION — the SSE leg's t4 is stamped at
+  parse, so under main-thread load it can read up to one render cycle early; within the
+  recorder's existing noise floor, not a precise paint timestamp.
+- *Deploy: `npx convex deploy` (schema `streamChunks.recTimingId` + functions) and REBUILD the
+  frontend image. The bridge and MCP have NO code change — rebuild only for lockstep
+  `/api/v1/version` consistency (0.11.1).*
+
 ## [0.11.0] — Live-stream transport: opt-in SSE / streamable-HTTP per gateway-instance
 
 A second live-stream transport for assistant replies, selectable per gateway-instance. The

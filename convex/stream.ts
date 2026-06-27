@@ -225,18 +225,13 @@ export const appendDelta = internalMutation({
       chunkKind = firstWithPrefix ? "replace" : "append";
       chunkText = firstWithPrefix ? full : text;
     }
-    // SSE transport (Phase 1): one chunk per stream write (unconditional, independent of
-    // the recorder). See streamChunks schema.
-    await ctx.db.insert("streamChunks", {
-      messageId,
-      chatId,
-      seq,
-      kind: chunkKind,
-      text: chunkText,
-    });
+    // Recorder: mint the correlator FIRST (when recording) so the SSE chunk below can carry
+    // it — the SSE leg then closes segment C at the displayed receipt (Phase 5). Still
+    // stamps streamingText.recTimingId for the reactive leg, as before.
+    let chunkRecTimingId: string | undefined;
     if (rec !== null && recSessionId === rec.sessionId) {
       // Session match: this delta belongs to the CURRENTLY active recording.
-      await recordDelta(ctx, {
+      chunkRecTimingId = await recordDelta(ctx, {
         sessionId: rec.sessionId,
         streamRowId,
         chatId,
@@ -257,6 +252,18 @@ export const appendDelta = internalMutation({
         recCommittedAt: undefined,
       });
     }
+    // SSE transport (Phase 1): one chunk per stream write. Carries recTimingId ONLY during
+    // an active recording (Phase 5: closes segment C on the SSE leg).
+    await ctx.db.insert("streamChunks", {
+      messageId,
+      chatId,
+      seq,
+      kind: chunkKind,
+      text: chunkText,
+      ...(chunkRecTimingId !== undefined
+        ? { recTimingId: chunkRecTimingId }
+        : {}),
+    });
   },
 });
 
@@ -295,18 +302,12 @@ export const setSnapshot = internalMutation({
       streamRowId = row._id;
       chatId = row.chatId;
     }
-    // SSE transport (Phase 1): a snapshot is a "replace" chunk (the consumer resets its
-    // accumulated text to it). Unconditional, independent of the recorder.
-    await ctx.db.insert("streamChunks", {
-      messageId,
-      chatId,
-      seq,
-      kind: "replace",
-      text,
-    });
+    // Recorder: mint the correlator FIRST (when recording) so the snapshot chunk can carry
+    // it — the SSE leg closes segment C at the displayed receipt (Phase 5).
+    let chunkRecTimingId: string | undefined;
     if (rec !== null && recSessionId === rec.sessionId) {
       // Session match: this delta belongs to the CURRENTLY active recording.
-      await recordDelta(ctx, {
+      chunkRecTimingId = await recordDelta(ctx, {
         sessionId: rec.sessionId,
         streamRowId,
         chatId,
@@ -327,6 +328,18 @@ export const setSnapshot = internalMutation({
         recCommittedAt: undefined,
       });
     }
+    // SSE transport (Phase 1): a snapshot is a "replace" chunk (the consumer resets its
+    // accumulated text to it). Carries recTimingId ONLY during an active recording (Phase 5).
+    await ctx.db.insert("streamChunks", {
+      messageId,
+      chatId,
+      seq,
+      kind: "replace",
+      text,
+      ...(chunkRecTimingId !== undefined
+        ? { recTimingId: chunkRecTimingId }
+        : {}),
+    });
   },
 });
 
@@ -431,7 +444,14 @@ export const streamPoll = internalQuery({
       .take(POLL_CHUNK_CAP);
     const terminal = message.status !== "streaming";
     return {
-      chunks: rows.map((r) => ({ seq: r.seq, kind: r.kind, text: r.text })),
+      chunks: rows.map((r) => ({
+        seq: r.seq,
+        kind: r.kind,
+        text: r.text,
+        // recTimingId present only on a chunk written during a recording (Phase 5: the SSE
+        // leg closes segment C). OMIT when absent (Convex rejects an undefined property).
+        ...(r.recTimingId !== undefined ? { recTimingId: r.recTimingId } : {}),
+      })),
       status: message.status,
       // OMIT finalText (not `undefined`) while streaming: Convex rejects an `undefined`
       // property in a returned object, which would fail the query for the MAIN active-

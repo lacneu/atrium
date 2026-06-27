@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   parseSseBuffer,
   applySseEvent,
+  chunkTimingId,
   EMPTY_SSE_ACCUM,
   type SseEvent,
 } from "./sseStream";
@@ -46,6 +47,27 @@ describe("parseSseBuffer", () => {
     const { events } = parseSseBuffer('id: 1\r\ndata: {"text":"x"}\r\n\r\n');
     expect(events).toHaveLength(1);
     expect(events[0]!.id).toBe(1);
+  });
+});
+
+describe("chunkTimingId (recorder correlator off the SSE leg)", () => {
+  const ev = (e: Partial<SseEvent> & { data: string }): SseEvent => ({ ...e });
+
+  test("returns recTimingId when a chunk carries it (recording active)", () => {
+    expect(
+      chunkTimingId(ev({ id: 5, data: '{"kind":"append","text":"x","recTimingId":"t_abc"}' })),
+    ).toBe("t_abc");
+  });
+
+  test("null for a normal (untagged) chunk — no recording, so no sample", () => {
+    expect(chunkTimingId(ev({ id: 5, data: '{"kind":"append","text":"x"}' }))).toBeNull();
+  });
+
+  test("null for final / done / empty / malformed events", () => {
+    expect(chunkTimingId(ev({ event: "final", data: '{"text":"f","recTimingId":"t"}' }))).toBeNull();
+    expect(chunkTimingId(ev({ event: "done", data: "{}" }))).toBeNull();
+    expect(chunkTimingId(ev({ data: "" }))).toBeNull();
+    expect(chunkTimingId(ev({ id: 1, data: "not json" }))).toBeNull();
   });
 });
 

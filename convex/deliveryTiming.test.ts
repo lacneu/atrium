@@ -72,6 +72,46 @@ describe("delivery-latency recorder", () => {
     expect((view[0] as Record<string, unknown>).recTimingId).toBeUndefined();
   });
 
+  test("SSE leg: the stream chunk carries recTimingId during a recording (absent otherwise)", async () => {
+    // Phase 5: the SSE chunk must carry the SAME correlator as the timing row so the SSE
+    // leg can close segment C at the displayed receipt. Untagged (no recording) chunks
+    // carry nothing — the recorder stays inert.
+    const t = convexTest(schema, modules);
+    const admin = await seedUser(t, "admin");
+    const asAdmin = t.withIdentity({ subject: `${admin}|session` });
+    const { messageId } = await seedStreamingMessage(t, admin);
+
+    // Not recording yet -> the chunk has no correlator.
+    await t.mutation(internal.stream.appendDelta, { messageId, text: "x" });
+    // Recording active -> the next delta's chunk carries the minted correlator.
+    const { sessionId } = await asAdmin.mutation(
+      api.deliveryTiming.startDeliveryRecord,
+      {},
+    );
+    await t.mutation(internal.stream.appendDelta, {
+      messageId,
+      text: "y",
+      recSessionId: sessionId,
+      bridgeSentAt: Date.now(),
+      bridgeSkew: 0,
+      sizeBytes: 1,
+    });
+
+    const chunks = await t.run((ctx) =>
+      ctx.db
+        .query("streamChunks")
+        .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+        .collect(),
+    );
+    const timings = await timingRows(t);
+    const untagged = chunks.find((c) => c.text === "x");
+    const tagged = chunks.find((c) => c.text === "y");
+    expect(untagged?.recTimingId).toBeUndefined();
+    // Same id as the minted timing row -> the frontend stamps t4 by it on the SSE leg.
+    expect(timings).toHaveLength(1);
+    expect(tagged?.recTimingId).toBe(timings[0]._id);
+  });
+
   test("active recording: deltas timed, in-band id shipped, report applies the skews", async () => {
     const t = convexTest(schema, modules);
     const admin = await seedUser(t, "admin");

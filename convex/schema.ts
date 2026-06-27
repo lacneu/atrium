@@ -900,6 +900,11 @@ export default defineSchema({
     seq: v.number(),
     kind: v.union(v.literal("append"), v.literal("replace")),
     text: v.string(),
+    // Delivery-latency recorder correlator (the deliveryTimings row id), present ONLY on a
+    // chunk written during an active recording. It lets the SSE leg close segment C at the
+    // ACTUAL displayed receipt (the frontend stamps t4 when this chunk arrives over SSE),
+    // mirroring streamingText.recTimingId for the reactive leg. Absent = no recording.
+    recTimingId: v.optional(v.string()),
   }).index("by_message_seq", ["messageId", "seq"]),
 
   // --- Delivery-latency recorder (convex/deliveryTiming.ts) -------------------

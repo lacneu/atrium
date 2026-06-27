@@ -1,13 +1,53 @@
 import { describe, expect, test } from "vitest";
 import {
   buildFlushBatch,
-  collectNewSamples,
+  mergeMinT4,
   reportToText,
+  rowTimingSamples,
   skewFromPing,
   type ClientSample,
   type DeliveryReport,
   type StreamRow,
 } from "./deliveryRecorder";
+
+describe("mergeMinT4 (segment C = min(reactive, SSE) per delta, Phase 5)", () => {
+  test("keeps the EARLIEST t4 per recTimingId across legs (regardless of merge order)", () => {
+    const pending = new Map<string, number>();
+    mergeMinT4(pending, [{ timingId: "a", t4: 100 }], new Set()); // reactive first
+    mergeMinT4(
+      pending,
+      [
+        { timingId: "a", t4: 80 }, // SSE arrived EARLIER (smaller t4) -> wins
+        { timingId: "b", t4: 50 },
+      ],
+      new Set(),
+    );
+    expect([...pending]).toEqual([
+      ["a", 80],
+      ["b", 50],
+    ]);
+  });
+
+  test("a later (larger-t4) straggler does NOT raise the recorded min", () => {
+    const pending = new Map<string, number>();
+    mergeMinT4(pending, [{ timingId: "a", t4: 50 }], new Set()); // earlier leg
+    mergeMinT4(pending, [{ timingId: "a", t4: 100 }], new Set()); // later leg
+    expect(pending.get("a")).toBe(50);
+  });
+
+  test("skips ids already reported (cross-flush dedup)", () => {
+    const pending = new Map<string, number>();
+    mergeMinT4(
+      pending,
+      [
+        { timingId: "a", t4: 10 },
+        { timingId: "b", t4: 20 },
+      ],
+      new Set(["a"]),
+    );
+    expect([...pending]).toEqual([["b", 20]]);
+  });
+});
 
 describe("skewFromPing", () => {
   test("estimates serverClock - clientClock with the symmetric-RTT midpoint", () => {
@@ -22,33 +62,19 @@ describe("skewFromPing", () => {
   });
 });
 
-describe("collectNewSamples", () => {
+describe("rowTimingSamples (reactive leg)", () => {
   const rows = (...ids: (string | undefined)[]): StreamRow[] =>
     ids.map((recTimingId, i) => ({ messageId: `m${i}`, text: "x", recTimingId }));
 
-  test("stamps t4 + skew only for unseen recTimingIds", () => {
-    const seen = new Set<string>(["a"]);
-    const out = collectNewSamples(rows("a", "b", "c"), seen, 5000, 42);
-    expect(out).toEqual([
-      { timingId: "b", t4: 5000, clientSkew: 42 },
-      { timingId: "c", t4: 5000, clientSkew: 42 },
+  test("one sample per row carrying a recTimingId, stamped at `now`", () => {
+    expect(rowTimingSamples(rows("a", undefined, "c"), 5000)).toEqual([
+      { timingId: "a", t4: 5000 },
+      { timingId: "c", t4: 5000 },
     ]);
   });
 
   test("rows without a recTimingId (not recording) yield nothing", () => {
-    expect(collectNewSamples(rows(undefined, undefined), new Set(), 1, 0)).toEqual(
-      [],
-    );
-  });
-
-  test("an already-seen id is not re-sampled (dedup)", () => {
-    const seen = new Set<string>(["a", "b"]);
-    expect(collectNewSamples(rows("a", "b"), seen, 1, undefined)).toEqual([]);
-  });
-
-  test("skew may be undefined before calibration completes", () => {
-    const out = collectNewSamples(rows("z"), new Set(), 7, undefined);
-    expect(out).toEqual([{ timingId: "z", t4: 7, clientSkew: undefined }]);
+    expect(rowTimingSamples(rows(undefined, undefined), 1)).toEqual([]);
   });
 });
 

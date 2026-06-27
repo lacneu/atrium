@@ -19,6 +19,11 @@ export type ClientSample = {
   clientSkew?: number;
 };
 
+// A timing sample captured off the SSE leg: the recorder stamps t4 at the moment the
+// correlated chunk ARRIVES over SSE (the displayed receipt), vs the reactive leg where t4
+// is the getStreamingText row's receipt. Carries no skew (the recorder back-fills it).
+export type SseTimingSample = { timingId: string; t4: number };
+
 // Report shapes (mirror convex/deliveryTiming.ts getDeliveryReport / listDeliverySessions).
 export type SegStat = {
   count: number;
@@ -101,20 +106,36 @@ export function buildFlushBatch(
     .map((s) => ({ ...s, clientSkew: s.clientSkew ?? skew }));
 }
 
-// Stamp t4 = `now` for each row whose recTimingId hasn't been seen yet. Pure: the
-// caller owns `seen` (mutates it after queuing). One sample per DISTINCT recTimingId
-// observed -> maximizes segment-C coverage given Convex coalesces intermediate states.
-export function collectNewSamples(
+// Timing samples carry (recTimingId, t4) for a delta on ONE transport leg:
+//   - reactive: t4 = the getStreamingText row's receipt.
+//   - sse:      t4 = the chunk's arrival over SSE.
+// Build reactive samples from the streaming rows (one per distinct recTimingId present).
+export function rowTimingSamples(
   rows: readonly StreamRow[],
-  seen: ReadonlySet<string>,
   now: number,
-  skew: number | undefined,
-): ClientSample[] {
-  const out: ClientSample[] = [];
+): SseTimingSample[] {
+  const out: SseTimingSample[] = [];
   for (const r of rows) {
-    if (r.recTimingId !== undefined && !seen.has(r.recTimingId)) {
-      out.push({ timingId: r.recTimingId, t4: now, clientSkew: skew });
-    }
+    if (r.recTimingId !== undefined) out.push({ timingId: r.recTimingId, t4: now });
   }
   return out;
+}
+
+// Merge timing samples from EITHER leg into `into` (recTimingId -> EARLIEST t4 seen),
+// skipping ids already reported. Segment C is the FIRST appearance of a delta across the
+// reactive + SSE legs (min t4): the recorder measures the path the user actually sees first
+// — reactive on short streams, SSE on long ones (where the reactive O(n²) full-text re-push
+// lags and SSE wins the display), and it never loses a sample if one leg replays/fails.
+// Compares by STAMPED t4, NOT arrival order (the SSE leg drains a beat later than the
+// reactive one), so a later-DRAINED but earlier-RECEIVED SSE sample still wins (Codex/advisor).
+export function mergeMinT4(
+  into: Map<string, number>,
+  samples: readonly SseTimingSample[],
+  reported: ReadonlySet<string>,
+): void {
+  for (const s of samples) {
+    if (reported.has(s.timingId)) continue;
+    const prev = into.get(s.timingId);
+    if (prev === undefined || s.t4 < prev) into.set(s.timingId, s.t4);
+  }
 }

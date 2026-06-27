@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -15,6 +15,8 @@ import {
 } from "./attachmentAdapter";
 import { useToast } from "@/components/ui/toast";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
+import { useDeliveryRecorder } from "./useDeliveryRecorder";
+import type { SseTimingSample } from "./deliveryRecorder";
 import { m } from "@/paraglide/messages.js";
 
 // The single source of truth for the chat UI runtime.
@@ -139,7 +141,28 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
   );
   const sseEnabled = streamTransport === "sse" || sseDevOverride();
-  const sse = useSseStreamingText(sseMessageId, sseEnabled);
+  // Delivery recorder (Phase 5): when SSE is the display, the recorder must close segment C
+  // at the SSE receipt, not the parallel reactive one. The SSE hook stamps t4 here as each
+  // correlated chunk arrives; the recorder (below) drains these when SSE is active.
+  const sseSamplesRef = useRef<SseTimingSample[]>([]);
+  // Sample the SSE leg for the recorder ONLY for chunks at/past the reactive frontier — i.e.
+  // chunks the SSE actually DISPLAYS (caught up), not the initial replay after a reload (seq <
+  // frontier), whose already-displayed chunks would inject inflated, late samples that
+  // overwrite the originals. Gating per-CHUNK by `seq` (not a render-stale boolean) also
+  // catches the boundary chunk that crosses the frontier within a replay batch (Codex review).
+  // Any residual jitter is corrected by min(legs): a still-behind SSE sample loses to the
+  // earlier reactive one. Same `caughtUp` threshold the display uses below.
+  const sseFrontierRef = useRef(0);
+  const onTimingSample = useCallback((timingId: string, seq: number) => {
+    if (seq < sseFrontierRef.current) return;
+    sseSamplesRef.current.push({ timingId, t4: Date.now() });
+  }, []);
+  const sse = useSseStreamingText(sseMessageId, sseEnabled, onTimingSample);
+  sseFrontierRef.current = (streamingRows?.[0]?.chunkSeq ?? 1) - 1;
+  // Segment-C recorder (one owner). Transport-AGNOSTIC: it reports min(reactive, SSE) per
+  // delta — the receipt the user saw first. Lives here (not ConvexChat) so it sees the SSE
+  // samples. The SSE ref is empty when SSE is off. Inert unless a recording is active.
+  useDeliveryRecorder(chatId, sseSamplesRef);
 
   const attachmentAdapter = useMemo(
     () =>

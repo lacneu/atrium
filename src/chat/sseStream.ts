@@ -50,6 +50,22 @@ export const EMPTY_SSE_ACCUM: SseAccum = { text: "", lastSeq: 0, done: false };
  * `replace` resets the text; `event: final` sets the authoritative final text; `event:
  * done` ends. Malformed/empty events are ignored (best-effort display).
  */
+/**
+ * Extract the delivery-recorder correlator (`recTimingId`) from a CHUNK event, if it
+ * carries one (it rides the chunk ONLY during an active recording). Returns null for
+ * final/done/malformed/untagged events. The SSE leg uses it to close segment C at the
+ * displayed receipt (the frontend stamps t4 on arrival). See convex/deliveryTiming.ts.
+ */
+export function chunkTimingId(ev: SseEvent): string | null {
+  if (ev.event === "done" || ev.event === "final" || ev.data === "") return null;
+  try {
+    const c = JSON.parse(ev.data) as { recTimingId?: unknown };
+    return typeof c.recTimingId === "string" ? c.recTimingId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function applySseEvent(state: SseAccum, ev: SseEvent): SseAccum {
   if (ev.event === "done") return { ...state, done: true };
   if (ev.event === "final") {

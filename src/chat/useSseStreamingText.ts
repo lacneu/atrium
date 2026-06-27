@@ -1,7 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuthToken } from "@convex-dev/auth/react";
 import { convexSiteUrl } from "@/lib/runtimeConfig";
-import { parseSseBuffer, applySseEvent, EMPTY_SSE_ACCUM } from "./sseStream";
+import {
+  parseSseBuffer,
+  applySseEvent,
+  chunkTimingId,
+  EMPTY_SSE_ACCUM,
+} from "./sseStream";
 
 // Phase 4b: the SSE transport is chosen PER GATEWAY-INSTANCE (the chat's instance config,
 // resolved server-side by getChatStreamTransport; the runtime passes the result as
@@ -26,8 +31,15 @@ export function sseDevOverride(): boolean {
 export function useSseStreamingText(
   streamingMessageId: string | null,
   enabled: boolean,
+  // Called with a chunk's (recTimingId, seq) the moment it ARRIVES over SSE (during a
+  // recording), so the delivery recorder can stamp t4 on the SSE leg. The seq lets the runtime
+  // gate on the chunk being at/past the displayed frontier (skip replay). Held in a ref so a
+  // changing callback identity never reconnects the stream.
+  onTimingSample?: (timingId: string, seq: number) => void,
 ): { text: string; lastSeq: number; messageId: string } | null {
   const token = useAuthToken();
+  const onSampleRef = useRef(onTimingSample);
+  onSampleRef.current = onTimingSample;
   // Carries `lastSeq` (so the runtime can tell a REPLAYING connection from one at the
   // frontier) AND the `messageId` the text belongs to — the effect resets state only AFTER
   // the next render, so on a message/transport switch the stale previous-message text would
@@ -84,7 +96,17 @@ export function useSseStreamingText(
             buffer += dec.decode(value, { stream: true });
             const parsed = parseSseBuffer(buffer);
             buffer = parsed.rest;
-            for (const ev of parsed.events) accum = applySseEvent(accum, ev);
+            for (const ev of parsed.events) {
+              accum = applySseEvent(accum, ev);
+              // Recorder (Phase 5): a chunk carrying a recTimingId means a recording is
+              // active — stamp t4 at THIS receipt (the displayed SSE leg) via the callback.
+              const tid = chunkTimingId(ev);
+              // Recorder (Phase 5): the SSE sample's t4 is stamped HERE, at parse — so under
+              // main-thread load it reads up to one render cycle EARLY vs the reactive leg
+              // (stamped in its effect). A residual bias WITHIN the recorder's existing
+              // approximation (single-ping skew, effect-not-paint timing); accepted, not chased.
+              if (tid !== null) onSampleRef.current?.(tid, ev.id ?? 0);
+            }
             if (!cancelled)
               setState({
                 text: accum.text,

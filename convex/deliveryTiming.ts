@@ -80,7 +80,7 @@ export async function recordDelta(
     bridgeSkew?: number;
     sizeBytes?: number;
   },
-): Promise<void> {
+): Promise<Id<"deliveryTimings">> {
   // t3 == t2 deliberately: Convex FREEZES Date.now() for the whole mutation
   // (determinism), so a post-insert re-stamp would read the SAME value — the old code
   // did exactly that and measured nothing (segment B was structurally 0). Convex exec
@@ -100,6 +100,9 @@ export async function recordDelta(
     recTimingId: timingId,
     recCommittedAt: args.t2,
   });
+  // Returned so the caller can tag the SSE chunk with the same correlator (the SSE leg
+  // closes segment C at the displayed receipt — see streamChunks.recTimingId).
+  return timingId;
 }
 
 // --- Start / stop ----------------------------------------------------------
