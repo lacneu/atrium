@@ -88,6 +88,42 @@ describe("stream.rehydrationContext", () => {
     expect(r.history).not.toContain("début de la conversation");
   });
 
+  // ROBUSTNESS (isolated sub-agents): rehydration re-injects the visible THREAD (message
+  // TEXT) only — it reads the `messages` table, NEVER `messageParts`. A future `kind:
+  // "subagent"` part carrying an ISOLATED sub-agent's result must therefore never leak into
+  // a switched agent's context. This guard locks the invariant: it fails loudly if anyone
+  // later extends rehydration to read part content (here proven with a `reasoning` part as
+  // the stand-in for any structured part).
+  test("re-injects message TEXT only — structured message PARTS are NEVER in the history", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const now = Date.now();
+      const cid = await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: now,
+      });
+      const msgId = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "VISIBLE_THREAD_TEXT",
+        updatedAt: now,
+      });
+      await ctx.db.insert("messageParts", {
+        messageId: msgId,
+        order: 0,
+        part: { kind: "reasoning" as const, text: "ISOLATED_PART_SECRET" },
+      });
+      return cid;
+    });
+    const r = await run(t, chatId);
+    expect(r.history).toContain("VISIBLE_THREAD_TEXT"); // the visible thread IS rehydrated
+    expect(r.history ?? "").not.toContain("ISOLATED_PART_SECRET"); // part content NEVER is
+  });
+
   test("excludes the current turn's message (excludeMessageId)", async () => {
     const t = convexTest(schema, modules);
     const { chatId, messageIds } = await seedChat(t, [

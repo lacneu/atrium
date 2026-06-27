@@ -27,6 +27,14 @@ export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
 // to fetch. A SOC2-safe diagnostic so the #7 self-correction loop can flag the agent's
 // missing delivery directive; it carries no content, only the signal.
 export const EVENT_MEDIA_UNDELIVERED = "media.undelivered";
+// A SUB-AGENT (a child run spawned by THIS chat's agent via `sessions_spawn`) emitted
+// observable activity. OBSERVATION-ONLY: this is NEVER part of the parent's message stream
+// (the child's output stays on its own lane; the parent reply is unaffected). Carries a
+// STRUCTURAL signal — the child session key, a lifecycle phase, and the child's FINAL result
+// text — admitted by `payload.spawnedBy === <this chat's sessionKey>`. Consumed by a later,
+// capability-gated UI; until then the bridge emits it and the turn-sink ignores it (dormant).
+//   { type: "agent.activity", childSessionKey, phase?, text?, done? }
+export const EVENT_AGENT_ACTIVITY = "agent.activity";
 
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):

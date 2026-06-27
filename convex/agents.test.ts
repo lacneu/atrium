@@ -732,6 +732,33 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
     expect(res?.agent).toBeNull();
   });
 
+  test("PER-TURN chat with a REVOKED primary is NOT locked — it routes per-turn to other usable agents (robustness)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);
+    // "ghost" exists but the user is no longer entitled to it (revoked primary). The chat
+    // is MULTI-AGENT (perTurnRouting) — the user still routes per-turn to main/bob, and the
+    // dispatch (resolveTargetForTurn with a chosen agent) ignores the chat binding.
+    await t.run((ctx) =>
+      ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "ghost",
+        source: "discovered",
+        presentInLastOk: true,
+        displayName: "GHOST",
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      }),
+    );
+    const chatId = await mkChat({ agentId: "ghost" });
+    await t.run((ctx) => ctx.db.patch(chatId, { perTurnRouting: true }));
+    const res = await as.query(api.agents.getChatAgent, { chatId });
+    // NOT locked (the single-agent restriction must not apply to a per-turn chat), and it
+    // resolves to a USABLE fallback. Drop the `!chat.perTurnRouting` gate and this regresses
+    // to readOnly:true/agent:null — proving the assertion discriminates.
+    expect(res?.readOnly).toBe(false);
+    expect(res?.agent).not.toBeNull();
+  });
+
   test("PURGED agent (bound agent no longer EXISTS) → NOT read-only; falls back (the deleted-agent path)", async () => {
     const t = convexTest(schema, modules);
     const { as, mkChat } = await seedUserWithAgents(t, ["main", "bob"]);

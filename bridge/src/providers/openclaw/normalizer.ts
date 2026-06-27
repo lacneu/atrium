@@ -42,6 +42,7 @@ import {
   EVENT_TOOL_STATUS,
   EVENT_MEDIA,
   EVENT_MEDIA_UNDELIVERED,
+  EVENT_AGENT_ACTIVITY,
   type BridgeEvent,
 } from "../../core/events.js";
 import {
@@ -442,6 +443,27 @@ export class Normalizer {
       return [];
     }
 
+    // --- SUB-AGENT observation gate (admitted BEFORE the isolation drop) ----
+    // A child run spawned by THIS chat's agent (`sessions_spawn`) emits on its OWN session
+    // `agent:<id>:subagent:<uuid>`, but every child frame carries `spawnedBy` = the PARENT
+    // sessionKey. Admit it for OBSERVATION ONLY when spawnedBy matches THIS session —
+    // contamination-proof, because the parent sessionKey embeds the chatId (a child of any
+    // other chat carries a different spawnedBy, so it is dropped by the isolation gate below).
+    // CRITICAL: route to handleSubAgent and RETURN here, never falling through to the run-state
+    // tracking — the child owns its OWN runId; admitting it into ownRunIds/currentRunId would
+    // corrupt the PARENT turn's finalization. The child's text NEVER becomes parent reply text.
+    if (
+      isString(payload.spawnedBy) &&
+      payload.spawnedBy === this.sessionKey &&
+      payload.sessionKey !== this.sessionKey
+    ) {
+      return this.handleSubAgent(
+        eventType,
+        payload,
+        isObject(payload.data) ? payload.data : {},
+      );
+    }
+
     // --- isolation gate (one decision for passthrough + normalized) -------
     if (payload.sessionKey !== this.sessionKey) {
       return []; // foreign session OR sessionless -> drop
@@ -477,6 +499,57 @@ export class Normalizer {
   }
 
   // -- chat (5.19 official path) -------------------------------------------
+
+  /**
+   * OBSERVATION-ONLY handling of a CHILD sub-agent frame (admitted by `spawnedBy` in feed()).
+   * Emits a STRUCTURAL `agent.activity` signal — the child session key, a lifecycle phase, and
+   * the child's FINAL result text — and NOTHING ELSE: never a `message.*` (so the parent reply
+   * is untouched), and it never reads/mutates `this.ownRunIds`/`this.currentRunId` (the child
+   * owns its runId). Intermediate child streams (assistant deltas + plugin provenance, which
+   * carries the child's RETRIEVED content — SOC2) are deliberately NOT surfaced for the MVP.
+   */
+  private handleSubAgent(
+    eventType: string,
+    payload: JsonObject,
+    data: JsonObject,
+  ): BridgeEvent[] {
+    // FULLY ISOLATED from the parent's state machine: never touches this.ownRunIds/currentRunId
+    // NOR the parent's recv silence timer. `spawnedBy` is CHAT-level (not run-level), so a
+    // sub-agent from a PRIOR turn can still emit during a later turn; re-arming the parent recv
+    // on it would push the WRONG turn's timeout (codex P2). The turn-correlated keep-alive
+    // (admit only the CURRENT turn's children, learned from the `sessions_spawn` tool result's
+    // childSessionKey) is consumer-half work; until then a long sub-agent under a silent parent
+    // is covered by the stuck-stream watchdog. KNOWN MVP limitation.
+    const childSessionKey = isString(payload.sessionKey) ? payload.sessionKey : "";
+    if (!childSessionKey) return [];
+    // The child's FINAL answer = its result (the one deterministic source — the parent lane
+    // does not reliably re-deliver it). Reuse the parent's `textFromMessage` (handles content
+    // arrays, string content, `message.text`) AND `safeSanitizeText` — a child final can carry
+    // `MEDIA:` lines / server paths the normalizer strips from every other emitted text
+    // (codex P2 — SOC2 / no internal paths leaked).
+    if (eventType === "chat" && payload.state === "final") {
+      return [
+        {
+          type: EVENT_AGENT_ACTIVITY,
+          childSessionKey,
+          done: true,
+          text: this.safeSanitizeText(textFromMessage(payload.message)),
+        },
+      ];
+    }
+    // A real lifecycle phase only — gate on the lifecycle STREAM, because tool/item child
+    // frames ALSO carry a `data.phase` (start/result/completed) that would otherwise surface
+    // as a bogus lifecycle signal (codex P3).
+    if (
+      eventType === "agent" &&
+      isString(payload.stream) &&
+      payload.stream.endsWith("lifecycle") &&
+      isString(data.phase)
+    ) {
+      return [{ type: EVENT_AGENT_ACTIVITY, childSessionKey, phase: data.phase }];
+    }
+    return [];
+  }
 
   private handleChat(payload: JsonObject, _data: JsonObject, now: number, events: BridgeEvent[]): void {
     const state = payload.state;

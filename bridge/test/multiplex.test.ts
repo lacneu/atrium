@@ -111,6 +111,51 @@ describe("SessionMultiplexer — Model A isolation", () => {
     expect(mux.activeCount).toBe(1);
   });
 
+  it("a sub-agent CHILD frame is routed to its PARENT session by spawnedBy", () => {
+    const mux = new SessionMultiplexer();
+    mux.beginSession(SK_A, "chatA", RUN_A, 1000);
+    // Child frame: its OWN (child) sessionKey has no turn here, but spawnedBy = SK_A (parent).
+    const childFrame = {
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "child-run",
+        sessionKey: `${SK_A}:subagent:uuid`,
+        spawnedBy: SK_A,
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "CHILD_RESULT" }] },
+      },
+    };
+    const emits = mux.feedFrame(childFrame, 1001);
+    expect(emits).toHaveLength(1);
+    const emit = emits[0]!;
+    expect(emit.chatId).toBe("chatA"); // routed to the parent's chat
+    const activity = (emit.events as Array<Record<string, unknown>>).filter(
+      (e) => e.type === "agent.activity",
+    );
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({ done: true, text: "CHILD_RESULT" });
+    expect(mux.activeCount).toBe(1); // the child never finalizes/reaps the parent turn
+  });
+
+  it("a child frame whose spawnedBy is NOT an active session is dropped (contamination-proof)", () => {
+    const mux = new SessionMultiplexer();
+    mux.beginSession(SK_A, "chatA", RUN_A, 1000);
+    const orphan = {
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "x",
+        sessionKey: "agent:z:subagent:u",
+        spawnedBy: "agent:z:webchat:chat:other:OTHER-CHAT",
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "X" }] },
+      },
+    };
+    expect(mux.feedFrame(orphan, 1001)).toEqual([]); // no parent turn for that spawnedBy → drop
+    expect(mux.activeCount).toBe(1);
+  });
+
   it("min-deadline tick finalizes ONLY the expired session", () => {
     const mux = new SessionMultiplexer();
     // A: delta turn fed around t=1000 -> deadline ~1180.

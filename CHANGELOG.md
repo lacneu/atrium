@@ -8,6 +8,17 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.13.1] — Multi-agent chats stay usable when the original agent is revoked
+
+Corrective release. No breaking changes.
+
+- **A multi-agent conversation is no longer wrongly locked when its original agent is taken
+  away.** If an admin revokes your access to the agent a multi-agent chat was first created
+  with, the conversation now stays usable — you keep routing each turn to your other available
+  agents (the lock only applies to a single-agent chat, or when you have no usable agent left
+  at all). Previously such a chat was incorrectly shown read-only even though sending would
+  have worked.
+
 ## [0.13.0] — Route one conversation to multiple specialized agents, turn by turn
 
 Feature release. No breaking changes; a few optional schema fields are added and the

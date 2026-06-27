@@ -1123,7 +1123,10 @@ export const documentaryAvailable = query({
  *  map many chats through this — never call it per-chat with its own reads. */
 export function resolveAgentForChat(
   agents: EnrichedUserAgent[],
-  chat: { instanceName?: string; agentId?: string },
+  // A MULTI-AGENT (`perTurnRouting`) chat is NOT locked by its creation-time PRIMARY being
+  // revoked — the user routes each turn to a CHOSEN agent and dispatch (resolveTargetForTurn)
+  // ignores the chat binding, so a primary restriction must not read-only the whole chat.
+  chat: { instanceName?: string; agentId?: string; perTurnRouting?: boolean },
   // Whether the chat's bound agent still EXISTS as a discovered agent. Mirrors the
   // dispatch (resolveTargetForChat): a bound agent NOT in the effective set is
   // READ-ONLY only when it still exists (a RESTRICTION); when it is GONE (purged by
@@ -1139,11 +1142,12 @@ export function resolveAgentForChat(
       // In the user's effective set: honor the binding unless the agent was
       // DELETED on the gateway (then fall through to the default below).
       if (inSet.state !== "deleted") return { agent: inSet, readOnly: false };
-    } else if (boundAgentExists) {
-      // Bound to an agent the user is NO LONGER entitled to but that still EXISTS
-      // (an admin narrowed their set): READ-ONLY — never silently re-route to a
-      // DIFFERENT agent (the dispatch enforces it as `agent_restricted`). A PURGED
-      // agent (no row) falls through to the fallback below instead.
+    } else if (boundAgentExists && !chat.perTurnRouting) {
+      // SINGLE-AGENT chat bound to an agent the user is NO LONGER entitled to but that still
+      // EXISTS (an admin narrowed their set): READ-ONLY — never silently re-route to a
+      // DIFFERENT agent (the dispatch enforces `agent_restricted`). A PURGED agent (no row)
+      // falls through to the fallback below. A PER-TURN chat is explicitly NOT locked here —
+      // it routes per-turn to its other usable agents (dispatch would succeed).
       return { agent: null, readOnly: true };
     }
   }
@@ -1151,7 +1155,14 @@ export function resolveAgentForChat(
     [...agents]
       .sort((a, b) => (a.isDefault === b.isDefault ? 0 : a.isDefault ? -1 : 1))
       .find((a) => a.state !== "deleted") ?? null;
-  return { agent: fallback, readOnly: false };
+  // A PER-TURN chat with a binding but NO usable agent LEFT is read-only (a clean proactive
+  // lock — preserving the all-revoked lock the restriction branch no longer provides for it).
+  // Single-agent chats are unaffected (perTurnRouting falsy → readOnly false, original).
+  const readOnly =
+    chat.perTurnRouting === true &&
+    Boolean(chat.instanceName && chat.agentId) &&
+    fallback === null;
+  return { agent: fallback, readOnly };
 }
 
 // Pre-loaded per-instance metadata (instances + discovery). The tables are tiny

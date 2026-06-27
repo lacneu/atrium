@@ -564,3 +564,177 @@ describe("native media generation without delivery", () => {
 // only referenced for documentation parity with the Python suite.
 void EMPTY_FINAL_GRACE;
 void LIFECYCLE_END_GRACE;
+
+// SUB-AGENT observation (Track B): a child run spawned inside THIS chat (`sessions_spawn`)
+// emits on `agent:<id>:subagent:<uuid>` but every frame carries `spawnedBy` = the PARENT
+// sessionKey. We admit it for OBSERVATION ONLY, keyed on `spawnedBy === this.sessionKey`
+// (contamination-proof — the chatId is in the parent key), emitting `agent.activity` and NEVER
+// touching the parent's run-state or reply text.
+describe("sub-agent observation (spawnedBy admission)", () => {
+  const CHILD_SK = "agent:alice:subagent:test-uuid";
+  const start = (): { n: Normalizer; clock: Clock } => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+
+  it("a child lifecycle frame (spawnedBy === this session) → agent.activity, NEVER message.*", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          stream: "codex_app_server.lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      { type: "agent.activity", childSessionKey: CHILD_SK, phase: "startup" },
+    ]);
+    expect(ev.some((e) => String(e.type).startsWith("message."))).toBe(false);
+  });
+
+  it("a child chat:final → agent.activity carries the result text + done", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "ZULU_DELTA_777" }] },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      { type: "agent.activity", childSessionKey: CHILD_SK, done: true, text: "ZULU_DELTA_777" },
+    ]);
+  });
+
+  it("a child of ANOTHER chat (different spawnedBy) is DROPPED — contamination-proof", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "x",
+          sessionKey: "agent:alice:subagent:other",
+          spawnedBy: "agent:alice:webchat:chat:olivier:OTHER-CHAT",
+          stream: "codex_app_server.lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev).toEqual([]); // foreign spawnedBy → not admitted; the isolation gate drops it
+  });
+
+  it("a child's output NEVER pollutes the parent reply (run-state stays isolated)", () => {
+    const { n, clock } = start();
+    const out: BridgeEvent[] = [];
+    out.push(
+      ...n.feed(
+        { event: "chat", payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "delta", deltaText: "parent-answer" } },
+        clock.tick(),
+      ),
+    );
+    // The child interleaves its OWN final mid-parent-turn.
+    out.push(
+      ...n.feed(
+        {
+          event: "chat",
+          payload: {
+            runId: "child-run",
+            sessionKey: CHILD_SK,
+            spawnedBy: SESSION_KEY,
+            state: "final",
+            message: { role: "assistant", content: [{ type: "text", text: "ZULU_DELTA_777" }] },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    out.push(
+      ...n.feed(
+        {
+          event: "chat",
+          payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "final", message: { role: "assistant", content: [{ type: "text", text: "parent-answer" }] } },
+        },
+        clock.tick(),
+      ),
+    );
+    const finalText = out
+      .filter((e) => e.type === "message.final")
+      .map((e) => String((e as Record<string, unknown>).text ?? ""))
+      .join("");
+    expect(finalText).toContain("parent-answer");
+    expect(finalText).not.toContain("ZULU_DELTA_777"); // child output is never the parent's reply
+  });
+
+  it("a child final with STRING content still yields the result (reuses textFromMessage)", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: "STRING_RESULT" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      { type: "agent.activity", childSessionKey: CHILD_SK, done: true, text: "STRING_RESULT" },
+    ]);
+  });
+
+  it("a child TOOL frame (stream:tool with data.phase) is NOT surfaced as a lifecycle phase", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          stream: "tool", // a tool frame ALSO carries data.phase — must not become lifecycle
+          data: { phase: "completed" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev).toEqual([]); // only true `…lifecycle` streams emit a phase
+  });
+
+  it("child observation does NOT touch the parent's recv timer (full isolation)", () => {
+    // A child frame is fed at T; if it (wrongly) re-armed the parent, the parent turn would
+    // survive past its own recv deadline. With full isolation it does not — the parent's
+    // timeout is governed solely by PARENT-lane activity (here: none after the seed).
+    const { n, clock } = start();
+    clock.tick(BASE_RECV_TIMEOUT * 0.5);
+    n.feed(
+      {
+        event: "agent",
+        payload: { runId: "child-run", sessionKey: CHILD_SK, spawnedBy: SESSION_KEY, stream: "codex_app_server.lifecycle", data: { phase: "running" } },
+      },
+      clock.now,
+    );
+    clock.tick(BASE_RECV_TIMEOUT * 0.6); // now past the parent's recv deadline since beginTurn
+    n.tick(clock.now);
+    // The child did NOT extend the parent — it finalized on its own (silent) recv timeout.
+    expect(n.finalized).toBe(true);
+  });
+});

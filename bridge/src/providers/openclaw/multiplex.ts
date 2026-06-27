@@ -85,12 +85,25 @@ export class SessionMultiplexer {
     if (sessionKey === null) {
       return [];
     }
-    const turn = this.turns.get(sessionKey);
+    let key = sessionKey;
+    let turn = this.turns.get(key);
     if (!turn) {
-      return []; // no active turn for this session -> drop (isolation)
+      // SUB-AGENT observation: a child run's frames arrive on the CHILD sessionKey (which has
+      // no turn of its own here) but carry `spawnedBy` = the PARENT sessionKey. Route them to
+      // the PARENT turn's normalizer, which admits them by the same spawnedBy match
+      // (observation-only). Contamination-proof: spawnedBy embeds the chatId, so a child of
+      // another chat finds no parent turn here either, and is dropped.
+      const spawnedBy = frameSpawnedBy(frame);
+      if (spawnedBy !== null && this.turns.has(spawnedBy)) {
+        key = spawnedBy;
+        turn = this.turns.get(key);
+      }
+    }
+    if (!turn) {
+      return []; // no active turn for this session (nor its parent) -> drop (isolation)
     }
     const events = turn.normalizer.feed(frame, now);
-    this.reapIfFinalized(sessionKey, turn);
+    this.reapIfFinalized(key, turn);
     return events.length ? [{ chatId: turn.chatId, events }] : [];
   }
 
@@ -169,4 +182,17 @@ function frameSessionKey(frame: unknown): string | null {
   }
   const sk = (payload as Record<string, unknown>).sessionKey;
   return typeof sk === "string" ? sk : null;
+}
+
+/** A frame's `payload.spawnedBy` — the PARENT sessionKey on a sub-agent child frame. */
+function frameSpawnedBy(frame: unknown): string | null {
+  if (typeof frame !== "object" || frame === null) {
+    return null;
+  }
+  const payload = (frame as Record<string, unknown>).payload;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const sb = (payload as Record<string, unknown>).spawnedBy;
+  return typeof sb === "string" ? sb : null;
 }
