@@ -1,0 +1,41 @@
+name: Release to Production (Vercel + Convex Cloud)
+
+# ADDITIVE pipeline for the Convex-Cloud-backed hosting on Vercel. It does NOT
+# touch the self-hosted path: build-and-push.yml keeps building the origin-
+# agnostic Docker images (atrium + bridge) that the self-hosted stack runs
+# against self-hosted Convex. Both react to the same `v*` tag (lockstep):
+#   - build-and-push.yml -> versioned self-hosted images
+#   - this workflow       -> Vercel Production deploy (Convex Cloud Prod)
+#
+# Dev/Preview is handled by Vercel's native Git integration (every push to
+# main/feature -> Preview, Convex Cloud Dev), so there is NO dev job here.
+#
+# The Convex Prod deploy + the per-env config.json run INSIDE `vercel build`
+# via the project Build Command (vercel.json). CONVEX_DEPLOY_KEY lives in the
+# Vercel Production environment and is fetched by `vercel pull` -- it is NOT a
+# GitHub secret.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+
+jobs:
+  prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version: 24 }
+      # Gate the production release on the same checks as build-and-push.yml.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Vercel CLI: pull Production settings/env, build (runs `convex deploy`
+      # to Cloud Prod via the Build Command), deploy the prebuilt output.
+      - run: npm i -g vercel
+      - run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+      - run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+      - run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
