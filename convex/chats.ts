@@ -324,6 +324,14 @@ export async function cascadeDeleteChat(
       .collect();
     for (const o of rows) await ctx.db.delete(o._id);
   }
+  // Sub-agent observations (Track B monitor) hold chat content (the child's result/error
+  // text) keyed by chatId — purge them with the chat so a deleted chat/user leaves no
+  // orphaned sub-agent rows (codex P1). Indexed by chat; a chat has few sub-agents.
+  const subAgents = await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .collect();
+  for (const s of subAgents) await ctx.db.delete(s._id);
   // L2: if this chat held the SOURCE of an in-flight documentary fetch, release the
   // hidden chat's lock (same as deleteMessage). `chatId` is skipped when IT is the
   // documentary chat — it is being deleted here anyway.

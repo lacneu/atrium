@@ -1853,6 +1853,186 @@
 .oc-toolact__detail {
   margin-top: 0.25rem;
 }
+
+/* ---------------------------------------------------------------------------
+   Sub-agent monitor — a chat-level block pinned ABOVE the composer (sibling of
+   .oc-composer, so it mirrors the same centered readable column). Shows the
+   sub-agents the main agent spawned + their LIVE status; a failed/hung child is
+   surfaced prominently (the headline pain). Hidden entirely when empty / behind
+   an old gateway / in the clean view — a chat without sub-agents is unchanged.
+   --------------------------------------------------------------------------- */
+.oc-subagents {
+  align-self: center;
+  width: calc(100% - 2rem);
+  max-width: var(--oc-thread-w);
+  margin: 0 auto 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: color-mix(in srgb, var(--muted) 35%, var(--card));
+}
+/* CLEAN-view failure surface (Bug C): a sub-agent failed while the tools toggle
+   is off — accent the block so the failure reads as an alert, not ambient meta. */
+.oc-subagents--alert {
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 7%, var(--card));
+}
+.oc-subagents--alert .oc-subagents__icon,
+.oc-subagents--alert .oc-subagents__title {
+  color: var(--destructive);
+}
+.oc-subagents__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius-md, 0.5rem);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.oc-subagents__summary:hover {
+  color: var(--foreground);
+}
+.oc-subagents__summary:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+.oc-subagents__icon {
+  flex: 0 0 auto;
+}
+.oc-subagents__title {
+  font-weight: 500;
+}
+/* Status count pills — always visible in the summary so a failed/running child
+   is signalled even when the list is collapsed. */
+.oc-subagents__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.oc-subagents__badge--running {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+.oc-subagents__badge--failed {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+}
+.oc-subagents__spin {
+  animation: oc-spin 1s linear infinite;
+}
+.oc-subagents__chevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+  transition: transform 150ms ease;
+}
+.oc-subagents.is-open .oc-subagents__chevron {
+  transform: rotate(90deg);
+}
+.oc-subagents__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* Cap the height so a many-child chat never crowds out the composer. */
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 0 0.6rem 0.5rem;
+}
+
+/* One sub-agent card. A colored left rail encodes the tone at a glance:
+   running = primary, done = muted, failed/aborted/timed-out = destructive. */
+.oc-subagent {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm, 0.375rem);
+  padding: 0.35rem 0.5rem;
+  background: var(--card);
+}
+.oc-subagent--running {
+  border-left-color: var(--primary);
+}
+.oc-subagent--done {
+  border-left-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+}
+.oc-subagent--failed {
+  border-left-color: var(--destructive);
+}
+.oc-subagent__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.oc-subagent__status-icon {
+  flex: 0 0 auto;
+}
+.oc-subagent--running .oc-subagent__status-icon {
+  color: var(--primary);
+}
+.oc-subagent--failed .oc-subagent__status-icon {
+  color: var(--destructive);
+}
+.oc-subagent--done .oc-subagent__status-icon {
+  color: var(--muted-foreground);
+}
+.oc-subagent__spin {
+  animation: oc-spin 1s linear infinite;
+}
+.oc-subagent__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.82rem;
+  color: var(--foreground);
+}
+.oc-subagent__status {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+/* Visible-FAILURE: the error/timeout reason, shown in full (never hidden). */
+.oc-subagent__error {
+  margin: 0.3rem 0 0;
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--radius-sm, 0.375rem);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
+  color: var(--destructive);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.oc-subagent__result {
+  margin-top: 0.3rem;
+}
+.oc-subagent__result > summary {
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-subagent__result-pre {
+  margin: 0.3rem 0 0;
+  padding: 0.4rem 0.5rem;
+  max-height: 12rem;
+  overflow: auto;
+  border-radius: var(--radius-sm, 0.375rem);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* The in-chat show/hide toggle, in the composer row. */
 .oc-composer__toolstoggle {
   display: inline-flex;

@@ -37,6 +37,25 @@ export type { ProvenancePart } from "./core/provenance.js";
 export type FinalizeStatus = "complete" | "error" | "aborted";
 
 /**
+ * A sub-agent observation upsert (see convex/subAgents.ts + the SubAgentObserver).
+ * Keyed by `childSessionKey`. NOT message-scoped -- a child outlives the parent
+ * turn -- so the writer records it independent of any message stream. `resultText`
+ * is the child's own answer with server-paths already stripped by the observer.
+ */
+export interface SubAgentRecord {
+  chatId: string;
+  parentMessageId?: string | null;
+  childSessionKey: string;
+  taskName?: string;
+  status: "running" | "done" | "error" | "aborted";
+  resultText?: string;
+  phase?: string;
+  // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
+  // monitor show WHY a sub-agent failed / why the parent is stuck.
+  errorMessage?: string;
+}
+
+/**
  * The seam between the run-manager and Convex. Each method maps 1:1 onto an
  * internal stream mutation (see convex/stream.ts). All calls MUST be awaited in
  * order by the run-manager so appendDelta ordering is deterministic.
@@ -91,6 +110,14 @@ export interface ConvexWriter {
    * a turn on a meta write.
    */
   reportSessionMeta(chatId: string, meta: SessionMetaReport): Promise<void>;
+  /**
+   * Sub-agent observation upsert (inbound-only): record a spawned child's status /
+   * lifecycle phase / final result, keyed by childSessionKey. Best-effort at the
+   * call site (a child outlives the parent turn; a failed observation write must
+   * never wedge the consume loop). Off the per-message chain -- no message to key
+   * on -- mirroring reportSessionMeta.
+   */
+  upsertSubAgent(record: SubAgentRecord): Promise<void>;
 }
 
 /** Operations the Convex ingest httpAction understands (its JSON `op` field). */
@@ -188,7 +215,21 @@ type IngestOp =
     }
   // Mirror the gateway's `sessions.describe` meta onto the chat so the header
   // strip (model + reasoning chips + context meter) shows LIVE values.
-  | { op: "setSessionMeta"; chatId: string; meta: SessionMetaReport };
+  | { op: "setSessionMeta"; chatId: string; meta: SessionMetaReport }
+  // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
+  // message-scoped (a child outlives the parent turn). resultText is server-path
+  // stripped by the observer before it reaches here.
+  | {
+      op: "upsertSubAgent";
+      chatId: string;
+      parentMessageId?: string | null;
+      childSessionKey: string;
+      taskName?: string;
+      status: "running" | "done" | "error" | "aborted";
+      resultText?: string;
+      phase?: string;
+      errorMessage?: string;
+    };
 
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
@@ -917,5 +958,26 @@ export class HttpConvexWriter implements ConvexWriter {
     // performPatch awaits in try/catch). Two near-concurrent describes may land
     // last-write-wins — acceptable for a meta snapshot.
     await this.doPost({ op: "setSessionMeta", chatId, meta });
+  }
+
+  async upsertSubAgent(record: SubAgentRecord): Promise<void> {
+    // OFF the per-message serialization chain ON PURPOSE: a sub-agent observation
+    // is keyed by childSessionKey and outlives the parent turn -- there is no
+    // message to key on, and putting it on a chain would block the turn's critical
+    // ordered writes. doPost runs it independently; the CALL SITE (Session.consume)
+    // fires it best-effort (void + catch) so a slow/failed observation write never
+    // delays or wedges the consume loop. The Convex upsert is reorder-tolerant (it
+    // never downgrades a terminal status), so racing records are safe.
+    await this.doPost({
+      op: "upsertSubAgent",
+      chatId: record.chatId,
+      parentMessageId: record.parentMessageId ?? null,
+      childSessionKey: record.childSessionKey,
+      taskName: record.taskName,
+      status: record.status,
+      resultText: record.resultText,
+      phase: record.phase,
+      errorMessage: record.errorMessage,
+    });
   }
 }

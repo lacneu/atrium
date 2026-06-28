@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { X } from "lucide-react";
+import { Gauge, ScrollText, X } from "lucide-react";
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
 import { DataTableShell } from "./DataTableShell";
@@ -32,6 +32,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { m } from "@/paraglide/messages.js";
 
 // "Traces" tab — recent observability events (D2: redacted metadata only, no
@@ -223,11 +229,36 @@ export function TracesTab() {
     ? unfiltered?.filter((e) => e.correlationId === followCorr)
     : filtered;
 
-  return (
-    <>
-      <DeliveryRecorderCard />
+  // Which sub-tool is shown: latency monitoring (recorder) vs the activity-trace explorer.
+  // Defaults to the trace explorer — the namesake of the "Traces" tab.
+  const [view, setView] = useState<"latency" | "events">("events");
 
-      <p className="oc-admin__hint">
+  return (
+    <Tabs
+      value={view}
+      onValueChange={(v) => setView(v as "latency" | "events")}
+    >
+      {/* Two distinct tools under one tab: latency MONITORING (the recorder — measure/compare
+          on chosen sessions) vs activity TRACES (the always-on forensic event log — debug /
+          optimize). One visible at a time, each with its own identity, so the eye doesn't have
+          to disentangle them. The evolution chart lives in the KPI tab. */}
+      <TabsList className="w-full">
+        <TabsTrigger value="latency" className="flex-1 gap-1.5">
+          <Gauge size={13} aria-hidden />
+          {m.traces_seg_latency()}
+        </TabsTrigger>
+        <TabsTrigger value="events" className="flex-1 gap-1.5">
+          <ScrollText size={13} aria-hidden />
+          {m.traces_seg_events()}
+        </TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="latency">
+        <DeliveryRecorderCard />
+      </TabsContent>
+
+      <TabsContent value="events" className="flex flex-col gap-3">
+        <p className="oc-admin__hint">
         {m.traces_hint_before()}<strong>{m.traces_hint_redacted()}</strong>{m.traces_hint_after()}{" "}
         <span className="oc-filter__window">
           {m.traces_hint_window()}
@@ -500,8 +531,9 @@ export function TracesTab() {
         ]}
       />
 
-      <MetaDialog row={metaRow} onClose={() => setMetaRow(null)} />
-    </>
+        <MetaDialog row={metaRow} onClose={() => setMetaRow(null)} />
+      </TabsContent>
+    </Tabs>
   );
 }
 

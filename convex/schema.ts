@@ -873,6 +873,45 @@ export default defineSchema({
     part: messagePart,
   }).index("by_message", ["messageId"]),
 
+  // SUB-AGENT observation store (increment 1 of the sub-agent monitor). A chat's
+  // agent can spawn an isolated child via the gateway `sessions_spawn` tool; the
+  // child runs on its OWN lane and OUTLIVES the parent turn (the parent often ends
+  // before the child finishes). The bridge OBSERVES those child frames — inbound
+  // only, never altering what Atrium sends — and upserts one row per child here so
+  // the chat can later surface "a delegation is running / finished" + its result.
+  //
+  // INVARIANT: at most one row per `childSessionKey` (the upsert key). `status`
+  // tracks the child lifecycle (from the child-lane frame, the reliable signal):
+  // `running` (spawn observed / lifecycle phase), `done` (child `chat:final`),
+  // `error` (child `chat:state==="error"` / lifecycle `phase==="error"` — failed or
+  // timed-out — OR the observer's own TTL watchdog firing on a silent hang),
+  // `aborted` (child `chat:state==="aborted"` — user /stop / cancel). CONTENT NOTE:
+  // `resultText` is the child's own answer and `errorMessage` the failure reason
+  // (the user's chat data, owner-scoped like `messages`), server-paths stripped by
+  // the bridge before they land here.
+  subAgents: defineTable({
+    chatId: v.id("chats"),
+    // The parent assistant message the spawn happened under, when known. OPTIONAL:
+    // increment 1 does not thread the live messageId into the observer, so it is
+    // usually absent (a documented follow-up). by_chat is the load-bearing index.
+    parentMessageId: v.optional(v.id("messages")),
+    childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
+    taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("error"),
+      v.literal("aborted"),
+    ),
+    resultText: v.optional(v.string()), // the child's final answer (server-paths stripped)
+    errorMessage: v.optional(v.string()), // failure reason on error (paths stripped)
+    phase: v.optional(v.string()), // last observed lifecycle phase (e.g. "startup")
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_child", ["childSessionKey"]),
+
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy
   // `loadChatView` reads the `messages` docs (NOT this table), so it no longer

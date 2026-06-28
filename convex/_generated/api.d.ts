@@ -88,6 +88,7 @@ import type * as search from "../search.js";
 import type * as send from "../send.js";
 import type * as stream from "../stream.js";
 import type * as stuckStreams from "../stuckStreams.js";
+import type * as subAgents from "../subAgents.js";
 import type * as uploads from "../uploads.js";
 import type * as version from "../version.js";
 
@@ -178,6 +179,7 @@ declare const fullApi: ApiFromModules<{
   send: typeof send;
   stream: typeof stream;
   stuckStreams: typeof stuckStreams;
+  subAgents: typeof subAgents;
   uploads: typeof uploads;
   version: typeof version;
 }>;

@@ -544,3 +544,90 @@ describe("bridge_ingest httpAction: calibrate (delivery recorder clock)", () => 
     expect(res.status).toBe(401);
   });
 });
+
+describe("bridge_ingest httpAction: upsertSubAgent dispatch", () => {
+  const CHILD = "agent:alice:subagent:50a9857b-5b2f-40ce-867d-2e20d2e2b737";
+
+  async function subAgentsOf(t: T, chatId: Id<"chats">) {
+    return await t.run((ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect(),
+    );
+  }
+
+  test("authed upsertSubAgent -> 200, upserts ONE row by childSessionKey", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+
+    const r1 = await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: CHILD,
+      taskName: "do the thing",
+      status: "running",
+    });
+    expect(r1.status).toBe(200);
+    expect(await r1.json()).toEqual({ ok: true });
+
+    const r2 = await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: CHILD,
+      status: "done",
+      resultText: "SUBAGENT_PONG_42",
+    });
+    expect(r2.status).toBe(200);
+
+    const rows = await subAgentsOf(t, chatId);
+    expect(rows).toHaveLength(1); // upsert, not append
+    expect(rows[0]).toMatchObject({
+      childSessionKey: CHILD,
+      status: "done",
+      resultText: "SUBAGENT_PONG_42",
+      taskName: "do the thing",
+    });
+  });
+
+  test("SOC2: the openclaw.ingest trace carries structural meta only — never the result/task content", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: CHILD,
+      taskName: "SECRET_TASK_PHRASE",
+      status: "done",
+      resultText: "SECRET_RESULT_PHRASE",
+      phase: "startup",
+    });
+    const traces = await tracesByKind(t, "openclaw.ingest");
+    const last = traces[traces.length - 1]!;
+    const meta = JSON.parse(last.meta!);
+    expect(meta).toMatchObject({
+      op: "upsertSubAgent",
+      status: "done",
+      phase: "startup",
+      hasResult: true,
+      ok: true,
+    });
+    // NEVER the child's task text or result content.
+    expect(last.meta).not.toContain("SECRET_TASK_PHRASE");
+    expect(last.meta).not.toContain("SECRET_RESULT_PHRASE");
+    // The child session key (a path-like id, not content) is also not logged.
+    expect(last.meta).not.toContain(CHILD);
+  });
+
+  test("upsertSubAgent without the bridge secret -> 401, writes NO row", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    const res = await post(
+      t,
+      { op: "upsertSubAgent", chatId, childSessionKey: CHILD, status: "running" },
+      null,
+    );
+    expect(res.status).toBe(401);
+    expect(await subAgentsOf(t, chatId)).toHaveLength(0);
+  });
+});

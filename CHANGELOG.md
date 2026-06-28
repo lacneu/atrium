@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.14.0] — See and monitor the sub-agents your agents spawn
+
+Feature release. No breaking changes; an additive table and a new gateway capability.
+
+- **You can now SEE the sub-agents a main agent spawns — and how they're doing.** When an agent
+  delegates work to a sub-agent (OpenClaw's `sessions_spawn`), a live "Sous-agents" panel in the
+  conversation shows one card per sub-agent: its task, its status (running / done), and its result.
+  Previously a sub-agent ran invisibly — you only saw the spawn tool call, never the work itself.
+- **A failed or stuck sub-agent is now impossible to miss.** If a sub-agent errors out or stops
+  responding — leaving the main agent waiting — its failure surfaces with the error reason shown
+  inline, EVEN in the clean content view, so you see the problem and can unblock the conversation
+  without digging through tool details. The monitor never relies on the gateway re-announcing the
+  result; it watches the sub-agent itself and flags a silent timeout on its own.
+- **Sub-agent observation is read-only, isolated, and self-cleaning.** Atrium only observes a
+  sub-agent's activity for the chat that actually spawned it (never another chat's), strips server
+  paths from what it shows, bounds memory, and purges a chat's sub-agent data when the chat is
+  deleted. It needs a gateway that supports sub-agents (OpenClaw ≥ 2026.5.19). *Deploy: `npx convex
+  deploy` + rebuild the frontend AND bridge images.*
+
 ## [0.13.1] — Multi-agent chats stay usable when the original agent is revoked
 
 Corrective release. No breaking changes.

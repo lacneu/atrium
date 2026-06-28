@@ -191,7 +191,6 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <DeliveryKpi sessions={sessions ?? []} />
       <FilterBar
         q={q}
         onQChange={setQ}
@@ -325,100 +324,6 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
         isExpanded={(r) => r.sessionId === expandedId}
         renderExpanded={(r) => <SessionReportDetail sessionId={r.sessionId} />}
       />
-    </div>
-  );
-}
-
-// --- Evolution KPI: segment C + A p50 across the recent records ------------------------
-// Plots each recent STOPPED record's segment-C/A p50 over time, read straight from the
-// per-session `rollup` (computed server-side at stop). So opening the list is ONE cheap query
-// (listDeliverySessions), not a per-record report fetch. Bounded to the recent KPI_RECORDS.
-const KPI_RECORDS = 15;
-
-type KpiDatum = { startedAt: number; cP50: number; aP50: number };
-
-function DeliveryKpi({ sessions }: { sessions: SessionSummary[] }) {
-  // Recent stopped records whose rollup has BOTH p50s (a record missing one — e.g. the tab
-  // closed before the t4 flush so segment C never landed — is excluded rather than plotted as
-  // a misleading 0). Oldest-first (left-to-right chronological).
-  const series = useMemo<KpiDatum[]>(
-    () =>
-      sessions
-        .filter(
-          (s) =>
-            !s.active &&
-            s.rollup !== null &&
-            s.rollup.cP50 !== null &&
-            s.rollup.aP50 !== null,
-        )
-        .slice(0, KPI_RECORDS)
-        .reverse()
-        .map((s) => ({
-          startedAt: s.startedAt,
-          cP50: s.rollup?.cP50 as number,
-          aP50: s.rollup?.aP50 as number,
-        })),
-    [sessions],
-  );
-
-  if (series.length < 2) return null; // need at least 2 rolled-up records for a trend
-  return (
-    <div className="flex flex-col gap-1 rounded-md border border-border p-2">
-      <p className="text-xs font-medium text-muted-foreground">
-        {m.delivery_kpi_title()}
-      </p>
-      <KpiChart series={series} />
-    </div>
-  );
-}
-
-function KpiChart({ series }: { series: KpiDatum[] }) {
-  if (series.length < 2) {
-    return <p className="oc-admin__hint">{m.delivery_loading()}</p>;
-  }
-  const W = 480;
-  const H = 72;
-  const pad = 6;
-  const cVals = series.map((s) => s.cP50);
-  const aVals = series.map((s) => s.aP50);
-  const max = Math.max(1, ...cVals, ...aVals);
-  const x = (i: number) => pad + (i * (W - 2 * pad)) / (series.length - 1);
-  const y = (v: number) => H - pad - (v * (H - 2 * pad)) / max;
-  const path = (vals: number[]) =>
-    vals
-      .map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
-      .join(" ");
-  const last = series[series.length - 1];
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex gap-3 text-xs text-muted-foreground">
-        <span style={{ color: "var(--primary)" }}>
-          {m.delivery_seg_c()} p50 {fmt(last.cP50)} {m.delivery_kpi_unit()}
-        </span>
-        <span>
-          {m.delivery_seg_a()} p50 {fmt(last.aP50)} {m.delivery_kpi_unit()}
-        </span>
-      </div>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="h-16 w-full"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={m.delivery_kpi_title()}
-      >
-        <path
-          d={path(aVals)}
-          fill="none"
-          style={{ stroke: "var(--muted-foreground)" }}
-          strokeWidth={1.5}
-        />
-        <path
-          d={path(cVals)}
-          fill="none"
-          style={{ stroke: "var(--primary)" }}
-          strokeWidth={1.5}
-        />
-      </svg>
     </div>
   );
 }

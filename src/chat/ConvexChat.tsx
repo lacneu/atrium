@@ -102,6 +102,7 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { ToolActivity } from "./ToolActivity";
+import { SubAgentActivity } from "./SubAgentActivity";
 import {
   SourcesActivity,
   SourcesPanelContent,
@@ -508,6 +509,13 @@ function ChatThread({
       ) : unavailable ? (
         <BridgeUnavailableBanner />
       ) : null}
+      {/* Chat-level sub-agent monitor: the sub-agents this chat's main agent
+          spawned + their LIVE status, with errors/hangs surfaced prominently.
+          Pinned above the composer so a running/failed child stays visible while
+          the user waits. Self-gating (analysis view + `subagents` capability +
+          non-empty); renders nothing otherwise — a chat without sub-agents is
+          unchanged. */}
+      <SubAgentActivity chatId={chatId} show={showTools} />
       <Composer
         showTools={showTools}
         onToggleTools={onToggleTools}

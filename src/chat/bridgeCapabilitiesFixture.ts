@@ -59,6 +59,10 @@ export const LIVE_CAPABILITIES_BODY = {
           agentsDiscovery: "2026.5.19",
           mediaOutbound: "2026.5.19",
           inboundAttachments: "2026.6.1",
+          // Hand-added in lockstep with the bridge manifest (atrium-bridge
+          // src/compat.ts OPENCLAW_CAPABILITIES) — pending a real /capabilities
+          // re-capture, this entry mirrors what the updated bridge emits.
+          subagents: "2026.5.19",
         },
       },
       hermes: {
@@ -87,6 +91,8 @@ export const LIVE_CAPABILITIES_BODY = {
         agentsDiscovery: true,
         mediaOutbound: true,
         inboundAttachments: false,
+        // 5.19 target: subagents is available from the 5.19 floor -> true.
+        subagents: true,
       },
     },
   ],

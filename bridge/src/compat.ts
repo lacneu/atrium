@@ -68,6 +68,9 @@ export interface CompatManifest {
  *  - agentsDiscovery / mediaOutbound: present since 5.19.
  *  - inboundAttachments: inbound vision was only RELIABLE from 6.1 (5.19
  *    accepted attachments but vision results were inconsistent on the bench).
+ *  - subagents: the bridge OBSERVES a chat's child (sub-agent) runs via the
+ *    `sessions_spawn` tool, which is present since 5.19 (read-only — it never
+ *    changes what Atrium sends), so the monitor UI is gated from the 5.19 floor.
  */
 const OPENCLAW_CAPABILITIES: Record<string, string> = {
   knobThinkingLevel: "2026.5.19",
@@ -81,6 +84,7 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   agentsDiscovery: "2026.5.19",
   mediaOutbound: "2026.5.19",
   inboundAttachments: "2026.6.1",
+  subagents: "2026.5.19",
 };
 
 export const COMPAT_MANIFEST: CompatManifest = {

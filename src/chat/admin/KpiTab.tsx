@@ -21,6 +21,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { DeliveryKpiCard } from "./DeliveryKpiCard";
 import { m } from "@/paraglide/messages.js";
 
 // "KPI" tab — the observability dashboard (increment 4). Reads
@@ -168,10 +169,14 @@ export function KpiTab() {
     </>
   );
 
+  // The delivery KPI card queries its OWN sessions independently of the general rollups, so
+  // render it in every branch — otherwise a loading/empty general KPI would hide a delivery
+  // trend that actually has data (codex P2). It self-empties when there is nothing to show.
   if (rollups === undefined) {
     return (
       <>
         {header}
+        <DeliveryKpiCard />
         <p className="oc-admin__hint">{m.kpi_loading()}</p>
       </>
     );
@@ -181,6 +186,7 @@ export function KpiTab() {
     return (
       <>
         {header}
+        <DeliveryKpiCard />
         <p className="oc-admin__hint">{m.kpi_empty()}</p>
       </>
     );
@@ -189,6 +195,8 @@ export function KpiTab() {
   return (
     <>
       {header}
+
+      <DeliveryKpiCard />
 
       {GROUP_ORDER.map((group) => {
         const configs = METRIC_CONFIG.filter((c) => c.group === group);

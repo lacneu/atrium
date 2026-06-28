@@ -49,6 +49,10 @@ import {
   isProvenanceStream,
   parseProvenanceReport,
 } from "../../core/provenance.js";
+import {
+  childChatTerminalStatus,
+  childLifecycleStatus,
+} from "./sub-agent-frames.js";
 
 // The normalized event vocabulary now lives in core/events.ts (the shared
 // provider contract). Re-export it from the OpenClaw normalizer so existing
@@ -502,11 +506,14 @@ export class Normalizer {
 
   /**
    * OBSERVATION-ONLY handling of a CHILD sub-agent frame (admitted by `spawnedBy` in feed()).
-   * Emits a STRUCTURAL `agent.activity` signal — the child session key, a lifecycle phase, and
-   * the child's FINAL result text — and NOTHING ELSE: never a `message.*` (so the parent reply
-   * is untouched), and it never reads/mutates `this.ownRunIds`/`this.currentRunId` (the child
-   * owns its runId). Intermediate child streams (assistant deltas + plugin provenance, which
-   * carries the child's RETRIEVED content — SOC2) are deliberately NOT surfaced for the MVP.
+   * Emits a STRUCTURAL `agent.activity` signal — the child session key, a STATUS
+   * (running/done/error/aborted), a lifecycle phase, the child's FINAL result text, and (on
+   * failure) the error message — and NOTHING ELSE: never a `message.*` (so the parent reply is
+   * untouched), and it never reads/mutates `this.ownRunIds`/`this.currentRunId` (the child owns
+   * its runId). Status mapping is the SHARED classifier (sub-agent-frames.ts), so this live
+   * per-turn signal and the persisted store status can never diverge. Intermediate child
+   * streams (assistant deltas + plugin provenance, which carries the child's RETRIEVED content —
+   * SOC2) are deliberately NOT surfaced for the MVP.
    */
   private handleSubAgent(
     eventType: string,
@@ -522,31 +529,54 @@ export class Normalizer {
     // is covered by the stuck-stream watchdog. KNOWN MVP limitation.
     const childSessionKey = isString(payload.sessionKey) ? payload.sessionKey : "";
     if (!childSessionKey) return [];
-    // The child's FINAL answer = its result (the one deterministic source — the parent lane
-    // does not reliably re-deliver it). Reuse the parent's `textFromMessage` (handles content
-    // arrays, string content, `message.text`) AND `safeSanitizeText` — a child final can carry
-    // `MEDIA:` lines / server paths the normalizer strips from every other emitted text
-    // (codex P2 — SOC2 / no internal paths leaked).
-    if (eventType === "chat" && payload.state === "final") {
-      return [
-        {
-          type: EVENT_AGENT_ACTIVITY,
-          childSessionKey,
-          done: true,
-          text: this.safeSanitizeText(textFromMessage(payload.message)),
-        },
-      ];
+    // The child's TERMINAL chat frame is the PRIMARY discriminator: final=done (the answer),
+    // error=failed/timed-out (+ a top-level `errorMessage`), aborted=stopped. Reuse the parent's
+    // `textFromMessage` + `safeSanitizeText` (a child final/error can carry `MEDIA:` lines /
+    // server paths the normalizer strips from every other emitted text — SOC2). A non-terminal
+    // chat frame (delta) is intentionally not surfaced (the child is already running).
+    if (eventType === "chat") {
+      const term = childChatTerminalStatus(payload.state);
+      if (term === null) return [];
+      const event: BridgeEvent = {
+        type: EVENT_AGENT_ACTIVITY,
+        childSessionKey,
+        status: term,
+        done: true,
+      };
+      if (term === "done") {
+        event.text = this.safeSanitizeText(textFromMessage(payload.message));
+      } else {
+        // error/aborted: capture the failure reason (top-level errorMessage when present,
+        // else the "Error: <msg>" message text). Never gate on the string (mode-dependent).
+        const reason = isString(payload.errorMessage)
+          ? payload.errorMessage
+          : textFromMessage(payload.message);
+        event.errorMessage = this.safeSanitizeText(reason);
+      }
+      return [event];
     }
     // A real lifecycle phase only — gate on the lifecycle STREAM, because tool/item child
     // frames ALSO carry a `data.phase` (start/result/completed) that would otherwise surface
-    // as a bogus lifecycle signal (codex P3).
+    // as a bogus lifecycle signal (codex P3). Maps end=done / error=failed / else=running.
     if (
       eventType === "agent" &&
       isString(payload.stream) &&
       payload.stream.endsWith("lifecycle") &&
       isString(data.phase)
     ) {
-      return [{ type: EVENT_AGENT_ACTIVITY, childSessionKey, phase: data.phase }];
+      const ls = childLifecycleStatus(data.phase);
+      if (ls === null) return [];
+      const event: BridgeEvent = {
+        type: EVENT_AGENT_ACTIVITY,
+        childSessionKey,
+        status: ls,
+        phase: data.phase,
+      };
+      if (ls !== "running") event.done = true;
+      if (ls === "error") {
+        event.errorMessage = this.safeSanitizeText(isString(data.error) ? data.error : "");
+      }
+      return [event];
     }
     return [];
   }

@@ -596,7 +596,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, phase: "startup" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "running", phase: "startup" },
     ]);
     expect(ev.some((e) => String(e.type).startsWith("message."))).toBe(false);
   });
@@ -617,7 +617,77 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, done: true, text: "ZULU_DELTA_777" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "ZULU_DELTA_777" },
+    ]);
+  });
+
+  it("a child chat:error → agent.activity status error + errorMessage (the failure signal)", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          state: "error",
+          errorMessage: "codex app-server turn idle timed out waiting for turn/completed",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Error: codex app-server turn idle timed out waiting for turn/completed" }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      {
+        type: "agent.activity",
+        childSessionKey: CHILD_SK,
+        status: "error",
+        done: true,
+        errorMessage: "codex app-server turn idle timed out waiting for turn/completed",
+      },
+    ]);
+  });
+
+  it("a child lifecycle phase:error → agent.activity status error + errorMessage", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "error", error: "boom", endedAt: 1 },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "error", phase: "error", done: true, errorMessage: "boom" },
+    ]);
+  });
+
+  it("a child chat:aborted → agent.activity status aborted (stopped/cancelled)", () => {
+    const { n, clock } = start();
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: "child-run",
+          sessionKey: CHILD_SK,
+          spawnedBy: SESSION_KEY,
+          state: "aborted",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "aborted", done: true, errorMessage: "" },
     ]);
   });
 
@@ -697,7 +767,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, done: true, text: "STRING_RESULT" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "STRING_RESULT" },
     ]);
   });
 

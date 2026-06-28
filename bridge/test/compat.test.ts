@@ -36,6 +36,7 @@ const ALL_CAPS = [
   "agentsDiscovery",
   "mediaOutbound",
   "inboundAttachments",
+  "subagents",
 ] as const;
 
 /**
@@ -56,6 +57,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     agentsDiscovery: true,
     mediaOutbound: true,
     inboundAttachments: false,
+    subagents: true,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -69,6 +71,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     agentsDiscovery: true,
     mediaOutbound: true,
     inboundAttachments: true,
+    subagents: true,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -82,6 +85,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     agentsDiscovery: true,
     mediaOutbound: true,
     inboundAttachments: true,
+    subagents: true,
   },
 };
 

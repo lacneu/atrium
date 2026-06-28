@@ -186,6 +186,22 @@ type IngestOp =
       op: "getRehydrationContext";
       chatId: string;
       excludeMessageId?: string | null;
+    }
+  // Sub-agent observation upsert (inbound only): the bridge observed a child run
+  // (spawn / lifecycle phase / final result) on the gateway and records its status
+  // here, keyed by childSessionKey. NOT message-scoped (a child outlives the parent
+  // turn) — recorded independent of any message stream. resultText is the child's
+  // own answer with server-paths already stripped by the bridge.
+  | {
+      op: "upsertSubAgent";
+      chatId: string;
+      parentMessageId?: string | null;
+      childSessionKey: string;
+      taskName?: string;
+      status: "running" | "done" | "error" | "aborted";
+      resultText?: string;
+      phase?: string;
+      errorMessage?: string;
     };
 
 export const ingest = httpAction(async (ctx, request) => {
@@ -449,6 +465,34 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json(result);
+    }
+    case "upsertSubAgent": {
+      await ctx.runMutation(internal.subAgents.upsertSubAgent, {
+        chatId: body.chatId as Id<"chats">,
+        parentMessageId: body.parentMessageId
+          ? (body.parentMessageId as Id<"messages">)
+          : undefined,
+        childSessionKey: body.childSessionKey,
+        taskName: body.taskName,
+        status: body.status,
+        resultText: body.resultText,
+        phase: body.phase,
+        errorMessage: body.errorMessage,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        meta: {
+          op: body.op,
+          // Structural only — never the child's result text/task content.
+          status: body.status,
+          ...(body.phase !== undefined ? { phase: body.phase } : {}),
+          hasResult: body.resultText != null,
+          ok: true,
+        },
+      });
+      return json({ ok: true });
     }
     default:
       return json({ ok: false, error: "unknown op" }, 400);

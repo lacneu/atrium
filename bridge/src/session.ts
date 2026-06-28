@@ -13,7 +13,8 @@
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import { extractMessageToolReplies } from "./providers/openclaw/history-recovery.js";
-import type { ConvexWriter } from "./convex-writer.js";
+import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
+import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
@@ -95,6 +96,13 @@ class Session implements BridgeSession {
   readonly instanceName: string;
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
+  // PERSISTENT, chat-level observation of sub-agents this chat's agent spawns
+  // (sessions_spawn). INBOUND-ONLY: it reads child frames off the same connection
+  // and upserts their status to Convex; it NEVER influences what the bridge sends.
+  // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
+  // parent turn finalized still records (the whole reason the monitor exists).
+  readonly observer: SubAgentObserver;
+  private readonly writer: ConvexWriter;
   readonly clock: Clock;
   // Last time this session saw work (a send via acquire, or an inbound frame), on
   // the SECONDS Clock. The registry's idle sweeper reaps a session — closing its
@@ -126,8 +134,25 @@ class Session implements BridgeSession {
     this.instanceName = routing.instanceName;
     this.connection = connection;
     this.runManager = new RunManager(chatId, sessionKey, writer, outboundScan);
+    this.writer = writer;
+    this.observer = new SubAgentObserver(sessionKey, chatId);
     this.clock = clock;
     this.lastActivityAt = clock();
+  }
+
+  /** Best-effort flush of sub-agent observations to Convex. Fired off the consume
+   *  loop's critical path (void + catch): a slow/failed observation write must
+   *  NEVER delay or wedge the loop. The Convex upsert is reorder-tolerant, so
+   *  records that race are safe. */
+  private flushSubAgent(records: SubAgentRecord[]): void {
+    for (const record of records) {
+      void this.writer.upsertSubAgent(record).catch((err) => {
+        console.warn(
+          `[subagent] upsert failed chat=${this.chatId}:`,
+          (err as Error)?.message ?? err,
+        );
+      });
+    }
   }
 
   /**
@@ -175,6 +200,9 @@ class Session implements BridgeSession {
     } catch {
       /* already gone */
     }
+    // The connection is gone -> no more child frames; drop observations so the
+    // crash-recovery path can't leak the registry.
+    this.observer.clear();
     if (!this.runManager.isFinalized) {
       try {
         await this.runManager.endTurn(this.clock(), "aborted");
@@ -223,7 +251,14 @@ class Session implements BridgeSession {
       if (this.runManager.takeRecoveryRequest()) {
         void this.recoverDeliveredReply();
       }
-      const timeoutSec = this.runManager.nextTimeout(this.clock());
+      // The next deadline is the EARLIER of the parent turn's grace and any live
+      // sub-agent observation's TTL — so the observer's stalled-child sweep fires
+      // even when the parent turn is idle/finalized (the FD-leak TTL guardrail).
+      const tNow = this.clock();
+      const timeoutSec = minTimeout(
+        this.runManager.nextTimeout(tNow),
+        this.observer.nextTimeout(tNow),
+      );
       const timeoutMs = timeoutSec === null ? null : Math.max(0, timeoutSec * 1000);
       // Arm the wake resolver for THIS race, then check `wakePending`
       // synchronously BEFORE blocking: a wake() delivered during the previous
@@ -260,21 +295,41 @@ class Session implements BridgeSession {
               console.error("session close finalize error:", (err as Error)?.message ?? err);
             }
           }
+          // Drop every sub-agent observation (status left as last-known): the
+          // connection is gone, so no more child frames can arrive — never leak
+          // the registry past the session's life.
+          this.observer.clear();
           break;
         }
         nextFrame = iterator.next();
-        this.lastActivityAt = now; // active turn -> not idle, don't let the sweeper reap it
+        this.lastActivityAt = now; // active turn (or live child) -> not idle, don't reap
         try {
           await this.runManager.feed(winner.value, now);
         } catch (err) {
           console.error("session feed error:", (err as Error)?.message ?? err);
         }
+        // INBOUND-ONLY sub-agent observation, INDEPENDENT of the parent turn's
+        // lifecycle (runs even after runManager finalized / its sink went inactive
+        // — that's the gap this closes). Errors here never affect the turn.
+        try {
+          this.flushSubAgent(this.observer.observe(winner.value, now));
+        } catch (err) {
+          console.error("session subagent observe error:", (err as Error)?.message ?? err);
+        }
       } else {
-        // timeout: resolve any expired normalizer deadline (may finalize).
+        // timeout: resolve any expired normalizer deadline (may finalize) AND reap
+        // any stalled sub-agent observation (FD-leak TTL guardrail).
         try {
           await this.runManager.tick(now);
         } catch (err) {
           console.error("session tick error:", (err as Error)?.message ?? err);
+        }
+        try {
+          // The TTL sweep returns visible terminal upserts for silently-hung
+          // sub-agents (Bug C) — flush them like any other observation.
+          this.flushSubAgent(this.observer.sweep(now));
+        } catch (err) {
+          console.error("session subagent sweep error:", (err as Error)?.message ?? err);
         }
       }
     }
@@ -321,6 +376,14 @@ type RaceResult<T> =
  * forever). On timeout the original `nextFrame` promise is left pending so the
  * next iteration re-awaits it — no frame is dropped.
  */
+/** The earlier of two seconds-until-deadline values (null = no deadline on that
+ *  side). Used to combine the parent turn's grace with the sub-agent observer TTL. */
+export function minTimeout(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.min(a, b);
+}
+
 export function raceWithTimeout<T>(
   nextFrame: Promise<IteratorResult<T>>,
   timeoutMs: number | null,

@@ -111,6 +111,10 @@ class FakeWriter implements ConvexWriter {
   async reportSessionMeta(): Promise<void> {
     // Fire-and-forget seam; the RunManager tests don't assert session meta.
   }
+  async upsertSubAgent(): Promise<void> {
+    // Inbound-only sub-agent observation seam; not exercised by RunManager tests
+    // (the observer is driven from Session, not RunManager).
+  }
 }
 
 class Clock {

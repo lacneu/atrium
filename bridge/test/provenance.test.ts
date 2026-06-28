@@ -301,6 +301,9 @@ class FakeWriter implements ConvexWriter {
     return { history: null, turnCount: 0 };
   }
   async reportSessionMeta(): Promise<void> {}
+  async upsertSubAgent(): Promise<void> {
+    this.calls.push(["other", "upsertSubAgent"]);
+  }
   provenanceParts(): ProvenancePart[] {
     return this.calls
       .filter((c): c is ["addProvenancePart", string, ProvenancePart] =>
