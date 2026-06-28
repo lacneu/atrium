@@ -415,6 +415,9 @@
   "chat_response_in_progress": "Response in progress…",
   "chat_queue_send_aria": "Queue (sent after the current reply)",
   "chat_queue_send_title": "Send after the current reply",
+  "chat_queue_hint_subagent": "Waiting for the sub-agent…",
+  "chat_queue_subagent_aria": "Queue (sent after the sub-agent finishes)",
+  "chat_queue_subagent_title": "Send after the sub-agent finishes",
   "chat_queue_full": "Too many messages waiting. Wait for the current reply to finish.",
   "chat_queue_failed": "Could not queue the message. Try again.",
   "integrations_loading": "Loading…",
@@ -1335,5 +1338,11 @@
   "subagents_result": "Result",
   "subagents_untitled": "Sub-agent",
   "subagents_collapse": "Hide sub-agents",
-  "subagents_expand": "Show sub-agents"
+  "subagents_expand": "Show sub-agents",
+  "assistant_empty_waiting": "The agent delegated to a sub-agent — waiting for its result…",
+  "assistant_empty_waiting_named": "The agent delegated to a sub-agent (\"{task}\") — waiting for its result…",
+  "assistant_empty_failed": "The agent delegated to a sub-agent that failed: {reason}",
+  "assistant_empty_failed_named": "The agent delegated to a sub-agent (\"{task}\") that failed: {reason}",
+  "assistant_empty_failed_hint": "You can send a new message to continue.",
+  "assistant_empty_generic": "The agent performed some actions but did not return a response."
 }

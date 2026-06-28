@@ -18,6 +18,7 @@ import {
   subAgentCardsToShow,
   subAgentCountLabel,
   subAgentFailedLabel,
+  shortenSubAgentError,
   type SubAgentCardView,
   type SubAgentRow,
 } from "./subAgentActivityView";
@@ -79,7 +80,7 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
           inline (never hidden behind a click) — this is the whole point. */}
       {card.failure ? (
         <p className="oc-subagent__error" role="status">
-          {card.errorMessage ?? m.subagents_error_generic()}
+          {shortenSubAgentError(card.errorMessage)}
         </p>
       ) : null}
       {/* The child's final answer on done (server-path-sanitized + capped by the

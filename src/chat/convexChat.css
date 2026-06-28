@@ -2033,6 +2033,69 @@
   overflow-wrap: anywhere;
 }
 
+/* Empty-bubble guard (AssistantEmptyState): the designed inline state shown WHERE
+   THE ANSWER WOULD BE when a settled assistant turn returned no text (delegated to
+   a sub-agent that is still running / failed, or acted but answered nothing). Sits
+   in the message body in place of the blank bubble; tokens-only so it recolors per
+   active charte in both modes. */
+.oc-empty-answer {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.15rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md, 0.5rem);
+  background: color-mix(in srgb, var(--muted) 35%, var(--card));
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+.oc-empty-answer__icon,
+.oc-empty-answer__spin {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+.oc-empty-answer__spin {
+  animation: oc-spin 1s linear infinite;
+}
+.oc-empty-answer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+.oc-empty-answer__text {
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.oc-empty-answer__hint {
+  font-size: 0.76rem;
+  color: var(--muted-foreground);
+}
+/* Waiting: a child run is still in flight -> primary, with the spinner. */
+.oc-empty-answer--waiting {
+  border-left-color: var(--primary);
+}
+.oc-empty-answer--waiting .oc-empty-answer__spin {
+  color: var(--primary);
+}
+/* Failed: a child run errored / timed out -> destructive, read as an alert. */
+.oc-empty-answer--failed {
+  border-left-color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 7%, var(--card));
+}
+.oc-empty-answer--failed .oc-empty-answer__icon {
+  color: var(--destructive);
+}
+/* Generic: the turn acted but returned nothing -> muted, neutral. */
+.oc-empty-answer--generic {
+  border-left-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+}
+.oc-empty-answer--generic .oc-empty-answer__icon {
+  color: var(--muted-foreground);
+}
+
 /* The in-chat show/hide toggle, in the composer row. */
 .oc-composer__toolstoggle {
   display: inline-flex;
@@ -2308,6 +2371,22 @@
   font: inherit;
   line-height: 1.5;
   color: var(--foreground);
+}
+/* Held-send hint: a subtle line between the input and the action bar, shown only
+   while the chat is busy (in-flight turn or running sub-agent) so the user SEES
+   their next send will be queued — and why. Tokens-only (recolors per charte). */
+.oc-composer__queuehint {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.55rem 0.25rem;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
+.oc-composer__queuehint-spin {
+  flex: 0 0 auto;
+  color: var(--primary);
+  animation: oc-spin 1s linear infinite;
 }
 .oc-composer__bar {
   display: flex;

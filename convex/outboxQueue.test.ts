@@ -15,6 +15,7 @@ import {
   isChatBusy,
   drainNextQueued,
   MAX_QUEUED_PER_CHAT,
+  SUBAGENT_STALE_TTL_MS,
 } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import type { Id } from "./_generated/dataModel";
@@ -72,6 +73,29 @@ function insertOutbox(
       text: clientMessageId,
       attachmentIds: [],
       status,
+    }),
+  );
+}
+
+/**
+ * Insert a sub-agent observation row directly (for isChatBusy assertions).
+ * `updatedAt` defaults to NOW so a `running` row is FRESH (and thus holds); the
+ * freshness tests pass an old `updatedAt` to exercise the stale-row path.
+ */
+function insertSubAgent(
+  t: ReturnType<typeof convexTest>,
+  chatId: Id<"chats">,
+  childSessionKey: string,
+  status: "running" | "done" | "error" | "aborted",
+  updatedAt: number = Date.now(),
+) {
+  return t.run((ctx) =>
+    ctx.db.insert("subAgents", {
+      chatId,
+      childSessionKey,
+      status,
+      createdAt: updatedAt,
+      updatedAt,
     }),
   );
 }
@@ -537,5 +561,372 @@ describe("sendMessage serialization (integration)", () => {
         .unique(),
     );
     expect(over).toBeNull();
+  });
+});
+
+// A/B fix: a chat with a LIVE sub-agent must HOLD the user's next send (OpenClaw
+// mis-routes it into the yielded child otherwise). These tests collectively prove
+// the one invariant the design rests on: every path that clears the LAST blocker
+// (pending outbox / streaming message / running sub-agent) calls drainNextQueued,
+// so whichever blocker clears last dispatches the held message — no lost-message
+// path regardless of ordering. Each test FAILS if the sub-agent hold regresses.
+describe("sub-agent dispatch hold (A/B fix)", () => {
+  const A = "agent:u:subagent:aaaaaaaa-0000-0000-0000-000000000001";
+  const B = "agent:u:subagent:bbbbbbbb-0000-0000-0000-000000000002";
+
+  test("isChatBusy: a RUNNING sub-agent holds; TERMINAL-only sub-agents do NOT", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+
+    // A running sub-agent (no in-flight turn) → busy.
+    const row = await insertSubAgent(t, chatId, A, "running");
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(true);
+
+    // Once terminal, it no longer holds. Dual of the line above: this FAILS if the
+    // filter ever broadened to match terminal rows.
+    await t.run((ctx) => ctx.db.patch(row, { status: "done" as const }));
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(false);
+
+    // error / aborted are terminal too (none should make the chat busy).
+    await insertSubAgent(t, chatId, B, "error");
+    await insertSubAgent(t, chatId, `${B}-x`, "aborted");
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(false);
+  });
+
+  test("many TERMINATED sub-agents (zero running) → NOT busy (bounded by_chat_status read)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    // A long-lived chat accumulates terminal history: it must NOT make a send busy,
+    // and the read must hit only the (empty) running slice — not the whole per-chat
+    // history. Regression guard for the by_chat scan + JS filter (P2).
+    for (let i = 0; i < 30; i++) {
+      await insertSubAgent(t, chatId, `${A}-done-${i}`, "done");
+      await insertSubAgent(t, chatId, `${A}-err-${i}`, "error");
+    }
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(false);
+    // Add ONE running child → busy true (the running slice now has a row).
+    await insertSubAgent(t, chatId, A, "running");
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(true);
+  });
+
+  test("RACE (a): a send right after a spawn — running row already present → QUEUED", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const asUser = t.withIdentity({ subject: `${userId}|session` });
+
+    // The spawn's `running` row is written DURING the parent turn, so it is present
+    // when the user's next message arrives. No pending outbox / streaming message:
+    // ONLY the sub-agent holds the chat.
+    await insertSubAgent(t, chatId, A, "running");
+    await asUser.mutation(api.send.sendMessage, {
+      chatId,
+      text: "while the sub-agent runs",
+      clientMessageId: "c1",
+    });
+    const ob = await t.run((ctx) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_client_message", (q) =>
+          q.eq("userId", userId).eq("clientMessageId", "c1"),
+        )
+        .unique(),
+    );
+    // Regression guard: without the sub-agent busy condition this would be "pending"
+    // and the dispatch would be mis-routed into the yielded child.
+    expect(ob?.status).toBe("queued");
+  });
+
+  test("RACE (b) / drain on terminal: the queued send dispatches when the child finishes", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    // running sub-agent registered via the REAL upsert (no drain on a running write).
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+    // Still held while the child runs.
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "queued",
+    );
+
+    // Child reaches `done` → the upsert's terminal drain dispatches the held send.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+      resultText: "child answer",
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "pending",
+    );
+  });
+
+  test("drains on the TTL/watchdog terminal (error), not just a clean done", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    // The observer's TTL watchdog writes a terminal `error` for a silently-hung
+    // child (same upsert seam). The held send must still dispatch — a silent hang
+    // can never permanently strand the queue.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "error" as const,
+      errorMessage: "timed out",
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "pending",
+    );
+  });
+
+  test("MULTI sub-agent: a PARTIAL terminal does NOT drain; the LAST one does", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    // Two children running concurrently under the same chat.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: B,
+      status: "running" as const,
+    });
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    // A finishes — B still holds the chat → the send STAYS queued. This is the sharp
+    // test for "AND no remaining running sub-agent": it FAILS if the drain fired on
+    // the first terminal regardless of the still-running sibling.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "queued",
+    );
+
+    // B finishes — now NO running sub-agent → the held send dispatches.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: B,
+      status: "done" as const,
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "pending",
+    );
+  });
+
+  test("drain HELD while the parent turn streams: finalize does NOT dispatch into a live child", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    // Parent turn streaming AND it spawned a child that is still running.
+    const streamingId = await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      }),
+    );
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    // The parent turn finalizes WHILE the child runs. finalize's own drain must see
+    // the running sub-agent and HOLD — this is the crux that folding the check into
+    // isChatBusy (which drainNextQueued calls) buys for free.
+    await t.mutation(internal.stream.finalize, {
+      messageId: streamingId,
+      status: "complete",
+      text: "parent done",
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "queued",
+    );
+
+    // Only when the child finishes does the held send dispatch.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "pending",
+    );
+  });
+
+  test("no double-drain: a redundant terminal frame promotes only ONE queued row", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+    const q2 = await insertOutbox(t, chatId, userId, "queued", "q-2");
+
+    // First terminal frame → drains q1 (oldest).
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+    });
+    // A redundant later `done` frame for the SAME child must NOT promote q2 (the
+    // chat is now busy via q1's pending row). Regression guard for double-dispatch.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+    });
+
+    const [s1, s2] = await t.run(async (ctx) => [
+      (await ctx.db.get(q1))?.status,
+      (await ctx.db.get(q2))?.status,
+    ]);
+    expect(s1).toBe("pending"); // promoted once
+    expect(s2).toBe("queued"); // still parked — no second dispatch
+  });
+
+  test("first-sight TERMINAL child drains a held send (insert branch)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    // A child observed already finished on its FIRST frame (it ended before its
+    // spawn registration was ingested). The insert-branch drain must still fire.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "done" as const,
+      resultText: "fast child",
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "pending",
+    );
+  });
+
+  test("a first-sight RUNNING child does NOT drain (it holds the chat)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    // Registering a running child must NOT release the queue — the child now holds.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: A,
+      status: "running" as const,
+    });
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "queued",
+    );
+  });
+
+  test("single-agent path unchanged: NO sub-agent rows → busy reflects only the turn", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    // Byte-identical to today: with zero subAgents rows the new read is empty.
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(false);
+    const pendingId = await insertOutbox(t, chatId, userId, "pending", "p-1");
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(true);
+    await t.run((ctx) => ctx.db.patch(pendingId, { status: "sent" as const }));
+    expect(await t.run((ctx) => isChatBusy(ctx, chatId))).toBe(false);
+  });
+
+  // DEAD-OBSERVER REAPER (Codex P1, round 2): a `running` row is a best-effort
+  // observer write. If the observer dies without terminalizing it (dropped upsert /
+  // bridge restart / the in-memory TTL watchdog dying with the connection), the row
+  // stays "running" forever → the chat is held forever AND its queue strands. The
+  // reaper terminalizes a stale row out-of-band, routing through the SAME terminal-
+  // drain so the held queue dispatches FIFO and the dead child becomes visible.
+  const STALE = SUBAGENT_STALE_TTL_MS + 60_000; // just past the TTL → reapable
+  const FRESH = 60_000; // 1 min ago — a genuinely live child, NOT reaped
+
+  test("reaper terminalizes a STALE running row AND drains the queue behind it (FIFO)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const staleRow = await insertSubAgent(
+      t,
+      chatId,
+      A,
+      "running",
+      Date.now() - STALE,
+    );
+    // Two sends queued behind the (now dead-observer) running row.
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+    const q2 = await insertOutbox(t, chatId, userId, "queued", "q-2");
+
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+
+    // The stale child is now a VISIBLE failure (status error + a short FR message).
+    const reaped = await t.run((ctx) => ctx.db.get(staleRow));
+    expect(reaped?.status).toBe("error");
+    expect(reaped?.errorMessage).toMatch(/expiré/i);
+    // The held queue drained via the terminal-drain — oldest first, ONE at a time.
+    const [s1, s2] = await t.run(async (ctx) => [
+      (await ctx.db.get(q1))?.status,
+      (await ctx.db.get(q2))?.status,
+    ]);
+    expect(s1).toBe("pending"); // q1 dispatched
+    expect(s2).toBe("queued"); // q2 still parked (no reorder, no double-drain)
+  });
+
+  test("reaper does NOT touch a FRESH running row (a live child still holds)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const freshRow = await insertSubAgent(
+      t,
+      chatId,
+      A,
+      "running",
+      Date.now() - FRESH,
+    );
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+
+    // Untouched → still running → the chat is still busy → the send stays queued.
+    expect(await t.run((ctx) => ctx.db.get(freshRow).then((r) => r?.status))).toBe(
+      "running",
+    );
+    expect(await t.run((ctx) => ctx.db.get(q1).then((r) => r?.status))).toBe(
+      "queued",
+    );
+  });
+
+  test("reaping is IDEMPOTENT: a second pass over an already-terminal row is a no-op (no double-drain)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    await insertSubAgent(t, chatId, A, "running", Date.now() - STALE);
+    const q1 = await insertOutbox(t, chatId, userId, "queued", "q-1");
+    const q2 = await insertOutbox(t, chatId, userId, "queued", "q-2");
+
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {}); // reaps A, drains q1
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {}); // A is now error → range empty
+
+    // The second pass must NOT promote q2 (it only ranges `running` rows; A is gone
+    // from that range). Regression guard against a double-drain reordering the queue.
+    const [s1, s2] = await t.run(async (ctx) => [
+      (await ctx.db.get(q1))?.status,
+      (await ctx.db.get(q2))?.status,
+    ]);
+    expect(s1).toBe("pending");
+    expect(s2).toBe("queued");
   });
 });

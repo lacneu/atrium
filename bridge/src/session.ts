@@ -69,6 +69,9 @@ export interface BridgeSession {
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
    *  hang the turn forever in "streaming". */
   wake(): void;
+  /** Test/diagnostic seam: count of children with an ordered registration recorded
+   *  (registeredChildren). Asserts the set never leaks across terminated/swept children. */
+  readonly registeredChildCount: number;
 }
 
 /**
@@ -102,6 +105,11 @@ class Session implements BridgeSession {
   // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
   // parent turn finalized still records (the whole reason the monitor exists).
   readonly observer: SubAgentObserver;
+  // Child session keys whose INITIAL running-row creation we have already ordered
+  // (awaited). Lets flushSubAgentObserved await ONLY the first `running` upsert per
+  // child (its spawn registration) and fire every later status/heartbeat off the
+  // loop's critical path. Cleared with the observer on connection close.
+  private readonly registeredChildren = new Set<string>();
   private readonly writer: ConvexWriter;
   readonly clock: Clock;
   // Last time this session saw work (a send via acquire, or an inbound frame), on
@@ -140,18 +148,61 @@ class Session implements BridgeSession {
     this.lastActivityAt = clock();
   }
 
-  /** Best-effort flush of sub-agent observations to Convex. Fired off the consume
-   *  loop's critical path (void + catch): a slow/failed observation write must
-   *  NEVER delay or wedge the loop. The Convex upsert is reorder-tolerant, so
-   *  records that race are safe. */
-  private flushSubAgent(records: SubAgentRecord[]): void {
+  /** Test/diagnostic seam (mirrors observer.size): how many children currently hold an
+   *  ORDERED registration in registeredChildren. Lets a test assert the set never leaks
+   *  — a child terminalized by a frame OR by the TTL sweep frees its key. */
+  get registeredChildCount(): number {
+    return this.registeredChildren.size;
+  }
+
+  /**
+   * Flush OBSERVED sub-agent records (from both observe() AND the TTL sweep()),
+   * ORDERING the initial running-row creation.
+   *
+   * The FIRST `running` record for a child (its spawn registration) is AWAITED, so the
+   * row commits before the consume loop reads the NEXT frame — e.g. the parent's
+   * chat:final, which finalizes the turn and runs the queue drain. That closes the
+   * spawn-upsert race (P1.2): by the time the parent reply is shown, the `running` row
+   * exists, so a fast follow-up is HELD (isChatBusy) instead of mis-routed into the
+   * yielded child. doPost is deadline-bounded, so this await can never wedge the loop.
+   *
+   * Every LATER record (status changes, the throttled keep-alive heartbeat, terminals)
+   * stays OFF the loop's critical path (void + catch) — preserving the fire-and-forget
+   * contract so a slow observation write never delays the turn. A terminal record frees
+   * the child's key from registeredChildren so the set stays bounded to live children —
+   * this is THE cleanup, and the sweep path MUST route through here (not a bare flush)
+   * so a TTL-terminalized child's key is freed too.
+   */
+  private async flushSubAgentObserved(
+    records: SubAgentRecord[],
+  ): Promise<void> {
     for (const record of records) {
-      void this.writer.upsertSubAgent(record).catch((err) => {
-        console.warn(
-          `[subagent] upsert failed chat=${this.chatId}:`,
-          (err as Error)?.message ?? err,
-        );
-      });
+      const isRegistration =
+        record.status === "running" &&
+        !this.registeredChildren.has(record.childSessionKey);
+      if (isRegistration) {
+        try {
+          await this.writer.upsertSubAgent(record);
+          this.registeredChildren.add(record.childSessionKey);
+        } catch (err) {
+          // Best-effort: a failed registration must not break the loop. Leave the
+          // child UNREGISTERED so the next frame re-attempts the ordered write.
+          console.warn(
+            `[subagent] registration upsert failed chat=${this.chatId}:`,
+            (err as Error)?.message ?? err,
+          );
+        }
+      } else {
+        if (record.status !== "running") {
+          this.registeredChildren.delete(record.childSessionKey);
+        }
+        void this.writer.upsertSubAgent(record).catch((err) => {
+          console.warn(
+            `[subagent] upsert failed chat=${this.chatId}:`,
+            (err as Error)?.message ?? err,
+          );
+        });
+      }
     }
   }
 
@@ -200,9 +251,12 @@ class Session implements BridgeSession {
     } catch {
       /* already gone */
     }
-    // The connection is gone -> no more child frames; drop observations so the
-    // crash-recovery path can't leak the registry.
+    // The connection is gone -> no more child frames; drop observations AND the
+    // registration-ordering set so the crash-recovery path can't leak the registry
+    // (keep registeredChildren in lockstep with the observer — invariant: it only ever
+    // holds keys of currently-observed children).
     this.observer.clear();
+    this.registeredChildren.clear();
     if (!this.runManager.isFinalized) {
       try {
         await this.runManager.endTurn(this.clock(), "aborted");
@@ -297,8 +351,10 @@ class Session implements BridgeSession {
           }
           // Drop every sub-agent observation (status left as last-known): the
           // connection is gone, so no more child frames can arrive — never leak
-          // the registry past the session's life.
+          // the registry past the session's life. Also drop the registration-ordering
+          // set so a reconnect re-orders the first running-row write for each child.
           this.observer.clear();
+          this.registeredChildren.clear();
           break;
         }
         nextFrame = iterator.next();
@@ -312,7 +368,12 @@ class Session implements BridgeSession {
         // lifecycle (runs even after runManager finalized / its sink went inactive
         // — that's the gap this closes). Errors here never affect the turn.
         try {
-          this.flushSubAgent(this.observer.observe(winner.value, now));
+          // AWAIT: the initial spawn-registration write is ordered (commits before the
+          // next frame / parent finalize) to close the spawn-upsert race; later
+          // status/heartbeat writes stay off the critical path. See flushSubAgentObserved.
+          await this.flushSubAgentObserved(
+            this.observer.observe(winner.value, now),
+          );
         } catch (err) {
           console.error("session subagent observe error:", (err as Error)?.message ?? err);
         }
@@ -326,8 +387,12 @@ class Session implements BridgeSession {
         }
         try {
           // The TTL sweep returns visible terminal upserts for silently-hung
-          // sub-agents (Bug C) — flush them like any other observation.
-          this.flushSubAgent(this.observer.sweep(now));
+          // sub-agents (Bug C). Route them through the SAME observed-flush helper (not a
+          // bare fire-and-forget) so a TTL-terminalized child's key is removed from
+          // registeredChildren — else a swept child leaks its key forever (it never hits
+          // the per-frame cleanup branch). Sweep emits only terminal records, so this
+          // awaits nothing (no registration write) — it just cleans up + fires the writes.
+          await this.flushSubAgentObserved(this.observer.sweep(now));
         } catch (err) {
           console.error("session subagent sweep error:", (err as Error)?.message ?? err);
         }

@@ -21,11 +21,24 @@ Feature release. No breaking changes; an additive table and a new gateway capabi
   inline, EVEN in the clean content view, so you see the problem and can unblock the conversation
   without digging through tool details. The monitor never relies on the gateway re-announcing the
   result; it watches the sub-agent itself and flags a silent timeout on its own.
+- **No more blank replies when an agent delegates.** When an agent hands a turn to a sub-agent and
+  has nothing to say yet, its reply used to render as an empty bubble — you couldn't tell whether it
+  was thinking, waiting, or broken. Now that turn shows a clear state where the answer would be:
+  "delegated to a sub-agent — waiting…", or, if the sub-agent failed, the short failure reason with
+  an invitation to send a new message. Error reasons are always shortened to a readable line — a
+  sub-agent's raw multi-kilobyte tool error is never dumped into the conversation.
+- **You can keep talking to your main agent while a sub-agent works.** Previously a follow-up you
+  sent while a sub-agent was still running could be mis-delivered into that sub-agent. Now such a
+  message is held — and the composer tells you so ("En attente du sous-agent…", with your message
+  parked visibly in the thread) instead of looking like nothing happened — then dispatched to your
+  main agent as soon as the sub-agent finishes (or fails, or times out), in order. If a sub-agent's
+  observer is ever lost, the hold self-heals within ~25 minutes and the stale sub-agent is shown as
+  failed.
 - **Sub-agent observation is read-only, isolated, and self-cleaning.** Atrium only observes a
   sub-agent's activity for the chat that actually spawned it (never another chat's), strips server
   paths from what it shows, bounds memory, and purges a chat's sub-agent data when the chat is
   deleted. It needs a gateway that supports sub-agents (OpenClaw ≥ 2026.5.19). *Deploy: `npx convex
-  deploy` + rebuild the frontend AND bridge images.*
+  deploy` (an additive table + index + a maintenance cron) + rebuild the frontend AND bridge images.*
 
 ## [0.13.1] — Multi-agent chats stay usable when the original agent is revoked
 

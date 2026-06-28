@@ -103,6 +103,14 @@ import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { ToolActivity } from "./ToolActivity";
 import { SubAgentActivity } from "./SubAgentActivity";
+import { assistantEmptyState } from "./assistantEmptyState";
+import { messageHasText } from "./runStatusView";
+import type { ToolActivityPart } from "./toolActivityView";
+import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
+import {
+  composerQueueState,
+  type ComposerQueueReason,
+} from "./composerQueueState";
 import {
   SourcesActivity,
   SourcesPanelContent,
@@ -479,6 +487,17 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  // The chat is ALSO busy when a sub-agent it spawned is still running: the parent
+  // turn has finalized but the bridge is one-turn-per-session, so a follow-up must
+  // be HELD (queued) — and that hold made VISIBLE in the composer. Owner-scoped +
+  // reactive; Convex dedupes this with SubAgentActivity's / AssistantEmptyState's
+  // identical subscription, so it is one network query (returns [] for the common
+  // no-sub-agent chat). When the child terminalizes, this flips false and the
+  // composer's held state clears (the server drains the queued message).
+  const subAgentRows = useQuery(api.subAgents.listSubAgents, {
+    chatId: chatId as Id<"chats">,
+  }) as SubAgentRow[] | undefined;
+  const subAgentBusy = hasRunningSubAgent(subAgentRows ?? []);
   useFocusMessage(chatId, focusMessageId);
   return (
     <ThreadPrimitive.Root className="oc-thread">
@@ -520,6 +539,7 @@ function ChatThread({
         showTools={showTools}
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
+        subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
   );
@@ -1357,6 +1377,103 @@ function MessageAgentChip({
   );
 }
 
+// Stable empty array so the toolParts selector never returns a fresh reference
+// (which would defeat useMessage's memoization and churn re-renders).
+const EMPTY_TOOL_PARTS: ToolActivityPart[] = [];
+
+// The "empty bubble" guard (the headline sub-agent fix): when a SETTLED assistant
+// turn has NO visible answer — the delegated-and-waiting / sub-agent-failed case
+// where the parent finalizes complete with empty text — render a clear, designed
+// inline state RIGHT WHERE THE ANSWER WOULD BE instead of a blank bubble. The
+// decision is the pure, tested `assistantEmptyState`; this component only supplies
+// it the message facts + the chat's sub-agent rows and renders the result.
+//
+// Returns null for a normal turn (there IS an answer) or an in-flight / errored
+// turn (the thinking indicator / RunStatus error card already cover those), so it
+// is inert on every healthy message.
+function AssistantEmptyState() {
+  const status = useMessage(
+    (msg) => (msg.metadata?.custom as { status?: string } | undefined)?.status,
+  );
+  const chatId = useMessage(
+    (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  // Boolean selectors -> re-render only on the empty<->non-empty crossing, not on
+  // every streamed token.
+  const hasText = useMessage((msg) =>
+    messageHasText(
+      msg.content as ReadonlyArray<{ type?: string; text?: unknown }>,
+    ),
+  );
+  const hasMedia = useMessage((msg) =>
+    (msg.content as ReadonlyArray<{ type?: string }>).some(
+      (p) => p?.type === "file",
+    ),
+  );
+  const toolParts = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
+        ?.toolParts ?? EMPTY_TOOL_PARTS,
+  );
+  // Owner-scoped + reactive. Convex dedupes this with SubAgentActivity's identical
+  // subscription, so every assistant row shares ONE network query; it returns []
+  // for a chat with no sub-agents (the common case), so the cost is bounded.
+  const subAgents = useQuery(
+    api.subAgents.listSubAgents,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  ) as SubAgentRow[] | undefined;
+
+  const state = assistantEmptyState(
+    { status, hasText, hasMedia },
+    toolParts,
+    subAgents ?? [],
+  );
+  if (state.kind === "none") return null;
+
+  if (state.kind === "waiting") {
+    return (
+      <div className="oc-empty-answer oc-empty-answer--waiting" role="status">
+        <LoaderCircle size={15} className="oc-empty-answer__spin" aria-hidden />
+        <span className="oc-empty-answer__text">
+          {state.taskName
+            ? m.assistant_empty_waiting_named({ task: state.taskName })
+            : m.assistant_empty_waiting()}
+        </span>
+      </div>
+    );
+  }
+
+  if (state.kind === "failed") {
+    return (
+      <div className="oc-empty-answer oc-empty-answer--failed" role="status">
+        <CircleAlert size={16} className="oc-empty-answer__icon" aria-hidden />
+        <div className="oc-empty-answer__body">
+          <span className="oc-empty-answer__text">
+            {state.taskName
+              ? m.assistant_empty_failed_named({
+                  task: state.taskName,
+                  reason: state.reason,
+                })
+              : m.assistant_empty_failed({ reason: state.reason })}
+          </span>
+          {/* Make the way forward explicit: the user can simply send a new
+              message (the composer is right below) to continue. */}
+          <span className="oc-empty-answer__hint">
+            {m.assistant_empty_failed_hint()}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="oc-empty-answer oc-empty-answer--generic" role="status">
+      <Bot size={15} className="oc-empty-answer__icon" aria-hidden />
+      <span className="oc-empty-answer__text">{m.assistant_empty_generic()}</span>
+    </div>
+  );
+}
+
 // Assistant turn: NO background bubble — content sits on the page background and
 // fills the readable column (Open WebUI style). An avatar + name header carries
 // the identity; RunStatus shows the live status (and hides itself when done).
@@ -1440,6 +1557,11 @@ function AssistantMessage() {
           ) : (
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
+          {/* Empty-bubble guard: a settled turn that delegated to a sub-agent and
+              returned no text renders a clear waiting/failed/generic state here
+              (where the answer would be) instead of a blank bubble. Inert on a
+              normal or in-flight turn (renders null). */}
+          <AssistantEmptyState />
           {/* RunStatus reads the assistant identity for its long-wait label; scope
               it to the per-message routed agent so the reassurance names the right
               one (the override equals the chat identity on a single-agent chat). */}
@@ -1576,23 +1698,34 @@ function UploadProgress() {
   );
 }
 
-// Send-while-running button (Phase 1: mid-turn QUEUE). Reads the composer text
-// reactively (enabled only when non-empty), queues it server-side via the
-// QueueSendContext, then clears the composer. The queued user message echoes
-// instantly (optimistic) below the streaming reply and is dispatched when the
-// current turn ends.
-function QueueSendButton() {
+// Send-while-busy button (mid-turn QUEUE). Reads the composer text reactively
+// (enabled only when non-empty), queues it server-side via the QueueSendContext,
+// then clears the composer. The queued user message echoes instantly (optimistic)
+// and is dispatched when the chat frees up. `reason` only swaps the labels so the
+// hold is attributed to the right cause: an in-flight TURN vs a running SUB-AGENT.
+function QueueSendButton({ reason }: { reason: ComposerQueueReason }) {
   const queueSend = useContext(QueueSendContext);
   const composer = useComposerRuntime();
   const text = useComposer((c) => c.text);
   const hasText = text.trim().length > 0;
+  const isSubagent = reason === "subagent";
   return (
     <button
       type="button"
       className="oc-composer__send"
       disabled={!hasText || queueSend === null}
-      aria-label={m.chat_queue_send_aria()}
-      title={hasText ? m.chat_queue_send_title() : m.chat_response_in_progress()}
+      aria-label={
+        isSubagent ? m.chat_queue_subagent_aria() : m.chat_queue_send_aria()
+      }
+      title={
+        hasText
+          ? isSubagent
+            ? m.chat_queue_subagent_title()
+            : m.chat_queue_send_title()
+          : isSubagent
+            ? m.chat_queue_hint_subagent()
+            : m.chat_response_in_progress()
+      }
       onClick={() => {
         if (queueSend === null) return;
         const t = composer.getState().text;
@@ -1752,24 +1885,40 @@ function Composer({
   showTools,
   onToggleTools,
   unavailable = false,
+  subAgentBusy = false,
 }: {
   showTools: boolean;
   onToggleTools: () => void;
   /** Bridge down: disable input + send so no un-sendable turn is persisted. */
   unavailable?: boolean;
+  /** A sub-agent this chat spawned is still running: hold the next send (queue) and
+   *  SHOW the hold, exactly like an in-flight turn. */
+  subAgentBusy?: boolean;
 }) {
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
-  // Mid-turn QUEUE (Phase 1): while a turn is in flight, assistant-ui blocks its
-  // own Enter→send, so we intercept Enter HERE and queue instead (server-side
-  // serialization). When NOT running, we do nothing and assistant-ui handles
-  // Enter normally.
+  // Mid-turn QUEUE: while a turn is in flight OR a sub-agent runs, the chat is
+  // BUSY — assistant-ui blocks its own Enter→send only for the in-flight turn, so
+  // we intercept Enter HERE and queue for BOTH busy sources. When idle we do
+  // nothing and assistant-ui handles Enter normally. `composerQueueState` is the
+  // single, tested source of the send-vs-queue decision + the hold REASON.
   const isRunning = useThread((t) => t.isRunning);
+  const queueMode = composerQueueState({
+    turnRunning: isRunning,
+    hasRunningSubAgent: subAgentBusy,
+  });
+  const queued = queueMode.mode === "queue";
+  // The visible hold reason: a running sub-agent gets its OWN label so the user
+  // knows WHY the send is parked (distinct from the in-flight-turn case).
+  const queueHint =
+    queueMode.mode === "queue" && queueMode.reason === "subagent"
+      ? m.chat_queue_hint_subagent()
+      : m.chat_response_in_progress();
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!isRunning || queueSend === null) return;
+    if (!queued || queueSend === null) return;
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1816,18 +1965,32 @@ function Composer({
         data-gramm_editor="false"
         data-enable-grammarly="false"
       />
+      {/* Held-send hint: the chat is busy (in-flight turn OR a running sub-agent),
+          so a submit is QUEUED, not lost. Making the hold visible — with the reason
+          — is the whole point: a parked message the user can't see is worse than
+          the blank-bubble bug. Clears the moment the chat frees up. */}
+      {queued ? (
+        <div className="oc-composer__queuehint" role="status">
+          <LoaderCircle
+            size={13}
+            className="oc-composer__queuehint-spin"
+            aria-hidden
+          />
+          <span>{queueHint}</span>
+        </div>
+      ) : null}
       <div className="oc-composer__bar">
         <div className="oc-composer__group">
-          {/* Phase-1 QUEUE is TEXT-ONLY: while a turn is in flight the follow-up
-              goes through queueSend (text only), so attaching here would be silently
-              dropped. Disable the picker during a run (and when unavailable) so the
-              affordance never lies. Including attachments in a queued send is a later
-              phase. */}
+          {/* The QUEUE is TEXT-ONLY: while the chat is busy (in-flight turn OR a
+              running sub-agent) the follow-up goes through queueSend (text only),
+              so attaching here would be silently dropped. Disable the picker while
+              queued (and when unavailable) so the affordance never lies. Including
+              attachments in a queued send is a later phase. */}
           <ComposerPrimitive.AddAttachment
             className="oc-composer__icon"
             aria-label={m.chat_attach_file()}
-            disabled={isRunning || unavailable}
-            title={isRunning ? m.chat_response_in_progress() : undefined}
+            disabled={queued || unavailable}
+            title={queued ? queueHint : undefined}
           >
             <Plus size={18} aria-hidden />
           </ComposerPrimitive.AddAttachment>
@@ -1869,23 +2032,23 @@ function Composer({
             >
               <ArrowUp size={18} aria-hidden />
             </button>
+          ) : queueMode.mode === "queue" ? (
+            /* The chat is BUSY — an in-flight turn OR a running sub-agent (the
+               parent turn already finalized, but the bridge is one-turn-per
+               -session). The follow-up is accepted NOW and serialized server-side
+               (parked as a `queued` outbox row, auto-dispatched when the chat frees
+               up). The button is enabled iff there's text; Enter also queues (see
+               the Input's onKeyDown). `reason` only swaps the label. Driven by
+               queueMode (NOT ThreadPrimitive.If running) so the sub-agent case —
+               where the thread is NOT running — also shows the queue affordance. */
+            <QueueSendButton reason={queueMode.reason} />
           ) : (
-            <>
-              <ThreadPrimitive.If running={false}>
-                <ComposerPrimitive.Send className="oc-composer__send" aria-label={m.chat_send()}>
-                  <ArrowUp size={18} aria-hidden />
-                </ComposerPrimitive.Send>
-              </ThreadPrimitive.If>
-              <ThreadPrimitive.If running>
-                {/* A turn is in flight. Phase 1 (QUEUE): the follow-up is accepted
-                    NOW and serialized server-side — parked as a `queued` outbox row
-                    and auto-dispatched when the current turn ends (the bridge is
-                    one-turn-per-session). The button is enabled iff there's text;
-                    Enter also queues (see the Input's onKeyDown). No gateway abort
-                    endpoint exists, so there is still no "Stop" affordance. */}
-                <QueueSendButton />
-              </ThreadPrimitive.If>
-            </>
+            <ComposerPrimitive.Send
+              className="oc-composer__send"
+              aria-label={m.chat_send()}
+            >
+              <ArrowUp size={18} aria-hidden />
+            </ComposerPrimitive.Send>
           )}
         </div>
       </div>

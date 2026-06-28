@@ -76,6 +76,14 @@ export function subAgentLabel(row: SubAgentRow): string {
   return short || m.subagents_untitled();
 }
 
+/** True iff the chat has at least one sub-agent still RUNNING. A cheap derivation
+ *  (no card building) the composer uses to treat the chat as BUSY: while a child
+ *  runs the parent turn has finalized but the bridge is one-turn-per-session, so a
+ *  follow-up must be HELD (and the hold made visible) rather than silently parked. */
+export function hasRunningSubAgent(rows: readonly SubAgentRow[]): boolean {
+  return rows.some((r) => r.status === "running");
+}
+
 /** status -> display tone. error AND aborted both map to the visible-FAILURE
  *  tone (an aborted/timed-out child is a failure the user must see). */
 export function statusTone(status: SubAgentStatus): SubAgentTone {
@@ -165,4 +173,82 @@ export function subAgentFailedLabel(failed: number): string {
   return failed === 1
     ? m.subagents_failed_label({ count: failed })
     : m.subagents_failed_label_plural({ count: failed });
+}
+
+// --- DISPLAY-side error shortening ------------------------------------------
+//
+// A sub-agent `errorMessage` reaches the store sanitized of server paths (the
+// bridge observer's sanitizeResult) but can still be a long, ugly blob -- the
+// gateway wraps tool failures in an untrusted-content safety notice, so a single
+// failure can carry ~2KB of "SECURITY NOTICE ... EXTERNAL_UNTRUSTED_CONTENT ...
+// DO NOT ..." boilerplate around the one useful line ("web_fetch failed (401)").
+// Rendering that raw is both ugly AND a content-injection surface. This reduces
+// ANY errorMessage to a SHORT, human reason fit for an inline label:
+//   1) the highest-signal "<tool> failed (<code>)" pattern  -> "web_fetch (401)"
+//   2) else the first meaningful, non-boilerplate line, capped
+//   3) else the localized generic fallback
+// Applied at the display EDGES (the sub-agent card + the empty-bubble failed
+// state), never inside toCard -- the raw message stays in the view model.
+
+/** Hard cap on the shortened reason (chars, ellipsis included). */
+const SUBAGENT_ERROR_CAP = 120;
+
+// Structural markers the gateway's untrusted-content wrapper injects. They are
+// noise and must never reach the display. The token markers are matched
+// case-insensitively (they are always emitted in this form); the imperative
+// "DO NOT" is matched in its UPPERCASE boilerplate form ONLY, so legitimate
+// lowercase prose ("you do not have access") is preserved.
+const BOILERPLATE_TOKENS = /EXTERNAL_UNTRUSTED_CONTENT|SECURITY\s*NOTICE|UNTRUSTED\s*CONTENT/i;
+const BOILERPLATE_IMPERATIVE = /DO NOT/;
+
+function isBoilerplate(line: string): boolean {
+  return BOILERPLATE_TOKENS.test(line) || BOILERPLATE_IMPERATIVE.test(line);
+}
+
+function capReason(s: string): string {
+  return s.length <= SUBAGENT_ERROR_CAP
+    ? s
+    : `${s.slice(0, SUBAGENT_ERROR_CAP - 1)}…`;
+}
+
+/** First whitespace-collapsed, non-boilerplate, non-trivial line of `text`. */
+function firstMeaningfulLine(text: string): string | null {
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+/g, " ").trim();
+    if (line.length < 3) continue; // blank / too short to be a reason
+    // Skip a SEPARATOR / decoration line with no actual word content (e.g.
+    // "=====", "----", "***", "<<<>>>"): the gateway's security wrapper fences the
+    // real reason with these, so returning one would surface "=====" instead of the
+    // reason (or the generic fallback). Require at least one letter or digit.
+    if (!/[\p{L}\p{N}]/u.test(line)) continue;
+    if (isBoilerplate(line)) continue; // safety-wrapper noise
+    return line;
+  }
+  return null;
+}
+
+/**
+ * Reduce a raw sub-agent error to a SHORT, display-safe reason. ALWAYS returns a
+ * non-empty string: a usable extraction when possible, else the localized generic
+ * fallback. Guaranteed to be <= SUBAGENT_ERROR_CAP chars and free of the
+ * untrusted-content boilerplate.
+ */
+export function shortenSubAgentError(raw: string | null | undefined): string {
+  const generic = m.subagents_error_generic();
+  if (raw === null || raw === undefined) return generic;
+  const text = raw.trim();
+  if (text === "") return generic;
+
+  // 1) Highest-signal: "<tool> failed (<code>)" -> "<tool> (<code>)". Runs over
+  //    the WHOLE text so it survives even a single-line boilerplate blob.
+  const toolFail = /([A-Za-z][\w.-]*)\s+failed\s*\(([^)]{1,40})\)/i.exec(text);
+  if (toolFail) return capReason(`${toolFail[1]} (${toolFail[2].trim()})`);
+
+  // 2) Else the first meaningful, non-boilerplate line.
+  const line = firstMeaningfulLine(text);
+  // The final guard: never return a candidate that still carries a marker.
+  if (line && !isBoilerplate(line)) return capReason(line);
+
+  // 3) Nothing usable / everything was boilerplate.
+  return generic;
 }

@@ -65,6 +65,35 @@ const PARENT_FINAL_2 = find(
     f.payload?.spawnedBy === undefined,
 );
 
+// --- the captured ERROR run (lifecycle:error THEN chat:error) -----------------
+// Ground truth for the round-7 terminalization-ordering fix: in this capture the
+// child's `lifecycle:error` frame arrives BEFORE its authoritative `chat:error`.
+const ERROR_FRAMES = readFileSync(
+  new URL("./fixtures/subagent_frames_error.jsonl", import.meta.url),
+  "utf-8",
+)
+  .split("\n")
+  .map((l) => l.trim())
+  .filter((l) => l.length > 0 && !l.startsWith("#"))
+  .map((l) => JSON.parse(l) as Record<string, any>);
+const ERR_PARENT = "agent:alice:webchat:chat:olivier:subagentcap1782608531897";
+const ERR_CHILD = "agent:alice:subagent:49f9a3fd-5ffd-4779-b1ed-5e24040dd946";
+const findErr = (pred: (f: Record<string, any>) => boolean): Record<string, any> => {
+  const f = ERROR_FRAMES.find(pred);
+  if (!f) throw new Error("error fixture frame not found");
+  return f;
+};
+const ERR_LIFECYCLE_ERROR = findErr(
+  (f) =>
+    f.payload?.sessionKey === ERR_CHILD &&
+    typeof f.payload?.stream === "string" &&
+    f.payload.stream.endsWith("lifecycle") &&
+    f.payload?.data?.phase === "error",
+);
+const ERR_CHAT_ERROR = findErr(
+  (f) => f.event === "chat" && f.payload?.sessionKey === ERR_CHILD && f.payload?.state === "error",
+);
+
 describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
   it("registers on the parent's sessions_spawn tool result (running + childKey + task)", () => {
     const obs = new SubAgentObserver(PARENT1, "chatA");
@@ -238,6 +267,111 @@ describe("SubAgentObserver — FD-leak guardrails", () => {
     // A late duplicate child frame must NOT re-create the observation.
     expect(obs.observe(CHILD_STARTUP_1, 1002)).toEqual([]);
     expect(obs.size).toBe(0);
+  });
+});
+
+describe("SubAgentObserver — keep-alive heartbeat (anti false-reap, P1.1)", () => {
+  // A non-terminal child chat delta = a keep-alive frame (no status/lifecycle change).
+  const childDelta = (now: unknown) => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      sessionKey: CHILD1,
+      spawnedBy: PARENT1,
+      state: "streaming", // NOT a terminal state
+      message: { role: "assistant", content: [{ type: "text", text: "thinking…" }] },
+    },
+    _t: now, // unused; documents the frame is the same shape across ticks
+  });
+
+  it("emits a THROTTLED running heartbeat on keep-alive frames (≤ once per window), bumping updatedAt without a phase", () => {
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000); // register: running, lastUpsertAt = 1000s
+    // Within the 5-min (300s) window: keep-alive frames do NOT upsert (no churn).
+    expect(obs.observe(childDelta(1100), 1100)).toEqual([]); // +100s
+    expect(obs.observe(childDelta(1299), 1299)).toEqual([]); // +299s
+    // At the window boundary: ONE running heartbeat (refreshes the Convex updatedAt).
+    const hb = obs.observe(childDelta(1300), 1300); // +300s
+    expect(hb).toHaveLength(1);
+    expect(hb[0]).toMatchObject({ childSessionKey: CHILD1, status: "running" });
+    expect(hb[0]!.phase).toBeUndefined(); // pure heartbeat — never changes status/phase
+    // Throttle resets from the heartbeat: the next window is silent again, then fires.
+    expect(obs.observe(childDelta(1450), 1450)).toEqual([]); // +150s since hb
+    expect(obs.observe(childDelta(1600), 1600)).toHaveLength(1); // +300s since hb
+  });
+
+  it("emits a heartbeat each ~5 min across a 20-min span (cadence that keeps updatedAt fresh)", () => {
+    // This proves the heartbeat CADENCE; the reaper-skip half (a fresh updatedAt is
+    // not reaped) lives in the Convex `reaper does NOT touch a FRESH running row` test.
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 0); // T0
+    // A child that only streams deltas for 20 min still emits a heartbeat each window.
+    let beats = 0;
+    for (let t = 60; t <= 20 * 60; t += 60) {
+      // one keep-alive per minute
+      if (obs.observe(childDelta(t), t).length > 0) beats++;
+    }
+    // ~4 heartbeats over 20 min (at 300/600/900/1200s) — each refreshes updatedAt well
+    // inside the 20-min reaper TTL, so the live child is never marked stale.
+    expect(beats).toBeGreaterThanOrEqual(3);
+    expect(obs.size).toBe(1); // still tracked, never reaped
+  });
+
+  it("does NOT heartbeat once the child is REAPED (chat:final → terminal → no resurrection)", () => {
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    obs.observe(CHILD_FINAL_1, 1001); // chat:final → done → reaped
+    expect(obs.size).toBe(0);
+    // A keep-alive long after the window: NO heartbeat (the child is gone/recentlyFinal).
+    expect(obs.observe(childDelta(2000), 2000)).toEqual([]);
+  });
+});
+
+describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1)", () => {
+  // The held send queue must release ONLY when the child is TRULY done — its
+  // chat:final/chat:error frame — never on the earlier lifecycle:end/error phase
+  // (which precedes it), else a queued follow-up dispatches into the still-finishing
+  // child and reopens the routing race the hold closes.
+  it("lifecycle:end keeps the child RUNNING (not done); only chat:final terminalizes + reaps", () => {
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const lifecycleEnd = {
+      type: "event",
+      event: "agent",
+      payload: {
+        sessionKey: CHILD1,
+        spawnedBy: PARENT1,
+        stream: "codex_app_server.lifecycle",
+        data: { phase: "end" },
+      },
+    };
+    // lifecycle:end is a PHASE update — status stays running (queue NOT released).
+    expect(obs.observe(lifecycleEnd, 1001)).toEqual([
+      { chatId: "chatA", parentMessageId: null, childSessionKey: CHILD1, status: "running", phase: "end" },
+    ]);
+    expect(obs.size).toBe(1); // NOT reaped — still held
+    // chat:final is the authoritative terminal (done + result) that drains the queue.
+    const fin = obs.observe(CHILD_FINAL_1, 1002);
+    expect(fin[0]).toMatchObject({ status: "done", resultText: "SUBAGENT_PONG_42" });
+    expect(obs.size).toBe(0);
+  });
+
+  it("REAL error fixture: lifecycle:error stays RUNNING; the FOLLOWING chat:error is the terminal", () => {
+    // Verifies the captured order: lifecycle:error arrives BEFORE chat:error.
+    expect(ERROR_FRAMES.indexOf(ERR_LIFECYCLE_ERROR)).toBeLessThan(
+      ERROR_FRAMES.indexOf(ERR_CHAT_ERROR),
+    );
+    const obs = new SubAgentObserver(ERR_PARENT, "chatErr");
+    // The child's lifecycle:error must NOT terminalize (it would drain the held queue
+    // early). It is a phase update → status running.
+    expect(obs.observe(ERR_LIFECYCLE_ERROR, 1000)).toEqual([
+      { chatId: "chatErr", parentMessageId: null, childSessionKey: ERR_CHILD, status: "running", phase: "error" },
+    ]);
+    expect(obs.size).toBe(1); // still held through lifecycle:error
+    // The child's chat:error (which FOLLOWS in the capture) is the real terminal + reap.
+    const chatErr = obs.observe(ERR_CHAT_ERROR, 1001);
+    expect(chatErr[0]).toMatchObject({ status: "error", childSessionKey: ERR_CHILD });
+    expect(obs.size).toBe(0); // reaped only at chat:error
   });
 });
 

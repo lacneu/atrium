@@ -910,7 +910,20 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_chat", ["chatId"])
-    .index("by_child", ["childSessionKey"]),
+    .index("by_child", ["childSessionKey"])
+    // Point-range for the send-hold busy check (lib/outboxQueue.isChatBusy): read ONLY
+    // the (chat, "running") slice with .first(), so the hot send/drain path is bounded
+    // regardless of how many TERMINATED sub-agents a long-lived chat has accumulated
+    // (a by_chat scan + JS status filter would read the whole per-chat history).
+    .index("by_chat_status", ["chatId", "status"])
+    // Bounded scan for the stale-sub-agent reaper (subAgents.reapStaleSubAgents):
+    // a `running` row is a best-effort observer write, and since a running row gates
+    // isChatBusy, a dead observer (dropped terminal / bridge restart / connection-
+    // close killing its in-memory TTL watchdog) would hold the chat forever. The
+    // reaper ranges the (status="running", updatedAt < cutoff) slice and terminalizes
+    // those rows. Mirrors messages.by_status_updated: a live child has a fresh
+    // updatedAt → outside the range → never read (no full scan).
+    .index("by_status_updated", ["status", "updatedAt"]),
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy

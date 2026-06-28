@@ -32,7 +32,6 @@
 import { sanitizeText } from "./sanitize.js";
 import {
   childChatTerminalStatus,
-  childLifecycleStatus,
   type SubAgentStatus,
 } from "./sub-agent-frames.js";
 import type { SubAgentRecord } from "../../convex-writer.js";
@@ -48,6 +47,14 @@ interface Observation {
   status: SubAgentStatus;
   /** Last time ANY frame for this child arrived (the TTL clock, in seconds). */
   lastFrameAt: number;
+  /**
+   * Last time we EMITTED an upsert for this child (seconds) — the heartbeat throttle
+   * clock. Distinct from lastFrameAt: most child frames are keep-alives that do NOT
+   * upsert, so without a heartbeat the Convex row's `updatedAt` would go stale while
+   * the child is alive (and the stale-row reaper would FALSE-REAP it). See
+   * heartbeatIfDue / HEARTBEAT_THROTTLE_SECONDS.
+   */
+  lastUpsertAt: number;
 }
 
 /** Bound the registry so a misbehaving stream can't grow it without limit. */
@@ -56,6 +63,13 @@ const DEFAULT_MAX_CONCURRENT = 64;
 // sub-agent run can be long (a captured dependent run waited ~210s); aligned with
 // the idle-session TTL so the whole session is reaped around the same horizon.
 const DEFAULT_TTL_SECONDS = 15 * 60;
+// Keep-alive HEARTBEAT throttle (seconds): a still-RUNNING child re-asserts `running`
+// (bumping the Convex row's updatedAt) at most once this often on ANY child frame, so
+// a long-running child that only streams deltas keeps a FRESH updatedAt and is never
+// FALSE-REAPED by the Convex stale-row reaper (convex/subAgents.reapStaleSubAgents,
+// SUBAGENT_STALE_TTL_MS = 20 min). 5 min << 20 min leaves ample margin while keeping
+// the upsert churn bounded (NOT one write per frame). Coupling documented, not imported.
+const HEARTBEAT_THROTTLE_SECONDS = 5 * 60;
 // Defensive cap on stored result text (a Convex doc must stay < 1MB; a child's
 // answer is normal chat content, so this only guards a pathological run).
 const MAX_RESULT_CHARS = 128_000;
@@ -179,8 +193,9 @@ export class SubAgentObserver {
         }
         return [rec];
       }
-      // Non-terminal chat (delta): keep-alive only (the child is already running).
-      return [];
+      // Non-terminal chat (delta): keep-alive — emit a throttled heartbeat so a long
+      // delta-only child keeps a fresh Convex updatedAt (anti false-reap).
+      return this.heartbeatIfDue(obs, now);
     }
 
     // --- Child lifecycle phase (the redundant earlier signal) -----------------
@@ -189,38 +204,19 @@ export class SubAgentObserver {
     const data = readField(payload, "data");
     const phase = data !== null ? readString(data, "phase") : null;
     if (eventType === "agent" && stream !== null && stream.endsWith("lifecycle") && phase !== null) {
-      const ls = childLifecycleStatus(phase);
-      if (ls === "error") {
-        this.reap(childKey); // terminal failure; data.error carries the reason
-        const errMsg = this.sanitizeResult(
-          data !== null ? readString(data, "error") ?? "" : "",
-        );
-        const rec: SubAgentUpsert = {
-          chatId: this.chatId,
-          parentMessageId: obs.parentMessageId,
-          childSessionKey: childKey,
-          status: "error",
-          phase,
-        };
-        if (errMsg) rec.errorMessage = errMsg;
-        return [rec];
-      }
-      if (ls === "done") {
-        // lifecycle:end has no result text -> DON'T reap; wait for the child's chat:final
-        // (which carries the answer). The TTL backstops if chat:final never arrives.
-        obs.status = "done";
-        return [
-          {
-            chatId: this.chatId,
-            parentMessageId: obs.parentMessageId,
-            childSessionKey: childKey,
-            status: "done",
-            phase,
-          },
-        ];
-      }
-      // running (start/startup/other non-terminal phase)
+      // A lifecycle phase is NEVER a drain-releasing terminal — it only updates the
+      // visible phase and keeps the child `running`. The AUTHORITATIVE terminal is the
+      // child's own chat:final / chat:error / chat:aborted frame (handled in the `chat`
+      // branch above), the ONLY frame that releases the held send queue (via
+      // maybeDrainOnTerminal). VERIFIED against the captured fixtures: `lifecycle:end`/
+      // `lifecycle:error` arrive BEFORE the child's `chat:final`/`chat:error`, so
+      // terminalizing here would DRAIN a held follow-up before the child is truly done —
+      // dispatching it into the still-finishing child and reopening the exact gateway
+      // routing race the hold exists to close (round-7 P1). A child that emits a
+      // lifecycle terminal but never its chat:final is backstopped by the TTL watchdog
+      // (+ the Convex reaper) — slower, but never premature.
       obs.status = "running";
+      obs.lastUpsertAt = now; // a real status upsert resets the heartbeat throttle
       return [
         {
           chatId: this.chatId,
@@ -232,8 +228,9 @@ export class SubAgentObserver {
       ];
     }
 
-    // Any other child frame (assistant delta, provenance, tool): keep-alive only.
-    return [];
+    // Any other child frame (assistant delta, provenance, tool): keep-alive — emit a
+    // throttled heartbeat so a long-running child stays fresh (anti false-reap).
+    return this.heartbeatIfDue(obs, now);
   }
 
   /**
@@ -242,7 +239,7 @@ export class SubAgentObserver {
    * TTL gets a VISIBLE terminal status (error + a timeout message), not a silent
    * reap -- this is the monitor's own watchdog, because the parent-lane announce is
    * unreliable (it may NO_REPLY or never fire). An already-terminal observation
-   * (e.g. lifecycle:end set done but chat:final never arrived) is reaped silently
+   * (its chat:final/error landed but it lingered in the registry) is reaped silently
    * (its last-known status stands -- never downgraded). Returns the upserts to write.
    */
   sweep(now: number): SubAgentUpsert[] {
@@ -339,9 +336,39 @@ export class SubAgentObserver {
       parentMessageId: extra.parentMessageId ?? null,
       status: "running",
       lastFrameAt: now,
+      // Seed the heartbeat clock at registration: the spawn-registration path emits a
+      // `running` upsert immediately after, so the first throttle window runs from now
+      // (no redundant heartbeat right after registration).
+      lastUpsertAt: now,
     };
     this.observations.set(childKey, obs);
     return obs;
+  }
+
+  /**
+   * Throttled keep-alive HEARTBEAT for a still-RUNNING child. The observer does NOT
+   * upsert on plain keep-alive frames (chat deltas / tool frames), so a child that
+   * runs long while only streaming would let its Convex `updatedAt` go stale though it
+   * is alive — and the stale-row reaper (convex/subAgents.reapStaleSubAgents, 20-min
+   * TTL) would FALSE-REAP it, releasing held sends into a LIVE child. To prevent that
+   * we re-assert `running` (which bumps the row's updatedAt) at most once per
+   * HEARTBEAT_THROTTLE_SECONDS. A genuinely DEAD child (no frames at all) emits no
+   * heartbeat, so it still goes stale and is reaped. The heartbeat carries NO phase —
+   * it only refreshes updatedAt and never changes status, so it never triggers the
+   * Convex terminal-drain.
+   */
+  private heartbeatIfDue(obs: Observation, now: number): SubAgentUpsert[] {
+    if (obs.status !== "running") return [];
+    if (now - obs.lastUpsertAt < HEARTBEAT_THROTTLE_SECONDS) return [];
+    obs.lastUpsertAt = now;
+    return [
+      {
+        chatId: this.chatId,
+        parentMessageId: obs.parentMessageId,
+        childSessionKey: obs.childSessionKey,
+        status: "running",
+      },
+    ];
   }
 
   /** Strip server paths (sanitizeText) and cap length — for both the success result

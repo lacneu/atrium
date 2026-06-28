@@ -107,6 +107,21 @@ crons.interval(
   {},
 );
 
+// Stale sub-agent reaper: every 5 minutes, terminalize `running` subAgents rows
+// untouched for > SUBAGENT_STALE_TTL_MS (20 min). A running row gates the chat's
+// send queue (isChatBusy), so a DEAD observer (dropped terminal / bridge restart /
+// connection-close killing its in-memory watchdog) that never finalizes a child
+// would lock the chat forever. Writing the row `error` routes through the SAME
+// terminal-drain a real child-terminal takes, so the held send dispatches FIFO and
+// the dead child becomes visible in the monitor. Bounded + self-reschedules. See
+// convex/subAgents.ts.
+crons.interval(
+  "reap stale sub-agents",
+  { minutes: 5 },
+  internal.subAgents.reapStaleSubAgents,
+  {},
+);
+
 // Durable access-log retention (SOC2): daily bounded purge of access-log rows
 // past ACCESS_LOG_RETENTION_DAYS (default 90 — spans a Type II audit period,
 // vs the 14-day traceEvents purge). Self-reschedules to drain a backlog.

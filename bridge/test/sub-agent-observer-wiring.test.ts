@@ -199,6 +199,178 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     reg.closeAll();
   });
 
+  it("AWAITS the spawn registration before the next frame (parent finalize) — closes the spawn-upsert race (P1.2)", async () => {
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => fakeConnQueue() as never,
+    );
+    // A writer whose REGISTRATION (running) upsert is gated on a manual deferral, so
+    // we can observe whether the consume loop blocks on it before finalizing.
+    let releaseRegistration!: () => void;
+    const registrationGate = new Promise<void>((res) => {
+      releaseRegistration = res;
+    });
+    const order: string[] = [];
+    const writer = {
+      startAssistant: async () => "msg-1",
+      appendDelta: async () => {},
+      setSnapshot: async () => {},
+      addToolPart: async () => {},
+      addMedia: async () => {},
+      addProvenancePart: async () => {},
+      noteMediaUndelivered: async () => {},
+      finalize: async () => {
+        order.push("finalize");
+      },
+      reportSessionMeta: async () => {},
+      getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+      upsertSubAgent: async (record: SubAgentRecord) => {
+        if (record.status === "running") {
+          order.push("registration:start");
+          await registrationGate; // block the ORDERED registration write
+          order.push("registration:commit");
+        }
+      },
+    } as unknown as ConvexWriter;
+
+    let now = 1000;
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
+    await tick();
+    const parentKey = buildSessionKey(
+      ROUTING.openclawChatId,
+      ROUTING.agentId,
+      ROUTING.canonical,
+    );
+    const childKey = "agent:alice:subagent:race-child";
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await tick();
+
+    // Parent's sessions_spawn result → the registration upsert is AWAITED (gate blocks).
+    conn.push({
+      type: "event",
+      event: "agent",
+      payload: {
+        sessionKey: parentKey,
+        runId: "run-1",
+        stream: "tool",
+        data: {
+          phase: "result",
+          name: "sessions_spawn",
+          meta: "task race, agent alice",
+          result: {
+            contentItems: [{ text: JSON.stringify({ childSessionKey: childKey }) }],
+          },
+        },
+      },
+    });
+    await tick();
+    // The parent's chat:final is queued BEHIND the spawn frame.
+    conn.push({
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: parentKey,
+        runId: "run-1",
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "delegated" }] },
+      },
+    });
+    await tick();
+
+    // ORDERING PROOF: the loop is blocked on the registration commit, so finalize has
+    // NOT run yet. (If the registration were fire-and-forget, finalize would already
+    // have happened here — the race that mis-routes a follow-up into the child.)
+    expect(order).toEqual(["registration:start"]);
+    expect(s.runManager.isFinalized).toBe(false);
+
+    // Release the registration → it commits, THEN the loop reads + finalizes.
+    releaseRegistration();
+    await tick();
+    await tick();
+    expect(order).toEqual([
+      "registration:start",
+      "registration:commit",
+      "finalize",
+    ]);
+    expect(s.runManager.isFinalized).toBe(true);
+    reg.closeAll();
+  });
+
+  it("a TTL-SWEPT child frees its registeredChildren key (no set leak); a still-running one does NOT (P3)", async () => {
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => fakeConnQueue() as never,
+    );
+    const { writer, subAgents } = recordingWriter();
+    let now = 1000; // SECONDS clock (the observer's TTL unit)
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
+    await tick();
+    const parentKey = buildSessionKey(
+      ROUTING.openclawChatId,
+      ROUTING.agentId,
+      ROUTING.canonical,
+    );
+    const childKey = "agent:alice:subagent:swept-child";
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await tick();
+
+    // Register the child (running) — its key is ordered into registeredChildren.
+    conn.push({
+      type: "event",
+      event: "agent",
+      payload: {
+        sessionKey: parentKey,
+        runId: "run-1",
+        stream: "tool",
+        data: {
+          phase: "result",
+          name: "sessions_spawn",
+          meta: "task swept, agent alice",
+          result: { contentItems: [{ text: JSON.stringify({ childSessionKey: childKey }) }] },
+        },
+      },
+    });
+    await tick();
+    // Parent turn finalizes; the child keeps running (no chat:final for it).
+    conn.push({
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: parentKey,
+        runId: "run-1",
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "delegated" }] },
+      },
+    });
+    await tick();
+    // STILL RUNNING: the key is held (not removed) — the set tracks a live child.
+    expect(s.registeredChildCount).toBe(1);
+
+    // Advance the clock PAST the observer's TTL (default 15 min = 900s) and poke the
+    // loop: nextTimeout collapses to 0 → the timeout branch runs the TTL sweep, which
+    // terminalizes the silently-hung child (status:error).
+    now = 1000 + 16 * 60; // +16 min > 15-min TTL
+    s.wake();
+    await tick();
+    await tick();
+
+    // The sweep emitted a terminal error for the child...
+    const sweptErr = subAgents.find(
+      (r) => r.childSessionKey === childKey && r.status === "error",
+    );
+    expect(sweptErr).toBeDefined();
+    // ...AND its key was freed from registeredChildren (the P3 leak fix: the sweep path
+    // now routes through the same cleanup). Regression guard: with the old bare flush,
+    // this stays 1 forever and the set leaks across every timed-out child.
+    expect(s.registeredChildCount).toBe(0);
+
+    reg.closeAll();
+  });
+
   it("a child of ANOTHER chat (foreign spawnedBy) is never written through this session", async () => {
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(
       async () => fakeConnQueue() as never,

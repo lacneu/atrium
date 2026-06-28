@@ -415,6 +415,9 @@
   "chat_response_in_progress": "Réponse en cours…",
   "chat_queue_send_aria": "Mettre en file (envoyé après la réponse en cours)",
   "chat_queue_send_title": "Envoyer après la réponse en cours",
+  "chat_queue_hint_subagent": "En attente du sous-agent…",
+  "chat_queue_subagent_aria": "Mettre en file (envoyé après la fin du sous-agent)",
+  "chat_queue_subagent_title": "Envoyer après la fin du sous-agent",
   "chat_queue_full": "Trop de messages en attente. Patientez la fin de la réponse en cours.",
   "chat_queue_failed": "Impossible de mettre le message en file. Réessayez.",
   "integrations_loading": "Chargement…",
@@ -1335,5 +1338,11 @@
   "subagents_result": "Résultat",
   "subagents_untitled": "Sous-agent",
   "subagents_collapse": "Masquer les sous-agents",
-  "subagents_expand": "Afficher les sous-agents"
+  "subagents_expand": "Afficher les sous-agents",
+  "assistant_empty_waiting": "L’agent a délégué à un sous-agent — en attente de son retour…",
+  "assistant_empty_waiting_named": "L’agent a délégué à un sous-agent (« {task} ») — en attente de son retour…",
+  "assistant_empty_failed": "L’agent a délégué à un sous-agent qui a échoué : {reason}",
+  "assistant_empty_failed_named": "L’agent a délégué à un sous-agent (« {task} ») qui a échoué : {reason}",
+  "assistant_empty_failed_hint": "Vous pouvez écrire un nouveau message pour continuer.",
+  "assistant_empty_generic": "L’agent a effectué des actions mais n’a pas renvoyé de réponse."
 }
