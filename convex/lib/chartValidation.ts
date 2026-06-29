@@ -251,7 +251,8 @@ export function validateChartImport(input: unknown): ChartValidationResult {
       key !== "colors" &&
       key !== "radius" &&
       key !== "fontSans" &&
-      key !== "fontMono"
+      key !== "fontMono" &&
+      key !== "bpm"
     ) {
       return { ok: false, error: `Unknown token field: ${key}` };
     }
@@ -292,6 +293,18 @@ export function validateChartImport(input: unknown): ChartValidationResult {
     const font = validateFont(t.fontMono);
     if (font === null) return { ok: false, error: "Invalid fontMono" };
     built.fontMono = font;
+  }
+  if (t.bpm !== undefined) {
+    const bpm = t.bpm;
+    if (
+      typeof bpm !== "number" ||
+      !Number.isInteger(bpm) ||
+      bpm < 0 ||
+      bpm > 90
+    ) {
+      return { ok: false, error: "Invalid bpm (expected an integer 0-90)" };
+    }
+    built.bpm = bpm;
   }
 
   return { ok: true, name, tokens: built };

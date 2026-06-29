@@ -42,6 +42,7 @@ import { Doc } from "../_generated/dataModel";
 import {
   langfuseConfig,
   opikConfig,
+  otlpConfig,
   readIntegrationConfig,
   type LangfuseOverride,
   type OpikOverride,
@@ -49,6 +50,9 @@ import {
 import { ShippableEvent, SendResult } from "./shared";
 import * as langfuse from "./langfuse";
 import * as opik from "./opik";
+import * as otlp from "./otlp";
+import { decryptOtlpHeaders } from "./otlpSecret";
+import type { EncryptedSecret } from "../lib/crypto/cipher";
 
 // Max trace events shipped to a single vendor per flush (bounded egress).
 const FLUSH_BATCH = 200;
@@ -66,6 +70,7 @@ const MAX_SAME_MS_SCAN = 4000;
 // The vendor keys (also the `integrationCursors.vendor` values).
 const VENDOR_LANGFUSE = "langfuse";
 const VENDOR_OPIK = "opik";
+const VENDOR_OTLP = "otlp";
 
 /** Per-vendor outcome returned by the flush (no secrets — booleans + counts). */
 type VendorFlushResult = {
@@ -333,6 +338,28 @@ export const flushToVendors = internalAction({
       }),
     );
 
+    // Generic OTLP — the operator's own OpenTelemetry backend. The auth headers are
+    // an ENCRYPTED secret; decrypt them lazily INSIDE sendBatch (only when there are
+    // events to send), so a missing/rotated master key or a tampered envelope
+    // surfaces as a vendor failure (cursor NOT advanced, anomaly after N) rather
+    // than crashing the cron.
+    const ot = otlpConfig({
+      endpoint: ov.otlp.endpoint,
+      enabled: ov.otlp.enabled,
+    });
+    const otHeadersSecret = ov.otlp.headersSecret;
+    results.push(
+      await flushOneVendor(ctx, {
+        vendor: VENDOR_OTLP,
+        configured: ot.configured && ot.enabled,
+        now,
+        sendBatch: async (events) => {
+          const headers = await decryptOtlpHeaders(otHeadersSecret);
+          return otlp.send({ ...ot, headers }, events);
+        },
+      }),
+    );
+
     return { vendors: results };
   },
 });
@@ -342,11 +369,22 @@ export const vendorOverrides = internalQuery({
   args: {},
   handler: async (
     ctx: QueryCtx,
-  ): Promise<{ langfuse: LangfuseOverride; opik: OpikOverride }> => {
+  ): Promise<{
+    langfuse: LangfuseOverride;
+    opik: OpikOverride;
+    // The OTLP blob includes the ENCRYPTED headers envelope (ciphertext only — safe
+    // to return to the flush ACTION, which decrypts it; NEVER reaches the browser).
+    otlp: {
+      endpoint?: string;
+      enabled?: boolean;
+      headersSecret?: EncryptedSecret;
+    };
+  }> => {
     const cfg = await readIntegrationConfig(ctx);
     return {
       langfuse: cfg?.langfuse ?? {},
       opik: cfg?.opik ?? {},
+      otlp: cfg?.otlp ?? {},
     };
   },
 });

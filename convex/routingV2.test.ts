@@ -437,40 +437,177 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     const chat = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
 
     // First per-turn turn → route to bob (≠ primary alice) → switch → segment = turn:<m1>.
+    // The mutation RETURNS the switched-from agent (codex P2: drives `routedSwitch`).
     const m1 = await seedMsg(t, chat._id, uid);
-    await t.mutation(internal.bridge.beginTurnRouting, {
+    const sw1 = await t.mutation(internal.bridge.beginTurnRouting, {
       chatId: chat._id,
       userId: uid as never,
       routedAgent: { instanceName: "prod", agentId: "bob" },
       turnId: m1,
     });
+    // beginTurnRouting RETURNS the ephemeral segment + persists ONLY perTurnRouting —
+    // the routingSegment/lastRouted* tuple advances atomically only on confirm.
+    expect(sw1).toEqual({
+      isSwitch: true,
+      segment: `turn:${m1}`, // a NEW segment on a switch
+      switchedFromInstanceName: "prod",
+      switchedFromAgentId: "alice", // switched FROM the primary
+    });
     let c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
     expect(c.perTurnRouting).toBe(true);
-    expect(c.routingSegment).toBe(`turn:${m1}`);
-    expect(c.lastRoutedAgentId).toBe("bob");
+    expect(c.routingSegment).toBeUndefined(); // NOT persisted before confirm
+    // Confirm the dispatch SUCCEEDED → advances the WHOLE tuple {segment, lastRouted*}.
+    await t.mutation(internal.bridge.confirmTurnRouting, {
+      chatId: chat._id,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      segment: sw1!.segment,
+    });
+    c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
+    expect(c.routingSegment).toBe(`turn:${m1}`); // confirmed
+    expect(c.lastRoutedAgentId).toBe("bob"); // confirmed
 
-    // Same agent (bob) again → NO re-key (warm run): the segment stays.
+    // Same agent (bob) again → NO re-key (warm run): reuses the CONFIRMED segment.
     const m2 = await seedMsg(t, chat._id, uid);
-    await t.mutation(internal.bridge.beginTurnRouting, {
+    const sw2 = await t.mutation(internal.bridge.beginTurnRouting, {
       chatId: chat._id,
       userId: uid as never,
       routedAgent: { instanceName: "prod", agentId: "bob" },
       turnId: m2,
     });
-    c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
-    expect(c.routingSegment).toBe(`turn:${m1}`); // UNCHANGED — no re-ship within a run
+    expect(sw2).toEqual({
+      isSwitch: false, // same-agent follow-up is NOT a switch → routedSwitch=false
+      segment: `turn:${m1}`, // REUSES the confirmed segment (warm), not a new one
+      switchedFromInstanceName: null,
+      switchedFromAgentId: null,
+    });
 
     // Switch back to alice → re-key (fresh segment → the bridge rehydrates alice).
     const m3 = await seedMsg(t, chat._id, uid);
-    await t.mutation(internal.bridge.beginTurnRouting, {
+    const sw3 = await t.mutation(internal.bridge.beginTurnRouting, {
       chatId: chat._id,
       userId: uid as never,
       routedAgent: { instanceName: "prod", agentId: "alice" },
       turnId: m3,
     });
+    expect(sw3).toEqual({
+      isSwitch: true,
+      segment: `turn:${m3}`, // a NEW segment on the switch back
+      switchedFromInstanceName: "prod",
+      switchedFromAgentId: "bob", // switched FROM bob
+    });
+    await t.mutation(internal.bridge.confirmTurnRouting, {
+      chatId: chat._id,
+      routedAgent: { instanceName: "prod", agentId: "alice" },
+      segment: sw3!.segment,
+    });
     c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
-    expect(c.routingSegment).toBe(`turn:${m3}`); // RE-KEYED on the switch
-    expect(c.lastRoutedAgentId).toBe("alice");
+    expect(c.routingSegment).toBe(`turn:${m3}`); // RE-KEYED on the switch (confirmed)
+    expect(c.lastRoutedAgentId).toBe("alice"); // confirmed
+  });
+
+  test("codex P2.B: a LEGACY/unbound chat's first per-turn selection (no chat.agentId, no predecessor) is STILL a switch — isSwitch=true with switchedFrom NULL → routedSwitch must be true so the novel segment rehydrates", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "bob", false);
+    // Unbound/legacy chat: NO agentId, NO lastRoutedAgentId (schema-supported).
+    const chat = await makeChat(t, uid, {});
+    const m1 = await seedMsg(t, chat._id, uid);
+    const sw = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m1,
+    });
+    // It re-keyed (minted a segment) → isSwitch=true → routedSwitch=true → fresh →
+    // rehydrate. switchedFrom is NULL (no known predecessor) — the decoupling (P2.B).
+    expect(sw).toEqual({
+      isSwitch: true,
+      segment: `turn:${m1}`,
+      switchedFromInstanceName: null,
+      switchedFromAgentId: null,
+    });
+    const c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
+    expect(c.perTurnRouting).toBe(true);
+    expect(c.routingSegment).toBeUndefined(); // segment is RETURNED, persisted on confirm
+  });
+
+  test("codex P2 (failed-first-routed): a routed switch whose dispatch FAILED (no confirmTurnRouting) does NOT 'use up' the switch — a retry to the SAME agent is STILL a switch (isSwitch=true) + re-keys, so the still-unestablished session rehydrates", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedUA(t, uid, "prod", "bob", false);
+    const chat = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
+
+    // First routed turn alice→bob: a switch. Segment minted. NO confirmTurnRouting →
+    // the dispatch FAILED (e.g. oversized attachment / gateway refusal pre-ack).
+    const m1 = await seedMsg(t, chat._id, uid);
+    const first = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m1,
+    });
+    expect(first?.isSwitch).toBe(true);
+    expect(first?.segment).toBe(`turn:${m1}`);
+    let c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
+    // NOTHING in the persisted tuple advanced — the dispatch was never confirmed.
+    expect(c.routingSegment).toBeUndefined();
+    expect(c.lastRoutedAgentId).toBeUndefined();
+
+    // RETRY to the SAME agent (bob) — a NEW send. Because the tuple was never confirmed,
+    // prevAgent is still the primary → isSwitch=TRUE again → a NEW segment → fresh
+    // session → rehydrate. (The bug: optimistic advance → isSwitch=false → empty context.)
+    const m2 = await seedMsg(t, chat._id, uid);
+    const retry = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m2,
+    });
+    expect(retry?.isSwitch).toBe(true); // <- the P2 fix: retry is STILL a switch
+    expect(retry?.segment).toBe(`turn:${m2}`); // RE-KEYED → novel bridge session → fresh
+  });
+
+  test("codex (atomic-on-confirm): an A→B switch whose dispatch FAILS leaves the WHOLE tuple at A → a RETURN to A reuses A's CONFIRMED segment (its real warm session), not the unconfirmed B segment", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedUA(t, uid, "prod", "bob", false);
+    // Chat already CONFIRMED on alice: segment turn:A0, lastRouted=alice.
+    const chat = await makeChat(t, uid, {
+      instanceName: "prod",
+      agentId: "alice",
+      perTurnRouting: true,
+      routingSegment: "turn:A0",
+      lastRoutedInstanceName: "prod",
+      lastRoutedAgentId: "alice",
+    });
+
+    // A→B switch — its dispatch FAILS (no confirm). The segment turn:<m1> is RETURNED
+    // (for the live send) but NOT persisted.
+    const m1 = await seedMsg(t, chat._id, uid);
+    const toB = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m1,
+    });
+    expect(toB).toMatchObject({ isSwitch: true, segment: `turn:${m1}` });
+    const cAfterFail = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
+    expect(cAfterFail.routingSegment).toBe("turn:A0"); // UNCHANGED — failed switch persisted nothing
+    expect(cAfterFail.lastRoutedAgentId).toBe("alice");
+
+    // RETURN to A: NOT a switch (lastRouted still alice, segment still turn:A0) → it
+    // reuses A's CONFIRMED segment turn:A0 (A's real warm session) — NOT the failed B
+    // segment turn:<m1>. (The bug: optimistic B segment → A reuses it → empty context.)
+    const m2 = await seedMsg(t, chat._id, uid);
+    const backToA = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "alice" },
+      turnId: m2,
+    });
+    expect(backToA).toMatchObject({ isSwitch: false, segment: "turn:A0" });
   });
 
   test("getChatRouting: a perTurnRouting chat keys on its epoch segment + forces rehydration ON", async () => {
@@ -486,15 +623,30 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       routingSegment: "turn:abc",
       openclawChatId: "warm-thread", // must be IGNORED for a per-turn chat
     });
-    const r = await t.query(internal.bridge.getChatRouting, {
+    // codex P2: routedSwitch is emitted ONLY when the caller flags an actual switch.
+    const rSwitch = await t.query(internal.bridge.getChatRouting, {
       chatId: chat._id,
       userId: uid as never,
       routedAgent: { instanceName: "prod", agentId: "alice" },
+      routedSwitch: true,
     });
-    expect(r?.openclawChatId).toBe("turn:abc"); // the epoch segment, NOT the warm thread
-    expect(r?.configOverrides?.rehydration).toBe(true); // full-thread re-ground on switch
-    expect(r?.target?.agentId).toBe("alice");
-    expect(r?.rebind).toBeNull(); // per-turn never rebinds the chat
+    expect(rSwitch?.openclawChatId).toBe("turn:abc"); // the epoch segment, NOT the warm thread
+    expect(rSwitch?.configOverrides?.rehydration).toBe(true); // enable knob always forced
+    expect(rSwitch?.configOverrides?.routedSwitch).toBe(true); // actual switch → fresh
+    expect(rSwitch?.target?.agentId).toBe("alice");
+    expect(rSwitch?.rebind).toBeNull(); // per-turn never rebinds the chat
+
+    // A NON-switch routed dispatch (same-agent follow-up): rehydration still ENABLED
+    // (the knob), but routedSwitch ABSENT → the bridge keeps a warm gateway session
+    // (no duplicate re-inject after a bridge restart). This is the codex P2 guard.
+    const rSame = await t.query(internal.bridge.getChatRouting, {
+      chatId: chat._id,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "alice" },
+      routedSwitch: false,
+    });
+    expect(rSame?.configOverrides?.rehydration).toBe(true);
+    expect(rSame?.configOverrides?.routedSwitch).toBeUndefined();
   });
 
   // Codex P2-1: a forged / since-revoked routedAgent must NOT reconfigure the chat.

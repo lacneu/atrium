@@ -295,6 +295,21 @@ export function getIntegrations(
  * turn whose finalize frame the bridge never relayed. A provenance part also
  * carries a SOC2-safe `structure` (per-item kind + hasFileName/hasScore booleans,
  * counts, allowlisted source/route) for diagnosing the Sources panel content-free.
+ *
+ * TURN RECONSTRUCTION (content-free): per message, `outbox:{outboxId,status}` is
+ * the dispatch JOIN KEY — `chatId:outboxId` is the correlationId of that turn's
+ * chat.send / openclaw.dispatch (and openclaw.rehydrate) traces, so list_traces
+ * stitches a message to its dispatch chain. NOTE on `outbox:null`: it means EITHER
+ * no outbox row (an assistant message — only user turns dispatch) OR a user message
+ * older than the per-status read cap; when top-level `outboxTruncated` is true, read
+ * null on an OLDER user message as "beyond the cap", NOT as "never dispatched". The
+ * most-recent user turns are always covered. Per message, `routedInstanceName` /
+ * `routedAgentId` give the per-turn routed agent (null = the chat's primary).
+ * Chat-level `routing` (perTurnRouting + lastRouted* + the opaque `routingSegment`)
+ * shows whether/where the chat fans turns to specialists. `subAgents` is the
+ * content-free delegation summary: `byStatus` counts + capped `failedSample` /
+ * `runningSample` (each = childIdShort + status enum + errorCategory enum +
+ * hasTaskName bool + ageSeconds — NEVER the task/result/error text or phase).
  */
 export function getChatState(
   config: Config,
@@ -354,10 +369,13 @@ export function getTraceEnrichment(
 /**
  * GET /api/v1/diagnose — ONE actionable assessment of a chat for the
  * self-correction loop: SOC2-safe chat-state + bridge availability, classified
- * (stuck_stream | dispatch_error | attachment_problem | bridge_unavailable |
- * bridge_degraded | healthy) with a `suggestedAction` and, when a safe corrective
- * exists, a `suggestedTool`. Requires `traces.read`. Read-only. Call FIRST on a
- * user report, then act on the suggestion.
+ * (stuck_stream | dispatch_error | attachment_problem | subagent_stuck |
+ * subagent_failure | bridge_unavailable | bridge_degraded | healthy) with a
+ * `suggestedAction` and, when a safe corrective exists, a `suggestedTool`.
+ * `subagent_stuck` (a delegated sub-agent running far too long — a main turn
+ * awaiting it can hang) and `subagent_failure` (a recent failed delegation) read
+ * the new chat-state `subAgents` summary. Requires `traces.read`. Read-only. Call
+ * FIRST on a user report, then act on the suggestion.
  */
 export function diagnoseChat(
   config: Config,

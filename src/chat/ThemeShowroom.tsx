@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MoreVertical, Check, X, Upload } from "lucide-react";
+import { MoreVertical, Check, X, Upload, Download } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -50,6 +50,31 @@ import type { ThemeMode } from "@/lib/useTheme";
 import { useResolvedMode } from "@/lib/useChart";
 import { cn } from "@/lib/utils";
 import { BUILTIN_CHARTS, type ChartTokens } from "../../convex/lib/charts";
+
+/**
+ * Export a chart's tokens as a `<name>.chart.json` download, in the EXACT shape
+ * `importChart` accepts — so a designer can export → edit → re-import (round-trip).
+ * Pure client-side: the tokens are already resolved on the chart list (builtin OR
+ * custom), so no extra query is needed.
+ */
+function downloadChartTokens(name: string, tokens: ChartTokens): void {
+  const safe =
+    name
+      .trim()
+      .replace(/[^A-Za-z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "chart";
+  const blob = new Blob([JSON.stringify(tokens, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${safe}.chart.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 // Living style guide + Apparence settings. The component showroom (collapsed
 // <details> at the bottom) renders every component the app uses with the active
@@ -146,6 +171,7 @@ function ChartCard({
   tokens,
   mode,
   onSelect,
+  onExport,
 }: {
   selected: boolean;
   title: string;
@@ -153,29 +179,48 @@ function ChartCard({
   tokens: ChartTokens | null;
   mode: "light" | "dark";
   onSelect: () => void;
+  // When set, a corner button downloads this chart's tokens (export → re-import).
+  // The card itself is a <button>, so the export control is a SIBLING (no nested
+  // button) overlaid on the card corner.
+  onExport?: () => void;
 }) {
   return (
-    <button
-      type="button"
-      className={cn("oc-chart-card", selected && "oc-chart-card--selected")}
-      aria-pressed={selected}
-      onClick={onSelect}
-    >
-      <div className="oc-chart-card__head">
-        <span className="oc-chart-card__title">{title}</span>
-        {selected ? (
-          <Check className="size-4 text-primary" aria-hidden />
-        ) : null}
-      </div>
-      {tokens ? (
-        <ChartSwatches tokens={tokens} mode={mode} />
-      ) : (
-        <div className="oc-chart-swatches oc-chart-swatches--native" aria-hidden />
-      )}
-      <div className="oc-chart-card__meta">
-        <span className="oc-chart-card__subtitle">{subtitle}</span>
-      </div>
-    </button>
+    <div className="oc-chart-card-wrap">
+      <button
+        type="button"
+        className={cn("oc-chart-card", selected && "oc-chart-card--selected")}
+        aria-pressed={selected}
+        onClick={onSelect}
+      >
+        <div className="oc-chart-card__head">
+          <span className="oc-chart-card__title">{title}</span>
+          {selected ? (
+            <Check className="size-4 text-primary" aria-hidden />
+          ) : null}
+        </div>
+        {tokens ? (
+          <ChartSwatches tokens={tokens} mode={mode} />
+        ) : (
+          <div className="oc-chart-swatches oc-chart-swatches--native" aria-hidden />
+        )}
+        <div className="oc-chart-card__meta">
+          <span className="oc-chart-card__subtitle">{subtitle}</span>
+        </div>
+      </button>
+      {onExport ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="oc-chart-card__export"
+          onClick={onExport}
+          aria-label={m.charts_export_label()}
+          title={m.charts_export_label()}
+        >
+          <Download className="size-4" />
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -255,6 +300,7 @@ function MyChartPicker({
               tokens={c.tokens}
               mode={resolvedMode}
               onSelect={() => void choose(c.key)}
+              onExport={() => downloadChartTokens(c.name, c.tokens)}
             />
           );
         })}
@@ -639,21 +685,31 @@ function ChartDomainControl({
   );
 }
 
-// One owned personal chart: name + a JSON tokens editor (re-validated server-side
-// via updateChart) + delete + group associations. The token editor is a JSON
-// textarea (NOT a 32-token grid) prefilled with the current tokens.
+// The cardiac gauge owns `bpm`, so the JSON editor shows every token EXCEPT bpm;
+// `save()` re-injects the slider value. One control per concern (no duplication).
+function tokensJsonWithoutBpm(tokens: ChartTokens): string {
+  const rest: Partial<ChartTokens> = { ...tokens };
+  delete rest.bpm;
+  return JSON.stringify(rest, null, 2);
+}
+
+// One owned personal chart: name + a cardiac (bpm) gauge + a JSON tokens editor
+// (re-validated server-side via updateChart) + delete + group associations. The
+// token editor is a JSON textarea (NOT a 32-token grid) prefilled with the tokens.
 function MyChartRow({ chart }: { chart: MyChart }) {
   const updateChart = useMutation(api.charts.updateChart);
   const deleteChart = useMutation(api.charts.deleteChart);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(chart.name);
-  const [json, setJson] = useState(() => JSON.stringify(chart.tokens, null, 2));
+  const [json, setJson] = useState(() => tokensJsonWithoutBpm(chart.tokens));
+  const [bpm, setBpm] = useState<number>(chart.tokens.bpm ?? 0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   function startEdit() {
     setName(chart.name);
-    setJson(JSON.stringify(chart.tokens, null, 2));
+    setJson(tokensJsonWithoutBpm(chart.tokens));
+    setBpm(chart.tokens.bpm ?? 0);
     setError(null);
     setEditing(true);
   }
@@ -667,6 +723,12 @@ function MyChartRow({ chart }: { chart: MyChart }) {
     } catch {
       setError(m.charts_import_invalid_json());
       return;
+    }
+    // Re-inject the cardiac-gauge value (the JSON omits bpm). 0 = static => omit.
+    if (tokens && typeof tokens === "object" && !Array.isArray(tokens)) {
+      const t = tokens as Record<string, unknown>;
+      if (bpm > 0) t.bpm = bpm;
+      else delete t.bpm;
     }
     setBusy(true);
     try {
@@ -718,6 +780,26 @@ function MyChartRow({ chart }: { chart: MyChart }) {
               maxLength={60}
             />
           </label>
+          {/* Cardiac gauge: the chart's ambient-pulse tempo (bpm). 0 = static. */}
+          <div className="oc-chart-import__field">
+            <span className="oc-chart-import__label">{m.charts_bpm_label()}</span>
+            <div className="oc-chart-bpm">
+              <input
+                type="range"
+                className="oc-chart-bpm__slider"
+                min={0}
+                max={90}
+                step={5}
+                value={bpm}
+                onChange={(e) => setBpm(Number(e.target.value))}
+                aria-label={m.charts_bpm_label()}
+              />
+              <span className="oc-chart-bpm__value">
+                {bpm === 0 ? m.charts_bpm_static() : `${bpm} BPM`}
+              </span>
+            </div>
+            <span className="oc-show__desc">{m.charts_bpm_help()}</span>
+          </div>
           <label className="oc-chart-import__field">
             <span className="oc-chart-import__label">
               {m.charts_mine_tokens_label()}

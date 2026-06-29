@@ -707,6 +707,162 @@ export const testSend = mutation({
 });
 
 /**
+ * DEV-ONLY: per-turn ROUTED send — mirrors send.sendMessage WITH a `routedAgent`
+ * so the live bench can drive the multi-agent per-turn router (the one path
+ * dev:testSend cannot: it never stamps routedAgent). Stamps routedInstanceName/
+ * routedAgentId on the user message AND routedAgent on the outbox row, exactly as
+ * the real composer does, so bridge.dispatch runs beginTurnRouting + getChatRouting
+ * with the routed agent (epoch-on-switch + forced rehydration). Test scaffolding,
+ * not a product path.
+ *   npx convex run dev:testSendRouted '{"chatId":"<id>","text":"oui","instanceName":"olivier","agentId":"bob"}'
+ */
+export const testSendRouted = mutation({
+  args: {
+    text: v.string(),
+    chatId: v.optional(v.id("chats")),
+    instanceName: v.string(),
+    agentId: v.string(),
+    // When creating a chat, the owner to use (find-or-create). Lets the bench drive a
+    // SINGLE user across an alice→bob switch deterministically.
+    ownerEmail: v.optional(v.string()),
+  },
+  handler: async (ctx, { text, chatId, instanceName, agentId, ownerEmail }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const routedAgent = { instanceName, agentId };
+
+    const profiles = await ctx.db.query("profiles").take(500);
+    let ownerUserId: Id<"users"> | undefined;
+    if (chatId) {
+      const boundChat = await ctx.db.get(chatId);
+      if (!boundChat) return { ok: false as const, reason: "chat not found" };
+      ownerUserId = boundChat.userId;
+    } else if (ownerEmail) {
+      const existing = profiles.find((p) => p.email === ownerEmail);
+      if (existing) ownerUserId = existing.userId;
+      else {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", {
+          userId: uid,
+          role: "user",
+          email: ownerEmail,
+          canonical: "u-repro",
+        });
+        ownerUserId = uid;
+      }
+    } else {
+      // Pick any profile entitled to the routed agent (membership = dispatch auth).
+      for (const p of profiles) {
+        const uas = await ctx.db
+          .query("userAgents")
+          .withIndex("by_user", (q) => q.eq("userId", p.userId))
+          .collect();
+        if (uas.some((u) => u.instanceName === instanceName && u.agentId === agentId)) {
+          ownerUserId = p.userId;
+          break;
+        }
+      }
+    }
+    if (!ownerUserId) return { ok: false as const, reason: "no owner for routedAgent" };
+    const userId = ownerUserId;
+    const now = Date.now();
+
+    // Ensure the owner is ENTITLED to the routed agent (membership = dispatch auth),
+    // so an alice→bob switch never fails agent_restricted on a freshly-granted agent.
+    const grants = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (!grants.some((g) => g.instanceName === instanceName && g.agentId === agentId)) {
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName,
+        agentId,
+        isDefault: grants.length === 0,
+        source: "manual",
+        createdAt: now,
+      });
+    }
+
+    const cid: Id<"chats"> =
+      chatId ??
+      (await ctx.db.insert("chats", {
+        userId,
+        title: "Live routed test",
+        archived: false,
+        sortKey: -1000,
+        updatedAt: now,
+      }));
+
+    const messageId = await ctx.db.insert("messages", {
+      chatId: cid,
+      userId,
+      role: "user",
+      status: "complete",
+      text,
+      updatedAt: now,
+      routedInstanceName: routedAgent.instanceName,
+      routedAgentId: routedAgent.agentId,
+    });
+    await ctx.db.patch(cid, { updatedAt: now });
+
+    const outboxId = await ctx.db.insert("outbox", {
+      chatId: cid,
+      userId,
+      clientMessageId: `live-routed-${messageId}`,
+      messageId,
+      text,
+      attachmentIds: [],
+      status: "pending",
+      routedAgent,
+    });
+    await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
+
+    return { ok: true as const, chatId: cid, messageId, outboxId };
+  },
+});
+
+/**
+ * DEV-ONLY: read the per-turn routing fields of a chat doc + its recent messages'
+ * routedAgentId — the values the obs MCP cannot expose. The decisive artifact for
+ * the multi-agent context-carryover diagnosis.
+ *   npx convex run dev:inspectRouting '{"chatId":"<id>"}'
+ */
+export const inspectRouting = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (!chat) return null;
+    const msgs = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .take(8);
+    return {
+      chat: {
+        agentId: chat.agentId ?? null,
+        instanceName: chat.instanceName ?? null,
+        perTurnRouting: chat.perTurnRouting ?? null,
+        routingSegment: chat.routingSegment ?? null,
+        lastRoutedAgentId: chat.lastRoutedAgentId ?? null,
+        lastRoutedInstanceName: chat.lastRoutedInstanceName ?? null,
+        openclawChatId: chat.openclawChatId ?? null,
+      },
+      messages: msgs
+        .reverse()
+        .map((m) => ({
+          role: m.role,
+          status: m.status,
+          textPreview: m.text.slice(0, 60),
+          routedAgentId: m.routedAgentId ?? null,
+          routedInstanceName: m.routedInstanceName ?? null,
+        })),
+    };
+  },
+});
+
+/**
  * LIVE-HARNESS ORACLE (dev-gated, read-only). Clean view of a chat's latest
  * messages + their part kinds/names + A2 text/liveText lengths — the
  * deterministic check the live matrix polls (avoids parsing `convex data` column

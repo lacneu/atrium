@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSubAgentActivityView,
+  failedSubAgentBeacon,
+  isReportableSubAgent,
   shortSessionKey,
   statusTone,
   subAgentActivityVisible,
@@ -8,6 +10,7 @@ import {
   subAgentCountLabel,
   subAgentFailedLabel,
   subAgentLabel,
+  subAgentRowsForMessage,
   shortenSubAgentError,
   hasRunningSubAgent,
   type SubAgentRow,
@@ -79,6 +82,18 @@ describe("statusTone", () => {
   it("maps BOTH error and aborted to the visible-failure tone", () => {
     expect(statusTone("error")).toBe("failed");
     expect(statusTone("aborted")).toBe("failed");
+  });
+});
+
+describe("isReportableSubAgent (the report-flag gate)", () => {
+  it("is true for EVERY terminal status — incl. done (wrong_result is reachable)", () => {
+    expect(isReportableSubAgent("done")).toBe(true); // the wrong_result case
+    expect(isReportableSubAgent("error")).toBe(true);
+    expect(isReportableSubAgent("aborted")).toBe(true);
+  });
+
+  it("is false while running (nothing to report yet → no flag)", () => {
+    expect(isReportableSubAgent("running")).toBe(false);
   });
 });
 
@@ -329,5 +344,91 @@ describe("shortenSubAgentError (DISPLAY-side error shortening)", () => {
     // the generic fallback; the UPPERCASE-only rule keeps the real reason.
     const msg = "Permission denied: you do not have the required role.";
     expect(shortenSubAgentError(msg)).toBe(msg);
+  });
+});
+
+describe("subAgentRowsForMessage (per-message ownership join)", () => {
+  it("keeps only the rows whose childSessionKey the turn spawned", () => {
+    const a = row({ _id: "a", childSessionKey: "K1" });
+    const b = row({ _id: "b", childSessionKey: "K2" });
+    const c = row({ _id: "c", childSessionKey: "K3" });
+    // Only K1 + K3 were spawned by this turn — K2 (a sibling turn's child) is
+    // excluded, which is the whole point of anchoring per spawning message.
+    expect(subAgentRowsForMessage([a, b, c], ["K1", "K3"])).toEqual([a, c]);
+  });
+
+  it("returns nothing for a turn that spawned no children (empty keys)", () => {
+    // Discriminating: a missing empty-keys guard would match every row.
+    expect(subAgentRowsForMessage([row({ childSessionKey: "K1" })], [])).toEqual(
+      [],
+    );
+  });
+
+  it("ignores keys with no matching row (no phantom rows, no throw)", () => {
+    expect(
+      subAgentRowsForMessage([row({ childSessionKey: "K1" })], ["K9"]),
+    ).toEqual([]);
+  });
+});
+
+describe("failedSubAgentBeacon (persistent chat-level failure signal)", () => {
+  it("is hidden when the gateway capability is absent (even WITH a failure)", () => {
+    expect(failedSubAgentBeacon([row({ status: "error" })], false)).toEqual({
+      visible: false,
+      count: 0,
+      jumpIds: [],
+    });
+  });
+
+  it("is hidden when no sub-agent failed (running/done only)", () => {
+    const b = failedSubAgentBeacon(
+      [row({ status: "running" }), row({ status: "done" })],
+      true,
+    );
+    expect(b.visible).toBe(false);
+    expect(b.count).toBe(0);
+    expect(b.jumpIds).toEqual([]);
+  });
+
+  it("counts BOTH error and aborted as failures, excluding running/done", () => {
+    const b = failedSubAgentBeacon(
+      [
+        row({ _id: "e", status: "error" }),
+        row({ _id: "a", status: "aborted" }),
+        row({ _id: "r", status: "running" }),
+        row({ _id: "d", status: "done" }),
+      ],
+      true,
+    );
+    expect(b.visible).toBe(true);
+    expect(b.count).toBe(2);
+    // Running/done never become jump targets.
+    expect(b.jumpIds).not.toContain("r");
+    expect(b.jumpIds).not.toContain("d");
+  });
+
+  it("orders jumpIds oldest-first so the first jump is the TOPMOST failure", () => {
+    // Discriminating: an unordered (or newest-first) selection would jump past
+    // the earliest failure — the one most likely scrolled far up.
+    const b = failedSubAgentBeacon(
+      [
+        row({ _id: "late", status: "error", createdAt: 3000 }),
+        row({ _id: "early", status: "aborted", createdAt: 1000 }),
+        row({ _id: "mid", status: "error", createdAt: 2000 }),
+      ],
+      true,
+    );
+    expect(b.jumpIds).toEqual(["early", "mid", "late"]);
+  });
+
+  it("tie-breaks equal-createdAt failures by id for a deterministic order", () => {
+    const b = failedSubAgentBeacon(
+      [
+        row({ _id: "zeta", status: "error", createdAt: 1000 }),
+        row({ _id: "alpha", status: "error", createdAt: 1000 }),
+      ],
+      true,
+    );
+    expect(b.jumpIds).toEqual(["alpha", "zeta"]);
   });
 });

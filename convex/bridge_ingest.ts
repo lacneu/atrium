@@ -22,6 +22,10 @@ import { httpAction, ActionCtx, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+import {
+  rehydrateTraceMeta,
+  shouldReportRehydrateMissed,
+} from "./lib/rehydrateTrace";
 
 /**
  * Stored-object metadata for an outbound media blob — size + content-type, read
@@ -149,6 +153,22 @@ type IngestOp =
       reason?: string;
       bytesBucket?: string;
       mimeBase?: string;
+    }
+  // Content-free re-hydration DECISION trace (no DB write, no message part): records
+  // WHY a dispatch did/didn't re-inject history as an `openclaw.rehydrate` trace keyed
+  // `chatId:outboxId`. Enums/scalars only — never prompt/history text.
+  | {
+      op: "rehydrateTrace";
+      chatId: string;
+      outboxId: string | null;
+      decision: string;
+      freshSession: boolean;
+      routedSwitch: boolean;
+      prependedTurns: number;
+      routedAgentId: string;
+      routedInstanceName: string | null;
+      switchedFromAgentId: string | null;
+      switchedFromInstanceName: string | null;
     }
   | {
       op: "finalize";
@@ -394,6 +414,45 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(body.mimeBase !== undefined ? { mimeBase: body.mimeBase } : {}),
         },
       });
+      return json({ ok: true });
+    }
+    case "rehydrateTrace": {
+      // Content-free reconstruction record of the bridge's re-hydration decision for
+      // a dispatch. correlationId = `chatId:outboxId` (the master join key — matches
+      // chat.send + openclaw.dispatch, NOT chatId:runId) so the obs MCP can show WHY a
+      // (cross-agent) turn re-injected history or not, with NO local repro. Enums +
+      // scalars + routed agent NAMES only — never prompt/history text.
+      const rehydrateCorrelationId = body.outboxId
+        ? `${body.chatId}:${body.outboxId}`
+        : body.chatId;
+      await traceIngest(ctx, {
+        kind: "openclaw.rehydrate",
+        chatId: body.chatId,
+        correlationId: rehydrateCorrelationId,
+        meta: rehydrateTraceMeta(body),
+      });
+      // EXCEPTION anomaly: a per-turn ROUTED switch whose session was FRESH but that
+      // still did NOT re-inject history — i.e. the switched agent got no context (the
+      // bug this whole fix closes). After the fix this should not fire on a normal
+      // switch; it remains as a regression/gap detector (e.g. an attachment turn on a
+      // switch, where history can't be prepended). Content-free evidence only.
+      if (shouldReportRehydrateMissed(body)) {
+        await ctx.runMutation(internal.anomalies.reportAnomalyInternal, {
+          kind: "routing.rehydrate_missed",
+          severity: "warn",
+          message: `A routed agent switch did not re-inject conversation history (decision=${body.decision}); the new agent may lack context.`,
+          correlationId: rehydrateCorrelationId,
+          evidence: JSON.stringify({
+            chatId: body.chatId,
+            routedAgentId: body.routedAgentId,
+            routedInstanceName: body.routedInstanceName,
+            switchedFromAgentId: body.switchedFromAgentId,
+            switchedFromInstanceName: body.switchedFromInstanceName,
+            decision: body.decision,
+            freshSession: body.freshSession,
+          }),
+        });
+      }
       return json({ ok: true });
     }
     case "finalize": {

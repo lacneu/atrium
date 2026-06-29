@@ -77,6 +77,10 @@ export type ChartTokens = {
   radius?: string;
   fontSans?: string;
   fontMono?: string;
+  // Heartbeat ambient pulse, beats/min. 0 or absent = static (no pulse); a set
+  // value (resting range) drives `--heart-period` (= 60s / bpm) so the chart's
+  // ambient aura beats at its own tempo. Part of the tokens => exported/imported.
+  bpm?: number;
 };
 
 /** A registry entry: a stable `key`, a display `name`, and its tokens. */

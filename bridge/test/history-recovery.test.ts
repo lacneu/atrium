@@ -89,7 +89,7 @@ describe("extractMessageToolReplies (pure)", () => {
 
 // -- normalizer wiring --------------------------------------------------------
 
-const KEY = "agent:agent-a:webchat:chat:u-x:chat1";
+const KEY = "agent:agent-a:atrium:chat:u-x:chat1";
 
 const itemFrame = () => ({
   type: "event",

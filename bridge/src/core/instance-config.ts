@@ -22,6 +22,11 @@ export interface InboundInstanceConfig {
   mediaMode?: MediaMode;
   inboundMediaMode?: InboundMediaMode;
   rehydration?: boolean;
+  /** Set by Convex ONLY for a per-turn ROUTED dispatch (the multi-agent switch path) —
+   *  a DISTINCT signal from the generic `rehydration` enable knob. Lets the bridge
+   *  re-ground a freshly-routed agent's brand-new session without an admin
+   *  `rehydration:true` setting forcing the same on ordinary single-agent sends. */
+  routedSwitch?: boolean;
   /** Per-file media cap in BYTES (converted from the wire `mediaMaxMb`). */
   mediaMaxBytes?: number;
   /** Agent-visible inbound mount (where the agent READS staged files). */
@@ -78,6 +83,9 @@ export function parseInboundConfig(raw: unknown): InboundInstanceConfig | null {
   }
   if (typeof o.rehydration === "boolean") {
     out.rehydration = o.rehydration;
+  }
+  if (typeof o.routedSwitch === "boolean") {
+    out.routedSwitch = o.routedSwitch;
   }
   if (
     typeof o.mediaMaxMb === "number" &&

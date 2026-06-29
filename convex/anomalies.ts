@@ -479,7 +479,7 @@ type AnomalyView = {
   severity: Severity;
   status: "open" | "acknowledged" | "resolved";
   message: string;
-  source: "detector" | "agent";
+  source: "detector" | "agent" | "user";
   correlationId: string | null;
   evidence: string | null;
   resolvedAt: number | null;

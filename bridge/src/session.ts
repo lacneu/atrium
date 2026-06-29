@@ -64,6 +64,14 @@ export interface BridgeSession {
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
   readonly clock: Clock;
+  /** TRUE until this bridge has run its first turn on this session (set false by
+   *  performSend after the first send). A session is created fresh on an agent
+   *  SWITCH (the epoch re-keys → a NEW sessionKey → acquire() builds a new Session),
+   *  so `firstSendPending` is the bridge's OWN "never sent a turn on this key" signal
+   *  — independent of the gateway's `systemSent`, which it reports truthy for a
+   *  freshly-created webchat session (so it cannot tell a brand-new cross-agent
+   *  session from a warm one). Rehydration uses it to re-ground a switched agent. */
+  firstSendPending: boolean;
   /** Prod the inbound consume loop to re-evaluate its next deadline. MUST be
    *  called after `runManager.beginTurn` (which arms the recv/grace deadline from
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
@@ -117,6 +125,8 @@ class Session implements BridgeSession {
   // WebSocket/FD — once this is older than IDLE_SESSION_TTL_SECONDS, so idle sockets
   // don't accumulate to FD exhaustion (the next send transparently reconnects).
   lastActivityAt: number;
+  // See BridgeSession.firstSendPending. True until performSend runs the first turn.
+  firstSendPending = true;
   private consumerStarted = false;
   // Wake seam for the consume loop (see consume() + wake()): lets beginTurn,
   // which runs OFF this loop and arms the recv/grace deadline, prod the loop to

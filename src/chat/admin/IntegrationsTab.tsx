@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../convexApi";
 import { DataTableShell } from "./DataTableShell";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -32,6 +33,7 @@ type VendorKnobs = {
   enabled?: boolean;
 };
 type VoiceKnobs = Record<string, string | number | boolean | undefined>;
+type OtlpKnobs = { endpoint?: string; enabled?: boolean };
 
 type Status = {
   langfuse: { configured: boolean; enabled: boolean; effectiveHost: string };
@@ -41,9 +43,16 @@ type Status = {
     effectiveBaseUrl: string;
     effectiveWorkspace: string;
   };
+  otlp: {
+    configured: boolean;
+    enabled: boolean;
+    effectiveEndpoint: string;
+    headersSet: boolean;
+  };
   config: {
     langfuse: VendorKnobs;
     opik: VendorKnobs;
+    otlp: OtlpKnobs;
     tts: VoiceKnobs;
     talk: VoiceKnobs;
   };
@@ -173,6 +182,46 @@ export function IntegrationsTab() {
           onChange={(v) => {
             setField("opik", "enabled", v);
             commit("opik", { enabled: v });
+          }}
+        />
+      </Section>
+
+      {/* ── OTLP / OpenTelemetry (generic trace exporter — LIVE) ─────── */}
+      <Section
+        title="OpenTelemetry (OTLP)"
+        status={
+          status.otlp.configured ? (
+            status.otlp.enabled ? (
+              <Badge variant="secondary">{m.integrations_status_active()}</Badge>
+            ) : (
+              <Badge variant="outline">{m.integrations_status_paused()}</Badge>
+            )
+          ) : (
+            <Badge variant="outline">
+              {m.integrations_status_endpoint_missing()}
+            </Badge>
+          )
+        }
+        note={m.integrations_otlp_note()}
+      >
+        <Field label={m.integrations_field_otlp_endpoint()}>
+          <Input
+            value={d.otlp.endpoint ?? ""}
+            placeholder={
+              status.otlp.effectiveEndpoint ||
+              "https://otlp.example.com/v1/traces"
+            }
+            onChange={(e) => setField("otlp", "endpoint", e.target.value)}
+            onBlur={() => commit("otlp", { endpoint: d.otlp.endpoint ?? "" })}
+          />
+        </Field>
+        <OtlpHeadersField headersSet={status.otlp.headersSet} />
+        <ToggleRow
+          label={m.integrations_toggle_traces_enabled()}
+          checked={d.otlp.enabled ?? true}
+          onChange={(v) => {
+            setField("otlp", "enabled", v);
+            commit("otlp", { enabled: v });
           }}
         />
       </Section>
@@ -435,5 +484,66 @@ function SelectField({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+// The OTLP auth headers — a write-only SECRET. Unlike the other fields it is NOT
+// part of the setIntegrationConfig draft: it is encrypted via the setOtlpHeaders
+// ACTION (which validates the JSON shape + returns a clear error on bad input),
+// and the stored value NEVER comes back (status exposes only `headersSet`). On
+// save the input clears (write-only). A clear button removes the stored headers.
+function OtlpHeadersField({ headersSet }: { headersSet: boolean }) {
+  const setHeaders = useAction(api.integrations.otlpSecret.setOtlpHeaders);
+  const clearHeaders = useMutation(api.integrations.otlpSecret.clearOtlpHeaders);
+  const [val, setVal] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await setHeaders({ headersJson: val });
+      setVal(""); // write-only: never echo the secret back
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Field label={m.integrations_field_otlp_headers()}>
+      <Input
+        value={val}
+        placeholder={
+          headersSet
+            ? m.integrations_otlp_headers_set()
+            : m.integrations_otlp_headers_placeholder()
+        }
+        onChange={(e) => setVal(e.target.value)}
+      />
+      <div className="oc-int__otlp-headers-actions">
+        <Button
+          size="sm"
+          disabled={busy || val.trim().length === 0}
+          onClick={() => void save()}
+        >
+          {m.integrations_otlp_headers_save()}
+        </Button>
+        {headersSet ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => void clearHeaders({})}
+          >
+            {m.integrations_otlp_headers_clear()}
+          </Button>
+        ) : null}
+      </div>
+      {err ? <p className="oc-int__otlp-headers-error">{err}</p> : null}
+      <p className="oc-uipa__note">{m.integrations_otlp_headers_hint()}</p>
+    </Field>
   );
 }

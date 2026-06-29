@@ -8,6 +8,74 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.16.0] — Sub-agent reliability, OTLP trace export, and chart authoring
+
+A large release: multi-agent reliability, a new traces exporter, broader gateway support, and chart
+authoring. No breaking changes for end users — but ONE coordinated cross-repo change (the gateway
+channel rename) with a required deploy ORDER (see the deploy note). Convex changes are additive only
+(a table + indexes, a content-free routing trace, a `"user"` anomaly source, a chart `bpm` field).
+
+- **Switching agents mid-conversation now keeps the full context.** When you route a turn to a
+  different agent — and especially when you switch back to one, or pick an agent for the first time in
+  a chat — that agent could answer as if it had never seen the conversation ("I don't have the context
+  of this 'yes' — tell me what you'd like me to do"). The bridge was misreading a freshly-routed agent's
+  session as already warm and skipping the history replay. The newly-selected agent now receives the
+  full prior conversation every time, including the tricky cases: switching back to a previously-used
+  agent, a chat with no default agent, and after a first send that failed or a bridge restart. A
+  consecutive turn to the *same* agent still reuses its warm session (no redundant replay).
+- **The sub-agent monitor now sits with the message that spawned it.** Instead of one ever-growing pile
+  of cards pinned above the prompt — which became unusable in a long conversation — each sub-agent's
+  card now appears in context, under the message that launched it. A failed sub-agent is never lost: a
+  compact "N en échec" indicator near the composer jumps you straight to it (and shows it even when its
+  message has scrolled far out of view).
+- **You can report a sub-agent that failed — or finished with a wrong result.** A flag on a finished or
+  failed sub-agent files a report that captures that sub-agent's execution details for an administrator
+  to analyze, surfaced in a new admin "Sub-agent reports" view with an audited read of the captured
+  snapshot and a reply thread back to you. Re-reporting the same sub-agent is a no-op, and the captured
+  text is bounded so a verbose failure can always be filed.
+- **Routing and sub-agent problems are now diagnosable from the observability tools.** The chat-state
+  and diagnose tools expose (content-free) the per-turn routing, the bridge's rehydration decision, the
+  sub-agents a turn spawned and their statuses, and a join key that stitches a turn's send / dispatch /
+  rehydrate events together — so a multi-agent routing or stuck/failed sub-agent issue can be
+  reconstructed from the tools alone, without a live reproduction. A reported sub-agent failure also
+  appears (content-free) in the anomalies stream.
+- **Tracing endpoints reject embedded credentials.** An OTLP, Langfuse, or Opik endpoint URL that
+  carries `user:pass@host` userinfo is now rejected when saved (put auth in the encrypted headers
+  instead) — these endpoints are shown in the non-secret integrations status, so a credential pasted
+  into the URL would have been stored in clear and exposed. Also fixed an OTLP exporter bug where a
+  differently-cased operator `content-type` header could corrupt the JSON payload sent to the collector.
+- **Export your traces to any OpenTelemetry backend.** Alongside Langfuse and Opik, Atrium can now ship
+  its (redacted, metadata-only) traces to any OTLP/HTTP endpoint — Grafana Tempo, Jaeger, Datadog, or a
+  collector — configured from the Integrations settings: an endpoint URL plus auth headers that are
+  encrypted at rest. The spans carry neutral, vendor-agnostic attributes, so nothing Langfuse-specific
+  leaks into a generic backend.
+- **OpenClaw 2026.6.10 is a validated gateway version.** The bridge recognizes and is
+  compatibility-tested against 2026.6.10 (including its new scoped device-pairing flow); previously
+  validated versions keep working.
+- **Atrium conversations use their own `atrium` gateway channel.** The session-key channel segment moved
+  from `webchat` to `atrium`, so Atrium no longer shares a gateway memory namespace with other webchat
+  clients. This is a coordinated change across the bridge, Convex, and the Hindsight plugin (see the
+  deploy order below); re-keying resets each agent's codex thread once, while Convex + Hindsight memory
+  are preserved.
+- **Export any chart as a file.** Every chart in the Theme settings now has an export button that
+  downloads it as `<name>.chart.json` — the exact shape the importer accepts — so a designer can export a
+  chart (built-in or custom), edit it, and re-import it. The round-trip is guaranteed for every built-in.
+- **Charts can carry a heartbeat.** A new `bpm` chart token — set with a "cardiac gauge" slider in the
+  chart editor, or directly in the JSON — drives the ambient pulse (0 = static). It travels with
+  export/import like any other token.
+- **A living, brand-tinted ambiance, driven by a heartbeat.** With ambient effects on (the default), the
+  app gently breathes on a shared cardiac rhythm: soft background glows and primary-button blooms pulse
+  in time, and the sign-in card and the chat composer each sit in front of a luminous glow that slowly
+  drifts behind them and pulses too. Everything is tinted by the active chart's color and paced by its
+  `bpm` token — subtle in light,
+  emissive in dark, and fully disabled under `prefers-reduced-motion`.
+- *Deploy — ORDER MATTERS (the channel rename is cross-repo): **(1)** deploy the Hindsight plugin first
+  (it accepts both `atrium` and `webchat`); **(2)** `npx convex deploy` (additive only: a table +
+  indexes, the content-free routing trace, the chart `bpm` field) and rebuild the frontend, bridge, AND
+  MCP images; **(3)** add the `atrium:` entries to each gateway instance's `identityLinks`. The OTLP
+  exporter's encrypted headers need `ATRIUM_SECRET_KEY` set on Convex (already required for encrypted
+  gateway credentials).*
+
 ## [0.15.0] — Failed sub-agents no longer leave you stuck
 
 Reliability and ergonomics release for the sub-agent experience (builds on 0.14.0's monitor). No

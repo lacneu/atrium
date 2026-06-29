@@ -147,6 +147,113 @@ describe("assessChat — L2 stuck document fetch", () => {
   });
 });
 
+describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
+  const subAgents = (o: {
+    byStatus?: Partial<{ running: number; done: number; error: number; aborted: number }>;
+    failedSample?: { status: string; errorCategory: string; ageSeconds: number }[];
+    runningSample?: { status: string; errorCategory: string; ageSeconds: number }[];
+  }) => ({
+    byStatus: { running: 0, done: 0, error: 0, aborted: 0, ...o.byStatus },
+    failedSample: o.failedSample ?? [],
+    runningSample: o.runningSample ?? [],
+  });
+
+  test("a long-running sub-agent -> subagent_stuck (high, no tool; reaper handles it)", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "complete" })],
+        subAgents: subAgents({
+          byStatus: { running: 1 },
+          runningSample: [{ status: "running", errorCategory: "unknown", ageSeconds: 25 * 60 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("subagent_stuck");
+    expect(a.severity).toBe("high");
+    expect(a.suggestedTool).toBeNull();
+  });
+
+  test("a FRESH running sub-agent is NOT flagged (still working)", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "complete" })],
+        subAgents: subAgents({
+          byStatus: { running: 1 },
+          runningSample: [{ status: "running", errorCategory: "unknown", ageSeconds: 30 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("healthy");
+  });
+
+  test("priority: a stuck STREAM still beats a stuck sub-agent", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "streaming", stuckStreaming: true })],
+        subAgents: subAgents({
+          byStatus: { running: 1 },
+          runningSample: [{ status: "running", errorCategory: "unknown", ageSeconds: 25 * 60 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("stuck_stream");
+  });
+
+  test("a RECENT failed sub-agent on an otherwise-OK chat -> subagent_failure (warn)", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "complete" })],
+        subAgents: subAgents({
+          byStatus: { error: 1 },
+          failedSample: [{ status: "error", errorCategory: "tool_failed", ageSeconds: 60 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("subagent_failure");
+    expect(a.severity).toBe("warn");
+    expect(a.suggestedTool).toBeNull();
+    expect(a.reason).toMatch(/tool_failed/);
+  });
+
+  test("an OLD sub-agent failure does NOT flag an otherwise-healthy chat", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "complete" })],
+        subAgents: subAgents({
+          byStatus: { error: 1 },
+          failedSample: [{ status: "error", errorCategory: "tool_failed", ageSeconds: 60 * 60 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("healthy");
+  });
+
+  test("priority: a failed MAIN turn beats a recent sub-agent failure", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "error", errorCode: "GATEWAY_TIMEOUT" })],
+        subAgents: subAgents({
+          byStatus: { error: 1 },
+          failedSample: [{ status: "error", errorCategory: "tool_failed", ageSeconds: 60 }],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("dispatch_error");
+  });
+});
+
 describe("actionForErrorCode", () => {
   test("known codes map to specific, non-generic remediations", () => {
     expect(actionForErrorCode("ATTACHMENT_REJECTED")).toMatch(/gateway/i);

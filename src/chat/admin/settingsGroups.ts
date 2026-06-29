@@ -44,7 +44,15 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "observability",
     label: () => m.settings_group_observability(),
-    tabs: ["traces", "kpi", "anomalies", "audit", "feedbacks", "integrations"],
+    tabs: [
+      "traces",
+      "kpi",
+      "anomalies",
+      "audit",
+      "feedbacks",
+      "subagentReports",
+      "integrations",
+    ],
   },
 ];
 

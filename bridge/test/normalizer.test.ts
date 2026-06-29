@@ -699,7 +699,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
         payload: {
           runId: "x",
           sessionKey: "agent:alice:subagent:other",
-          spawnedBy: "agent:alice:webchat:chat:olivier:OTHER-CHAT",
+          spawnedBy: "agent:alice:atrium:chat:olivier:OTHER-CHAT",
           stream: "codex_app_server.lifecycle",
           data: { phase: "startup" },
         },

@@ -128,6 +128,28 @@ export function opikConfig(override?: OpikOverride): OpikConfig {
   };
 }
 
+// Generic OTLP exporter. UNLIKE langfuse/opik, EVERYTHING is admin-set in the UI
+// (no env): the `endpoint` is the full OTLP/HTTP traces URL; the auth `headers`
+// are a SECRET stored ENCRYPTED in integrationConfig.otlp.headersSecret and
+// decrypted by the flush ACTION (async crypto can't run in this pure resolver),
+// so they are NOT part of this resolved shape — the action merges them in.
+export type OtlpOverride = { endpoint?: string; enabled?: boolean };
+
+export type OtlpResolved = {
+  configured: boolean; // endpoint present (headers are optional — auth-less collector)
+  enabled: boolean;
+  endpoint: string;
+};
+
+export function otlpConfig(override?: OtlpOverride): OtlpResolved {
+  const endpoint = (override?.endpoint ?? "").trim();
+  return {
+    configured: endpoint.length > 0,
+    enabled: override?.enabled !== false, // undefined => enabled
+    endpoint,
+  };
+}
+
 /** Normalize a base URL so adapters can append paths without double slashes. */
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");

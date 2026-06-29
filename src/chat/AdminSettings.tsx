@@ -29,6 +29,7 @@ export const TABS = [
   "chatDefaults",
   "audit",
   "feedbacks",
+  "subagentReports",
 ] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -43,6 +44,7 @@ export const PARAMLESS_TABS = [
   "injections",
   "theme",
   "feedbacks",
+  "subagentReports",
   "files",
   "agentFiles",
   "preferences",
@@ -62,6 +64,7 @@ export const TAB_LABELS: Partial<Record<Tab, string>> = {
   anomalies: "Anomalies",
   integrations: "Intégrations",
   feedbacks: "Feedbacks",
+  subagentReports: "Rapports sous-agents",
   bridge: "Bridge",
   injections: "Injections", // FR fallback; the nav renders m.settings_tab_injections
 
@@ -118,6 +121,7 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   chatDefaults: "admin.manage",
   audit: "admin.manage",
   feedbacks: "admin.manage",
+  subagentReports: "admin.manage",
 };
 
 // The Settings tabs an admin may grant to a NON-admin. Mirrors the server-side

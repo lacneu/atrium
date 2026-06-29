@@ -22,7 +22,7 @@ function isString(v: Json): v is string {
 // Channels/targets the gateway uses for "this very conversation". Anything
 // else (telegram, whatsapp, an explicit peer id…) is a REAL external delivery
 // and must never be folded back into the webchat answer.
-const CURRENT_CHANNELS = new Set(["webchat", "chat", "current"]);
+const CURRENT_CHANNELS = new Set(["atrium", "webchat", "chat", "current"]);
 const CURRENT_TARGETS = new Set(["current-run", "current", "current-session"]);
 
 /** Parse one message-tool RESULT json (string) → delivered text, or null. */

@@ -68,7 +68,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
       agentId: "agent-b",
       canonical: "alice",
     });
-    expect(s.sessionKey).toBe("agent:agent-b:webchat:chat:alice:oc1");
+    expect(s.sessionKey).toBe("agent:agent-b:atrium:chat:alice:oc1");
     reg.closeAll();
   });
 
@@ -104,7 +104,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
     });
     expect(second).not.toBe(first);
     expect(first.connection.isClosed).toBe(true); // stale one closed → no leak
-    expect(second.sessionKey).toBe("agent:agent-b:webchat:chat:alice:oc1");
+    expect(second.sessionKey).toBe("agent:agent-b:atrium:chat:alice:oc1");
     expect(connect).toHaveBeenCalledTimes(2);
     reg.closeAll();
   });

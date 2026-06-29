@@ -13,6 +13,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { assessChat } from "./lib/diagnose";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -257,6 +258,224 @@ describe("chatStateInternal", () => {
     expect(doc.kind).toBe("documentary");
     expect(doc.pendingDocFetch).not.toBeNull();
     expect(doc.pendingDocFetch!.ageSeconds).toBeGreaterThan(700); // stale -> stuck
+  });
+
+  // ROUTING (G1) + the dispatch JOIN KEY (G4) + the CONTENT-FREE sub-agent summary
+  // (G3). The SOC2 contract again: every NEW field carries STRUCTURE only. The
+  // sub-agent rows seed content in EVERY content slot (taskName / errorMessage /
+  // resultText / phase) and the outbox seeds its text — none may surface. The
+  // hasTaskName/errorCategory teeth: a naive `taskName`/`errorMessage` projection
+  // would leak the seeded sentinel (asserted absent), so the guard has real bite.
+  test("surfaces routing + bounded sub-agent summary + outbox join key, NO content leak", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId, userMsgId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        perTurnRouting: true,
+        lastRoutedInstanceName: "inst-b",
+        lastRoutedAgentId: "agent-b",
+        routingSegment: "turn:seg-123",
+      });
+      const uid = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "hello",
+        routedInstanceName: "inst-b",
+        routedAgentId: "agent-b",
+        updatedAt: Date.now(),
+      });
+      const obId = await ctx.db.insert("outbox", {
+        chatId: cid,
+        userId,
+        clientMessageId: "cmid-1",
+        messageId: uid,
+        text: "SENTINEL_OUTBOXTEXT",
+        attachmentIds: [],
+        status: "sent" as const,
+      });
+      // A FAILED sub-agent (content in every slot, incl. PHI in the error) and a
+      // fresh RUNNING one (no taskName -> hasTaskName must read false).
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:x:subagent:erruuid000000",
+        taskName: "SENTINEL_SUBTASK",
+        status: "error" as const,
+        errorMessage: "SENTINEL_SUBERR 429 rate limit for Jean Dupont",
+        resultText: "SENTINEL_SUBRESULT",
+        phase: "SENTINEL_SUBPHASE",
+        createdAt: Date.now() - 1000,
+        updatedAt: Date.now() - 1000,
+      });
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:x:subagent:rununresidual",
+        status: "running" as const,
+        phase: "SENTINEL_RUNPHASE",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return { chatId: cid, outboxId: obId, userMsgId: uid };
+    });
+
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+
+    // (1) AUDITABLE NO-CONTENT PROOF: no sub-agent / outbox sentinel anywhere.
+    const serialized = JSON.stringify(state);
+    for (const sentinel of [
+      "SENTINEL_OUTBOXTEXT",
+      "SENTINEL_SUBTASK",
+      "SENTINEL_SUBERR",
+      "SENTINEL_SUBRESULT",
+      "SENTINEL_SUBPHASE", // phase is free-form gateway text -> treated as content
+      "SENTINEL_RUNPHASE",
+      "Jean Dupont", // PHI inside the raw error must never escape the classifier
+    ]) {
+      expect(serialized).not.toContain(sentinel);
+    }
+
+    // (2) Chat-level routing (non-secret slugs + the opaque session segment).
+    expect(state.routing).toEqual({
+      perTurnRouting: true,
+      lastRoutedInstanceName: "inst-b",
+      lastRoutedAgentId: "agent-b",
+      routingSegment: "turn:seg-123",
+    });
+
+    // (3) Per-message routing + the dispatch JOIN KEY (chatId:outboxId reconstructs
+    // the turn's send/dispatch/rehydrate chain in list_traces).
+    const m = state.messages[0]!;
+    expect(m.messageId).toBe(userMsgId);
+    expect(m.routedInstanceName).toBe("inst-b");
+    expect(m.routedAgentId).toBe("agent-b");
+    expect(m.outbox).toEqual({ outboxId, status: "sent" });
+    expect(state.outboxTruncated).toBe(false);
+
+    // (4) Sub-agent summary: counts + samples, content-free. errorCategory is the
+    // FIXED enum ("429" -> api_error), NOT the text; hasTaskName is a BOOLEAN.
+    expect(state.subAgents.total).toBe(2);
+    expect(state.subAgents.byStatus).toEqual({
+      running: 1,
+      done: 0,
+      error: 1,
+      aborted: 0,
+    });
+    const failed = state.subAgents.failedSample[0]!;
+    expect(failed.status).toBe("error");
+    expect(failed.errorCategory).toBe("api_error");
+    expect(failed.hasTaskName).toBe(true);
+    const running = state.subAgents.runningSample[0]!;
+    expect(running.status).toBe("running");
+    expect(running.hasTaskName).toBe(false); // no taskName seeded
+  });
+
+  // INTEGRATION: a STALE running sub-agent flows chatStateInternal -> assessChat ->
+  // subagent_stuck. The pure assessChat tests hand-feed ageSeconds; ONLY this
+  // exercises the real ageSeconds = (now - updatedAt)/1000 derivation in
+  // loadSubAgentSummary against the diagnose threshold — i.e. it would catch
+  // "diagnose silently never fires subagent_stuck in prod". This is the exact
+  // composition the GET /api/v1/diagnose route performs.
+  test("integration: a STALE running sub-agent -> chatStateInternal -> assessChat -> subagent_stuck", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      // A COMPLETED visible turn (so it is NOT a stuck stream, which would win) +
+      // a sub-agent stuck 'running' with a 30-min-stale heartbeat (> the 20-min
+      // STUCK_SUBAGENT_SECONDS threshold).
+      await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "ok",
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:x:subagent:stalerun0000",
+        status: "running" as const,
+        createdAt: Date.now() - 30 * 60 * 1000,
+        updatedAt: Date.now() - 30 * 60 * 1000,
+      });
+      return cid;
+    });
+
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    const assessment = assessChat(state, {
+      known: true,
+      available: true,
+      degraded: false,
+      reason: null,
+    });
+    expect(assessment.class).toBe("subagent_stuck");
+    expect(assessment.severity).toBe("high");
+    expect(assessment.suggestedTool).toBeNull();
+  });
+
+  // Codex P2 regression: with MORE running sub-agents than the cap, the STALEST
+  // (stuck) one must still reach the sample so subagent_stuck fires. A newest-first
+  // sample would drop exactly the oldest running rows the stuck check needs — here
+  // the stale child is inserted FIRST (oldest creation) + many fresher ones follow,
+  // so a creation-ordered desc sample would drop it and mis-report "healthy".
+  test("Codex P2: > cap running sub-agents, the STALEST is stuck -> subagent_stuck (not dropped)", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "ok",
+        updatedAt: Date.now(),
+      });
+      // The STUCK child: oldest creation AND stalest heartbeat (30 min > 20 min).
+      // Inserted first so a creation-desc sample would evict it under the cap.
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:x:subagent:stalestone0",
+        status: "running" as const,
+        createdAt: Date.now() - 40 * 60 * 1000,
+        updatedAt: Date.now() - 30 * 60 * 1000,
+      });
+      // 25 FRESH running children (> cap=20), all newer-created + fresh heartbeat.
+      for (let i = 0; i < 25; i++) {
+        await ctx.db.insert("subAgents", {
+          chatId: cid,
+          childSessionKey: `agent:x:subagent:fresh${i}`,
+          status: "running" as const,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+      return cid;
+    });
+
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+    // The cap was hit -> truncated is honest.
+    expect(state.subAgents.truncated).toBe(true);
+    // The stalest (stuck) child is in the running sample despite the cap.
+    expect(
+      state.subAgents.runningSample.some((s) => s.ageSeconds > 20 * 60),
+    ).toBe(true);
+
+    // End-to-end: diagnose fires subagent_stuck (NOT healthy).
+    const assessment = assessChat(state, {
+      known: true,
+      available: true,
+      degraded: false,
+      reason: null,
+    });
+    expect(assessment.class).toBe("subagent_stuck");
   });
 
   test("bad / unknown chatId returns ok:false (never throws)", async () => {

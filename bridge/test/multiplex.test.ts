@@ -32,7 +32,7 @@ const FIXTURES = JSON.parse(readFileSync(FIXTURES_PATH, "utf-8")) as {
 
 const SK_A = FIXTURES.session_key;
 const RUN_A = FIXTURES.run_id;
-const SK_B = "agent:main:webchat:chat:bob:chat_B";
+const SK_B = "agent:main:atrium:chat:bob:chat_B";
 const RUN_B = "run-B-0001";
 
 function frames(scenario: string): unknown[] {
@@ -147,7 +147,7 @@ describe("SessionMultiplexer — Model A isolation", () => {
       payload: {
         runId: "x",
         sessionKey: "agent:z:subagent:u",
-        spawnedBy: "agent:z:webchat:chat:other:OTHER-CHAT",
+        spawnedBy: "agent:z:atrium:chat:other:OTHER-CHAT",
         state: "final",
         message: { role: "assistant", content: [{ type: "text", text: "X" }] },
       },

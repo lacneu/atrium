@@ -612,19 +612,19 @@ describe("bridge.openclawThreadForChat — reconstruct the OpenClaw thread_id", 
     });
   }
 
-  test("unbound chat -> agent:<default agent>:webchat:chat:<canonical>:<convex chatId>", async () => {
+  test("unbound chat -> agent:<default agent>:atrium:chat:<canonical>:<convex chatId>", async () => {
     const t = convexTest(schema, modules);
     const chatId = await seedChat(t);
     const thread = await t.query(internal.bridge.openclawThreadForChat, { chatId });
     // Unbound -> rebind to default -> stale openclawChatId dropped -> convex chatId.
-    expect(thread).toBe(`agent:bob:webchat:chat:alice:${chatId}`);
+    expect(thread).toBe(`agent:bob:atrium:chat:alice:${chatId}`);
   });
 
   test("bound chat with a provider conversation id -> uses that openclawChatId segment", async () => {
     const t = convexTest(schema, modules);
     const chatId = await seedChat(t, { bound: true, openclawChatId: "oc-xyz" });
     const thread = await t.query(internal.bridge.openclawThreadForChat, { chatId });
-    expect(thread).toBe("agent:bob:webchat:chat:alice:oc-xyz");
+    expect(thread).toBe("agent:bob:atrium:chat:alice:oc-xyz");
   });
 
   test("no assigned agent -> null (never query with a partial/guessed key)", async () => {

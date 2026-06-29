@@ -102,7 +102,7 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { ToolActivity } from "./ToolActivity";
-import { SubAgentActivity } from "./SubAgentActivity";
+import { MessageSubAgents, SubAgentFailureBeacon } from "./SubAgentActivity";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { messageHasText } from "./runStatusView";
 import type { ToolActivityPart } from "./toolActivityView";
@@ -490,7 +490,7 @@ function ChatThread({
   // The chat is ALSO busy when a sub-agent it spawned is still running: the parent
   // turn has finalized but the bridge is one-turn-per-session, so a follow-up must
   // be HELD (queued) — and that hold made VISIBLE in the composer. Owner-scoped +
-  // reactive; Convex dedupes this with SubAgentActivity's / AssistantEmptyState's
+  // reactive; Convex dedupes this with the sub-agent monitor's / AssistantEmptyState's
   // identical subscription, so it is one network query (returns [] for the common
   // no-sub-agent chat). When the child terminalizes, this flips false and the
   // composer's held state clears (the server drains the queued message).
@@ -528,13 +528,13 @@ function ChatThread({
       ) : unavailable ? (
         <BridgeUnavailableBanner />
       ) : null}
-      {/* Chat-level sub-agent monitor: the sub-agents this chat's main agent
-          spawned + their LIVE status, with errors/hangs surfaced prominently.
-          Pinned above the composer so a running/failed child stays visible while
-          the user waits. Self-gating (analysis view + `subagents` capability +
-          non-empty); renders nothing otherwise — a chat without sub-agents is
-          unchanged. */}
-      <SubAgentActivity chatId={chatId} show={showTools} />
+      {/* Persistent sub-agent FAILURE beacon: a compact chip that appears ONLY
+          when a sub-agent failed somewhere in the chat (Bug C) and scrolls the
+          failed card into view — or reveals a failure-only fallback list when the
+          spawning turn is scrolled outside the loaded window. The running/done
+          cards live IN CONTEXT under their spawning message (MessageSubAgents),
+          not in a chat-level pile. Self-gating; renders nothing without a failure. */}
+      <SubAgentFailureBeacon chatId={chatId} />
       <Composer
         showTools={showTools}
         onToggleTools={onToggleTools}
@@ -1382,16 +1382,21 @@ function MessageAgentChip({
 const EMPTY_TOOL_PARTS: ToolActivityPart[] = [];
 
 // The "empty bubble" guard (the headline sub-agent fix): when a SETTLED assistant
-// turn has NO visible answer — the delegated-and-waiting / sub-agent-failed case
-// where the parent finalizes complete with empty text — render a clear, designed
-// inline state RIGHT WHERE THE ANSWER WOULD BE instead of a blank bubble. The
-// decision is the pure, tested `assistantEmptyState`; this component only supplies
-// it the message facts + the chat's sub-agent rows and renders the result.
+// turn has NO visible answer — the delegated-and-waiting case where the parent
+// finalizes complete with empty text — render a clear, designed inline note RIGHT
+// WHERE THE ANSWER WOULD BE instead of a blank bubble. The decision is the pure,
+// tested `assistantEmptyState`; this component supplies it the message facts + the
+// chat's sub-agent rows and renders the result.
+//
+// COEXISTS with the in-context sub-agent card (MessageSubAgents), which now owns
+// the FAILED case (and the running detail in the analysis view) — so this only
+// surfaces the WAITING note in the clean view (where the running card is hidden)
+// and the GENERIC "acted but answered nothing" note, never duplicating a card.
 //
 // Returns null for a normal turn (there IS an answer) or an in-flight / errored
 // turn (the thinking indicator / RunStatus error card already cover those), so it
 // is inert on every healthy message.
-function AssistantEmptyState() {
+function AssistantEmptyState({ show }: { show: boolean }) {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as { status?: string } | undefined)?.status,
   );
@@ -1415,9 +1420,9 @@ function AssistantEmptyState() {
       (msg.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
         ?.toolParts ?? EMPTY_TOOL_PARTS,
   );
-  // Owner-scoped + reactive. Convex dedupes this with SubAgentActivity's identical
-  // subscription, so every assistant row shares ONE network query; it returns []
-  // for a chat with no sub-agents (the common case), so the cost is bounded.
+  // Owner-scoped + reactive. Convex dedupes this with the sub-agent monitor's
+  // identical subscription, so every assistant row shares ONE network query; it
+  // returns [] for a chat with no sub-agents (the common case) — bounded cost.
   const subAgents = useQuery(
     api.subAgents.listSubAgents,
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
@@ -1430,7 +1435,16 @@ function AssistantEmptyState() {
   );
   if (state.kind === "none") return null;
 
+  // FAILED is owned by the in-context sub-agent CARD (MessageSubAgents renders it
+  // in BOTH views) — surfacing the failed note here too would double the
+  // destructive box and repeat the reason. Defer to the card.
+  if (state.kind === "failed") return null;
+
   if (state.kind === "waiting") {
+    // The running CARD already shows this turn's delegation in the analysis view;
+    // only the clean view (which hides running cards) needs the prose so the
+    // settled-empty bubble is never blank.
+    if (show) return null;
     return (
       <div className="oc-empty-answer oc-empty-answer--waiting" role="status">
         <LoaderCircle size={15} className="oc-empty-answer__spin" aria-hidden />
@@ -1439,29 +1453,6 @@ function AssistantEmptyState() {
             ? m.assistant_empty_waiting_named({ task: state.taskName })
             : m.assistant_empty_waiting()}
         </span>
-      </div>
-    );
-  }
-
-  if (state.kind === "failed") {
-    return (
-      <div className="oc-empty-answer oc-empty-answer--failed" role="status">
-        <CircleAlert size={16} className="oc-empty-answer__icon" aria-hidden />
-        <div className="oc-empty-answer__body">
-          <span className="oc-empty-answer__text">
-            {state.taskName
-              ? m.assistant_empty_failed_named({
-                  task: state.taskName,
-                  reason: state.reason,
-                })
-              : m.assistant_empty_failed({ reason: state.reason })}
-          </span>
-          {/* Make the way forward explicit: the user can simply send a new
-              message (the composer is right below) to continue. */}
-          <span className="oc-empty-answer__hint">
-            {m.assistant_empty_failed_hint()}
-          </span>
-        </div>
       </div>
     );
   }
@@ -1558,10 +1549,17 @@ function AssistantMessage() {
             <MessagePrimitive.Parts components={assistantComponents} />
           )}
           {/* Empty-bubble guard: a settled turn that delegated to a sub-agent and
-              returned no text renders a clear waiting/failed/generic state here
-              (where the answer would be) instead of a blank bubble. Inert on a
-              normal or in-flight turn (renders null). */}
-          <AssistantEmptyState />
+              returned no text renders a clear waiting/generic note here (where the
+              answer would be) instead of a blank bubble. The FAILED case is owned
+              by the in-context sub-agent card below; `show` lets the running note
+              defer to the running card in the analysis view (no duplicate). Inert
+              on a normal or in-flight turn (renders null). */}
+          <AssistantEmptyState show={ui.showTools} />
+          {/* In-context sub-agent monitor: the child run(s) THIS turn spawned,
+              anchored under the turn that delegated them (analysis view = all
+              states; clean view = failures only). Inert on a turn that spawned
+              nothing. */}
+          <MessageSubAgents show={ui.showTools} />
           {/* RunStatus reads the assistant identity for its long-wait label; scope
               it to the per-message routed agent so the reassurance names the right
               one (the override equals the chat identity on a single-agent chat). */}

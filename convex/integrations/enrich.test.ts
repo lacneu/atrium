@@ -325,7 +325,7 @@ describe("enrichTraceByCorrelation orchestration", () => {
   });
 
   test("Opik thread-search: finds OpenClaw's OWN traces by thread_id in the SEPARATE project + reads spans there (SOC2 exclude), NO PHI", async () => {
-    const threadId = "agent:olivier:webchat:chat:olivier:m97abc";
+    const threadId = "agent:olivier:atrium:chat:olivier:m97abc";
     const calls: string[] = [];
     const fetchImpl = (async (url: string) => {
       calls.push(url);
@@ -395,7 +395,7 @@ describe("enrichTraceByCorrelation orchestration", () => {
     }) as unknown as FetchImpl;
     await enrichTraceByCorrelation({
       correlationId: "corr-1",
-      openclawThreadId: "agent:x:webchat:chat:y:z",
+      openclawThreadId: "agent:x:atrium:chat:y:z",
       atMs: 1,
       langfuse: { ...LF, configured: false },
       opik: { ...OP_ON, openclawProjectName: "" }, // not configured

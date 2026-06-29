@@ -24,14 +24,44 @@ read (`bridge/src/providers/openclaw/history-recovery.ts`) during the existing
 ack/empty-final grace. This is the kind of per-version handling the design
 conclusion below refers to — added only where a frame shape actually differs.
 
-## Current target: 2026.6.8
+## Current target: 2026.6.10 (VALIDATED 2026-06-28)
 
-`2026.6.8` is the OpenClaw release the harness currently targets. Bring it up with
-`OPENCLAW_VERSION=2026.6.8 ./local-openclaw/up.sh`, then run the per-version replay
-checklist below. The version-agnostic harness (reorder wrapper + stripped seed)
-applies unchanged; the matrix records each version's replay results — add the
-2026.6.8 column from that run, and only add per-version handling where a step
-reveals a real protocol difference.
+`2026.6.10` is the OpenClaw release the bridge currently validates against (added to
+`bridge/src/compat.ts`: `maxValidated`/`validatedVersions`). Live bench run
+2026-06-28 (codex harness ON, instance `olivier` multi-instance path):
+
+| ID | Result |
+|---|---|
+| A1 gateway health (:18789 + :18790) | ✅ GREEN-live (both 200) |
+| A2 bridge hello-ok | ✅ GREEN-live (bridge serves instance, turns dispatch) |
+| B1 text round-trip | ✅ GREEN-live (deterministic reply "LIVE_610_OK" exact, finalize complete) |
+| B2/B3 deltas + snapshot | ✅ GREEN-live (delta frames → finalize) |
+| B4 tool parts | ✅ GREEN-live (subagent turn parts=[tool,tool]) |
+| E multi-agent | ✅ GREEN-live (routed to alice AND bob, both complete) |
+| Sub-agent | ✅ GREEN-live (parent `sessions_spawn` → child ran under tool-policy guard → "CHILD_OK") |
+
+**Per-version change found — SCOPED DEVICE PAIRING (the one 6.10 difference).** A device
+now pairs as `operator.pairing`, then must obtain a **scope upgrade** to
+`operator.read` + `operator.write` (a second pending request, status "scope upgrade,
+repair") before it can read sessions / send. The **bridge already requests
+operator.read/write/pairing** (`providers/openclaw/openclaw-client.ts`) and classifies
+`SESSION_SCOPE_DENIED` (`core/dispatch-errors.ts`), so the bridge is compatible — the
+operator just approves the scope-upgrade once. The bench `pair.sh` did NOT handle it
+(it approved a stale requestId + always printed "✅ paired"); approving the CURRENT
+scope-upgrade request grants read/write. `pair.sh` fixed to re-list + approve until no
+pending remains.
+
+**Bench bring-up note (runbook drift).** The bridge is now MULTI-INSTANCE
+(`BRIDGE_INSTANCE_SECRETS`): the legacy `OPENCLAW_GATEWAY_URL`/`OPENCLAW_TOKEN` override
+path serves 0 instances. Wire a bench instance via `dev:seedInstanceCreds` (→ a bridge
+secret) + `dev:routeUser`, then run the bridge with `BRIDGE_INSTANCE_SECRETS=<secret>`.
+Dev instance names are restricted to `[olivier, jerome]` (`assertDevInstance`), not
+`local`. (The `atrium-live-bench-runbook.md` §1.2/§1.3 predate this and need updating.)
+
+### Previous target: 2026.6.8 (not separately benched)
+`2026.6.8` was the prior target tag (image present locally); it was not added to the
+compat manifest. The version-agnostic harness (reorder wrapper + stripped seed) applies
+unchanged; only add per-version handling where a step reveals a real protocol difference.
 
 ## Design conclusion: the harness is already version-aware WITHOUT per-version logic
 - **Wrapper**: `local-openclaw/up.sh` + the compose ALWAYS bind-mount the reorder

@@ -35,6 +35,7 @@ import {
   builtinChart,
   resolveChart,
 } from "./lib/charts";
+import { validateChartImport } from "./lib/chartValidation";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -610,3 +611,32 @@ describe("isChartAvailableToUser (bounded reachability truth table)", () => {
 // NOTE: setChartLogo's input guards (oversized / non-image) + authorization are
 // covered in convex/chartsDomain.test.ts ("setChartLogo (server-side store)"),
 // which exercises the current bytes-in / server-stores-the-blob flow.
+
+// Export -> import round-trip: the export button downloads a chart's `tokens`;
+// re-importing pastes those tokens + a name -> validateChartImport({name, tokens}).
+// Guarantee: EVERY built-in's tokens pass that validation, so a chart can never be
+// exported into a form the importer rejects.
+describe("chart export round-trips through import", () => {
+  test.each(BUILTIN_CHARTS.map((c) => [c.key, c.tokens] as const))(
+    "builtin %s re-validates as an import",
+    (_key, tokens) => {
+      expect(validateChartImport({ name: "Imported chart", tokens }).ok).toBe(
+        true,
+      );
+    },
+  );
+
+  test("bpm token: 0/50/90 accepted; out-of-range / non-integer rejected", () => {
+    const base = BUILTIN_CHARTS[0]!.tokens;
+    for (const bpm of [0, 50, 90]) {
+      expect(
+        validateChartImport({ name: "X", tokens: { ...base, bpm } }).ok,
+      ).toBe(true);
+    }
+    for (const bad of [91, -1, 1.5, "50"]) {
+      expect(
+        validateChartImport({ name: "X", tokens: { ...base, bpm: bad } }).ok,
+      ).toBe(false);
+    }
+  });
+});

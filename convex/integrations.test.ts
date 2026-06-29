@@ -12,11 +12,17 @@
 //       the strict-gt watermark behavior.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { ShippableEvent } from "./integrations/shared";
-import { langfuseConfig, opikConfig } from "./integrations/config";
+import { langfuseConfig, opikConfig, otlpConfig } from "./integrations/config";
+import {
+  loadIntegrationsStatusPublic,
+  projectOtlpKnobs,
+} from "./integrations/status";
+import { decryptOtlpHeaders } from "./integrations/otlpSecret";
+import { toBase64 } from "./lib/crypto/cipher";
 import * as langfuse from "./integrations/langfuse";
 import * as opik from "./integrations/opik";
 
@@ -604,5 +610,252 @@ describe("integrations status query (requireAdmin, secret-safe)", () => {
     await expect(
       asUser.query(api.integrations.status.status, {}),
     ).rejects.toThrow(/admin/i);
+  });
+});
+
+// Generic OTLP exporter — the FEATURE-LEVEL gaps the adapter/secret unit tests
+// don't cover: the config resolver, the status no-leak (security), the two-writer
+// merge that preserves the encrypted headers, and the end-to-end FLUSH (decrypt →
+// POST to the operator endpoint with the decrypted auth header → advance cursor).
+describe("OTLP exporter (generic, encrypted headers)", () => {
+  const KEY_B64 = toBase64(new Uint8Array(32).fill(13));
+  beforeAll(() => {
+    process.env.ATRIUM_SECRET_KEY = KEY_B64;
+  });
+
+  const seedAdmin = async (t: ReturnType<typeof convexTest>) => {
+    const uid = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: id, role: "admin" });
+      return id;
+    });
+    return t.withIdentity({ subject: `${uid}|session` });
+  };
+
+  test("otlpConfig: configured only with an endpoint; enabled defaults true; trims", () => {
+    expect(otlpConfig().configured).toBe(false);
+    expect(otlpConfig({ endpoint: "   " }).configured).toBe(false);
+    const c = otlpConfig({ endpoint: " https://x/v1/traces " });
+    expect(c.configured).toBe(true);
+    expect(c.endpoint).toBe("https://x/v1/traces");
+    expect(c.enabled).toBe(true);
+    expect(otlpConfig({ endpoint: "x", enabled: false }).enabled).toBe(false);
+  });
+
+  test("status NEVER leaks the headers envelope — headersSet boolean only", async () => {
+    const t = convexTest(schema, modules);
+    const SECRET_CT = "CIPHERTEXT-MUST-NOT-LEAK";
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "admin" });
+      await ctx.db.insert("integrationConfig", {
+        key: "singleton",
+        otlp: {
+          endpoint: "https://otlp.example.com/v1/traces",
+          enabled: true,
+          headersSecret: {
+            v: 1,
+            alg: "AES-256-GCM",
+            keyRef: "local:v1",
+            iv: "aXY=",
+            ciphertext: SECRET_CT,
+          },
+        },
+      });
+      return uid;
+    });
+    // Public (MCP/API) projection.
+    const pub = await t.run(async (ctx) => loadIntegrationsStatusPublic(ctx));
+    expect(pub.otlp).toEqual({
+      configured: true,
+      enabled: true,
+      endpoint: "https://otlp.example.com/v1/traces",
+      headersSet: true,
+    });
+    expect(JSON.stringify(pub)).not.toContain(SECRET_CT);
+    // Admin projection: headersSet only; config.otlp has endpoint/enabled, NEVER the envelope.
+    const asAdmin = t.withIdentity({ subject: `${userId}|session` });
+    const admin = await asAdmin.query(api.integrations.status.status, {});
+    expect(admin.otlp.headersSet).toBe(true);
+    expect(admin.config.otlp).toEqual({
+      endpoint: "https://otlp.example.com/v1/traces",
+      enabled: true,
+    });
+    const ser = JSON.stringify(admin);
+    expect(ser).not.toContain(SECRET_CT);
+    expect(ser).not.toContain("ciphertext");
+  });
+
+  test("projectOtlpKnobs OMITS unset fields (no present-but-undefined) and never the secret", () => {
+    // The admin status.config.otlp projection must add knobs ADDITIVELY: an unset
+    // field is absent, NOT present-with-undefined. (Convex's convexToJson strips
+    // undefined props at the wire so this is harmless today, but it is a smell and
+    // would break under a future `returns` validator — and codex re-flags it.) This
+    // FAILS against the old inline `{ endpoint: cfg?.otlp?.endpoint, enabled: ... }`
+    // (which yields `{ endpoint: undefined, enabled: undefined }` → `"endpoint" in`
+    // is true). It also locks the no-secret invariant.
+    expect(projectOtlpKnobs(undefined)).toEqual({});
+    expect("endpoint" in projectOtlpKnobs(undefined)).toBe(false);
+    expect("enabled" in projectOtlpKnobs(undefined)).toBe(false);
+    // A partial config carries ONLY the set knob (the other is omitted, not undefined).
+    expect(projectOtlpKnobs({ enabled: false })).toEqual({ enabled: false });
+    expect("endpoint" in projectOtlpKnobs({ enabled: false })).toBe(false);
+    // The encrypted headers envelope is NEVER copied into the non-secret knobs.
+    const full = projectOtlpKnobs({
+      endpoint: "https://otlp.example.com/v1/traces",
+      enabled: true,
+      headersSecret: { v: 1, alg: "AES-256-GCM", ciphertext: "SECRET-CT" },
+    });
+    expect(full).toEqual({
+      endpoint: "https://otlp.example.com/v1/traces",
+      enabled: true,
+    });
+    expect("headersSecret" in full).toBe(false);
+  });
+
+  test("setIntegrationConfig REJECTS an endpoint carrying userinfo credentials; stores nothing", async () => {
+    // Security (codex P2): the endpoint is NON-secret (exposed to traces.read), so a
+    // `user:pass@host` URL would leak credentials in clear. The set-time guard must
+    // reject it BEFORE any write, and a clean URL must still be accepted.
+    const t = convexTest(schema, modules);
+    const asAdmin = await seedAdmin(t);
+    const readSingleton = () =>
+      t.run(async (ctx) =>
+        ctx.db
+          .query("integrationConfig")
+          .withIndex("by_key", (q) => q.eq("key", "singleton"))
+          .unique(),
+      );
+    await expect(
+      asAdmin.mutation(api.admin.setIntegrationConfig, {
+        otlp: { endpoint: "https://user:pass@host/v1/traces" },
+      }),
+    ).rejects.toThrow(/credential/i);
+    expect(await readSingleton()).toBeNull(); // guard ran before the write
+
+    // A clean endpoint is accepted and stored.
+    await asAdmin.mutation(api.admin.setIntegrationConfig, {
+      otlp: { endpoint: "https://host/v1/traces" },
+    });
+    expect((await readSingleton())?.otlp?.endpoint).toBe(
+      "https://host/v1/traces",
+    );
+  });
+
+  test("setIntegrationConfig REJECTS userinfo in Langfuse host / Opik baseUrl too (same guard)", async () => {
+    // The non-secret-URL leak class is vendor-neutral: the Langfuse host and Opik
+    // base URL are also surfaced via integrations.status, so a `user:pass@host`
+    // there leaks creds just like the OTLP endpoint. The SAME set-time guard covers
+    // them; clean hosts stay accepted (the absolute-URL shape they already require).
+    const t = convexTest(schema, modules);
+    const asAdmin = await seedAdmin(t);
+    const readSingleton = () =>
+      t.run(async (ctx) =>
+        ctx.db
+          .query("integrationConfig")
+          .withIndex("by_key", (q) => q.eq("key", "singleton"))
+          .unique(),
+      );
+
+    await expect(
+      asAdmin.mutation(api.admin.setIntegrationConfig, {
+        langfuse: { host: "https://user:pass@lf.example.com" },
+      }),
+    ).rejects.toThrow(/credential/i);
+    await expect(
+      asAdmin.mutation(api.admin.setIntegrationConfig, {
+        opik: { baseUrl: "https://user:pass@opik.example.com/api" },
+      }),
+    ).rejects.toThrow(/credential/i);
+    expect(await readSingleton()).toBeNull(); // neither write landed
+
+    // Clean hosts are still accepted + stored (no format tightening).
+    await asAdmin.mutation(api.admin.setIntegrationConfig, {
+      langfuse: { host: "https://lf.example.com" },
+      opik: { baseUrl: "https://opik.example.com/api" },
+    });
+    const row = await readSingleton();
+    expect(row?.langfuse?.host).toBe("https://lf.example.com");
+    expect(row?.opik?.baseUrl).toBe("https://opik.example.com/api");
+  });
+
+  test("setIntegrationConfig(endpoint) PRESERVES the encrypted headers (two writers)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = await seedAdmin(t);
+    // 1) set the secret (action). 2) set the endpoint via a DIFFERENT writer.
+    await asAdmin.action(api.integrations.otlpSecret.setOtlpHeaders, {
+      headersJson: '{"Authorization":"Bearer keep-me"}',
+    });
+    await asAdmin.mutation(api.admin.setIntegrationConfig, {
+      otlp: { endpoint: "https://otlp.example.com/v1/traces" },
+    });
+    const otlp = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("integrationConfig")
+        .withIndex("by_key", (q) => q.eq("key", "singleton"))
+        .unique();
+      return row?.otlp ?? null;
+    });
+    expect(otlp?.endpoint).toBe("https://otlp.example.com/v1/traces");
+    expect(otlp?.headersSecret).not.toBeUndefined(); // SURVIVED the endpoint write
+    expect(await decryptOtlpHeaders(otlp!.headersSecret)).toEqual({
+      Authorization: "Bearer keep-me",
+    });
+  });
+
+  test("flushToVendors ships to the OTLP endpoint with the DECRYPTED header; cursor advances", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = await seedAdmin(t);
+    await asAdmin.action(api.integrations.otlpSecret.setOtlpHeaders, {
+      headersJson: '{"Authorization":"Bearer FLUSH-TOKEN"}',
+    });
+    await asAdmin.mutation(api.admin.setIntegrationConfig, {
+      otlp: { endpoint: "https://otlp.example.com/v1/traces" },
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("traceEvents", {
+        at: 1000,
+        kind: "api.call",
+        principalType: "system",
+        redacted: true,
+        correlationId: "c1",
+      });
+      // Pre-seed the cursor at 0 so this event is in range (not skipped by the
+      // forward-only first-flush seeding).
+      await ctx.db.insert("integrationCursors", { vendor: "otlp", lastAt: 0 });
+    });
+
+    // flushToVendors calls otlp.send WITHOUT a fetchImpl → it uses global fetch.
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const stub = (async (url: unknown, init?: unknown) => {
+      calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", stub);
+    try {
+      await t.action(internal.integrations.ship.flushToVendors, {});
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const otlpCall = calls.find(
+      (c) => c.url === "https://otlp.example.com/v1/traces",
+    );
+    expect(otlpCall).toBeDefined();
+    const headers = otlpCall!.init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer FLUSH-TOKEN"); // decrypted + applied
+    expect(headers["Content-Type"]).toBe("application/json");
+    // The shipped payload carries the redacted event, never a secret.
+    expect(String(otlpCall!.init.body)).toContain("api.call");
+    expect(String(otlpCall!.init.body)).not.toContain("FLUSH-TOKEN");
+    // Cursor advanced to the shipped event.
+    const cur = await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("integrationCursors")
+        .withIndex("by_vendor", (q) => q.eq("vendor", "otlp"))
+        .unique();
+      return row?.lastAt;
+    });
+    expect(cur).toBe(1000);
   });
 });

@@ -121,6 +121,13 @@ interface SendBody extends BodyRouting {
   clientMessageId: string;
   /** The user message id for this turn (excluded from re-hydration history). */
   messageId: string | null;
+  /** The OUTBOX id of this dispatch — echoed as the `openclaw.rehydrate` trace's
+   *  correlationId (`chatId:outboxId`), the obs-MCP join key. Null on an old Convex. */
+  outboxId: string | null;
+  /** The agent this turn SWITCHED AWAY FROM (null = not an agent switch) — non-secret
+   *  names, echoed into the rehydrate trace + anomaly. From Convex's beginTurnRouting. */
+  switchedFromAgentId: string | null;
+  switchedFromInstanceName: string | null;
   /** The user's reasoning/model overrides, re-applied before chat.send. */
   sessionSettings: SessionSettings | null;
   /** INLINE (model-native / non-shared-fs) attachments: base64 in the WS frame. */
@@ -293,6 +300,13 @@ export function parseSendBody(raw: string): SendBody | null {
     text: obj.text,
     clientMessageId: obj.clientMessageId,
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
+    outboxId: typeof obj.outboxId === "string" ? obj.outboxId : null,
+    switchedFromAgentId:
+      typeof obj.switchedFromAgentId === "string" ? obj.switchedFromAgentId : null,
+    switchedFromInstanceName:
+      typeof obj.switchedFromInstanceName === "string"
+        ? obj.switchedFromInstanceName
+        : null,
     sessionSettings,
     attachments: obj.attachments,
     referenceAttachments: parseReferenceAttachments(obj.referenceAttachments),
@@ -354,6 +368,39 @@ export function rehydrationDecision(opts: {
   if (!opts.freshSession) return "skip_warm";
   if (opts.hasAttachments) return "skip_attachment"; // can't prepend history here
   return "rehydrate";
+}
+
+/**
+ * Is this turn's gateway session "fresh" for re-hydration? TWO independent signals,
+ * either suffices:
+ *   (1) `sess` absent, OR `sess.systemSent === false` — a RESET/rolled gateway
+ *       session (daily/idle reset, redeploy). The original single-agent trigger.
+ *   (2) `firstSendPending && routedSwitch` — this bridge has NEVER run a turn on this
+ *       sessionKey AND Convex marked the turn a per-turn ROUTED dispatch. An agent
+ *       SWITCH re-keys the session (epoch segment + new agentId) → a NEW Session
+ *       (firstSendPending), and the per-turn router sets `config.routedSwitch:true` —
+ *       so together they catch "a freshly-routed agent."
+ * (1) ALONE misses the multi-agent switch: empirically the gateway returns a session
+ * row for the freshly-patched key whose `systemSent` is NOT false, so a freshly-routed
+ * agent looks "warm" and skips re-hydration → the new agent answers with NO
+ * conversation context (live-reproduced: confirmed `skip_warm` on a novel cross-agent
+ * key). `routedSwitch` is a DISTINCT signal from the generic `rehydration` enable knob
+ * (codex P2): an instance whose admin config sets `rehydration:true` does NOT thereby
+ * make an ordinary single-agent send fresh-on-restart — only an actual per-turn routed
+ * dispatch sets `routedSwitch`. So a plain BRIDGE RESTART of a single-agent chat keeps
+ * its still-warm gateway session (no redundant re-prepend). A warm SAME-agent follow-up
+ * keeps its key → the Session is REUSED → firstSendPending already false → no re-prepend.
+ * Pure + exported for the locking test (the freshness rule is the bug surface, not
+ * `rehydrationDecision`).
+ */
+export function computeFreshSession(
+  sess: { systemSent?: unknown } | undefined,
+  firstSendPending: boolean,
+  routedSwitch: boolean,
+): boolean {
+  return (
+    !sess || sess.systemSent === false || (firstSendPending && routedSwitch)
+  );
 }
 
 /** Defensive parse of the session-reset body. Exported for tests. */
@@ -749,12 +796,42 @@ async function performSend(
     // (b) Re-hydration on a fresh/rolled session (systemSent flips true after the
     // first turn, false on reset; absent session row -> also fresh). The decision is
     // a pure helper (tested).
-    const freshSession = !sess || sess.systemSent === false;
+    // FRESHNESS for re-hydration is TWO signals OR'd:
+    //  (1) the gateway's `systemSent === false` — a RESET/rolled session (the
+    //      original single-agent trigger: daily/idle reset re-grounds from our store);
+    //  (2) `session.firstSendPending` — this bridge has NEVER run a turn on THIS
+    //      sessionKey. An agent SWITCH re-keys the gateway session (epoch segment +
+    //      new agentId) → acquire() builds a NEW Session → firstSendPending is true.
+    // (1) ALONE is insufficient for a switch: the gateway creates a brand-new webchat
+    // session with `systemSent` TRUTHY, so a freshly-routed agent's session is
+    // misread as "warm" → rehydration is skipped and the new agent answers with ZERO
+    // conversation context (the multi-agent context-carryover bug). A warm SAME-agent
+    // follow-up keeps its key (segment unchanged) → acquire() REUSES the Session →
+    // firstSendPending is already false → no wasteful re-prepend. Capture+clear here.
+    // READ firstSendPending for the freshness decision but do NOT consume it yet
+    // (codex P2.A): if THIS first send of a freshly-routed session FAILS before the
+    // gateway accepts it (oversized attachment / chat.send reject-or-timeout / a
+    // beginTurn relaunch), the SAME in-memory Session persists — the retry must still
+    // see firstSendPending=true and re-hydrate. It is consumed only AFTER a successful
+    // chat.send (below).
+    const firstTurnOnSession = session.firstSendPending;
+    // `routedSwitch` = Convex marked this a per-turn ROUTED dispatch (the multi-agent
+    // path) — a DISTINCT signal from the generic `rehydration` enable knob (codex P2:
+    // an admin `rehydration:true` instance must NOT make a NON-routed send's brand-new
+    // session re-inject after a bridge restart). Gates the new-session freshness to the
+    // multi-agent switch only (see computeFreshSession).
+    const routedSwitch = body.config?.routedSwitch === true;
+    const freshSession = computeFreshSession(
+      sess,
+      firstTurnOnSession,
+      routedSwitch,
+    );
     const decision = rehydrationDecision({
       freshSession,
       hasAttachments: hasInlineAttachments,
       enabled: rehydrationEnabled,
     });
+    let prependedTurns = 0;
     if (decision === "skip_attachment") {
       // Ship the bare message — prepending history to an attachment turn crashes the
       // gateway. KNOWN GAP (best-effort, strictly better than crashing): this chat
@@ -770,12 +847,38 @@ async function performSend(
       );
       if (ctx.history) {
         message = `${ctx.history}\n\n${body.text}`;
+        prependedTurns = ctx.turnCount;
         // Decision log (no PHI — counts + chatId only).
         console.error(
           `[rehydrate] chat=${body.chatId} fresh session -> prepended ${ctx.turnCount} prior turn(s)`,
         );
       }
+    } else {
+      // skip_warm / skip_disabled were SILENT — which is exactly why the multi-agent
+      // "switched agent has no context" bug needed a live bench to diagnose. Log the
+      // decision (content-free: chatId + decision + the freshness inputs) so a future
+      // rehydration miss is visible in the bridge log without a repro. Loud ONLY when
+      // rehydration was ENABLED (a routed/forced turn that still skipped is the signal);
+      // a plain disabled-by-config turn stays quiet at debug level.
+      const line = `[rehydrate] chat=${body.chatId} ${decision} (firstSend=${firstTurnOnSession} systemSent=${JSON.stringify((sess as { systemSent?: unknown } | undefined)?.systemSent)} enabled=${rehydrationEnabled})`;
+      if (decision === "skip_warm" && rehydrationEnabled) console.error(line);
+      else if (process.env.BRIDGE_DEBUG) console.error(line);
     }
+    // Content-free reconstruction trace of the decision (keyed chatId:outboxId in
+    // Convex) so the obs MCP can show WHY a (cross-agent) turn re-injected history or
+    // not — no local repro needed next time. Fire-and-forget; routed agent NAMES only.
+    writer.emitRehydrateTrace({
+      chatId: body.chatId,
+      outboxId: body.outboxId,
+      decision,
+      freshSession,
+      routedSwitch,
+      prependedTurns,
+      routedAgentId: body.agentId,
+      routedInstanceName: body.instanceName,
+      switchedFromAgentId: body.switchedFromAgentId,
+      switchedFromInstanceName: body.switchedFromInstanceName,
+    });
   } catch (err) {
     console.error(
       "[rehydrate] skipped (non-fatal):",
@@ -859,6 +962,11 @@ async function performSend(
   session.runManager.armReplayBuffer();
   try {
     const response = await conn.request("chat.send", params, 20_000);
+    // The gateway ACCEPTED the message (with any prepended re-hydration history) — only
+    // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
+    // retry of this freshly-routed session re-hydrates again; a post-ack beginTurn throw
+    // is fine to consume past (the gateway already has the re-grounded message).
+    session.firstSendPending = false;
     const ackRunId = extractRunId(response);
     await session.runManager.beginTurn(now, ackRunId);
   } catch (err) {

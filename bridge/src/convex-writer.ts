@@ -118,6 +118,34 @@ export interface ConvexWriter {
    * on -- mirroring reportSessionMeta.
    */
   upsertSubAgent(record: SubAgentRecord): Promise<void>;
+  /**
+   * Re-hydration DECISION trace (content-free reconstruction record) -> an
+   * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
+   * the freshness decision so the obs MCP can show WHY a (cross-agent) turn did or did
+   * not re-inject history -- the multi-agent context-carryover diagnosis, without a
+   * local repro. Enums/scalars only (decision/freshSession/turn count + routed agent
+   * names) -- never prompt/history text. Fire-and-forget like the media trace.
+   */
+  emitRehydrateTrace(args: RehydrateTraceArgs): void;
+}
+
+/** Content-free meta for the `openclaw.rehydrate` trace (see emitRehydrateTrace). */
+export interface RehydrateTraceArgs {
+  chatId: string;
+  outboxId: string | null;
+  decision: string;
+  freshSession: boolean;
+  /** Convex marked this a per-turn ROUTED dispatch (the multi-agent path). With
+   *  `freshSession` + a non-rehydrate decision it is the `routing.rehydrate_missed`
+   *  anomaly condition (a switched agent that still got no history). */
+  routedSwitch: boolean;
+  prependedTurns: number;
+  routedAgentId: string;
+  routedInstanceName: string | null;
+  /** The agent this turn switched away from (null = not a switch) — the diagnostic
+   *  "switched from X to Y" half. Non-secret names. */
+  switchedFromAgentId: string | null;
+  switchedFromInstanceName: string | null;
 }
 
 /** Operations the Convex ingest httpAction understands (its JSON `op` field). */
@@ -199,6 +227,9 @@ type IngestOp =
       bytesBucket?: string;
       mimeBase?: string;
     }
+  // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
+  // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
+  | ({ op: "rehydrateTrace" } & RehydrateTraceArgs)
   | {
       op: "finalize";
       messageId: string;
@@ -876,6 +907,14 @@ export class HttpConvexWriter implements ConvexWriter {
         // best-effort: never surface as an unhandled rejection.
       },
     );
+  }
+
+  /** See ConvexWriter.emitRehydrateTrace. Message-less (keyed chatId:outboxId), so it
+   *  rides doPost directly (off the per-message chain), fire-and-forget. */
+  emitRehydrateTrace(args: RehydrateTraceArgs): void {
+    void this.doPost({ op: "rehydrateTrace", ...args }).catch(() => {
+      // best-effort: a trace write must never surface as an unhandled rejection.
+    });
   }
 
   /**

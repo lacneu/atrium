@@ -277,6 +277,10 @@ export function resolveInstanceConfig(
  *  stored sparse `promptInjections` itself is never sent, only its resolution. */
 export type BridgeDispatchConfig = Omit<InstanceConfig, "promptInjections"> & {
   injections: Record<string, ResolvedInjection>;
+  /** Set by getChatRouting ONLY on an actual per-turn agent SWITCH (codex P2). The
+   *  bridge uses it to re-ground a freshly-routed agent's brand-new session; absent on
+   *  a same-agent follow-up so a warm gateway session is kept (no duplicate). */
+  routedSwitch?: boolean;
 };
 
 export function bridgeDispatchConfig(

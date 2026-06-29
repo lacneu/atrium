@@ -81,6 +81,7 @@ export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follo
 const CURRENT_CHAT_CHANNELS = new Set([
   "chat",
   "current",
+  "atrium",
   "webchat",
   "owui",
   "openwebui",

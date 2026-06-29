@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import { buildOpenClawThreadId, safeSessionPart } from "./openclawThread";
 
 describe("buildOpenClawThreadId — gateway session-key contract", () => {
-  test("the canonical shape: agent:<agentId>:webchat:chat:<canonical>:<chatId>", () => {
+  test("the canonical shape: agent:<agentId>:atrium:chat:<canonical>:<chatId>", () => {
     // Same fixture the bridge documents (session-keys.ts).
     expect(
       buildOpenClawThreadId({
@@ -14,7 +14,7 @@ describe("buildOpenClawThreadId — gateway session-key contract", () => {
         canonical: "u-testuser01",
         chatId: "own-chat",
       }),
-    ).toBe("agent:main:webchat:chat:u-testuser01:own-chat");
+    ).toBe("agent:main:atrium:chat:u-testuser01:own-chat");
   });
 
   test("matches a REAL observed OpenClaw webchat thread_id", () => {
@@ -25,7 +25,7 @@ describe("buildOpenClawThreadId — gateway session-key contract", () => {
         canonical: "olivier",
         chatId: "m97c9e745j5xq5zt5xy63q7e6s88wqf1",
       }),
-    ).toBe("agent:olivier:webchat:chat:olivier:m97c9e745j5xq5zt5xy63q7e6s88wqf1");
+    ).toBe("agent:olivier:atrium:chat:olivier:m97c9e745j5xq5zt5xy63q7e6s88wqf1");
   });
 
   test("any missing routing part -> null (never query with a partial/guessed key)", () => {

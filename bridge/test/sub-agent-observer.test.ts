@@ -32,8 +32,8 @@ const FRAMES = FIXTURE.split("\n")
   .filter((l) => l.length > 0 && !l.startsWith("#"))
   .map((l) => JSON.parse(l) as Record<string, any>);
 
-const PARENT1 = "agent:alice:webchat:chat:olivier:subagentcap1782588406379";
-const PARENT2 = "agent:alice:webchat:chat:olivier:subagentcap1782589051772";
+const PARENT1 = "agent:alice:atrium:chat:olivier:subagentcap1782588406379";
+const PARENT2 = "agent:alice:atrium:chat:olivier:subagentcap1782589051772";
 const CHILD1 = "agent:alice:subagent:50a9857b-5b2f-40ce-867d-2e20d2e2b737";
 const CHILD2 = "agent:alice:subagent:b50901b0-2f75-45c4-8ffc-47db32472afb";
 
@@ -76,7 +76,7 @@ const ERROR_FRAMES = readFileSync(
   .map((l) => l.trim())
   .filter((l) => l.length > 0 && !l.startsWith("#"))
   .map((l) => JSON.parse(l) as Record<string, any>);
-const ERR_PARENT = "agent:alice:webchat:chat:olivier:subagentcap1782608531897";
+const ERR_PARENT = "agent:alice:atrium:chat:olivier:subagentcap1782608531897";
 const ERR_CHILD = "agent:alice:subagent:49f9a3fd-5ffd-4779-b1ed-5e24040dd946";
 const findErr = (pred: (f: Record<string, any>) => boolean): Record<string, any> => {
   const f = ERROR_FRAMES.find(pred);

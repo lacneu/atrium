@@ -102,6 +102,9 @@
    bands that used to hug the line were removed. */
 .oc-signin {
   position: relative;
+  /* Establish a stacking context so the card's `::before` aura (z-index:-1) stays
+     ABOVE this section's background (stays visible) yet BELOW the card itself. */
+  isolation: isolate;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -193,7 +196,11 @@
 
 .oc-signin__card {
   position: relative;
-  z-index: 1;
+  /* Deliberately NO z-index: the card must NOT create a stacking context, else its
+     `::before` aura (z-index:-1) gets trapped ABOVE the card's own background and
+     paints ON the card surface. Without it, the aura falls BEHIND the opaque card
+     bg (only the halo bleed shows). The card still paints above the motif (z-index:0)
+     via DOM order inside the isolated `.oc-signin`. */
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
@@ -203,9 +210,13 @@
   border-radius: calc(var(--radius-lg) + 0.5rem);
   background: var(--card);
   border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  /* Drop shadow TINTED by the active chart's primary so the card's shadow
+     harmonizes with the brand (terracotta on Ataraxis, etc.) instead of a
+     neutral black. Falls back to the native primary on the default chart. */
+  --oc-signin-shadow-col: color-mix(in oklch, var(--primary) 35%, black);
   box-shadow:
-    0 2px 4px color-mix(in oklch, black 6%, transparent),
-    0 30px 70px -22px color-mix(in oklch, black 38%, transparent);
+    0 2px 4px color-mix(in oklch, var(--oc-signin-shadow-col) 6%, transparent),
+    0 30px 70px -22px color-mix(in oklch, var(--oc-signin-shadow-col) 38%, transparent);
 }
 /* Wordmark lockup ABOVE the card, sitting on the gradient — a background-tinted
    halo (text/drop shadow) keeps it legible over bright pools in either mode. */
@@ -1855,96 +1866,91 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Sub-agent monitor — a chat-level block pinned ABOVE the composer (sibling of
-   .oc-composer, so it mirrors the same centered readable column). Shows the
-   sub-agents the main agent spawned + their LIVE status; a failed/hung child is
-   surfaced prominently (the headline pain). Hidden entirely when empty / behind
-   an old gateway / in the clean view — a chat without sub-agents is unchanged.
+   Sub-agent monitor — IN-CONTEXT placement.
+
+   The child runs a turn spawned are anchored UNDER that turn (.oc-msg-subagents,
+   in the message body), so a sub-agent shows where it was delegated rather than
+   in a chat-level pile. A single persistent FAILURE beacon (.oc-subagent-beacon)
+   sits ABOVE the composer (centered readable column like .oc-composer) and keeps
+   a scrolled-away failure reachable (Bug C). All tokens-only so it recolors per
+   active charte in both modes.
    --------------------------------------------------------------------------- */
-.oc-subagents {
+/* Per-message group: the cards this turn spawned, stacked under the answer. */
+.oc-msg-subagents {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+/* Each card's anchor wrapper — the scroll + flash target for the failure beacon.
+   scroll-margin keeps the card clear of sticky chrome when scrolled into view. */
+.oc-msg-subagents__anchor {
+  scroll-margin: 5rem;
+  border-radius: var(--radius-sm, 0.375rem);
+}
+
+/* Persistent failure beacon, centered above the composer (Bug C). */
+.oc-subagent-beacon {
   align-self: center;
   width: calc(100% - 2rem);
   max-width: var(--oc-thread-w);
   margin: 0 auto 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md, 0.5rem);
-  background: color-mix(in srgb, var(--muted) 35%, var(--card));
-}
-/* CLEAN-view failure surface (Bug C): a sub-agent failed while the tools toggle
-   is off — accent the block so the failure reads as an alert, not ambient meta. */
-.oc-subagents--alert {
-  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
-  background: color-mix(in srgb, var(--destructive) 7%, var(--card));
-}
-.oc-subagents--alert .oc-subagents__icon,
-.oc-subagents--alert .oc-subagents__title {
-  color: var(--destructive);
-}
-.oc-subagents__summary {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  width: 100%;
-  padding: 0.4rem 0.6rem;
-  border: 0;
-  border-radius: var(--radius-md, 0.5rem);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
-  cursor: pointer;
+  flex-direction: column;
+  gap: 0.4rem;
 }
-.oc-subagents__summary:hover {
-  color: var(--foreground);
+/* The compact alert chip: the SHARED .oc-chip + .oc-chip--btn (so it matches the
+   header capability/agent chips exactly), with a destructive FAILURE tint that
+   mirrors .oc-chip--agent.is-warn — un-missable but on-brand, never a banner.
+   Left-aligned so it sits as a quiet affordance above the composer. */
+.oc-subagent-beacon__chip {
+  align-self: flex-start;
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 12%, var(--muted));
+  border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
 }
-.oc-subagents__summary:focus-visible {
-  outline: 2px solid var(--ring, var(--primary));
-  outline-offset: 2px;
+/* Keep the failure tint on hover (the shared .oc-chip--btn:hover would neutralize
+   it); same specificity, later in the file, so this wins. */
+.oc-subagent-beacon__chip:hover {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 18%, var(--muted));
+  border-color: color-mix(in srgb, var(--destructive) 55%, var(--border));
 }
-.oc-subagents__icon {
-  flex: 0 0 auto;
-}
-.oc-subagents__title {
-  font-weight: 500;
-}
-/* Status count pills — always visible in the summary so a failed/running child
-   is signalled even when the list is collapsed. */
-.oc-subagents__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
+.oc-subagent-beacon__label {
   font-variant-numeric: tabular-nums;
 }
-.oc-subagents__badge--running {
-  color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 14%, transparent);
-}
-.oc-subagents__badge--failed {
-  color: var(--destructive);
-  background: color-mix(in srgb, var(--destructive) 14%, transparent);
-}
-.oc-subagents__spin {
-  animation: oc-spin 1s linear infinite;
-}
-.oc-subagents__chevron {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--muted-foreground);
-  transition: transform 150ms ease;
-}
-.oc-subagents.is-open .oc-subagents__chevron {
-  transform: rotate(90deg);
-}
-.oc-subagents__list {
+/* Fallback failure-only list (revealed when a failure has no in-thread anchor —
+   spawning turn out of the loaded window / elided spawn output). */
+.oc-subagent-beacon__list {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
-  /* Cap the height so a many-child chat never crowds out the composer. */
   max-height: 14rem;
   overflow-y: auto;
-  padding: 0 0.6rem 0.5rem;
+  padding: 0.1rem;
+}
+
+/* Flash painted on a card's anchor when the beacon scrolls it into view (reuses
+   the message deep-link flash language). */
+.oc-subagent--flash {
+  animation: oc-subagent-flash 2.4s ease-out;
+}
+@keyframes oc-subagent-flash {
+  0%,
+  45% {
+    background-color: color-mix(in oklch, var(--primary) 22%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-subagent--flash {
+    animation: none;
+    background-color: color-mix(in oklch, var(--primary) 14%, transparent);
+  }
 }
 
 /* One sub-agent card. A colored left rail encodes the tone at a glance:
@@ -2767,6 +2773,23 @@
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--card); color: var(--card-foreground);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+/* Export control overlay: the card is a <button>, so its "Exporter" sits as a
+   SIBLING over the top-right corner (no nested button). The wrap becomes the grid
+   item; the card flexes to fill it. */
+.oc-chart-card-wrap { position: relative; display: flex; }
+.oc-chart-card-wrap > .oc-chart-card { flex: 1; }
+.oc-chart-card__export {
+  position: absolute; top: 0.4rem; right: 0.4rem; z-index: 2;
+  opacity: 0.7;
+}
+.oc-chart-card__export:hover { opacity: 1; }
+/* Cardiac gauge (chart editor): a native range slider tinted by the chart color. */
+.oc-chart-bpm { display: flex; align-items: center; gap: 0.75rem; }
+.oc-chart-bpm__slider { flex: 1; accent-color: var(--primary); cursor: pointer; }
+.oc-chart-bpm__value {
+  min-width: 4.5rem; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--muted-foreground);
 }
 .oc-chart-card:hover { border-color: var(--ring); }
 .oc-chart-card--selected {
@@ -3869,7 +3892,11 @@
   color: var(--destructive);
   border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
 }
-.oc-composer--disabled {
+/* Dim the disabled composer's CONTENT, not the whole element. `opacity < 1` on the
+   composer itself creates a STACKING CONTEXT that traps the ambient torch (the
+   `::before`, z-index:-1) ON the card surface instead of behind it. Dimming the
+   direct children keeps the "disabled" cue without that side effect. */
+.oc-composer--disabled > * {
   opacity: 0.65;
 }
 .oc-composer--disabled .oc-composer__input {
@@ -5625,7 +5652,7 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   PROTOTYPE — Ambient visual effects (token-driven).  [easy to remove: this block]
+   Ambient visual effects (token-driven) — the brand "heartbeat".
    ---------------------------------------------------------------------------
    Goal: extremely delicate, almost-imperceptible ambient lighting that DRAWS ITS
    COLORS FROM THE ACTIVE CHARTE GRAPHIQUE. Every effect is painted with
@@ -5694,7 +5721,151 @@
   box-shadow: 0 2px 22px -7px color-mix(in oklch, var(--primary) 70%, transparent);
 }
 
-/* (The sign-in "mesh/aurora" moved OUT of the prototype: the redesigned auth
-   page now OWNS its background unconditionally — see the `.oc-signin` block
+/* (The sign-in "mesh/aurora" lives OUTSIDE this block: the redesigned auth
+   page OWNS its background unconditionally — see the `.oc-signin` block
    above — so it no longer depends on the ambiance toggle.) */
-/* END PROTOTYPE — Ambient visual effects */
+
+/* ───────────────────────────────────────────────────────────────────────────
+   3 — HEARTBEAT pulse (the brand "vit"). ONE rhythm drives EVERY ambient glow:
+   a registered `--oc-beat` (0→1) animates on a lub-dub curve at `--heart-period`
+   (= 60s / BPM — set per chart by the future `bpm` token), inherits down, and
+   each glow reads it to throb IN SYNC. Tiny amplitude in light; more emissive in
+   dark (Vercel-style aura). Tune by eye: `--heart-period` (tempo) + `--oc-aura`
+   (login card-aura strength, 0 = off). prefers-reduced-motion freezes the beat
+   at 0 → every glow falls back to its static base. */
+@property --oc-beat {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+:root[data-ambiance="on"] {
+  /* Calm DEFAULT heartbeat tempo (~40 BPM) so the ambient pulse is alive even with
+     no chart bpm (e.g. the login). A chart's `bpm` token OVERRIDES this via
+     applyChartTokens (bpm>0 => 60s/bpm; bpm===0 => 0s = static). */
+  --heart-period: 1.5s;
+  --oc-aura: 0.6; /* login card-aura strength */
+}
+@keyframes oc-heart {
+  0% { --oc-beat: 0; }
+  5% { --oc-beat: 1; } /* lub */
+  11% { --oc-beat: 0.12; }
+  17% { --oc-beat: 0.66; } /* dub */
+  25% { --oc-beat: 0; }
+  100% { --oc-beat: 0; } /* diastole — the long rest IS the period */
+}
+/* Drive the shared beat from `body` (always present) + throb the canvas pools a
+   hair on each beat (background-size is animatable; the radial glows scale). */
+:root[data-ambiance="on"] body {
+  animation: oc-heart var(--heart-period, 0s) ease-in-out infinite;
+  background-position: center;
+  background-size:
+    calc(100% + var(--oc-beat) * 3%) calc(100% + var(--oc-beat) * 3%);
+}
+/* Primary buttons bloom ON the beat (overrides the static rule above). */
+:root[data-ambiance="on"] [data-slot="button"][data-variant="default"] {
+  box-shadow: 0 1px calc(16px + var(--oc-beat) * 10px) -9px
+    color-mix(in oklch, var(--primary) calc(55% + var(--oc-beat) * 25%), transparent);
+}
+/* Login: a large, diffuse, brand-tinted aura BEHIND the card (the Vercel plume)
+   that rises + intensifies on each beat. Subtle haze in light. */
+:root[data-ambiance="on"] .oc-signin__card::before {
+  content: "";
+  position: absolute;
+  inset: -34% -30% -40%;
+  z-index: -1;
+  border-radius: 50%;
+  /* A CONCENTRATED torch (hot core), smaller than the card, pre-blurred ONCE. It
+     ORBITS behind the card (see oc-torch) so the halo SWEEPS edge to edge -- never
+     a uniform ring. The card's opaque bg occludes the core; only the spill on the
+     torch's current side shows, so the light reads as moving left<->right /
+     bottom<->top behind the card. */
+  background: radial-gradient(
+    34% 34% at 50% 50%,
+    color-mix(in oklch, var(--primary) 72%, white 28%),
+    color-mix(in oklch, var(--primary) 48%, transparent) 42%,
+    transparent 72%
+  );
+  filter: blur(40px);
+  pointer-events: none;
+  /* Wide brightness swing so the heartbeat THROB is clearly visible on top of the
+     slow drift (rest -> beat doubles the torch). */
+  opacity: calc(var(--oc-aura) * (0.5 + var(--oc-beat) * 0.5));
+  /* VERY slow elliptical orbit (a calm drift, not a sweep). transform = GPU-cheap
+     (the blurred layer is MOVED, not re-blurred each frame). The beat scale rides
+     inside each keyframe so the torch still pulses. Wider horizontally => clearer
+     L<->R drift. */
+  animation: oc-torch 30s linear infinite;
+}
+@keyframes oc-torch {
+  0%   { transform: translate(0, -24%) scale(calc(1 + var(--oc-beat) * 0.05)); }
+  25%  { transform: translate(32%, 0)  scale(calc(1 + var(--oc-beat) * 0.05)); }
+  50%  { transform: translate(0, 24%)  scale(calc(1 + var(--oc-beat) * 0.05)); }
+  75%  { transform: translate(-32%, 0) scale(calc(1 + var(--oc-beat) * 0.05)); }
+  100% { transform: translate(0, -24%) scale(calc(1 + var(--oc-beat) * 0.05)); }
+}
+/* Dark = EMISSIVE (the Vercel secret): `screen` makes the moving torch ADD light
+   over the dark bg (blends within the isolated `.oc-signin`). */
+:root[data-ambiance="on"].dark .oc-signin__card::before {
+  mix-blend-mode: screen;
+  opacity: calc(var(--oc-aura) * (0.78 + var(--oc-beat) * 0.55));
+}
+/* The SAME orbiting torch behind the chat composer card. The composer is opaque
+   (var(--card)) and its ancestors (.oc-thread / .oc-main / .oc-shell) are
+   transparent and create NO stacking context, so the `::before` (z-index:-1)
+   escapes to the root, paints above the body canvas, and screen-blends with it in
+   dark -- exactly like the login. A touch subtler (it is always on screen). Tune
+   the geometry (inset / radial / opacity) by eye -- the composer is wide + short. */
+:root[data-ambiance="on"] .oc-composer {
+  position: relative; /* containing block for the torch; no z-index => not a SC */
+}
+:root[data-ambiance="on"] .oc-composer::before {
+  content: "";
+  position: absolute;
+  /* The composer is glued to the screen bottom, so a glow wrapping it fully would
+     spill UP into the conversation. We keep it strictly BELOW: the box starts 60%
+     down the card and the gradient is transparent well before the card's top, so
+     neither the gradient nor the (reduced) 30px blur reaches above it. */
+  inset: 18% -12% -90%;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(
+    62% 60% at 50% 56%,
+    color-mix(in oklch, var(--primary) 70%, white 30%),
+    color-mix(in oklch, var(--primary) 46%, transparent) 42%,
+    transparent 72%
+  );
+  filter: blur(34px);
+  pointer-events: none;
+  opacity: calc(var(--oc-aura) * (0.32 + var(--oc-beat) * 0.4));
+  /* Horizontal-only drift (Y stays 0 => never rises above the card) + the beat. */
+  animation: oc-torch-low 24s ease-in-out infinite;
+}
+@keyframes oc-torch-low {
+  0%   { transform: translate(-24%, 0) scale(calc(1 + var(--oc-beat) * 0.05)); }
+  50%  { transform: translate(24%, 0)  scale(calc(1 + var(--oc-beat) * 0.05)); }
+  100% { transform: translate(-24%, 0) scale(calc(1 + var(--oc-beat) * 0.05)); }
+}
+:root[data-ambiance="on"].dark .oc-composer::before {
+  mix-blend-mode: screen;
+  opacity: calc(var(--oc-aura) * (0.6 + var(--oc-beat) * 0.45));
+}
+/* The ECG line itself rings with light on each beat (drop-shadow is animatable
+   frame-to-frame as --oc-beat changes). */
+:root[data-ambiance="on"] .oc-signin__line {
+  filter: drop-shadow(
+    0 0 calc(2px + var(--oc-beat) * 7px)
+      color-mix(in oklch, var(--primary) calc(35% + var(--oc-beat) * 45%), transparent)
+  );
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Freeze the beat → --oc-beat stays 0 → every glow at its static base, AND stop
+     the torch orbit (orbit IS motion) → it rests at its first keyframe (top glow). */
+  :root[data-ambiance="on"] body {
+    animation: none;
+  }
+  :root[data-ambiance="on"] .oc-signin__card::before,
+  :root[data-ambiance="on"] .oc-composer::before {
+    animation: none;
+  }
+}
+/* END — Ambient visual effects */

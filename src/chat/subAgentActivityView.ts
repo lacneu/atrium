@@ -92,6 +92,16 @@ export function statusTone(status: SubAgentStatus): SubAgentTone {
   return "failed"; // error | aborted
 }
 
+/** A sub-agent can be REPORTED once it has reached a TERMINAL state — `done`
+ *  (the `wrong_result` case: "it finished but the answer was wrong") OR
+ *  failed/aborted (the error case). A still-`running` child has nothing to
+ *  report yet, so the flag is gated off there. Gating the report flag on
+ *  "failure" alone would make the `wrong_result` category dead-reachable
+ *  (a done child would never expose a flag). */
+export function isReportableSubAgent(status: SubAgentStatus): boolean {
+  return status !== "running";
+}
+
 /** Build one card from a row. */
 function toCard(row: SubAgentRow): SubAgentCardView {
   const tone = statusTone(row.status);
@@ -125,6 +135,65 @@ export function buildSubAgentActivityView(
     running: cards.filter((c) => c.tone === "running").length,
     failed: cards.filter((c) => c.tone === "failed").length,
   };
+}
+
+/**
+ * The sub-agent rows a SINGLE assistant turn spawned, for anchoring the cards
+ * UNDER that turn (not in a chat-level pile). Pure ownership join: keep only the
+ * rows whose `childSessionKey` is in `keys` (the keys the turn's `sessions_spawn`
+ * output carried — see assistantEmptyState.extractSpawnedChildKeys). An empty
+ * `keys` (the turn spawned nothing, or its spawn output was elided) yields no
+ * rows: the turn anchors no card, and the chat-level failure beacon stays the
+ * safety net for an elided / out-of-window failure.
+ */
+export function subAgentRowsForMessage(
+  rows: readonly SubAgentRow[],
+  keys: readonly string[],
+): SubAgentRow[] {
+  if (keys.length === 0) return [];
+  const owned = new Set(keys);
+  return rows.filter((r) => owned.has(r.childSessionKey));
+}
+
+/** The chat-level FAILURE-beacon view model. `jumpIds` are the failed rows' ids
+ *  in THREAD order (oldest spawn first = top→bottom of the conversation), so a
+ *  consumer can scroll to the first failed card that is actually anchored on
+ *  screen and fall back to a failure-only list for any whose spawning turn is
+ *  outside the loaded message window / had an elided spawn output. */
+export type FailedSubAgentBeacon = {
+  visible: boolean;
+  count: number;
+  jumpIds: string[];
+};
+
+/**
+ * Derive the persistent, chat-level failure signal (Bug C): the un-missable
+ * indicator that a sub-agent failed SOMEWHERE in the chat, kept reachable even
+ * when its spawning message is scrolled far away. Pure so visibility + count +
+ * jump ORDER are unit-tested without a DOM harness.
+ *
+ * Rule: visible iff the gateway advertises `subagents` AND at least one row is a
+ * FAILURE (error | aborted — `statusTone` collapses both). Independent of the
+ * tools toggle: a failure must surface in BOTH the clean and analysis views, so
+ * this never depends on `show`. `count` is the number of failed sub-agents;
+ * `jumpIds` orders them oldest-first so the first jump target is the topmost
+ * failure in the thread.
+ */
+export function failedSubAgentBeacon(
+  rows: readonly SubAgentRow[],
+  capable: boolean,
+): FailedSubAgentBeacon {
+  if (!capable) return { visible: false, count: 0, jumpIds: [] };
+  const failed = rows.filter((r) => statusTone(r.status) === "failed");
+  if (failed.length === 0) return { visible: false, count: 0, jumpIds: [] };
+  const jumpIds = [...failed]
+    .sort(
+      (a, b) =>
+        a.createdAt - b.createdAt ||
+        (a._id < b._id ? -1 : a._id > b._id ? 1 : 0),
+    )
+    .map((r) => r._id);
+  return { visible: true, count: failed.length, jumpIds };
 }
 
 /**

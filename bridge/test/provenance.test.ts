@@ -30,7 +30,7 @@ import type {
   ToolPart,
 } from "../src/convex-writer.js";
 
-const SESSION_KEY = "agent:main:webchat:chat:prov-user:prov-probe-4";
+const SESSION_KEY = "agent:main:atrium:chat:prov-user:prov-probe-4";
 const RUN_ID =
   "webchat-47806df6f283c5f83c519ebeac8df34b97ba7ea69a20749c724f6f4570e833a0";
 
@@ -303,6 +303,9 @@ class FakeWriter implements ConvexWriter {
   async reportSessionMeta(): Promise<void> {}
   async upsertSubAgent(): Promise<void> {
     this.calls.push(["other", "upsertSubAgent"]);
+  }
+  emitRehydrateTrace(): void {
+    this.calls.push(["other", "emitRehydrateTrace"]);
   }
   provenanceParts(): ProvenancePart[] {
     return this.calls

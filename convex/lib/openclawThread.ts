@@ -7,7 +7,7 @@
 // parsing a fragile format.
 //
 // CONTRACT (must match the gateway EXACTLY — it routes by this key):
-//   agent:<agentId>:webchat:chat:<canonical>:<chatId>
+//   agent:<agentId>:atrium:chat:<canonical>:<chatId>
 // This mirrors `bridge/src/providers/openclaw/session-keys.ts` (itself a port of
 // the gateway's backend/app/session_keys.py). The two MUST stay byte-identical.
 //
@@ -20,6 +20,12 @@
 // "no OpenClaw spans", never to wrong data.
 
 const SAFE_PART_RE = /[^A-Za-z0-9_.-]+/g;
+
+// The OpenClaw channel segment. MUST stay byte-identical with the bridge's
+// session-keys.ts OC_CHANNEL — the gateway round-trips it verbatim (LIVE-VERIFIED
+// on 2026.6.10: a sessionKey sent with "atrium" is echoed with "atrium"). "atrium"
+// namespaces Atrium distinctly from the Open WebUI pipe (also client.mode=cli).
+const OC_CHANNEL = "atrium";
 
 /** Sanitize one session-key segment — mirror of the bridge's `safeSessionPart`
  *  (and the gateway's `safe_session_part`). Keep in lockstep. */
@@ -44,7 +50,7 @@ export function buildOpenClawThreadId(opts: {
   if (!agentId || !canonical || !chatId) return null;
   return (
     `agent:${safeSessionPart(agentId)}:` +
-    `webchat:chat:${safeSessionPart(canonical)}:` +
+    `${OC_CHANNEL}:chat:${safeSessionPart(canonical)}:` +
     `${safeSessionPart(chatId)}`
   );
 }

@@ -1,52 +1,60 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "convex/react";
-import {
-  Bot,
-  Check,
-  ChevronRight,
-  CircleAlert,
-  LoaderCircle,
-} from "lucide-react";
+import { useMessage } from "@assistant-ui/react";
+import { Check, CircleAlert, Flag, LoaderCircle } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import type { ConvexId } from "./convexTypes";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import {
+  extractSpawnedChildKeys,
+  type EmptyStateToolPart,
+} from "./assistantEmptyState";
+import {
+  SubAgentReportDialog,
+  type SubAgentReportTarget,
+} from "./SubAgentReportDialog";
+import {
   buildSubAgentActivityView,
-  subAgentActivityVisible,
+  failedSubAgentBeacon,
+  isReportableSubAgent,
   subAgentCardsToShow,
-  subAgentCountLabel,
   subAgentFailedLabel,
+  subAgentRowsForMessage,
   shortenSubAgentError,
   type SubAgentCardView,
   type SubAgentRow,
 } from "./subAgentActivityView";
 
-// Chat-level "Sous-agents" block — shows the sub-agents (child runs) a main agent
-// spawned in THIS chat plus their LIVE status, with errors/hangs surfaced
-// prominently (the headline pain: a sub-agent fails and the main agent hangs with
-// no way to SEE it). READ-ONLY consumer of the `subAgents` store written by the
-// bridge observer; it never changes what Atrium sends.
+// Sub-agent monitor UI — READ-ONLY consumer of the `subAgents` store the bridge
+// observer writes (one row per child run); it never changes what Atrium sends.
 //
-// Data path: useQuery(listSubAgents) is owner-scoped + reactive — the bridge
-// upserts a row per child as frames arrive, the query re-runs, and the card
-// status/result/error update live with no per-turn HTTP request. All derivation
-// (sort, status -> tone, label, the failure mapping, the gate) is pure in
-// subAgentActivityView.ts and unit tested.
+// PLACEMENT (the redesign): instead of one chat-level pile pinned above the
+// composer that accumulates EVERY child of the chat, each sub-agent is anchored
+// IN CONTEXT under the assistant turn that spawned it (MessageSubAgents), and a
+// single persistent chip near the composer (SubAgentFailureBeacon) keeps any
+// FAILED child reachable even when its spawning turn is scrolled far away (Bug C).
 //
-// GATING (pure subAgentActivityVisible / subAgentCardsToShow): requires the
-// `subagents` capability AND ≥1 sub-agent — an old gateway / a chat without
-// sub-agents is visually unchanged. In the ANALYSIS view (`show` = showTools) it
-// shows ALL cards; in the CLEAN view it shows ONLY when a sub-agent FAILED, and
-// then ONLY the failed cards — a failed/hung child (Bug C) is un-missable even
-// with the tools toggle off, while running/done detail stays out of the clean
-// view.
+// All derivation (sort, status -> tone, label, the failure mapping, the
+// per-message ownership join, the beacon visibility/order) is pure in
+// subAgentActivityView.ts and unit tested. Data flows over reactive owner-scoped
+// queries (listSubAgents / myReportedSubAgentIds / compat.forChat) that Convex
+// dedupes across every consumer, so the many per-message anchors share ONE
+// network subscription each and return [] for the common no-sub-agent chat.
 
 // One sub-agent card: label + a LIVE status badge, the error message shown
 // prominently on a failed/timed-out child, and the child's final answer
-// (collapsible) on done.
-function SubAgentCard({ card }: { card: SubAgentCardView }) {
+// (collapsible) on done. Presentational — the caller supplies the report wiring.
+function SubAgentCard({
+  card,
+  reported,
+  onReport,
+}: {
+  card: SubAgentCardView;
+  reported: boolean;
+  onReport: (card: SubAgentCardView) => void;
+}) {
   const StatusIcon =
     card.tone === "running"
       ? LoaderCircle
@@ -75,6 +83,39 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
           {card.label}
         </span>
         <span className="oc-subagent__status">{statusText}</span>
+        {/* Flag a TERMINAL sub-agent → freezes a report (content) + emits a
+            content-free anomaly. Shown on done AND failed/aborted cards: a
+            `done`-but-wrong child is the `wrong_result` case, a failed one the
+            error case. A still-running child has nothing to report yet. */}
+        {isReportableSubAgent(card.status) ? (
+          reported ? (
+            // ALREADY reported: createSubAgentReport is idempotent (it returns
+            // the existing report WITHOUT updating category/comment), so re-
+            // opening the editable form would SILENTLY DROP any new input. Show a
+            // locked "reported" indicator instead — never the re-submit form.
+            // (Adding to an existing report belongs to the deferred exchange
+            // thread, not a silent re-submit.)
+            <button
+              type="button"
+              className="oc-iconbtn oc-subagent__flag is-on"
+              disabled
+              title={m.subagentreport_btn_reported()}
+              aria-label={m.subagentreport_btn_reported()}
+            >
+              <Flag size={13} aria-hidden />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="oc-iconbtn oc-subagent__flag"
+              title={m.subagentreport_btn_report()}
+              aria-label={m.subagentreport_btn_aria()}
+              onClick={() => onReport(card)}
+            >
+              <Flag size={13} aria-hidden />
+            </button>
+          )
+        ) : null}
       </div>
       {/* Visible-FAILURE: a failed/aborted/timed-out child surfaces its reason
           inline (never hidden behind a click) — this is the whole point. */}
@@ -95,94 +136,195 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
   );
 }
 
-export function SubAgentActivity({
+// A stable empty array so the toolParts selector never returns a fresh reference
+// (which would defeat useMessage's memoization and churn re-renders).
+const EMPTY_TOOL_PARTS: readonly EmptyStateToolPart[] = [];
+
+/**
+ * Per-message anchor: the sub-agent(s) THIS assistant turn spawned, rendered
+ * right under that turn so a child shows WHERE it was delegated — not in a
+ * chat-level pile. Correlates the turn's `sessions_spawn` output keys
+ * (extractSpawnedChildKeys) with the chat's sub-agent rows (subAgentRowsForMessage).
+ *
+ * GATING mirrors the old block: requires the `subagents` capability; in the
+ * ANALYSIS view (`show` = showTools) it renders ALL of this turn's cards, in the
+ * CLEAN view it renders ONLY the failed ones (a failed/hung child stays
+ * un-missable even with the tools toggle off). A turn that spawned nothing — or
+ * whose spawn output was elided — anchors no card and does not even subscribe.
+ *
+ * Each card carries `data-subagent-id` (+ `data-subagent-failed` on a failure)
+ * so the chat-level failure beacon can scroll a scrolled-away failure into view.
+ */
+export function MessageSubAgents({ show }: { show: boolean }) {
+  const chatId = useMessage(
+    (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  const toolParts = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { toolParts?: EmptyStateToolPart[] } | undefined)
+        ?.toolParts ?? EMPTY_TOOL_PARTS,
+  );
+  // The childSessionKeys this turn spawned (pure). Empty for the vast majority of
+  // turns — gate the subscriptions on it so an ordinary turn costs nothing.
+  const keys = useMemo(() => extractSpawnedChildKeys(toolParts), [toolParts]);
+  const hasSpawn = keys.length > 0;
+  const cid: ConvexId<"chats"> | null =
+    hasSpawn && chatId ? (chatId as ConvexId<"chats">) : null;
+
+  const { can } = useInstanceCapabilities(cid);
+  const rows = useQuery(
+    api.subAgents.listSubAgents,
+    cid ? { chatId: cid as Id<"chats"> } : "skip",
+  ) as SubAgentRow[] | undefined;
+  const reportedIds = useQuery(
+    api.subAgentReports.myReportedSubAgentIds,
+    cid ? { chatId: cid as Id<"chats"> } : "skip",
+  ) as string[] | undefined;
+  const [reportTarget, setReportTarget] = useState<SubAgentReportTarget | null>(
+    null,
+  );
+
+  if (!hasSpawn || !can("subagents")) return null;
+  const owned = subAgentRowsForMessage(rows ?? [], keys);
+  const view = buildSubAgentActivityView(owned);
+  const cards = subAgentCardsToShow(view.cards, show);
+  if (cards.length === 0) return null;
+  const reportedSet = new Set(reportedIds ?? []);
+
+  return (
+    <div className="oc-msg-subagents">
+      {cards.map((card) => (
+        <div
+          key={card.id}
+          className="oc-msg-subagents__anchor"
+          data-subagent-id={card.id}
+          data-subagent-failed={card.failure ? "" : undefined}
+        >
+          <SubAgentCard
+            card={card}
+            reported={reportedSet.has(card.id)}
+            onReport={(c) =>
+              setReportTarget({ subAgentId: c.id, label: c.label })
+            }
+          />
+        </div>
+      ))}
+      <SubAgentReportDialog
+        target={reportTarget}
+        onClose={() => setReportTarget(null)}
+      />
+    </div>
+  );
+}
+
+/** Scroll an anchored sub-agent card into view and flash it (reuses the
+ *  useFocusMessage pattern: remove → reflow → re-add so the keyframes restart). */
+function flashAnchor(el: HTMLElement): void {
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.remove("oc-subagent--flash");
+  void el.offsetWidth;
+  el.classList.add("oc-subagent--flash");
+  window.setTimeout(() => el.classList.remove("oc-subagent--flash"), 2400);
+}
+
+/**
+ * Persistent, chat-level FAILURE beacon (Bug C): a compact chip near the composer
+ * that appears ONLY when a sub-agent is in a FAILED/timed-out state, regardless
+ * of the tools toggle, showing an "N sub-agent(s) failed" count. Running/done
+ * children do NOT get this signal — only failures must be un-missable.
+ *
+ * Clicking it reaches the failure even when the spawning turn is scrolled far
+ * away: if every failure is anchored in the loaded thread it SCROLLS to (and
+ * flashes) the topmost one; otherwise — a failure whose spawning turn is outside
+ * the 200-message window, or whose spawn output was elided, so no card is
+ * anchored — it reveals a failure-only fallback list so the failure is never
+ * unreachable (which would silently re-open Bug C).
+ */
+export function SubAgentFailureBeacon({
   chatId,
-  show,
 }: {
   chatId: ConvexId<"chats">;
-  show: boolean;
 }) {
-  // Default OPEN: the user opened the analysis view to SEE the sub-agents, so the
-  // cards (and any failure) are visible without a click. Collapsing is opt-in; the
-  // summary line keeps the running/failed counts visible even when collapsed.
-  const [open, setOpen] = useState(true);
-  // Both subscriptions stay ACTIVE even in the clean view (show=false): the whole
-  // point of Bug C is that a FAILED/hung sub-agent surfaces WITHOUT the analysis
-  // toggle, so the component must know about failures regardless of `show` (the gate
-  // below is `show || failed > 0`). Gating these on `show` would make the clean-view
-  // failure surface dead. The cost is bounded — listSubAgents returns [] for a chat
-  // with no sub-agents (the common case), so an ordinary chat just reads an empty set.
+  const [expanded, setExpanded] = useState(false);
   const { can } = useInstanceCapabilities(chatId);
   const rows = useQuery(api.subAgents.listSubAgents, {
     chatId: chatId as Id<"chats">,
   }) as SubAgentRow[] | undefined;
+  const reportedIds = useQuery(api.subAgentReports.myReportedSubAgentIds, {
+    chatId: chatId as Id<"chats">,
+  }) as string[] | undefined;
+  const [reportTarget, setReportTarget] = useState<SubAgentReportTarget | null>(
+    null,
+  );
 
-  const view = buildSubAgentActivityView(rows ?? []);
-  if (!subAgentActivityVisible(show, can("subagents"), view.total, view.failed))
-    return null;
+  const beacon = failedSubAgentBeacon(rows ?? [], can("subagents"));
+  if (!beacon.visible) return null;
 
-  // CLEAN view reaches here ONLY because a sub-agent failed (the gate above) —
-  // render a tight, failure-only surface. ANALYSIS view renders the full picture.
-  const cards = subAgentCardsToShow(view.cards, show);
-  const failureOnly = !show;
+  const onActivate = () => {
+    // Count the failed cards actually anchored in the loaded thread. Only when
+    // EVERY failure is anchored do we scroll straight to the topmost one — a
+    // strictly safe direction: any shortfall (out-of-window / elided / not yet
+    // loaded) reveals the fallback list instead, so a failure is never missed.
+    const anchored = document.querySelectorAll("[data-subagent-failed]");
+    if (anchored.length > 0 && anchored.length >= beacon.count) {
+      for (const id of beacon.jumpIds) {
+        const el = document.querySelector<HTMLElement>(
+          `[data-subagent-id="${CSS.escape(id)}"]`,
+        );
+        if (el) {
+          flashAnchor(el);
+          setExpanded(false);
+          return;
+        }
+      }
+    }
+    setExpanded((v) => !v);
+  };
+
+  // The fallback failure-only list (shown only when expanded): the same cards the
+  // old clean-view block rendered, so a failure with no in-thread anchor is still
+  // fully visible + flaggable here.
+  const failedCards = subAgentCardsToShow(
+    buildSubAgentActivityView(rows ?? []).cards,
+    false,
+  );
+  const reportedSet = new Set(reportedIds ?? []);
 
   return (
-    <div
-      className={`oc-subagents${open ? " is-open" : ""}${
-        failureOnly ? " oc-subagents--alert" : ""
-      }`}
-    >
+    <div className="oc-subagent-beacon">
       <button
         type="button"
-        className="oc-subagents__summary"
-        aria-expanded={open}
-        title={open ? m.subagents_collapse() : m.subagents_expand()}
-        onClick={() => setOpen(!open)}
+        className={`oc-chip oc-chip--btn oc-subagent-beacon__chip${
+          expanded ? " is-open" : ""
+        }`}
+        title={m.subagents_beacon_jump()}
+        aria-label={m.subagents_beacon_jump()}
+        aria-expanded={expanded}
+        onClick={onActivate}
       >
-        {failureOnly ? (
-          <CircleAlert size={14} className="oc-subagents__icon" aria-hidden />
-        ) : (
-          <Bot size={14} className="oc-subagents__icon" aria-hidden />
-        )}
-        <span className="oc-subagents__title">
-          {failureOnly
-            ? subAgentFailedLabel(view.failed)
-            : subAgentCountLabel(view.total)}
+        <CircleAlert size={14} className="oc-chip__icon" aria-hidden />
+        <span className="oc-subagent-beacon__label">
+          {subAgentFailedLabel(beacon.count)}
         </span>
-        {/* The count pills are an ANALYSIS-view affordance: the clean view's
-            title already states the failure count and every card below is a
-            failure, so the pills would be redundant there. */}
-        {!failureOnly && view.running > 0 ? (
-          <span
-            className="oc-subagents__badge oc-subagents__badge--running"
-            title={m.subagents_running_count({ count: view.running })}
-          >
-            <LoaderCircle
-              size={11}
-              className="oc-subagents__spin"
-              aria-hidden
-            />
-            {view.running}
-          </span>
-        ) : null}
-        {!failureOnly && view.failed > 0 ? (
-          <span
-            className="oc-subagents__badge oc-subagents__badge--failed"
-            title={m.subagents_failed_count({ count: view.failed })}
-          >
-            <CircleAlert size={11} aria-hidden />
-            {view.failed}
-          </span>
-        ) : null}
-        <ChevronRight size={15} className="oc-subagents__chevron" aria-hidden />
       </button>
-      {open ? (
-        <div className="oc-subagents__list">
-          {cards.map((card) => (
-            <SubAgentCard key={card.id} card={card} />
+      {expanded ? (
+        <div className="oc-subagent-beacon__list">
+          {failedCards.map((card) => (
+            <SubAgentCard
+              key={card.id}
+              card={card}
+              reported={reportedSet.has(card.id)}
+              onReport={(c) =>
+                setReportTarget({ subAgentId: c.id, label: c.label })
+              }
+            />
           ))}
         </div>
       ) : null}
+      <SubAgentReportDialog
+        target={reportTarget}
+        onClose={() => setReportTarget(null)}
+      />
     </div>
   );
 }

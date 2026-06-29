@@ -36,12 +36,27 @@ import { deleteFilesByMessage } from "./lib/files";
 import { enrichUserAgents, resolveAgentForChat } from "./agents";
 import { compareOrder } from "./lib/messageOrder";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
+import {
+  classifySubAgentError,
+  shortChildId,
+  type SubAgentStatus,
+} from "./lib/subAgentFailure";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
 // per-message part fan-out below) cheap and bounded. Older history must be
 // reached via pagination, not by raising this.
 const MESSAGE_WINDOW = 200;
+
+// Bounded caps for the key-authed chat-state diagnostic reads (NEVER the
+// unbounded listSubAgents.collect()): mirror subAgentReports' bounded
+// by_chat_status point-ranges. Each is a CONSTANT number of indexed reads
+// regardless of how many messages / sub-agents a long-lived chat accumulates —
+// so this MCP-hit path can't reintroduce the listChats "too many system
+// operations" read-amplification. A slice that hits the cap is flagged
+// (`truncated`), never silently dropped.
+const CHAT_STATE_SUBAGENT_CAP = 20; // per status (sample + count cap)
+const CHAT_STATE_OUTBOX_CAP = 50; // per status, recent-first
 
 // A part as returned to the client. For media/file parts we resolve the Convex
 // storage id to a signed URL (`url`) so the browser can render it directly;
@@ -272,6 +287,146 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
   return result;
 }
 
+/**
+ * Bounded reverse map messageId -> { outboxId, status } for a chat (the dispatch
+ * JOIN KEY). FOUR indexed point-range reads (one per lifecycle status, capped),
+ * joined in memory — a CONSTANT read budget independent of message count. (A
+ * per-message `outbox.by_message` reverse lookup would be O(messages) on a
+ * key-authed/MCP path — the exact read-amplification the listChats incident
+ * warns against.) `outbox` rows are never deleted for a live chat, so the key is
+ * durably recoverable, not just for in-flight turns. The resulting
+ * `chatId:outboxId` is the correlationId of this turn's chat.send / openclaw.dispatch
+ * (and the forthcoming openclaw.rehydrate) traces — so a chat-state message can be
+ * stitched to its dispatch chain via list_traces. `truncated` flags a status slice
+ * that hit the cap (a very long chat), never a silent drop.
+ */
+async function loadOutboxByMessage(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+): Promise<{
+  byMessage: Map<string, { outboxId: Id<"outbox">; status: string }>;
+  truncated: boolean;
+}> {
+  const byMessage = new Map<
+    string,
+    { outboxId: Id<"outbox">; status: string }
+  >();
+  let truncated = false;
+  const STATUSES = ["queued", "pending", "sent", "failed"] as const;
+  for (const status of STATUSES) {
+    const rows = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", chatId).eq("status", status),
+      )
+      .order("desc")
+      .take(CHAT_STATE_OUTBOX_CAP + 1);
+    if (rows.length > CHAT_STATE_OUTBOX_CAP) truncated = true;
+    for (const r of rows.slice(0, CHAT_STATE_OUTBOX_CAP)) {
+      // Recent-first within a status; a message maps to exactly one outbox row in
+      // practice (dedup on clientMessageId), so first write wins.
+      if (r.messageId !== undefined && !byMessage.has(r.messageId)) {
+        byMessage.set(r.messageId, { outboxId: r._id, status });
+      }
+    }
+  }
+  return { byMessage, truncated };
+}
+
+/** One content-free sub-agent row for the chat-state summary. */
+type SubAgentEntry = {
+  childIdShort: string;
+  status: SubAgentStatus;
+  errorCategory: string;
+  hasTaskName: boolean;
+  ageSeconds: number;
+};
+
+/**
+ * CONTENT-FREE per-chat sub-agent summary for the diagnostic (G3 — make a failed/
+ * stuck delegation visible to the MCP, not only to the UI monitor + a user-flagged
+ * anomaly). Bounded reads via `by_chat_status` (running/done/error/aborted,
+ * capped) — mirrors subAgentReports' point-ranges, NEVER the unbounded
+ * listSubAgents.collect().
+ *
+ * SOC2: every per-child field is derived through the lib/subAgentFailure
+ * content-free helpers (classifySubAgentError -> a FIXED enum, shortChildId -> an
+ * opaque id tail) or a boolean (hasTaskName). The raw taskName / errorMessage /
+ * resultText / phase are NEVER read into the output — `phase` in particular is a
+ * free-form gateway string and is treated as content (the sentinel test seeds it
+ * and asserts its absence).
+ */
+async function loadSubAgentSummary(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  now: number,
+): Promise<{
+  total: number;
+  byStatus: { running: number; done: number; error: number; aborted: number };
+  failedSample: SubAgentEntry[];
+  runningSample: SubAgentEntry[];
+  truncated: boolean;
+}> {
+  // Read each status slice via (chatId, status, updatedAt) so ordering is by the
+  // STALENESS signal the detectors use, not by _creationTime:
+  //   - running ASC  -> STALEST-updated first, so the stuck child (oldest updatedAt,
+  //     ageSeconds > STUCK_SUBAGENT_SECONDS) is ALWAYS within the cap and the
+  //     subagent_stuck detector is never blind to it (Codex P2: a newest-first
+  //     sample drops exactly the oldest running rows the stuck check needs).
+  //   - error/aborted DESC -> most-recently-updated first, so a RECENT failure (the
+  //     subagent_failure signal) is within the cap.
+  //   - done DESC -> count only (order irrelevant).
+  const readStatus = (status: SubAgentStatus, dir: "asc" | "desc") =>
+    ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", status),
+      )
+      .order(dir)
+      .take(CHAT_STATE_SUBAGENT_CAP + 1);
+  const [running, done, errored, aborted] = await Promise.all([
+    readStatus("running", "asc"),
+    readStatus("done", "desc"),
+    readStatus("error", "desc"),
+    readStatus("aborted", "desc"),
+  ]);
+  const cap = CHAT_STATE_SUBAGENT_CAP;
+  const truncated =
+    running.length > cap ||
+    done.length > cap ||
+    errored.length > cap ||
+    aborted.length > cap;
+  const capRows = <T,>(rows: T[]): T[] => rows.slice(0, cap);
+  const byStatus = {
+    running: capRows(running).length,
+    done: capRows(done).length,
+    error: capRows(errored).length,
+    aborted: capRows(aborted).length,
+  };
+  const toEntry = (c: Doc<"subAgents">): SubAgentEntry => ({
+    childIdShort: shortChildId(c.childSessionKey),
+    status: c.status,
+    // PATTERN-MATCHES the raw error but RETURNS ONLY a fixed enum (never the text).
+    errorCategory: classifySubAgentError(c.status, c.errorMessage),
+    // Presence boolean ONLY — never the taskName text.
+    hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",
+    ageSeconds: Math.round((now - c.updatedAt) / 1000),
+  });
+  // Failed = error ∪ aborted, newest-first (each slice already desc by creation).
+  const failedSample = [...capRows(errored), ...capRows(aborted)]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, cap)
+    .map(toEntry);
+  const runningSample = capRows(running).map(toEntry);
+  return {
+    total: byStatus.running + byStatus.done + byStatus.error + byStatus.aborted,
+    byStatus,
+    failedSample,
+    runningSample,
+    truncated,
+  };
+}
+
 export const listByChat = query({
   // v.string (NOT v.id): the chatId comes straight from the URL (/chat/$chatId)
   // and may be malformed (a truncated/typo'd deep link). With v.id a bad value
@@ -403,6 +558,13 @@ export const chatStateInternal = internalQuery({
       .withIndex("by_chat", (q) => q.eq("chatId", id))
       .collect();
     const streamByMsg = new Map(streamRows.map((r) => [r.messageId, r]));
+    // Dispatch JOIN KEY (G4 + the turn-reconstruction spine): map each message to
+    // its outbox row id + lifecycle status, via a CONSTANT 4 indexed reads (not a
+    // per-message reverse lookup). `chatId:outboxId` is the correlationId of the
+    // turn's chat.send / openclaw.dispatch traces — the key that stitches a
+    // chat-state message to its dispatch chain in list_traces.
+    const { byMessage: outboxByMsg, truncated: outboxTruncated } =
+      await loadOutboxByMessage(ctx, id);
     const messages = view.map((mDoc) => {
       const live =
         mDoc.status === "streaming" ? streamByMsg.get(mDoc._id) : undefined;
@@ -456,6 +618,17 @@ export const chatStateInternal = internalQuery({
         role: mDoc.role,
         status: mDoc.status,
         runId: mDoc.runId ?? null,
+        // MULTI-AGENT per-turn routing (G1): which agent THIS turn was routed to —
+        // null = the chat's primary agent. Non-secret slugs (same class as the
+        // chat-level instanceName/agentId already exposed). Lets the MCP see a
+        // switched turn that the rehydration/context bug hinges on.
+        routedInstanceName: mDoc.routedInstanceName ?? null,
+        routedAgentId: mDoc.routedAgentId ?? null,
+        // Dispatch JOIN KEY + lifecycle (G4): the outbox row id (-> correlationId
+        // chatId:outboxId) and its status (queued | pending | sent | failed). null
+        // when no outbox row (assistant messages; or a user message older than the
+        // outbox read cap — see outboxTruncated).
+        outbox: outboxByMsg.get(mDoc._id) ?? null,
         updatedAt: effectiveUpdatedAt,
         ageSeconds: Math.round(ageMs / 1000),
         textLenBucket: textLenBucket(effectiveLen),
@@ -473,12 +646,35 @@ export const chatStateInternal = internalQuery({
         parts,
       };
     });
+    // CONTENT-FREE sub-agent summary (G3): make a failed / stuck delegation visible
+    // to the MCP, not only the UI monitor. Bounded reads; enums + counts + opaque
+    // ids only (see loadSubAgentSummary).
+    const subAgents = await loadSubAgentSummary(ctx, id, now);
     return {
       ok: true as const,
       chatId: id,
       // The slug (instances.name), never the admin-settable displayName.
       instanceName: chat.instanceName ?? null,
       agentId: chat.agentId ?? null,
+      // MULTI-AGENT per-turn routing at the chat level (G1): has the chat flipped to
+      // per-turn routing, and what was the LAST-routed agent + the gateway session
+      // SEGMENT the bridge keys on (`turn:<id>`, an opaque token). Non-secret slugs +
+      // an opaque id — the chat-level half of the routing picture the rehydration /
+      // switched-context bug needs (the dispatch half rides openclaw.rehydrate traces).
+      routing: {
+        perTurnRouting: chat.perTurnRouting === true,
+        lastRoutedInstanceName: chat.lastRoutedInstanceName ?? null,
+        lastRoutedAgentId: chat.lastRoutedAgentId ?? null,
+        routingSegment: chat.routingSegment ?? null,
+      },
+      // CONTENT-FREE sub-agent summary (G3): counts by lifecycle status + a capped
+      // failed/running sample (enums + opaque ids only). `truncated` flags a status
+      // slice past the cap.
+      subAgents,
+      // The dispatch JOIN-KEY read hit its per-status cap (a very long chat): some
+      // older messages' `outbox` may read null even though a row exists. Honest flag,
+      // never a silent omission.
+      outboxTruncated,
       // L2: the HIDDEN per-user documentary chat is tagged `kind:"documentary"`; a
       // diagnostic consumer keys off this (it's excluded from the sidebar).
       kind: chat.kind ?? null,

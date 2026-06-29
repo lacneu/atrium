@@ -115,6 +115,9 @@ class FakeWriter implements ConvexWriter {
     // Inbound-only sub-agent observation seam; not exercised by RunManager tests
     // (the observer is driven from Session, not RunManager).
   }
+  emitRehydrateTrace(): void {
+    // Content-free rehydration-decision trace; not exercised by RunManager tests.
+  }
 }
 
 class Clock {

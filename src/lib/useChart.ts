@@ -102,6 +102,20 @@ function applyChartTokens(
   } else {
     style.removeProperty("--ui-font-mono");
   }
+  // Heartbeat: `bpm` (beats/min) -> the period the ambient pulse reads
+  // (`--heart-period` = 60s / bpm). Three cases: a set tempo (bpm>0) drives it;
+  // explicit "Static" (bpm===0) pins 0s to OVERRIDE the calm CSS default; no token
+  // (e.g. the login) removes it -> falls back to that default tempo (pulses).
+  const bpm = tokens?.bpm;
+  if (bpm !== undefined && bpm > 0) {
+    // The gauge value IS the tempo (cap the max defensively; the validator caps
+    // imports at 90 too). 60s / bpm => the period the ambient pulse animates on.
+    style.setProperty("--heart-period", `${(60 / Math.min(90, bpm)).toFixed(3)}s`);
+  } else if (bpm === 0) {
+    style.setProperty("--heart-period", "0s");
+  } else {
+    style.removeProperty("--heart-period");
+  }
 }
 
 /**

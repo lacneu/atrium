@@ -26,15 +26,31 @@ echo "▶ registering pairing request (bridge identity) …"
     });' >/dev/null 2>&1 ) || true
 sleep 1
 
-# 2) Approve every pending request.
-PENDING="$(docker exec "$CID" node /app/openclaw.mjs devices list --json --token "$TOKEN" 2>/dev/null \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);(j.pending||[]).forEach(p=>console.log(p.requestId))}catch{}})')"
-if [[ -z "${PENDING// }" ]]; then
-  echo "ℹ no pending pairing (bridge device may already be approved)"; exit 0
-fi
-for req in $PENDING; do
-  echo "▶ approving device request $req …"
-  docker exec "$CID" node /app/openclaw.mjs devices approve "$req" --token "$TOKEN" >/dev/null 2>&1 \
-    && echo "  ✅ approved $req" || echo "  ⚠ approve failed for $req"
+# 2) Approve pending requests until NONE remain. On OpenClaw 2026.6.10+ pairing is
+#    SCOPED: a device pairs as operator.pairing, then asks to UPGRADE to
+#    operator.read + operator.write (a SECOND pending request, status "scope
+#    upgrade, repair"). A single list+approve pass can also race a freshly-created
+#    request (the old code approved a STALE id, printed "approve failed", yet still
+#    declared success — leaving read/write never granted). Re-list + approve in a
+#    bounded loop, then report HONESTLY (only "paired" when nothing is left pending).
+list_pending() {
+  docker exec "$CID" node /app/openclaw.mjs devices list --json --token "$TOKEN" 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);(j.pending||[]).forEach(p=>console.log(p.requestId))}catch{}})'
+}
+for round in 1 2 3 4 5; do
+  PENDING="$(list_pending)"
+  if [[ -z "${PENDING// }" ]]; then
+    [[ "$round" == "1" ]] && echo "ℹ no pending pairing (bridge device may already be approved)"
+    break
+  fi
+  for req in $PENDING; do
+    echo "▶ approving device request $req …"
+    docker exec "$CID" node /app/openclaw.mjs devices approve "$req" --token "$TOKEN" >/dev/null 2>&1 \
+      && echo "  ✅ approved $req" || echo "  ⚠ approve failed for $req"
+  done
+  sleep 1   # let the device re-request a scope upgrade, then re-list
 done
+if [[ -n "$(list_pending | tr -d '[:space:]')" ]]; then
+  echo "✖ pairing INCOMPLETE — requests still pending (scope upgrade not granted?)"; exit 1
+fi
 echo "✅ bridge device paired"

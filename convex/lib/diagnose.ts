@@ -10,6 +10,8 @@ export type DiagnoseClass =
   | "stuck_stream"
   | "attachment_problem"
   | "dispatch_error"
+  | "subagent_stuck"
+  | "subagent_failure"
   | "bridge_unavailable"
   | "bridge_degraded"
   | "healthy";
@@ -38,17 +40,42 @@ export interface DiagMessage {
   stuckStreaming: boolean;
   errorCode: string | null;
 }
+/** A content-free sub-agent row in the chat-state summary (subset of the
+ *  loadSubAgentSummary entry — only the fields the assessment reasons over). */
+export interface DiagSubAgentEntry {
+  status: string;
+  errorCategory: string;
+  ageSeconds: number;
+}
 export interface DiagChatState {
   ok: boolean;
   messages?: DiagMessage[];
   /** L2: an in-flight document fetch on this (hidden documentary) chat. A large
    *  `ageSeconds` = a STUCK fetch the owner is locked out behind. */
   pendingDocFetch?: { ageSeconds: number } | null;
+  /** G3: the CONTENT-FREE sub-agent summary (counts + capped failed/running
+   *  samples). Absent on a chat with no sub-agents (or a pre-this-feature read). */
+  subAgents?: {
+    byStatus: { running: number; done: number; error: number; aborted: number };
+    failedSample: DiagSubAgentEntry[];
+    runningSample: DiagSubAgentEntry[];
+  } | null;
 }
 
 /** A document fetch in flight longer than this (s) is treated as STUCK — mirrors
  *  the stream watchdog's tolerance (a slow documentary agent gets the same grace). */
 export const STUCK_DOC_FETCH_SECONDS = 12 * 60;
+
+/** A delegated sub-agent left `running` longer than this (s) is treated as STUCK:
+ *  its observer was likely lost, and a main turn awaiting it can hang (the observed
+ *  bug-C). Aligns with the reaper's terminalization horizon (SUBAGENT_STALE_TTL_MS
+ *  = 20 min) so diagnose flags exactly what the reaper is about to clean up. */
+export const STUCK_SUBAGENT_SECONDS = 20 * 60;
+
+/** Only a RECENTLY failed sub-agent flags the chat — an old failure the
+ *  conversation has moved past is not a current dysfunction (avoids lighting up
+ *  every chat that ever had a sub-agent fail). */
+export const RECENT_SUBAGENT_FAILURE_SECONDS = 15 * 60;
 export interface DiagAvailability {
   known: boolean;
   available: boolean;
@@ -140,6 +167,29 @@ export function assessChat(
     };
   }
 
+  // 1.7) A delegated sub-agent stuck 'running' far longer than expected — its
+  // observer was likely lost, and a main turn awaiting it can HANG (bug-C). No safe
+  // MCP corrective exists (reconcile_chat releases stuck STREAMS, not sub-agents);
+  // the stale-sub-agent reaper terminalizes it after its TTL and releases any held
+  // follow-up. Surfaced HIGH so a diagnostician sees the cause behind a hung chat
+  // that is not itself a stuck stream (which would have won at priority 1).
+  const stuckChild = (state.subAgents?.runningSample ?? []).find(
+    (s) => s.ageSeconds > STUCK_SUBAGENT_SECONDS,
+  );
+  if (stuckChild) {
+    return {
+      class: "subagent_stuck",
+      severity: "high",
+      errorCode: null,
+      reason: "a delegated sub-agent has been running far longer than expected",
+      summary:
+        "A delegated sub-agent is stuck 'running' (its observer was likely lost) — a main turn awaiting it can hang.",
+      suggestedAction:
+        "The stale-sub-agent reaper terminalizes it after its TTL and releases any held follow-up. If the visible turn is itself hung, reconcile the chat to release the stream.",
+      suggestedTool: null,
+    };
+  }
+
   // 2) The most recent assistant turn ended in error (a failed dispatch).
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   if (lastAssistant && lastAssistant.status === "error") {
@@ -166,6 +216,27 @@ export function assessChat(
       summary: `The bridge is unavailable (${availability.reason ?? "unknown"}) — this blocks ALL chats.`,
       suggestedAction:
         "Check the bridge container and BRIDGE_URL. The composer is correctly disabled until /health recovers.",
+      suggestedTool: null,
+    };
+  }
+
+  // 3.5) A RECENTLY failed sub-agent on an otherwise-OK chat — informational: the
+  // main turn likely answered WITHOUT the delegation's result. (A failed last MAIN
+  // turn is already dispatch_error above; a down bridge is above too.) Chat-specific,
+  // so it precedes the global bridge_degraded note.
+  const recentFailedChild = (state.subAgents?.failedSample ?? []).find(
+    (s) => s.ageSeconds < RECENT_SUBAGENT_FAILURE_SECONDS,
+  );
+  if (recentFailedChild) {
+    return {
+      class: "subagent_failure",
+      severity: "warn",
+      errorCode: null,
+      reason: `a delegated sub-agent ${recentFailedChild.status} recently (${recentFailedChild.errorCategory})`,
+      summary:
+        "A delegated sub-agent failed recently — the main turn may have answered without its result.",
+      suggestedAction:
+        "Inspect the sub-agent's failure category; if the answer looks incomplete, ask the user to retry the delegation. The failure detail is owner-scoped (the chat's sub-agent monitor).",
       suggestedTool: null,
     };
   }

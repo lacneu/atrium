@@ -28,6 +28,7 @@ import {
   filterValidator,
   type FilterConfig,
 } from "./lib/filters";
+import { validateEndpointUrl } from "./integrations/otlpShared";
 
 // --- Per-resource filter configs (docs/FILTERS_SPEC.md) --------------------
 // Applied over the VIEW objects each query returns (so q/advanced see computed
@@ -494,6 +495,14 @@ export const setIntegrationConfig = mutation({
         enabled: v.optional(v.boolean()),
       }),
     ),
+    // OTLP NON-SECRET knobs only. The auth headers (a secret) are set via the
+    // setOtlpHeaders ACTION; the merge below preserves the stored headersSecret.
+    otlp: v.optional(
+      v.object({
+        endpoint: v.optional(v.string()),
+        enabled: v.optional(v.boolean()),
+      }),
+    ),
     tts: v.optional(
       v.object({
         auto: v.optional(v.string()),
@@ -518,6 +527,20 @@ export const setIntegrationConfig = mutation({
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // Vendor URL knobs (OTLP endpoint, Langfuse host, Opik base URL) are NON-secret
+    // (exposed via integrations.status + the traces.read-authed /api/v1 route), so
+    // none may CARRY a secret: reject a credential-bearing (userinfo) or malformed
+    // URL at SET time BEFORE any write (transactional → nothing is stored on reject).
+    // Auth belongs in the encrypted headers / secret env, never the URL.
+    if (args.otlp?.endpoint !== undefined) {
+      validateEndpointUrl(args.otlp.endpoint, "OTLP endpoint");
+    }
+    if (args.langfuse?.host !== undefined) {
+      validateEndpointUrl(args.langfuse.host, "Langfuse host");
+    }
+    if (args.opik?.baseUrl !== undefined) {
+      validateEndpointUrl(args.opik.baseUrl, "Opik base URL");
+    }
     const meta = await ctx.db
       .query("integrationConfig")
       .withIndex("by_key", (q) => q.eq("key", INTEGRATION_CONFIG_KEY))
@@ -531,6 +554,8 @@ export const setIntegrationConfig = mutation({
       key: INTEGRATION_CONFIG_KEY,
       langfuse: merge(meta?.langfuse, args.langfuse),
       opik: merge(meta?.opik, args.opik),
+      // merge preserves the encrypted headersSecret (set via setOtlpHeaders).
+      otlp: merge(meta?.otlp, args.otlp),
       tts: merge(meta?.tts, args.tts),
       talk: merge(meta?.talk, args.talk),
     };

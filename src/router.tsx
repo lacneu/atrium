@@ -141,6 +141,11 @@ const IntegrationsTab = lazy(() =>
 const FeedbacksTab = lazy(() =>
   import("./chat/admin/FeedbacksTab").then((m) => ({ default: m.FeedbacksTab })),
 );
+const SubAgentReportsTab = lazy(() =>
+  import("./chat/admin/SubAgentReportsTab").then((m) => ({
+    default: m.SubAgentReportsTab,
+  })),
+);
 const FilesTab = lazy(() =>
   import("./chat/admin/FilesTab").then((m) => ({ default: m.FilesTab })),
 );
@@ -831,6 +836,8 @@ function paramlessTab(tab: string) {
       return <ThemeShowroom />;
     case "feedbacks":
       return <FeedbacksTab />;
+    case "subagentReports":
+      return <SubAgentReportsTab />;
     case "files":
       return <FilesTab />;
     case "agentFiles":

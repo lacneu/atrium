@@ -392,7 +392,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
       payload: {
         sessionKey: "agent:alice:subagent:foreign",
         runId: "x",
-        spawnedBy: "agent:alice:webchat:chat:someone:OTHER",
+        spawnedBy: "agent:alice:atrium:chat:someone:OTHER",
         state: "final",
         message: { role: "assistant", content: [{ type: "text", text: "LEAK" }] },
       },

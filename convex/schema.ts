@@ -549,6 +549,7 @@ export default defineSchema({
       radius: v.optional(v.string()),
       fontSans: v.optional(v.string()),
       fontMono: v.optional(v.string()),
+      bpm: v.optional(v.number()), // heartbeat ambient pulse (0/absent = static)
     }),
     // Brand logos shown in the top bar when this chart is active (label = chart
     // `name`), one per theme mode. Uploaded images are normalized to WebP and
@@ -916,6 +917,15 @@ export default defineSchema({
     // regardless of how many TERMINATED sub-agents a long-lived chat has accumulated
     // (a by_chat scan + JS status filter would read the whole per-chat history).
     .index("by_chat_status", ["chatId", "status"])
+    // (chatId, status, updatedAt): the chat-state diagnostic summary
+    // (messages.loadSubAgentSummary) reads each per-chat status slice ORDERED BY
+    // updatedAt — the staleness signal the detectors key on — so a capped sample
+    // surfaces the right rows: running ASC (stalest-updated first => the stuck child
+    // is always in the cap, so the subagent_stuck detector is never blind to it),
+    // error/aborted DESC (most-recently-updated first => a recent failure is in the
+    // cap). by_chat_status only orders by _creationTime, which can drop exactly the
+    // stale running rows the stuck check needs (Codex P2).
+    .index("by_chat_status_updated", ["chatId", "status", "updatedAt"])
     // Bounded scan for the stale-sub-agent reaper (subAgents.reapStaleSubAgents):
     // a `running` row is a best-effort observer write, and since a running row gates
     // isChatBusy, a dead observer (dropped terminal / bridge restart / connection-
@@ -1367,6 +1377,97 @@ export default defineSchema({
     // The user's own reports, newest-first, for the notification zone.
     .index("by_user", ["userId"]),
 
+  // USER-created report on a SUB-AGENT FAILURE (the plane-1, CONTENT-BEARING,
+  // owner-scoped record). Mirrors the `feedback` forensic-snapshot architecture:
+  // when a user flags a failed sub-agent card, `createSubAgentReport` FREEZES the
+  // failing child + its failed siblings + the spawning turn, owner-scoped, so a
+  // later `reapStaleSubAgents` (which OVERWRITES errorMessage) / re-spawn cannot
+  // erase the real failure. The admin analyzes it via an AUDITED content read
+  // (subAgentReports.readReport), the user sees their own reports + the thread.
+  //
+  // TWO-PLANE BOUNDARY: this table holds the raw `errorMessage`/`resultText`/
+  // `taskName` (content). The CONTENT-FREE plane-2 anomaly (source:"user",
+  // kind:"subagent.failure") carries only the structure + `reportId`/correlationId
+  // pointer (lib/subAgentFailure.toSubAgentFailureStructure). No httpAction /
+  // key-authed / MCP route reads THIS table — the reportId is an opaque pointer.
+  subAgentReports: defineTable({
+    userId: v.id("users"), // effective reporter
+    realUserId: v.id("users"), // who really clicked (impersonation-aware)
+    impersonated: v.boolean(),
+    chatId: v.id("chats"),
+    // The flagged sub-agent row. The `by_subagent` index backs the "already
+    // reported" UI affordance (myReportedSubAgentIds).
+    subAgentId: v.id("subAgents"),
+    at: v.number(),
+    category: v.optional(v.string()), // optional reporter-picked reason (free list)
+    comment: v.optional(v.string()),
+    // The emitted plane-2 anomaly (source:"user") — kept so the admin/AnomaliesTab
+    // can drill from the content-free anomaly INTO this plane-1 record. The
+    // anomaly itself never carries content (see lib/subAgentFailure).
+    anomalyId: v.optional(v.id("anomalies")),
+    // The parent turn's correlationId (`chatId:runId` when resolvable, else
+    // chatId) — the deterministic key into Opik/Langfuse (get_trace_enrichment).
+    // Non-PHI (an id), duplicated onto the anomaly's correlationId field.
+    correlationId: v.optional(v.string()),
+    // --- The FROZEN forensic snapshot (SERVER-READ, owner-scoped CONTENT) -------
+    snapshot: v.object({
+      flaggedChildSessionKey: v.string(),
+      totalCount: v.number(), // children captured in this report's scope
+      failedCount: v.number(),
+      // The captured children (flagged child + failed siblings), bounded. These
+      // carry CONTENT (errorMessage/resultText/taskName) and live ONLY here.
+      children: v.array(
+        v.object({
+          childSessionKey: v.string(),
+          taskName: v.optional(v.string()),
+          status: v.string(),
+          errorMessage: v.optional(v.string()),
+          resultText: v.optional(v.string()),
+          phase: v.optional(v.string()),
+          createdAt: v.number(),
+          updatedAt: v.number(),
+        }),
+      ),
+      childrenTruncated: v.optional(v.boolean()), // bound applied (no silent drop)
+      // ANY frozen text field (per-child errorMessage/resultText/taskName/phase,
+      // parentText, or an oversized sessionMeta) was clipped to keep the document
+      // under Convex's ~1MB limit. The audited admin read surfaces this so the
+      // operator knows the stored text is an excerpt.
+      textTruncated: v.optional(v.boolean()),
+      // --- The spawning turn (SERVER-READ, best-effort; parentMessageId is often
+      // absent on a subAgents row) ---
+      parentMessageId: v.optional(v.id("messages")),
+      parentMessageRole: v.optional(v.string()),
+      parentText: v.optional(v.string()), // the spawning turn text (content)
+      parentRunId: v.optional(v.string()),
+      parentStatus: v.optional(v.string()),
+      parentErrorCode: v.optional(v.string()), // stable code (non-PHI)
+      // --- Session config that produced it (SERVER-READ) ---
+      openclawModel: v.optional(v.string()),
+      openclawProvider: v.optional(v.string()),
+      openclawRuntime: v.optional(v.string()),
+      sessionMetaJson: v.optional(v.string()),
+    }),
+    // Admin↔user exchange about this report (append-list, like feedback.thread).
+    // Admin replies are admin-visible notes today; the owner-facing read surface
+    // + its notification are a coherent follow-up (see respondToReport).
+    thread: v.optional(
+      v.array(
+        v.object({
+          authorUserId: v.id("users"),
+          authorRole: v.union(v.literal("admin"), v.literal("user")),
+          text: v.string(),
+          at: v.number(),
+        }),
+      ),
+    ),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_subagent", ["subAgentId"]) // "already reported" affordance
+    .index("by_time", ["at"]) // admin list, newest-first
+    .index("by_real", ["realUserId"])
+    .index("by_user", ["userId"]), // the owner's own reports
+
   // Generic per-user notification feed (the bell). The SINGLE source of truth for
   // the unread badge. Producers: anomaly open/resolved (→ every admin), feedback
   // reply (→ the report's owner). NON-PHI only — title/body are labels (e.g.
@@ -1548,7 +1649,15 @@ export default defineSchema({
       v.literal("resolved"),
     ),
     message: v.string(), // human-readable, non-PHI summary
-    source: v.union(v.literal("detector"), v.literal("agent")),
+    // detector = the cron; agent = the key-authed POST /api/v1/anomalies; user =
+    // a USER-flagged sub-agent failure (the content-free plane-2 of a plane-1
+    // subAgentReports record — evidence carries the reportId pointer + structure
+    // only, never the raw error text). All three remain non-PHI by construction.
+    source: v.union(
+      v.literal("detector"),
+      v.literal("agent"),
+      v.literal("user"),
+    ),
     correlationId: v.optional(v.string()), // optional link to a span chain
     evidence: v.optional(v.string()), // JSON-encoded non-PHI signals
     resolvedAt: v.optional(v.number()),
@@ -1569,7 +1678,7 @@ export default defineSchema({
   // only. No secrets here — vendor credentials live in deployment env (D3); this
   // table holds only the watermark + secret-free failure bookkeeping.
   integrationCursors: defineTable({
-    vendor: v.string(), // "langfuse" | "opik"
+    vendor: v.string(), // "langfuse" | "opik" | "otlp"
     lastAt: v.number(), // last shipped traceEvents.at (watermark)
     // M3: secondary tiebreaker so a same-millisecond batch boundary cannot drop
     // events. Paging is (at > lastAt) OR (at == lastAt AND _id > lastId).
@@ -1602,6 +1711,21 @@ export default defineSchema({
         baseUrl: v.optional(v.string()), // overrides OPIK_BASE_URL
         workspace: v.optional(v.string()), // overrides OPIK_WORKSPACE
         enabled: v.optional(v.boolean()),
+      }),
+    ),
+    // Generic OTLP / OpenTelemetry exporter (consumer = integrations/ship flush
+    // via otlp.ts). UNLIKE langfuse/opik (creds in env), the operator configures
+    // it ENTIRELY in the UI: `endpoint` = the full OTLP/HTTP traces URL
+    // (non-secret); `headersSecret` = the auth headers as an ENCRYPTED envelope
+    // (AES-256-GCM, AAD "integration:otlp:headers" — the ONLY encrypted secret in
+    // this table, written via the setOtlpHeaders ACTION, NOT setIntegrationConfig);
+    // `enabled` = master pause. `configured` = endpoint present (headers optional,
+    // for an auth-less collector).
+    otlp: v.optional(
+      v.object({
+        endpoint: v.optional(v.string()),
+        enabled: v.optional(v.boolean()),
+        headersSecret: v.optional(encryptedSecretValidator),
       }),
     ),
     // Voice tooling (consumer = the bridge worker — NOT built yet; stored here

@@ -68,7 +68,9 @@ function statusOptionLabel(value: (typeof STATUS_OPTIONS)[number]["value"]): str
 }
 
 const SEVERITIES = ["info", "warn", "critical"] as const;
-const SOURCES = ["detector", "agent"] as const;
+// "user" = a user-flagged sub-agent failure (the content-free plane-2 of a
+// subAgentReports record). detector = the cron; agent = the key-authed POST.
+const SOURCES = ["detector", "agent", "user"] as const;
 
 // Default time window for the anomalies table. Wide (30d) so seeded/older
 // anomalies surface on load — anomalies previously had NO time filter, so a
@@ -377,11 +379,69 @@ function parseDispatchEvidence(r: AnomalyView): {
   }
 }
 
+// Parse the content-free sub-agent failure evidence (a user-flagged report). The
+// categories are an allowlist enum (lib/subAgentFailure) — never raw error text.
+function parseSubAgentEvidence(r: AnomalyView): {
+  failedCount?: number;
+  totalCount?: number;
+  errorCategories?: string[];
+} {
+  if (r.kind !== "subagent.failure" || !r.evidence) return {};
+  try {
+    const e = JSON.parse(r.evidence) as {
+      failedCount?: number;
+      totalCount?: number;
+      errorCategories?: string[];
+    };
+    return {
+      failedCount: e.failedCount,
+      totalCount: e.totalCount,
+      errorCategories: e.errorCategories,
+    };
+  } catch {
+    return {};
+  }
+}
+
 // Root cause + actionable fix hint + one-click drill-down into the failing turn's
 // traces. This is what turns "N dispatch failures" into something an admin can
 // actually fix (the user's explicit ask: "comprendre l'origine pour la fixer").
 function CauseCell({ row }: { row: AnomalyView }) {
   const navigate = useNavigate();
+
+  // User-flagged sub-agent failure: show the content-free category breakdown +
+  // a drill into the spawning turn's traces (correlationId). The CONTENT lives
+  // in Settings › Rapports sous-agents (audited), never here.
+  if (row.kind === "subagent.failure") {
+    const sa = parseSubAgentEvidence(row);
+    const cats = [...new Set(sa.errorCategories ?? [])];
+    return (
+      <div className="oc-anomaly__cause">
+        <div className="oc-anomaly__cause-head">
+          {cats.map((c) => (
+            <code key={c} className="oc-traces__mono">
+              {c}
+            </code>
+          ))}
+        </div>
+        {row.correlationId ? (
+          <button
+            type="button"
+            className="oc-anomaly__drill"
+            onClick={() =>
+              void navigate({
+                to: "/settings/traces",
+                search: { q: row.correlationId as string, limit: 100 },
+              })
+            }
+          >
+            ↗ {m.anomalies_view_trace()}
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
   const ev = parseDispatchEvidence(row);
   if (!ev.dominantCode) return <span className="oc-traces__muted">—</span>;
   const info = dispatchErrorInfo(ev.dominantCode);

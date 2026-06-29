@@ -63,6 +63,7 @@ const TAB_I18N: Partial<Record<Tab, () => string>> = {
   theme: () => m.appearance_tab_label(),
   audit: () => m.settings_tab_audit(),
   feedbacks: () => m.settings_tab_feedbacks(),
+  subagentReports: () => m.settings_tab_subagentreports(),
 };
 
 // Two-level settings navigation (layer-cake, docs/CONF_RESEARCH.md):

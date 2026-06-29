@@ -283,8 +283,24 @@ export const getChatRouting = internalQuery({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    // TRUE only when this routed turn is an ACTUAL agent SWITCH (the routed agent
+    // differs from the immediately-preceding routed turn's agent), computed by
+    // beginTurnRouting (codex P2). It gates the bridge's `routedSwitch` config: a
+    // same-agent routed FOLLOW-UP — even one whose bridge Session was rebuilt by a
+    // restart (firstSendPending true) — must NOT be marked a switch, else it would
+    // re-inject the whole history onto the still-warm gateway session (duplicate).
+    routedSwitch: v.optional(v.boolean()),
+    // The EPHEMERAL session segment for THIS dispatch (beginTurnRouting's returned
+    // `segment`) — the openclawChatId / bridge session key. Passed explicitly because
+    // an unconfirmed switch's segment is NOT persisted to the chat doc (atomic-on-
+    // confirm); falls back to the chat's last-confirmed segment for callers that don't
+    // run beginTurnRouting (dispatchReset/dispatchPatch).
+    routingSegment: v.optional(v.string()),
   },
-  handler: async (ctx, { chatId, userId, routedAgent }) => {
+  handler: async (
+    ctx,
+    { chatId, userId, routedAgent, routedSwitch, routingSegment },
+  ) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       return null;
@@ -319,16 +335,17 @@ export const getChatRouting = internalQuery({
       // — sending it with the NEW target would resume/reset the wrong agent's
       // session. Start the new agent fresh (the bridge falls back to the Convex
       // chatId as the routing-id segment). Persisted to null by bindChatTarget.
-      // MULTI-AGENT: a per-turn chat keys on its epoch `routingSegment` (changed only
-      // on an agent switch by beginTurnRouting) so the bridge re-keys — hence rehydrates
-      // — exactly on a switch, and stays warm within a same-agent run. ONLY for an actual
-      // routed send (`routedAgent` present): a no-agent call (dispatchPatch/Reset/compact)
-      // resolves to the chat's binding/default, so it must NOT inherit the last routed
-      // turn's segment (codex P2 — that targeted the primary agent on another agent's
-      // session) and keeps the legacy session id.
+      // MULTI-AGENT: a per-turn chat keys on the EPHEMERAL segment the dispatch passes
+      // (beginTurnRouting's `segment` — a NEW one on a switch, else the last-confirmed),
+      // so the bridge re-keys — hence rehydrates — exactly on a switch and stays warm
+      // within a same-agent run. The segment is passed (not read from the chat doc)
+      // because an UNCONFIRMED switch's segment is not persisted (atomic-on-confirm);
+      // falls back to the chat's confirmed segment for callers that don't run
+      // beginTurnRouting. ONLY for an actual routed send (`routedAgent` present): a
+      // no-agent call (dispatchPatch/Reset/compact) keeps the legacy session id.
       openclawChatId:
         chat.perTurnRouting && routedAgent
-          ? (chat.routingSegment ?? null)
+          ? (routingSegment ?? chat.routingSegment ?? null)
           : res.rebind
             ? null
             : (chat.openclawChatId ?? null),
@@ -364,11 +381,23 @@ export const getChatRouting = internalQuery({
       // MULTI-AGENT: force rehydration ON for a per-turn chat so a freshly-routed agent
       // (cold session from the epoch segment) is re-grounded with the FULL thread; the
       // bridge's own fresh-session gate then SKIPS it on a warm same-agent turn.
+      // `rehydration:true` is forced for every per-turn routed dispatch (it ENABLES the
+      // knob; the bridge's freshness gate decides whether to actually inject). The
+      // DISTINCT `routedSwitch` flag is emitted ONLY on an ACTUAL agent SWITCH (codex
+      // P2 — the caller passes `routedSwitch`, computed by beginTurnRouting). A
+      // same-agent routed FOLLOW-UP must NOT carry routedSwitch: otherwise, after a
+      // bridge restart rebuilds its Session (firstSendPending true), the bridge would
+      // treat the still-warm gateway session as fresh and re-inject the whole history
+      // (duplicate). `rehydration` stays the admin/env enable knob.
       configOverrides:
         chat.kind === "documentary"
           ? { ...bridgeDispatchConfig(instance?.config), rehydration: false }
           : chat.perTurnRouting && routedAgent
-            ? { ...bridgeDispatchConfig(instance?.config), rehydration: true }
+            ? {
+                ...bridgeDispatchConfig(instance?.config),
+                rehydration: true,
+                ...(routedSwitch ? { routedSwitch: true } : {}),
+              }
             : bridgeDispatchConfig(instance?.config),
     };
   },
@@ -571,16 +600,37 @@ export const beginTurnRouting = internalMutation({
     routedAgent: v.object({ instanceName: v.string(), agentId: v.string() }),
     turnId: v.id("messages"),
   },
+  // `isSwitch` = this turn re-keyed the gateway session (the routed agent differs from
+  // the preceding routed turn's agent, OR the first per-turn selection that mints a
+  // segment) — it DRIVES the bridge's `routedSwitch` freshness signal. `switchedFrom*`
+  // = the previous agent's non-secret names for the trace/anomaly diagnostic; it can be
+  // NULL on a real switch with no known predecessor (a legacy/unbound chat's first
+  // per-turn selection — codex P2.B: that case is STILL a switch, isSwitch=true, so it
+  // must rehydrate even though switchedFrom is null). null return = no per-turn routing
+  // happened (early-returned: chat gone, unauthorized, or a single-agent primary turn).
+  returns: v.union(
+    v.object({
+      isSwitch: v.boolean(),
+      // The EPHEMERAL session segment for THIS dispatch (the bridge session key): a
+      // NEW `turn:<turnId>` on a switch, else the chat's last-CONFIRMED segment. It is
+      // RETURNED (not persisted here) so a FAILED dispatch never advances the chat's
+      // segment — the persisted tuple advances atomically in confirmTurnRouting.
+      segment: v.string(),
+      switchedFromInstanceName: v.union(v.string(), v.null()),
+      switchedFromAgentId: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
   handler: async (ctx, { chatId, userId, routedAgent, turnId }) => {
     const chat = await ctx.db.get(chatId);
-    if (chat === null) return;
+    if (chat === null) return null;
     // AUTHORIZE before persisting ANY turn state (codex P2): a forged routedAgent — or one
     // revoked/deleted between sendMessage and dispatch — must NOT reconfigure the chat.
     // Otherwise the dispatch fails agent_restricted/no_agent but the chat is left with an
     // invalid per-turn session segment that corrupts every later routing. Resolve the exact
     // same way the dispatch does; only an entitled, present agent reconfigures the chat.
     const res = await resolveTargetForTurn(ctx, chat, userId, routedAgent);
-    if (res.target === null) return;
+    if (res.target === null) return null;
     // A turn explicitly routed to the chat's OWN primary agent, on a chat that is not yet
     // multi-agent, is just a normal single-agent turn — do NOT flip perTurnRouting or
     // re-key (codex P2): that would needlessly fork the warm gateway session and force a
@@ -588,7 +638,7 @@ export const beginTurnRouting = internalMutation({
     const isToPrimary =
       routedAgent.agentId === chat.agentId &&
       routedAgent.instanceName === chat.instanceName;
-    if (!chat.perTurnRouting && isToPrimary) return;
+    if (!chat.perTurnRouting && isToPrimary) return null;
     // Baseline for "did the agent change?": the previous turn's agent, or — on the first
     // per-turn turn — the chat's primary binding.
     const prevAgent = chat.lastRoutedAgentId ?? chat.agentId ?? null;
@@ -598,11 +648,63 @@ export const beginTurnRouting = internalMutation({
       routedAgent.agentId !== prevAgent ||
       routedAgent.instanceName !== prevInstance ||
       !chat.routingSegment;
+    // ATOMIC-ON-CONFIRM invariant (codex): the PERSISTED routing tuple
+    // {routingSegment, lastRoutedAgentId, lastRoutedInstanceName} is what later turns
+    // read for a routing DECISION — it must advance ATOMICALLY and ONLY when the
+    // dispatch is CONFIRMED (confirmTurnRouting). beginTurnRouting persists ONLY the
+    // monotonic `perTurnRouting` flag (it never encodes WHICH agent/segment, so a failed
+    // switch leaving it set is harmless + needed so the retry takes the per-turn path).
+    // The EPHEMERAL segment for THIS dispatch is RETURNED (a NEW one on a switch, else
+    // the last-confirmed segment) so the live send keys correctly WITHOUT persisting an
+    // unconfirmed segment — a failed switch then leaves the WHOLE tuple at the prior
+    // confirmed agent+segment, so a return-to-prior reuses its REAL warm session.
+    const segment = isSwitch
+      ? `turn:${turnId}`
+      : (chat.routingSegment ?? `turn:${turnId}`);
+    await ctx.db.patch(chatId, { perTurnRouting: true });
+    // `isSwitch` drives routedSwitch (the freshness signal). `switchedFrom*` is the
+    // DIAGNOSTIC predecessor — present only on a switch with a KNOWN previous agent
+    // (null on a legacy/unbound first selection, where isSwitch is still true).
+    return {
+      isSwitch,
+      segment,
+      switchedFromInstanceName: isSwitch ? prevInstance : null,
+      switchedFromAgentId: isSwitch ? prevAgent : null,
+    };
+  },
+});
+
+// Advance the chat's PERSISTED routing tuple — {routingSegment, lastRoutedAgentId,
+// lastRoutedInstanceName} — ATOMICALLY, called by the dispatch ONLY after the gateway
+// accepted the send (mirrors the bridge's firstSendPending consume-on-success). A FAILED
+// routed dispatch never reaches here, so the WHOLE tuple stays at the prior CONFIRMED
+// values: a return-to-prior reuses its real warm session+segment, and a retry to the
+// failed agent is re-detected as a switch (isSwitch=true → routedSwitch=true → rehydrate).
+// This tuple is the ONLY persisted state any later turn reads for a routing DECISION.
+export const confirmTurnRouting = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    routedAgent: v.object({ instanceName: v.string(), agentId: v.string() }),
+    // The segment THIS dispatch used (beginTurnRouting's returned `segment`).
+    segment: v.string(),
+  },
+  handler: async (ctx, { chatId, routedAgent, segment }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    // Only meaningful once the chat is per-turn routed (beginTurnRouting flips it before
+    // the dispatch); a non-per-turn send never confirms a routed agent.
+    if (!chat.perTurnRouting) return;
+    if (
+      chat.lastRoutedAgentId === routedAgent.agentId &&
+      chat.lastRoutedInstanceName === routedAgent.instanceName &&
+      chat.routingSegment === segment
+    ) {
+      return; // already current — no write
+    }
     await ctx.db.patch(chatId, {
-      perTurnRouting: true,
+      routingSegment: segment,
       lastRoutedInstanceName: routedAgent.instanceName,
       lastRoutedAgentId: routedAgent.agentId,
-      ...(isSwitch ? { routingSegment: `turn:${turnId}` } : {}),
     });
   },
 });
@@ -643,9 +745,17 @@ export const dispatch = internalAction({
     // MULTI-AGENT per-turn router: persist this turn's routing (switch detection + the
     // epoch session segment) BEFORE getChatRouting reads the chat. Only when the turn
     // carries an explicit agent (a deliberate per-turn choice); a normal send leaves the
-    // chat single-agent and skips this entirely.
+    // chat single-agent and skips this entirely. The return carries `isSwitch` (drives
+    // routedSwitch — the freshness signal) + the diagnostic `switchedFrom*` (the prior
+    // agent, can be null on a legacy switch).
+    let turnRouting: {
+      isSwitch: boolean;
+      segment: string;
+      switchedFromInstanceName: string | null;
+      switchedFromAgentId: string | null;
+    } | null = null;
     if (row.routedAgent && row.messageId) {
-      await ctx.runMutation(internal.bridge.beginTurnRouting, {
+      turnRouting = await ctx.runMutation(internal.bridge.beginTurnRouting, {
         chatId: row.chatId as Id<"chats">,
         userId: row.userId as Id<"users">,
         routedAgent: row.routedAgent,
@@ -657,6 +767,17 @@ export const dispatch = internalAction({
       chatId: row.chatId as Id<"chats">,
       userId: row.userId as Id<"users">,
       ...(row.routedAgent ? { routedAgent: row.routedAgent } : {}),
+      // ACTUAL switch only (codex P2): `isSwitch` is true EXACTLY when this turn
+      // re-keyed the session (routed agent differs from the preceding routed turn, OR a
+      // first per-turn selection minting a segment — even a legacy/unbound chat with no
+      // known predecessor, where switchedFrom is null but it IS still a switch, P2.B). A
+      // same-agent follow-up → isSwitch false → routedSwitch false → the bridge keeps a
+      // warm gateway session (no duplicate re-inject after a restart).
+      routedSwitch: turnRouting?.isSwitch ?? false,
+      // The EPHEMERAL segment this dispatch keys on (a NEW one on a switch, else the
+      // last-confirmed) — NOT persisted to the chat doc until confirm (atomic-on-confirm),
+      // so it must travel explicitly. Absent for a non-routed send (falls back inside).
+      ...(turnRouting ? { routingSegment: turnRouting.segment } : {}),
     });
 
     // Chat deleted mid-turn -> nothing to dispatch / render.
@@ -852,6 +973,17 @@ export const dispatch = internalAction({
           },
           body: JSON.stringify({
             chatId: row.chatId,
+            // The OUTBOX id of this dispatch — the bridge echoes it as the
+            // `openclaw.rehydrate` trace's correlationId (`chatId:outboxId`), the
+            // master join key (matches chat.send's correlationId) so the
+            // rehydration decision stitches to the turn in the obs MCP. Non-secret id.
+            outboxId,
+            // The agent THIS turn switched away from (null = not a switch, OR a switch
+            // with no known predecessor) — non-secret names, echoed into the rehydrate
+            // trace + anomaly so a routing bug reads "switched from X to Y". From
+            // beginTurnRouting (the dispatch-time truth).
+            switchedFromInstanceName: turnRouting?.switchedFromInstanceName ?? null,
+            switchedFromAgentId: turnRouting?.switchedFromAgentId ?? null,
             openclawChatId: routing.openclawChatId,
             // Resolved valve target (non-secret names): the bridge maps
             // instanceName -> gateway token/device identity from its env.
@@ -898,6 +1030,18 @@ export const dispatch = internalAction({
         outboxId,
         status: "sent",
       });
+      // CONFIRM the WHOLE routing tuple {segment, lastRoutedAgent*} ONLY now that the
+      // gateway accepted the send — so a FAILED routed dispatch advances NOTHING and a
+      // return-to-prior reuses its real segment + a retry to the failed agent is still a
+      // switch (rehydrate). Only when beginTurnRouting ran (turnRouting carries the
+      // segment); a non-routed send never confirms.
+      if (row.routedAgent && turnRouting) {
+        await ctx.runMutation(internal.bridge.confirmTurnRouting, {
+          chatId: row.chatId as Id<"chats">,
+          routedAgent: row.routedAgent,
+          segment: turnRouting.segment,
+        });
+      }
     } else {
       // The bridge accepted the POST shape but the gateway refused the turn
       // (502): surface it to the user instead of leaving the message unanswered.
