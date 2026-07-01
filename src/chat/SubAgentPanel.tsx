@@ -44,11 +44,15 @@ import {
 } from "./subAgentExport";
 import {
   buildSubAgentActivityView,
+  formatCostUsd,
+  formatRuntime,
   isReportableSubAgent,
+  isSubAgentSessionArchived,
   shortenSubAgentError,
   type SubAgentCardView,
   type SubAgentRow,
   type SubAgentSessionMeta,
+  type SubAgentTelemetry,
 } from "./subAgentActivityView";
 
 /** Scroll the PRIMARY thread to the assistant message that spawned this sub-agent
@@ -261,24 +265,25 @@ function PanelTools({
  *  until the first session frame populates the meta, so the layout never jumps. */
 function SubAgentSessionBar({
   meta,
+  telemetry,
+  childAgentId,
   parentAgentLabel,
   onExport,
 }: {
   meta: SubAgentSessionMeta | undefined;
+  telemetry?: SubAgentTelemetry;
+  childAgentId?: string;
   parentAgentLabel?: string;
   onExport?: () => void;
 }) {
   const [advOpen, setAdvOpen] = useState(false);
+  // ANY captured field opens the Advanced detail — derived (not an enumerated field
+  // list) so a newly-captured param can never be silently unreachable (codex P2:
+  // a spawn that only carried label/agentId/… would otherwise never show the button).
   const hasMeta =
-    !!meta &&
-    (meta.model !== undefined ||
-      meta.thinkingLevel !== undefined ||
-      meta.fastMode !== undefined ||
-      meta.controlScope !== undefined ||
-      meta.subagentRole !== undefined ||
-      meta.spawnDepth !== undefined ||
-      meta.context !== undefined ||
-      meta.runtime !== undefined);
+    (!!meta && Object.values(meta).some((v) => v !== undefined)) ||
+    (!!telemetry && Object.values(telemetry).some((v) => v !== undefined)) ||
+    childAgentId !== undefined;
   if (!hasMeta && !parentAgentLabel && !onExport) {
     return <div className="oc-subpanel__barslot" aria-hidden />;
   }
@@ -363,7 +368,13 @@ function SubAgentSessionBar({
           />
         </button>
       ) : null}
-      {advOpen && meta ? <AdvancedMeta meta={meta} /> : null}
+      {advOpen && hasMeta ? (
+        <AdvancedMeta
+          meta={meta ?? {}}
+          telemetry={telemetry}
+          childAgentId={childAgentId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -381,11 +392,24 @@ function subAgentCapability(role: string | undefined): string | null {
   return null;
 }
 
-function AdvancedMeta({ meta }: { meta: SubAgentSessionMeta }) {
+function AdvancedMeta({
+  meta,
+  telemetry,
+  childAgentId,
+}: {
+  meta: SubAgentSessionMeta;
+  telemetry?: SubAgentTelemetry;
+  childAgentId?: string;
+}) {
   const rows: Array<[string, string]> = [];
   if (meta.model) rows.push([m.subagent_bar_model(), meta.model]);
   if (meta.modelProvider)
     rows.push([m.subagent_bar_provider(), meta.modelProvider]);
+  // The agent the CHILD runs AS (spawn agentId / derived from the session key) —
+  // differs from the parent chip when the spawn delegated to another agent.
+  const childAgent = meta.agentId ?? childAgentId;
+  if (childAgent) rows.push([m.subagent_bar_agent(), childAgent]);
+  if (meta.label) rows.push([m.subagent_bar_label(), meta.label]);
   if (meta.thinkingLevel)
     rows.push([m.subagent_bar_reasoning(), meta.thinkingLevel]);
   if (meta.fastMode !== undefined)
@@ -396,6 +420,11 @@ function AdvancedMeta({ meta }: { meta: SubAgentSessionMeta }) {
   // Spawn-time config — rendered ONLY when the spawn actually set it (never a
   // fabricated default; `context` in particular is usually absent).
   if (meta.context) rows.push([m.subagent_bar_context(), meta.context]);
+  if (meta.lightContext !== undefined)
+    rows.push([
+      m.subagent_bar_light_context(),
+      meta.lightContext ? m.subagent_bar_light_on() : m.subagent_bar_light_off(),
+    ]);
   if (meta.runtime) rows.push([m.subagent_bar_runtime(), meta.runtime]);
   if (meta.mode) rows.push([m.subagent_bar_mode(), meta.mode]);
   if (meta.cleanup) rows.push([m.subagent_bar_cleanup(), meta.cleanup]);
@@ -406,7 +435,22 @@ function AdvancedMeta({ meta }: { meta: SubAgentSessionMeta }) {
     rows.push([m.subagent_bar_depth(), String(meta.spawnDepth)]);
   const capability = subAgentCapability(meta.subagentRole);
   if (capability) rows.push([m.subagent_bar_capability(), capability]);
+  // Effective working directory (child session static) beats the requested cwd arg.
+  const workDir = meta.spawnedWorkspaceDir ?? meta.cwd;
+  if (workDir) rows.push([m.subagent_bar_workdir(), workDir]);
+  if (meta.sessionId) rows.push([m.subagent_bar_session_id(), meta.sessionId]);
   if (meta.gatewayKind) rows.push([m.subagent_bar_gateway(), meta.gatewayKind]);
+  // Run telemetry — live-ish while running (heartbeat cadence), final once settled.
+  if (telemetry?.runtimeMs !== undefined) {
+    const v = formatRuntime(telemetry.runtimeMs);
+    if (v) rows.push([m.subagent_tel_runtime(), v]);
+  }
+  if (telemetry?.totalTokens !== undefined)
+    rows.push([m.subagent_tel_tokens(), telemetry.totalTokens.toLocaleString()]);
+  if (telemetry?.estimatedCostUsd !== undefined) {
+    const v = formatCostUsd(telemetry.estimatedCostUsd);
+    if (v) rows.push([m.subagent_tel_cost(), v]);
+  }
   return (
     <dl className="oc-subpanel__adv-list">
       {rows.map(([label, value]) => (
@@ -436,6 +480,9 @@ export function SubAgentPanelContent({
   const row = (rows ?? []).find((r) => r.childSessionKey === childKey);
   const card = row ? buildSubAgentActivityView([row]).cards[0] : undefined;
   const taskName = row?.taskName?.trim();
+  // A terminal `cleanup: "delete"` child has no gateway session left to talk to —
+  // the interaction composer disables with an explicit reason (pure, unit-tested).
+  const sessionArchived = isSubAgentSessionArchived(card);
   // Which sub-agents the user already reported (drives the report button's
   // already-flagged state) — owner-scoped, Convex-deduped across consumers.
   const reportedIds = useQuery(api.subAgentReports.myReportedSubAgentIds, {
@@ -581,6 +628,9 @@ export function SubAgentPanelContent({
   // A message may be text-only OR file-only. Clears the draft + strip on accept.
   const doSend = async () => {
     const text = draft.trim();
+    // Same guard as the disabled button — Enter in the textarea calls doSend()
+    // directly, so an archived session must be refused HERE too (codex P2).
+    if (sessionArchived) return;
     if ((!text && attachments.length === 0) || sending || uploading) return;
     setSending(true);
     try {
@@ -688,6 +738,8 @@ export function SubAgentPanelContent({
           empty band until the first session frame fills it (no layout jump). */}
       <SubAgentSessionBar
         meta={card?.sessionMeta}
+        telemetry={card?.telemetry}
+        childAgentId={card?.childAgentId}
         parentAgentLabel={parentAgentLabel}
         onExport={card ? doExport : undefined}
       />
@@ -896,10 +948,16 @@ export function SubAgentPanelContent({
                 ) : null}
               </div>
               {/* Steering a RUNNING sub-agent is not yet verified (gated server-side),
-                  and one interaction at a time per child — surface WHY send is off. */}
+                  and one interaction at a time per child — surface WHY send is off.
+                  A `cleanup: "delete"` child is ARCHIVED by the gateway right after
+                  its announce, so once terminal there is no session left to talk to. */}
               {card?.tone === "running" ? (
                 <span className="oc-subpanel__prompt-hint">
                   {m.subagent_interact_wait_running()}
+                </span>
+              ) : sessionArchived ? (
+                <span className="oc-subpanel__prompt-hint">
+                  {m.subagent_interact_archived()}
                 </span>
               ) : (interactions ?? []).some((it) => it.status === "pending") ? (
                 <span className="oc-subpanel__prompt-hint">
@@ -915,6 +973,7 @@ export function SubAgentPanelContent({
                   sending ||
                   uploading ||
                   card?.tone === "running" ||
+                  sessionArchived ||
                   (interactions ?? []).some((it) => it.status === "pending")
                 }
                 onClick={() => void doSend()}

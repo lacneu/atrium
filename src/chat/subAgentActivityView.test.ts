@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSubAgentActivityView,
+  childAgentIdFromKey,
+  formatCostUsd,
+  formatRuntime,
   isReportableSubAgent,
+  isSubAgentSessionArchived,
   shortSessionKey,
   statusTone,
   subAgentCountLabel,
@@ -398,3 +402,104 @@ describe("subAgentRowsForMessage (per-message ownership join)", () => {
   });
 });
 
+
+// --- extended params: child agent derivation, telemetry formatting, archive guard ---
+
+describe("childAgentIdFromKey", () => {
+  it("parses the agent id from a depth-1 child key", () => {
+    expect(childAgentIdFromKey("agent:bob:subagent:1234-abcd")).toBe("bob");
+  });
+  it("keeps the FIRST id on a nested depth-2 key", () => {
+    expect(
+      childAgentIdFromKey("agent:alice:subagent:aaa:subagent:bbb"),
+    ).toBe("alice");
+  });
+  it("returns undefined on a foreign key shape (never a wrong guess)", () => {
+    expect(childAgentIdFromKey("session:whatever:123")).toBeUndefined();
+    expect(childAgentIdFromKey("")).toBeUndefined();
+  });
+});
+
+describe("formatRuntime", () => {
+  it("sub-second reads < 1 s (never 0 s)", () => {
+    expect(formatRuntime(400)).toBe("< 1 s");
+  });
+  it("seconds / minutes / hours", () => {
+    expect(formatRuntime(42_000)).toBe("42 s");
+    expect(formatRuntime(3 * 60_000 + 12_000)).toBe("3 min 12 s");
+    expect(formatRuntime(64 * 60_000)).toBe("1 h 04 min");
+    expect(formatRuntime(120 * 60_000)).toBe("2 h");
+  });
+  it("rejects a negative/NaN input with an empty string", () => {
+    expect(formatRuntime(-5)).toBe("");
+    expect(formatRuntime(Number.NaN)).toBe("");
+  });
+});
+
+describe("formatCostUsd", () => {
+  it("cents precision for a regular cost", () => {
+    expect(formatCostUsd(0.53)).toBe("0,53 $");
+  });
+  it("tighter precision for a tiny cost (never reads as free)", () => {
+    expect(formatCostUsd(0.0042)).toBe("0,0042 $");
+  });
+  it("zero stays a plain zero", () => {
+    expect(formatCostUsd(0)).toBe("0,00 $");
+  });
+  it("rejects negative/NaN with an empty string", () => {
+    expect(formatCostUsd(-1)).toBe("");
+    expect(formatCostUsd(Number.NaN)).toBe("");
+  });
+});
+
+describe("isSubAgentSessionArchived (cleanup=delete interaction guard)", () => {
+  it("terminal + cleanup:delete -> archived (composer disables with reason)", () => {
+    expect(
+      isSubAgentSessionArchived({
+        tone: "done",
+        sessionMeta: { cleanup: "delete" },
+      }),
+    ).toBe(true);
+    expect(
+      isSubAgentSessionArchived({
+        tone: "failed",
+        sessionMeta: { cleanup: "delete" },
+      }),
+    ).toBe(true);
+  });
+  it("RUNNING + cleanup:delete is NOT archived yet", () => {
+    expect(
+      isSubAgentSessionArchived({
+        tone: "running",
+        sessionMeta: { cleanup: "delete" },
+      }),
+    ).toBe(false);
+  });
+  it("cleanup:keep (or absent) never archives", () => {
+    expect(
+      isSubAgentSessionArchived({ tone: "done", sessionMeta: { cleanup: "keep" } }),
+    ).toBe(false);
+    expect(isSubAgentSessionArchived({ tone: "done" })).toBe(false);
+    expect(isSubAgentSessionArchived(undefined)).toBe(false);
+  });
+});
+
+describe("card mapping — telemetry + childAgentId", () => {
+  it("toCard carries telemetry through and derives the child agent", () => {
+    const row: SubAgentRow = {
+      _id: "r1",
+      childSessionKey: "agent:bob:subagent:xyz",
+      status: "done",
+      telemetry: { runtimeMs: 5000, totalTokens: 42, estimatedCostUsd: 0.01 },
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const card = buildSubAgentActivityView([row]).cards[0];
+    expect(card.telemetry).toEqual({
+      runtimeMs: 5000,
+      totalTokens: 42,
+      estimatedCostUsd: 0.01,
+    });
+    expect(card.childAgentId).toBe("bob");
+  });
+});

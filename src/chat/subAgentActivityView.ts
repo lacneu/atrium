@@ -44,6 +44,22 @@ export type SubAgentSessionMeta = {
   cleanup?: string;
   sandbox?: string;
   gatewayKind?: string;
+  /** Extended spawn args + child session statics (see convex/subAgents SESSION_META). */
+  label?: string;
+  cwd?: string;
+  agentId?: string;
+  lightContext?: boolean;
+  sessionId?: string;
+  spawnedWorkspaceDir?: string;
+};
+
+/** Run telemetry (runtime / tokens / estimated cost) — content-free numbers written
+ *  at heartbeat/terminal cadence (live-ish while running, final once settled). */
+export type SubAgentTelemetry = {
+  runtimeMs?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  startedAt?: number;
 };
 
 export type SubAgentRow = {
@@ -59,6 +75,7 @@ export type SubAgentRow = {
   errorMessage?: string;
   tools?: ReadonlyArray<SubAgentToolRow>;
   sessionMeta?: SubAgentSessionMeta;
+  telemetry?: SubAgentTelemetry;
   createdAt: number;
   updatedAt: number;
 };
@@ -96,6 +113,11 @@ export type SubAgentCardView = {
   /** The child's static session config — model / reasoning / speed / scope (the
    *  panel session bar + Advanced popover). Absent until the first session frame. */
   sessionMeta?: SubAgentSessionMeta;
+  /** Run telemetry (live-ish while running via heartbeats; final once settled). */
+  telemetry?: SubAgentTelemetry;
+  /** The agent the CHILD runs AS, derived from the session key (`agent:<id>:subagent:…`).
+   *  Differs from the parent when the spawn targeted another agent (allowAgents). */
+  childAgentId?: string;
 };
 
 export type SubAgentActivityView = {
@@ -117,6 +139,38 @@ export function shortSessionKey(key: string): string {
   if (trimmed === "") return "";
   const segment = trimmed.slice(trimmed.lastIndexOf(":") + 1) || trimmed;
   return segment.length > 10 ? `${segment.slice(0, 8)}…` : segment;
+}
+
+/** The agent id the CHILD runs AS, parsed from `agent:<id>:subagent:<uuid>` (nesting
+ *  keeps the FIRST id — depth-2 keys append more `:subagent:` segments). Undefined on
+ *  a foreign/unNparseable key shape rather than a wrong guess. */
+export function childAgentIdFromKey(key: string): string | undefined {
+  const match = /^agent:(.+?):subagent:/.exec(key.trim());
+  const id = match?.[1]?.trim();
+  return id ? id : undefined;
+}
+
+/** Human duration for a child's runtimeMs: "42 s", "3 min 12 s", "1 h 04 min".
+ *  Sub-second runs read "< 1 s" (never "0 s"). Pure for unit tests. */
+export function formatRuntime(runtimeMs: number): string {
+  if (!Number.isFinite(runtimeMs) || runtimeMs < 0) return "";
+  if (runtimeMs < 1000) return "< 1 s";
+  const totalSec = Math.round(runtimeMs / 1000);
+  if (totalSec < 60) return `${totalSec} s`;
+  const totalMin = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (totalMin < 60) return sec > 0 ? `${totalMin} min ${sec} s` : `${totalMin} min`;
+  const h = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return min > 0 ? `${h} h ${String(min).padStart(2, "0")} min` : `${h} h`;
+}
+
+/** Estimated cost display: cents-precision for regular runs, tighter for tiny ones
+ *  ("0,0042 $" not "0,00 $") so a cheap child never reads as free. Pure. */
+export function formatCostUsd(costUsd: number): string {
+  if (!Number.isFinite(costUsd) || costUsd < 0) return "";
+  const decimals = costUsd > 0 && costUsd < 0.01 ? 4 : 2;
+  return `${costUsd.toFixed(decimals).replace(".", ",")} $`;
 }
 
 /** A card's label: the task name when the spawn meta carried one, else a short
@@ -154,6 +208,23 @@ export function isReportableSubAgent(status: SubAgentStatus): boolean {
   return status !== "running";
 }
 
+/**
+ * True when the child's gateway session no longer exists to talk to: a spawn with
+ * `cleanup: "delete"` is ARCHIVED by the gateway right after its announce, so once
+ * the child is terminal an interaction send can only fail — the composer disables
+ * with an explicit reason instead. A running child is NOT archived yet (its send
+ * is gated by the running rule, not this one).
+ */
+export function isSubAgentSessionArchived(
+  card: Pick<SubAgentCardView, "tone" | "sessionMeta"> | undefined,
+): boolean {
+  return (
+    card !== undefined &&
+    card.tone !== "running" &&
+    card.sessionMeta?.cleanup === "delete"
+  );
+}
+
 /** Build one card from a row. */
 function toCard(row: SubAgentRow): SubAgentCardView {
   const tone = statusTone(row.status);
@@ -176,6 +247,8 @@ function toCard(row: SubAgentRow): SubAgentCardView {
       toolCallId: t.toolCallId,
     })),
     sessionMeta: row.sessionMeta,
+    telemetry: row.telemetry,
+    childAgentId: childAgentIdFromKey(row.childSessionKey),
   };
 }
 

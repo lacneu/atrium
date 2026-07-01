@@ -66,6 +66,9 @@ export interface SubAgentRecord {
   // The child's STATIC session config (model / reasoning / speed / scope), emitted
   // ONLY when a static field changes (write-once in practice). CONFIG, not content.
   sessionMeta?: SubAgentSessionMeta;
+  // Last-known run telemetry (runtime/tokens/cost), attached ONLY to upserts that are
+  // already being written (heartbeat + terminal) — never a write trigger by itself.
+  telemetry?: SubAgentTelemetry;
   // Phase 2c: when set, this frame carried the reply to a USER INTERACTION (the child
   // was re-woken by a chat.send from "Interagir"). Routed to the interaction record
   // (NOT the subAgents.resultText, which stays the original answer). Present only on
@@ -82,7 +85,8 @@ export interface SubAgentInteractionReply {
 }
 
 /** The child's STATIC session config for the panel session bar. CONFIG (SOC2-safe);
- *  NO live telemetry (tokens/cost) -- that would be a write-per-tick. */
+ *  live telemetry (tokens/cost/runtime) rides on SubAgentTelemetry instead --
+ *  attached only to already-scheduled upserts, never a write-per-tick. */
 export interface SubAgentSessionMeta {
   model?: string;
   modelProvider?: string;
@@ -101,6 +105,28 @@ export interface SubAgentSessionMeta {
   cleanup?: string;
   sandbox?: string;
   gatewayKind?: string;
+  // Extended spawn args (label / cwd / target agentId / lightContext) + child session
+  // statics (sessionId, spawnedWorkspaceDir) — so every embedded spawn parameter the
+  // gateway exposes reaches the panel. Same sensitivity class as taskName (config;
+  // paths sanitized by the observer before they land here).
+  label?: string;
+  cwd?: string;
+  agentId?: string;
+  lightContext?: boolean;
+  sessionId?: string;
+  spawnedWorkspaceDir?: string;
+}
+
+/** The child's run TELEMETRY (runtime / tokens / estimated cost, from
+ *  `payload.session` on child frames). These change every frame, so the observer
+ *  keeps the last-known values IN MEMORY and attaches them only to upserts that are
+ *  already being written (heartbeat + terminal) — the write cadence never changes.
+ *  Content-free numbers (SOC2-safe). */
+export interface SubAgentTelemetry {
+  runtimeMs?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  startedAt?: number;
 }
 
 /**
@@ -339,6 +365,7 @@ type IngestOp =
       errorMessage?: string;
       tools?: Array<{ name: string; status: "running" | "done"; toolCallId?: string }>;
       sessionMeta?: SubAgentSessionMeta;
+      telemetry?: SubAgentTelemetry;
     }
   // Per-tool DETAIL (args + result) for a sub-agent call -> its own table. Keyed by
   // (childSessionKey, toolCallId). In-app user data; server-paths stripped.
@@ -1118,6 +1145,7 @@ export class HttpConvexWriter implements ConvexWriter {
       errorMessage: record.errorMessage,
       tools: record.tools,
       sessionMeta: record.sessionMeta,
+      telemetry: record.telemetry,
     });
   }
 

@@ -8,6 +8,37 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.18.0] — Complete sub-agent parameters and run telemetry
+
+A focused follow-up to 0.17.0: the sub-agent panel now reflects every spawn parameter the OpenClaw
+gateway exposes (embedded/API runtime), plus the run's telemetry. No breaking changes; Convex changes
+are additive (new optional fields on the sub-agent record). Deploy: Convex + frontend + bridge.
+
+- **The sub-agent panel now shows every spawn parameter.** The "Avancé" detail gained the missing
+  gateway parameters: the spawn label, the agent the child actually runs as (visible when a spawn
+  delegates to another agent), the light-context flag, the child's workspace (shown as the workspace
+  name only — the server's filesystem layout is never exposed), and the gateway session id (the join
+  key for the gateway's own `/subagents log` inspection). The detail toggle now opens whenever ANY
+  field was captured, so a newly-added parameter can never be silently unreachable.
+- **Run telemetry: duration, tokens, and estimated cost.** A sub-agent's runtime, total token usage,
+  and estimated cost now appear in its panel — refreshed at a bounded cadence while it works and
+  final once it settles. Telemetry is captured without adding any database write traffic (it rides
+  on writes that already happen).
+- **The model appears as soon as the sub-agent is created.** The spawn's resolved model/provider now
+  seed the panel immediately, instead of waiting for the child's first frame.
+- **Interacting with an auto-archived sub-agent is now clearly unavailable.** A spawn with
+  `cleanup: "delete"` is archived by the gateway right after it reports — sending it a follow-up
+  could only fail. The panel's composer now disables with an explicit reason, and the server refuses
+  such sends outright (covering every path, including Enter and direct API calls). The guard holds
+  even for a child that finishes faster than its spawn record arrives.
+- **Sub-agent capture hardening.** The session id is also read from gateway frame shapes that carry
+  it top-level; a straggler spawn record arriving after a fast child finished can no longer create a
+  phantom "running" entry or flip a failed child's status; and an unchanged workspace path no longer
+  re-writes the record on every frame.
+
+Deploy note: additive Convex fields on the sub-agent record (extended session config + telemetry).
+Deploy the Convex functions (`npx convex deploy`), then the frontend and bridge images.
+
 ## [0.17.0] — Sub-agent panel, live interaction, and OpenClaw 2026.6.11
 
 A sub-agent-focused release: a dedicated panel to watch — and talk to — the sub-agents an agent

@@ -79,6 +79,15 @@ export const prepareInteraction = internalMutation({
     if (child.status === "running") {
       throw new Error("sub-agent still running: cannot interact yet");
     }
+    // A `cleanup: "delete"` child is ARCHIVED by the gateway right after its announce:
+    // there is no session left to deliver to. Refuse here (server truth) instead of
+    // parking a pending interaction that can only error/time out — the panel disables
+    // its composer for the same state, but Enter/direct callers land here too.
+    if (child.sessionMeta?.cleanup === "delete") {
+      throw new Error(
+        "sub-agent session archived (cleanup: delete): cannot interact",
+      );
+    }
     // CONCURRENCY: the observer tracks ONE interactionId per child (last-writer-wins),
     // so refuse a second send while one is still pending for this child.
     const pending = await ctx.db

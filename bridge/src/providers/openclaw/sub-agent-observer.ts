@@ -38,6 +38,7 @@ import type {
   SubAgentInteractionReply,
   SubAgentRecord,
   SubAgentSessionMeta,
+  SubAgentTelemetry,
   SubAgentToolPartRecord,
 } from "../../convex-writer.js";
 
@@ -48,7 +49,15 @@ export type SubAgentUpsert = SubAgentRecord;
 /** The subset of the session meta carried by the sessions_spawn `start` args. */
 type SpawnConfig = Pick<
   SubAgentSessionMeta,
-  "context" | "runtime" | "mode" | "cleanup" | "sandbox"
+  | "context"
+  | "runtime"
+  | "mode"
+  | "cleanup"
+  | "sandbox"
+  | "label"
+  | "cwd"
+  | "agentId"
+  | "lightContext"
 >;
 
 interface Observation {
@@ -71,6 +80,10 @@ interface Observation {
   /** Last-known STATIC session config (model/reasoning/speed/scope), merged across
    *  frames. Write-once in practice; emitted only on a real change. */
   sessionMeta?: SubAgentSessionMeta;
+  /** Last-known run telemetry (runtime/tokens/cost), refreshed in memory on every
+   *  session-bearing frame but attached ONLY to already-scheduled upserts
+   *  (heartbeat + terminal) — telemetry alone never triggers a write. */
+  telemetry?: SubAgentTelemetry;
   /** Phase 2c: when set, the child was re-woken by a USER INTERACTION (chat.send from
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
@@ -160,7 +173,11 @@ export class SubAgentObserver {
   private readonly ttlSeconds: number;
   private readonly observations = new Map<string, Observation>();
   // Insertion-ordered set of recently-reaped child keys (resurrection guard).
-  private readonly recentlyFinal = new Set<string>();
+  // Key -> the FINAL status it reached. A Map (not a Set) so a straggler spawn-result
+  // backfill can re-assert the TRUE terminal status instead of a fabricated one
+  // (emitting `running` would leak Session.registeredChildren; emitting a guessed
+  // terminal could flip error->done — the Convex guard only blocks running).
+  private readonly recentlyFinal = new Map<string, SubAgentStatus>();
   // sessions_spawn config cached from the `start` frame args, keyed by toolCallId,
   // consumed by the matching `result` registration. Bounded (insertion-ordered).
   private readonly pendingSpawnConfig = new Map<string, SpawnConfig>();
@@ -257,7 +274,7 @@ export class SubAgentObserver {
       const term = childChatTerminalStatus(readString(payload, "state"));
       if (term !== null) {
         const interactionId = obs.interactionId;
-        this.reap(childKey); // final-reap guardrail (any terminal)
+        this.reap(childKey, term); // final-reap guardrail (any terminal)
         // Phase 2c: this terminal is the reply to a USER INTERACTION -> route it to
         // the interaction record ONLY (the subAgents.resultText keeps the ORIGINAL
         // answer). `aborted` reads as an error for the interaction.
@@ -295,6 +312,9 @@ export class SubAgentObserver {
           parentMessageId: obs.parentMessageId,
           childSessionKey: childKey,
           status: term,
+          // The FINAL telemetry (total runtime/tokens/cost) rides on the terminal
+          // write — the one place a finished child's numbers become durable.
+          ...(obs.telemetry !== undefined ? { telemetry: obs.telemetry } : {}),
         };
         if (term === "done") {
           const text = this.sanitizeResult(textFromMessage(readField(payload, "message")));
@@ -487,10 +507,31 @@ export class SubAgentObserver {
     obs: Observation,
     payload: Record<string, unknown>,
   ): SubAgentUpsert[] {
-    const session = readField(payload, "session");
-    if (session === null) return [];
     const merged: SubAgentSessionMeta = { ...obs.sessionMeta };
     let changed = false;
+    // The gateway session id ALSO rides TOP-LEVEL on some child frame shapes (e.g.
+    // lifecycle frames carry `payload.sessionId` with NO `session` object — codex
+    // P3), so read it before the session-object gate; `session.sessionId` below
+    // still applies when the object form is present (same value in practice).
+    const topSessionId = readString(payload, "sessionId");
+    if (topSessionId !== null && merged.sessionId !== topSessionId) {
+      merged.sessionId = topSessionId;
+      changed = true;
+    }
+    const session = readField(payload, "session");
+    if (session === null) {
+      if (!changed) return [];
+      obs.sessionMeta = merged;
+      return [
+        {
+          chatId: this.chatId,
+          parentMessageId: obs.parentMessageId,
+          childSessionKey: obs.childSessionKey,
+          status: obs.status,
+          sessionMeta: merged,
+        },
+      ];
+    }
     const model = readString(session, "model");
     if (model !== null && merged.model !== model) {
       merged.model = model;
@@ -535,6 +576,42 @@ export class SubAgentObserver {
       merged.gatewayKind = gatewayKind;
       changed = true;
     }
+    // Extended session statics: the spawn label (sanitized like the task name), the
+    // gateway session id (the `/subagents log` join key), and the child's effective
+    // working directory. Write-once in practice, same merge rule as the rest.
+    const label = this.sanitizeTaskName(readString(session, "label") ?? undefined);
+    if (label !== undefined && label !== "" && merged.label !== label) {
+      merged.label = label;
+      changed = true;
+    }
+    const sessionId = readString(session, "sessionId");
+    if (sessionId !== null && merged.sessionId !== sessionId) {
+      merged.sessionId = sessionId;
+      changed = true;
+    }
+    // Workspace: store the LAST path segment only ("workspace-alice"), never the full
+    // server path — the bridge invariant keeps host filesystem layout out of the
+    // browser/MCP surfaces (codex P1). Compare the PROCESSED value so an unchanged
+    // long path does not re-emit sessionMeta every frame (codex P2).
+    const workDir = pathTail(readString(session, "spawnedWorkspaceDir"));
+    if (workDir !== undefined && merged.spawnedWorkspaceDir !== workDir) {
+      merged.spawnedWorkspaceDir = workDir;
+      changed = true;
+    }
+    // TELEMETRY (runtime/tokens/cost/startedAt): changes on nearly EVERY frame, so it
+    // NEVER sets `changed` (that would turn this into a write-per-tick). Stash the
+    // last-known values on the observation; heartbeat + terminal upserts attach them.
+    const telemetry: SubAgentTelemetry = { ...obs.telemetry };
+    for (const key of [
+      "runtimeMs",
+      "totalTokens",
+      "estimatedCostUsd",
+      "startedAt",
+    ] as const) {
+      const val = session[key];
+      if (typeof val === "number" && Number.isFinite(val)) telemetry[key] = val;
+    }
+    if (Object.keys(telemetry).length > 0) obs.telemetry = telemetry;
     if (!changed) return [];
     obs.sessionMeta = merged;
     return [
@@ -567,7 +644,9 @@ export class SubAgentObserver {
         const wasRunning = obs.status === "running";
         const parentMessageId = obs.parentMessageId;
         const interactionId = obs.interactionId;
-        this.reap(key);
+        // A still-running child times out to `error`; an already-terminal one keeps
+        // its last-known status (never downgraded).
+        this.reap(key, wasRunning ? "error" : obs.status);
         if (wasRunning && interactionId !== undefined) {
           // 2c: a pending INTERACTION whose reply never arrived -> fail the interaction
           // (not the subAgents row), so the panel's "Interagir" doesn't hang forever.
@@ -584,6 +663,8 @@ export class SubAgentObserver {
             childSessionKey: key,
             status: "error",
             errorMessage: `Sub-agent timed out: no activity for ${this.ttlSeconds}s and the gateway never reported it finishing.`,
+            // Last-known telemetry so even a timed-out child keeps its numbers.
+            ...(obs.telemetry !== undefined ? { telemetry: obs.telemetry } : {}),
           });
         }
       }
@@ -622,8 +703,6 @@ export class SubAgentObserver {
     if (readString(data, "phase") !== "result") return null;
     const childKey = extractChildSessionKey(readField(data, "result"));
     if (childKey === null) return null;
-    // Already reaped: nothing to do (resurrection guard).
-    if (this.recentlyFinal.has(childKey)) return [];
     const taskName = this.sanitizeTaskName(extractTaskName(readString(data, "meta")));
     // The spawn CONFIG cached from this call's `start` frame (by toolCallId) — so
     // `context`/runtime/mode/cleanup/sandbox reach the row from the spawn result.
@@ -633,6 +712,33 @@ export class SubAgentObserver {
       toolCallId !== null ? this.pendingSpawnConfig.get(toolCallId) : undefined;
     if (cfg !== undefined && toolCallId !== null) {
       this.pendingSpawnConfig.delete(toolCallId);
+    }
+    // The spawn result also announces the RESOLVED model/provider — a fill-gaps-only
+    // seed (a child session frame's effective value, when already present, wins).
+    const resolved = extractSpawnResolved(readField(data, "result"));
+    // Already reaped (a FAST child finished off its own frames before this spawn
+    // result was ingested): never re-REGISTER (resurrection guard), but still emit a
+    // LATE BACKFILL upsert carrying the spawn config — without it the row would miss
+    // `cleanup: "delete"` and the interaction archive-guard could be bypassed (codex
+    // P2). It carries the child's TRUE final status (from the reap ledger) — never
+    // `running` (that would leak Session.registeredChildren + could resurrect a
+    // running Convex row) and never a guessed terminal (error must not flip to done).
+    const finalStatus = this.recentlyFinal.get(childKey);
+    if (finalStatus !== undefined) {
+      const lateMeta: SubAgentSessionMeta = {
+        ...(resolved ?? {}),
+        ...(cfg ?? {}),
+      };
+      if (Object.keys(lateMeta).length === 0 && taskName === undefined) return [];
+      return [
+        {
+          chatId: this.chatId,
+          childSessionKey: childKey,
+          status: finalStatus,
+          ...(taskName !== undefined ? { taskName } : {}),
+          ...(Object.keys(lateMeta).length > 0 ? { sessionMeta: lateMeta } : {}),
+        },
+      ];
     }
 
     // The child's OWN frames can arrive BEFORE this spawn result (a race), lazily
@@ -649,6 +755,15 @@ export class SubAgentObserver {
       }
       if (cfg !== undefined) {
         existing.sessionMeta = { ...existing.sessionMeta, ...cfg };
+        changed = true;
+      }
+      if (
+        resolved !== undefined &&
+        (existing.sessionMeta?.model === undefined ||
+          existing.sessionMeta?.modelProvider === undefined)
+      ) {
+        // Fill-gaps only: spread order keeps any effective value already captured.
+        existing.sessionMeta = { ...resolved, ...existing.sessionMeta };
         changed = true;
       }
       if (!changed) return [];
@@ -670,6 +785,9 @@ export class SubAgentObserver {
     if (obs === null) return []; // cap reached -> refused (logged)
     if (cfg !== undefined) {
       obs.sessionMeta = { ...obs.sessionMeta, ...cfg };
+    }
+    if (resolved !== undefined) {
+      obs.sessionMeta = { ...resolved, ...obs.sessionMeta };
     }
     return [
       {
@@ -704,6 +822,18 @@ export class SubAgentObserver {
       const val = readString(args, key);
       if (val !== null && val !== "") cfg[key] = val;
     }
+    // Extended spawn args: the human label (sanitized like the task name), the
+    // working-directory override (LAST segment only — never a full server path,
+    // same invariant as spawnedWorkspaceDir), the explicit target agent (an id,
+    // capped), and the lightContext flag.
+    const label = this.sanitizeTaskName(readString(args, "label") ?? undefined);
+    if (label !== undefined && label !== "") cfg.label = label;
+    const cwd = pathTail(readString(args, "cwd"));
+    if (cwd !== undefined) cfg.cwd = cwd;
+    const agentId = readString(args, "agentId");
+    if (agentId !== null && agentId !== "")
+      cfg.agentId = agentId.slice(0, MAX_TASK_CHARS);
+    if (typeof args.lightContext === "boolean") cfg.lightContext = args.lightContext;
     if (Object.keys(cfg).length === 0) return;
     if (this.pendingSpawnConfig.size >= 64) {
       const oldest = this.pendingSpawnConfig.keys().next().value;
@@ -764,6 +894,9 @@ export class SubAgentObserver {
         parentMessageId: obs.parentMessageId,
         childSessionKey: obs.childSessionKey,
         status: "running",
+        // Piggyback the last-known telemetry on this already-scheduled write, so a
+        // long-running child shows live-ish runtime/tokens/cost at heartbeat cadence.
+        ...(obs.telemetry !== undefined ? { telemetry: obs.telemetry } : {}),
       },
     ];
   }
@@ -784,12 +917,12 @@ export class SubAgentObserver {
     return clean.length > MAX_TASK_CHARS ? clean.slice(0, MAX_TASK_CHARS) : clean;
   }
 
-  private reap(childKey: string): void {
+  private reap(childKey: string, finalStatus: SubAgentStatus): void {
     this.observations.delete(childKey);
-    this.recentlyFinal.add(childKey);
+    this.recentlyFinal.set(childKey, finalStatus);
     if (this.recentlyFinal.size > RECENT_FINAL_CAP) {
-      // Evict the oldest (Set preserves insertion order).
-      const oldest = this.recentlyFinal.values().next().value;
+      // Evict the oldest (Map preserves insertion order).
+      const oldest = this.recentlyFinal.keys().next().value;
       if (oldest !== undefined) this.recentlyFinal.delete(oldest);
     }
   }
@@ -816,6 +949,17 @@ function readString(obj: unknown, key: string): string | null {
   if (!isObject(obj)) return null;
   const v = obj[key];
   return typeof v === "string" ? v : null;
+}
+
+/** The LAST non-empty segment of a filesystem path ("workspace-alice" from
+ *  "/home/node/.openclaw/workspace-alice"), capped. The panel shows WHICH workspace a
+ *  child ran in without persisting the server's filesystem layout (codex P1); a
+ *  segment-less input ("/", "") yields undefined so the field is simply absent. */
+function pathTail(path: string | null): string | undefined {
+  if (path === null) return undefined;
+  const tail = path.split(/[\\/]/).filter((s) => s !== "").pop();
+  if (tail === undefined || tail === "") return undefined;
+  return tail.length > MAX_TASK_CHARS ? tail.slice(0, MAX_TASK_CHARS) : tail;
 }
 
 /** Extract visible text from a chat `message` (content array | string | text). */
@@ -904,6 +1048,39 @@ function extractChildSessionKey(result: Record<string, unknown> | null): string 
     }
   }
   return null;
+}
+
+/**
+ * The RESOLVED model/provider announced in the spawn result JSON (resolvedModel /
+ * resolvedProvider) — seeds the panel's session bar BEFORE the first child frame
+ * arrives; the child's own session frames later confirm (same values) or overwrite.
+ */
+function extractSpawnResolved(
+  result: Record<string, unknown> | null,
+): Pick<SubAgentSessionMeta, "model" | "modelProvider"> | undefined {
+  if (result === null) return undefined;
+  const items = Array.isArray(result.content)
+    ? result.content
+    : Array.isArray(result.contentItems)
+      ? result.contentItems
+      : null;
+  if (items === null) return undefined;
+  for (const item of items) {
+    const text = readString(item, "text");
+    if (text === null) continue;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const model = readString(parsed, "resolvedModel");
+      const provider = readString(parsed, "resolvedProvider");
+      const out: Pick<SubAgentSessionMeta, "model" | "modelProvider"> = {};
+      if (model !== null && model !== "") out.model = model;
+      if (provider !== null && provider !== "") out.modelProvider = provider;
+      if (Object.keys(out).length > 0) return out;
+    } catch {
+      // Non-JSON content item -- skip.
+    }
+  }
+  return undefined;
 }
 
 /**

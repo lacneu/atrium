@@ -363,10 +363,18 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
     );
     const obs = new SubAgentObserver(ERR_PARENT, "chatErr");
     // The child's lifecycle:error must NOT terminalize (it would drain the held queue
-    // early). It is a phase update → status running.
-    expect(obs.observe(ERR_LIFECYCLE_ERROR, 1000)).toEqual([
-      { chatId: "chatErr", parentMessageId: null, childSessionKey: ERR_CHILD, status: "running", phase: "error" },
-    ]);
+    // early). It is a phase update → status running. (The same frame's top-level
+    // sessionId ALSO emits a sessionMeta capture upsert — status running too; the
+    // invariant under test is that NO upsert here is terminal.)
+    const lifecycleUps = obs.observe(ERR_LIFECYCLE_ERROR, 1000);
+    expect(lifecycleUps.every((u) => u.status === "running")).toBe(true);
+    expect(lifecycleUps).toContainEqual({
+      chatId: "chatErr",
+      parentMessageId: null,
+      childSessionKey: ERR_CHILD,
+      status: "running",
+      phase: "error",
+    });
     expect(obs.size).toBe(1); // still held through lifecycle:error
     // The child's chat:error (which FOLLOWS in the capture) is the real terminal + reap.
     const chatErr = obs.observe(ERR_CHAT_ERROR, 1001);
@@ -845,5 +853,321 @@ describe("SubAgentObserver — spawn CONFIG + gateway kind (doc-driven Avancé)"
     expect(ups.find((u) => u.sessionMeta)?.sessionMeta?.gatewayKind).toBe(
       "openclaw",
     );
+  });
+});
+
+describe("SubAgentObserver — extended spawn args + resolved model seed", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_ext";
+  const CHILD = "agent:bob:subagent:ext-child";
+
+  const spawnStart = (args: Record<string, unknown>): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      sessionKey: PARENT,
+      stream: "tool",
+      data: { name: "sessions_spawn", phase: "start", toolCallId: "tc-ext", args },
+    },
+  });
+  const spawnResult = (json: Record<string, unknown>): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      sessionKey: PARENT,
+      stream: "tool",
+      data: {
+        name: "sessions_spawn",
+        phase: "result",
+        toolCallId: "tc-ext",
+        meta: "label ext-label, task Do the thing",
+        result: { content: [{ type: "text", text: JSON.stringify(json) }] },
+      },
+    },
+  });
+
+  it("captures label / cwd / agentId / lightContext from the spawn args", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(
+      spawnStart({
+        context: "isolated",
+        label: "ext-label",
+        cwd: "/data/work",
+        agentId: "bob",
+        lightContext: true,
+      }),
+      100,
+    );
+    const ups = obs.observe(
+      spawnResult({ status: "accepted", childSessionKey: CHILD }),
+      101,
+    );
+    expect(ups.at(-1)?.sessionMeta).toMatchObject({
+      context: "isolated",
+      label: "ext-label",
+      // Paths are stored as their LAST segment only — never the server layout.
+      cwd: "work",
+      agentId: "bob",
+      lightContext: true,
+    });
+  });
+
+  it("seeds model/provider from the spawn result's resolvedModel/resolvedProvider", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      spawnResult({
+        status: "accepted",
+        childSessionKey: CHILD,
+        resolvedModel: "openai/gpt-5.5",
+        resolvedProvider: "openai",
+      }),
+      100,
+    );
+    expect(ups.at(-1)?.sessionMeta).toMatchObject({
+      model: "openai/gpt-5.5",
+      modelProvider: "openai",
+    });
+  });
+
+  it("resolved seed is fill-gaps ONLY: an effective session model already captured wins", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    // The child's own frame lands FIRST (lazy admission) with the EFFECTIVE model.
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          session: { model: "gpt-5.5-effective", modelProvider: "openai" },
+          stream: "tool",
+          data: { phase: "start", name: "exec", toolCallId: "e1" },
+        },
+      },
+      100,
+    );
+    // The straggler spawn result carries a DIFFERENT resolved value: must not clobber.
+    const ups = obs.observe(
+      spawnResult({
+        status: "accepted",
+        childSessionKey: CHILD,
+        resolvedModel: "openai/other",
+        resolvedProvider: "other",
+      }),
+      101,
+    );
+    const meta = ups.find((u) => u.sessionMeta)?.sessionMeta;
+    // Backfill may emit for taskName, but the model fields keep the effective values.
+    if (meta !== undefined) {
+      expect(meta.model).toBe("gpt-5.5-effective");
+      expect(meta.modelProvider).toBe("openai");
+    }
+  });
+});
+
+describe("SubAgentObserver — extended session statics + telemetry cadence", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_tel";
+  const CHILD = "agent:alice:subagent:tel-child";
+  const sessionFrame = (
+    session: Record<string, unknown>,
+    toolCallId = "t1",
+  ): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      session,
+      data: { phase: "start", name: "exec", toolCallId },
+    },
+  });
+  const finalFrame = (): Record<string, unknown> => ({
+    event: "chat",
+    payload: {
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      state: "final",
+      message: { content: [{ type: "text", text: "OK_DONE" }] },
+    },
+  });
+
+  it("captures label / sessionId / spawnedWorkspaceDir as session STATICS", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      sessionFrame({
+        label: "tel-label",
+        sessionId: "sess-42",
+        spawnedWorkspaceDir: "/home/node/.openclaw/workspace-alice",
+      }),
+      100,
+    );
+    expect(ups.find((u) => u.sessionMeta)?.sessionMeta).toMatchObject({
+      label: "tel-label",
+      sessionId: "sess-42",
+      // LAST segment only — the server's filesystem layout never persists (codex P1).
+      spawnedWorkspaceDir: "workspace-alice",
+    });
+  });
+
+  it("an unchanged workspace path does NOT re-emit sessionMeta (compare processed value)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(
+      sessionFrame({ spawnedWorkspaceDir: "/home/node/.openclaw/workspace-alice" }),
+      100,
+    );
+    // Same path on the next frame (a NEW tool id so the frame is not a pure dup):
+    // statics unchanged -> no sessionMeta upsert (write-once cadence preserved).
+    const ups = obs.observe(
+      sessionFrame(
+        { spawnedWorkspaceDir: "/home/node/.openclaw/workspace-alice" },
+        "t-again",
+      ),
+      101,
+    );
+    expect(ups.some((u) => u.sessionMeta !== undefined)).toBe(false);
+  });
+
+  it("telemetry alone NEVER emits an upsert (write cadence unchanged)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(sessionFrame({ model: "gpt-5.5", runtimeMs: 1000 }), 100);
+    // Telemetry-only change on a keep-alive frame within the heartbeat window.
+    const ups = obs.observe(
+      sessionFrame({ model: "gpt-5.5", runtimeMs: 2000, totalTokens: 50 }, "t2"),
+      101,
+    );
+    // t2 is a NEW tool -> a tools upsert fires, but none carries telemetry and no
+    // sessionMeta re-emit happens (statics unchanged).
+    expect(ups.some((u) => u.telemetry !== undefined)).toBe(false);
+    expect(ups.some((u) => u.sessionMeta !== undefined)).toBe(false);
+  });
+
+  it("the TERMINAL upsert carries the last-known telemetry (final numbers)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(
+      sessionFrame({
+        model: "gpt-5.5",
+        runtimeMs: 5400,
+        totalTokens: 1234,
+        estimatedCostUsd: 0.0042,
+        startedAt: 1700000000000,
+      }),
+      100,
+    );
+    const ups = obs.observe(finalFrame(), 102);
+    const terminal = ups.find((u) => u.status === "done");
+    expect(terminal?.telemetry).toEqual({
+      runtimeMs: 5400,
+      totalTokens: 1234,
+      estimatedCostUsd: 0.0042,
+      startedAt: 1700000000000,
+    });
+  });
+
+  it("a due HEARTBEAT piggybacks the last-known telemetry", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(sessionFrame({ model: "gpt-5.5", totalTokens: 77 }), 100);
+    // A keep-alive frame past the 5-min heartbeat throttle -> heartbeat upsert.
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          session: { totalTokens: 99 },
+          stream: "assistant",
+          data: {},
+        },
+      },
+      100 + 5 * 60 + 1,
+    );
+    const hb = ups.find((u) => u.status === "running" && u.telemetry !== undefined);
+    expect(hb?.telemetry).toMatchObject({ totalTokens: 99 });
+  });
+});
+
+describe("SubAgentObserver — codex round-3 fixes (fast-child backfill + top-level sessionId)", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_r3";
+  const CHILD = "agent:alice:subagent:r3-child";
+
+  it("a spawn result arriving AFTER the child was reaped still backfills the spawn config (cleanup guard)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    // The FAST child finishes off its own frames first -> terminal + reaped.
+    obs.observe(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          state: "final",
+          message: { content: [{ type: "text", text: "FAST_OK" }] },
+        },
+      },
+      100,
+    );
+    expect(obs.size).toBe(0); // reaped
+    // The straggler spawn result carries cleanup:"delete" -> must STILL reach the row.
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          stream: "tool",
+          data: {
+            name: "sessions_spawn",
+            phase: "start",
+            toolCallId: "tc-r3",
+            args: { cleanup: "delete" },
+          },
+        },
+      },
+      101,
+    );
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          stream: "tool",
+          data: {
+            name: "sessions_spawn",
+            phase: "result",
+            toolCallId: "tc-r3",
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ status: "accepted", childSessionKey: CHILD }),
+                },
+              ],
+            },
+          },
+        },
+      },
+      102,
+    );
+    expect(ups).toHaveLength(1);
+    expect(ups[0]?.sessionMeta).toMatchObject({ cleanup: "delete" });
+    // The backfill re-asserts the child's TRUE final status — never "running"
+    // (that would leak Session.registeredChildren as a phantom registration) and
+    // never a guessed terminal (an errored child must not flip to done).
+    expect(ups[0]?.status).toBe("done");
+    // And the resurrection guard held: nothing was re-registered.
+    expect(obs.size).toBe(0);
+  });
+
+  it("captures the TOP-LEVEL payload.sessionId (lifecycle frames without a session object)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          sessionId: "top-level-sess-7",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      100,
+    );
+    expect(ups.find((u) => u.sessionMeta)?.sessionMeta).toMatchObject({
+      sessionId: "top-level-sess-7",
+    });
   });
 });

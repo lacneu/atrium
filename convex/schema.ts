@@ -953,6 +953,28 @@ export default defineSchema({
         // provider SEAM so a Hermes mapping can slot in later; the field NAMES above are
         // OpenClaw-specific, captured by the OpenClaw observer.
         gatewayKind: v.optional(v.string()),
+        // Extended spawn args (label / cwd / target agentId / lightContext) + child
+        // session statics (sessionId = the gateway `/subagents log` join key,
+        // spawnedWorkspaceDir = the child's effective working directory). Same
+        // sensitivity class as taskName (config; sanitized/capped bridge-side).
+        label: v.optional(v.string()),
+        cwd: v.optional(v.string()),
+        agentId: v.optional(v.string()),
+        lightContext: v.optional(v.boolean()),
+        sessionId: v.optional(v.string()),
+        spawnedWorkspaceDir: v.optional(v.string()),
+      }),
+    ),
+    // Run TELEMETRY (runtime / tokens / estimated cost) — content-free numbers. The
+    // bridge attaches the last-known values ONLY to upserts it already writes
+    // (heartbeat + terminal), so observation never becomes a write-per-tick; once
+    // terminal the final numbers stand (no backwards rolls from straggler frames).
+    telemetry: v.optional(
+      v.object({
+        runtimeMs: v.optional(v.number()),
+        totalTokens: v.optional(v.number()),
+        estimatedCostUsd: v.optional(v.number()),
+        startedAt: v.optional(v.number()),
       }),
     ),
     createdAt: v.number(),

@@ -52,6 +52,13 @@ const SESSION_META = v.object({
   cleanup: v.optional(v.string()),
   sandbox: v.optional(v.string()),
   gatewayKind: v.optional(v.string()),
+  // Extended spawn args + child session statics (see bridge SubAgentSessionMeta).
+  label: v.optional(v.string()),
+  cwd: v.optional(v.string()),
+  agentId: v.optional(v.string()),
+  lightContext: v.optional(v.boolean()),
+  sessionId: v.optional(v.string()),
+  spawnedWorkspaceDir: v.optional(v.string()),
 });
 export type SubAgentSessionMeta = {
   model?: string;
@@ -67,6 +74,27 @@ export type SubAgentSessionMeta = {
   cleanup?: string;
   sandbox?: string;
   gatewayKind?: string;
+  label?: string;
+  cwd?: string;
+  agentId?: string;
+  lightContext?: boolean;
+  sessionId?: string;
+  spawnedWorkspaceDir?: string;
+};
+
+// Run telemetry (runtime/tokens/cost) — content-free numbers, written by the bridge
+// only on already-scheduled upserts (heartbeat/terminal), never per-tick.
+const TELEMETRY = v.object({
+  runtimeMs: v.optional(v.number()),
+  totalTokens: v.optional(v.number()),
+  estimatedCostUsd: v.optional(v.number()),
+  startedAt: v.optional(v.number()),
+});
+export type SubAgentTelemetry = {
+  runtimeMs?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  startedAt?: number;
 };
 
 /** Terminal child lifecycle states (no longer holding the chat — see isChatBusy). */
@@ -155,6 +183,7 @@ export const upsertSubAgent = internalMutation({
       ),
     ),
     sessionMeta: v.optional(SESSION_META),
+    telemetry: v.optional(TELEMETRY),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -180,6 +209,7 @@ export const upsertSubAgent = internalMutation({
         errorMessage: args.errorMessage,
         tools: args.tools,
         sessionMeta: args.sessionMeta,
+        telemetry: args.telemetry,
         createdAt: now,
         updatedAt: now,
       });
@@ -202,6 +232,7 @@ export const upsertSubAgent = internalMutation({
       taskName?: string;
       tools?: SubAgentTool[];
       sessionMeta?: SubAgentSessionMeta;
+      telemetry?: SubAgentTelemetry;
       parentMessageId?: typeof args.parentMessageId;
       updatedAt: number;
     } = { updatedAt: now };
@@ -223,6 +254,16 @@ export const upsertSubAgent = internalMutation({
     // real change, so this is a rare write).
     if (args.sessionMeta !== undefined) {
       patch.sessionMeta = { ...existing.sessionMeta, ...args.sessionMeta };
+    }
+    // Telemetry: last-write-wins while running; once terminal the FINAL numbers stand
+    // (a stale straggler heartbeat must not roll runtime/tokens backwards) — unless
+    // the terminal write carried none, then a late value is better than nothing.
+    if (args.telemetry !== undefined) {
+      if (!terminal) {
+        patch.telemetry = { ...existing.telemetry, ...args.telemetry };
+      } else if (existing.telemetry === undefined) {
+        patch.telemetry = args.telemetry;
+      }
     }
     // Backfill identity fields only if not already set (registration carries them;
     // later child frames don't, so don't clobber).

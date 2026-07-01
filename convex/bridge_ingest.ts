@@ -239,6 +239,20 @@ type IngestOp =
         cleanup?: string;
         sandbox?: string;
         gatewayKind?: string;
+        label?: string;
+        cwd?: string;
+        agentId?: string;
+        lightContext?: boolean;
+        sessionId?: string;
+        spawnedWorkspaceDir?: string;
+      };
+      // Last-known run telemetry (runtime/tokens/cost) — attached by the bridge only
+      // to already-scheduled upserts (heartbeat/terminal). Content-free numbers.
+      telemetry?: {
+        runtimeMs?: number;
+        totalTokens?: number;
+        estimatedCostUsd?: number;
+        startedAt?: number;
       };
     }
   // Per-tool DETAIL (args + result) for a sub-agent's call, keyed by
@@ -579,6 +593,7 @@ export const ingest = httpAction(async (ctx, request) => {
         errorMessage: body.errorMessage,
         tools: body.tools,
         sessionMeta: body.sessionMeta,
+        telemetry: body.telemetry,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
