@@ -8,6 +8,45 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.17.0] — Sub-agent panel, live interaction, and OpenClaw 2026.6.11
+
+A sub-agent-focused release: a dedicated panel to watch — and talk to — the sub-agents an agent
+spawns, plus broader gateway support and queue/UI polish. No breaking changes. Convex changes are
+additive (sub-agent tables and a per-message dispatch-status projection). Deploy: Convex + frontend +
+bridge.
+
+- **Watch a sub-agent's full run in a dedicated side panel.** Opening a sub-agent's in-thread card now
+  slides out a resizable right-column panel showing everything about that sub-agent's run: its live
+  status, its static configuration (model, provider, reasoning, runtime, mode, sandbox, role, depth,
+  gateway), every tool it calls with a running/done count, and its final result rendered as markdown —
+  the same fidelity as a main-agent turn. The conversation auto-scrolls to keep the exchange in view.
+- **Interact with a running sub-agent.** From the panel you can send a follow-up to a sub-agent while
+  it works — including file attachments — using the same composer ergonomics as the main chat (drop
+  files, toggle the tool detail).
+- **Export a sub-agent's session.** A one-click download produces a self-contained Markdown of the
+  sub-agent's task, configuration, each tool call (input and output), and its result — your own data,
+  ready to share or archive.
+- **A successful sub-agent spawn no longer reads "error".** OpenClaw flags a *successful*
+  `sessions_spawn` result as an error even though the child was created; the tool card now recognizes
+  the created child and reads "completed", so a working delegation is no longer shown as a failure.
+- **A message you send while the agent is busy is clearly marked "waiting".** Queuing a follow-up
+  mid-turn now shows an "En attente" badge on that message instead of a misleading "processing…"
+  placeholder, so it is obvious the message is parked behind the running turn (and dispatches
+  automatically when that turn ends).
+- **OpenClaw 2026.6.11 is validated and supported.** The compatibility manifest recognizes 2026.6.11
+  as a validated gateway version. Note for self-hosters: 2026.6.11 drops the bundled `searxng`
+  web-search provider, so a gateway configured for it must install/enable an alternative provider or
+  disable web search, otherwise the gateway refuses to start.
+- **Returning to the app reopens your last conversation.** Exiting Settings, following the home link,
+  or reloading "/" now reopens the chat you were last in (validated against your chat list) instead of
+  the empty "select a conversation" pane.
+- **The chat list shows placeholder rows while it loads** instead of flashing an empty sidebar, so the
+  workspace takes shape immediately on boot.
+
+Deploy note: This release touches Convex (new `subAgents` and `subAgentInteractions` tables plus a
+per-message dispatch-status projection — additive), the frontend image, and the bridge image. Deploy
+the Convex functions (`npx convex deploy`), then the frontend and bridge images.
+
 ## [0.16.0] — Sub-agent reliability, OTLP trace export, and chart authoring
 
 A large release: multi-agent reliability, a new traces exporter, broader gateway support, and chart
@@ -69,6 +108,17 @@ channel rename) with a required deploy ORDER (see the deploy note). Convex chang
   drifts behind them and pulses too. Everything is tinted by the active chart's color and paced by its
   `bpm` token — subtle in light,
   emissive in dark, and fully disabled under `prefers-reduced-motion`.
+- **Returning to the chat reopens your last conversation.** Leaving Settings (or any return to the chat
+  root -- the brand/home link, a reload to "/") now reopens the conversation you were on instead of the
+  empty "select a conversation" pane. The last open chat is remembered per browser and restored only when
+  it still exists for you (a deleted or another identity's chat is ignored).
+- **The app loads progressively.** Instead of a blank loading bar, the interface takes shape at once --
+  the top bar, sidebar, and main area render immediately while the profile loads, and the chat list shows
+  a shimmer placeholder that fills in as it arrives (the persisted sidebar width / theme are reused, so
+  nothing jumps when the data lands). The page feels instant even when data is slower.
+- **The error screen fills the page.** When a page fails and the friendly "Une erreur est survenue" /
+  "Page introuvable" fallback is shown full-page (caught above the app chrome), it now covers the whole
+  viewport instead of leaving a blank white band below it.
 - *Deploy — ORDER MATTERS (the channel rename is cross-repo): **(1)** deploy the Hindsight plugin first
   (it accepts both `atrium` and `webchat`); **(2)** `npx convex deploy` (additive only: a table +
   indexes, the content-free routing trace, the chart `bpm` field) and rebuild the frontend, bridge, AND

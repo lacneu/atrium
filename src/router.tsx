@@ -60,9 +60,10 @@ import {
 } from "lucide-react";
 import { api } from "./chat/convexApi";
 import type { Id } from "./chat/convexApi";
+import { getLastChat, rememberChat } from "./lib/lastChat";
 import type { ConvexId } from "./chat/convexTypes";
 import { ConvexChat } from "./chat/ConvexChat";
-import { ChatSidebar } from "./chat/ChatSidebar";
+import { ChatSidebar, ChatListSkeleton } from "./chat/ChatSidebar";
 import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
@@ -382,6 +383,56 @@ function SignIn() {
   );
 }
 
+// Immediate app shell shown while the profile (getMe) loads, so the page takes
+// shape AT ONCE instead of a blank loading bar. Reuses the REAL chrome layout
+// classes + the persisted sidebar width/collapsed (useSidebarLayout); the theme is
+// already on <html> from the index.html inline script. When the real chrome mounts
+// the frame does not jump -- only the content (brand, list, chat) fills in.
+function AppShellSkeleton() {
+  const { width, collapsed, isMobile } = useSidebarLayout();
+  return (
+    <div className="oc-shell">
+      <header className="oc-topbar">
+        <div className="oc-topbar__left">
+          <div
+            className="oc-skel"
+            style={{ width: "1.75rem", height: "1.75rem" }}
+          />
+          <div className="oc-skel" style={{ width: "5.5rem", height: "1.1rem" }} />
+        </div>
+        <div className="oc-topbar__search">
+          <div className="oc-skel" style={{ width: "100%", height: "2.25rem" }} />
+        </div>
+        <div className="oc-topbar__actions">
+          <div
+            className="oc-skel"
+            style={{ width: "1.75rem", height: "1.75rem", borderRadius: "999px" }}
+          />
+        </div>
+      </header>
+      <div
+        className={isMobile ? "oc-workspace oc-workspace--mobile" : "oc-workspace"}
+      >
+        {!collapsed && !isMobile ? (
+          <div
+            className="oc-sidebar-col"
+            style={{ width, flex: `0 0 ${width}px` }}
+          >
+            <aside className="oc-sidebar">
+              <div
+                className="oc-skel"
+                style={{ height: "2.25rem", margin: "0.25rem 0.25rem 0" }}
+              />
+              <ChatListSkeleton />
+            </aside>
+          </div>
+        ) : null}
+        <main className="oc-main" />
+      </div>
+    </div>
+  );
+}
+
 // After authentication, provision the profile once (me.bootstrap — the only
 // mutation a pending user may call) and route by role. RoleGate does NOT remount
 // on navigation (only the inner chrome wrapper is keyed), so the impersonation
@@ -432,7 +483,9 @@ function RoleGate() {
     prevUserId.current = me.userId;
   }, [me, navigate]);
 
-  if (me === undefined) return <div className="oc-boot">{m.app_loading()}</div>;
+  // Profile still loading: show the app shell immediately (structure now, data
+  // fills in) instead of a blank loading bar.
+  if (me === undefined) return <AppShellSkeleton />;
 
   const userLabel = me.name || me.email || m.app_account_fallback();
 
@@ -870,6 +923,11 @@ function SettingsParamlessScreen() {
 function ChatScreen() {
   const { chatId } = useParams({ from: "/chat/$chatId" });
   const { m: focusMessageId } = useSearch({ from: "/chat/$chatId" });
+  // Remember this as the last opened chat so returning to "/" (e.g. exiting
+  // Settings) reopens it instead of the empty pane. See ChatHome.
+  useEffect(() => {
+    rememberChat(chatId);
+  }, [chatId]);
   return (
     <ConvexChat
       chatId={chatId as ConvexId<"chats">}
@@ -878,8 +936,34 @@ function ChatScreen() {
   );
 }
 
-// Chat home: no chat selected (the empty pane).
+// Chat home: restore the LAST opened chat if it still exists / is accessible,
+// otherwise the empty pane. Validating the stored id against the user's chat list
+// ignores a deleted chat AND preserves the impersonation "/" safety (a prior
+// identity's chat is not in the new effective identity's list).
 function ChatHome() {
+  const navigate = useNavigate();
+  const lastChatId = getLastChat();
+  const chats = useQuery(api.messages.listChats, {}) as
+    | Array<{ _id: string }>
+    | undefined;
+  const willRestore =
+    lastChatId !== null &&
+    chats !== undefined &&
+    chats.some((c) => c._id === lastChatId);
+  useEffect(() => {
+    if (willRestore && lastChatId) {
+      void navigate({
+        to: "/chat/$chatId",
+        params: { chatId: lastChatId },
+        replace: true,
+      });
+    }
+  }, [willRestore, lastChatId, navigate]);
+  // Avoid flashing the empty pane while we still might restore (list loading, or
+  // a redirect is imminent).
+  if (lastChatId !== null && (chats === undefined || willRestore)) {
+    return <div className="oc-boot">{m.app_loading()}</div>;
+  }
   return <ConvexChat chatId={null} />;
 }
 

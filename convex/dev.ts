@@ -16,6 +16,7 @@ import { generateApiKey, hashKey } from "./lib/apikeys";
 import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
 import { resolveTargetForChat } from "./routing";
+import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { enrichUserAgents } from "./agents";
 import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
@@ -1701,5 +1702,119 @@ export const enrichProbe = query({
         state: g.state,
       })),
     };
+  },
+});
+
+// DEV-only: exercise the 2c sub-agent INTERACTION end-to-end. `sendToSubAgent` needs
+// an authenticated user (requireActive), so the CLI/live-bench can't call it — this
+// inserts the interaction as the chat OWNER + POSTs to the bridge exactly like the
+// real action. The reply is recorded async by the observer (recordInteractionReply).
+export const devPrepareInteraction = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    userText: v.string(),
+  },
+  handler: async (ctx, { chatId, childSessionKey, userText }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const child = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+      .first();
+    if (!child || child.chatId !== chatId) return null;
+    const res = await resolveTargetForChat(ctx, chat, chat.userId);
+    if (!res.target) return null;
+    const target = res.target;
+    // Same tenant guard as testSend: a dev live op NEVER touches a protected tenant.
+    assertDevInstance(target.instanceName);
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+      .first();
+    const someInstances = await ctx.db.query("instances").take(2);
+    const bridgeUrl = resolveBridgeUrlForDispatch(instance, {
+      instanceName: target.instanceName,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+      isSole: someInstances.length <= 1,
+    });
+    const text = userText.trim().slice(0, 8000);
+    const now = Date.now();
+    const interactionId = await ctx.db.insert("subAgentInteractions", {
+      chatId,
+      childSessionKey,
+      userText: text,
+      status: "pending" as const,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return {
+      interactionId: interactionId as string,
+      bridgeUrl: bridgeUrl ?? null,
+      text,
+      routing: {
+        chatId: chatId as string,
+        openclawChatId: chat.openclawChatId ?? null,
+        agentId: target.agentId,
+        canonical: target.canonical,
+        instanceName: target.instanceName,
+      },
+    };
+  },
+});
+
+export const testSubAgentInteraction = action({
+  args: {
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    text: v.string(),
+    // SPIKE (attachments-to-child): inline base64 attachment(s), same shape as the
+    // main dispatch — passed through /subagent-send to the child chat.send.
+    attachments: v.optional(
+      v.array(
+        v.object({
+          type: v.string(),
+          mimeType: v.string(),
+          fileName: v.string(),
+          content: v.string(),
+        }),
+      ),
+    ),
+  },
+  handler: async (
+    ctx,
+    { chatId, childSessionKey, text, attachments },
+  ): Promise<{ ok: boolean; interactionId?: string; reason?: string }> => {
+    const prep = await ctx.runMutation(internal.dev.devPrepareInteraction, {
+      chatId,
+      childSessionKey,
+      userText: text,
+    });
+    if (prep === null) return { ok: false, reason: "prepare_failed" };
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    if (!prep.bridgeUrl || !sharedSecret) {
+      return { ok: false, reason: "not_configured" };
+    }
+    const httpRes = await fetch(
+      `${prep.bridgeUrl.replace(/\/$/, "")}/subagent-send`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: sharedSecret,
+        },
+        body: JSON.stringify({
+          ...prep.routing,
+          childSessionKey,
+          interactionId: prep.interactionId,
+          message: prep.text,
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        }),
+      },
+    );
+    return httpRes.ok
+      ? { ok: true, interactionId: prep.interactionId }
+      : { ok: false, reason: `http_${httpRes.status}` };
   },
 });

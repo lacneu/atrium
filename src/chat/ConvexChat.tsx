@@ -71,6 +71,7 @@ import {
   Server,
   LoaderCircle,
   Lock,
+  Clock,
   Paperclip,
   Image as ImageIcon,
   Check,
@@ -101,8 +102,9 @@ import {
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
+import { QueuedTurnContext } from "./queuedTurnContext";
 import { ToolActivity } from "./ToolActivity";
-import { MessageSubAgents, SubAgentFailureBeacon } from "./SubAgentActivity";
+import { MessageSubAgents } from "./SubAgentActivity";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { messageHasText } from "./runStatusView";
 import type { ToolActivityPart } from "./toolActivityView";
@@ -117,10 +119,15 @@ import {
   SourcesPanelContext,
   type SourcesPanelApi,
 } from "./SourcesActivity";
+import {
+  SubAgentPanelContent,
+  SubAgentPanelContext,
+  type SubAgentPanelApi,
+} from "./SubAgentPanel";
 import { useResizableWidth, useIsMobile } from "@/lib/useSidebarLayout";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
-import { MarkdownText } from "./MarkdownText";
+import { MarkdownText, AgentMarkdown } from "./MarkdownText";
 import { FeedbackButton } from "./FeedbackDialog";
 import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
@@ -181,6 +188,7 @@ const QueueSendContext = createContext<
   ((text: string) => Promise<boolean>) | null
 >(null);
 
+
 // MULTI-AGENT per-turn router context: the routing surface from the runtime hook
 // (the entitled agent pool + selection + per-message attribution). Null when no
 // chat is mounted. Consumed by the composer's agent selector and the per-message
@@ -222,7 +230,8 @@ function BrandAvatar({ className }: { className: string }) {
 }
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
-  const { runtime, turnGate, queueSend, routing } = useConvexChatRuntime({
+  const { runtime, turnGate, queueSend, routing, lastUserTurnQueued } =
+    useConvexChatRuntime({
     chatId,
   });
   // (The delivery-latency recorder now runs INSIDE useConvexChatRuntime, where it can see
@@ -312,24 +321,56 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   useEffect(() => {
     setActiveSourcesMessageId(null);
   }, [chatId]);
+  const { width: subAgentWidth, startResize: startSubAgentResize } =
+    useResizableWidth({
+      storageKey: "oc.subagent.width",
+      defaultWidth: 460,
+      min: 320,
+      max: 720,
+      edge: "right",
+    });
+  const [activeSubAgentKey, setActiveSubAgentKey] = useState<string | null>(null);
+  useEffect(() => {
+    setActiveSubAgentKey(null);
+  }, [chatId]);
+  // Sources + the sub-agent secondary-conversation panel SHARE one right column
+  // (mutually exclusive): opening one closes the other, so there's never a 4th
+  // column. Each keeps its own resizable width.
   const sourcesApi = useMemo<SourcesPanelApi>(
     () => ({
       activeMessageId: activeSourcesMessageId,
-      openFor: (id) => setActiveSourcesMessageId(id),
+      openFor: (id) => {
+        setActiveSourcesMessageId(id);
+        setActiveSubAgentKey(null);
+      },
       close: () => setActiveSourcesMessageId(null),
     }),
     [activeSourcesMessageId],
   );
+  const subAgentApi = useMemo<SubAgentPanelApi>(
+    () => ({
+      activeChildKey: activeSubAgentKey,
+      openFor: (key) => {
+        setActiveSubAgentKey(key);
+        setActiveSourcesMessageId(null);
+      },
+      close: () => setActiveSubAgentKey(null),
+    }),
+    [activeSubAgentKey],
+  );
   const sourcesOpen = activeSourcesMessageId !== null;
+  const subAgentOpen = activeSubAgentKey !== null;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
+      <QueuedTurnContext.Provider value={lastUserTurnQueued}>
       <ChatRoutingContext.Provider value={routing}>
       <UiPrefsContext.Provider value={ui}>
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
+      <SubAgentPanelContext.Provider value={subAgentApi}>
         <div className="oc-chat">
           <div className="oc-chat__convo">
             {chatId ? (
@@ -351,23 +392,37 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           </div>
           {/* DESKTOP: integrated, resizable Sources column (conversation stays
               live on the left). MOBILE: overlay drawer below. */}
-          {sourcesOpen && !isMobile ? (
+          {(sourcesOpen || subAgentOpen) && !isMobile ? (
             <>
               <div
                 className="oc-sources-resizer"
-                onPointerDown={startSourcesResize}
+                onPointerDown={
+                  subAgentOpen ? startSubAgentResize : startSourcesResize
+                }
                 role="separator"
                 aria-orientation="vertical"
                 aria-label={m.sources_panel_resize()}
               />
               <aside
                 className="oc-sources-col"
-                style={{ width: sourcesWidth, flex: `0 0 ${sourcesWidth}px` }}
+                style={{
+                  width: subAgentOpen ? subAgentWidth : sourcesWidth,
+                  flex: `0 0 ${subAgentOpen ? subAgentWidth : sourcesWidth}px`,
+                }}
               >
-                <SourcesPanelContent
-                  messageId={activeSourcesMessageId as string}
-                  onClose={sourcesApi.close}
-                />
+                {subAgentOpen ? (
+                  <SubAgentPanelContent
+                    chatId={chatId as string}
+                    childKey={activeSubAgentKey as string}
+                    onClose={subAgentApi.close}
+                    parentAgentLabel={assistantDisplayName(assistantIdentity)}
+                  />
+                ) : (
+                  <SourcesPanelContent
+                    messageId={activeSourcesMessageId as string}
+                    onClose={sourcesApi.close}
+                  />
+                )}
               </aside>
             </>
           ) : null}
@@ -382,10 +437,24 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
+        {subAgentOpen && isMobile ? (
+          <Sheet open onOpenChange={(o) => { if (!o) subAgentApi.close(); }}>
+            <SheetContent side="right" className="oc-sources-panel-sheet">
+              <SubAgentPanelContent
+                chatId={chatId as string}
+                childKey={activeSubAgentKey as string}
+                onClose={subAgentApi.close}
+                parentAgentLabel={assistantDisplayName(assistantIdentity)}
+              />
+            </SheetContent>
+          </Sheet>
+        ) : null}
+      </SubAgentPanelContext.Provider>
       </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>
       </UiPrefsContext.Provider>
       </ChatRoutingContext.Provider>
+      </QueuedTurnContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
     </AssistantRuntimeProvider>
@@ -528,13 +597,6 @@ function ChatThread({
       ) : unavailable ? (
         <BridgeUnavailableBanner />
       ) : null}
-      {/* Persistent sub-agent FAILURE beacon: a compact chip that appears ONLY
-          when a sub-agent failed somewhere in the chat (Bug C) and scrolls the
-          failed card into view — or reveals a failure-only fallback list when the
-          spawning turn is scrolled outside the loaded window. The running/done
-          cards live IN CONTEXT under their spawning message (MessageSubAgents),
-          not in a chat-level pile. Self-gating; renders nothing without a failure. */}
-      <SubAgentFailureBeacon chatId={chatId} />
       <Composer
         showTools={showTools}
         onToggleTools={onToggleTools}
@@ -1298,10 +1360,20 @@ function UserMessage() {
   // instead of the action bar so the user sees their message is registered +
   // being sent (esp. on a slow/overloaded/reconnecting backend).
   const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
+  // Mid-turn QUEUE: this user turn was sent while the chat was busy, so it is parked
+  // behind the in-flight turn (its outbox row is `queued`). Show it as WAITING so the
+  // interface makes the hold visible; it clears reactively when the drainer dispatches.
+  const queued = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { queued?: boolean } | undefined)?.queued ===
+      true,
+  );
   const messageId = useMessage((msg) => msg.id);
   return (
     <MessagePrimitive.Root
-      className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}`}
+      className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}${
+        queued ? " is-queued" : ""
+      }`}
       data-message-id={messageId}
     >
       <div className="oc-msg__col oc-msg__col--user">
@@ -1316,6 +1388,11 @@ function UserMessage() {
           <span className="oc-msg__sending" role="status">
             <span className="oc-msg__sending-spin" aria-hidden />
             {m.chat_message_sending()}
+          </span>
+        ) : queued ? (
+          <span className="oc-msg__queued" role="status">
+            <Clock size={12} aria-hidden />
+            {m.chat_message_queued()}
           </span>
         ) : (
           <ActionBarPrimitive.Root
@@ -1388,10 +1465,13 @@ const EMPTY_TOOL_PARTS: ToolActivityPart[] = [];
 // tested `assistantEmptyState`; this component supplies it the message facts + the
 // chat's sub-agent rows and renders the result.
 //
-// COEXISTS with the in-context sub-agent card (MessageSubAgents), which now owns
-// the FAILED case (and the running detail in the analysis view) — so this only
-// surfaces the WAITING note in the clean view (where the running card is hidden)
-// and the GENERIC "acted but answered nothing" note, never duplicating a card.
+// COEXISTS with the in-context sub-agent card (MessageSubAgents), which now lives
+// ONLY in the analysis view's meta group. So in the ANALYSIS view this defers the
+// running/failed detail to the card (returns null to avoid doubling it); in the
+// CLEAN view (card hidden) it surfaces the WAITING and FAILED notes ITSELF so a
+// delegated turn is never a blank bubble. The DONE result is the turn's answer and
+// renders as markdown ALWAYS (both views); the GENERIC "acted but answered nothing"
+// note covers the rest.
 //
 // Returns null for a normal turn (there IS an answer) or an in-flight / errored
 // turn (the thinking indicator / RunStatus error card already cover those), so it
@@ -1427,18 +1507,42 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     api.subAgents.listSubAgents,
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
   ) as SubAgentRow[] | undefined;
+  // The Convex message _id (convertMessage surfaces it as custom.messageId) = the
+  // bridge's `parentMessageId` → the robust, message-precise correlation key.
+  const messageId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
 
   const state = assistantEmptyState(
     { status, hasText, hasMedia },
     toolParts,
     subAgents ?? [],
+    messageId,
   );
   if (state.kind === "none") return null;
 
-  // FAILED is owned by the in-context sub-agent CARD (MessageSubAgents renders it
-  // in BOTH views) — surfacing the failed note here too would double the
-  // destructive box and repeat the reason. Defer to the card.
-  if (state.kind === "failed") return null;
+  if (state.kind === "failed") {
+    // In the ANALYSIS view the in-context sub-agent CARD owns the failure (its
+    // destructive box + reason) — defer, else we'd double it. In the CLEAN view the
+    // card is hidden (it now lives in the Outils-gated meta group), so the bubble
+    // would otherwise be BLANK on a failed delegation — render the failure prose so
+    // it stays un-missable (the persistent composer beacon is the chat-level echo).
+    if (show) return null;
+    return (
+      <div className="oc-empty-answer oc-empty-answer--failed" role="status">
+        <Bot size={15} className="oc-empty-answer__icon" aria-hidden />
+        <span className="oc-empty-answer__text">
+          {state.taskName
+            ? m.assistant_empty_failed_named({
+                task: state.taskName,
+                reason: state.reason,
+              })
+            : m.assistant_empty_failed({ reason: state.reason })}
+        </span>
+      </div>
+    );
+  }
 
   if (state.kind === "waiting") {
     // The running CARD already shows this turn's delegation in the analysis view;
@@ -1455,6 +1559,13 @@ function AssistantEmptyState({ show }: { show: boolean }) {
         </span>
       </div>
     );
+  }
+
+  if (state.kind === "done") {
+    // The sub-agent's result IS this turn's answer — render it as MARKDOWN,
+    // IDENTICAL to a normal reply (no special block). The "a sub-agent produced
+    // this" detail lives in the gated in-thread card, not here.
+    return state.resultText ? <AgentMarkdown text={state.resultText} /> : null;
   }
 
   return (
@@ -1476,6 +1587,16 @@ function AssistantMessage() {
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // A QUEUED user turn's synthetic upcoming-message placeholder (assistant-ui shows it
+  // only because ANOTHER turn is streaming; it carries no status of its own) is
+  // redundant with the queued USER message's "En attente" badge. `status===undefined`
+  // + last user turn queued identifies exactly that placeholder — suppress the whole
+  // phantom "Atrium · En attente" row (see the early return below, AFTER all hooks) so
+  // the queue shows ONE indicator. A real streaming turn (status defined) is untouched.
+  const placeholderStatus = useMessage(
+    (m) => (m.metadata?.custom as { status?: string } | undefined)?.status,
+  );
+  const lastUserTurnQueued = useContext(QueuedTurnContext);
   // MULTI-AGENT: in a perTurnRouting chat each reply names the agent that answered
   // it (per-message, inheriting the user turn's agent — see perTurnAgent.ts). A
   // single-agent chat keeps the identity name EXACTLY as before.
@@ -1505,6 +1626,9 @@ function AssistantMessage() {
       agentEmoji: d?.emoji ?? null,
     };
   }, [perMsgAgent, identity, pool]);
+  // Suppress the queued synthetic placeholder entirely (its "En attente" lives on the
+  // user message badge). Placed AFTER all hooks — Rules of Hooks.
+  if (placeholderStatus === undefined && lastUserTurnQueued) return null;
   return (
     <MessagePrimitive.Root
       className="oc-msg oc-msg--assistant"
@@ -1527,18 +1651,22 @@ function AssistantMessage() {
           )}
         </div>
         <div className="oc-msg__body">
-          {/* "Outils" ON = the ANALYSIS view: the grouped tool activity (summary +
-              click-to-expand ToolCards) AND the Sources block (what memory/document
-              plugins fed the LLM this turn) are shown so the user can drill into what
-              the gateway did. OFF = the CLEAN, content-focused view: both hidden; the
-              in-progress signal is carried by RunStatus ("… traite votre message")
-              below, so nothing about an active treatment is lost. Tools + Sources are
-              grouped ABOVE the body — the meta "what informed this turn" sits together
-              at the top, so everything BELOW is purely the agent's returned message
-              (text + delivered files), un-mixed. Above-the-body also keeps streamed
-              text in view of the bottom-following auto-scroll. */}
+          {/* "Outils" ON = the ANALYSIS view: ONE grouped meta block above the answer
+              (a single subtly-ruled container so it reads as this turn's metadata, as
+              one block) holding — in order — the sub-agent monitor (the child run(s)
+              this turn delegated, opening the secondary-conversation panel), the tool
+              activity (summary + click-to-expand ToolCards), and the Sources block
+              (what memory/document plugins fed the LLM). All three share the same
+              ActivityRow chrome (left icon+label / right status+chevron). OFF = the
+              CLEAN, content-focused view: the block is hidden; the in-progress signal
+              is carried by RunStatus below and any FAILED child stays reachable via
+              the persistent SubAgentFailureBeacon near the composer, so nothing about
+              an active treatment is lost. Everything BELOW the block is purely the
+              agent's returned message (text + delivered files), un-mixed; above-the-
+              body also keeps streamed text in view of the bottom-following scroll. */}
           {ui.showTools ? (
             <div className="oc-msg__meta">
+              <MessageSubAgents />
               <ToolActivity />
               <SourcesActivity />
             </div>
@@ -1555,11 +1683,6 @@ function AssistantMessage() {
               defer to the running card in the analysis view (no duplicate). Inert
               on a normal or in-flight turn (renders null). */}
           <AssistantEmptyState show={ui.showTools} />
-          {/* In-context sub-agent monitor: the child run(s) THIS turn spawned,
-              anchored under the turn that delegated them (analysis view = all
-              states; clean view = failures only). Inert on a turn that spawned
-              nothing. */}
-          <MessageSubAgents show={ui.showTools} />
           {/* RunStatus reads the assistant identity for its long-wait label; scope
               it to the per-message routed agent so the reassurance names the right
               one (the override equals the chat identity on a single-agent chat). */}
@@ -1907,12 +2030,6 @@ function Composer({
     hasRunningSubAgent: subAgentBusy,
   });
   const queued = queueMode.mode === "queue";
-  // The visible hold reason: a running sub-agent gets its OWN label so the user
-  // knows WHY the send is parked (distinct from the in-flight-turn case).
-  const queueHint =
-    queueMode.mode === "queue" && queueMode.reason === "subagent"
-      ? m.chat_queue_hint_subagent()
-      : m.chat_response_in_progress();
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1963,20 +2080,12 @@ function Composer({
         data-gramm_editor="false"
         data-enable-grammarly="false"
       />
-      {/* Held-send hint: the chat is busy (in-flight turn OR a running sub-agent),
-          so a submit is QUEUED, not lost. Making the hold visible — with the reason
-          — is the whole point: a parked message the user can't see is worse than
-          the blank-bubble bug. Clears the moment the chat frees up. */}
-      {queued ? (
-        <div className="oc-composer__queuehint" role="status">
-          <LoaderCircle
-            size={13}
-            className="oc-composer__queuehint-spin"
-            aria-hidden
-          />
-          <span>{queueHint}</span>
-        </div>
-      ) : null}
+      {/* No in-composer status. Anything tied to an AI response — processing,
+          held-send, sub-agents — is anchored to THAT response in the thread (the
+          run status + sub-agent cards), never accumulated in the neutral composer
+          (a response with sub-agents, then a plain one, then another with
+          sub-agents must each carry their own context where they belong). The
+          held-send LOGIC stays (Enter queues while busy); only its hint is gone. */}
       <div className="oc-composer__bar">
         <div className="oc-composer__group">
           {/* The QUEUE is TEXT-ONLY: while the chat is busy (in-flight turn OR a
@@ -1988,7 +2097,6 @@ function Composer({
             className="oc-composer__icon"
             aria-label={m.chat_attach_file()}
             disabled={queued || unavailable}
-            title={queued ? queueHint : undefined}
           >
             <Plus size={18} aria-hidden />
           </ComposerPrimitive.AddAttachment>

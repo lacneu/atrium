@@ -115,6 +115,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // instant echo carries the text (the primary case). Empty is fine — the
         // converter renders the text bubble immediately.
         parts: [] as (typeof base)[number]["parts"],
+        // No outbox row yet at echo time (the mutation creates it on commit); the real
+        // message that replaces this echo carries the queued/pending/sent status.
+        outbox: null,
       } satisfies (typeof base)[number];
       localStore.setQuery(api.messages.listByChat, key, [...base, optimistic]);
     },
@@ -457,6 +460,20 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // the gap (see runStatusView's `undefined` case).
   const isRunning = pendingSince !== null || anyStreaming;
 
+  // The LAST user turn is parked in the mid-turn QUEUE (its outbox is `queued`),
+  // parked BEHIND the in-flight turn. assistant-ui still shows a synthetic
+  // upcoming-message placeholder after it (isRunning is true because the OTHER turn
+  // streams) — misleadingly "processing". RunStatus reads this to label that
+  // placeholder "En attente" instead. Only the LAST user turn can be the queued one
+  // the placeholder follows.
+  let lastUserTurnQueued = false;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].role === "user") {
+      lastUserTurnQueued = list[i].outbox?.status === "queued";
+      break;
+    }
+  }
+
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {
     return {
       messages: list,
@@ -602,6 +619,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     turnGate,
     queueSend,
     routing,
+    lastUserTurnQueued,
   };
 }
 

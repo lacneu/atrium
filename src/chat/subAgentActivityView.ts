@@ -16,14 +16,49 @@ export type SubAgentStatus = "running" | "done" | "error" | "aborted";
 /** One sub-agent observation, as listSubAgents returns it. Kept structural (a
  *  loose superset of the Convex doc) so the pure helpers stay independent of the
  *  generated types and are trivially testable with plain fixtures. */
+/** A tool the CHILD sub-agent called, on the always-loaded SUMMARY: name + lifecycle
+ *  status + the toolCallId join key only. The args/result DETAIL lives in its own
+ *  table (subAgentToolParts), correlated to this summary by toolCallId in the panel.
+ *  Mirrors the schema's `subAgents.tools` element. */
+export type SubAgentToolRow = {
+  name: string;
+  status: "running" | "done";
+  toolCallId?: string;
+};
+
+/** The child's STATIC session config (model / reasoning / speed / scope) — CONFIG,
+ *  not content. Drives the panel session bar + the Advanced popover. */
+export type SubAgentSessionMeta = {
+  model?: string;
+  modelProvider?: string;
+  thinkingLevel?: string;
+  fastMode?: boolean;
+  controlScope?: string;
+  subagentRole?: string;
+  spawnDepth?: number;
+  /** Spawn-time config (present only when the spawn set it) + the source gateway kind
+   *  (the provider seam). `context: "fork"` = the parent transcript was branched in. */
+  context?: string;
+  runtime?: string;
+  mode?: string;
+  cleanup?: string;
+  sandbox?: string;
+  gatewayKind?: string;
+};
+
 export type SubAgentRow = {
   _id: string;
+  /** The assistant message that spawned this child (the bridge tags it at
+   *  registration). The ROBUST correlation key — message-precise, no toolPart parse. */
+  parentMessageId?: string;
   childSessionKey: string;
   taskName?: string;
   status: SubAgentStatus;
   resultText?: string;
   phase?: string;
   errorMessage?: string;
+  tools?: ReadonlyArray<SubAgentToolRow>;
+  sessionMeta?: SubAgentSessionMeta;
   createdAt: number;
   updatedAt: number;
 };
@@ -38,6 +73,10 @@ export type SubAgentTone = "running" | "done" | "failed";
  *  a sub-agent that failed/hung with no way to see it). */
 export type SubAgentCardView = {
   id: string;
+  /** The child's session key — the panel open/correlation key. */
+  childSessionKey: string;
+  /** The spawn task name (clean) when known — the card's subtitle. */
+  taskName?: string;
   label: string;
   status: SubAgentStatus;
   tone: SubAgentTone;
@@ -45,11 +84,24 @@ export type SubAgentCardView = {
   phase?: string;
   errorMessage?: string;
   resultText?: string;
+  /** The tools the child used (name + status + the toolCallId join key) — the
+   *  AUTHORITATIVE summary list (its length is the tool count). The panel renders
+   *  one card per entry and looks up the args/result DETAIL by toolCallId, so the
+   *  card count can never disagree with the count. Absent when the child called none. */
+  tools?: ReadonlyArray<{
+    name: string;
+    status: "running" | "done";
+    toolCallId?: string;
+  }>;
+  /** The child's static session config — model / reasoning / speed / scope (the
+   *  panel session bar + Advanced popover). Absent until the first session frame. */
+  sessionMeta?: SubAgentSessionMeta;
 };
 
 export type SubAgentActivityView = {
   cards: SubAgentCardView[];
   total: number;
+  done: number;
   running: number;
   failed: number;
 };
@@ -107,6 +159,8 @@ function toCard(row: SubAgentRow): SubAgentCardView {
   const tone = statusTone(row.status);
   return {
     id: row._id,
+    childSessionKey: row.childSessionKey,
+    taskName: row.taskName?.trim() || undefined,
     label: subAgentLabel(row),
     status: row.status,
     tone,
@@ -115,7 +169,26 @@ function toCard(row: SubAgentRow): SubAgentCardView {
     phase: row.status === "running" ? row.phase : undefined,
     errorMessage: row.errorMessage,
     resultText: row.resultText,
+    // Name + status only (the row never carries args/results — SOC2).
+    tools: row.tools?.map((t) => ({
+      name: t.name,
+      status: t.status,
+      toolCallId: t.toolCallId,
+    })),
+    sessionMeta: row.sessionMeta,
   };
+}
+
+/**
+ * Compact progress over a child's tools: total + how many have completed. Pure so
+ * the "N tools, M done" summary line is unit-tested without a DOM harness.
+ */
+export function subAgentToolsProgress(
+  tools: ReadonlyArray<{ status: "running" | "done" }> | undefined,
+): { total: number; done: number; running: number } {
+  const list = tools ?? [];
+  const done = list.filter((t) => t.status === "done").length;
+  return { total: list.length, done, running: list.length - done };
 }
 
 /**
@@ -132,101 +205,59 @@ export function buildSubAgentActivityView(
   return {
     cards,
     total: cards.length,
+    done: cards.filter((c) => c.tone === "done").length,
     running: cards.filter((c) => c.tone === "running").length,
     failed: cards.filter((c) => c.tone === "failed").length,
   };
 }
 
+/** One badge in the multi-sub-agent PROGRESS summary header: a tone + its count. */
+export type SubAgentProgressBadge = { tone: SubAgentTone; count: number };
+
+/**
+ * The progress badges for the summary header shown ABOVE several sub-agent cards
+ * (the user's "which already returned / how many still running" ask): one badge
+ * per tone that has at least one sub-agent, in a STABLE order (done, running,
+ * failed) so the header never reorders as states settle. Returns EMPTY for a
+ * single sub-agent — its own card already carries the status, so a summary would
+ * be redundant. Pure so the order + the zero-suppression are unit tested.
+ */
+export function subAgentProgressBadges(
+  view: SubAgentActivityView,
+): SubAgentProgressBadge[] {
+  if (view.total <= 1) return [];
+  const counts: Record<SubAgentTone, number> = {
+    done: view.done,
+    running: view.running,
+    failed: view.failed,
+  };
+  const order: SubAgentTone[] = ["done", "running", "failed"];
+  return order
+    .filter((tone) => counts[tone] > 0)
+    .map((tone) => ({ tone, count: counts[tone] }));
+}
+
 /**
  * The sub-agent rows a SINGLE assistant turn spawned, for anchoring the cards
  * UNDER that turn (not in a chat-level pile). Pure ownership join: keep only the
- * rows whose `childSessionKey` is in `keys` (the keys the turn's `sessions_spawn`
- * output carried — see assistantEmptyState.extractSpawnedChildKeys). An empty
- * `keys` (the turn spawned nothing, or its spawn output was elided) yields no
- * rows: the turn anchors no card, and the chat-level failure beacon stays the
- * safety net for an elided / out-of-window failure.
+ * rows for ONE assistant turn. PRIMARY join = `parentMessageId === messageId` (the
+ * bridge tags every child with its spawning message — robust, no parse). FALLBACK =
+ * `childSessionKey ∈ keys` (the keys the turn's `sessions_spawn` output carried),
+ * which still covers any row written before parentMessageId tagging. With neither a
+ * messageId match nor a key match a turn anchors no card, and the chat-level failure
+ * beacon stays the safety net for an elided / out-of-window failure.
  */
 export function subAgentRowsForMessage(
   rows: readonly SubAgentRow[],
   keys: readonly string[],
+  messageId?: string,
 ): SubAgentRow[] {
-  if (keys.length === 0) return [];
   const owned = new Set(keys);
-  return rows.filter((r) => owned.has(r.childSessionKey));
-}
-
-/** The chat-level FAILURE-beacon view model. `jumpIds` are the failed rows' ids
- *  in THREAD order (oldest spawn first = top→bottom of the conversation), so a
- *  consumer can scroll to the first failed card that is actually anchored on
- *  screen and fall back to a failure-only list for any whose spawning turn is
- *  outside the loaded message window / had an elided spawn output. */
-export type FailedSubAgentBeacon = {
-  visible: boolean;
-  count: number;
-  jumpIds: string[];
-};
-
-/**
- * Derive the persistent, chat-level failure signal (Bug C): the un-missable
- * indicator that a sub-agent failed SOMEWHERE in the chat, kept reachable even
- * when its spawning message is scrolled far away. Pure so visibility + count +
- * jump ORDER are unit-tested without a DOM harness.
- *
- * Rule: visible iff the gateway advertises `subagents` AND at least one row is a
- * FAILURE (error | aborted — `statusTone` collapses both). Independent of the
- * tools toggle: a failure must surface in BOTH the clean and analysis views, so
- * this never depends on `show`. `count` is the number of failed sub-agents;
- * `jumpIds` orders them oldest-first so the first jump target is the topmost
- * failure in the thread.
- */
-export function failedSubAgentBeacon(
-  rows: readonly SubAgentRow[],
-  capable: boolean,
-): FailedSubAgentBeacon {
-  if (!capable) return { visible: false, count: 0, jumpIds: [] };
-  const failed = rows.filter((r) => statusTone(r.status) === "failed");
-  if (failed.length === 0) return { visible: false, count: 0, jumpIds: [] };
-  const jumpIds = [...failed]
-    .sort(
-      (a, b) =>
-        a.createdAt - b.createdAt ||
-        (a._id < b._id ? -1 : a._id > b._id ? 1 : 0),
-    )
-    .map((r) => r._id);
-  return { visible: true, count: failed.length, jumpIds };
-}
-
-/**
- * The block's show/hide gate, pure so the visibility rule is unit-tested.
- *
- * Rule: `capable && total > 0 && (show || failed > 0)`. Two hard preconditions —
- * the gateway must advertise the `subagents` capability AND the chat must have at
- * least one sub-agent (otherwise a chat is visually unchanged). Beyond that:
- *  - ANALYSIS view (`show`): always visible (the full picture).
- *  - CLEAN view (`!show`): visible ONLY when a sub-agent FAILED — a failed/hung
- *    child is the headline pain (Bug C) and must be un-missable even with the
- *    tools toggle off, so the user knows to unblock the waiting parent.
- */
-export function subAgentActivityVisible(
-  show: boolean,
-  capable: boolean,
-  total: number,
-  failed: number,
-): boolean {
-  return capable && total > 0 && (show || failed > 0);
-}
-
-/**
- * Which cards to render given the view mode. The ANALYSIS view shows ALL cards
- * (running/done/failed); the CLEAN view shows ONLY the failed ones — a tight
- * failure surface that does not clutter the content-focused view with running/
- * done detail. Pure so the filtering is table-tested.
- */
-export function subAgentCardsToShow(
-  cards: readonly SubAgentCardView[],
-  show: boolean,
-): SubAgentCardView[] {
-  return show ? [...cards] : cards.filter((c) => c.failure);
+  return rows.filter(
+    (r) =>
+      (messageId !== undefined && r.parentMessageId === messageId) ||
+      owned.has(r.childSessionKey),
+  );
 }
 
 /** "N sous-agent(s)" count label (i18n singular/plural; both branches tested). */
@@ -234,14 +265,6 @@ export function subAgentCountLabel(total: number): string {
   return total === 1
     ? m.subagents_count({ count: total })
     : m.subagents_count_plural({ count: total });
-}
-
-/** "N sub-agent(s) failed" label for the CLEAN-view failure header (i18n
- *  singular/plural; both branches tested). */
-export function subAgentFailedLabel(failed: number): string {
-  return failed === 1
-    ? m.subagents_failed_label({ count: failed })
-    : m.subagents_failed_label_plural({ count: failed });
 }
 
 // --- DISPLAY-side error shortening ------------------------------------------

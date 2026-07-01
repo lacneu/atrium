@@ -34,11 +34,22 @@ import {
   childChatTerminalStatus,
   type SubAgentStatus,
 } from "./sub-agent-frames.js";
-import type { SubAgentRecord } from "../../convex-writer.js";
+import type {
+  SubAgentInteractionReply,
+  SubAgentRecord,
+  SubAgentSessionMeta,
+  SubAgentToolPartRecord,
+} from "../../convex-writer.js";
 
 /** The Convex upsert the observer emits (see convex/subAgents.ts). Alias of the
  *  writer's record type -- single source of truth for the shape. */
 export type SubAgentUpsert = SubAgentRecord;
+
+/** The subset of the session meta carried by the sessions_spawn `start` args. */
+type SpawnConfig = Pick<
+  SubAgentSessionMeta,
+  "context" | "runtime" | "mode" | "cleanup" | "sandbox"
+>;
 
 interface Observation {
   childSessionKey: string;
@@ -55,6 +66,15 @@ interface Observation {
    * heartbeatIfDue / HEARTBEAT_THROTTLE_SECONDS.
    */
   lastUpsertAt: number;
+  /** The tools the child has called so far (name + status; SOC2 — no args/results). */
+  tools?: ChildTool[];
+  /** Last-known STATIC session config (model/reasoning/speed/scope), merged across
+   *  frames. Write-once in practice; emitted only on a real change. */
+  sessionMeta?: SubAgentSessionMeta;
+  /** Phase 2c: when set, the child was re-woken by a USER INTERACTION (chat.send from
+   *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
+   *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
+  interactionId?: string;
 }
 
 /** Bound the registry so a misbehaving stream can't grow it without limit. */
@@ -78,6 +98,56 @@ const MAX_TASK_CHARS = 256;
 // not re-register a child that was already reaped.
 const RECENT_FINAL_CAP = 256;
 
+/** One captured child tool: NAME + lifecycle status only (SOC2 — never args/results). */
+type ChildTool = { name: string; status: "running" | "done"; toolCallId?: string };
+// A tool name is an identifier (not content), but bound it like the task name so a
+// malformed frame can't bloat the row; cap the COUNT so a runaway child can't grow the
+// tools array without limit.
+const MAX_TOOL_NAME_CHARS = 80;
+const MAX_TOOLS_PER_CHILD = 100;
+// Bound the toolCallId too: it is the dedupe key but reaches the Convex doc, so a
+// malformed frame with a huge id must not blow the per-row size (codex review P2).
+// 200 is generous for real ids ("call_…|fc_…" ~70 chars); a longer one is truncated
+// (still a stable dedupe key) — never the whole blob.
+const MAX_TOOL_CALL_ID_CHARS = 200;
+// Per-tool DETAIL caps (args + result) -> their own subAgentToolParts row. The detail
+// is the user's OWN in-app data, but bound each so one pathological tool (a megabyte
+// fetched page) can't blow a row; a longer value is truncated, never dropped whole.
+const MAX_TOOL_ARGS_CHARS = 2000;
+const MAX_TOOL_RESULT_CHARS = 4000;
+
+function capToolName(name: string): string {
+  return name.length > MAX_TOOL_NAME_CHARS ? name.slice(0, MAX_TOOL_NAME_CHARS) : name;
+}
+
+/** A child tool frame's phase -> our two-state status. The tool lifecycle is
+ *  start -> (output) -> result/completed; only the END phases read as "done". */
+function childToolStatus(phase: string): "running" | "done" {
+  return phase === "result" || phase === "completed" || phase === "end"
+    ? "done"
+    : "running";
+}
+
+/** Insert/update a child tool by toolCallId (else name), "done" winning over
+ *  "running". Returns the SAME array reference when nothing changed (duplicate or
+ *  cap reached) so the caller can skip a redundant upsert; else a NEW array. */
+function upsertChildTool(tools: ChildTool[], tool: ChildTool): ChildTool[] {
+  const keyOf = (t: ChildTool): string => t.toolCallId ?? `name:${t.name}`;
+  const k = keyOf(tool);
+  const idx = tools.findIndex((t) => keyOf(t) === k);
+  if (idx === -1) {
+    if (tools.length >= MAX_TOOLS_PER_CHILD) return tools; // cap -> no change
+    return [...tools, tool];
+  }
+  const cur = tools[idx];
+  if (cur !== undefined && tool.status === "done" && cur.status !== "done") {
+    const out = tools.slice();
+    out[idx] = { ...cur, name: tool.name, status: "done" };
+    return out;
+  }
+  return tools; // already present (and not a running->done transition) -> no change
+}
+
 interface SubAgentObserverOptions {
   maxConcurrent?: number;
   ttlSeconds?: number;
@@ -91,6 +161,9 @@ export class SubAgentObserver {
   private readonly observations = new Map<string, Observation>();
   // Insertion-ordered set of recently-reaped child keys (resurrection guard).
   private readonly recentlyFinal = new Set<string>();
+  // sessions_spawn config cached from the `start` frame args, keyed by toolCallId,
+  // consumed by the matching `result` registration. Bounded (insertion-ordered).
+  private readonly pendingSpawnConfig = new Map<string, SpawnConfig>();
   // Log the cap breach only once per observer so a sustained overflow can't spam.
   private warnedCap = false;
 
@@ -133,8 +206,11 @@ export class SubAgentObserver {
 
     // --- Registration: the parent's own `sessions_spawn` tool result -----------
     // Emitted on the PARENT lane (sessionKey === parentSessionKey), so this is how
-    // we learn a childSessionKey + (best-effort) the task name.
+    // we learn a childSessionKey + (best-effort) the task name. The spawn CONFIG
+    // (context/runtime/mode/cleanup/sandbox) rides on the earlier `start` frame's
+    // args — cache it by toolCallId here so the `result` registration can attach it.
     if (eventType === "agent" && sessionKey === this.parentSessionKey) {
+      this.maybeCacheSpawnConfig(payload);
       const reg = this.tryRegisterFromSpawn(payload, now, parentMessageId);
       if (reg !== null) return reg;
     }
@@ -166,13 +242,54 @@ export class SubAgentObserver {
     }
     obs.lastFrameAt = now;
 
+    // Capture the child's STATIC session config (model / reasoning / speed / scope)
+    // from any frame carrying a `session` object, merged last-known-non-null. `meta`
+    // is a one-element upsert ONLY when a static field changed (write-once in practice
+    // — NEVER per-frame, so no live-telemetry write-per-tick); else []. Prepended to
+    // whatever this frame otherwise emits so the bar fills promptly without its own
+    // dedicated round-trip.
+    const meta = this.captureSessionMeta(obs, payload);
+
     // --- Child TERMINAL via chat state (the PRIMARY discriminator) -------------
     // final=done (the answer, the one deterministic source — the parent lane does not
     // reliably re-deliver it), error=failed/timed-out (+ errorMessage), aborted=stopped.
     if (eventType === "chat") {
       const term = childChatTerminalStatus(readString(payload, "state"));
       if (term !== null) {
+        const interactionId = obs.interactionId;
         this.reap(childKey); // final-reap guardrail (any terminal)
+        // Phase 2c: this terminal is the reply to a USER INTERACTION -> route it to
+        // the interaction record ONLY (the subAgents.resultText keeps the ORIGINAL
+        // answer). `aborted` reads as an error for the interaction.
+        if (interactionId !== undefined) {
+          const reply: SubAgentInteractionReply = {
+            interactionId,
+            status: term === "done" ? "done" : "error",
+          };
+          if (term === "done") {
+            const text = this.sanitizeResult(
+              textFromMessage(readField(payload, "message")),
+            );
+            if (text) reply.replyText = text;
+          } else {
+            const reason =
+              readString(payload, "errorMessage") ??
+              textFromMessage(readField(payload, "message"));
+            const errMsg = this.sanitizeResult(reason);
+            if (errMsg) reply.errorMessage = errMsg;
+          }
+          return [
+            ...meta,
+            {
+              chatId: this.chatId,
+              childSessionKey: childKey,
+              // Placeholder status (the flush routes an interactionReply record to the
+              // interaction store, NOT upsertSubAgent, so this never patches the row).
+              status: "running",
+              interactionReply: reply,
+            },
+          ];
+        }
         const rec: SubAgentUpsert = {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
@@ -191,11 +308,11 @@ export class SubAgentObserver {
           const errMsg = this.sanitizeResult(reason);
           if (errMsg) rec.errorMessage = errMsg;
         }
-        return [rec];
+        return [...meta, rec];
       }
       // Non-terminal chat (delta): keep-alive — emit a throttled heartbeat so a long
       // delta-only child keeps a fresh Convex updatedAt (anti false-reap).
-      return this.heartbeatIfDue(obs, now);
+      return [...meta, ...this.heartbeatIfDue(obs, now)];
     }
 
     // --- Child lifecycle phase (the redundant earlier signal) -----------------
@@ -218,6 +335,7 @@ export class SubAgentObserver {
       obs.status = "running";
       obs.lastUpsertAt = now; // a real status upsert resets the heartbeat throttle
       return [
+        ...meta,
         {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
@@ -228,9 +346,206 @@ export class SubAgentObserver {
       ];
     }
 
-    // Any other child frame (assistant delta, provenance, tool): keep-alive — emit a
-    // throttled heartbeat so a long-running child stays fresh (anti false-reap).
-    return this.heartbeatIfDue(obs, now);
+    // --- Child TOOL frame: capture the tool NAME + status (SOC2: name+status only,
+    // never the args/results). The child's tool emits stream:"tool" {data:{name,
+    // phase, toolCallId}} — the SAME shape as a main-agent tool — so a sub-agent
+    // surfaces its tools at the same detail. (sessions_spawn is parent-only.)
+    if (eventType === "agent" && stream === "tool" && data !== null) {
+      const toolUpserts = this.observeChildTool(obs, data, now);
+      if (toolUpserts !== null) return [...meta, ...toolUpserts];
+    }
+
+    // Any other child frame (assistant delta, provenance, a no-change tool): keep-
+    // alive — emit a throttled heartbeat so a long-running child stays fresh.
+    return [...meta, ...this.heartbeatIfDue(obs, now)];
+  }
+
+  /**
+   * Phase 2c: ARM the observer to capture a USER INTERACTION reply for a child. The
+   * child is usually already terminal (its spawn finished + it was reaped), so
+   * re-open the observation — clear the resurrection guard + (re)register it running —
+   * and flag `interactionId`. The NEXT terminal frame for this child is that
+   * interaction's reply, routed (in the chat-terminal branch) to the interaction
+   * record, NOT the subAgents.resultText. A second arm just re-points the id.
+   */
+  armInteraction(childKey: string, interactionId: string, now: number): void {
+    this.recentlyFinal.delete(childKey);
+    let obs = this.observations.get(childKey);
+    if (obs === undefined) {
+      const created = this.register(childKey, now, {});
+      if (created === null) return; // cap reached -> not tracked
+      obs = created;
+    }
+    obs.status = "running";
+    obs.lastFrameAt = now;
+    obs.interactionId = interactionId;
+  }
+
+  /**
+   * A child TOOL frame (stream:"tool"): record the tool NAME + status on the
+   * observation and emit an upsert with the full (merged) tools list. SOC2: name +
+   * status ONLY — never the tool args/results (the child's content). Returns null
+   * when the frame is not a usable/new tool signal (fall through to keep-alive).
+   */
+  private observeChildTool(
+    obs: Observation,
+    data: Record<string, unknown>,
+    now: number,
+  ): SubAgentUpsert[] | null {
+    const name = readString(data, "name");
+    const phase = readString(data, "phase");
+    if (name === null || name === "" || phase === null) return null;
+    // A child cannot spawn (anti-recursion); ignore a stray sessions_spawn defensively.
+    if (name === "sessions_spawn") return null;
+    const rawId = readString(data, "toolCallId");
+    const toolCallId =
+      rawId === null || rawId === ""
+        ? undefined
+        : rawId.length > MAX_TOOL_CALL_ID_CHARS
+          ? rawId.slice(0, MAX_TOOL_CALL_ID_CHARS)
+          : rawId;
+    const updated = upsertChildTool(obs.tools ?? [], {
+      name: capToolName(name),
+      status: childToolStatus(phase),
+      toolCallId,
+    });
+    if (updated === obs.tools) return null; // no change (duplicate / cap) -> keep-alive
+    obs.tools = updated;
+    obs.lastUpsertAt = now; // a real tool upsert refreshes the heartbeat throttle
+    return [
+      {
+        chatId: this.chatId,
+        parentMessageId: obs.parentMessageId,
+        childSessionKey: obs.childSessionKey,
+        // The child is still running while it uses tools; the Convex reorder guard
+        // keeps a terminal row terminal, so this never un-finishes a done child.
+        status: obs.status,
+        tools: updated,
+        // Per-tool DETAIL piggybacked on this same emission: the args (start frame)
+        // and result (result frame) for THIS call, routed by the session to its own
+        // table. Rides only the emissions where the summary changed (start = new tool,
+        // result = running->done), which is exactly where the args/result land.
+        toolPart: this.buildToolPart(obs, data, name, phase, toolCallId),
+      },
+    ];
+  }
+
+  /**
+   * Build the per-tool DETAIL record (args + result) for the current tool frame.
+   * args come on the `start` frame, result on the `result`/`completed`/`end` frame
+   * (an `isError` flag there -> status "error"); both are stringified, server-paths
+   * stripped, and length-capped. The (childSessionKey, toolCallId) pair is the upsert
+   * key — a missing id falls back to `name:<name>` (mirrors the summary's keyOf).
+   */
+  private buildToolPart(
+    obs: Observation,
+    data: Record<string, unknown>,
+    name: string,
+    phase: string,
+    toolCallId: string | undefined,
+  ): SubAgentToolPartRecord {
+    const done = childToolStatus(phase) === "done";
+    const isError = data.isError === true;
+    const part: SubAgentToolPartRecord = {
+      chatId: this.chatId,
+      childSessionKey: obs.childSessionKey,
+      toolCallId: toolCallId ?? `name:${capToolName(name)}`,
+      name: capToolName(name),
+      status: done ? (isError ? "error" : "done") : "running",
+    };
+    const argsRaw = stringifyToolArgs(data.args);
+    if (argsRaw) {
+      part.argsText = this.sanitizeDetail(argsRaw, MAX_TOOL_ARGS_CHARS);
+    }
+    // The result lands on the `result` frame; an `update` (partialResult) frame never
+    // reaches here (it doesn't change the summary, so observeChildTool returns before
+    // building a toolPart), so only data.result is read.
+    const resultRaw = extractToolResultText(data.result);
+    if (resultRaw) {
+      part.resultText = this.sanitizeDetail(resultRaw, MAX_TOOL_RESULT_CHARS);
+    }
+    return part;
+  }
+
+  /** Strip server paths (sanitizeText) + cap — for a tool's args/result detail. */
+  private sanitizeDetail(text: string, max: number): string {
+    const clean = sanitizeText(text, { mediaSessionKey: this.parentSessionKey });
+    return clean.length > max ? clean.slice(0, max) : clean;
+  }
+
+  /**
+   * Capture the child's STATIC session config from a frame's `payload.session`,
+   * merged last-known-non-null. Returns a one-element upsert ONLY when a static field
+   * CHANGED (first-known counts), else []. Deliberately reads only the write-once
+   * config fields (model / provider / reasoning / speed / control scope / role /
+   * depth) — NOT the live telemetry (totalTokens / cost / runtime), which changes
+   * every frame and would make this a write-per-tick. CONFIG only (SOC2-safe); the
+   * parentSessionKey is NOT captured here (it embeds the canonical + chatId — the
+   * parent AGENT is resolved to a display name in-app).
+   */
+  private captureSessionMeta(
+    obs: Observation,
+    payload: Record<string, unknown>,
+  ): SubAgentUpsert[] {
+    const session = readField(payload, "session");
+    if (session === null) return [];
+    const merged: SubAgentSessionMeta = { ...obs.sessionMeta };
+    let changed = false;
+    const model = readString(session, "model");
+    if (model !== null && merged.model !== model) {
+      merged.model = model;
+      changed = true;
+    }
+    const modelProvider = readString(session, "modelProvider");
+    if (modelProvider !== null && merged.modelProvider !== modelProvider) {
+      merged.modelProvider = modelProvider;
+      changed = true;
+    }
+    const thinkingLevel = readString(session, "thinkingLevel");
+    if (thinkingLevel !== null && merged.thinkingLevel !== thinkingLevel) {
+      merged.thinkingLevel = thinkingLevel;
+      changed = true;
+    }
+    const fastMode = session.effectiveFastMode;
+    if (typeof fastMode === "boolean" && merged.fastMode !== fastMode) {
+      merged.fastMode = fastMode;
+      changed = true;
+    }
+    const controlScope = readString(session, "subagentControlScope");
+    if (controlScope !== null && merged.controlScope !== controlScope) {
+      merged.controlScope = controlScope;
+      changed = true;
+    }
+    const subagentRole = readString(session, "subagentRole");
+    if (subagentRole !== null && merged.subagentRole !== subagentRole) {
+      merged.subagentRole = subagentRole;
+      changed = true;
+    }
+    const spawnDepth = session.spawnDepth;
+    if (typeof spawnDepth === "number" && merged.spawnDepth !== spawnDepth) {
+      merged.spawnDepth = spawnDepth;
+      changed = true;
+    }
+    // The SOURCE gateway kind (session.agentRuntime = {id, source}) — the provider
+    // seam so the UI knows which mapping produced these fields (OpenClaw today).
+    const agentRuntime = readField(session, "agentRuntime");
+    const gatewayKind =
+      agentRuntime !== null ? readString(agentRuntime, "id") : null;
+    if (gatewayKind !== null && merged.gatewayKind !== gatewayKind) {
+      merged.gatewayKind = gatewayKind;
+      changed = true;
+    }
+    if (!changed) return [];
+    obs.sessionMeta = merged;
+    return [
+      {
+        chatId: this.chatId,
+        parentMessageId: obs.parentMessageId,
+        childSessionKey: obs.childSessionKey,
+        status: obs.status,
+        sessionMeta: merged,
+      },
+    ];
   }
 
   /**
@@ -251,8 +566,18 @@ export class SubAgentObserver {
       if (now - obs.lastFrameAt >= this.ttlSeconds) {
         const wasRunning = obs.status === "running";
         const parentMessageId = obs.parentMessageId;
+        const interactionId = obs.interactionId;
         this.reap(key);
-        if (wasRunning) {
+        if (wasRunning && interactionId !== undefined) {
+          // 2c: a pending INTERACTION whose reply never arrived -> fail the interaction
+          // (not the subAgents row), so the panel's "Interagir" doesn't hang forever.
+          out.push({
+            chatId: this.chatId,
+            childSessionKey: key,
+            status: "running", // placeholder (routed to the interaction store)
+            interactionReply: { interactionId, status: "error" },
+          });
+        } else if (wasRunning) {
           out.push({
             chatId: this.chatId,
             parentMessageId,
@@ -297,13 +622,55 @@ export class SubAgentObserver {
     if (readString(data, "phase") !== "result") return null;
     const childKey = extractChildSessionKey(readField(data, "result"));
     if (childKey === null) return null;
-    // Already known (idempotent) or already reaped: nothing to register.
-    if (this.observations.has(childKey) || this.recentlyFinal.has(childKey)) {
-      return [];
-    }
+    // Already reaped: nothing to do (resurrection guard).
+    if (this.recentlyFinal.has(childKey)) return [];
     const taskName = this.sanitizeTaskName(extractTaskName(readString(data, "meta")));
+    // The spawn CONFIG cached from this call's `start` frame (by toolCallId) — so
+    // `context`/runtime/mode/cleanup/sandbox reach the row from the spawn result.
+    // Absent when the spawn omitted them (rendered only when present).
+    const toolCallId = readString(data, "toolCallId");
+    const cfg =
+      toolCallId !== null ? this.pendingSpawnConfig.get(toolCallId) : undefined;
+    if (cfg !== undefined && toolCallId !== null) {
+      this.pendingSpawnConfig.delete(toolCallId);
+    }
+
+    // The child's OWN frames can arrive BEFORE this spawn result (a race), lazily
+    // registering it first. When that happens, BACKFILL the taskName + spawn config
+    // onto the existing observation here (the spawn result is their only source), so
+    // they are never lost to frame ordering — instead of the old early-return that
+    // dropped both.
+    const existing = this.observations.get(childKey);
+    if (existing !== undefined) {
+      let changed = false;
+      if (taskName !== undefined && existing.taskName === undefined) {
+        existing.taskName = taskName;
+        changed = true;
+      }
+      if (cfg !== undefined) {
+        existing.sessionMeta = { ...existing.sessionMeta, ...cfg };
+        changed = true;
+      }
+      if (!changed) return [];
+      return [
+        {
+          chatId: this.chatId,
+          parentMessageId: existing.parentMessageId,
+          childSessionKey: childKey,
+          status: existing.status, // reorder-guarded Convex-side; never downgrades
+          ...(existing.taskName !== undefined
+            ? { taskName: existing.taskName }
+            : {}),
+          ...(existing.sessionMeta ? { sessionMeta: existing.sessionMeta } : {}),
+        },
+      ];
+    }
+
     const obs = this.register(childKey, now, { taskName, parentMessageId });
     if (obs === null) return []; // cap reached -> refused (logged)
+    if (cfg !== undefined) {
+      obs.sessionMeta = { ...obs.sessionMeta, ...cfg };
+    }
     return [
       {
         chatId: this.chatId,
@@ -311,8 +678,38 @@ export class SubAgentObserver {
         childSessionKey: childKey,
         taskName,
         status: "running",
+        ...(obs.sessionMeta ? { sessionMeta: obs.sessionMeta } : {}),
       },
     ];
+  }
+
+  /**
+   * Cache the sessions_spawn CONFIG from the parent's `start` frame args (by
+   * toolCallId), so the `result` registration can attach it to the child. Reads only
+   * the small enum config fields (context / runtime / mode / cleanup / sandbox) —
+   * NEVER the `task` text (content). Bounded so a runaway parent can't grow the map.
+   */
+  private maybeCacheSpawnConfig(payload: Record<string, unknown>): void {
+    if (readString(payload, "stream") !== "tool") return;
+    const data = readField(payload, "data");
+    if (data === null) return;
+    if (readString(data, "name") !== "sessions_spawn") return;
+    if (readString(data, "phase") !== "start") return;
+    const toolCallId = readString(data, "toolCallId");
+    if (toolCallId === null) return;
+    const args = readField(data, "args");
+    if (args === null) return;
+    const cfg: SpawnConfig = {};
+    for (const key of ["context", "runtime", "mode", "cleanup", "sandbox"] as const) {
+      const val = readString(args, key);
+      if (val !== null && val !== "") cfg[key] = val;
+    }
+    if (Object.keys(cfg).length === 0) return;
+    if (this.pendingSpawnConfig.size >= 64) {
+      const oldest = this.pendingSpawnConfig.keys().next().value;
+      if (oldest !== undefined) this.pendingSpawnConfig.delete(oldest);
+    }
+    this.pendingSpawnConfig.set(toolCallId, cfg);
   }
 
   /** Insert an observation, honoring the max-concurrent cap. null = refused. */
@@ -442,6 +839,40 @@ function textFromContent(content: unknown): string {
   return "";
 }
 
+/** A tool call's INPUT as display text: a string as-is, else pretty JSON. Empty
+ *  when there is nothing to show (the detail row just omits the input block). */
+function stringifyToolArgs(args: unknown): string {
+  if (args === undefined || args === null) return "";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+/** A tool call's OUTPUT as display text: prefer the `{content:[{text}]}` envelope's
+ *  text (what the gateway shows), else the whole value stringified. Mirrors the panel
+ *  ToolCard's expectation of a plain text/JSON output. */
+function extractToolResultText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (isObject(value)) {
+    const fromContent = textFromContent(value.content);
+    if (fromContent) return fromContent;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Pull `childSessionKey` out of a `sessions_spawn` tool result. The result is
  * `{ contentItems: [{ text: "<json string>" }] }`, where the JSON string carries
@@ -451,8 +882,16 @@ function textFromContent(content: unknown): string {
  */
 function extractChildSessionKey(result: Record<string, unknown> | null): string | null {
   if (result === null) return null;
-  const items = result.contentItems;
-  if (!Array.isArray(items)) return null;
+  // The array key CHANGED between gateway versions: `contentItems` (<=2026.6.5) ->
+  // `content` (2026.6.10+). Read whichever is present so the spawn RESULT still
+  // registers the child (else it falls back to lazy admission and LOSES taskName +
+  // the spawn config — the bug this fixes). Verified live on 6.10: `result.content`.
+  const items = Array.isArray(result.content)
+    ? result.content
+    : Array.isArray(result.contentItems)
+      ? result.contentItems
+      : null;
+  if (items === null) return null;
   for (const item of items) {
     const text = readString(item, "text");
     if (text === null) continue;
@@ -478,7 +917,13 @@ function extractChildSessionKey(result: Record<string, unknown> | null): string 
 export function extractTaskName(meta: string | null): string | undefined {
   if (meta === null) return undefined;
   const label = /^label ([^,]+),/.exec(meta)?.[1]?.trim();
-  const task = /(?:^|, )task (.*), agent [^,]*$/.exec(meta)?.[1]?.trim();
+  // The TASK text, greedy, minus the gateway's trailing metadata token: ", agent X"
+  // (<=2026.6.5) OR ", cleanup X" (2026.6.10 renamed it). Without tolerating the new
+  // suffix, a label-LESS 6.10 spawn parsed to NO task name (card showed none).
+  let task = /(?:^|, )task (.*)$/.exec(meta)?.[1]?.trim();
+  if (task !== undefined) {
+    task = task.replace(/,\s*(?:agent|cleanup)\s+[^,]*$/, "").trim();
+  }
   const raw = label || task;
   if (!raw) return undefined;
   return raw.length > MAX_TASK_CHARS ? raw.slice(0, MAX_TASK_CHARS) : raw;

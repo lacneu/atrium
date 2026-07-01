@@ -332,6 +332,19 @@ export async function cascadeDeleteChat(
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .collect();
   for (const s of subAgents) await ctx.db.delete(s._id);
+  // The per-tool DETAIL rows (args + result) live in their own table keyed by chat;
+  // purge them with the chat too so no orphaned child content lingers.
+  const subAgentToolParts = await ctx.db
+    .query("subAgentToolParts")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .collect();
+  for (const p of subAgentToolParts) await ctx.db.delete(p._id);
+  // The user's sub-agent INTERACTIONS (2c) hold conversation content keyed by chat.
+  const subAgentInteractions = await ctx.db
+    .query("subAgentInteractions")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .collect();
+  for (const i of subAgentInteractions) await ctx.db.delete(i._id);
   // L2: if this chat held the SOURCE of an in-flight documentary fetch, release the
   // hidden chat's lock (same as deleteMessage). `chatId` is skipped when IT is the
   // documentary chat — it is being deleted here anyway.

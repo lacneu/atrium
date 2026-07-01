@@ -892,9 +892,12 @@ export default defineSchema({
   // the bridge before they land here.
   subAgents: defineTable({
     chatId: v.id("chats"),
-    // The parent assistant message the spawn happened under, when known. OPTIONAL:
-    // increment 1 does not thread the live messageId into the observer, so it is
-    // usually absent (a documented follow-up). by_chat is the load-bearing index.
+    // The parent assistant message the spawn happened under. The observer is fed the
+    // run's current streaming messageId (session.ts -> runManager.currentMessageId),
+    // so a spawn registered DURING the parent turn carries it -> the per-message card
+    // correlation + the panel's "jump to the spawning message" use it. Still OPTIONAL:
+    // a child lazily registered from its own later frames (spawn result missed) can
+    // land without it. by_chat is the load-bearing index.
     parentMessageId: v.optional(v.id("messages")),
     childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
     taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
@@ -907,6 +910,51 @@ export default defineSchema({
     resultText: v.optional(v.string()), // the child's final answer (server-paths stripped)
     errorMessage: v.optional(v.string()), // failure reason on error (paths stripped)
     phase: v.optional(v.string()), // last observed lifecycle phase (e.g. "startup")
+    // The tools the CHILD called — NAME + lifecycle status ONLY (SOC2: never the
+    // args/results, which are the child's retrieved/produced CONTENT). Lets a
+    // sub-agent surface the SAME tool detail as a main-agent turn. Deduped by
+    // toolCallId by the observer; "done" wins over "running" on a reordered merge.
+    tools: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          status: v.union(v.literal("running"), v.literal("done")),
+          toolCallId: v.optional(v.string()),
+        }),
+      ),
+    ),
+    // The child's STATIC session config (captured from `payload.session` on the child
+    // frames, merged last-known). Drives the panel's session bar (model / reasoning /
+    // speed / scope) + the Advanced popover. These are CONFIG, not content -- SOC2-safe,
+    // so the obs MCP may surface them too (unlike resultText/tool args). Deliberately
+    // NO live telemetry (tokens/cost/runtime) here: those change every frame and would
+    // turn this into a write-per-tick. parentSessionKey is NOT stored raw (it embeds
+    // the canonical+chatId); the parent AGENT is resolved to a display name in-app.
+    sessionMeta: v.optional(
+      v.object({
+        model: v.optional(v.string()),
+        modelProvider: v.optional(v.string()),
+        thinkingLevel: v.optional(v.string()),
+        fastMode: v.optional(v.boolean()),
+        controlScope: v.optional(v.string()),
+        subagentRole: v.optional(v.string()),
+        spawnDepth: v.optional(v.number()),
+        // Spawn-time config (from the sessions_spawn ARGS, correlated by toolCallId).
+        // ALL optional + rendered only when present — `context` in particular is
+        // usually ABSENT (gateway-defaulted), so never fabricate "isolated". `context:
+        // "fork"` branches the parent transcript into the child (a HIGHER-SENSITIVITY
+        // signal for the child's captured content — still config, never widens MCP).
+        context: v.optional(v.string()), // "isolated" | "fork"
+        runtime: v.optional(v.string()), // "subagent" | "acp"
+        mode: v.optional(v.string()), // "run" | "session"
+        cleanup: v.optional(v.string()), // "delete" | "keep"
+        sandbox: v.optional(v.string()), // "inherit" | "require"
+        // The SOURCE gateway kind (from session.agentRuntime.id, e.g. "openclaw") — the
+        // provider SEAM so a Hermes mapping can slot in later; the field NAMES above are
+        // OpenClaw-specific, captured by the OpenClaw observer.
+        gatewayKind: v.optional(v.string()),
+      }),
+    ),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -934,6 +982,67 @@ export default defineSchema({
     // those rows. Mirrors messages.by_status_updated: a live child has a fresh
     // updatedAt → outside the range → never read (no full scan).
     .index("by_status_updated", ["status", "updatedAt"]),
+
+  // In-app DETAIL for a sub-agent's tool calls (args + result), kept OFF the
+  // `subAgents` doc on purpose: a 67-tool child would O(n^2)-re-push the whole
+  // tools[] array on every per-tool upsert (the same write-amplification reason
+  // `streamingText` is its own table). ONE row per (childSessionKey, toolCallId),
+  // upserted per tool; the panel fetches them on demand when it opens (the
+  // Sources-panel pattern). This is the user's OWN data shown IN-APP, so full
+  // args/results are fine here -- the SOC2 content-free floor applies only to the
+  // observability surfaces (MCP / KPI / traces), which never read this table.
+  // Server PATHS are still stripped by the observer (infra-leakage scrub, orthogonal
+  // to the content line). Bounded: <=100 parts/child (the observer's tool cap) and
+  // each args/result capped, so a row stays small and the table stays per-child tiny.
+  subAgentToolParts: defineTable({
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    toolCallId: v.string(), // the dedupe key within a child (with childSessionKey)
+    name: v.string(),
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("error"),
+    ),
+    argsText: v.optional(v.string()), // the call input (stringified, sanitized, capped)
+    resultText: v.optional(v.string()), // the call output text (sanitized, capped)
+    updatedAt: v.number(),
+  })
+    // Cascade delete with the chat (cascadeDeleteChat ranges this).
+    .index("by_chat", ["chatId"])
+    // Panel fetch: all parts for the open sub-agent.
+    .index("by_child", ["childSessionKey"])
+    // Upsert dedupe: the (child, toolCallId) point key.
+    .index("by_child_tool", ["childSessionKey", "toolCallId"]),
+
+  // Phase 2c — the user's DIRECT interaction with a sub-agent ("Interagir"): one row
+  // per user message + the child's reply. The user's message is dispatched to the
+  // CHILD session key via chat.send (verified live: the gateway routes it + the reply
+  // streams back on the child lane); the bridge records the reply here. This is the
+  // user's OWN conversation (in-app), so the reply text is stored in full; server
+  // PATHS are stripped by the bridge. Keyed by chat (cascade) + child (panel thread).
+  subAgentInteractions: defineTable({
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    userText: v.string(), // the message the user sent to the sub-agent
+    // Files the user attached to THIS message — METADATA ONLY (name + type), for the
+    // thread to show "sent X"; the bytes ride the dispatch (resolved to base64), never
+    // stored on the row.
+    attachments: v.optional(
+      v.array(v.object({ filename: v.string(), mimeType: v.string() })),
+    ),
+    replyText: v.optional(v.string()), // the sub-agent's answer (paths stripped)
+    status: v.union(
+      v.literal("pending"),
+      v.literal("done"),
+      v.literal("error"),
+    ),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_chat", ["chatId"]) // cascade delete with the chat
+    .index("by_child", ["childSessionKey"]), // the panel's interaction thread
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy

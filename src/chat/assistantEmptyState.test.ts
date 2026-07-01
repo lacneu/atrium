@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assistantEmptyState,
   extractSpawnedChildKeys,
+  toolPartsHaveSpawn,
   type EmptyStateToolPart,
 } from "./assistantEmptyState";
 import type { SubAgentRow } from "./subAgentActivityView";
@@ -253,5 +254,82 @@ describe("extractSpawnedChildKeys (parsing the sessions_spawn output)", () => {
         { toolName: "sessions_spawn", result: realResult },
       ]),
     ).toEqual(["agent:alice:subagent:50a9857b-5b2f-40ce-867d-2e20d2e2b737"]);
+  });
+});
+
+describe("assistantEmptyState — parentMessageId correlation (robust) + done case", () => {
+  it("correlates by parentMessageId even when the spawn output carried NO key", () => {
+    // The live gateway omits the spawn result -> extractSpawnedChildKeys is empty;
+    // the message-id join must STILL find the child (the whole point of the fix).
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }], // a spawn tool part with NO result
+      [row({ parentMessageId: "msg-1", status: "running", taskName: "Recherche" })],
+      "msg-1",
+    );
+    expect(state).toEqual({ kind: "waiting", taskName: "Recherche" });
+  });
+
+  it("a DONE correlated child surfaces its result (never the blank generic bubble)", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [
+        row({
+          parentMessageId: "msg-1",
+          status: "done",
+          resultText: "10 news IA…",
+          taskName: "News",
+        }),
+      ],
+      "msg-1",
+    );
+    expect(state).toEqual({
+      kind: "done",
+      taskName: "News",
+      resultText: "10 news IA…",
+    });
+  });
+
+  it("a running sibling takes precedence over a done one (still waiting)", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [
+        row({ _id: "a", parentMessageId: "msg-1", status: "done", resultText: "x" }),
+        row({ _id: "b", parentMessageId: "msg-1", status: "running" }),
+      ],
+      "msg-1",
+    );
+    expect(state.kind).toBe("waiting");
+  });
+
+  it("does NOT correlate a child of ANOTHER message (mismatch + no key) -> generic", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [row({ parentMessageId: "OTHER", status: "running" })],
+      "msg-1",
+    );
+    expect(state).toEqual({ kind: "generic" });
+  });
+
+  it("falls back to the childSessionKey join when no messageId is given", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [spawnPart("agent:main:subagent:child-1")],
+      [row({ childSessionKey: "agent:main:subagent:child-1", status: "running" })],
+    );
+    expect(state.kind).toBe("waiting");
+  });
+});
+
+describe("toolPartsHaveSpawn (gate on the spawn tool NAME, not its result)", () => {
+  it("true when a sessions_spawn tool part is present even with NO result", () => {
+    expect(toolPartsHaveSpawn([{ toolName: "sessions_spawn" }])).toBe(true);
+  });
+  it("false for an ordinary tool part and for none", () => {
+    expect(toolPartsHaveSpawn([{ toolName: "exec", result: {} }])).toBe(false);
+    expect(toolPartsHaveSpawn([])).toBe(false);
   });
 });

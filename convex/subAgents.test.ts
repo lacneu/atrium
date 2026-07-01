@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { mergeSubAgentTools } from "./subAgents";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -91,6 +92,36 @@ describe("subAgents.upsertSubAgent", () => {
     );
     expect(row!.status).toBe("done");
     expect(row!.resultText).toBe("FINAL");
+  });
+
+  test("sessionMeta MERGES last-known (a later partial never wipes a captured field)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "running" as const,
+      sessionMeta: { model: "gpt-5.5", thinkingLevel: "high" },
+    });
+    // A later frame carries only a NEW field — it must merge, not replace.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "running" as const,
+      sessionMeta: { fastMode: false, controlScope: "none" },
+    });
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .unique(),
+    );
+    expect(row!.sessionMeta).toEqual({
+      model: "gpt-5.5", // preserved across the second upsert
+      thinkingLevel: "high",
+      fastMode: false, // merged in
+      controlScope: "none",
+    });
   });
 });
 
@@ -187,5 +218,194 @@ describe("subAgents cleanup (no orphaned chat content)", () => {
         .collect(),
     );
     expect(orphans).toHaveLength(0);
+  });
+});
+
+describe("subAgents.upsertSubAgentToolPart — per-tool detail (args + result)", () => {
+  test("start INSERTS args (running); result PATCHES the SAME row to done + keeps args", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    // start frame: args known, running.
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "running" as const,
+      argsText: '{"command":"echo hi"}',
+    });
+    // result frame: output known, done — args omitted (must NOT be wiped).
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "done" as const,
+      resultText: "hi",
+    });
+
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("subAgentToolParts")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1); // upsert by (child, toolCallId) — not appended
+    expect(rows[0]).toMatchObject({
+      toolCallId: "call_1",
+      status: "done",
+      argsText: '{"command":"echo hi"}', // set-once survives the result patch
+      resultText: "hi",
+    });
+  });
+
+  test("a terminal tool part is never downgraded back to running (reorder-tolerance)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "done" as const,
+      resultText: "OK",
+    });
+    // A late running frame for the same call must not un-finish it.
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "running" as const,
+    });
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query("subAgentToolParts")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .first(),
+    );
+    expect(row!.status).toBe("done");
+    expect(row!.resultText).toBe("OK");
+  });
+
+  test("listSubAgentToolParts is OWNER-SCOPED (owner sees, non-owner rejected)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserAndChat(t, "alice");
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "web_search",
+      status: "done" as const,
+      argsText: '{"query":"news"}',
+      resultText: "results...",
+    });
+    const otherUserId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "user", canonical: "bob" });
+      return uid as Id<"users">;
+    });
+
+    const asOwner = t.withIdentity({ subject: `${userId}|session` });
+    const rows = await asOwner.query(api.subAgents.listSubAgentToolParts, {
+      chatId,
+      childSessionKey: CHILD,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: "web_search", resultText: "results..." });
+
+    const asOther = t.withIdentity({ subject: `${otherUserId}|session` });
+    await expect(
+      asOther.query(api.subAgents.listSubAgentToolParts, {
+        chatId,
+        childSessionKey: CHILD,
+      }),
+    ).rejects.toThrow(/not owned/i);
+  });
+
+  test("deleting a chat PURGES its tool-part rows (cascade — no orphaned content)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserAndChat(t);
+    await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "done" as const,
+      resultText: "private tool output",
+    });
+    const count = () =>
+      t.run((ctx) =>
+        ctx.db
+          .query("subAgentToolParts")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .collect(),
+      );
+    expect(await count()).toHaveLength(1);
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.chats.deleteChat, { chatId });
+    expect(await count()).toHaveLength(0); // purged with the chat
+  });
+
+  test("upsert for a VANISHED chat is ignored (no orphan tool detail re-created)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserAndChat(t);
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.chats.deleteChat, { chatId });
+    const ret = await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
+      chatId,
+      childSessionKey: CHILD,
+      toolCallId: "call_1",
+      name: "exec",
+      status: "running" as const,
+      argsText: "{}",
+    });
+    expect(ret).toBeNull();
+    const orphans = await t.run((ctx) =>
+      ctx.db
+        .query("subAgentToolParts")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .collect(),
+    );
+    expect(orphans).toHaveLength(0);
+  });
+});
+
+describe("mergeSubAgentTools (Inc 4 — reorder-tolerant child-tool merge)", () => {
+  test("appends a new tool, keeping first-seen order", () => {
+    expect(
+      mergeSubAgentTools(
+        [{ name: "exec", status: "done", toolCallId: "c1" }],
+        [{ name: "web_search", status: "running", toolCallId: "c2" }],
+      ),
+    ).toEqual([
+      { name: "exec", status: "done", toolCallId: "c1" },
+      { name: "web_search", status: "running", toolCallId: "c2" },
+    ]);
+  });
+
+  test("running -> done flips the same tool (deduped by toolCallId)", () => {
+    expect(
+      mergeSubAgentTools(
+        [{ name: "exec", status: "running", toolCallId: "c1" }],
+        [{ name: "exec", status: "done", toolCallId: "c1" }],
+      ),
+    ).toEqual([{ name: "exec", status: "done", toolCallId: "c1" }]);
+  });
+
+  test("a LATE running frame never un-finishes a done tool (the whole point)", () => {
+    expect(
+      mergeSubAgentTools(
+        [{ name: "exec", status: "done", toolCallId: "c1" }],
+        [{ name: "exec", status: "running", toolCallId: "c1" }],
+      ),
+    ).toEqual([{ name: "exec", status: "done", toolCallId: "c1" }]);
+  });
+
+  test("undefined incoming leaves the stored list unchanged (same reference)", () => {
+    const existing = [{ name: "exec", status: "done" as const, toolCallId: "c1" }];
+    expect(mergeSubAgentTools(existing, undefined)).toBe(existing);
   });
 });

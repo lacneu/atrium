@@ -222,6 +222,46 @@ type IngestOp =
       resultText?: string;
       phase?: string;
       errorMessage?: string;
+      tools?: Array<{ name: string; status: "running" | "done"; toolCallId?: string }>;
+      // STATIC session config (model / reasoning / speed / scope / spawn config) for
+      // the panel bar + Advanced. All optional (rendered only when present).
+      sessionMeta?: {
+        model?: string;
+        modelProvider?: string;
+        thinkingLevel?: string;
+        fastMode?: boolean;
+        controlScope?: string;
+        subagentRole?: string;
+        spawnDepth?: number;
+        context?: string;
+        runtime?: string;
+        mode?: string;
+        cleanup?: string;
+        sandbox?: string;
+        gatewayKind?: string;
+      };
+    }
+  // Per-tool DETAIL (args + result) for a sub-agent's call, keyed by
+  // (childSessionKey, toolCallId). In its OWN table (NOT subAgents.tools[]) to avoid
+  // re-pushing the whole array per write. In-app user data; server-paths stripped by
+  // the bridge. The observability surfaces (MCP/KPI/traces) never read this.
+  | {
+      op: "upsertSubAgentToolPart";
+      chatId: string;
+      childSessionKey: string;
+      toolCallId: string;
+      name: string;
+      status: "running" | "done" | "error";
+      argsText?: string;
+      resultText?: string;
+    }
+  // Phase 2c: a sub-agent's reply to a user interaction -> the interaction record.
+  | {
+      op: "recordSubAgentInteractionReply";
+      interactionId: string;
+      status: "done" | "error";
+      replyText?: string;
+      errorMessage?: string;
     };
 
 export const ingest = httpAction(async (ctx, request) => {
@@ -537,6 +577,8 @@ export const ingest = httpAction(async (ctx, request) => {
         resultText: body.resultText,
         phase: body.phase,
         errorMessage: body.errorMessage,
+        tools: body.tools,
+        sessionMeta: body.sessionMeta,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -548,7 +590,57 @@ export const ingest = httpAction(async (ctx, request) => {
           status: body.status,
           ...(body.phase !== undefined ? { phase: body.phase } : {}),
           hasResult: body.resultText != null,
+          // Content-free: how MANY tools the child has used (never the names/args).
+          ...(Array.isArray(body.tools) ? { toolCount: body.tools.length } : {}),
           ok: true,
+        },
+      });
+      return json({ ok: true });
+    }
+    case "upsertSubAgentToolPart": {
+      await ctx.runMutation(internal.subAgents.upsertSubAgentToolPart, {
+        chatId: body.chatId as Id<"chats">,
+        childSessionKey: body.childSessionKey,
+        toolCallId: body.toolCallId,
+        name: body.name,
+        status: body.status,
+        argsText: body.argsText,
+        resultText: body.resultText,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        meta: {
+          op: body.op,
+          // Structural only — the tool's args/result are the child's CONTENT (shown
+          // in-app), never written to the observability trace; only presence flags.
+          status: body.status,
+          hasArgs: body.argsText != null,
+          hasResult: body.resultText != null,
+          ok: true,
+        },
+      });
+      return json({ ok: true });
+    }
+    case "recordSubAgentInteractionReply": {
+      await ctx.runMutation(
+        internal.subAgentInteractions.recordInteractionReply,
+        {
+          interactionId: body.interactionId as Id<"subAgentInteractions">,
+          status: body.status,
+          replyText: body.replyText,
+          errorMessage: body.errorMessage,
+        },
+      );
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: undefined,
+        meta: {
+          op: body.op,
+          // Structural only — the reply text is the user's in-app content, never traced.
+          status: body.status,
+          hasReply: body.replyText != null,
         },
       });
       return json({ ok: true });

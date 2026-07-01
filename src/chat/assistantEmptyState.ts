@@ -18,13 +18,14 @@ import {
 // pure + unit tested so every branch (running / failed / generic / has-answer) is
 // covered without a DOM harness.
 //
-// CORRELATION: the sub-agent observer does NOT populate `parentMessageId` in
-// increment 1 (session.ts calls observe() without it -> the column is null), so a
-// turn cannot be matched to its children by message id. Instead we read the
-// `childSessionKey` the `sessions_spawn` tool output carries and match it against
-// the `subAgents` rows -- a precise, per-turn join that needs no bridge change.
-// If extraction fails (output elided / odd shape), the join is simply empty and
-// the turn falls back to the generic state -- still never a blank bubble.
+// CORRELATION: the bridge tags every child with `parentMessageId` (the spawning
+// assistant message — session.ts passes runManager.currentMessageId to observe()),
+// so the PRIMARY join is message-precise: `s.parentMessageId === messageId`. The
+// `childSessionKey` parsed from the `sessions_spawn` tool output is kept as a
+// FALLBACK (covers a row written before tagging, or odd shapes). If neither matches
+// the join is empty and the turn falls back to the generic state — never a blank
+// bubble. (The earlier toolPart-only join failed live: the gateway's sessions_spawn
+// tool part carries NO result/childSessionKey, so the key set was always empty.)
 
 /** The minimal tool-part shape this module reads (a structural subset of
  *  toolActivityView.ToolActivityPart) so the helper stays trivially testable. */
@@ -51,6 +52,7 @@ export type EmptyStateMessage = {
 export type AssistantEmptyState =
   | { kind: "none" }
   | { kind: "waiting"; taskName?: string }
+  | { kind: "done"; taskName?: string; resultText?: string }
   | { kind: "failed"; taskName?: string; reason: string }
   | { kind: "generic" };
 
@@ -90,6 +92,15 @@ export function extractSpawnedChildKeys(
   return keys;
 }
 
+/** Whether this turn CALLED sessions_spawn at all — detectable from the tool part's
+ *  NAME even when the gateway omits the result/childSessionKey (it does), so the
+ *  sub-agent UI gates on "did it delegate?" not on a parseable spawn output. */
+export function toolPartsHaveSpawn(
+  toolParts: readonly EmptyStateToolPart[],
+): boolean {
+  return toolParts.some((p) => p.toolName === "sessions_spawn");
+}
+
 /** Trim a task name to a clean label, or undefined when blank. */
 function cleanTaskName(name: string | undefined): string | undefined {
   const trimmed = name?.trim();
@@ -114,13 +125,20 @@ export function assistantEmptyState(
   message: EmptyStateMessage,
   toolParts: readonly EmptyStateToolPart[],
   subAgents: readonly SubAgentRow[],
+  messageId?: string,
 ): AssistantEmptyState {
   if (message.hasText || message.hasMedia) return { kind: "none" };
   if (message.status !== "complete") return { kind: "none" };
 
+  // PRIMARY correlation = parentMessageId (the bridge tags every child with its
+  // spawning message — robust, message-precise). FALLBACK = the childSessionKey the
+  // spawn output carried (covers a row written before parentMessageId tagging).
   const keys = new Set(extractSpawnedChildKeys(toolParts));
-  const mine =
-    keys.size > 0 ? subAgents.filter((s) => keys.has(s.childSessionKey)) : [];
+  const mine = subAgents.filter(
+    (s) =>
+      (messageId !== undefined && s.parentMessageId === messageId) ||
+      keys.has(s.childSessionKey),
+  );
 
   // A still-running child takes precedence: the parent yielded and the gateway
   // resumes it when the child returns, so "waiting" is the truthful state even if
@@ -136,6 +154,18 @@ export function assistantEmptyState(
       kind: "failed",
       taskName: cleanTaskName(failed.taskName),
       reason: shortenSubAgentError(failed.errorMessage),
+    };
+  }
+
+  // A child that FINISHED with a result: the parent delegated and never relayed the
+  // answer, so the sub-agent's OWN result IS this turn's answer — surfaced as a
+  // distinct "done" state (never the blank "generic" bubble for a real delegation).
+  const done = mine.find((s) => s.status === "done");
+  if (done) {
+    return {
+      kind: "done",
+      taskName: cleanTaskName(done.taskName),
+      resultText: done.resultText,
     };
   }
 

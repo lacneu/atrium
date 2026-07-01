@@ -120,12 +120,13 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.6.10" });
+    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.6.11" });
     expect(oc.validatedVersions).toEqual([
       "2026.5.19",
       "2026.6.1",
       "2026.6.5",
       "2026.6.10",
+      "2026.6.11",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
   });
@@ -213,8 +214,8 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated (2026.6.10) now that 6.10 is validated.
-  test.each(["2026.6.11", "2026.7.0", "2027.1.1"])(
+  // All STRICTLY above maxValidated (2026.6.11) now that 6.11 is validated.
+  test.each(["2026.6.12", "2026.7.0", "2027.1.1"])(
     "%s enables all validated capabilities + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);

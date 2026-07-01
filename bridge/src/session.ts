@@ -80,6 +80,9 @@ export interface BridgeSession {
   /** Test/diagnostic seam: count of children with an ordered registration recorded
    *  (registeredChildren). Asserts the set never leaks across terminated/swept children. */
   readonly registeredChildCount: number;
+  /** Phase 2c: arm the sub-agent observer to capture the reply to a user INTERACTION
+   *  before the /subagent-send endpoint dispatches the chat.send to the child. */
+  armSubAgentInteraction(childKey: string, interactionId: string): void;
 }
 
 /**
@@ -165,6 +168,14 @@ class Session implements BridgeSession {
     return this.registeredChildren.size;
   }
 
+  /** Phase 2c: arm the sub-agent observer to capture the reply to a user INTERACTION,
+   *  called just before the /subagent-send endpoint dispatches the chat.send to the
+   *  child (so a re-woken, already-reaped child's terminal is recognized as the
+   *  interaction reply and routed to the interaction store). */
+  armSubAgentInteraction(childKey: string, interactionId: string): void {
+    this.observer.armInteraction(childKey, interactionId, this.clock());
+  }
+
   /**
    * Flush OBSERVED sub-agent records (from both observe() AND the TTL sweep()),
    * ORDERING the initial running-row creation.
@@ -187,6 +198,20 @@ class Session implements BridgeSession {
     records: SubAgentRecord[],
   ): Promise<void> {
     for (const record of records) {
+      // Phase 2c: a pure INTERACTION-reply record routes to the interaction store
+      // ONLY — never the subAgents row (the original answer stays intact). Off the
+      // critical path (best-effort), like the other observation writes.
+      if (record.interactionReply) {
+        void this.writer
+          .recordInteractionReply(record.interactionReply)
+          .catch((err) => {
+            console.warn(
+              `[subagent] interaction reply write failed chat=${this.chatId}:`,
+              (err as Error)?.message ?? err,
+            );
+          });
+        continue;
+      }
       const isRegistration =
         record.status === "running" &&
         !this.registeredChildren.has(record.childSessionKey);
@@ -209,6 +234,17 @@ class Session implements BridgeSession {
         void this.writer.upsertSubAgent(record).catch((err) => {
           console.warn(
             `[subagent] upsert failed chat=${this.chatId}:`,
+            (err as Error)?.message ?? err,
+          );
+        });
+      }
+      // Per-tool DETAIL (args + result) rides on the same tool-frame emission; route
+      // it to its OWN table best-effort, off the critical path — it never gates the
+      // summary upsert above and a failed detail write must not wedge the loop.
+      if (record.toolPart) {
+        void this.writer.upsertSubAgentToolPart(record.toolPart).catch((err) => {
+          console.warn(
+            `[subagent] tool-part upsert failed chat=${this.chatId}:`,
             (err as Error)?.message ?? err,
           );
         });
@@ -382,7 +418,11 @@ class Session implements BridgeSession {
           // next frame / parent finalize) to close the spawn-upsert race; later
           // status/heartbeat writes stay off the critical path. See flushSubAgentObserved.
           await this.flushSubAgentObserved(
-            this.observer.observe(winner.value, now),
+            this.observer.observe(
+              winner.value,
+              now,
+              this.runManager.currentMessageId,
+            ),
           );
         } catch (err) {
           console.error("session subagent observe error:", (err as Error)?.message ?? err);

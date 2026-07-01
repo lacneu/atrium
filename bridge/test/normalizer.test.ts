@@ -274,6 +274,101 @@ describe("tool message delivery", () => {
   });
 });
 
+// --- sessions_spawn success flagged isError (OpenClaw quirk) ------------------
+
+describe("sessions_spawn result status", () => {
+  // Feed one `sessions_spawn` tool result frame (with an explicit isError) + return
+  // the tool.status event it emits.
+  function spawnStatus(result: unknown, isError: boolean) {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    events.push(
+      ...normalizer.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: {
+              name: "sessions_spawn",
+              phase: "result",
+              toolCallId: "tc-spawn",
+              isError,
+              result,
+            },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    return events.find(
+      (e) => e.type === "tool.status" && e.name === "sessions_spawn",
+    ) as { phase: string } | undefined;
+  }
+
+  // OpenClaw marks a SUCCESSFUL spawn's result isError:true; the child IS created
+  // (its childSessionKey is in the result). The card must NOT read "error".
+  const acceptedResult = {
+    content: [
+      {
+        type: "text",
+        text: '{"status":"accepted","childSessionKey":"agent:alice:subagent:1234"}',
+      },
+    ],
+  };
+
+  it("isError:true WITH a childSessionKey renders completed (spawn succeeded)", () => {
+    expect(spawnStatus(acceptedResult, true)?.phase).toBe("completed");
+  });
+
+  it("isError:true WITHOUT a childSessionKey stays error (real spawn failure)", () => {
+    const rejected = {
+      content: [{ type: "text", text: '{"status":"rejected","reason":"quota"}' }],
+    };
+    // Delete-the-guard check: a genuine failure (no childSessionKey) MUST stay error,
+    // else the fix would mask real spawn failures.
+    expect(spawnStatus(rejected, true)?.phase).toBe("error");
+  });
+
+  it("a non-spawn tool with isError:true is unaffected (still error)", () => {
+    // The override is scoped to sessions_spawn only — childSessionKey text in some
+    // OTHER tool's output must not flip it to completed.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    events.push(
+      ...normalizer.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: {
+              name: "web_fetch",
+              phase: "result",
+              toolCallId: "tc-wf",
+              isError: true,
+              result: acceptedResult,
+            },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    const s = events.find(
+      (e) => e.type === "tool.status" && e.name === "web_fetch",
+    ) as { phase: string } | undefined;
+    expect(s?.phase).toBe("error");
+  });
+});
+
 // --- media (adapted to the Convex {filename, path} shape) ---------------------
 
 describe("media", () => {

@@ -57,6 +57,12 @@ export class TurnSink {
   private readonly outboundScan?: OutboundScan;
 
   private messageId: string | null = null;
+  /** The assistant message id for the CURRENT/last turn (null before the first
+   *  beginTurn). Lets the session tag a sub-agent observation with the message
+   *  that spawned it -- robust parent-message correlation (no toolPart parse). */
+  get currentMessageId(): string | null {
+    return this.messageId;
+  }
   private turnActive = false;
   // Turn-start wall clock + the basenames hosted via MEDIA: this turn — together
   // they let the finalize-time outbound scan host ONLY this turn's NEW files and

@@ -594,3 +594,74 @@ describe("listByChat elides oversized part fields from the window", () => {
     expect(diagTool).toMatchObject({ hasInput: true, hasOutput: true });
   });
 });
+
+describe("deleteMessage — sub-agent cascade (retry drops the child session)", () => {
+  test("deleting the spawning turn purges its sub-agents + tool parts + interactions", async () => {
+    const t = convexTest(schema, modules);
+    const CHILD = "agent:alice:subagent:del-child";
+    const { userId, userMsgId } = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "user" as const,
+        canonical: "alice",
+      });
+      const chatId = await ctx.db.insert("chats", { userId: uid, updatedAt: 0 });
+      const um = await ctx.db.insert("messages", {
+        chatId,
+        userId: uid,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "spawn one",
+        updatedAt: 1,
+      });
+      const asst = await ctx.db.insert("messages", {
+        chatId,
+        userId: uid,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "done",
+        updatedAt: 2,
+      });
+      // A sub-agent anchored to the ASSISTANT turn, with tool detail + an interaction.
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: CHILD,
+        parentMessageId: asst,
+        status: "done" as const,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+      await ctx.db.insert("subAgentToolParts", {
+        chatId,
+        childSessionKey: CHILD,
+        toolCallId: "c1",
+        name: "exec",
+        status: "done" as const,
+        updatedAt: 0,
+      });
+      await ctx.db.insert("subAgentInteractions", {
+        chatId,
+        childSessionKey: CHILD,
+        userText: "hi",
+        status: "done" as const,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+      return { userId: uid, userMsgId: um };
+    });
+
+    // Deleting the user turn cascades forward (incl. the assistant that spawned the
+    // sub-agent) -> the child's rows must all be gone.
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.messages.deleteMessage, { messageId: userMsgId });
+
+    const counts = await t.run(async (ctx) => ({
+      subAgents: (await ctx.db.query("subAgents").collect()).length,
+      toolParts: (await ctx.db.query("subAgentToolParts").collect()).length,
+      interactions: (await ctx.db.query("subAgentInteractions").collect()).length,
+    }));
+    expect(counts).toEqual({ subAgents: 0, toolParts: 0, interactions: 0 });
+  });
+});

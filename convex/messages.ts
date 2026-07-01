@@ -180,6 +180,14 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
     // newest-N window). Tie-break by _creationTime for a stable order.
     const messages = [...recentDesc].sort(compareOrder);
 
+    // Dispatch lifecycle per message (queued | pending | sent | failed) — a CONSTANT
+    // 4-read budget (see loadOutboxByMessage), NOT per-message. The frontend reads
+    // `outbox.status === "queued"` to badge a mid-turn QUEUE follow-up "En attente"
+    // (message badge + the synthetic placeholder RunStatus). Outbox transitions are
+    // infrequent (send/dispatch/drain), NOT per-token, so this does not reintroduce a
+    // per-delta re-run of this heavy view.
+    const { byMessage: outboxByMsg } = await loadOutboxByMessage(ctx, id);
+
     // Batch part resolution: fetch each message's parts in parallel. Convex has
     // no SQL join, so this is per-message — but the message set is bounded by
     // MESSAGE_WINDOW, so the fan-out is bounded too. Within a message, parts are
@@ -278,6 +286,10 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
           // L2: ready downloadable-attachment count (subtle Sources-chip badge).
           attachedDocCount: message.attachedDocCount,
+          // Dispatch lifecycle (queued | pending | sent | failed); null when no outbox
+          // row (assistant messages; or a user message older than the outbox read cap).
+          // Drives the mid-turn QUEUE "En attente" badge + placeholder.
+          outbox: outboxByMsg.get(message._id) ?? null,
           updatedAt: message.updatedAt,
           parts,
         };
@@ -339,6 +351,33 @@ type SubAgentEntry = {
   status: SubAgentStatus;
   errorCategory: string;
   hasTaskName: boolean;
+  // The spawning assistant message — surfaces the parent<->child CORRELATION for
+  // debugging (a structural message id only, never content; SOC2-safe). null for a
+  // row written before parentMessageId tagging. This is the field whose absence made
+  // a "delegated turn shows no sub-agent" bug hard to diagnose from the obs API.
+  parentMessageId: string | null;
+  // How many tools the child has used (COUNT only — never names/args; SOC2-safe).
+  toolCount: number;
+  // The child's STATIC session config (CONFIG, not content — SOC2-safe): model /
+  // reasoning / speed / control scope / role / depth. Lets the obs MCP diagnose a
+  // misconfigured sub-agent (wrong model, unexpected scope/depth) without any content.
+  // The parent session key is NEVER surfaced (it embeds the canonical + chatId).
+  model: string | null;
+  modelProvider: string | null;
+  thinkingLevel: string | null;
+  fastMode: boolean | null;
+  controlScope: string | null;
+  subagentRole: string | null;
+  spawnDepth: number | null;
+  // Spawn-time config (CONFIG, SOC2-safe). NOTE: `context:"fork"` means the child's
+  // captured CONTENT is higher-sensitivity (parent transcript branched in) — the FLAG
+  // is fine here, but this MUST NOT widen what content the observability path exposes.
+  context: string | null;
+  runtime: string | null;
+  mode: string | null;
+  cleanup: string | null;
+  sandbox: string | null;
+  gatewayKind: string | null;
   ageSeconds: number;
 };
 
@@ -410,6 +449,24 @@ async function loadSubAgentSummary(
     errorCategory: classifySubAgentError(c.status, c.errorMessage),
     // Presence boolean ONLY — never the taskName text.
     hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",
+    // The spawning message id (structural, SOC2-safe) — the correlation link.
+    parentMessageId: c.parentMessageId ?? null,
+    // Count of the child's tools (never the names/args).
+    toolCount: c.tools?.length ?? 0,
+    // Static session config (CONFIG, SOC2-safe) — null until the first session frame.
+    model: c.sessionMeta?.model ?? null,
+    modelProvider: c.sessionMeta?.modelProvider ?? null,
+    thinkingLevel: c.sessionMeta?.thinkingLevel ?? null,
+    fastMode: c.sessionMeta?.fastMode ?? null,
+    controlScope: c.sessionMeta?.controlScope ?? null,
+    subagentRole: c.sessionMeta?.subagentRole ?? null,
+    spawnDepth: c.sessionMeta?.spawnDepth ?? null,
+    context: c.sessionMeta?.context ?? null,
+    runtime: c.sessionMeta?.runtime ?? null,
+    mode: c.sessionMeta?.mode ?? null,
+    cleanup: c.sessionMeta?.cleanup ?? null,
+    sandbox: c.sessionMeta?.sandbox ?? null,
+    gatewayKind: c.sessionMeta?.gatewayKind ?? null,
     ageSeconds: Math.round((now - c.updatedAt) / 1000),
   });
   // Failed = error ∪ aborted, newest-first (each slice already desc by creation).
@@ -1001,6 +1058,34 @@ export const deleteMessage = mutation({
       }
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
+    }
+
+    // Sub-agents anchored to a deleted turn: the spawning message is gone, so on a
+    // retry/regenerate the child's SESSION is considered gone too — purge the row +
+    // its tool detail + interaction thread (else orphaned rows linger AND the open
+    // right-panel keeps showing a stale sub-agent). The open panel self-closes when
+    // its viewed child vanishes from the list. Bounded read (by_chat).
+    const chatSubAgents = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
+      .collect();
+    for (const sa of chatSubAgents) {
+      if (!sa.parentMessageId || !deletedIds.has(sa.parentMessageId)) continue;
+      const parts = await ctx.db
+        .query("subAgentToolParts")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", sa.childSessionKey),
+        )
+        .collect();
+      for (const p of parts) await ctx.db.delete(p._id);
+      const threads = await ctx.db
+        .query("subAgentInteractions")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", sa.childSessionKey),
+        )
+        .collect();
+      for (const t of threads) await ctx.db.delete(t._id);
+      await ctx.db.delete(sa._id);
     }
 
     // Drop the non-terminal outbox of the TRUNCATED messages ONLY (a stale dispatch

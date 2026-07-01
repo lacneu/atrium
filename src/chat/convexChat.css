@@ -19,7 +19,11 @@
   justify-content: center;
   gap: 0.75rem;
   height: 100%;
-  min-height: 60vh;
+  /* Fill the FULL viewport: this fallback can render full-page (when the error is
+     caught ABOVE the app chrome, so there is no sidebar/top bar to size it), where
+     a 60vh floor left a white band below it. In-shell it is clipped by `.oc-main`
+     (overflow:hidden), so 100dvh is correct in both cases. */
+  min-height: 100dvh;
   padding: 2rem;
   text-align: center;
 }
@@ -1360,6 +1364,10 @@
   display: flex;
   width: 100%;
   max-width: var(--oc-thread-w);
+  /* A scrollIntoView({block:"start"}) target (the sub-agent panel's "jump to the
+     spawning message") lands the message TOP at the viewport top; this margin keeps
+     it clear of the header bar above the viewport so it is never hidden under it. */
+  scroll-margin-top: 1rem;
 }
 /* Micro-interaction: ONLY the last message fades + rises in. Scoping to
    :last-child means opening/switching to a populated chat shows it SETTLED (the
@@ -1545,6 +1553,21 @@
     animation: none;
   }
 }
+/* Mid-turn QUEUE: a user turn parked behind the in-flight turn. The bubble dims a
+   touch (it hasn't been dispatched yet) and a "En attente" affordance replaces the
+   action bar until the drainer sends it. */
+.oc-msg--user.is-queued .oc-msg__bubble {
+  opacity: 0.72;
+}
+.oc-msg__queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-end;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
 .oc-msg__body {
   min-width: 0;
   color: var(--foreground);
@@ -1723,7 +1746,10 @@
    generating = a soft pulse + "Génération…"; error/aborted = Lucide icon +
    legible French label. Driven by the pure `runStatusView` mapping. ─────────── */
 .oc-run-status {
-  display: inline-flex;
+  /* BLOCK-level (own line): the status sits BELOW the answer + any delivered-file
+     chip. inline-flex made it share the file chip's line while a turn streamed. */
+  display: flex;
+  width: fit-content;
   align-items: flex-start;
   flex-wrap: wrap; /* a long error message wraps to a new line instead of
                       squeezing the "Erreur" label into "Erre/ur" */
@@ -1817,52 +1843,138 @@
 .oc-toolact {
   margin: 0.15rem 0 0.5rem;
 }
-.oc-toolact__summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.25rem 0.55rem;
-  /* Cancel the left padding's optical indent so the wrench glyph lines up with
-     the name + body text edge (the hover pill still extends into the gutter). */
-  margin-left: -0.55rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
+.oc-toolact__detail {
+  margin-top: 0.25rem;
+}
+
+/* ---------------------------------------------------------------------------
+   ActivityRow — the ONE charte-graphique chrome shared by every per-turn meta
+   affordance (tool activity, sources, sub-agent card). A full-width row:
+   LEFT = icon + label (+ optional sublabel), RIGHT = a trailing status/count
+   slot pushed to the edge + a chevron. Tones tint the leading icon; `is-active`
+   is the panel-open highlight; `is-open` rotates the chevron for inline expand.
+   Tokens only -> recolors per active charte in both modes.
+--------------------------------------------------------------------------- */
+.oc-actrow {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm, 0.375rem);
   background: transparent;
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-.oc-toolact__summary:hover {
   color: var(--foreground);
-  background: color-mix(in srgb, var(--muted-foreground) 8%, transparent);
+  font-family: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
 }
-.oc-toolact__summary:focus-visible {
+/* The TOP row: icon + label + trailing + chevron, vertically centered on one line.
+   Same for every row; a sublabel (sub-agent card only) sits BELOW it. */
+.oc-actrow__top {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+}
+.oc-actrow:hover {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.oc-actrow:focus-visible {
   outline: 2px solid var(--ring, var(--primary));
   outline-offset: 2px;
 }
-.oc-toolact__icon {
-  flex: 0 0 auto;
+.oc-actrow.is-active {
+  background: color-mix(in oklch, var(--primary) 8%, transparent);
 }
-.oc-toolact__state {
+.oc-actrow__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+/* Tone tints the leading icon (sub-agent lifecycle; neutral for tools/sources). */
+.oc-actrow--running .oc-actrow__icon {
+  color: var(--primary);
+}
+.oc-actrow--failed .oc-actrow__icon {
+  color: var(--destructive);
+}
+.oc-actrow__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--foreground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Sublabel (the sub-agent task): its own line UNDER the top row, indented to align
+   with the label (past the leading icon + gap). */
+.oc-actrow__sub {
+  padding-left: calc(15px + 0.55rem);
+  font-size: 0.72rem;
+  line-height: 1.25;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.oc-actrow__trail {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
   font-size: 0.72rem;
+  color: var(--muted-foreground);
 }
-.oc-toolact__spin {
+.oc-actrow__counts {
+  color: var(--muted-foreground);
+}
+.oc-actrow__toolcount {
+  font-variant-numeric: tabular-nums;
+}
+.oc-actrow__status-icon {
+  flex: 0 0 auto;
+  /* Base = muted, so the SUCCESS check reads identically whatever the row tone
+     (a default-tone tools row and a done-tone sub-agent row match exactly). */
+  color: var(--muted-foreground);
+}
+.oc-actrow--done .oc-actrow__status-icon {
+  color: var(--muted-foreground);
+}
+.oc-actrow--failed .oc-actrow__status-icon {
+  color: var(--destructive);
+}
+.oc-actrow__spin {
   animation: oc-spin 1s linear infinite;
 }
-/* Sober animated chevron: points right when collapsed, down when open. */
-.oc-toolact__chevron {
+/* Sober animated chevron: points right, rotates down when inline-expanded. */
+.oc-actrow__chev {
   flex: 0 0 auto;
   color: var(--muted-foreground);
   transition: transform 150ms ease;
 }
-.oc-toolact.is-open .oc-toolact__chevron {
+.oc-actrow.is-open .oc-actrow__chev {
   transform: rotate(90deg);
 }
-.oc-toolact__detail {
-  margin-top: 0.25rem;
+.oc-actrow.is-active .oc-actrow__chev {
+  color: var(--primary);
+}
+/* A small primary-tinted pill in the trailing slot (e.g. the Sources "N docs
+   attached" badge): present but unobtrusive. */
+.oc-actrow__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  padding: 0.02rem 0.34rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  border-radius: 999px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1888,78 +2000,40 @@
   scroll-margin: 5rem;
   border-radius: var(--radius-sm, 0.375rem);
 }
-
-/* Persistent failure beacon, centered above the composer (Bug C). */
-.oc-subagent-beacon {
-  align-self: center;
-  width: calc(100% - 2rem);
-  max-width: var(--oc-thread-w);
-  margin: 0 auto 0.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+/* Progress summary header above several cards ("N sous-agents" + per-tone count
+   badges) — now a shared ActivityRow; the badges render in its trailing slot. The
+   tone colors mirror the card left-rail (running = primary, done = muted, failed =
+   destructive). */
+.oc-subagent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
 }
-/* The compact alert chip: the SHARED .oc-chip + .oc-chip--btn (so it matches the
-   header capability/agent chips exactly), with a destructive FAILURE tint that
-   mirrors .oc-chip--agent.is-warn — un-missable but on-brand, never a banner.
-   Left-aligned so it sits as a quiet affordance above the composer. */
-.oc-subagent-beacon__chip {
-  align-self: flex-start;
-  color: var(--destructive);
-  background: color-mix(in srgb, var(--destructive) 12%, var(--muted));
-  border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
-}
-/* Keep the failure tint on hover (the shared .oc-chip--btn:hover would neutralize
-   it); same specificity, later in the file, so this wins. */
-.oc-subagent-beacon__chip:hover {
-  color: var(--destructive);
-  background: color-mix(in srgb, var(--destructive) 18%, var(--muted));
-  border-color: color-mix(in srgb, var(--destructive) 55%, var(--border));
-}
-.oc-subagent-beacon__label {
+.oc-subagent-badge__count {
   font-variant-numeric: tabular-nums;
 }
-/* Fallback failure-only list (revealed when a failure has no in-thread anchor —
-   spawning turn out of the loaded window / elided spawn output). */
-.oc-subagent-beacon__list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  max-height: 14rem;
-  overflow-y: auto;
-  padding: 0.1rem;
+.oc-subagent-badge--done {
+  color: var(--muted-foreground);
+}
+.oc-subagent-badge--running {
+  color: var(--primary);
+}
+.oc-subagent-badge--failed {
+  color: var(--destructive);
 }
 
-/* Flash painted on a card's anchor when the beacon scrolls it into view (reuses
-   the message deep-link flash language). */
-.oc-subagent--flash {
-  animation: oc-subagent-flash 2.4s ease-out;
-}
-@keyframes oc-subagent-flash {
-  0%,
-  45% {
-    background-color: color-mix(in oklch, var(--primary) 22%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 55%, transparent);
-  }
-  100% {
-    background-color: transparent;
-    box-shadow: 0 0 0 3px transparent;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .oc-subagent--flash {
-    animation: none;
-    background-color: color-mix(in oklch, var(--primary) 14%, transparent);
-  }
-}
-
+/* Persistent failure beacon, centered above the composer (Bug C). */
 /* One sub-agent card. A colored left rail encodes the tone at a glance:
    running = primary, done = muted, failed/aborted/timed-out = destructive. */
 .oc-subagent {
   border: 1px solid var(--border);
   border-left-width: 3px;
   border-radius: var(--radius-sm, 0.375rem);
-  padding: 0.35rem 0.5rem;
+  /* No inner padding: the row (.oc-actrow, itself padded) spans the full box so its
+     chevron lands at the SAME right inset as the bare tool-activity row (whose chevron
+     they must align with). overflow clips the row's hover/active fill to the corners. */
+  padding: 0;
+  overflow: hidden;
   background: var(--card);
 }
 .oc-subagent--running {
@@ -1971,40 +2045,8 @@
 .oc-subagent--failed {
   border-left-color: var(--destructive);
 }
-.oc-subagent__head {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-}
-.oc-subagent__status-icon {
-  flex: 0 0 auto;
-}
-.oc-subagent--running .oc-subagent__status-icon {
-  color: var(--primary);
-}
-.oc-subagent--failed .oc-subagent__status-icon {
-  color: var(--destructive);
-}
-.oc-subagent--done .oc-subagent__status-icon {
-  color: var(--muted-foreground);
-}
 .oc-subagent__spin {
   animation: oc-spin 1s linear infinite;
-}
-.oc-subagent__label {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 0.82rem;
-  color: var(--foreground);
-}
-.oc-subagent__status {
-  flex: 0 0 auto;
-  font-size: 0.72rem;
-  color: var(--muted-foreground);
 }
 /* Visible-FAILURE: the error/timeout reason, shown in full (never hidden). */
 .oc-subagent__error {
@@ -2037,6 +2079,488 @@
   font-size: 0.76rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* ── Sub-agent SUCCINCT CARD (redesigned) — a clickable row that opens the
+   secondary-conversation panel. Avatar + "Sous-agent" + task + status + tool
+   count + chevron; the full detail lives in the panel. ─────────────────────── */
+/* ── Sub-agent SECONDARY-CONVERSATION PANEL (the resizable right column) ────── */
+.oc-subpanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.oc-subpanel__head {
+  flex: 0 0 auto;
+  display: flex;
+  /* TOP-align the back tile + the title column so the back button stays at the title
+     row even when the prompt expands below (it never re-centers down). */
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+/* The title column: a centered top ROW (kind + controls) with the prompt BELOW. */
+.oc-subpanel__headmain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.oc-subpanel__head-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* Match the back tile height so this row's content centers on the SAME line as the
+     back arrow — coherent alignment of back / title / report / status / close. */
+  min-height: 1.9rem;
+}
+.oc-subpanel__head-ctrls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.oc-subpanel__report {
+  flex: 0 0 auto;
+}
+.oc-subpanel__avatar {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: var(--radius-md, 0.5rem);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+/* The header tile is a BACK button (jump to the spawning message). */
+.oc-subpanel__back {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.oc-subpanel__back:hover:not(:disabled) {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, var(--muted));
+}
+.oc-subpanel__back:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.oc-subpanel__back:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+.oc-subpanel__avatar--running {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 14%, var(--muted));
+}
+.oc-subpanel__avatar--failed {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 14%, var(--muted));
+}
+.oc-subpanel__kind {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+/* The task IS the sub-agent's prompt — a click-to-expand button (clamped to one
+   line by default, full wrapped text when expanded so it can be read entirely). */
+.oc-subpanel__task {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.oc-subpanel__task:hover {
+  color: var(--foreground);
+}
+.oc-subpanel__task.is-expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+.oc-subpanel__status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
+.oc-subpanel__status--running {
+  color: var(--primary);
+}
+.oc-subpanel__status--failed {
+  color: var(--destructive);
+}
+.oc-subpanel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* The body itself never scrolls SIDEWAYS — a long URL / wide tool output must not
+     let a trackpad swipe drag the whole result horizontally. Inner code blocks
+     (ToolCard <pre>) keep their own overflow-x:auto, so they still scroll in place. */
+  overflow-x: hidden;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+/* Long URLs in the sub-agent result WRAP (the panel is narrow + resizable) so the
+   markdown never overflows the column. */
+.oc-subpanel .oc-md {
+  overflow-wrap: anywhere;
+}
+.oc-subpanel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.oc-subpanel__section-title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.oc-subpanel__error {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm, 0.375rem);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--card));
+  color: var(--destructive);
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.oc-subpanel__muted {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.84rem;
+}
+.oc-subpanel__working {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+/* The in-thread card "currently detailed in the panel" highlight (the visual
+   breadcrumb to the open secondary conversation) lives on the row itself now —
+   see `.oc-actrow.is-active` — so the wrapper rail stays its lifecycle tone. */
+
+/* Panel breadcrumb: the link from the primary thread to this secondary one. */
+/* Reserved band shown until the first session frame fills the bar (no layout jump). */
+.oc-subpanel__barslot {
+  flex: 0 0 auto;
+  min-height: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The sub-agent SESSION BAR (Phase 2b): chips (model / reasoning / speed / parent)
+   in the same visual language as the main chat header, + an Advanced toggle that
+   reveals the full static config below. */
+.oc-subpanel__bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-subpanel__bar-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.oc-subpanel__adv-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 0.375rem);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+.oc-subpanel__adv-toggle:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  border-color: color-mix(in srgb, var(--border) 140%, var(--foreground) 8%);
+}
+.oc-subpanel__adv-chevron {
+  transition: transform 150ms ease;
+}
+.oc-subpanel__adv-toggle.is-open .oc-subpanel__adv-chevron {
+  transform: rotate(90deg);
+}
+/* Advanced detail: a shadcn-style bordered definition list — a soft-tinted card with
+   hairline row separators, muted labels left, tabular values right. Reads as a config
+   table, consistent with the charte's other data surfaces. */
+.oc-subpanel__adv-list {
+  margin: 0.4rem 0 0;
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  gap: 0;
+  font-size: 0.76rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: color-mix(in srgb, var(--muted) 28%, transparent);
+  overflow: hidden;
+}
+.oc-subpanel__adv-row {
+  display: contents;
+}
+.oc-subpanel__adv-row dt,
+.oc-subpanel__adv-row dd {
+  padding: 0.3rem 0.6rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.oc-subpanel__adv-row:first-child dt,
+.oc-subpanel__adv-row:first-child dd {
+  border-top: 0;
+}
+.oc-subpanel__adv-row dt {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.oc-subpanel__adv-row dd {
+  margin: 0;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Actions toolbar under the bar: jump-to-spawn + report-an-issue (shadcn outline
+   buttons, wrap on a narrow column). The steer/Interact action stays in the footer. */
+/* Collapsible result: a chevron toggle that rotates open. */
+.oc-subpanel__result-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.oc-subpanel__result-chevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 0.12s ease;
+}
+.oc-subpanel__result.is-open .oc-subpanel__result-chevron {
+  transform: rotate(90deg);
+}
+
+/* Prompt zone footer: an affordance reveals the message box (steer/send = P2). */
+.oc-subpanel__foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 0.85rem;
+}
+.oc-subpanel__interact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.oc-subpanel__interact:hover {
+  color: var(--foreground);
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+}
+.oc-subpanel__prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.oc-subpanel__prompt-input {
+  width: 100%;
+  resize: vertical;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 0.375rem);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.84rem;
+}
+.oc-subpanel__prompt-input:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+}
+.oc-subpanel__prompt-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.oc-subpanel__prompt-hint {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+/* Hidden native file input driven by the attach (+) button. */
+.oc-subpanel__fileinput {
+  display: none;
+}
+/* Composer action group (LEFT of the send button): attach (+) + the Outils toggle,
+   mirroring the main composer's action bar. */
+.oc-subpanel__composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.oc-subpanel__composer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.28rem 0.4rem;
+  border: 0;
+  border-radius: var(--radius-sm, 0.375rem);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.oc-subpanel__composer-btn:hover:not(:disabled) {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+.oc-subpanel__composer-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.oc-subpanel__composer-btn--label.is-on {
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+/* Staged / sent attachment chips. */
+.oc-subpanel__attstrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.oc-subpanel__attchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+}
+.oc-subpanel__attchip-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 12rem;
+}
+.oc-subpanel__attchip-x {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-subpanel__attchip-x:hover {
+  color: var(--destructive);
+}
+/* Attachments echoed on a SENT interaction message (no remove button). */
+.oc-subpanel__msg-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+.oc-subpanel__attchip--sent {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+/* 2c interaction thread: a compact chat log — the user's message (primary bubble,
+   right) + the sub-agent's reply (muted, left), with pending / error states. */
+.oc-subpanel__thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.oc-subpanel__exchange {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.oc-subpanel__msg {
+  font-size: 0.82rem;
+  border-radius: var(--radius-md, 0.5rem);
+  padding: 0.4rem 0.6rem;
+  overflow-wrap: anywhere;
+}
+.oc-subpanel__msg--user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.oc-subpanel__msg--reply {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-subpanel__msg--pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-subpanel__msg--err {
+  font-size: 0.78rem;
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
 }
 
 /* Empty-bubble guard (AssistantEmptyState): the designed inline state shown WHERE
@@ -2094,6 +2618,11 @@
 .oc-empty-answer--failed .oc-empty-answer__icon {
   color: var(--destructive);
 }
+/* Note: a DELEGATED turn whose answer IS the sub-agent's result no longer renders
+   a special empty-state block — AssistantEmptyState returns that result as plain
+   markdown (AgentMarkdown), styled IDENTICALLY to a normal reply (the user's point:
+   "no difference, the agent just used an extra tool"). */
+
 /* Generic: the turn acted but returned nothing -> muted, neutral. */
 .oc-empty-answer--generic {
   border-left-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
@@ -3243,6 +3772,28 @@
   background: color-mix(in oklch, var(--primary-foreground) 12%, transparent);
 }
 .oc-sidebar__scroll { flex: 1; overflow-y: auto; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.75rem; }
+/* Loading skeleton (chat list + app shell): a subtle shimmer in the muted hue, so
+   the structure shows immediately while data is still loading. */
+.oc-sidebar__skeleton { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.25rem 0.4rem; }
+.oc-skel {
+  border-radius: var(--radius);
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted-foreground) 7%, transparent),
+    color-mix(in oklch, var(--muted-foreground) 16%, transparent),
+    color-mix(in oklch, var(--muted-foreground) 7%, transparent)
+  );
+  background-size: 200% 100%;
+  animation: oc-skel-shimmer 1.4s ease-in-out infinite;
+}
+.oc-skel--row { height: 2rem; }
+@keyframes oc-skel-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-skel { animation: none; }
+}
 .oc-sidebar__group { display: flex; flex-direction: column; gap: 0.125rem; }
 .oc-sidebar__group-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -4608,7 +5159,7 @@
   .oc-dots > span,
   .oc-run-status__pulse,
   .oc-tool__status--spin,
-  .oc-toolact__spin {
+  .oc-actrow__spin {
     animation: none;
   }
 }
@@ -5204,73 +5755,42 @@
 /* ── Sources (provenance/v1) — what memory/document plugins fed the LLM this
    turn. Entry grammar = an inline chip (like ToolActivity) that OPENS a side
    panel (slide-over) to browse / search / multi-select / reason on the sources. */
-.oc-sources-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin-top: 0.35rem;
-  padding: 0.25rem 0.55rem;
-  /* Cancel the left padding's optical indent so the file glyph lines up with the
-     ToolActivity wrench + the body text edge (mirror of .oc-toolact__summary). */
-  margin-left: -0.55rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: 0.78rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-/* Tools + Sources are one meta group: when the Sources chip follows the tool
-   activity, tighten the gap between them (they read as a pair, not two blocks). */
-.oc-toolact + .oc-sources-trigger {
-  margin-top: -0.3rem;
-}
-/* The META block = a subtly carded CONTEXT group (tool activity + sources), set
-   apart from the agent's actual answer below it. Boxed ONLY when it has content
-   (:has) so an empty meta region stays invisible. The chips' negative left margin
-   self-cancels their padding → their icons land on the box's inner left edge. */
-.oc-msg__meta:has(.oc-toolact, .oc-sources-trigger) {
+/* The META block = ONE subtly-ruled CONTEXT group holding this turn's metadata —
+   in order: the sub-agent monitor, the tool activity, and the sources — set apart
+   from the agent's actual answer below it. Boxed ONLY when it has content (:has) so
+   an empty meta region stays invisible. A faint primary-tinted LEFT rule makes the
+   group read as ONE block ("everything to the right belongs to this turn's activity")
+   without a literal node-tree (the user's grouping cue, applied subtly). The rows
+   are full-width ActivityRows that fill the box edge to edge; a flex column + gap
+   gives them one consistent rhythm. */
+.oc-msg__meta:has(.oc-actrow, .oc-msg-subagents) {
   margin: 0.1rem 0 0.7rem;
-  padding: 0.4rem 0.6rem 0.45rem;
+  padding: 0.3rem;
   border: 1px solid var(--border);
+  border-left: 2px solid color-mix(in oklch, var(--primary) 30%, var(--border));
   border-radius: var(--radius-md);
   background: color-mix(in oklch, var(--muted) 45%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
 }
-/* Inside the box: drop the chips' outer margins and set one tight, consistent gap
-   between tool activity and sources (overrides the global adjacent-sibling rule). */
-.oc-msg__meta .oc-toolact {
+/* Inside the group the wrapper owns spacing (flex gap) — drop the children's own
+   outer margins so they sit flush with their siblings. */
+.oc-msg__meta .oc-toolact,
+.oc-msg__meta .oc-msg-subagents {
   margin: 0;
 }
-.oc-msg__meta .oc-toolact + .oc-sources-trigger {
-  margin-top: 0.15rem;
-}
-.oc-sources-trigger:hover {
-  background: var(--muted);
-  color: var(--foreground);
-}
-.oc-sources-trigger:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-.oc-sources-trigger__icon { flex-shrink: 0; }
-.oc-sources-trigger__label { font-weight: 600; }
-.oc-sources-trigger__counts { color: var(--muted-foreground); }
-.oc-sources-trigger__chev { flex-shrink: 0; opacity: 0.7; }
-/* Subtle "downloadable docs attached" badge on the Sources chip (replaces the old
-   prominent recap message). A small primary-tinted pill: present but unobtrusive. */
-.oc-sources-trigger__attached {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  flex-shrink: 0;
-  padding: 0.02rem 0.34rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--primary);
-  background: color-mix(in oklch, var(--primary) 12%, transparent);
-  border-radius: 999px;
+/* Inside the grouped meta block the sub-agent renders as a BARE row (uniform with
+   tools / sources) — drop the standalone card's border + rail + padding + bg so it
+   reads as one of the group's rows, not a nested card (no double border). Tone is
+   carried by the ActivityRow icon color + status text; a failure stays un-missable
+   via the inline error line below and the persistent composer failure beacon. The
+   standalone beacon list (outside this group) keeps the full card look. */
+.oc-msg__meta .oc-subagent {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
 }
 
 /* The panel content fills its host — the resizable column (desktop) or a Sheet

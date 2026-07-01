@@ -145,6 +145,12 @@ export class RunManager {
     return this.normalizer.finalized;
   }
 
+  /** The assistant message id for the current/last turn (from the sink) -- the
+   *  parent message a sub-agent observation is tagged with for robust correlation. */
+  get currentMessageId(): string | null {
+    return this.sink.currentMessageId;
+  }
+
   /**
    * Arm the pre-ack frame buffer for ONE upcoming turn — call RIGHT BEFORE the
    * chat.send request so response frames that race the ack are captured (not

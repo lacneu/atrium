@@ -94,6 +94,19 @@ export type ChatRow = {
 };
 type Project = { _id: Id<"projects">; name: string; collapsed: boolean };
 
+// Skeleton rows shown in place of the chat list while it first loads, so the
+// sidebar takes shape immediately instead of flashing an empty pane. Exported so
+// the boot app-shell (AppShellSkeleton) reuses the exact same rows.
+export function ChatListSkeleton() {
+  return (
+    <div className="oc-sidebar__skeleton" aria-hidden="true">
+      {Array.from({ length: 7 }).map((_, i) => (
+        <div key={i} className="oc-skel oc-skel--row" />
+      ))}
+    </div>
+  );
+}
+
 export function ChatSidebar({
   activeChatId,
   onSelect,
@@ -188,6 +201,9 @@ export function ChatSidebar({
     if (!pendingRef.current && chats) setBuffer(chats);
   }, [chats]);
   const rows = buffer ?? chats ?? [];
+  // First load: the query hasn't resolved AND nothing is buffered yet -> show a
+  // skeleton list instead of an empty pane, so the sidebar takes shape immediately.
+  const isLoading = chats === undefined && buffer === null;
 
   const [activeDragId, setActiveDragId] = useState<Id<"chats"> | null>(null);
   const [noProjectCollapsed, setNoProjectCollapsed] = useState(
@@ -383,6 +399,10 @@ export function ChatSidebar({
         onDragEnd={handleDragEnd}
       >
         <div className="oc-sidebar__scroll">
+          {isLoading ? (
+            <ChatListSkeleton />
+          ) : (
+          <>
           {pinned.length > 0 ? (
             <Section label={m.sidebar_pinned()} chats={pinned}>
               {pinned.map((c) => (
@@ -455,6 +475,8 @@ export function ChatSidebar({
                 ))
               : null}
           </Section>
+          </>
+          )}
         </div>
 
         <DragOverlay>

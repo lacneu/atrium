@@ -259,6 +259,18 @@ function flattenStrings(value: Json): string[] {
   return out;
 }
 
+// OpenClaw flags a SUCCESSFUL `sessions_spawn` result with isError:true (the child IS
+// created — its childSessionKey sits inside the result payload — yet the tool is marked
+// errored). Treat a spawn whose result carries a childSessionKey as SUCCESS so the tool
+// card doesn't falsely read "error" (mirrors the sub-agent observer's extractChildSession
+// Key: childSessionKey presence — not isError — is the real success signal).
+function spawnResultAccepted(name: unknown, result: unknown): boolean {
+  if (name !== "sessions_spawn") return false;
+  return flattenStrings(result as Json).some((s) =>
+    s.includes("childSessionKey"),
+  );
+}
+
 function extractLifecycleError(error: Json): string {
   if (isString(error) && error.trim()) {
     return error.trim();
@@ -760,10 +772,17 @@ export class Normalizer {
             ? this.toolArgs.get(toolCallId)
             : data.args;
         if (toolCallId) this.toolArgs.delete(toolCallId);
+        // OpenClaw flags a SUCCESSFUL `sessions_spawn` result with isError:true (the
+        // child IS created — its childSessionKey is in the result — yet the tool is
+        // marked errored). Treat a spawn whose result carries a childSessionKey as
+        // SUCCESS so the card doesn't falsely read "error" (mirrors the observer's
+        // extractChildSessionKey: childSessionKey presence is the real success signal).
+        const errored =
+          data.isError === true && !spawnResultAccepted(name, data.result);
         events.push({
           type: EVENT_TOOL_STATUS,
           name: name ?? null,
-          phase: data.isError === true ? "error" : "completed",
+          phase: errored ? "error" : "completed",
           input: input ?? undefined,
           output: data.result ?? undefined,
           runId: this.currentRunId,

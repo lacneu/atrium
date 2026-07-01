@@ -116,8 +116,7 @@
     },
     "web": {
       "search": {
-        "enabled": true,
-        "provider": "searxng"
+        "enabled": false
       },
       "fetch": {
         "enabled": true

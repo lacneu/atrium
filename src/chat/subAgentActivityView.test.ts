@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSubAgentActivityView,
-  failedSubAgentBeacon,
   isReportableSubAgent,
   shortSessionKey,
   statusTone,
-  subAgentActivityVisible,
-  subAgentCardsToShow,
   subAgentCountLabel,
-  subAgentFailedLabel,
   subAgentLabel,
+  subAgentProgressBadges,
   subAgentRowsForMessage,
+  subAgentToolsProgress,
   shortenSubAgentError,
   hasRunningSubAgent,
   type SubAgentRow,
@@ -106,6 +104,7 @@ describe("buildSubAgentActivityView", () => {
     ]);
     expect(view.cards.map((c) => c.id)).toEqual(["new", "mid", "old"]);
     expect(view.total).toBe(3);
+    expect(view.done).toBe(1);
     expect(view.running).toBe(1);
     expect(view.failed).toBe(1);
   });
@@ -151,58 +150,86 @@ describe("buildSubAgentActivityView", () => {
   });
 });
 
-describe("subAgentActivityVisible (the show/hide gate)", () => {
-  it("renders NOTHING when the gateway capability is absent (even with a failure)", () => {
-    expect(subAgentActivityVisible(true, false, 3, 1)).toBe(false);
-    expect(subAgentActivityVisible(false, false, 3, 1)).toBe(false);
+describe("subAgentProgressBadges (multi-sub-agent summary header)", () => {
+  it("is EMPTY for a single sub-agent (its own card carries the status)", () => {
+    expect(subAgentProgressBadges(buildSubAgentActivityView([row()]))).toEqual([]);
   });
 
-  it("renders nothing with no sub-agents at all", () => {
-    expect(subAgentActivityVisible(true, true, 0, 0)).toBe(false);
-  });
-
-  it("ANALYSIS view (show on) is visible whenever there are rows", () => {
-    expect(subAgentActivityVisible(true, true, 1, 0)).toBe(true);
-    expect(subAgentActivityVisible(true, true, 2, 1)).toBe(true);
-  });
-
-  it("CLEAN view (show off) is visible ONLY when a sub-agent failed", () => {
-    // Bug C: a failed/hung child must surface even with the tools toggle off.
-    expect(subAgentActivityVisible(false, true, 3, 1)).toBe(true);
-    // No failure in the clean view -> stay hidden (running/done is meta).
-    expect(subAgentActivityVisible(false, true, 3, 0)).toBe(false);
-  });
-});
-
-describe("subAgentCardsToShow (which cards render per view mode)", () => {
-  const view = buildSubAgentActivityView([
-    row({ _id: "r", status: "running", createdAt: 3 }),
-    row({ _id: "f", status: "error", createdAt: 2 }),
-    row({ _id: "d", status: "done", createdAt: 1 }),
-  ]);
-
-  it("ANALYSIS view (show on) renders ALL cards", () => {
-    expect(subAgentCardsToShow(view.cards, true).map((c) => c.id)).toEqual([
-      "r",
-      "f",
-      "d",
+  it("emits one badge per NON-ZERO tone in a STABLE order: done, running, failed", () => {
+    const view = buildSubAgentActivityView([
+      row({ _id: "a", childSessionKey: "k:a", status: "done", createdAt: 3 }),
+      row({ _id: "b", childSessionKey: "k:b", status: "running", createdAt: 2 }),
+      row({ _id: "c", childSessionKey: "k:c", status: "error", createdAt: 1 }),
+    ]);
+    expect(subAgentProgressBadges(view)).toEqual([
+      { tone: "done", count: 1 },
+      { tone: "running", count: 1 },
+      { tone: "failed", count: 1 },
     ]);
   });
 
-  it("CLEAN view (show off) renders ONLY the failed cards", () => {
-    expect(subAgentCardsToShow(view.cards, false).map((c) => c.id)).toEqual([
-      "f",
+  it("SUPPRESSES zero-count tones (all done -> only the done badge)", () => {
+    const view = buildSubAgentActivityView([
+      row({ _id: "a", childSessionKey: "k:a", status: "done", createdAt: 2 }),
+      row({ _id: "b", childSessionKey: "k:b", status: "done", createdAt: 1 }),
+    ]);
+    expect(subAgentProgressBadges(view)).toEqual([{ tone: "done", count: 2 }]);
+  });
+
+  it("folds aborted into the failed tone and keeps the running,failed order", () => {
+    const view = buildSubAgentActivityView([
+      row({ _id: "a", childSessionKey: "k:a", status: "aborted", createdAt: 2 }),
+      row({ _id: "b", childSessionKey: "k:b", status: "running", createdAt: 1 }),
+    ]);
+    expect(subAgentProgressBadges(view)).toEqual([
+      { tone: "running", count: 1 },
+      { tone: "failed", count: 1 },
     ]);
   });
 });
 
-describe("subAgentFailedLabel (i18n singular/plural branches)", () => {
-  it("uses the SINGULAR message for one failed sub-agent", () => {
-    expect(subAgentFailedLabel(1)).toBe("1 sous-agent en échec");
+describe("child tools (Inc 4 — toCard mapping + progress)", () => {
+  it("maps the child's tools onto the card, KEEPING toolCallId (the detail join key)", () => {
+    const card = buildSubAgentActivityView([
+      row({
+        status: "done",
+        tools: [
+          { name: "exec", status: "done", toolCallId: "c1" },
+          { name: "web_search", status: "running", toolCallId: "c2" },
+        ],
+      }),
+    ]).cards[0];
+    // toolCallId is preserved so the panel correlates each summary tool to its
+    // args/result detail row (subAgentToolParts) — without it the card count and
+    // the rendered detail could diverge.
+    expect(card.tools).toEqual([
+      { name: "exec", status: "done", toolCallId: "c1" },
+      { name: "web_search", status: "running", toolCallId: "c2" },
+    ]);
   });
 
-  it("uses the PLURAL message for several failed sub-agents", () => {
-    expect(subAgentFailedLabel(2)).toBe("2 sous-agents en échec");
+  it("leaves card.tools undefined when the child used no tools", () => {
+    const card = buildSubAgentActivityView([row({ status: "done" })]).cards[0];
+    expect(card.tools).toBeUndefined();
+  });
+
+  it("subAgentToolsProgress counts total / done / running", () => {
+    expect(
+      subAgentToolsProgress([
+        { status: "done" },
+        { status: "running" },
+        { status: "done" },
+      ]),
+    ).toEqual({ total: 3, done: 2, running: 1 });
+  });
+
+  it("subAgentToolsProgress is all-zero for undefined / empty", () => {
+    expect(subAgentToolsProgress(undefined)).toEqual({
+      total: 0,
+      done: 0,
+      running: 0,
+    });
+    expect(subAgentToolsProgress([])).toEqual({ total: 0, done: 0, running: 0 });
   });
 });
 
@@ -371,64 +398,3 @@ describe("subAgentRowsForMessage (per-message ownership join)", () => {
   });
 });
 
-describe("failedSubAgentBeacon (persistent chat-level failure signal)", () => {
-  it("is hidden when the gateway capability is absent (even WITH a failure)", () => {
-    expect(failedSubAgentBeacon([row({ status: "error" })], false)).toEqual({
-      visible: false,
-      count: 0,
-      jumpIds: [],
-    });
-  });
-
-  it("is hidden when no sub-agent failed (running/done only)", () => {
-    const b = failedSubAgentBeacon(
-      [row({ status: "running" }), row({ status: "done" })],
-      true,
-    );
-    expect(b.visible).toBe(false);
-    expect(b.count).toBe(0);
-    expect(b.jumpIds).toEqual([]);
-  });
-
-  it("counts BOTH error and aborted as failures, excluding running/done", () => {
-    const b = failedSubAgentBeacon(
-      [
-        row({ _id: "e", status: "error" }),
-        row({ _id: "a", status: "aborted" }),
-        row({ _id: "r", status: "running" }),
-        row({ _id: "d", status: "done" }),
-      ],
-      true,
-    );
-    expect(b.visible).toBe(true);
-    expect(b.count).toBe(2);
-    // Running/done never become jump targets.
-    expect(b.jumpIds).not.toContain("r");
-    expect(b.jumpIds).not.toContain("d");
-  });
-
-  it("orders jumpIds oldest-first so the first jump is the TOPMOST failure", () => {
-    // Discriminating: an unordered (or newest-first) selection would jump past
-    // the earliest failure — the one most likely scrolled far up.
-    const b = failedSubAgentBeacon(
-      [
-        row({ _id: "late", status: "error", createdAt: 3000 }),
-        row({ _id: "early", status: "aborted", createdAt: 1000 }),
-        row({ _id: "mid", status: "error", createdAt: 2000 }),
-      ],
-      true,
-    );
-    expect(b.jumpIds).toEqual(["early", "mid", "late"]);
-  });
-
-  it("tie-breaks equal-createdAt failures by id for a deterministic order", () => {
-    const b = failedSubAgentBeacon(
-      [
-        row({ _id: "zeta", status: "error", createdAt: 1000 }),
-        row({ _id: "alpha", status: "error", createdAt: 1000 }),
-      ],
-      true,
-    );
-    expect(b.jumpIds).toEqual(["alpha", "zeta"]);
-  });
-});

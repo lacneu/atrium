@@ -144,6 +144,10 @@ export interface ConvexMessageView {
   routedAgentId?: string;
   /** L2: count of ready downloadable document attachments (Sources-chip badge). */
   attachedDocCount?: number;
+  /** Dispatch lifecycle (from loadChatView): the outbox row + its status
+   *  (queued | pending | sent | failed). `queued` = this user turn is parked in the
+   *  mid-turn QUEUE behind the in-flight turn. null when no outbox row. */
+  outbox?: { outboxId: string; status: string } | null;
   updatedAt: number;
   parts: ConvexMessagePartView[];
 }

@@ -3,6 +3,7 @@ import {
   StreamdownTextPrimitive,
   type StreamdownTextComponents,
 } from "@assistant-ui/react-streamdown";
+import { Streamdown, type StreamdownProps } from "streamdown";
 import { isNavigableHref } from "./markdownLinks";
 
 // Anchor renderer for AGENT-AUTHORED markdown. Two cases:
@@ -56,6 +57,23 @@ const components = { a: AgentAnchor } as StreamdownTextComponents;
 // apply; we deliberately do NOT import Streamdown's own stylesheet (it would fight
 // the shadcn tokens). GFM (tables/strikethrough/task lists) is built in. `a` keeps
 // the untrusted-link AgentAnchor above; HTML is sanitized by Streamdown.
+const agentMdComponents = { a: AgentAnchor } as StreamdownProps["components"];
+
+/**
+ * Render ARBITRARY agent markdown (a sub-agent's result, a delegated empty-state
+ * answer) with the SAME `.oc-md` charte + untrusted-link safety as a main-agent
+ * reply — so a DELEGATED answer looks IDENTICAL to a normal one (the user's point:
+ * "no difference, the agent just used an extra tool"). Unlike MarkdownText (which
+ * reads the assistant-ui part context), this takes the text directly.
+ */
+export function AgentMarkdown({ text }: { text: string }) {
+  return (
+    <Streamdown className="oc-md" components={agentMdComponents}>
+      {text}
+    </Streamdown>
+  );
+}
+
 export const MarkdownText = memo(function MarkdownText() {
   return (
     <StreamdownTextPrimitive

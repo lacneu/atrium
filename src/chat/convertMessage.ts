@@ -192,6 +192,11 @@ export function convertConvexMessage(
         // L2: count of READY downloadable document attachments for this turn —
         // drives the subtle "joints" badge on the Sources chip.
         attachedDocCount: message.attachedDocCount ?? 0,
+        // Mid-turn QUEUE: this user turn was sent while the chat was BUSY, so it is
+        // parked as a `queued` outbox row awaiting the in-flight turn to drain.
+        // Drives the "en attente" badge; clears reactively when the drainer promotes
+        // it to dispatch (status -> pending/sent). Only meaningful for user turns.
+        queued: message.role === "user" && message.outbox?.status === "queued",
         // The EXACT stored text — the verbatim string for the "Source" view (no
         // markdown, no autocorrect, no transformation). For the user turn this is
         // what was typed/sent; for the assistant turn it is the gateway's final

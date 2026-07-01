@@ -36,9 +36,81 @@ const STATUS = v.union(
   v.literal("aborted"),
 );
 
+/** The child's STATIC session config (model / reasoning / speed / scope). CONFIG, not
+ *  content — SOC2-safe (the obs MCP may surface these). NO live telemetry here. */
+const SESSION_META = v.object({
+  model: v.optional(v.string()),
+  modelProvider: v.optional(v.string()),
+  thinkingLevel: v.optional(v.string()),
+  fastMode: v.optional(v.boolean()),
+  controlScope: v.optional(v.string()),
+  subagentRole: v.optional(v.string()),
+  spawnDepth: v.optional(v.number()),
+  context: v.optional(v.string()),
+  runtime: v.optional(v.string()),
+  mode: v.optional(v.string()),
+  cleanup: v.optional(v.string()),
+  sandbox: v.optional(v.string()),
+  gatewayKind: v.optional(v.string()),
+});
+export type SubAgentSessionMeta = {
+  model?: string;
+  modelProvider?: string;
+  thinkingLevel?: string;
+  fastMode?: boolean;
+  controlScope?: string;
+  subagentRole?: string;
+  spawnDepth?: number;
+  context?: string;
+  runtime?: string;
+  mode?: string;
+  cleanup?: string;
+  sandbox?: string;
+  gatewayKind?: string;
+};
+
 /** Terminal child lifecycle states (no longer holding the chat — see isChatBusy). */
 function isTerminalStatus(status: string): boolean {
   return status === "done" || status === "error" || status === "aborted";
+}
+
+/** One captured child tool: NAME + lifecycle status only (SOC2 — never args/results). */
+export type SubAgentTool = {
+  name: string;
+  status: "running" | "done";
+  toolCallId?: string;
+};
+
+/**
+ * Merge an incoming child-tool list into the stored one, REORDER-TOLERANT (the
+ * observer fires upserts off any ordering chain): dedupe by toolCallId (else name),
+ * keep the first-seen ORDER, and let "done" win over "running" so a late
+ * earlier-running frame never un-finishes a tool that already completed. Exported
+ * for unit tests (the upsert's reorder-tolerance is the whole point).
+ */
+export function mergeSubAgentTools(
+  existing: SubAgentTool[] | undefined,
+  incoming: SubAgentTool[] | undefined,
+): SubAgentTool[] | undefined {
+  if (incoming === undefined) return existing;
+  const out: SubAgentTool[] = [];
+  const at = new Map<string, number>();
+  const keyOf = (t: SubAgentTool): string => t.toolCallId ?? `name:${t.name}`;
+  for (const t of existing ?? []) {
+    at.set(keyOf(t), out.length);
+    out.push({ ...t });
+  }
+  for (const t of incoming) {
+    const k = keyOf(t);
+    const i = at.get(k);
+    if (i === undefined) {
+      at.set(k, out.length);
+      out.push({ ...t });
+    } else if (t.status === "done") {
+      out[i] = { ...out[i], name: t.name, status: "done" };
+    }
+  }
+  return out;
 }
 
 /**
@@ -73,6 +145,16 @@ export const upsertSubAgent = internalMutation({
     resultText: v.optional(v.string()),
     phase: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
+    tools: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          status: v.union(v.literal("running"), v.literal("done")),
+          toolCallId: v.optional(v.string()),
+        }),
+      ),
+    ),
+    sessionMeta: v.optional(SESSION_META),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -96,6 +178,8 @@ export const upsertSubAgent = internalMutation({
         resultText: args.resultText,
         phase: args.phase,
         errorMessage: args.errorMessage,
+        tools: args.tools,
+        sessionMeta: args.sessionMeta,
         createdAt: now,
         updatedAt: now,
       });
@@ -116,6 +200,8 @@ export const upsertSubAgent = internalMutation({
       phase?: string;
       errorMessage?: string;
       taskName?: string;
+      tools?: SubAgentTool[];
+      sessionMeta?: SubAgentSessionMeta;
       parentMessageId?: typeof args.parentMessageId;
       updatedAt: number;
     } = { updatedAt: now };
@@ -127,6 +213,17 @@ export const upsertSubAgent = internalMutation({
     if (args.errorMessage !== undefined) patch.errorMessage = args.errorMessage;
     // Drop a stale phase update once the child is terminal.
     if (args.phase !== undefined && !terminal) patch.phase = args.phase;
+    // Merge the child's tools (accumulates across frames — a finished child KEEPS
+    // the tools it used, so merge even when terminal). Reorder-tolerant.
+    if (args.tools !== undefined) {
+      patch.tools = mergeSubAgentTools(existing.tools, args.tools);
+    }
+    // Merge the static session config last-known-non-null (a later frame without a
+    // session object never wipes a captured field; the observer only sends it on a
+    // real change, so this is a rare write).
+    if (args.sessionMeta !== undefined) {
+      patch.sessionMeta = { ...existing.sessionMeta, ...args.sessionMeta };
+    }
     // Backfill identity fields only if not already set (registration carries them;
     // later child frames don't, so don't clobber).
     if (args.taskName !== undefined && existing.taskName === undefined) {
@@ -249,5 +346,96 @@ export const listSubAgents = query({
     // Stable, useful order for a future UI: most-recently-spawned first.
     rows.sort((a, b) => b.createdAt - a.createdAt);
     return rows;
+  },
+});
+
+/**
+ * Upsert one of a sub-agent's TOOL-CALL details (args + result) by
+ * (childSessionKey, toolCallId). Kept in its OWN table (NOT the `subAgents.tools[]`
+ * summary array) so a many-tool child does not re-push the whole array per write
+ * (the streamingText write-amplification lesson). INSERT on first sight (usually the
+ * `start` frame, args known); PATCH on the later `result`/`update` frame (status →
+ * done/error, resultText set). Reorder-tolerant, mirroring `upsertSubAgent`:
+ *   - a terminal status (done/error) is never downgraded back to running;
+ *   - argsText/resultText are only overwritten when SUPPLIED, so a stale running
+ *     frame that omits them never wipes a captured value.
+ * Best-effort + off any ordering chain (the bridge fires it fire-and-forget).
+ */
+export const upsertSubAgentToolPart = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    toolCallId: v.string(),
+    name: v.string(),
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("error"),
+    ),
+    argsText: v.optional(v.string()),
+    resultText: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("subAgentToolParts")
+      .withIndex("by_child_tool", (q) =>
+        q
+          .eq("childSessionKey", args.childSessionKey)
+          .eq("toolCallId", args.toolCallId),
+      )
+      .first();
+
+    if (existing === null) {
+      // Don't recreate detail for a chat purged mid-flight (mirrors upsertSubAgent).
+      if ((await ctx.db.get(args.chatId)) === null) return null;
+      return await ctx.db.insert("subAgentToolParts", {
+        chatId: args.chatId,
+        childSessionKey: args.childSessionKey,
+        toolCallId: args.toolCallId,
+        name: args.name,
+        status: args.status,
+        argsText: args.argsText,
+        resultText: args.resultText,
+        updatedAt: now,
+      });
+    }
+
+    const terminal = existing.status === "done" || existing.status === "error";
+    const patch: {
+      name: string;
+      status?: "running" | "done" | "error";
+      argsText?: string;
+      resultText?: string;
+      updatedAt: number;
+    } = { updatedAt: now, name: args.name };
+    if (!(terminal && args.status === "running")) patch.status = args.status;
+    if (args.argsText !== undefined) patch.argsText = args.argsText;
+    if (args.resultText !== undefined) patch.resultText = args.resultText;
+    await ctx.db.patch(existing._id, patch);
+    return existing._id;
+  },
+});
+
+/**
+ * OWNER-SCOPED detail of ONE sub-agent's tool calls (args + result), first-seen
+ * order. The panel fetches this ON DEMAND when it opens a sub-agent (the Sources-
+ * panel pattern) so the heavy per-tool content never rides the always-loaded
+ * `listSubAgents`. `requireOwnedChat` is the access boundary; the result is further
+ * filtered to this chat's rows (defense-in-depth, since a childSessionKey is a bare
+ * UUID lane that does not embed the chatId).
+ */
+export const listSubAgentToolParts = query({
+  args: { chatId: v.id("chats"), childSessionKey: v.string() },
+  handler: async (ctx, { chatId, childSessionKey }) => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedChat(ctx, userId, chatId);
+    const rows = await ctx.db
+      .query("subAgentToolParts")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+      .collect();
+    return rows
+      .filter((r) => r.chatId === chatId)
+      .sort((a, b) => a._creationTime - b._creationTime);
   },
 });

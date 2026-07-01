@@ -115,6 +115,12 @@ class FakeWriter implements ConvexWriter {
     // Inbound-only sub-agent observation seam; not exercised by RunManager tests
     // (the observer is driven from Session, not RunManager).
   }
+  async upsertSubAgentToolPart(): Promise<void> {
+    // Per-tool detail seam; not exercised by RunManager tests.
+  }
+  async recordInteractionReply(): Promise<void> {
+    // 2c interaction-reply seam; not exercised by RunManager tests.
+  }
   emitRehydrateTrace(): void {
     // Content-free rehydration-decision trace; not exercised by RunManager tests.
   }

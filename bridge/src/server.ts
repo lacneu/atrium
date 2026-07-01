@@ -1700,6 +1700,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/agent-files",
       "/config-defaults",
       "/validate-media",
+      // Phase 2c: dispatch a user's message to a SUB-AGENT session (chat.send to the
+      // child key), arming the observer to capture the reply. Convex verifies IDOR.
+      "/subagent-send",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -1793,6 +1796,102 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compact failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    // Phase 2c: the user's "Interagir" message -> a chat.send addressed to the CHILD
+    // session key (verified live: the gateway routes it + the reply streams back on
+    // the child lane). Convex's sendToSubAgent already re-derived + IDOR-checked the
+    // target (child MUST belong to the owned chat); here we acquire the parent's
+    // operator connection (which can address any sessionKey), ARM the observer to
+    // capture the reply, then dispatch. The reply is recorded async by the observer.
+    if (req.url === "/subagent-send") {
+      let body: {
+        instanceName?: string;
+        agentId?: string;
+        canonical?: string;
+        chatId?: string;
+        openclawChatId?: string | null;
+        childSessionKey?: string;
+        interactionId?: string;
+        message?: string;
+        // INLINE base64 attachments ({type,mimeType,fileName,content}) — same shape as
+        // the main /send path. The child is WARM/resumed (context server-side), so the
+        // frame is just {message + attachment}: NO rehydration, only the base64 guard.
+        attachments?: unknown;
+      };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid json" });
+        return;
+      }
+      const saInstance = body.instanceName;
+      if (!saInstance || !served.has(saInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (!body.childSessionKey || !body.interactionId || !body.message) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "childSessionKey + interactionId + message required",
+        });
+        return;
+      }
+      try {
+        const session = await registry.acquire(
+          toRouting(
+            {
+              chatId: body.chatId ?? "",
+              openclawChatId: body.openclawChatId ?? null,
+              agentId: body.agentId ?? "",
+              canonical: body.canonical ?? "",
+            } as never,
+            saInstance,
+          ),
+        );
+        // Arm BEFORE the send so a re-woken child's terminal is recognized as this
+        // interaction's reply (the child is usually already reaped after its spawn).
+        session.armSubAgentInteraction(body.childSessionKey, body.interactionId);
+        const saParams: Record<string, unknown> = {
+          sessionKey: body.childSessionKey,
+          message: body.message,
+          // Stable per interaction so a dispatch retry dedupes at the gateway.
+          idempotencyKey: `interaction-${body.interactionId}`,
+        };
+        const saAtts = body.attachments;
+        if (Array.isArray(saAtts) && saAtts.length > 0) {
+          // Frame guard (mirror the main /send path): the attachment rides THIS
+          // chat.send as inline base64 — reject an oversized frame BEFORE sending so
+          // it never closes the gateway socket. Size by the SUM of base64 only.
+          const base64Bytes = (saAtts as Array<{ content?: unknown }>).reduce(
+            (sum, a) =>
+              sum + (typeof a?.content === "string" ? a.content.length : 0),
+            0,
+          );
+          const conn = session.connection;
+          if (
+            conn.maxPayload !== null &&
+            !base64FitsFrame(base64Bytes, conn.maxPayload)
+          ) {
+            sendJson(res, 502, {
+              ok: false,
+              error: { code: "attachment_too_large" },
+            });
+            return;
+          }
+          saParams.attachments = saAtts;
+        }
+        await session.connection.request("chat.send", saParams, 20_000);
+        sendJson(res, 200, { ok: true });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /subagent-send failed [${code}]:`,
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });

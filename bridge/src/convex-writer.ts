@@ -53,6 +53,70 @@ export interface SubAgentRecord {
   // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
   // monitor show WHY a sub-agent failed / why the parent is stuck.
   errorMessage?: string;
+  // The tools the CHILD called -- NAME + lifecycle status ONLY here (the cheap,
+  // always-loaded summary on the subAgents doc). The full per-tool DETAIL (args +
+  // result) rides on `toolPart` below and is routed to a SEPARATE table. Deduped/
+  // merged by the Convex upsert.
+  tools?: Array<{ name: string; status: "running" | "done"; toolCallId?: string }>;
+  // OPTIONAL per-tool DETAIL piggybacked on the same tool-frame emission: the args /
+  // result for ONE tool call. Session.flushSubAgentObserved routes it to its own
+  // table (subAgentToolParts) so a many-tool child does not re-push the whole tools[]
+  // array per write. In-app user data; server-paths stripped by the observer.
+  toolPart?: SubAgentToolPartRecord;
+  // The child's STATIC session config (model / reasoning / speed / scope), emitted
+  // ONLY when a static field changes (write-once in practice). CONFIG, not content.
+  sessionMeta?: SubAgentSessionMeta;
+  // Phase 2c: when set, this frame carried the reply to a USER INTERACTION (the child
+  // was re-woken by a chat.send from "Interagir"). Routed to the interaction record
+  // (NOT the subAgents.resultText, which stays the original answer). Present only on
+  // the interaction's terminal frame.
+  interactionReply?: SubAgentInteractionReply;
+}
+
+/** The child's reply to a user interaction (2c), keyed by the Convex interactionId. */
+export interface SubAgentInteractionReply {
+  interactionId: string;
+  status: "done" | "error";
+  replyText?: string;
+  errorMessage?: string;
+}
+
+/** The child's STATIC session config for the panel session bar. CONFIG (SOC2-safe);
+ *  NO live telemetry (tokens/cost) -- that would be a write-per-tick. */
+export interface SubAgentSessionMeta {
+  model?: string;
+  modelProvider?: string;
+  thinkingLevel?: string;
+  fastMode?: boolean;
+  controlScope?: string;
+  subagentRole?: string;
+  spawnDepth?: number;
+  // Spawn-time config (from the sessions_spawn args). ALL optional (present only when
+  // the spawn set them). `context: "fork"` branches the parent transcript into the
+  // child (config, but a higher-sensitivity content signal). `gatewayKind` is the
+  // source gateway (session.agentRuntime.id) — the provider seam for a later Hermes.
+  context?: string;
+  runtime?: string;
+  mode?: string;
+  cleanup?: string;
+  sandbox?: string;
+  gatewayKind?: string;
+}
+
+/**
+ * Per-tool DETAIL for a sub-agent's call: the input (argsText) + output (resultText),
+ * keyed by (childSessionKey, toolCallId). Stored in its OWN table, fetched on demand
+ * by the panel. The observability surfaces (MCP / KPI / traces) never carry this --
+ * it is the user's own in-app data, with server-paths stripped + lengths capped.
+ */
+export interface SubAgentToolPartRecord {
+  chatId: string;
+  childSessionKey: string;
+  toolCallId: string;
+  name: string;
+  status: "running" | "done" | "error";
+  argsText?: string;
+  resultText?: string;
 }
 
 /**
@@ -118,6 +182,19 @@ export interface ConvexWriter {
    * on -- mirroring reportSessionMeta.
    */
   upsertSubAgent(record: SubAgentRecord): Promise<void>;
+  /**
+   * Per-tool DETAIL upsert (args + result) for a sub-agent call -> its OWN table
+   * (subAgentToolParts), keyed by (childSessionKey, toolCallId). Best-effort + off
+   * any chain, exactly like upsertSubAgent: a child outlives the parent turn and a
+   * failed detail write must never wedge the consume loop.
+   */
+  upsertSubAgentToolPart(record: SubAgentToolPartRecord): Promise<void>;
+  /**
+   * Record a sub-agent's reply to a user INTERACTION (2c) -> the interaction record,
+   * keyed by interactionId. Best-effort + off any chain (the reply arrives after the
+   * child re-wakes; a failed write must never wedge the consume loop).
+   */
+  recordInteractionReply(reply: SubAgentInteractionReply): Promise<void>;
   /**
    * Re-hydration DECISION trace (content-free reconstruction record) -> an
    * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
@@ -259,6 +336,28 @@ type IngestOp =
       status: "running" | "done" | "error" | "aborted";
       resultText?: string;
       phase?: string;
+      errorMessage?: string;
+      tools?: Array<{ name: string; status: "running" | "done"; toolCallId?: string }>;
+      sessionMeta?: SubAgentSessionMeta;
+    }
+  // Per-tool DETAIL (args + result) for a sub-agent call -> its own table. Keyed by
+  // (childSessionKey, toolCallId). In-app user data; server-paths stripped.
+  | {
+      op: "upsertSubAgentToolPart";
+      chatId: string;
+      childSessionKey: string;
+      toolCallId: string;
+      name: string;
+      status: "running" | "done" | "error";
+      argsText?: string;
+      resultText?: string;
+    }
+  // Phase 2c: a sub-agent's reply to a user interaction -> the interaction record.
+  | {
+      op: "recordSubAgentInteractionReply";
+      interactionId: string;
+      status: "done" | "error";
+      replyText?: string;
       errorMessage?: string;
     };
 
@@ -1017,6 +1116,34 @@ export class HttpConvexWriter implements ConvexWriter {
       resultText: record.resultText,
       phase: record.phase,
       errorMessage: record.errorMessage,
+      tools: record.tools,
+      sessionMeta: record.sessionMeta,
+    });
+  }
+
+  async upsertSubAgentToolPart(record: SubAgentToolPartRecord): Promise<void> {
+    // Same contract as upsertSubAgent: independent of the per-message chain, fired
+    // best-effort by the call site. One small tool's payload per write (no array
+    // re-push), upserted by (childSessionKey, toolCallId) on the Convex side.
+    await this.doPost({
+      op: "upsertSubAgentToolPart",
+      chatId: record.chatId,
+      childSessionKey: record.childSessionKey,
+      toolCallId: record.toolCallId,
+      name: record.name,
+      status: record.status,
+      argsText: record.argsText,
+      resultText: record.resultText,
+    });
+  }
+
+  async recordInteractionReply(reply: SubAgentInteractionReply): Promise<void> {
+    await this.doPost({
+      op: "recordSubAgentInteractionReply",
+      interactionId: reply.interactionId,
+      status: reply.status,
+      replyText: reply.replyText,
+      errorMessage: reply.errorMessage,
     });
   }
 }

@@ -414,8 +414,436 @@ describe("extractTaskName (labeled vs plain spawn meta)", () => {
       extractTaskName("label timeout_child, task block on sleep 600, agent alice"),
     ).toBe("timeout_child");
   });
+  it("2026.6.10 meta: strips a trailing ', cleanup X' (renamed from ', agent X')", () => {
+    // A label-less 6.10 spawn ends with ", cleanup delete" — the task must survive.
+    expect(
+      extractTaskName("task Réponds exactement : FORKOK, cleanup delete"),
+    ).toBe("Réponds exactement : FORKOK");
+    expect(extractTaskName("label doer, task do X, cleanup keep")).toBe("doer");
+  });
   it("returns undefined for null / unrecognized meta", () => {
     expect(extractTaskName(null)).toBeUndefined();
     expect(extractTaskName("nonsense")).toBeUndefined();
+  });
+});
+
+describe("SubAgentObserver — child TOOL capture (Inc 4: name + status only, SOC2)", () => {
+  // Synthetic child tool frames in the EXACT shape captured live on the PI bench
+  // (gateway 2026.6.10): a child's tool is stream:"tool" {data:{name,phase,
+  // toolCallId,args}} on the child lane, spawnedBy=parent — the same shape as a
+  // main-agent tool. We deliberately carry an `args` blob to assert it is NEVER
+  // stored (only name + status reach the upsert).
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_tools";
+  const CHILD = "agent:alice:subagent:tool-child-uuid";
+  const toolFrame = (
+    phase: string,
+    name: string,
+    toolCallId: string,
+  ): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      data: { phase, name, toolCallId, args: { secret: "NEVER_STORED_CONTENT" } },
+    },
+  });
+
+  it("records a tool NAME + running status on its start frame", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    expect(ups.at(-1)?.tools).toEqual([
+      { name: "exec", status: "running", toolCallId: "call_1" },
+    ]);
+  });
+
+  it("flips the SAME tool to done on its result frame (deduped by toolCallId)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    const ups = obs.observe(toolFrame("result", "exec", "call_1"), 101);
+    expect(ups.at(-1)?.tools).toEqual([
+      { name: "exec", status: "done", toolCallId: "call_1" },
+    ]);
+  });
+
+  it("accumulates multiple tools in first-seen order", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    obs.observe(toolFrame("result", "exec", "call_1"), 101);
+    const ups = obs.observe(toolFrame("start", "web_search", "call_2"), 102);
+    expect(ups.at(-1)?.tools).toEqual([
+      { name: "exec", status: "done", toolCallId: "call_1" },
+      { name: "web_search", status: "running", toolCallId: "call_2" },
+    ]);
+  });
+
+  // The child's tool args/results ARE captured now -- but ONLY on the separate
+  // `toolPart` (the in-app user-data detail), NEVER on the summary `tools[]` (the
+  // cheap, always-loaded list). The SOC2 content-free floor applies to the
+  // observability surfaces (MCP/KPI/traces), not to the user's own in-app data.
+  it("keeps args/results OFF the summary tools[] (only name + status there)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    expect(ups.at(-1)?.tools).toEqual([
+      { name: "exec", status: "running", toolCallId: "call_1" },
+    ]);
+    expect(JSON.stringify(ups.at(-1)?.tools)).not.toContain(
+      "NEVER_STORED_CONTENT",
+    );
+  });
+
+  it("captures the tool ARGS (start) on the toolPart, keyed by toolCallId", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    const part = ups.at(-1)?.toolPart;
+    expect(part?.toolCallId).toBe("call_1");
+    expect(part?.name).toBe("exec");
+    expect(part?.status).toBe("running");
+    expect(part?.argsText).toContain("NEVER_STORED_CONTENT");
+    expect(part?.resultText).toBeUndefined();
+  });
+
+  it("captures the tool RESULT text + flips the toolPart to done on result", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          data: {
+            phase: "result",
+            name: "exec",
+            toolCallId: "call_1",
+            isError: false,
+            result: { content: [{ type: "text", text: "EXEC_OUTPUT_OK" }] },
+          },
+        },
+      },
+      101,
+    );
+    const part = ups.at(-1)?.toolPart;
+    expect(part?.status).toBe("done");
+    expect(part?.resultText).toContain("EXEC_OUTPUT_OK");
+  });
+
+  it("marks the toolPart status 'error' when the result frame isError", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          data: {
+            phase: "result",
+            name: "exec",
+            toolCallId: "call_1",
+            isError: true,
+            result: { content: [{ type: "text", text: "boom" }] },
+          },
+        },
+      },
+      101,
+    );
+    expect(ups.at(-1)?.toolPart?.status).toBe("error");
+  });
+
+  it("ignores a child sessions_spawn (anti-recursion) — never a recorded tool", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    obs.observe(toolFrame("start", "sessions_spawn", "call_x"), 101); // must be ignored
+    const ups = obs.observe(toolFrame("result", "exec", "call_1"), 102);
+    expect(ups.at(-1)?.tools).toEqual([
+      { name: "exec", status: "done", toolCallId: "call_1" },
+    ]);
+  });
+
+  it("a duplicate running frame emits no redundant tools upsert (keep-alive)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(toolFrame("start", "exec", "call_1"), 100);
+    const dup = obs.observe(toolFrame("start", "exec", "call_1"), 101);
+    expect(dup.some((u) => u.tools !== undefined)).toBe(false);
+  });
+
+  it("bounds a pathological toolCallId before storage (codex review P2)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(toolFrame("start", "exec", "x".repeat(5000)), 100);
+    expect(ups.at(-1)?.tools?.[0]?.toolCallId?.length).toBe(200);
+  });
+});
+
+describe("SubAgentObserver — STATIC session meta capture (Phase 2b)", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_meta";
+  const CHILD = "agent:alice:subagent:meta-child";
+  // A child frame carrying a `payload.session` object (the shape the gateway sends).
+  const sessionFrame = (
+    session: Record<string, unknown>,
+    extraData: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      session,
+      data: { phase: "start", name: "exec", toolCallId: "c1", ...extraData },
+    },
+  });
+
+  const FULL = {
+    model: "gpt-5.5",
+    modelProvider: "openai",
+    thinkingLevel: "high",
+    effectiveFastMode: false,
+    subagentControlScope: "none",
+    subagentRole: "leaf",
+    spawnDepth: 1,
+    totalTokens: 12523, // live telemetry — must NOT be captured
+    estimatedCostUsd: 0,
+  };
+
+  it("captures the STATIC fields from payload.session (and maps the gateway names)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(sessionFrame(FULL), 100);
+    const meta = ups.find((u) => u.sessionMeta)?.sessionMeta;
+    expect(meta).toEqual({
+      model: "gpt-5.5",
+      modelProvider: "openai",
+      thinkingLevel: "high",
+      fastMode: false,
+      controlScope: "none",
+      subagentRole: "leaf",
+      spawnDepth: 1,
+    });
+  });
+
+  it("NEVER captures live telemetry (totalTokens / cost) — only static config", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(sessionFrame(FULL), 100);
+    const serialized = JSON.stringify(ups.find((u) => u.sessionMeta)?.sessionMeta);
+    expect(serialized).not.toContain("12523");
+    expect(serialized).not.toContain("totalTokens");
+    expect(serialized).not.toContain("estimatedCostUsd");
+  });
+
+  it("does NOT re-emit sessionMeta when only telemetry changes (no write-per-tick)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(sessionFrame(FULL), 100); // first-known emits
+    // Same static config, only tokens bumped: must NOT emit a sessionMeta upsert.
+    const ups = obs.observe(
+      sessionFrame({ ...FULL, totalTokens: 19873 }),
+      101,
+    );
+    expect(ups.some((u) => u.sessionMeta)).toBe(false);
+  });
+
+  it("merges last-known-non-null: a session-absent frame never wipes a captured field", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(sessionFrame({ model: "gpt-5.5" }), 100);
+    // A later frame WITHOUT a session object (the common case) — no meta change.
+    const ups = obs.observe(toolFrame("result", "exec", "c1"), 101);
+    expect(ups.some((u) => u.sessionMeta)).toBe(false);
+    // A frame that ADDS a field merges it on top of the kept model.
+    const ups2 = obs.observe(sessionFrame({ thinkingLevel: "low" }), 102);
+    expect(ups2.find((u) => u.sessionMeta)?.sessionMeta).toEqual({
+      model: "gpt-5.5", // preserved
+      thinkingLevel: "low", // added
+    });
+  });
+
+  // toolFrame is defined in the tool-capture describe; redefine the minimal one here.
+  function toolFrame(
+    phase: string,
+    name: string,
+    toolCallId: string,
+  ): Record<string, unknown> {
+    return {
+      event: "agent",
+      payload: {
+        stream: "tool",
+        sessionKey: CHILD,
+        spawnedBy: PARENT,
+        data: { phase, name, toolCallId },
+      },
+    };
+  }
+});
+
+describe("SubAgentObserver — user INTERACTION capture (Phase 2c)", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_ix";
+  const CHILD = "agent:alice:subagent:ix-child";
+  const finalFrame = (
+    state: string,
+    text: string,
+    errorMessage?: string,
+  ): Record<string, unknown> => ({
+    event: "chat",
+    payload: {
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      state,
+      ...(errorMessage ? { errorMessage } : {}),
+      message: { content: [{ type: "text", text }] },
+    },
+  });
+
+  it("armInteraction re-opens a reaped child + routes the reply to interactionReply (NEVER resultText)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    // The child's ORIGINAL spawn finishes + is reaped.
+    obs.observe(finalFrame("final", "original answer"), 100);
+    expect(obs.size).toBe(0);
+    // Arm an interaction — re-opens the reaped child (past the recentlyFinal guard).
+    obs.armInteraction(CHILD, "interaction123", 101);
+    expect(obs.size).toBe(1);
+    // The child's NEXT final is the interaction reply.
+    const rec = obs.observe(finalFrame("final", "the reply"), 102).at(-1);
+    expect(rec?.interactionReply).toEqual({
+      interactionId: "interaction123",
+      status: "done",
+      replyText: "the reply",
+    });
+    // NOT a resultText update — the original answer must never be overwritten.
+    expect(rec?.resultText).toBeUndefined();
+    // Placeholder status only (the flush routes it to the interaction store, not a
+    // subAgents patch), so it never terminalizes the subAgents row.
+    expect(rec?.status).toBe("running");
+  });
+
+  it("an interaction ERROR final -> interactionReply status error", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix1", 100);
+    const rec = obs
+      .observe(finalFrame("error", "Error: boom", "boom"), 101)
+      .at(-1);
+    expect(rec?.interactionReply?.interactionId).toBe("ix1");
+    expect(rec?.interactionReply?.status).toBe("error");
+  });
+});
+
+describe("SubAgentObserver — interaction TTL timeout (Phase 2c)", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_ixtt";
+  const CHILD = "agent:alice:subagent:ixtt-child";
+  it("a pending interaction whose reply never arrives is FAILED by the sweep (not left hanging)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1", { ttlSeconds: 10 });
+    obs.armInteraction(CHILD, "ix1", 100);
+    // No reply frame; the TTL elapses.
+    const out = obs.sweep(200);
+    expect(out.at(-1)?.interactionReply).toMatchObject({
+      interactionId: "ix1",
+      status: "error",
+    });
+    // The child was reaped (not left in the registry forever).
+    expect(obs.size).toBe(0);
+  });
+});
+
+describe("SubAgentObserver — spawn CONFIG + gateway kind (doc-driven Avancé)", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_cfg";
+  const CHILD = "agent:alice:subagent:cfg-child";
+  const CALLID = "call_spawn_cfg";
+
+  const startFrame = (args: Record<string, unknown>) => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: PARENT,
+      data: { phase: "start", name: "sessions_spawn", toolCallId: CALLID, args },
+    },
+  });
+  // The 2026.6.10 gateway names the result array `content` (was `contentItems`
+  // <=6.5) — the observer must read either or the spawn RESULT stops registering.
+  const resultFrame = (childKey: string, meta: string) => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: PARENT,
+      data: {
+        phase: "result",
+        name: "sessions_spawn",
+        toolCallId: CALLID,
+        result: { content: [{ text: JSON.stringify({ childSessionKey: childKey }) }] },
+        meta,
+      },
+    },
+  });
+
+  it("captures context/runtime/mode/cleanup from the START args + taskName, via the 6.10 `content` result", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(
+      startFrame({
+        task: "do X",
+        context: "fork",
+        runtime: "subagent",
+        mode: "run",
+        cleanup: "delete",
+      }),
+      100,
+    );
+    const ups = obs.observe(
+      resultFrame(CHILD, "label pi, task do X, cleanup delete"),
+      101,
+    );
+    expect(ups.at(-1)).toMatchObject({
+      taskName: "pi", // registration is NOT lost to the gateway field rename
+      sessionMeta: {
+        context: "fork",
+        runtime: "subagent",
+        mode: "run",
+        cleanup: "delete",
+      },
+    });
+  });
+
+  it("BACKFILLS taskName + config when the child's own frames register it BEFORE the spawn result (race)", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(startFrame({ task: "do X", runtime: "subagent", cleanup: "keep" }), 100);
+    // The child's OWN frame arrives first -> lazy registration (no taskName/config yet).
+    const lazy = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          data: { phase: "start", name: "exec", toolCallId: "x1" },
+        },
+      },
+      101,
+    );
+    expect(lazy.at(-1)?.taskName).toBeUndefined();
+    // The spawn RESULT lands later -> backfills onto the existing observation.
+    const ups = obs.observe(
+      resultFrame(CHILD, "label doer, task do X, cleanup keep"),
+      102,
+    );
+    expect(ups.at(-1)).toMatchObject({
+      taskName: "doer",
+      sessionMeta: { runtime: "subagent", cleanup: "keep" },
+    });
+  });
+
+  it("captures the gateway kind from session.agentRuntime.id", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          session: { agentRuntime: { id: "openclaw", source: "model" } },
+          data: { phase: "start", name: "exec", toolCallId: "c1" },
+        },
+      },
+      100,
+    );
+    expect(ups.find((u) => u.sessionMeta)?.sessionMeta?.gatewayKind).toBe(
+      "openclaw",
+    );
   });
 });

@@ -92,8 +92,14 @@ export const COMPAT_MANIFEST: CompatManifest = {
   protocolVersion: PROTOCOL_VERSION,
   providers: {
     openclaw: {
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.6.10" },
-      validatedVersions: ["2026.5.19", "2026.6.1", "2026.6.5", "2026.6.10"],
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.6.11" },
+      validatedVersions: [
+        "2026.5.19",
+        "2026.6.1",
+        "2026.6.5",
+        "2026.6.10",
+        "2026.6.11",
+      ],
       capabilities: OPENCLAW_CAPABILITIES,
     },
     // Structural placeholder: the Hermes adapter is pending. Declaring it here

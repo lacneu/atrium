@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMessage } from "@assistant-ui/react";
-import { Check, ChevronRight, LoaderCircle, Wrench } from "lucide-react";
+import { Check, LoaderCircle, Wrench } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
+import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import { toolActivitySummary, type ToolActivityPart } from "./toolActivityView";
 
@@ -44,33 +45,35 @@ export function ToolActivity() {
 
   const isExpanded = expanded;
   const summary = toolActivitySummary(toolParts, status);
+  const trailing = summary.running ? (
+    <>
+      <LoaderCircle
+        size={13}
+        className="oc-actrow__status-icon oc-actrow__spin"
+        aria-hidden
+      />
+      {m.tools_activity_running()}
+    </>
+  ) : (
+    <>
+      <Check size={13} className="oc-actrow__status-icon" aria-hidden />
+      <span className="oc-sr-only">{m.tools_activity_done()}</span>
+    </>
+  );
 
   return (
-    <div className={`oc-toolact${isExpanded ? " is-open" : ""}`}>
-      <button
-        type="button"
-        className="oc-toolact__summary"
-        aria-expanded={isExpanded}
+    <div className="oc-toolact">
+      <ActivityRow
+        icon={<Wrench size={14} />}
+        label={summary.label}
+        trailing={trailing}
+        open={isExpanded}
+        ariaExpanded={isExpanded}
         title={
           isExpanded ? m.tools_activity_collapse() : m.tools_activity_expand()
         }
         onClick={() => setExpanded(!isExpanded)}
-      >
-        <Wrench size={13} className="oc-toolact__icon" aria-hidden />
-        <span className="oc-toolact__label">{summary.label}</span>
-        {summary.running ? (
-          <span className="oc-toolact__state">
-            <LoaderCircle size={12} className="oc-toolact__spin" aria-hidden />
-            {m.tools_activity_running()}
-          </span>
-        ) : (
-          <span className="oc-toolact__state oc-toolact__state--done">
-            <Check size={12} aria-hidden />
-            <span className="oc-sr-only">{m.tools_activity_done()}</span>
-          </span>
-        )}
-        <ChevronRight size={14} className="oc-toolact__chevron" aria-hidden />
-      </button>
+      />
       {isExpanded ? (
         <div className="oc-toolact__detail">
           {toolParts.map((p) => (

@@ -304,6 +304,12 @@ class FakeWriter implements ConvexWriter {
   async upsertSubAgent(): Promise<void> {
     this.calls.push(["other", "upsertSubAgent"]);
   }
+  async upsertSubAgentToolPart(): Promise<void> {
+    this.calls.push(["other", "upsertSubAgentToolPart"]);
+  }
+  async recordInteractionReply(): Promise<void> {
+    this.calls.push(["other", "recordInteractionReply"]);
+  }
   emitRehydrateTrace(): void {
     this.calls.push(["other", "emitRehydrateTrace"]);
   }

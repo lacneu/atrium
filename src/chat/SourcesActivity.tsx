@@ -20,6 +20,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { ActivityRow } from "./ActivityRow";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -89,29 +90,31 @@ export function SourcesActivity() {
     return null;
   }
   const isActive = panel?.activeMessageId === messageId && messageId !== undefined;
-  return (
-    <button
-      type="button"
-      className={`oc-sources-trigger${isActive ? " is-active" : ""}`}
-      onClick={() => messageId && panel?.openFor(messageId)}
-      aria-haspopup="dialog"
-      aria-expanded={isActive}
-      aria-label={m.sources_trigger_aria()}
-    >
-      <FileText size={13} className="oc-sources-trigger__icon" aria-hidden />
-      <span className="oc-sources-trigger__label">{m.sources_label()}</span>
-      <span className="oc-sources-trigger__counts">{summaryLabel(summary)}</span>
+  const trailing = (
+    <>
+      <span className="oc-actrow__counts">{summaryLabel(summary)}</span>
       {attachedDocCount > 0 ? (
         <span
-          className="oc-sources-trigger__attached"
+          className="oc-actrow__badge"
           title={m.sources_attached_badge({ count: attachedDocCount })}
         >
           <Download size={12} aria-hidden />
           {attachedDocCount}
         </span>
       ) : null}
-      <ChevronRight size={14} className="oc-sources-trigger__chev" aria-hidden />
-    </button>
+    </>
+  );
+  return (
+    <ActivityRow
+      icon={<FileText size={14} />}
+      label={m.sources_label()}
+      trailing={trailing}
+      active={isActive}
+      ariaExpanded={isActive}
+      ariaHasPopup
+      ariaLabel={m.sources_trigger_aria()}
+      onClick={() => messageId && panel?.openFor(messageId)}
+    />
   );
 }
 
