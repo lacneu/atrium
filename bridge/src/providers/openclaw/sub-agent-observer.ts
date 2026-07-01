@@ -375,6 +375,37 @@ export class SubAgentObserver {
       if (toolUpserts !== null) return [...meta, ...toolUpserts];
     }
 
+    // --- HARNESS (codex app-server) child TOOL frame: on a harness gateway the
+    // child's tool calls ride `stream:"item"` frames {itemId, phase:start|end, kind:
+    // command|tool, name, status} — native `stream:"tool"` never fires on the child
+    // lane (live-captured 2026-07-01). Normalize to the SAME capture path (itemId is
+    // the call key; childToolStatus already maps "end" -> done). `kind:"analysis"`
+    // (reasoning) and the codex_app_server.item shapes (type:userMessage/...) are NOT
+    // tools — they fall through to keep-alive.
+    if (eventType === "agent" && stream === "item" && data !== null) {
+      const kind = readString(data, "kind");
+      if (kind === "command" || kind === "tool") {
+        const itemId = readString(data, "itemId");
+        const toolUpserts = this.observeChildTool(
+          obs,
+          {
+            name: data.name,
+            phase: data.phase,
+            ...(itemId !== null ? { toolCallId: itemId } : {}),
+            // Items flag failure via status:"failed" (no isError field), and their
+            // human `meta` description is the closest args-equivalent the harness
+            // exposes (items never carry args/result payloads).
+            ...(data.status === "failed" ? { isError: true } : {}),
+            ...(typeof data.meta === "string" && data.meta !== ""
+              ? { args: data.meta }
+              : {}),
+          },
+          now,
+        );
+        if (toolUpserts !== null) return [...meta, ...toolUpserts];
+      }
+    }
+
     // Any other child frame (assistant delta, provenance, a no-change tool): keep-
     // alive — emit a throttled heartbeat so a long-running child stays fresh.
     return [...meta, ...this.heartbeatIfDue(obs, now)];

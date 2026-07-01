@@ -1171,3 +1171,82 @@ describe("SubAgentObserver — codex round-3 fixes (fast-child backfill + top-le
     });
   });
 });
+
+describe("SubAgentObserver — HARNESS child tools (stream:item, real captured frames)", () => {
+  // REAL harness-mode capture (codex app-server, 2026-07-01): the child's tool calls
+  // ride stream:"item" frames — native stream:"tool" never fires on the child lane.
+  const HARNESS_FRAMES = readFileSync(
+    new URL("./fixtures/subagent_frames_harness.jsonl", import.meta.url),
+    "utf-8",
+  )
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"))
+    .map((l) => JSON.parse(l) as Record<string, any>);
+  const H_PARENT =
+    "agent:alice:atrium:chat:olivier:m974f21nhs2hwqemec35kpkw2x89pg1w";
+  const findH = (pred: (f: Record<string, any>) => boolean): Record<string, any> => {
+    const f = HARNESS_FRAMES.find(pred);
+    if (!f) throw new Error("harness fixture frame not found");
+    return f;
+  };
+  const H_CMD_START = findH(
+    (f) => f.payload?.data?.kind === "command" && f.payload?.data?.phase === "start",
+  );
+  const H_CMD_END = findH(
+    (f) =>
+      f.payload?.data?.kind === "command" &&
+      f.payload?.data?.phase === "end" &&
+      f.payload?.data?.status === "completed",
+  );
+  const H_CMD_FAILED = findH((f) => f.payload?.data?.status === "failed");
+  const H_ANALYSIS = findH((f) => f.payload?.data?.kind === "analysis");
+  const H_CODEX_ITEM = findH(
+    (f) => f.payload?.stream === "codex_app_server.item",
+  );
+
+  it("a command item start registers the tool as RUNNING (name from the real frame)", () => {
+    const obs = new SubAgentObserver(H_PARENT, "chatH");
+    const ups = obs.observe(H_CMD_START, 100);
+    const withTools = ups.find((u) => u.tools !== undefined);
+    expect(withTools?.tools).toEqual([
+      {
+        name: "bash",
+        status: "running",
+        toolCallId: H_CMD_START.payload.data.itemId,
+      },
+    ]);
+    // The item's human `meta` description rides as the args-equivalent detail.
+    expect(withTools?.toolPart?.argsText).toBe(H_CMD_START.payload.data.meta);
+  });
+
+  it("the matching item end flips it to DONE (same itemId join key)", () => {
+    const obs = new SubAgentObserver(H_PARENT, "chatH");
+    obs.observe(H_CMD_START, 100);
+    const ups = obs.observe(H_CMD_END, 101);
+    const withTools = ups.find((u) => u.tools !== undefined);
+    expect(withTools?.tools).toEqual([
+      {
+        name: "bash",
+        status: "done",
+        toolCallId: H_CMD_END.payload.data.itemId,
+      },
+    ]);
+  });
+
+  it("a FAILED item marks the tool-part detail status error", () => {
+    // This captured frame comes from a DIFFERENT run — key the observer on ITS
+    // parent (the contamination guard rightly rejects it under H_PARENT).
+    const obs = new SubAgentObserver(H_CMD_FAILED.payload.spawnedBy, "chatH2");
+    const ups = obs.observe(H_CMD_FAILED, 100);
+    const withTools = ups.find((u) => u.tools !== undefined);
+    expect(withTools?.toolPart?.status).toBe("error");
+  });
+
+  it("kind:analysis (reasoning) and codex_app_server.item shapes are NOT tools", () => {
+    const obs = new SubAgentObserver(H_PARENT, "chatH");
+    const a = obs.observe(H_ANALYSIS, 100);
+    const c = obs.observe(H_CODEX_ITEM, 101);
+    expect([...a, ...c].every((u) => u.tools === undefined)).toBe(true);
+  });
+});

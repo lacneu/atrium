@@ -8,6 +8,21 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.18.1] — Sub-agent tools on Codex-harness gateways
+
+A small corrective release, bridge-only. No breaking changes; nothing to deploy besides the bridge
+image.
+
+- **Sub-agent tool calls now appear on gateways running the Codex harness runtime.** On a gateway
+  whose models run through the Codex app-server (`agentRuntime: "codex"`), a sub-agent's tool calls
+  are emitted in a different frame shape than the native OpenClaw runtime — so the panel showed a
+  working sub-agent with no tools at all. The bridge now recognizes that shape too: the tool list,
+  its running/done progress, a failed call's error state, and the call's description all show up —
+  on both runtimes. (On the harness runtime the gateway does not expose the child's session
+  config/telemetry, so those panel fields stay absent there; the model/provider still display, seeded
+  from the spawn response.) Verified live against both runtimes, with the recognition driven by real
+  captured gateway frames.
+
 ## [0.18.0] — Complete sub-agent parameters and run telemetry
 
 A focused follow-up to 0.17.0: the sub-agent panel now reflects every spawn parameter the OpenClaw
