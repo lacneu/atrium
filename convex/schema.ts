@@ -1919,6 +1919,11 @@ export default defineSchema({
     reachable: v.boolean(), // could Convex reach the bridge /capabilities this poll?
     lastError: v.optional(v.string()), // poll-level reason code when unreachable
     bridgeVersion: v.union(v.string(), v.null()), // bridge package.json version
+    // Build-time truths (image env): the CI-stamped version + exact git sha.
+    // Optional (absent on pre-0.19.3 bridges). A buildVersion differing from
+    // bridgeVersion = the container is not the build it claims (banner warning).
+    buildVersion: v.optional(v.union(v.string(), v.null())),
+    buildRevision: v.optional(v.union(v.string(), v.null())),
     protocolVersion: v.union(v.number(), v.null()), // bridge contract version (2)
     // CompatManifest stored VERBATIM (forward-compatible), bounded at write time
     // by lib/compat.boundCompatManifest (plain JSON object, size-capped). null =

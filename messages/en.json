@@ -1314,6 +1314,8 @@
   "compat_section": "Compatibility",
   "compat_no_data": "No compatibility reading yet — the poll runs every 5 minutes.",
   "compat_bridge_version_label": "Bridge version:",
+  "compat_build_revision_hint": "Exact git commit of this image (build truth)",
+  "compat_build_mismatch": "⚠ image built at {build} — the container does not match its version",
   "compat_protocol_label": "Protocol:",
   "compat_unknown": "unknown",
   "compat_stale": "Last poll failed — showing the last good reading.",

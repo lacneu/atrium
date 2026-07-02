@@ -23,6 +23,11 @@ export type CompatTarget = {
 /** The normalized, storable projection of a /capabilities response body. */
 export type NormalizedCapabilities = {
   bridgeVersion: string | null;
+  /** Build-time truths (image env, frozen by CI): the stamped version + git sha.
+   *  null on a pre-0.19.3 bridge. A buildVersion differing from bridgeVersion
+   *  means the deployed container is not the build it claims. */
+  buildVersion: string | null;
+  buildRevision: string | null;
   protocolVersion: number | null;
   /** CompatManifest verbatim (bounded), or null = legacy bridge / bad shape. */
   compat: unknown;
@@ -231,6 +236,8 @@ export function normalizeCapabilitiesBody(
 
   return {
     bridgeVersion: str(o.bridgeVersion),
+    buildVersion: str(o.buildVersion),
+    buildRevision: str(o.buildRevision),
     protocolVersion:
       typeof o.protocolVersion === "number" ? o.protocolVersion : null,
     compat,

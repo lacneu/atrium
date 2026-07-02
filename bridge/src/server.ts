@@ -1511,6 +1511,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // Additive, non-secret: instances configured but not (yet) served + WHY. Lets the
         // admin UI / a curl show "olivier: bad_device" instead of needing docker logs.
         configIssues: getConfigIssues?.() ?? [],
+        // BUILD-time truths (image env, frozen by CI) beside the RUNTIME truth
+        // (bridgeVersion = package.json): a divergence means the deployed
+        // container is NOT the build you think — surfaced in the Settings banner.
+        buildVersion: process.env.ATRIUM_VERSION ?? null,
+        buildRevision: process.env.ATRIUM_REVISION ?? null,
       });
       return;
     }
@@ -1585,6 +1590,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         gatewayVersion: soleVersion,
         capabilities: openclawCapabilities(),
         bridgeVersion: BRIDGE_VERSION,
+        // Build-time truths (image env) beside the runtime bridgeVersion — the
+        // compat poller persists them so the banner can flag a divergence.
+        buildVersion: process.env.ATRIUM_VERSION ?? null,
+        buildRevision: process.env.ATRIUM_REVISION ?? null,
         protocolVersion: PROTOCOL_VERSION,
         compat: COMPAT_MANIFEST,
         targets,

@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.19.3] — Deploy-verification built in: two version truths per image
+
+A small operability release. No breaking changes; Convex changes are additive.
+
+- **Every image now carries a second, independent version truth — and the UI flags a divergence.**
+  Diagnosing "am I really running the build I think?" required shell access and guesswork. CI now
+  freezes the stamped version AND the exact git commit into each image's environment; the bridge
+  reports them on `/health` and `/capabilities`, and the Bridge status banner shows the version with
+  the short commit — e.g. `0.19.3 (483fdb1)`. If the image's build version disagrees with what the
+  running code reports (a stale pull, a cached container), the banner shows an explicit amber
+  warning instead of letting the mismatch hide. The frontend's `/version.json` also gains the
+  `revision` field, and branch-built bridge images no longer mislabel their env version as "main".
+- **The composer placeholder follows the agent you select.** Switching the composer's agent chip now
+  updates the placeholder instantly ("Message Pissey…"); it previously kept naming the chat's last
+  responding agent.
+
+Deploy note: Convex functions (additive fields), then the frontend and bridge images. The build/
+runtime version comparison becomes active on images built AFTER this release.
+
 ## [0.19.2] — Truthful image versions and a provider-neutral composer
 
 A small corrective release before the next feature cycle.

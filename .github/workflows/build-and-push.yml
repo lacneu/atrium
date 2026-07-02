@@ -109,6 +109,7 @@ jobs:
           # lockstep version) is stamped into the image env + served /version.json.
           build-args: |
             ATRIUM_VERSION=${{ steps.ver.outputs.version }}
+            ATRIUM_REVISION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -157,12 +158,21 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
+      # The TRUTHFUL stamped version (bridge/package.json after the stamp steps) —
+      # NOT the docker meta ref, which reads "main" on branch builds.
+      - id: ver
+        working-directory: ${{ github.workspace }}
+        run: echo "version=$(node -p "require('./bridge/package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v7
         with:
           context: bridge
           file: bridge/Dockerfile
           push: true
+          # Build-time truths frozen into the image env (see bridge/Dockerfile):
+          # the stamped version + the exact git sha. /health + /capabilities report
+          # them beside the runtime package.json version — a divergence is visible.
           build-args: |
-            ATRIUM_VERSION=${{ steps.meta.outputs.version }}
+            ATRIUM_VERSION=${{ steps.ver.outputs.version }}
+            ATRIUM_REVISION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

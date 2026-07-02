@@ -2062,8 +2062,16 @@ function Composer({
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
-  // Placeholder identity: the resolved brand/agent name (see the placeholder JSX).
+  // Placeholder identity: the agent the composer CURRENTLY targets (the selector
+  // chip — switching agents must update the placeholder instantly), falling back
+  // to the resolved chat identity (brand / single-agent name).
   const composerIdentity = useAssistantIdentity();
+  const composerRouting = useChatRouting();
+  const composerSelected = composerRouting?.selected ?? null;
+  const composerName = composerSelected
+    ? (findAgentDisplay(composerRouting?.pool ?? [], composerSelected)
+        ?.displayName ?? composerSelected.agentId)
+    : assistantDisplayName(composerIdentity);
   // Mid-turn QUEUE: while a turn is in flight OR a sub-agent runs, the chat is
   // BUSY — assistant-ui blocks its own Enter→send only for the in-flight turn, so
   // we intercept Enter HERE and queue for BOTH busy sources. When idle we do
@@ -2114,12 +2122,10 @@ function Composer({
         placeholder={
           unavailable
             ? m.chat_composer_unavailable()
-            : // The RESOLVED assistant identity (per-chart brand, or the agent's
-              // display name) — never a hardcoded provider: OpenClaw is one gateway
-              // among others (Hermes upcoming), not the product the user writes to.
-              m.chat_composer_placeholder({
-                name: assistantDisplayName(composerIdentity),
-              })
+            : // The composer's TARGET name (selected agent, else brand/identity) —
+              // never a hardcoded provider: OpenClaw is one gateway among others
+              // (Hermes upcoming), not the product the user writes to.
+              m.chat_composer_placeholder({ name: composerName })
         }
         autoFocus
         rows={1}

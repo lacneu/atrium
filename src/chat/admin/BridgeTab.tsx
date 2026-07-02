@@ -155,10 +155,40 @@ function BridgeStatusCard({
   compat: Compat | null | undefined;
   onSeeAnomalies: () => void;
 }) {
+  // TWO version truths: bridgeVersion = what the RUNNING CODE reads
+  // (package.json) and buildVersion/buildRevision = what CI froze into the image
+  // env at build. Agreement -> version + short sha. Divergence -> an explicit
+  // warning: the container is NOT the build it claims (stale pull / cache).
+  const buildMismatch =
+    compat != null &&
+    compat.buildVersion != null &&
+    compat.bridgeVersion != null &&
+    compat.buildVersion !== compat.bridgeVersion;
+  const shortRev =
+    compat?.buildRevision && compat.buildRevision !== "unknown"
+      ? compat.buildRevision.slice(0, 7)
+      : null;
   const version =
     compat && compat !== null ? (
       <span className="oc-bridge-card__ver">
         <code className="oc-traces__mono">{versionLabel(compat.bridgeVersion)}</code>
+        {shortRev ? (
+          <>
+            {" "}
+            <code
+              className="oc-traces__mono"
+              title={m.compat_build_revision_hint()}
+            >
+              ({shortRev})
+            </code>
+          </>
+        ) : null}
+        {buildMismatch ? (
+          <strong className="oc-bridge-card__mismatch">
+            {" "}
+            {m.compat_build_mismatch({ build: compat.buildVersion ?? "?" })}
+          </strong>
+        ) : null}
         {" · "}
         {m.compat_protocol_label()}{" "}
         <code className="oc-traces__mono">

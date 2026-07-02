@@ -24,11 +24,15 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
-# Surface the build version as an env var so `docker exec <c> env | grep ATRIUM_VERSION`
-# verifies the running image at a glance (the bridge also self-reports it via /compat
-# from package.json). CI passes the lockstep version; defaults to "dev" for local builds.
+# TWO build-time truths frozen into the image env — independent of package.json
+# (the runtime truth compat.ts reads). `/health` + `/capabilities` report BOTH and
+# the Settings banner flags a divergence, so "the code I run" vs "the build I came
+# from" can never silently disagree again (the 0.19.0-banner-on-newer-code incident).
+# CI passes the stamped lockstep version + the exact git sha; local builds default.
 ARG ATRIUM_VERSION=dev
 ENV ATRIUM_VERSION=${ATRIUM_VERSION}
+ARG ATRIUM_REVISION=unknown
+ENV ATRIUM_REVISION=${ATRIUM_REVISION}
 
 # Env is injected by docker-compose (NOT --env-file), so run dist directly.
 # Drop to the built-in non-root `node` user; the media mount is read-only.

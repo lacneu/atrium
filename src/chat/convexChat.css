@@ -6434,3 +6434,10 @@
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+
+/* Build-vs-runtime version divergence (Bridge status card): the container is NOT
+   the build it claims — a deploy/pull problem, in the meter's warn amber. */
+.oc-bridge-card__mismatch {
+  color: oklch(0.56 0.13 75);
+  font-weight: 600;
+}

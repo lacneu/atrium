@@ -100,6 +100,10 @@ describe("GET /capabilities + /health (compat surface)", () => {
     >;
     expect(Object.keys(body).sort()).toEqual([
       "bridgeVersion",
+      // Build-time truths (image env, CI-frozen) beside the runtime version --
+      // the divergence detector for "the container is not the build it claims".
+      "buildRevision",
+      "buildVersion",
       "capabilities",
       "compat",
       "gatewayVersion",

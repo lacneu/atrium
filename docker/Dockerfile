@@ -15,10 +15,12 @@ COPY . .
 # it as a baked fallback and the image would stop being origin-agnostic. The
 # committed convex/_generated lets `vite build` typecheck without a live backend.
 RUN npm run build
-# Emit the build version (from the stamped package.json) as a served, curl-able file:
-# `curl https://<frontend-host>/version.json` verifies the running bundle WITHOUT shell
-# access — the frontend otherwise surfaces no version at all. Origin-agnostic (no URL).
-RUN node -p "JSON.stringify({ version: require('./package.json').version })" > dist/version.json
+# Emit the build version (from the stamped package.json) + the exact git sha as a
+# served, curl-able file: `curl https://<frontend-host>/version.json` verifies the
+# running bundle WITHOUT shell access, and the sha pins WHICH commit was built —
+# two truths, divergence visible. Origin-agnostic (no URL).
+ARG ATRIUM_REVISION=unknown
+RUN node -p "JSON.stringify({ version: require('./package.json').version, revision: process.env.ATRIUM_REVISION })" > dist/version.json
 
 # --- Serve stage (Caddy — tiny, SPA-aware, no nginx) --------------------------
 FROM caddy:2-alpine AS serve
@@ -30,6 +32,10 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # check. CI passes the lockstep version; defaults to "dev" for local builds.
 ARG ATRIUM_VERSION=dev
 ENV ATRIUM_VERSION=${ATRIUM_VERSION}
+# The exact git sha this image was built from — the second, package-independent
+# truth (see /version.json below + the bridge counterpart).
+ARG ATRIUM_REVISION=unknown
+ENV ATRIUM_REVISION=${ATRIUM_REVISION}
 # CONVEX_URL is REQUIRED at run time (the public Convex cloud origin the browser
 # reaches, e.g. https://api.example.com). The entrypoint fails fast if unset.
 ENV CONVEX_URL=""

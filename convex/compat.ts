@@ -76,6 +76,8 @@ export const pollBridgeCompat = internalAction({
     const mergedTargets: NormalizedCapabilities["targets"] = [];
     const seenInstance = new Set<string | null>();
     let bridgeVersion: string | null = null;
+    let buildVersion: string | null = null;
+    let buildRevision: string | null = null;
     let protocolVersion: number | null = null;
     let compat: NormalizedCapabilities["compat"] = null;
     let anyReachable = false;
@@ -94,6 +96,8 @@ export const pollBridgeCompat = internalAction({
         const n = normalizeCapabilitiesBody(body, name);
         anyReachable = true;
         if (bridgeVersion === null) bridgeVersion = n.bridgeVersion;
+        if (buildVersion === null) buildVersion = n.buildVersion;
+        if (buildRevision === null) buildRevision = n.buildRevision;
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
         if (compat === null) compat = n.compat;
         for (const t of n.targets) {
@@ -115,6 +119,8 @@ export const pollBridgeCompat = internalAction({
     }
     await ctx.runMutation(internal.compat.upsertBridgeCompat, {
       bridgeVersion,
+      buildVersion,
+      buildRevision,
       protocolVersion,
       compat,
       targets: mergedTargets,
@@ -127,6 +133,8 @@ export const pollBridgeCompat = internalAction({
 export const upsertBridgeCompat = internalMutation({
   args: {
     bridgeVersion: v.union(v.string(), v.null()),
+    buildVersion: v.optional(v.union(v.string(), v.null())),
+    buildRevision: v.optional(v.union(v.string(), v.null())),
     protocolVersion: v.union(v.number(), v.null()),
     compat: v.any(),
     targets: v.array(bridgeCompatTarget),
@@ -138,6 +146,8 @@ export const upsertBridgeCompat = internalMutation({
       reachable: true,
       lastError: undefined,
       bridgeVersion: args.bridgeVersion,
+      buildVersion: args.buildVersion ?? null,
+      buildRevision: args.buildRevision ?? null,
       protocolVersion: args.protocolVersion,
       compat: args.compat,
       targets: args.targets,
@@ -195,6 +205,8 @@ export const getBridgeCompat = query({
       reachable: doc.reachable,
       lastError: doc.lastError ?? null,
       bridgeVersion: doc.bridgeVersion,
+      buildVersion: doc.buildVersion ?? null,
+      buildRevision: doc.buildRevision ?? null,
       protocolVersion: doc.protocolVersion,
       compat: doc.compat,
       targets: doc.targets,

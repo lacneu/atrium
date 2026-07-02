@@ -1314,6 +1314,8 @@
   "compat_section": "Compatibilité",
   "compat_no_data": "Aucun relevé de compatibilité pour l’instant — le sondage tourne toutes les 5 minutes.",
   "compat_bridge_version_label": "Version du bridge :",
+  "compat_build_revision_hint": "Commit git exact de cette image (vérité de build)",
+  "compat_build_mismatch": "⚠ image construite en {build} — le conteneur ne correspond pas à sa version",
   "compat_protocol_label": "Protocole :",
   "compat_unknown": "inconnue",
   "compat_stale": "Dernier sondage en échec — affichage du dernier relevé valide.",
