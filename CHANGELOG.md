@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.19.1] — Close the stale-file gap on gateway-http deployments
+
+A corrective release, bridge-only. Completes 0.19.0's "old files no longer re-attach themselves"
+fix on gateway-http deployments.
+
+- **Unverifiable file mentions are no longer delivered.** 0.19.0 gated mentioned-only files on their
+  modification date — but on gateway-http deployments (the default) the gateway reports NO file
+  dates at all (verified live: neither a modification time in the media probe nor a Last-Modified
+  header), so the guard silently let everything through and old files from other conversations kept
+  re-attaching. A path that is merely mentioned in tool output is now delivered only when the file
+  can actually be verified as fresh; with no verifiable signal it is refused, with a distinct
+  diagnostic code (`unverifiable_mention` in the `openclaw.media` trace) so the decision is
+  auditable. Explicit `MEDIA:` deliveries and structured tool outputs are unaffected — including
+  deliberately re-sending an old file.
+
+Deploy note: bridge image only (no Convex, no frontend). After deploying, the previous repro shows
+`dropped reason=unverifiable_mention` in the `openclaw.media` traces instead of `stored`.
+
 ## [0.19.0] — Honest gateway-outage handling, no more stale file re-delivery
 
 A robustness and honesty release: the interface now tells the truth when a gateway goes down, old
@@ -23,12 +41,15 @@ breaking changes; Convex changes are additive. Deploy: Convex + frontend + bridg
   shows you a false outage, and switching agents mid-outage updates the guidance. The composer stays
   usable (one dead gateway must never lock everyone out); attachment size limits now also follow the
   agent currently selected in the composer.
-- **Old files no longer re-attach themselves to new conversations.** When the agent read notes that
-  merely MENTIONED previously delivered files, the bridge re-attached those old files to the current
-  reply (the "bilan-news + IFOA out of nowhere" bug). A path that is only mentioned in tool output is
-  now delivered ONLY if the file was actually produced during the current turn; an explicit `MEDIA:`
-  delivery still always works — including deliberately re-sending an old file, even when the same
-  path was mentioned earlier in the turn.
+- **Old files no longer re-attach themselves to new conversations.** When the agent read or edited
+  notes that merely MENTIONED previously delivered files (its memory citing OTHER conversations'
+  deliveries), the bridge re-attached those old files to the current reply (the "bilan-news + IFOA
+  out of nowhere" bug). A path that is only mentioned in tool output is now delivered ONLY if the
+  file can be verified as produced during the current turn — and when the gateway provides no way to
+  verify it (the gateway-http mode reports no file dates), the mention is NOT delivered at all. An
+  explicit `MEDIA:` delivery (the documented convention, injected into every turn) always works —
+  including deliberately re-sending an old file, even when the same path was mentioned earlier in
+  the turn.
 - **The app self-heals after a deploy.** Navigating to a lazily-loaded page right after a new release
   could show "Une erreur est survenue" (the page's chunk files had been replaced). The app now detects
   that case and reloads itself once automatically; the retry button performs a full reload too.

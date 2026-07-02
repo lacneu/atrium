@@ -32,6 +32,7 @@ interface MockOpts {
     status?: number;
     contentType?: string;
     contentLength?: string;
+    lastModified?: string;
     content?: string;
     noBody?: boolean;
   };
@@ -57,6 +58,7 @@ function mockGateway(opts: MockOpts) {
     const h = new Headers();
     if (d.contentType) h.set("content-type", d.contentType);
     if (d.contentLength) h.set("content-length", d.contentLength);
+    if (d.lastModified) h.set("last-modified", d.lastModified);
     const body = d.noBody
       ? null
       : new ReadableStream({
@@ -242,5 +244,64 @@ describe("GatewayHttpMediaFetcher", () => {
     const got = opened(await f.open(PATH));
     await new Promise((r) => setTimeout(r, 60)); // 4x the connect timeout
     expect(await drain(got.stream)).toBe("delivered-late"); // not dropped
+  });
+});
+
+describe("GatewayHttpMediaFetcher — mention freshness (the stale re-delivery bug)", () => {
+  const BOUND = Date.parse("2026-07-01T00:00:00Z");
+  const ACCEPT = { available: true, mediaTicket: "T" };
+
+  it("meta mtime OLDER than the bound -> stale_mention (no download attempted)", async () => {
+    const { fetchImpl } = mockGateway({
+      meta: { body: { ...ACCEPT, mtimeMs: BOUND - 86_400_000 } },
+    });
+    const r = await fetcher(fetchImpl).open(PATH, { rejectOlderThanMs: BOUND });
+    expect(skip(r)).toBe("stale_mention");
+  });
+
+  it("Last-Modified OLDER than the bound -> stale_mention", async () => {
+    const { fetchImpl } = mockGateway({
+      meta: { body: ACCEPT },
+      download: {
+        contentType: "text/markdown",
+        content: "old",
+        lastModified: "Sat, 20 Jun 2026 00:00:00 GMT",
+      },
+    });
+    const r = await fetcher(fetchImpl).open(PATH, { rejectOlderThanMs: BOUND });
+    expect(skip(r)).toBe("stale_mention");
+  });
+
+  it("NO freshness signal at ALL (live-probed 6.11 shape) -> unverifiable_mention, never delivered", async () => {
+    // The exact prod-dev bug: the gateway reports neither mtimeMs nor
+    // Last-Modified; failing open re-attached files from OTHER conversations.
+    const { fetchImpl } = mockGateway({
+      meta: { body: ACCEPT },
+      download: { contentType: "text/markdown", content: "old" },
+    });
+    const r = await fetcher(fetchImpl).open(PATH, { rejectOlderThanMs: BOUND });
+    expect(skip(r)).toBe("unverifiable_mention");
+  });
+
+  it("a FRESH Last-Modified passes the bound", async () => {
+    const { fetchImpl } = mockGateway({
+      meta: { body: ACCEPT },
+      download: {
+        contentType: "text/markdown",
+        content: "fresh",
+        lastModified: new Date(BOUND + 60_000).toUTCString(),
+      },
+    });
+    const r = await fetcher(fetchImpl).open(PATH, { rejectOlderThanMs: BOUND });
+    expect(r.ok).toBe(true);
+  });
+
+  it("NO bound (explicit MEDIA: delivery) needs no signal — old files re-send fine", async () => {
+    const { fetchImpl } = mockGateway({
+      meta: { body: ACCEPT },
+      download: { contentType: "text/markdown", content: "old but wanted" },
+    });
+    const r = await fetcher(fetchImpl).open(PATH);
+    expect(r.ok).toBe(true);
   });
 });

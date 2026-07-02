@@ -93,7 +93,13 @@ export type MediaSkipReason =
   // The source is OLDER than the caller's freshness bound: the path was merely
   // MENTIONED (e.g. the agent read memory notes citing last week's deliveries),
   // not produced this turn — re-delivering it would attach stale files.
-  | "stale_mention";
+  | "stale_mention"
+  // A mention-only path whose age CANNOT be verified (gateway-http against a
+  // gateway that reports no mtime and no Last-Modified — live-probed on 6.11:
+  // neither exists). Failing OPEN here is exactly the stale re-delivery bug, so
+  // an unverifiable MENTION is refused; explicit MEDIA:/structured deliveries
+  // never carry a freshness bound and are unaffected.
+  | "unverifiable_mention";
 
 /** Discriminated open() outcome: the bytes, or the structural reason it failed. */
 export type OpenResult =

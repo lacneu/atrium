@@ -147,12 +147,14 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
         return { ok: false, reason: "too_large" };
       }
       // Freshness guard (mentioned-only paths): refuse a source KNOWN to predate
-      // the caller's bound. Judged from the meta probe's mtime when the gateway
-      // reports one; an absent signal fails OPEN (see the download-side check too).
+      // the caller's bound, judged from the meta probe's mtime when the gateway
+      // reports one. When absent, the download-side check below decides (Last-
+      // Modified, else REFUSE as unverifiable).
+      const metaMtime = typeof meta.mtimeMs === "number" ? meta.mtimeMs : null;
       if (
         opts?.rejectOlderThanMs != null &&
-        typeof meta.mtimeMs === "number" &&
-        meta.mtimeMs < opts.rejectOlderThanMs
+        metaMtime !== null &&
+        metaMtime < opts.rejectOlderThanMs
       ) {
         return { ok: false, reason: "stale_mention" };
       }
@@ -170,15 +172,21 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
         return { ok: false, reason: "fetch_error" };
       }
       // Download-side freshness check (covers a gateway that sets Last-Modified
-      // but reports no mtime in the meta probe). Unparseable/absent -> fail open.
-      if (opts?.rejectOlderThanMs != null) {
+      // but reports no mtime in the meta probe). When a bound is requested and NO
+      // signal exists AT ALL (live-probed 6.11: neither meta.mtimeMs nor
+      // Last-Modified) the mention is REFUSED — failing open here was exactly the
+      // stale re-delivery bug (files from OTHER conversations, cited by the
+      // agent's memory, re-attached to the current turn). Explicit deliveries
+      // never carry a bound, so the documented MEDIA: path is unaffected.
+      if (opts?.rejectOlderThanMs != null && metaMtime === null) {
         const lastModified = Date.parse(
           dlRes.headers.get("last-modified") ?? "",
         );
-        if (
-          Number.isFinite(lastModified) &&
-          lastModified < opts.rejectOlderThanMs
-        ) {
+        if (!Number.isFinite(lastModified)) {
+          void dlRes.body.cancel().catch(() => {});
+          return { ok: false, reason: "unverifiable_mention" };
+        }
+        if (lastModified < opts.rejectOlderThanMs) {
           void dlRes.body.cancel().catch(() => {});
           return { ok: false, reason: "stale_mention" };
         }
