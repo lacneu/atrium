@@ -345,7 +345,7 @@
   "chat_run_taking_longer_agent": "The agent {name} is processing your message…",
   "chat_copy_response": "Copy the reply",
   "chat_composer_unavailable": "Chat unavailable…",
-  "chat_composer_placeholder": "Message OpenClaw…",
+  "chat_composer_placeholder": "Message {name}…",
   "chat_attach_file": "Attach a file",
   "chat_attach_failed": "failed",
   "chat_uploading": "Uploading file… {percent}%",

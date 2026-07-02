@@ -2062,6 +2062,8 @@ function Composer({
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
+  // Placeholder identity: the resolved brand/agent name (see the placeholder JSX).
+  const composerIdentity = useAssistantIdentity();
   // Mid-turn QUEUE: while a turn is in flight OR a sub-agent runs, the chat is
   // BUSY — assistant-ui blocks its own Enter→send only for the in-flight turn, so
   // we intercept Enter HERE and queue for BOTH busy sources. When idle we do
@@ -2110,7 +2112,14 @@ function Composer({
       <ComposerPrimitive.Input
         className="oc-composer__input"
         placeholder={
-          unavailable ? m.chat_composer_unavailable() : m.chat_composer_placeholder()
+          unavailable
+            ? m.chat_composer_unavailable()
+            : // The RESOLVED assistant identity (per-chart brand, or the agent's
+              // display name) — never a hardcoded provider: OpenClaw is one gateway
+              // among others (Hermes upcoming), not the product the user writes to.
+              m.chat_composer_placeholder({
+                name: assistantDisplayName(composerIdentity),
+              })
         }
         autoFocus
         rows={1}

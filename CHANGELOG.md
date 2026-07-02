@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.19.2] — Truthful image versions and a provider-neutral composer
+
+A small corrective release before the next feature cycle.
+
+- **`:latest` images now self-report their real version.** An image pulled via `:latest` right after
+  a release reported the PREVIOUS version number while actually containing the new code (the
+  "banner says 0.19.0 but the fix is in" confusion): `:latest` is built from `main`, where the
+  committed version lags one release behind. Branch builds are now stamped with an honest
+  pre-release version derived from the nearest tag (e.g. `0.19.1-dev.1.g0663349`), and the frontend's
+  `/version.json` follows the same truthful number. A release-tagged image still reports the exact
+  release version.
+- **The composer no longer names the gateway provider.** The input placeholder said "Message
+  OpenClaw…" — but OpenClaw is one gateway among others (a Hermes adapter is planned), not the
+  product you write to. The placeholder now uses the resolved assistant identity: the agent's name
+  for multi-agent users ("Message Olivier…"), or the active chart's brand ("Message Atrium…").
+
+Deploy note: frontend image only for the placeholder; the CI change takes effect on the next builds
+(no deployment action).
+
 ## [0.19.1] — Close the stale-file gap on gateway-http deployments
 
 A corrective release, bridge-only. Completes 0.19.0's "old files no longer re-attach themselves"
