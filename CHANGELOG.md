@@ -8,6 +8,40 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.19.0] — Honest gateway-outage handling, no more stale file re-delivery
+
+A robustness and honesty release: the interface now tells the truth when a gateway goes down, old
+files can no longer re-attach themselves to new turns, and the app self-heals after a deploy. No
+breaking changes; Convex changes are additive. Deploy: Convex + frontend + bridge.
+
+- **When an agent's gateway goes down, the chat says so.** Previously a dead gateway showed NOTHING:
+  the in-flight spinner kept claiming "Atrium traite votre message…" until a long timeout. Now the
+  chat shows a non-blocking warning banner ("la passerelle ne répond plus — un envoi échouera
+  probablement") and the in-flight indicator switches to an honest "the gateway is not responding —
+  this turn may time out". The signal is precisely scoped — to that chat's instance, agent, your own
+  identity, and the turn actually in flight — so another agent's (or another user's) problem never
+  shows you a false outage, and switching agents mid-outage updates the guidance. The composer stays
+  usable (one dead gateway must never lock everyone out); attachment size limits now also follow the
+  agent currently selected in the composer.
+- **Old files no longer re-attach themselves to new conversations.** When the agent read notes that
+  merely MENTIONED previously delivered files, the bridge re-attached those old files to the current
+  reply (the "bilan-news + IFOA out of nowhere" bug). A path that is only mentioned in tool output is
+  now delivered ONLY if the file was actually produced during the current turn; an explicit `MEDIA:`
+  delivery still always works — including deliberately re-sending an old file, even when the same
+  path was mentioned earlier in the turn.
+- **The app self-heals after a deploy.** Navigating to a lazily-loaded page right after a new release
+  could show "Une erreur est survenue" (the page's chunk files had been replaced). The app now detects
+  that case and reloads itself once automatically; the retry button performs a full reload too.
+- **Sub-agent export offers the same formats as the conversation export.** The panel's export button
+  is now a Markdown / JSON menu; the JSON includes the task, status, full configuration, telemetry,
+  every tool call with input/output, and the result.
+- **Session settings now detail the agent's configuration.** The AGENT section of "Réglages de
+  session" shows the same configuration table as a sub-agent's advanced view: agent, instance, model,
+  provider, gateway runtime, and reasoning (current + default).
+
+Deploy note: Convex functions (`npx convex deploy`), then the frontend and bridge images. Convex
+changes are additive (an optional query argument; no schema migration).
+
 ## [0.18.1] — Sub-agent tools on Codex-harness gateways
 
 A small corrective release, bridge-only. No breaking changes; nothing to deploy besides the bridge

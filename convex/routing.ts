@@ -55,13 +55,23 @@ async function isDeleted(
   return agent !== null && agent.presentInLastOk === false;
 }
 
+/** The user's OpenClaw canonical (profile slug, or the stable u-<id> fallback) —
+ *  the identity segment session keys AND health targets are scoped by. ONE source
+ *  for the fallback expression (was duplicated across the two resolvers). */
+export async function canonicalForUser(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<string> {
+  const profile = await getProfile(ctx, userId);
+  return profile?.canonical ?? `u-${userId.slice(0, 10)}`;
+}
+
 export async function resolveTargetForChat(
   ctx: QueryCtx | MutationCtx,
   chat: Doc<"chats">,
   userId: Id<"users">,
 ): Promise<ChatResolution> {
-  const profile = await getProfile(ctx, userId);
-  const canonical = profile?.canonical ?? `u-${userId.slice(0, 10)}`;
+  const canonical = await canonicalForUser(ctx, userId);
 
   // Candidate set = the EFFECTIVE union (direct userAgents ∪ group agents), the
   // dispatch-time authorization boundary (IDOR defense). With NO groups this is
@@ -175,8 +185,7 @@ export async function resolveTargetForTurn(
 ): Promise<ChatResolution> {
   if (chosen === null) return resolveTargetForChat(ctx, chat, userId);
 
-  const profile = await getProfile(ctx, userId);
-  const canonical = profile?.canonical ?? `u-${userId.slice(0, 10)}`;
+  const canonical = await canonicalForUser(ctx, userId);
   const uas = await getEffectiveGrants(ctx, userId);
   const member = uas.find(
     (u) => u.instanceName === chosen.instanceName && u.agentId === chosen.agentId,

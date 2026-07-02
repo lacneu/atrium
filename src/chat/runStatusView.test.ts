@@ -2,7 +2,11 @@
 // (sub-second) so the live capture cannot reliably prove every branch — these do.
 
 import { describe, expect, it } from "vitest";
-import { runStatusView, messageHasText } from "./runStatusView";
+import {
+  runStatusView,
+  runStatusOutageLabel,
+  messageHasText,
+} from "./runStatusView";
 
 describe("runStatusView", () => {
   it("streaming with NO text -> thinking", () => {
@@ -76,5 +80,20 @@ describe("messageHasText", () => {
   it("false for undefined / empty content", () => {
     expect(messageHasText(undefined)).toBe(false);
     expect(messageHasText([])).toBe(false);
+  });
+});
+
+describe("runStatusOutageLabel (honest in-flight label on gateway outage)", () => {
+  it("returns the outage label for the IN-FLIGHT kinds while degraded", () => {
+    expect(runStatusOutageLabel("thinking", true)).toContain("passerelle");
+    expect(runStatusOutageLabel("generating", true)).toContain("passerelle");
+  });
+  it("never overrides a settled kind (error/aborted keep their own presentation)", () => {
+    expect(runStatusOutageLabel("error", true)).toBeNull();
+    expect(runStatusOutageLabel("aborted", true)).toBeNull();
+  });
+  it("returns null when the gateway is healthy (normal labels untouched)", () => {
+    expect(runStatusOutageLabel("thinking", false)).toBeNull();
+    expect(runStatusOutageLabel("generating", false)).toBeNull();
   });
 });

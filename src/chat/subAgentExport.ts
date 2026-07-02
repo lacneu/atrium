@@ -1,5 +1,8 @@
 import { m } from "@/paraglide/messages.js";
-import type { SubAgentSessionMeta } from "./subAgentActivityView";
+import type {
+  SubAgentSessionMeta,
+  SubAgentTelemetry,
+} from "./subAgentActivityView";
 
 // Pure assembly of a self-contained Markdown export of a sub-agent's session — its
 // task, static config, each tool call (input + output), and the final result/error.
@@ -20,16 +23,49 @@ export type SubAgentExportInput = {
   status: string;
   parentAgentLabel?: string;
   sessionMeta?: SubAgentSessionMeta;
+  telemetry?: SubAgentTelemetry;
   result?: string;
   error?: string;
   tools: ReadonlyArray<SubAgentExportTool>;
 };
 
 /** A filesystem-safe, short slug of the task for the download filename. */
-export function subAgentExportFilename(taskName: string | undefined): string {
+export function subAgentExportFilename(
+  taskName: string | undefined,
+  format: "md" | "json" = "md",
+): string {
   const base = (taskName ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const slug = base.replace(/^-+|-+$/g, "").slice(0, 40);
-  return `sous-agent${slug ? `-${slug}` : ""}.md`;
+  return `sous-agent${slug ? `-${slug}` : ""}.${format}`;
+}
+
+/** JSON export — the SAME choice set as the conversation export (md | json). A
+ *  machine-readable mirror of the Markdown: task, status, config, telemetry, the
+ *  tool calls with their input/output, and the final result/error. */
+export function buildSubAgentExportJson(
+  input: SubAgentExportInput & { exportedAt: number },
+): string {
+  return JSON.stringify(
+    {
+      kind: "sub-agent",
+      taskName: input.taskName ?? null,
+      status: input.status,
+      exportedAt: new Date(input.exportedAt).toISOString(),
+      parentAgent: input.parentAgentLabel ?? null,
+      config: input.sessionMeta ?? null,
+      telemetry: input.telemetry ?? null,
+      tools: input.tools.map((t) => ({
+        name: t.name,
+        status: t.status,
+        input: t.argsText ?? null,
+        output: t.resultText ?? null,
+      })),
+      result: input.result ?? null,
+      error: input.error ?? null,
+    },
+    null,
+    2,
+  );
 }
 
 export function buildSubAgentExportMarkdown(input: SubAgentExportInput): string {

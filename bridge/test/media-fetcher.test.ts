@@ -8,7 +8,7 @@
 // operator fix; collapsing them to a bare "dropped" would make prod undebuggable).
 
 import { describe, it, expect } from "vitest";
-import { mkdtemp, writeFile, rm, symlink, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, symlink, mkdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
@@ -183,5 +183,59 @@ describe("LocalDirMediaFetcher", () => {
       const got = opened(await fetcher.open("/srv/openclaw/media/outbound/r.pdf"));
       expect(got.mimeType).toBe("application/pdf");
     });
+  });
+});
+
+describe("LocalDirMediaFetcher — freshness guard (stale mentions)", () => {
+  it("rejects a file OLDER than rejectOlderThanMs with reason stale_mention", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "media-stale-"));
+    const file = join(dir, "old-report.md");
+    await writeFile(file, "old content");
+    // Backdate the file a week (the memory-note case from the exports bug).
+    const weekAgo = (Date.now() - 7 * 24 * 3600 * 1000) / 1000;
+    await utimes(file, weekAgo, weekAgo);
+    const fetcher = new LocalDirMediaFetcher({
+      baseDir: dir,
+      maxBytes: 1024,
+      onSkip: () => {},
+    });
+    const res = await fetcher.open(
+      "/home/node/.openclaw/media/outbound/old-report.md",
+      { rejectOlderThanMs: Date.now() - 120_000 },
+    );
+    expect(res).toEqual({ ok: false, reason: "stale_mention" });
+  });
+
+  it("a FRESH file passes the same bound (the just-written exec case)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "media-fresh-"));
+    const file = join(dir, "fresh-report.md");
+    await writeFile(file, "fresh content");
+    const fetcher = new LocalDirMediaFetcher({
+      baseDir: dir,
+      maxBytes: 1024,
+      onSkip: () => {},
+    });
+    const res = await fetcher.open(
+      "/home/node/.openclaw/media/outbound/fresh-report.md",
+      { rejectOlderThanMs: Date.now() - 120_000 },
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it("NO bound (explicit delivery) opens an old file — re-sending on request stays legit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "media-explicit-"));
+    const file = join(dir, "old-but-wanted.md");
+    await writeFile(file, "old content");
+    const weekAgo = (Date.now() - 7 * 24 * 3600 * 1000) / 1000;
+    await utimes(file, weekAgo, weekAgo);
+    const fetcher = new LocalDirMediaFetcher({
+      baseDir: dir,
+      maxBytes: 1024,
+      onSkip: () => {},
+    });
+    const res = await fetcher.open(
+      "/home/node/.openclaw/media/outbound/old-but-wanted.md",
+    );
+    expect(res.ok).toBe(true);
   });
 });

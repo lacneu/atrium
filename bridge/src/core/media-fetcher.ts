@@ -89,7 +89,11 @@ export type MediaSkipReason =
   | "not_a_file"
   | "invalid_filename"
   | "fetch_error"
-  | "route_absent";
+  | "route_absent"
+  // The source is OLDER than the caller's freshness bound: the path was merely
+  // MENTIONED (e.g. the agent read memory notes citing last week's deliveries),
+  // not produced this turn — re-delivering it would attach stale files.
+  | "stale_mention";
 
 /** Discriminated open() outcome: the bytes, or the structural reason it failed. */
 export type OpenResult =
@@ -104,8 +108,17 @@ export interface MediaFetcher {
    * large, or escapes the configured root — the caller treats a failure as "no
    * attachment" (never breaks the turn) but records the structural REASON so the
    * outbound-media path is diagnosable remotely (SOC2-safe codes, never a path).
+   *
+   * `opts.rejectOlderThanMs`: when set, a source whose last-modified time is
+   * KNOWN and OLDER is refused with reason "stale_mention" — the freshness guard
+   * for paths merely MENTIONED in tool output (an agent reading its memory notes
+   * must not re-deliver last week's files). An UNKNOWN mtime fails OPEN
+   * (delivered) so a legit delivery is never lost to a missing signal.
    */
-  open(path: string): Promise<OpenResult>;
+  open(
+    path: string,
+    opts?: { rejectOlderThanMs?: number | null },
+  ): Promise<OpenResult>;
 }
 
 // Minimal extension -> mime map for the file kinds the chat matrix exercises
@@ -172,7 +185,10 @@ export class LocalDirMediaFetcher implements MediaFetcher {
         console.warn(`[media] skip ${filename}: ${reason}`));
   }
 
-  async open(path: string): Promise<OpenResult> {
+  async open(
+    path: string,
+    opts?: { rejectOlderThanMs?: number | null },
+  ): Promise<OpenResult> {
     const filename = basename(path);
     // Defense in depth: the normalizer already rejected "..", but a bad basename
     // (".", "..", empty, or containing a separator) must never reach a join.
@@ -210,6 +226,15 @@ export class LocalDirMediaFetcher implements MediaFetcher {
       if (!info.isFile()) {
         this.onSkip("not a file", filename);
         return { ok: false, reason: "not_a_file" };
+      }
+      // Freshness guard (mentioned-only paths): a file last modified BEFORE the
+      // caller's bound was not produced this turn — refuse the re-delivery.
+      if (
+        opts?.rejectOlderThanMs != null &&
+        info.mtimeMs < opts.rejectOlderThanMs
+      ) {
+        this.onSkip("stale mention (older than the current turn)", filename);
+        return { ok: false, reason: "stale_mention" };
       }
       size = info.size;
     } catch {

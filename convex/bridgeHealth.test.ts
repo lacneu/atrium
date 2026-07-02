@@ -131,7 +131,13 @@ function doc(p: {
   checkedAt: number;
   lastError?: string;
   maxPayload?: number | null;
-  targets?: { state: string; instanceName?: string; maxPayload?: number }[];
+  targets?: {
+    state: string;
+    instanceName?: string;
+    agentId?: string;
+    canonical?: string;
+    maxPayload?: number;
+  }[];
 }): Doc<"bridgeHealth"> {
   return {
     _id: "x" as Doc<"bridgeHealth">["_id"],
@@ -214,6 +220,52 @@ describe("computeAvailability (chat gate decision — fail OPEN)", () => {
     expect(computeAvailability(d, NOW).degraded).toBe(true); // global = any target error
     // available stays the GLOBAL bridge-reachable gate for every scope (no lockout).
     expect(computeAvailability(d, NOW, "jerome").available).toBe(true);
+  });
+
+  test("per-AGENT scope: another agent erroring on the SAME instance does not degrade this chat (codex P2)", () => {
+    // alice connected, bob erroring, BOTH on instance olivier. A chat routed to
+    // alice must NOT read degraded; a bob chat must; the instance-level view
+    // (Settings-style, no agent) still reads degraded (any target).
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      targets: [
+        { state: "connected", instanceName: "olivier", agentId: "alice" },
+        { state: "error", instanceName: "olivier", agentId: "bob" },
+      ],
+    });
+    expect(computeAvailability(d, NOW, "olivier", "alice").degraded).toBe(false);
+    expect(computeAvailability(d, NOW, "olivier", "bob").degraded).toBe(true);
+    expect(computeAvailability(d, NOW, "olivier").degraded).toBe(true);
+  });
+
+  test("per-CANONICAL scope: another user's canonical on a SHARED agent does not degrade this chat (codex P2 round 2)", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      targets: [
+        { state: "connected", instanceName: "olivier", agentId: "alice", canonical: "user-a" },
+        { state: "error", instanceName: "olivier", agentId: "alice", canonical: "user-b" },
+      ],
+    });
+    expect(
+      computeAvailability(d, NOW, "olivier", "alice", "user-a").degraded,
+    ).toBe(false);
+    expect(
+      computeAvailability(d, NOW, "olivier", "alice", "user-b").degraded,
+    ).toBe(true);
+    // Agent-level view (no canonical) still reads any-of (Settings-style).
+    expect(computeAvailability(d, NOW, "olivier", "alice").degraded).toBe(true);
+  });
+
+  test("agent scope with NO target row yet -> not degraded (fail open)", () => {
+    const d = doc({
+      reachable: true,
+      checkedAt: NOW,
+      targets: [{ state: "error", instanceName: "olivier", agentId: "bob" }],
+    });
+    // alice never dispatched since bridge boot: no row -> no outage claim for her.
+    expect(computeAvailability(d, NOW, "olivier", "alice").degraded).toBe(false);
   });
 
   test("per-instance maxInboundBytes uses THAT instance's gateway frame, not the doc MIN", () => {

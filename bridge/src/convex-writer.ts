@@ -169,10 +169,19 @@ export interface ConvexWriter {
    * internal.stream.addPart(kind:media,storageId). Resolution is behind the
    * interface so the fake can record it without I/O.
    */
+  /** Returns TRUE when the attachment actually landed as a part (the sink uses
+   *  it to dedupe an explicit re-emission of a path whose earlier mention-only
+   *  sighting was stale-dropped). Every drop path returns false. */
   addMedia(
     messageId: string,
-    media: { filename: string; path: string; mimeType?: string },
-  ): Promise<void>;
+    media: {
+      filename: string;
+      path: string;
+      mimeType?: string;
+      explicit?: boolean;
+      turnStartMs?: number;
+    },
+  ): Promise<boolean>;
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
   noteMediaUndelivered(messageId: string): Promise<void>;
@@ -484,6 +493,11 @@ const MAX_PENDING_DELTA_CHARS = 256 * 1024;
 // the whole life of a long-running ("Mars") bridge.
 const CALIBRATE_SAMPLES = 5;
 const SKEW_TTL_MS = 5 * 60 * 1000;
+
+// Grace subtracted from the turn start when freshness-gating a MENTION-ONLY media
+// path (clock skew bridge<->gateway host + a file written just before the turn's
+// first frame reached the bridge).
+const STALE_MENTION_GRACE_MS = 120_000;
 
 export class HttpConvexWriter implements ConvexWriter {
   private readonly url: string;
@@ -920,8 +934,18 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async addMedia(
     messageId: string,
-    media: { filename: string; path: string; mimeType?: string },
-  ): Promise<void> {
+    media: {
+      filename: string;
+      path: string;
+      mimeType?: string;
+      // Delivery intent (see the normalizer's discovery tagging): explicit=false
+      // (a path merely MENTIONED in tool prose) is freshness-gated below so an
+      // agent reading old notes never re-attaches last week's files. Absent /
+      // true / no turnStartMs -> no gate (fail open for legit deliveries).
+      explicit?: boolean;
+      turnStartMs?: number;
+    },
+  ): Promise<boolean> {
     await this.flushDelta(messageId); // ordering: drain deltas before the part
     // DIAGNOSTIC (SOC2-safe): the normalizer surfaced a media ref, so addMedia was
     // called. This "received" trace is the load-bearing A/B discriminator — if it
@@ -939,7 +963,7 @@ export class HttpConvexWriter implements ConvexWriter {
         );
       }
       this.emitMediaTrace(messageId, "dropped", { reason: "no_fetcher" });
-      return;
+      return false;
     }
     // Best-effort: an attachment failure must NEVER abort the assistant turn —
     // the text + tool parts still land; only the attachment is skipped (logged).
@@ -947,13 +971,21 @@ export class HttpConvexWriter implements ConvexWriter {
       // The bridge STREAMS the raw bytes (no base64, no full buffer) directly to
       // a Convex upload URL — sidesteps the 20MB httpAction ceiling and the ~33%
       // base64 inflation. The server-side fs path stays inside the bridge.
-      const opened = await fetcher.open(media.path);
+      // Freshness bound for MENTION-ONLY paths: the source must have been
+      // modified during (or just before) THIS turn. The grace absorbs clock skew
+      // between the bridge and the gateway host / a file written moments before
+      // the turn's first frame reached us.
+      const rejectOlderThanMs =
+        media.explicit === false && typeof media.turnStartMs === "number"
+          ? media.turnStartMs - STALE_MENTION_GRACE_MS
+          : null;
+      const opened = await fetcher.open(media.path, { rejectOlderThanMs });
       if (!opened.ok) {
         // The structural reason (not_found / too_large / path_escape / ...) — the
         // single most useful signal: each is a DIFFERENT fix. Already warned
         // locally by the fetcher (with the filename); the trace stays code-only.
         this.emitMediaTrace(messageId, "dropped", { reason: opened.reason });
-        return;
+        return false;
       }
       const mimeType = media.mimeType ?? opened.mimeType;
       const { uploadUrl } = await this.post<{ uploadUrl: string }>({
@@ -968,7 +1000,7 @@ export class HttpConvexWriter implements ConvexWriter {
       // propagates it -> the catch below reports the drop.)
       if (opened.readError?.()) {
         this.emitMediaTrace(messageId, "dropped", { reason: "read_error" });
-        return;
+        return false;
       }
       const storageId = await this.streamToUploadUrl(
         uploadUrl,
@@ -986,6 +1018,7 @@ export class HttpConvexWriter implements ConvexWriter {
         bytesBucket: bytesBucket(opened.size),
         mimeBase: mimeBaseOf(mimeType),
       });
+      return true;
     } catch (err) {
       // Structural only (never the bytes/content). Filename hints at content, so
       // log just the failure class. A cap-exceeded error surfaces HERE (not from
@@ -998,6 +1031,7 @@ export class HttpConvexWriter implements ConvexWriter {
       this.emitMediaTrace(messageId, "dropped", {
         reason: causedByTooLarge(err) ? "too_large" : "upload_error",
       });
+      return false;
     }
   }
 

@@ -61,6 +61,10 @@ import {
 import { api } from "./chat/convexApi";
 import type { Id } from "./chat/convexApi";
 import { getLastChat, rememberChat } from "./lib/lastChat";
+import {
+  isStaleChunkError,
+  shouldAutoReloadForStaleChunk,
+} from "./lib/staleChunk";
 import type { ConvexId } from "./chat/convexTypes";
 import { ConvexChat } from "./chat/ConvexChat";
 import { ChatSidebar, ChatListSkeleton } from "./chat/ChatSidebar";
@@ -1089,8 +1093,27 @@ const settingsTabRoute = createRoute({
 // "Something went wrong" screen with a thrown stack. We deliberately do NOT
 // render `error.message` (it can carry "Forbidden: chat not owned by user" or
 // other internal detail) — the message stays generic; details live in logs.
-function RouteError({ reset }: ErrorComponentProps) {
+function RouteError({ error, reset }: ErrorComponentProps) {
   const navigate = useNavigate();
+  // STALE-CHUNK self-heal: after a deploy, a lazy route's hashed chunk no longer
+  // exists — reset() would re-run the SAME dead import (the prod "Une erreur est
+  // survenue" on Settings ▸ Traces). Auto-reload ONCE (sessionStorage-guarded so a
+  // genuinely broken deploy still shows this screen, never a reload loop); the
+  // manual retry button also full-reloads in that case instead of reset().
+  const staleChunk = isStaleChunkError(error);
+  const [autoReloading] = useState(
+    () => staleChunk && shouldAutoReloadForStaleChunk(Date.now()),
+  );
+  useEffect(() => {
+    if (autoReloading) window.location.reload();
+  }, [autoReloading]);
+  if (autoReloading) {
+    return (
+      <div className="oc-route-error" role="status">
+        <p className="oc-route-error__body">{m.app_updating()}</p>
+      </div>
+    );
+  }
   return (
     <div className="oc-route-error" role="alert">
       <div className="oc-route-error__icon" aria-hidden>
@@ -1099,7 +1122,14 @@ function RouteError({ reset }: ErrorComponentProps) {
       <h2 className="oc-route-error__title">{m.app_route_error_title()}</h2>
       <p className="oc-route-error__body">{m.app_route_error_body()}</p>
       <div className="oc-route-error__actions">
-        <button type="button" className="oc-route-error__cta" onClick={() => reset()}>
+        <button
+          type="button"
+          className="oc-route-error__cta"
+          onClick={() => {
+            if (staleChunk) window.location.reload();
+            else reset();
+          }}
+        >
           {m.app_retry()}
         </button>
         <button

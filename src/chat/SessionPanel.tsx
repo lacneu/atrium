@@ -224,12 +224,59 @@ export function SessionPanel({
                   </div>
                 ) : null}
               </section>
-              {agentInfoLine !== null ? (
+              {agentInfoLine !== null || sm ? (
                 <section>
                   <h3 className="oc-spanel__cat">{m.spanel_section_agent()}</h3>
-                  <div className="oc-spanel__static">
-                    <span className="oc-spanel__value">{agentInfoLine}</span>
-                  </div>
+                  {/* The agent's CONFIGURATION, detailed like the sub-agent panel's
+                      "Advanced" list (same vocabulary/keys) — rendered ONLY from captured
+                      values, never a fabricated default. */}
+                  <dl className="oc-spanel__kv">
+                    {agent ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.subagent_bar_agent()}</dt>
+                        <dd>
+                          {agent.emoji ? `${agent.emoji} ` : ""}
+                          {agent.displayName ?? agent.agentId}
+                        </dd>
+                      </div>
+                    ) : null}
+                    {agent?.instanceName ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.spanel_agent_instance()}</dt>
+                        <dd>{agent.instanceName}</dd>
+                      </div>
+                    ) : null}
+                    {sm?.model ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.subagent_bar_model()}</dt>
+                        <dd>{sm.model}</dd>
+                      </div>
+                    ) : null}
+                    {sm?.modelProvider ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.subagent_bar_provider()}</dt>
+                        <dd>{sm.modelProvider}</dd>
+                      </div>
+                    ) : null}
+                    {sm?.agentRuntime ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.subagent_bar_gateway()}</dt>
+                        <dd>{sm.agentRuntime}</dd>
+                      </div>
+                    ) : null}
+                    {sm?.thinkingLevel ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.subagent_bar_reasoning()}</dt>
+                        <dd>{sm.thinkingLevel}</dd>
+                      </div>
+                    ) : null}
+                    {sm?.thinkingDefault ? (
+                      <div className="oc-spanel__kv-row">
+                        <dt>{m.spanel_thinking_default()}</dt>
+                        <dd>{sm.thinkingDefault}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
                 </section>
               ) : null}
             </>

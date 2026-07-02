@@ -11,6 +11,7 @@ import {
   Bot,
   Brain,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   Cpu,
@@ -28,6 +29,13 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -39,6 +47,7 @@ import {
   type SubAgentReportTarget,
 } from "./SubAgentReportDialog";
 import {
+  buildSubAgentExportJson,
   buildSubAgentExportMarkdown,
   subAgentExportFilename,
 } from "./subAgentExport";
@@ -274,7 +283,7 @@ function SubAgentSessionBar({
   telemetry?: SubAgentTelemetry;
   childAgentId?: string;
   parentAgentLabel?: string;
-  onExport?: () => void;
+  onExport?: (format: "md" | "json") => void;
 }) {
   const [advOpen, setAdvOpen] = useState(false);
   // ANY captured field opens the Advanced detail — derived (not an enumerated field
@@ -341,15 +350,32 @@ function SubAgentSessionBar({
           </span>
         ) : null}
         {onExport ? (
-          <button
-            type="button"
-            className="oc-chip oc-chip--btn oc-subpanel__bar-export"
-            title={m.subagent_panel_export_hint()}
-            onClick={onExport}
-          >
-            <Download size={12} aria-hidden />
-            <span className="oc-chip__label">{m.subagent_panel_export()}</span>
-          </button>
+          // The SAME choice set as the conversation's Exporter menu (md | json),
+          // in the same dropdown idiom — one export language across the app.
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="oc-chip oc-chip--btn oc-subpanel__bar-export"
+                title={m.subagent_panel_export_hint()}
+              >
+                <Download size={12} aria-hidden />
+                <span className="oc-chip__label">
+                  {m.subagent_panel_export()}
+                </span>
+                <ChevronDown size={12} className="oc-chip__chev" aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuLabel>{m.subagent_panel_export()}</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => onExport("md")}>
+                {m.chat_export_markdown()}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onExport("json")}>
+                {m.chat_export_json()}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
       </div>
       {hasMeta ? (
@@ -563,32 +589,40 @@ export function SubAgentPanelContent({
   );
   const alreadyReported = card ? (reportedIds ?? []).includes(card.id) : false;
 
-  // Export the sub-agent transcript (moved beside the session chips). Prefers the
+  // Export the sub-agent transcript (moved beside the session chips) — the SAME
+  // format choices as the conversation export (Markdown | JSON). Prefers the
   // on-demand tool DETAIL (args + results) when loaded, else the summary tool list.
-  const doExport = useCallback(() => {
-    if (!card) return;
-    const exportTools =
-      toolParts && toolParts.length > 0
-        ? toolParts.map((p) => ({
-            name: p.name,
-            status: p.status,
-            argsText: p.argsText,
-            resultText: p.resultText,
-          }))
-        : (card.tools ?? []).map((t) => ({ name: t.name, status: t.status }));
-    downloadTextFile(
-      subAgentExportFilename(taskName),
-      buildSubAgentExportMarkdown({
+  const doExport = useCallback(
+    (format: "md" | "json") => {
+      if (!card) return;
+      const exportTools =
+        toolParts && toolParts.length > 0
+          ? toolParts.map((p) => ({
+              name: p.name,
+              status: p.status,
+              argsText: p.argsText,
+              resultText: p.resultText,
+            }))
+          : (card.tools ?? []).map((t) => ({ name: t.name, status: t.status }));
+      const input = {
         taskName,
         status: card.status,
         parentAgentLabel,
         sessionMeta: card.sessionMeta,
+        telemetry: card.telemetry,
         result: card.resultText,
         error: card.failure ? shortenSubAgentError(card.errorMessage) : undefined,
         tools: exportTools,
-      }),
-    );
-  }, [card, toolParts, taskName, parentAgentLabel]);
+      };
+      downloadTextFile(
+        subAgentExportFilename(taskName, format),
+        format === "md"
+          ? buildSubAgentExportMarkdown(input)
+          : buildSubAgentExportJson({ ...input, exportedAt: Date.now() }),
+      );
+    },
+    [card, toolParts, taskName, parentAgentLabel],
+  );
 
   // Escape closes the panel — a reliable second way out beside the header's X (the X
   // can scroll out of reach on a long result / narrow window). Scoped to the panel's

@@ -201,19 +201,27 @@ const MEDIA_DIRECTIVE_LINE_RE =
  * (spaces included) while every other line falls back to the conservative
  * bare-token scan. A directive line is NOT also bare-scanned, so a spaced name
  * never produces a truncated duplicate alongside the full path.
+ *
+ * Each hit is tagged with its DELIVERY INTENT: a MEDIA: directive is the agent
+ * explicitly delivering the file (always honored — re-sending an old file on
+ * request is legitimate); a path merely EMBEDDED in prose (exec stdout, a memory
+ * note the agent read) is an incidental MENTION — the consumer freshness-gates
+ * it so last week's files never re-attach to today's turn (the exports bug).
  */
-function extractOutboundPaths(text: string): string[] {
-  const out: string[] = [];
+function extractOutboundPaths(
+  text: string,
+): Array<{ path: string; explicit: boolean }> {
+  const out: Array<{ path: string; explicit: boolean }> = [];
   for (const line of text.split(/\r\n|[\n\r\v\f]/)) {
     const directive = MEDIA_DIRECTIVE_LINE_RE.exec(line);
     if (directive) {
       // trimEnd: the gateway file has no trailing whitespace, and a trailing
       // space would make the fetch path not-found.
-      out.push(directive[1]!.trimEnd());
+      out.push({ path: directive[1]!.trimEnd(), explicit: true });
       continue;
     }
     for (const match of line.matchAll(EMBEDDED_OUTBOUND_RE)) {
-      out.push(match[0]);
+      out.push({ path: match[0], explicit: false });
     }
   }
   return out;
@@ -309,7 +317,11 @@ export class Normalizer {
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   pendingAckText: string;
-  mediaPaths: string[];
+  // path -> the intent it was EMITTED with (true = explicit). A Map (not a list)
+  // so a LATER explicit sighting of a mention-only path re-emits as an upgrade —
+  // the deliberate "re-send an old file via MEDIA:" case survives a stale-dropped
+  // earlier mention (the sink dedupes actual double-attaches).
+  mediaPaths: Map<string, boolean>;
   lastDedupKey: string | null;
   // 6.5 webchat sink: the gateway runs the message-tool itself and only emits a
   // bare `stream:"item"` frame (no args, no result) — the delivered text lives
@@ -342,7 +354,7 @@ export class Normalizer {
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
-    this.mediaPaths = [];
+    this.mediaPaths = new Map();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
@@ -361,7 +373,7 @@ export class Normalizer {
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
-    this.mediaPaths = [];
+    this.mediaPaths = new Map();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
@@ -914,27 +926,45 @@ export class Normalizer {
     if (!Array.isArray(candidates)) {
       return;
     }
-    const items: Array<{ filename: string; path: string }> = [];
-    // Validate + dedupe a single resolved path, pushing a media item once.
-    const consider = (path: string): void => {
-      if (!isOutboundMediaPath(path) || this.mediaPaths.includes(path)) {
+    const items: Array<{ filename: string; path: string; explicit: boolean }> =
+      [];
+    // Validate + dedupe a single resolved path. An EXPLICIT sighting UPGRADES an
+    // earlier mention-only one — including one emitted by a PREVIOUS collectMedia
+    // call (the deliberate "re-send an old file via MEDIA:" case: the earlier
+    // mention may have been stale-dropped by the fetcher, so the explicit
+    // delivery must RE-EMIT; the sink dedupes an actual double-attach). Never
+    // downgrades: an explicit path re-mentioned later stays deduped.
+    const consider = (path: string, explicit: boolean): void => {
+      if (!isOutboundMediaPath(path)) return;
+      const prior = this.mediaPaths.get(path);
+      if (prior !== undefined) {
+        if (!explicit || prior) return; // same-or-weaker sighting -> deduped
+        this.mediaPaths.set(path, true);
+        const inCall = items.find((i) => i.path === path);
+        if (inCall) {
+          inCall.explicit = true; // upgrade within this call's batch
+        } else {
+          // Upgrade across calls: re-emit as explicit.
+          items.push({ filename: posixBasename(path), path, explicit: true });
+        }
         return;
       }
-      this.mediaPaths.push(path);
-      items.push({ filename: posixBasename(path), path });
+      this.mediaPaths.set(path, explicit);
+      items.push({ filename: posixBasename(path), path, explicit });
     };
     for (const candidate of candidates) {
       if (!isString(candidate)) {
         continue;
       }
       if (isOutboundMediaPath(candidate)) {
-        // A bare path candidate (streamed `mediaUrls` list).
-        consider(candidate);
+        // A bare path candidate (a structured `mediaUrls` entry / a tool-result
+        // field that IS the path) — a deliberate delivery signal, not prose.
+        consider(candidate, true);
       } else {
-        // A path embedded in free text (exec stdout / MEDIA: directive line):
-        // extract every occurrence; each is re-validated by `consider`.
-        for (const path of extractOutboundPaths(candidate)) {
-          consider(path);
+        // Paths inside free text (exec stdout / memory notes / MEDIA: lines):
+        // each hit carries its own intent tag; `consider` re-validates.
+        for (const hit of extractOutboundPaths(candidate)) {
+          consider(hit.path, hit.explicit);
         }
       }
     }
@@ -1007,7 +1037,7 @@ export class Normalizer {
     // The agent ran native media generation this turn but delivered NO media
     // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
     // gap (agent omitted the delivery directive) is visible to the #7 loop.
-    if (this.sawMediaGeneration && this.mediaPaths.length === 0) {
+    if (this.sawMediaGeneration && this.mediaPaths.size === 0) {
       result.push({ type: EVENT_MEDIA_UNDELIVERED, runId: this.currentRunId });
     }
     return result;
@@ -1020,7 +1050,7 @@ export class Normalizer {
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
-    this.mediaPaths = [];
+    this.mediaPaths = new Map();
     this.lastDedupKey = null;
     this.deadlines.delete("empty_final");
     this.deadlines.delete("private_ack");
@@ -1047,7 +1077,7 @@ export class Normalizer {
   private hasRealContent(): boolean {
     return Boolean(
       this.hasVisibleToolText ||
-        this.mediaPaths.length > 0 ||
+        this.mediaPaths.size > 0 ||
         (this.text && !isPrivateAck(this.text)),
     );
   }

@@ -4443,6 +4443,15 @@
   color: var(--destructive);
   border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
 }
+
+/* WARNING tone (gateway outage): informational, the composer stays usable — visually
+   distinct from the blocking --error banner. Uses the meter's warn amber (oklch hue
+   75) so "warning" reads the same everywhere in the app. */
+.oc-chat-banner--warn {
+  background: color-mix(in oklch, oklch(0.74 0.16 75) 12%, var(--background));
+  color: oklch(0.56 0.13 75);
+  border: 1px solid color-mix(in oklch, oklch(0.74 0.16 75) 35%, transparent);
+}
 /* Dim the disabled composer's CONTENT, not the whole element. `opacity < 1` on the
    composer itself creates a STACKING CONTEXT that traps the ambient torch (the
    `::before`, z-index:-1) ON the card surface instead of behind it. Dimming the
@@ -6389,3 +6398,39 @@
   }
 }
 /* END — Ambient visual effects */
+
+/* Session-settings AGENT config table: the SAME key/value presentation as the
+   sub-agent panel's Advanced list, so agent + sub-agent configs read identically. */
+.oc-spanel__kv {
+  margin: 0.4rem 0 0;
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  gap: 0;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: color-mix(in srgb, var(--muted) 28%, transparent);
+  overflow: hidden;
+}
+.oc-spanel__kv-row {
+  display: contents;
+}
+.oc-spanel__kv-row dt,
+.oc-spanel__kv-row dd {
+  padding: 0.35rem 0.6rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.oc-spanel__kv-row:first-child dt,
+.oc-spanel__kv-row:first-child dd {
+  border-top: none;
+}
+.oc-spanel__kv-row dt {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.oc-spanel__kv-row dd {
+  margin: 0;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}

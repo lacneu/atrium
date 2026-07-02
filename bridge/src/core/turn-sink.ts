@@ -37,6 +37,10 @@ const TERMINAL_STATUS: Record<string, FinalizeStatus> = {
 interface MediaItem {
   filename: string;
   path: string;
+  /** Delivery intent from discovery: MEDIA: directive / structured field = true;
+   *  a path merely embedded in prose = false (freshness-gated at fetch). Absent
+   *  on a pre-tag event -> treated as explicit (no gate; fail open). */
+  explicit?: boolean;
 }
 
 /**
@@ -156,12 +160,21 @@ export class TurnSink {
         }
         case "media": {
           for (const item of mediaItems(event.items)) {
-            await this.writer.addMedia(messageId, {
+            // Already ATTACHED this turn (e.g. a fresh mention delivered, then the
+            // same path re-emitted as an explicit upgrade) -> never double-attach.
+            if (this.hostedThisTurn.has(item.filename)) continue;
+            const attached = await this.writer.addMedia(messageId, {
               filename: item.filename,
               path: item.path,
+              // Mention-only paths are freshness-gated against THIS turn's start,
+              // so an agent reading old notes never re-attaches last week's files.
+              ...(item.explicit !== undefined ? { explicit: item.explicit } : {}),
+              turnStartMs: this.turnStartMs,
             });
-            // Mark delivered so the finalize-time outbound scan does not re-host it.
-            this.hostedThisTurn.add(item.filename);
+            // Mark hosted ONLY on a real attach: a stale-dropped mention must stay
+            // eligible for a later EXPLICIT re-delivery of the same path (and the
+            // finalize-time outbound scan keys on actually-delivered files).
+            if (attached) this.hostedThisTurn.add(item.filename);
           }
           break;
         }
@@ -248,8 +261,14 @@ function mediaItems(value: unknown): MediaItem[] {
       typeof (raw as Record<string, unknown>).filename === "string" &&
       typeof (raw as Record<string, unknown>).path === "string"
     ) {
-      const obj = raw as { filename: string; path: string };
-      items.push({ filename: obj.filename, path: obj.path });
+      const obj = raw as { filename: string; path: string; explicit?: unknown };
+      items.push({
+        filename: obj.filename,
+        path: obj.path,
+        ...(typeof obj.explicit === "boolean"
+          ? { explicit: obj.explicit }
+          : {}),
+      });
     }
   }
   return items;

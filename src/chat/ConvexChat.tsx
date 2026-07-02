@@ -103,6 +103,7 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { QueuedTurnContext } from "./queuedTurnContext";
+import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { assistantEmptyState } from "./assistantEmptyState";
@@ -549,6 +550,31 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const unavailable = avail && !avail.available ? avail : null;
+  // GATEWAY OUTAGE (target-scoped): the bridge is up but a gateway target errors —
+  // informational + NON-blocking (the anti-deadlock rule: one gateway must never
+  // lock the composer). TWO scopes, two consumers (codex P2):
+  //   - ACTIVE turn (RunStatus label): the chatId-only query — server-side it
+  //     follows the LAST SEND's routing (the turn the spinner belongs to).
+  //   - NEXT send (the warning banner: "a new send will likely fail"):
+  //     scoped to the agent the COMPOSER currently targets, so switching agents
+  //     mid-outage updates the guidance. Convex dedupes the two subscriptions when
+  //     no per-turn selection exists (identical args — the common case).
+  const routing = useChatRouting();
+  const selected = routing?.selected ?? null;
+  const availNext = useQuery(api.bridgeHealth.getBridgeAvailability, {
+    chatId: chatId as Id<"chats">,
+    ...(selected
+      ? {
+          routedAgent: {
+            instanceName: selected.instanceName,
+            agentId: selected.agentId,
+          },
+        }
+      : {}),
+  });
+  const gatewayDegraded = avail?.available === true && avail.degraded === true;
+  const gatewayDegradedNext =
+    availNext?.available === true && availNext.degraded === true;
   // READ-ONLY: the chat is bound to an agent the user is no longer entitled to
   // (an admin narrowed their set). Lock the composer + show a reason so the user
   // understands WHY they cannot send (the dispatch also enforces it server-side).
@@ -569,6 +595,7 @@ function ChatThread({
   const subAgentBusy = hasRunningSubAgent(subAgentRows ?? []);
   useFocusMessage(chatId, focusMessageId);
   return (
+    <GatewayDegradedContext.Provider value={gatewayDegraded}>
     <ThreadPrimitive.Root className="oc-thread">
       <ChatHeader chatId={chatId} />
       <ThreadAnnouncer chatId={chatId} />
@@ -596,6 +623,8 @@ function ChatThread({
         <ChatReadOnlyBanner />
       ) : unavailable ? (
         <BridgeUnavailableBanner />
+      ) : gatewayDegradedNext ? (
+        <GatewayDegradedBanner />
       ) : null}
       <Composer
         showTools={showTools}
@@ -604,6 +633,20 @@ function ChatThread({
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
+    </GatewayDegradedContext.Provider>
+  );
+}
+
+// GATEWAY-OUTAGE notice (warning, NON-blocking): this chat's routed gateway is not
+// responding while the bridge itself is up. The composer stays usable (one gateway
+// must never lock everyone out — the failDispatch bubble backstops a failed send);
+// the banner just makes the outage visible instead of leaving spinners lying.
+function GatewayDegradedBanner() {
+  return (
+    <div className="oc-chat-banner oc-chat-banner--warn" role="status">
+      <CircleAlert size={16} aria-hidden />
+      <span>{m.chat_degraded_banner()}</span>
+    </div>
   );
 }
 

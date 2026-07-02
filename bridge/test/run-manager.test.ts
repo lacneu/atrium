@@ -83,12 +83,13 @@ class FakeWriter implements ConvexWriter {
   async addMedia(
     messageId: string,
     media: { filename: string; path: string; mimeType?: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     this.calls.push([
       "addMedia",
       messageId,
       { filename: media.filename, path: media.path },
     ]);
+    return true;
   }
   async noteMediaUndelivered(): Promise<void> {
     /* no-op for these tests */

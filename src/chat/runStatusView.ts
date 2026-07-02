@@ -41,6 +41,22 @@ export function runStatusView(
   return { kind, label: LABEL[kind]() };
 }
 
+/**
+ * The HONEST in-flight label when the chat's gateway is unreachable (the routed
+ * instance's target is in error while the bridge itself is up): an active turn is
+ * not "processing" — it is waiting on a dead gateway and will most likely time
+ * out. Returns the outage label ONLY for the in-flight kinds (thinking/generating)
+ * while degraded; null otherwise (the caller keeps the normal label). Pure.
+ */
+export function runStatusOutageLabel(
+  kind: RunStatusKind,
+  gatewayDegraded: boolean,
+): string | null {
+  if (!gatewayDegraded) return null;
+  if (kind !== "thinking" && kind !== "generating") return null;
+  return m.runstatus_gateway_unreachable();
+}
+
 /** Re-exported from the shared module so existing importers (RunStatus) are
  *  unchanged while the implementation stays single-source. */
 export const messageHasText = sharedMessageHasText;

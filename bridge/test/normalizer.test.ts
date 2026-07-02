@@ -456,6 +456,7 @@ describe("media", () => {
       {
         filename: "fruits---f998f47f.md",
         path: "/home/node/.openclaw/media/outbound/fruits---f998f47f.md",
+        explicit: true, // MEDIA: directive line = a deliberate delivery
       },
     ]);
   });
@@ -497,6 +498,7 @@ describe("media", () => {
       {
         filename: "IFOA Presentation.pdf",
         path: "/home/node/.openclaw/media/outbound/IFOA Presentation.pdf",
+        explicit: true, // MEDIA: directive line = a deliberate delivery
       },
     ]);
     // Discriminating: delete the directive handling and this regresses to the
@@ -525,6 +527,7 @@ describe("media", () => {
       {
         filename: "Mon Rapport Final.pdf",
         path: "/home/node/.openclaw/media/outbound/Mon Rapport Final.pdf",
+        explicit: true, // a structured tool-result field that IS the path
       },
     ]);
   });
@@ -540,6 +543,60 @@ describe("media", () => {
     expect(mediaItems(events).map((i) => i.path)).toEqual([
       "/home/node/.openclaw/media/outbound/My",
     ]);
+  });
+
+  it("a path MENTIONED in prose (memory note read by a tool) is tagged NON-explicit", () => {
+    // The exports bug: the agent read its memory citing last week's deliveries;
+    // those paths must ride as mention-only so the fetcher freshness-gates them.
+    const events = feedToolResult(
+      "- 2026-06-29: Bilan livre sous /home/node/.openclaw/media/outbound/bilan-news-ia-2026-06-28---c18b07b9.md (12 295 bytes)",
+    );
+    const items = mediaItems(events);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.explicit).toBe(false);
+  });
+
+  it("an explicit MEDIA: in a LATER frame re-emits a path first seen as a mention (cross-call upgrade)", () => {
+    // The intentional re-send case: an earlier tool result MENTIONS an old path
+    // (emitted mention-only, possibly stale-dropped by the fetcher), then the
+    // agent explicitly delivers the SAME path via MEDIA:. The turn-level dedupe
+    // must NOT swallow the explicit delivery — it re-emits explicit:true.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    const events: BridgeEvent[] = [];
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const feed = (result: string) =>
+      events.push(
+        ...normalizer.feed(
+          {
+            event: "agent",
+            payload: {
+              sessionKey: SESSION_KEY,
+              runId: OWN_RUN,
+              stream: "tool",
+              data: { name: "exec", phase: "result", toolCallId: `t${events.length}`, result },
+            },
+          },
+          clock.tick(),
+        ),
+      );
+    feed("note: /home/node/.openclaw/media/outbound/old-bilan.md was delivered last week");
+    feed("MEDIA:/home/node/.openclaw/media/outbound/old-bilan.md");
+    const items = mediaItems(events);
+    expect(items).toHaveLength(2); // the mention, then the explicit re-emission
+    expect(items[0]!.explicit).toBe(false);
+    expect(items[1]!.explicit).toBe(true);
+  });
+
+  it("the SAME path mentioned in prose AND delivered via MEDIA: reads explicit (upgrade)", () => {
+    const events = feedToolResult(
+      "note /home/node/.openclaw/media/outbound/report.md\n" +
+        "MEDIA:/home/node/.openclaw/media/outbound/report.md",
+    );
+    const items = mediaItems(events);
+    expect(items).toHaveLength(1); // deduped
+    expect(items[0]!.explicit).toBe(true); // the directive wins
   });
 });
 

@@ -101,7 +101,10 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
-  async open(path: string): Promise<OpenResult> {
+  async open(
+    path: string,
+    opts?: { rejectOlderThanMs?: number | null },
+  ): Promise<OpenResult> {
     const enc = encodeURIComponent(path);
     // Bounds the meta-probe + the time to get the download RESPONSE HEADERS. Once
     // headers arrive we clear it and hand the BODY to streamGuard's idle timeout, so
@@ -135,12 +138,23 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
         available?: boolean;
         mediaTicket?: string;
         size?: number;
+        mtimeMs?: number;
       };
       if (!meta.available || !meta.mediaTicket) {
         return { ok: false, reason: "not_found" };
       }
       if (typeof meta.size === "number" && meta.size > this.maxBytes) {
         return { ok: false, reason: "too_large" };
+      }
+      // Freshness guard (mentioned-only paths): refuse a source KNOWN to predate
+      // the caller's bound. Judged from the meta probe's mtime when the gateway
+      // reports one; an absent signal fails OPEN (see the download-side check too).
+      if (
+        opts?.rejectOlderThanMs != null &&
+        typeof meta.mtimeMs === "number" &&
+        meta.mtimeMs < opts.rejectOlderThanMs
+      ) {
+        return { ok: false, reason: "stale_mention" };
       }
       // 2) Ticketed download (ticket alone authorizes it; no Bearer).
       const dlRes = await this.fetchImpl(
@@ -154,6 +168,20 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       clearTimeout(connectTimer);
       if (!dlRes.ok || !dlRes.body) {
         return { ok: false, reason: "fetch_error" };
+      }
+      // Download-side freshness check (covers a gateway that sets Last-Modified
+      // but reports no mtime in the meta probe). Unparseable/absent -> fail open.
+      if (opts?.rejectOlderThanMs != null) {
+        const lastModified = Date.parse(
+          dlRes.headers.get("last-modified") ?? "",
+        );
+        if (
+          Number.isFinite(lastModified) &&
+          lastModified < opts.rejectOlderThanMs
+        ) {
+          void dlRes.body.cancel().catch(() => {});
+          return { ok: false, reason: "stale_mention" };
+        }
       }
       const lenHeader = dlRes.headers.get("content-length");
       const len = lenHeader ? Number.parseInt(lenHeader, 10) : NaN;

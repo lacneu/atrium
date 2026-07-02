@@ -88,6 +88,10 @@ export function createConvexAttachmentAdapter(
   // a tool-read file on a shared-fs instance rides by reference (any size), so the
   // inline maxPayload cap must NOT block it. Null/omitted → inline cap only.
   chatId?: string | null,
+  // The agent the COMPOSER currently targets (per-turn routing), read at add()
+  // time — the upload cap must be the TARGET gateway's frame limit, not the last
+  // send's (a switch to an agent on another instance changes the cap).
+  getRoutedAgent?: () => { instanceName: string; agentId: string } | null,
 ): AttachmentAdapter {
   return {
     // "*" is assistant-ui's "no restriction" sentinel: the composer then omits
@@ -105,10 +109,15 @@ export function createConvexAttachmentAdapter(
       // getBridgeAvailability.maxInboundBytes.
       let maxInboundBytes: number | null = null;
       try {
+        const routedAgent = getRoutedAgent?.() ?? null;
         const avail = await convex.query(
           api.bridgeHealth.getBridgeAvailability,
-          // Scope the inbound cap to THIS chat's gateway (one bridge, N gateways).
-          chatId ? { chatId: chatId as Id<"chats"> } : {},
+          // Scope the inbound cap to THIS chat's gateway (one bridge, N gateways) —
+          // and to the composer's CURRENT target when per-turn routing picked one
+          // (validated server-side by the dispatch's own authorization).
+          chatId
+            ? { chatId: chatId as Id<"chats">, ...(routedAgent ? { routedAgent } : {}) }
+            : {},
         );
         maxInboundBytes = avail?.maxInboundBytes ?? null;
       } catch {

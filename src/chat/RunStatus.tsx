@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
 import { CircleAlert, Square } from "lucide-react";
 import type { MessageStatus } from "./convexTypes";
-import { runStatusView, messageHasText } from "./runStatusView";
+import {
+  runStatusView,
+  runStatusOutageLabel,
+  messageHasText,
+} from "./runStatusView";
 import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
+import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import { m } from "@/paraglide/messages.js";
 
 // Map a stored, stable error CODE to a localized, actionable message; any other
@@ -42,6 +47,7 @@ export function RunStatus() {
     messageHasText(m.content as ReadonlyArray<{ type?: string; text?: unknown }>),
   );
 
+  const gatewayDegraded = useContext(GatewayDegradedContext);
   const view = runStatusView(status, hasText);
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
@@ -96,9 +102,14 @@ export function RunStatus() {
         <Square size={13} aria-hidden />
       )}
       <span className="oc-run-status__label">
-        {view.kind === "thinking" && longWait
-          ? runWaitingLabel(identity)
-          : view.label}
+        {/* HONEST outage label first: while THIS chat's gateway is unreachable an
+            in-flight turn is not "processing" — it is waiting on a dead gateway
+            (it will most likely time out). Beats the long-wait reassurance, which
+            would otherwise keep claiming the agent is working (#123/#124). */}
+        {runStatusOutageLabel(view.kind, gatewayDegraded) ??
+          (view.kind === "thinking" && longWait
+            ? runWaitingLabel(identity)
+            : view.label)}
       </span>
     </div>
   );

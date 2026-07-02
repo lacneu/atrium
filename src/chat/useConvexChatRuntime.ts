@@ -183,15 +183,6 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // samples. The SSE ref is empty when SSE is off. Inert unless a recording is active.
   useDeliveryRecorder(chatId, sseSamplesRef);
 
-  const attachmentAdapter = useMemo(
-    () =>
-      createConvexAttachmentAdapter(
-        convex,
-        (msg) => toast.error(msg),
-        chatId,
-      ),
-    [convex, toast, chatId],
-  );
 
   // MULTI-AGENT per-turn router. The composer routes a turn to a chosen agent and
   // each reply is attributed to the agent that answered it. Source of truth:
@@ -373,6 +364,21 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       canRoute: r.canRoute,
     });
   }, []);
+
+  // Defined AFTER computeRoutedAgent (TDZ): the adapter resolves the upload cap
+  // against the agent the COMPOSER currently targets — on a multi-instance chat the
+  // last-send scope would apply the WRONG gateway's frame limit after a switch
+  // (codex P2: reject a file the target accepts / accept one it rejects).
+  const attachmentAdapter = useMemo(
+    () =>
+      createConvexAttachmentAdapter(
+        convex,
+        (msg) => toast.error(msg),
+        chatId,
+        () => computeRoutedAgent() ?? null,
+      ),
+    [convex, toast, chatId, computeRoutedAgent],
+  );
 
   // Overlay the live streaming text onto its message (keyed by messageId — robust
   // to >1 in-flight stream, e.g. a mid-turn queue). Only while the message is

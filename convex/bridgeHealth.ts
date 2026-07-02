@@ -25,7 +25,7 @@ import {
   resolveBridgeUrlForDispatch,
   resolveHealthPollTargets,
 } from "./lib/bridgeRouting";
-import { resolveTargetForChat } from "./routing";
+import { canonicalForUser, resolveTargetForTurn } from "./routing";
 
 const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
@@ -133,6 +133,14 @@ export function computeAvailability(
   // A as degraded, and A's inbound cap is A's gateway frame, not the doc-wide MIN.
   // `available` stays the GLOBAL bridge-reachable gate (no per-instance lockout).
   instanceName?: string | null,
+  // When ALSO given, `degraded` narrows further to the chat's routed AGENT's own
+  // target rows — on a multi-agent instance, another agent's erroring target must
+  // not flag THIS chat's gateway as down (codex P2). `maxInboundBytes` stays
+  // instance-scoped (the frame limit is the gateway's, not the agent's).
+  agentId?: string | null,
+  // And to the resolved CANONICAL: health targets are per instance:canonical, so on
+  // a shared agent another user's erroring target must not flag this chat either.
+  canonical?: string | null,
 ): Availability {
   if (doc === null)
     return {
@@ -148,7 +156,12 @@ export function computeAvailability(
     instanceName != null
       ? doc.targets.filter((t) => t.instanceName === instanceName)
       : doc.targets;
-  const anyTargetError = scoped.some((t) => t.state === "error");
+  const agentScoped = scoped.filter(
+    (t) =>
+      (agentId == null || t.agentId === agentId) &&
+      (canonical == null || t.canonical === canonical),
+  );
+  const anyTargetError = agentScoped.some((t) => t.state === "error");
   // GLOBAL availability gates ONLY on "the bridge process is reachable AND the
   // poller is fresh". A SINGLE agent/target in `error` must NOT grey out the
   // composer for EVERY user/chat — that was a global-readonly DEADLOCK: one agent's
@@ -335,10 +348,20 @@ export const getBridgeHealth = query({
  *  and A's upload cap is A's gateway frame. Omitted → the global view (admin badge).
  *  instanceName is non-secret routing metadata; resolved from the chat's own row. */
 export const getBridgeAvailability = query({
-  args: { chatId: v.optional(v.id("chats")) },
-  handler: async (ctx, { chatId }): Promise<Availability> => {
+  args: {
+    chatId: v.optional(v.id("chats")),
+    // The agent the COMPOSER currently targets (attachment adapter): the upload cap
+    // must be the TARGET gateway's frame limit. Validated below by the dispatch's
+    // own authorization — a forged value can never scope-read another instance.
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (ctx, { chatId, routedAgent }): Promise<Availability> => {
     const { userId } = await requireActive(ctx);
     let instanceName: string | null = null;
+    let agentId: string | null = null;
+    let canonical: string | null = null;
     if (chatId) {
       const chat = await ctx.db.get(chatId);
       // Only scope by a chat the CALLER owns — never read a third party's chat to
@@ -348,13 +371,69 @@ export const getBridgeAvailability = query({
       // to another instance when the bound agent was deleted/revoked — so the resolver
       // wins, with chat.instanceName only as a last resort (resolver found no target).
       if (chat && chat.userId === userId) {
-        instanceName =
-          (await resolveTargetForChat(ctx, chat, userId)).target?.instanceName ??
-          chat.instanceName ??
-          null;
+        // Narrow `degraded` to the routed AGENT's own target for THIS user's
+        // canonical (codex P2: another agent — or another user's canonical on a
+        // shared agent — erroring on the same instance must not flag this chat).
+        // PER-TURN routing precedence, mirroring the dispatch's own:
+        //   1. the LAST SEND's explicit routing — the newest outbox row across ALL
+        //      lifecycle states (pending covers a switch mid-send before
+        //      confirmTurnRouting; FAILED covers the outage window itself: the
+        //      switched-to agent's dead gateway fails the dispatch, lastRouted*
+        //      never advances, yet the composer/retry stays on that agent),
+        //   2. the last CONFIRMED routed agent (lastRouted*),
+        //   3. the chat's primary binding.
+        // The choice runs through resolveTargetForTurn — the dispatch's OWN
+        // authorization — so a forged/revoked routedAgent yields target:null and
+        // can never scope-read a non-entitled instance's state or capacity.
+        // NOT "queued": a queued follow-up describes a FUTURE turn — the degraded
+        // signal feeds the ACTIVE turn's RunStatus, so a queued row targeting a
+        // different agent must neither hide the active agent's outage nor show a
+        // false one (codex P2 round 5). pending (being dispatched NOW) outranks
+        // recency; else the newest of sent/failed = the last attempted send.
+        const [pendingRow, sentRow, failedRow] = await Promise.all(
+          (["pending", "sent", "failed"] as const).map((status) =>
+            ctx.db
+              .query("outbox")
+              .withIndex("by_chat_status", (q) =>
+                q.eq("chatId", chatId!).eq("status", status),
+              )
+              .order("desc")
+              .first(),
+          ),
+        );
+        const lastAttempt = [sentRow, failedRow]
+          .filter((r) => r !== null)
+          .sort((a, b) => b!._creationTime - a!._creationTime)[0];
+        const lastSend = pendingRow ?? lastAttempt;
+        // An EXPLICIT caller target (the attachment adapter passing the composer's
+        // current selection) outranks the send history — the upload cap must be the
+        // gateway the NEXT send will actually hit.
+        const chosen =
+          routedAgent ??
+          lastSend?.routedAgent ??
+          (chat.lastRoutedInstanceName && chat.lastRoutedAgentId
+            ? {
+                instanceName: chat.lastRoutedInstanceName,
+                agentId: chat.lastRoutedAgentId,
+              }
+            : null);
+        const target = (await resolveTargetForTurn(ctx, chat, userId, chosen))
+          .target;
+        instanceName = target?.instanceName ?? chat.instanceName ?? null;
+        agentId = target?.agentId ?? chat.agentId ?? null;
+        // The user's OWN canonical, independent of target resolution — the filter
+        // must stay narrow even when the resolver finds no target (else another
+        // canonical's error on a shared agent shows this chat a false outage).
+        canonical = await canonicalForUser(ctx, userId);
       }
     }
-    return computeAvailability(await readDoc(ctx), Date.now(), instanceName);
+    return computeAvailability(
+      await readDoc(ctx),
+      Date.now(),
+      instanceName,
+      agentId,
+      canonical,
+    );
   },
 });
 
