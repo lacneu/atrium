@@ -1516,5 +1516,8 @@
   "subagents_badge_done": "{count} terminé(s)",
   "subagents_badge_running": "{count} en cours",
   "subagents_badge_failed": "{count} en échec",
-  "subagent_tel_cost_unreported": "non communiqué"
+  "subagent_tel_cost_unreported": "non communiqué",
+  "compaction_label": "Contexte optimisé par la passerelle",
+  "compaction_detail_preflight": "Avant de répondre, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés.",
+  "compaction_detail_midturn": "Pendant cette réponse, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle, puis a repris. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés."
 }

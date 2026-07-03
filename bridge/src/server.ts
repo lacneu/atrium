@@ -41,6 +41,7 @@ import {
   type InboundReference,
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
+import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { validateSharedFs } from "./core/media-validate.js";
 import {
   gatewayHostOf,
@@ -766,6 +767,12 @@ async function performSend(
   const rehydrationEnabled =
     body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
+  // Pre-send session snapshot for the turn's context-pressure signal (Inc 2) and
+  // the compaction-by-rotation detector (Inc 1): the describe below is ALREADY
+  // made every turn — capturing these three fields adds zero gateway calls.
+  let preSendSessionId: string | null = null;
+  let preTurnTotalTokens: number | null = null;
+  let preTurnContextTokens: number | null = null;
   try {
     const desc = await conn.request(
       "sessions.describe",
@@ -775,6 +782,21 @@ async function performSend(
     const sess = (
       desc.payload as { session?: Record<string, unknown> } | undefined
     )?.session;
+    if (sess) {
+      preSendSessionId =
+        typeof sess.sessionId === "string" && sess.sessionId
+          ? sess.sessionId
+          : null;
+      preTurnTotalTokens =
+        typeof sess.totalTokens === "number" && Number.isFinite(sess.totalTokens)
+          ? sess.totalTokens
+          : null;
+      preTurnContextTokens =
+        typeof sess.contextTokens === "number" &&
+        Number.isFinite(sess.contextTokens)
+          ? sess.contextTokens
+          : null;
+    }
 
     // (a) Mirror LIVE session meta onto the chat for the header strip (model +
     // reasoning chips + context meter). Fire-and-forget — never blocks/fails the
@@ -973,7 +995,13 @@ async function performSend(
     // is fine to consume past (the gateway already has the re-grounded message).
     session.firstSendPending = false;
     const ackRunId = extractRunId(response);
-    await session.runManager.beginTurn(now, ackRunId);
+    await session.runManager.beginTurn(now, ackRunId, {
+      expectedSessionId: preSendSessionId,
+      pressure: {
+        totalTokens: preTurnTotalTokens,
+        contextTokens: preTurnContextTokens,
+      },
+    });
   } catch (err) {
     // ANY failure in the armed send→turn-start window: chat.send rejected (e.g. the
     // gateway refused the attachment), OR beginTurn threw AFTER the ack (e.g. its
@@ -1062,6 +1090,56 @@ async function performCompact(session: BridgeSession): Promise<void> {
     { key: session.sessionKey },
     60_000,
   );
+}
+
+/**
+ * LAZY compaction history for one chat's gateway session (Inc 3 — never called
+ * on the turn path): `sessions.compaction.list`, shaped CONTENT-FREE. Each
+ * checkpoint's stored `summary` (real conversation content) is deliberately
+ * DROPPED here — only structural facts cross this API: when, why, and how many
+ * tokens the compaction condensed. Checkpoint shape pinned on live capture
+ * 2026-07-03 (reason "auto-threshold", tokensBefore 19698 → tokensAfter 1050).
+ */
+async function fetchCompactionHistory(
+  conn: OpenClawConnection,
+  sessionKey: string,
+): Promise<{
+  count: number;
+  checkpoints: {
+    checkpointId: string | null;
+    createdAt: number | null;
+    reason: string | null;
+    tokensBefore: number | null;
+    tokensAfter: number | null;
+  }[];
+}> {
+  const res = await conn.request(
+    "sessions.compaction.list",
+    { key: sessionKey },
+    15_000,
+  );
+  const payload = res.payload as Record<string, unknown> | undefined;
+  const rawList = Array.isArray(payload?.checkpoints)
+    ? (payload.checkpoints as unknown[])
+    : Array.isArray(payload?.compactions)
+      ? (payload.compactions as unknown[])
+      : Array.isArray(payload)
+        ? (payload as unknown[])
+        : [];
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v ? v : null;
+  const checkpoints = rawList
+    .filter((c): c is Record<string, unknown> => typeof c === "object" && c !== null)
+    .map((c) => ({
+      checkpointId: str(c.checkpointId),
+      createdAt: num(c.createdAt),
+      reason: str(c.reason),
+      tokensBefore: num(c.tokensBefore),
+      tokensAfter: num(c.tokensAfter),
+    }));
+  return { count: checkpoints.length, checkpoints };
 }
 
 /**
@@ -1720,6 +1798,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/patch",
       "/reset",
       "/compact",
+      "/compaction-history",
       "/agent-files",
       "/config-defaults",
       "/validate-media",
@@ -1794,6 +1873,49 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         console.error("bridge /reset failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: "upstream reset failed" });
+      }
+      return;
+    }
+
+    if (req.url === "/compaction-history") {
+      // LAZY read (Inc 3): same body shape as /reset, hence the shared parser.
+      // Never on the turn path — called on demand by the Convex /api/v1 route
+      // (MCP debug). READ-ONLY, so it must NOT go through registry.acquire():
+      // acquire re-keys (closes) an existing session whose key/instance differs
+      // (the per-turn-routing epoch path) — a diagnostic read arriving MID-STREAM
+      // would kill the in-flight turn (codex P2). Instead derive the session key
+      // directly (the same derivation acquire uses) and read it over a SHORT
+      // dedicated operator connection — zero interaction with live sessions.
+      const hist = parseResetBody(raw);
+      if (hist === null) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const histInstance = hist.instanceName;
+      const histBundle = histInstance ? served.get(histInstance) : undefined;
+      if (!histInstance || !histBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      try {
+        const sessionKey = buildSessionKey(
+          hist.openclawChatId ?? hist.chatId,
+          hist.agentId,
+          hist.canonical,
+        );
+        const history = await withOperatorConnection(
+          histBundle.config,
+          (conn) => fetchCompactionHistory(conn, sessionKey),
+          noteHandshakeFor(histInstance),
+        );
+        sendJson(res, 200, { ok: true, ...history });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /compaction-history failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
     }

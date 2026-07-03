@@ -43,6 +43,7 @@ import {
   EVENT_MEDIA,
   EVENT_MEDIA_UNDELIVERED,
   EVENT_AGENT_ACTIVITY,
+  EVENT_CONTEXT_COMPACTION,
   type BridgeEvent,
 } from "../../core/events.js";
 import {
@@ -333,6 +334,18 @@ export class Normalizer {
   // item). It carries no path/url/bytes — if the turn then delivers no media
   // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
   sawMediaGeneration: boolean;
+  // --- Gateway COMPACTION detection (pinned on live capture 2026-07-03) ------
+  // A PREFLIGHT compaction (before the model call) leaves NO trace in the frame
+  // stream: no phase, no notice — the ONLY observable signal is the session id
+  // ROTATION (truncateAfterCompaction rotates the transcript; the checkpoint's
+  // pre/postCompaction sessionIds confirm it). `expectedSessionId` is seeded per
+  // turn from the pre-send `sessions.describe`; the first own frame carrying a
+  // DIFFERENT id ⇒ the gateway compacted before answering. A MID-TURN compaction
+  // already surfaces as livenessState "abandoned" (resetForCompaction) — it emits
+  // its own signal and SUPPRESSES the follow-up rotation (same compaction, not two).
+  private expectedSessionId: string | null = null;
+  private suppressNextRotation = false;
+  private compactionSignaled = false;
   private recoveryAttempted = false;
   // Buffered tool args by toolCallId: a real tool's start(args) + result(result)
   // coalesce into ONE `completed` tool.status carrying input+output, so the UI
@@ -378,6 +391,8 @@ export class Normalizer {
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
     this.recoveryAttempted = false;
+    this.suppressNextRotation = false;
+    this.compactionSignaled = false;
     this.toolArgs.clear();
     // A fresh turn invalidates the previous run ids: frames arriving before the
     // new ack are admitted on sessionKey alone (ownRunIds empty), then the ack
@@ -385,6 +400,16 @@ export class Normalizer {
     this.ownRunIds = new Set();
     this.deadlines = new Map();
     this.armRecv(now);
+  }
+
+  /**
+   * Seed the session id the pre-send `sessions.describe` reported, per turn.
+   * Rotation detection compares own frames against it (see the field comment).
+   * `null` (no describe / no session yet) ⇒ adopt the first id seen silently —
+   * a brand-new session must never read as "compacted".
+   */
+  noteExpectedSessionId(sessionId: string | null): void {
+    this.expectedSessionId = sessionId;
   }
 
   /** Seed ownRunIds from the chat.send ack so foreign runs are filtered. */
@@ -518,6 +543,24 @@ export class Normalizer {
     const events: BridgeEvent[] = [
       { type: EVENT_OPENCLAW_FRAME, frame: this.safeSanitizeFrame(frame) },
     ];
+    // Compaction-by-rotation: an own frame carrying a session id that differs
+    // from the pre-send describe means the gateway compacted (and rotated the
+    // transcript) before/while answering. Adopt-silently cases: no expectation
+    // seeded (fresh session), or a mid-turn compaction already signaled this
+    // rotation (suppressNextRotation). One signal per turn.
+    const frameSessionId = payload.sessionId;
+    if (isString(frameSessionId) && frameSessionId) {
+      if (this.expectedSessionId === null || this.suppressNextRotation) {
+        this.expectedSessionId = frameSessionId;
+        this.suppressNextRotation = false;
+      } else if (frameSessionId !== this.expectedSessionId) {
+        this.expectedSessionId = frameSessionId;
+        if (!this.compactionSignaled) {
+          this.compactionSignaled = true;
+          events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "preflight" });
+        }
+      }
+    }
     const data = isObject(payload.data) ? payload.data : {};
     if (eventType === "chat") {
       this.handleChat(payload, data, now, events);
@@ -837,6 +880,14 @@ export class Normalizer {
         // the invalidated prefix. The replay refills it when real text resumes.
         events.push({ type: EVENT_MESSAGE_SNAPSHOT, text: "" });
         events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
+        // Signal the compaction itself (persisted marker), and suppress the
+        // follow-up session-id rotation — the replay's rotated id is THIS same
+        // compaction, not a second one.
+        if (!this.compactionSignaled) {
+          this.compactionSignaled = true;
+          events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "midturn" });
+        }
+        this.suppressNextRotation = true;
       } else {
         // Not necessarily turn-final: a follow-on run may continue. Arm a short
         // grace; if nothing follows, tick() finalizes.

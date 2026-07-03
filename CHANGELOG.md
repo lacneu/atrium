@@ -8,6 +8,43 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.21.0] — See what the gateway is doing: compaction visibility, clearer sub-agent status
+
+A feature release focused on transparency: when the gateway works hard (summarizing a long
+conversation's context, running several sub-agents), the user now SEES it instead of wondering
+whether the agent will ever answer. No breaking changes; all Convex changes are additive.
+
+- **The conversation shows when the gateway compacted its context.** When a session approaches the
+  model's limit, gateways (OpenClaw today, Hermes tomorrow) summarize the older exchanges before or
+  even during a reply — an invisible step that could take ~10 seconds and quietly shorten the
+  agent's memory of old messages. Atrium now detects it (from data it already receives — zero extra
+  gateway calls, zero hot-path cost) and renders a subtle "Context optimized by the gateway" divider
+  on the affected reply. It appears live WHILE the gateway compacts (explaining the wait) and stays
+  in the thread as an honest marker; its tooltip explains what was condensed and that recent
+  exchanges are kept verbatim. Detection is content-free by construction and pinned on live
+  captures, covering both pre-reply and mid-reply compactions.
+- **Sub-agent statuses are unambiguous at a glance.** The multi-sub-agent summary now renders one
+  colored pill per status — green "done" count, accent "running" count (with the spinner), red
+  "failed" count — instead of unlabeled icon+number pairs; hover and screen readers announce
+  "3 done / 1 failed". Completed sub-agents read as success (green), no longer as greyed-out. The
+  sub-agent list now starts collapsed behind that summary, matching the tools and Sources
+  accordions; expand it for the per-child detail.
+- **No more misleading "0.00 $" on failed sub-agents.** Gateways compute a sub-agent's cost only at
+  settle, so a child that crashed (e.g. context overflow) reports tokens but never its cost. The
+  detail panel now says the cost was "not reported" instead of showing a false zero; a genuinely
+  idle child still shows 0.00 $ and successful children keep their real cost.
+- **Operators can debug context pressure remotely.** Each turn ships a content-free
+  `chat.gateway_pressure` trace (session fill counters + fill percentage + whether the gateway
+  compacted — written after the reply completes, never delaying it), and a new
+  `get_compaction_history` MCP tool / `GET /api/v1/compaction-history` endpoint (traces.read)
+  returns the gateway's compaction checkpoints for a chat on demand — when, why, and how many
+  tokens each compaction condensed (e.g. "auto-threshold, 19,698 → 1,050"), never the summary text.
+  The read is strictly non-intrusive: it never touches live chat sessions, and a gateway outage is
+  reported as such (never disguised as "chat not found").
+
+Deploy note: `npx convex deploy` (additive schema + new API route) + frontend image + bridge image
+REQUIRED (compaction detection lives in the bridge) + MCP image for the new tool.
+
 ## [0.20.0] — Hybrid rehydration: long conversations without the token bill
 
 A feature release. When a gateway session resets (daily/idle resets, agent switches), Atrium

@@ -85,6 +85,15 @@ export class TurnSink {
   // Per-turn provenance budget: a misbehaving plugin (or several) must never
   // turn the sources affordance into a flood of parts.
   private provenanceCount = 0;
+  // Gateway context-pressure for THIS turn (from the send path's pre-send
+  // describe — zero extra calls) + whether a compaction was detected. Flushed as
+  // ONE content-free `chat.gateway_pressure` trace at finalize (fire-and-forget:
+  // observability must never delay the user's reply).
+  private pressure: {
+    totalTokens: number | null;
+    contextTokens: number | null;
+  } | null = null;
+  private compactionPhase: string | null = null;
 
   constructor(
     chatId: string,
@@ -109,11 +118,16 @@ export class TurnSink {
    * before content; chat-final-content has none until the end). The provider
    * driver calls this AFTER seeding its own per-turn state.
    */
-  async beginTurn(ackRunId: string | null): Promise<void> {
+  async beginTurn(
+    ackRunId: string | null,
+    pressure?: { totalTokens: number | null; contextTokens: number | null },
+  ): Promise<void> {
     this.pendingFinalText = "";
     this.pendingFinalError = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
+    this.pressure = pressure ?? null;
+    this.compactionPhase = null;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
     // Create the streaming message FIRST, go active SECOND. If we flipped
@@ -220,6 +234,23 @@ export class TurnSink {
           // representation -> dropped.
           break;
         }
+        case "context.compaction": {
+          // The gateway summarized this session's older context during the turn
+          // (see core/events.ts). Persist ONE user-facing marker part — it both
+          // explains a long "Réflexion…" wait live (parts stream to the UI) and
+          // stays in the thread as the honest "context was optimized" note.
+          // Content-free: phase + timestamp only, never the summary.
+          const phase = asString(event.phase) || "preflight";
+          if (this.compactionPhase === null) {
+            this.compactionPhase = phase;
+            await this.writer.addCompactionPart(messageId, {
+              kind: "compaction",
+              phase,
+              at: Date.now(),
+            });
+          }
+          break;
+        }
         case "openclaw.frame":
         default:
           // Deprecated raw passthrough / unknown -> not persisted.
@@ -257,6 +288,24 @@ export class TurnSink {
       this.hasPendingFinal ? this.pendingFinalText : "",
       this.pendingFinalError,
     );
+    // Context-pressure trace (Inc 2): one content-free record per turn — the
+    // pre-turn fill counters + whether the gateway compacted. Fire-and-forget
+    // AFTER finalize so observability never delays the visible reply; a write
+    // failure only loses the trace, never the turn.
+    if (this.pressure !== null || this.compactionPhase !== null) {
+      void this.writer
+        .recordGatewayPressure(this.chatId, messageId, {
+          totalTokens: this.pressure?.totalTokens ?? null,
+          contextTokens: this.pressure?.contextTokens ?? null,
+          compaction: this.compactionPhase,
+        })
+        .catch((e) =>
+          console.error(
+            "[gateway-pressure] trace skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+    }
   }
 }
 

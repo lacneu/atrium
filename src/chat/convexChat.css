@@ -6551,3 +6551,29 @@
   line-height: 1.55;
   color: inherit;
 }
+
+/* Gateway compaction marker (CompactionNotice): a thin divider-styled event line
+   above the reply body — reads as "the conversation was folded here". Always
+   visible (not gated by the tools toggle); the full explanation rides the title
+   tooltip. Muted by design: informative, never alarming. */
+.oc-compaction {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0.15rem 0 0.35rem;
+  cursor: help;
+}
+.oc-compaction__rule {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.oc-compaction__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}

@@ -36,6 +36,18 @@ export const EVENT_MEDIA_UNDELIVERED = "media.undelivered";
 // by the SubAgentObserver (persisted) + a later capability-gated UI; the turn-sink ignores it.
 //   { type: "agent.activity", childSessionKey, status?, phase?, text?, errorMessage?, done? }
 export const EVENT_AGENT_ACTIVITY = "agent.activity";
+// The GATEWAY compacted this session's context during the turn — older history was
+// summarized to fit the model window. Provider-neutral (any gateway that manages
+// context emits the same shape). Two detection paths, both pinned on live capture
+// (2026-07-03): "preflight" = the session id ROTATED between the pre-send
+// `sessions.describe` and the run's frames (compaction ran before the model call;
+// no frame carries a compaction marker — rotation is the only signal). "midturn" =
+// the run was abandoned mid-stream for a compaction restart (livenessState
+// "abandoned", the pre-existing resetForCompaction path). Content-free: the signal
+// only, never the summary text. Consumed by the turn-sink → a `compaction` message
+// part (the user-facing "context was optimized" marker).
+//   { type: "context.compaction", phase: "preflight" | "midturn" }
+export const EVENT_CONTEXT_COMPACTION = "context.compaction";
 
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):

@@ -31,6 +31,15 @@ export interface ReasoningPart {
   text: string;
 }
 
+/** Mirrors convex/schema.ts messagePart `compaction` variant: the gateway
+ *  summarized this session's older context during the turn. Content-free —
+ *  the phase ("preflight" | "midturn") + detection timestamp only. */
+export interface CompactionPart {
+  kind: "compaction";
+  phase: string;
+  at: number;
+}
+
 // The provenance part shape lives in core/provenance.ts (pure contract module).
 export type { ProvenancePart } from "./core/provenance.js";
 
@@ -165,6 +174,21 @@ export interface ConvexWriter {
   setSnapshot(messageId: string, text: string): Promise<void>;
   /** tool.status -> internal.stream.addPart(kind:tool). */
   addToolPart(messageId: string, part: ToolPart): Promise<void>;
+  /** context.compaction -> internal.stream.addPart(kind:compaction): the
+   *  gateway summarized older context during this turn (user-facing marker). */
+  addCompactionPart(messageId: string, part: CompactionPart): Promise<void>;
+  /** One content-free `chat.gateway_pressure` trace per turn (fire-and-forget
+   *  at the call site, AFTER finalize): pre-turn fill counters + whether the
+   *  gateway compacted. Never blocks or fails a turn. */
+  recordGatewayPressure(
+    chatId: string,
+    messageId: string,
+    data: {
+      totalTokens: number | null;
+      contextTokens: number | null;
+      compaction: string | null;
+    },
+  ): Promise<void>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
   addProvenancePart(
     messageId: string,
@@ -328,7 +352,20 @@ type IngestOp =
   | {
       op: "addPart";
       messageId: string;
-      part: ToolPart | import("./core/provenance.js").ProvenancePart;
+      part:
+        | ToolPart
+        | CompactionPart
+        | import("./core/provenance.js").ProvenancePart;
+    }
+  // Content-free per-turn context-pressure trace (chat.gateway_pressure):
+  // pre-turn token counters + whether the gateway compacted this turn.
+  | {
+      op: "gatewayPressure";
+      chatId: string;
+      messageId: string;
+      totalTokens: number | null;
+      contextTokens: number | null;
+      compaction: string | null;
     }
   // Outbound media is a 3-step, base64-free flow (Convex upload URL pattern):
   //   1. getUploadUrl -> Convex `ctx.storage.generateUploadUrl()` (no size limit)
@@ -948,6 +985,28 @@ export class HttpConvexWriter implements ConvexWriter {
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
     await this.flushDelta(messageId);
     await this.post({ op: "addPart", messageId, part });
+  }
+
+  async addCompactionPart(
+    messageId: string,
+    part: CompactionPart,
+  ): Promise<void> {
+    await this.flushDelta(messageId);
+    await this.post({ op: "addPart", messageId, part });
+  }
+
+  /** See ConvexWriter.recordGatewayPressure. Rides doPost directly (off the
+   *  per-message chain) — the turn is already finalized when this fires. */
+  async recordGatewayPressure(
+    chatId: string,
+    messageId: string,
+    data: {
+      totalTokens: number | null;
+      contextTokens: number | null;
+      compaction: string | null;
+    },
+  ): Promise<void> {
+    await this.doPost({ op: "gatewayPressure", chatId, messageId, ...data });
   }
 
   async addProvenancePart(

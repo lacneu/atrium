@@ -274,7 +274,26 @@ export class SubAgentObserver {
       const term = childChatTerminalStatus(readString(payload, "state"));
       if (term !== null) {
         const interactionId = obs.interactionId;
-        this.reap(childKey, term); // final-reap guardrail (any terminal)
+        // Final-reap guardrail — but ONLY on done/aborted. An ERROR is NOT
+        // reap-terminal: the gateway's mid-turn overflow recovery ABANDONS the
+        // attempt with a chat:error frame, truncates tool results, then RESUMES
+        // the same run and can finish clean (live-pinned on the NAS 2026-07-03:
+        // error 14:39:15 → "Truncated 8 tool result(s)" → run end isError=false
+        // 14:39:58). Reaping here made the resurrection guard swallow that real
+        // success, freezing a SUCCEEDED child as "en échec" forever. Keep the
+        // observation alive instead: the provisional error row is written below
+        // (a REAL failure stays visible immediately), and a later terminal
+        // done/aborted overwrites it (Convex upsertSubAgent allows error→done).
+        // A child that truly died emits nothing more — the TTL sweep reaps it.
+        if (term !== "error") {
+          this.reap(childKey, term);
+        } else {
+          // Mark the observation itself as errored (not just the store row): the
+          // TTL sweep only synthesizes its "timed out" upsert for RUNNING
+          // observations — a real un-recovered error must reap SILENTLY at TTL,
+          // keeping the original error message (codex P2).
+          obs.status = "error";
+        }
         // Phase 2c: this terminal is the reply to a USER INTERACTION -> route it to
         // the interaction record ONLY (the subAgents.resultText keeps the ORIGINAL
         // answer). `aborted` reads as an error for the interaction.

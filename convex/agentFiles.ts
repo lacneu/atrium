@@ -29,6 +29,7 @@
 import { v } from "convex/values";
 import {
   action,
+  internalAction,
   internalMutation,
   internalQuery,
   type ActionCtx,
@@ -528,6 +529,89 @@ export const compactSession = action({
       resourceId: chatId,
     });
     return null;
+  },
+});
+
+/** Chat lookup for the KEY-AUTHED compaction-history path (no user identity —
+ *  the /api/v1 route already gated on traces.read): the owner id feeds the same
+ *  routing resolution the owner-scoped actions use. */
+export const chatOwnerInternal = internalQuery({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return null;
+    const chat = await ctx.db.get(id);
+    if (chat === null) return null;
+    return { chatId: id, userId: chat.userId };
+  },
+});
+
+/**
+ * LAZY compaction history for a chat's gateway session (Inc 3): resolve the
+ * chat's routed target, POST the bridge `/compaction-history` (which shapes the
+ * gateway's `sessions.compaction.list` CONTENT-FREE — reasons/timestamps/token
+ * counts, never the checkpoint summaries), and return it. Called ON DEMAND by
+ * the key-authed /api/v1 route (MCP debug) — never on the turn path.
+ */
+export const compactionHistoryInternal = internalAction({
+  args: { chatId: v.string() },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<
+    | { ok: true; count: number; checkpoints: unknown[] }
+    // `code` disambiguates the HTTP mapping (codex P2: a gateway outage must
+    // never read as "chat not found"): not_found -> 404, no_agent -> 409,
+    // upstream (bridge/gateway failure) -> 502.
+    | { ok: false; code: "not_found" | "no_agent" | "upstream"; error: string }
+  > => {
+    const chat = await ctx.runQuery(internal.agentFiles.chatOwnerInternal, {
+      chatId,
+    });
+    if (chat === null) {
+      return { ok: false, code: "not_found", error: "chat not found" };
+    }
+    const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
+      chatId: chat.chatId,
+      userId: chat.userId,
+    });
+    if (!routing || routing.target === null) {
+      return { ok: false, code: "no_agent", error: "no_agent" };
+    }
+    try {
+      const { status, data } = await postBridge(
+        "/compaction-history",
+        {
+          chatId: chat.chatId,
+          openclawChatId: routing.openclawChatId,
+          instanceName: routing.target.instanceName,
+          agentId: routing.target.agentId,
+          canonical: routing.target.canonical,
+        },
+        COMPACT_TIMEOUT_MS,
+        routing.bridgeUrl,
+      );
+      if (status !== 200) {
+        return {
+          ok: false,
+          code: "upstream",
+          error: `bridge status ${status}`,
+        };
+      }
+      const body = data as { count?: number; checkpoints?: unknown[] } | null;
+      return {
+        ok: true,
+        count: typeof body?.count === "number" ? body.count : 0,
+        checkpoints: Array.isArray(body?.checkpoints) ? body.checkpoints : [],
+      };
+    } catch (err) {
+      // Unreachable bridge (fetch threw) = upstream too, never a 404.
+      return {
+        ok: false,
+        code: "upstream",
+        error: (err as Error)?.message ?? "bridge unreachable",
+      };
+    }
   },
 });
 

@@ -56,6 +56,18 @@ export const messagePart = v.union(
     kind: v.literal("reasoning"),
     text: v.string(),
   }),
+  // The GATEWAY compacted this session's context during the turn (older history
+  // summarized to fit the model window). Provider-neutral, content-free: the
+  // detection phase ("preflight" = before the model call, detected by session-id
+  // rotation; "midturn" = the run was abandoned + replayed for compaction) and
+  // the detection timestamp — never the summary text. Rendered as the user-facing
+  // "context was optimized" marker on the message (always visible, not a tool
+  // detail — it explains why the agent may have lost older conversation detail).
+  v.object({
+    kind: v.literal("compaction"),
+    phase: v.string(),
+    at: v.number(),
+  }),
   // Provenance report (provenance/v1, docs/PROVENANCE_CONTRACT.md): what a
   // gateway context-injecting plugin (conversational memory / document RAG)
   // fed the LLM for THIS turn. Emitted by the plugin on its gateway-scoped

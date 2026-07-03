@@ -175,6 +175,18 @@ type IngestOp =
       switchedFromAgentId: string | null;
       switchedFromInstanceName: string | null;
     }
+  // Content-free per-turn GATEWAY CONTEXT-PRESSURE trace (chat.gateway_pressure):
+  // the pre-turn token counters (from the bridge's per-turn sessions.describe —
+  // zero extra gateway calls) + whether the gateway COMPACTED this turn (phase
+  // "preflight"/"midturn", null = no compaction). Counters + enums only.
+  | {
+      op: "gatewayPressure";
+      chatId: string;
+      messageId: string;
+      totalTokens: number | null;
+      contextTokens: number | null;
+      compaction: string | null;
+    }
   | {
       op: "finalize";
       messageId: string;
@@ -513,6 +525,31 @@ export const ingest = httpAction(async (ctx, request) => {
           }),
         });
       }
+      return json({ ok: true });
+    }
+    case "gatewayPressure": {
+      // One content-free record per turn: how full the gateway session was
+      // BEFORE the turn (counters from the per-turn describe) + whether the
+      // gateway compacted during it. correlationId = `chatId:messageId` so the
+      // obs MCP can line pressure up with the turn's other traces. The fill
+      // percentage is derived here (single place) for direct MCP readability.
+      const fillPct =
+        typeof body.totalTokens === "number" &&
+        typeof body.contextTokens === "number" &&
+        body.contextTokens > 0
+          ? Math.round((body.totalTokens / body.contextTokens) * 100)
+          : null;
+      await traceIngest(ctx, {
+        kind: "chat.gateway_pressure",
+        chatId: body.chatId,
+        correlationId: `${body.chatId}:${body.messageId}`,
+        meta: {
+          totalTokens: body.totalTokens,
+          contextTokens: body.contextTokens,
+          fillPct,
+          compaction: body.compaction,
+        },
+      });
       return json({ ok: true });
     }
     case "finalize": {

@@ -51,7 +51,18 @@ type Call =
   | ["addToolPart", string, ToolPart]
   | ["addProvenancePart", string, ProvenancePart]
   | ["addMedia", string, { filename: string; path: string }]
-  | ["finalize", string, FinalizeStatus, string, string | null];
+  | ["finalize", string, FinalizeStatus, string, string | null]
+  | ["addCompactionPart", string, string]
+  | [
+      "recordGatewayPressure",
+      string,
+      string,
+      {
+        totalTokens: number | null;
+        contextTokens: number | null;
+        compaction: string | null;
+      },
+    ];
 
 /**
  * Records every writer call in order. startAssistant returns a stub message id;
@@ -73,6 +84,23 @@ class FakeWriter implements ConvexWriter {
   }
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
     this.calls.push(["addToolPart", messageId, part]);
+  }
+  async addCompactionPart(
+    messageId: string,
+    part: { kind: "compaction"; phase: string; at: number },
+  ): Promise<void> {
+    this.calls.push(["addCompactionPart", messageId, part.phase]);
+  }
+  async recordGatewayPressure(
+    chatId: string,
+    messageId: string,
+    data: {
+      totalTokens: number | null;
+      contextTokens: number | null;
+      compaction: string | null;
+    },
+  ): Promise<void> {
+    this.calls.push(["recordGatewayPressure", chatId, messageId, data]);
   }
   async addProvenancePart(
     messageId: string,

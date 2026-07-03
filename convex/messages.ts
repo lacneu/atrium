@@ -80,6 +80,8 @@ type ClientPart =
     }
   | { kind: "media"; url: string | null; filename: string; mimeType: string }
   | { kind: "file"; url: string | null; filename: string; mimeType: string }
+  // Gateway context-compaction marker (content-free: phase + timestamp).
+  | { kind: "compaction"; phase: string; at: number }
   // `text` elided when oversized (same rationale as tool fields).
   | { kind: "reasoning"; text?: string; textOmitted?: boolean; textBytes?: number }
   // Provenance reports (docs/PROVENANCE_CONTRACT.md). The REACTIVE projection
@@ -252,6 +254,12 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               // should fetch the bounded per-message detail
               // (getProvenanceParts) on demand.
               parts.push(compactProvenancePart(part));
+              break;
+            case "compaction":
+              // Gateway context-compaction marker (content-free by construction:
+              // phase + timestamp). Always shipped — the user-facing "context was
+              // optimized" note is not a tool detail.
+              parts.push({ kind: "compaction", phase: part.phase, at: part.at });
               break;
           }
         }
@@ -667,6 +675,10 @@ export const chatStateInternal = internalQuery({
               kind: "provenance" as const,
               structure: provenancePartStructure(p),
             };
+          case "compaction":
+            // Content-free by construction (phase + timestamp): the gateway
+            // compacted this turn — pairs with the chat.gateway_pressure trace.
+            return { kind: "compaction" as const, phase: p.phase };
           default:
             return { kind: "unknown" as const };
         }

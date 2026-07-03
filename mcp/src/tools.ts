@@ -175,6 +175,12 @@ export const getChatStateInput = {
   ),
 } as const;
 
+export const getCompactionHistoryInput = {
+  chatId: z.string().describe(
+    "The chat id (the /chat/<id> path segment) whose gateway-session compaction history to read (required).",
+  ),
+} as const;
+
 export const getSchemaInput = {
   id: z.string().describe(
     "The schema registry id (from list_schemas), e.g. \"provenance.v1\" (required).",
@@ -317,6 +323,29 @@ export function getChatState(
   options?: ApiFetchOptions,
 ): Promise<unknown> {
   return apiFetch(config, `/chat-state${qs({ chatId: args.chatId })}`, {}, options);
+}
+
+/**
+ * GET /api/v1/compaction-history — the gateway's compaction checkpoints for one
+ * chat's session (LAZY: the only caller of the gateway's sessions.compaction.list,
+ * never on the turn path). Requires `traces.read`. CONTENT-FREE: each checkpoint =
+ * {checkpointId, createdAt, reason, tokensBefore, tokensAfter} — the stored summary
+ * (conversation content) never crosses this API. Correlate with the per-turn
+ * `chat.gateway_pressure` traces (list_traces kind=chat.gateway_pressure): pressure
+ * shows WHEN the session filled up + which turn compacted; this shows what each
+ * compaction condensed (e.g. reason "auto-threshold", 19698 -> 1050 tokens).
+ */
+export function getCompactionHistory(
+  config: Config,
+  args: { chatId: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    `/compaction-history${qs({ chatId: args.chatId })}`,
+    {},
+    options,
+  );
 }
 
 /**

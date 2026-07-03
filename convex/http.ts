@@ -1387,6 +1387,84 @@ http.route({
   }),
 });
 
+// Gateway compaction HISTORY for one chat's session (key-authed, Inc 3 of the
+// gateway-observability initiative). LAZY: the ONLY caller of the gateway's
+// `sessions.compaction.list` — never on the turn path. Mirrors /api/v1/chat-state
+// EXACTLY (authenticate -> traces.read -> audit trace -> return). CONTENT-FREE by
+// construction: the bridge drops each checkpoint's stored summary (conversation
+// content); only reasons/timestamps/token counts cross this API.
+http.route({
+  path: "/api/v1/compaction-history",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/compaction-history",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+
+    const chatId = strParam(url, "chatId");
+    if (chatId === undefined) {
+      return apiJson({ ok: false, error: "chatId required" }, 400);
+    }
+    const history = await ctx.runAction(
+      internal.agentFiles.compactionHistoryInternal,
+      { chatId },
+    );
+
+    // Status mapping (codex P2: a gateway outage must never read as "chat not
+    // found"): not_found -> 404, no_agent -> 409, upstream failure -> 502.
+    const status = history.ok
+      ? 200
+      : history.code === "not_found"
+        ? 404
+        : history.code === "no_agent"
+          ? 409
+          : 502;
+
+    // SOC2 access log (CC6.1/CC7.2): WHO read WHICH chat's compaction history —
+    // counts only, no content in the trace.
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/compaction-history",
+      method: "GET",
+      status,
+      chatId,
+      latencyMs: Date.now() - startedAt,
+      meta: JSON.stringify(
+        history.ok ? { count: history.count } : { result: history.error },
+      ),
+    });
+
+    return apiJson(history, status);
+  }),
+});
+
 // Heartbeat summary (key-authed) so an OpenClaw heartbeat learns whether
 // anomalies appeared -> can self-repair. Mirrors /api/v1/traces:
 // authenticate -> require anomalies.read -> record an `api.call` trace -> return.

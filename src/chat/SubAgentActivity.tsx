@@ -170,9 +170,10 @@ export function MessageSubAgents() {
     api.subAgents.listSubAgents,
     cid ? { chatId: cid as Id<"chats"> } : "skip",
   ) as SubAgentRow[] | undefined;
-  // Multi-sub-agent: the card list collapses behind the summary header (default
-  // open) — "open like a tools list" when a turn spawned several delegations.
-  const [listOpen, setListOpen] = useState(true);
+  // Multi-sub-agent: the card list collapses behind the summary header, CLOSED
+  // by default like the sibling accordions (tools, Sources) — the header's
+  // status pills already tell the story at a glance; expand for the detail.
+  const [listOpen, setListOpen] = useState(false);
 
   // Visibility is the caller's (.oc-msg__meta, analysis view only); here we only
   // gate on the capability + a real spawn. The turn's ANSWER is never hidden — when

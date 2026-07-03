@@ -106,6 +106,7 @@ import { QueuedTurnContext } from "./queuedTurnContext";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
+import { CompactionNotice } from "./CompactionNotice";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { messageHasText } from "./runStatusView";
 import type { ToolActivityPart } from "./toolActivityView";
@@ -1714,6 +1715,11 @@ function AssistantMessage() {
               <SourcesActivity />
             </div>
           ) : null}
+          {/* Gateway compaction marker — ALWAYS visible (outside the tools
+              toggle): it explains a long pre-answer wait and the agent's
+              condensed older memory, which is conversation-level information,
+              not tool telemetry. Renders null on the (vast) majority of turns. */}
+          <CompactionNotice />
           {showSource ? (
             <MessageSource />
           ) : (

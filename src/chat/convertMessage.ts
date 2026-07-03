@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
   ConvexMessagePartView,
   ConvexMessageView,
+  isCompactionPart,
   isFilePart,
   isMediaPart,
   isReasoningPart,
@@ -120,6 +121,11 @@ export function convertConvexMessage(
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
   const provenanceParts: ProvenancePartView[] = [];
+  // Gateway context-compaction marker (at most one is written per turn by the
+  // bridge sink; keep the FIRST defensively). Rendered by CompactionNotice —
+  // always visible (it explains the agent's shortened memory + a long wait),
+  // never gated behind the tools toggle.
+  let compaction: { phase: string; at: number } | null = null;
 
   // 1) Parts that PRECEDE the text chronologically (listByChat returns parts
   //    flat + sorted by order): reasoning goes into content; tool calls are
@@ -137,6 +143,8 @@ export function convertConvexMessage(
       toolParts.push(toolPartToActivity(message, index, p));
     } else if (p.kind === "provenance") {
       provenanceParts.push(p);
+    } else if (isCompactionPart(p) && compaction === null) {
+      compaction = { phase: p.phase, at: p.at };
     }
   });
 
@@ -189,6 +197,9 @@ export function convertConvexMessage(
         // Provenance reports (what the gateway plugins fed the LLM this turn),
         // in part order — rendered by SourcesActivity as the "Sources" line.
         provenanceParts,
+        // Gateway context-compaction marker for this turn (null = none) —
+        // rendered by CompactionNotice above the reply body.
+        compaction,
         // L2: count of READY downloadable document attachments for this turn —
         // drives the subtle "joints" badge on the Sources chip.
         attachedDocCount: message.attachedDocCount ?? 0,

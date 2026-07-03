@@ -74,6 +74,15 @@ export type ConvexMessagePartView =
       textOmitted?: boolean;
       textBytes?: number;
     }
+  // Gateway context-compaction marker: the gateway summarized this session's
+  // older context during the turn (content-free — phase + timestamp only).
+  // Rendered as the always-visible "context optimized" note on the message.
+  | {
+      kind: "compaction";
+      /** "preflight" (before the model call) | "midturn" (run restarted). */
+      phase: string;
+      at: number;
+    }
   | ProvenancePartView;
 
 /**
@@ -174,4 +183,10 @@ export function isReasoningPart(
   p: ConvexMessagePartView,
 ): p is Extract<ConvexMessagePartView, { kind: "reasoning" }> {
   return p.kind === "reasoning";
+}
+
+export function isCompactionPart(
+  p: ConvexMessagePartView,
+): p is Extract<ConvexMessagePartView, { kind: "compaction" }> {
+  return p.kind === "compaction";
 }

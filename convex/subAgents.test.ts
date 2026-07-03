@@ -67,6 +67,47 @@ describe("subAgents.upsertSubAgent", () => {
     expect(rows[0]!.updatedAt).toBeGreaterThanOrEqual(rows[0]!.createdAt);
   });
 
+  test("overflow RECOVERY: error -> done overwrites, purges errorMessage, takes the final telemetry", async () => {
+    // The gateway can abandon an attempt with chat:error (mid-turn overflow
+    // recovery), truncate tool results, resume the SAME run and finish clean
+    // (NAS capture 2026-07-03). The observer keeps observing and delivers BOTH
+    // writes; this row must end as a clean success — no stale error text, and
+    // the resumed run's FINAL telemetry (not the provisional attempt's).
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "error" as const,
+      errorMessage: "Context overflow: prompt too large for the model.",
+      telemetry: { runtimeMs: 60_000, totalTokens: 279_947 },
+    });
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "done" as const,
+      resultText: "RECOVERED_OK",
+      telemetry: { runtimeMs: 141_781, totalTokens: 13_025, estimatedCostUsd: 0.02 },
+    });
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "done",
+      resultText: "RECOVERED_OK",
+      telemetry: { runtimeMs: 141_781, totalTokens: 13_025, estimatedCostUsd: 0.02 },
+    });
+    // The provisional error must be PURGED on the recovery transition — a
+    // succeeded child card must not keep a stale "Context overflow" banner.
+    expect(rows[0]!.errorMessage).toBeUndefined();
+  });
+
   test("a terminal status is never downgraded back to running (reorder-tolerance)", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedUserAndChat(t);

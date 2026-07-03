@@ -1516,5 +1516,8 @@
   "subagents_badge_done": "{count} done",
   "subagents_badge_running": "{count} running",
   "subagents_badge_failed": "{count} failed",
-  "subagent_tel_cost_unreported": "not reported"
+  "subagent_tel_cost_unreported": "not reported",
+  "compaction_label": "Context optimized by the gateway",
+  "compaction_detail_preflight": "Before answering, the gateway summarized the beginning of the conversation to stay within the model limit. Recent exchanges are kept verbatim; older ones are now condensed.",
+  "compaction_detail_midturn": "During this reply, the gateway summarized the beginning of the conversation to stay within the model limit, then resumed. Recent exchanges are kept verbatim; older ones are now condensed."
 }

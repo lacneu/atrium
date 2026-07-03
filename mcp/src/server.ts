@@ -20,6 +20,8 @@ import { ApiError, resolveConfig } from "./config.js";
 import {
   getChatState,
   getChatStateInput,
+  getCompactionHistory,
+  getCompactionHistoryInput,
   getTraceEnrichment,
   getTraceEnrichmentInput,
   diagnoseChat,
@@ -180,6 +182,23 @@ function main(): void {
       inputSchema: getChatStateInput,
     },
     async (args) => run(() => getChatState(config, args)),
+  );
+
+  server.registerTool(
+    "get_compaction_history",
+    {
+      title: "Gateway compaction history",
+      description:
+        "The gateway's compaction checkpoints for one chat's session (GET " +
+        "/compaction-history). Key must have traces.read. LAZY read (on-demand " +
+        "gateway RPC — never on the turn path). CONTENT-FREE: per checkpoint " +
+        "{checkpointId, createdAt, reason, tokensBefore, tokensAfter}; the stored " +
+        "summary text never crosses the API. Pair with list_traces " +
+        "kind=chat.gateway_pressure (per-turn fill ratio + compaction flag) to see " +
+        "WHEN a session filled up and WHAT each compaction condensed.",
+      inputSchema: getCompactionHistoryInput,
+    },
+    async (args) => run(() => getCompactionHistory(config, args)),
   );
 
   server.registerTool(

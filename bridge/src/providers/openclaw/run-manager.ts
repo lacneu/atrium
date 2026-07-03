@@ -177,16 +177,32 @@ export class RunManager {
    * Start a new assistant turn. Seeds ownRunIds from the chat.send ack runId
    * (foreign-run isolation) BEFORE the sink creates the streaming message, so
    * ordering matches the pre-refactor monolith. Call before feeding any frames.
+   *
+   * `turnContext` (optional, from the send path's pre-send `sessions.describe` —
+   * zero extra gateway calls): the expected session id seeds the normalizer's
+   * compaction-by-rotation detector; the pressure counters ride to the sink for
+   * the turn's content-free `chat.gateway_pressure` trace. Best-effort — absent
+   * on paths that never described the session (sub-agent sends, tests).
    */
-  async beginTurn(now: number, ackRunId: string | null): Promise<void> {
+  async beginTurn(
+    now: number,
+    ackRunId: string | null,
+    turnContext?: {
+      expectedSessionId: string | null;
+      pressure?: { totalTokens: number | null; contextTokens: number | null };
+    },
+  ): Promise<void> {
     this.normalizer.beginTurn(now);
+    this.normalizer.noteExpectedSessionId(
+      turnContext?.expectedSessionId ?? null,
+    );
     this.frameTally.clear();
     this.frameSampled.clear();
     this.tallyDumped = false;
     if (ackRunId) {
       this.normalizer.noteRunStarted(ackRunId, now);
     }
-    await this.sink.beginTurn(ackRunId);
+    await this.sink.beginTurn(ackRunId, turnContext?.pressure);
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.
     const matched = ackRunId

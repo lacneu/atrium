@@ -240,8 +240,18 @@ export const upsertSubAgent = internalMutation({
     if (!(terminal && args.status === "running")) {
       patch.status = args.status;
     }
+    // Overflow-recovery transition (error -> done): the gateway can abandon an
+    // attempt with a chat:error, truncate tool results, resume the SAME run and
+    // finish clean — the observer keeps observing and the real terminal lands
+    // here. The stale provisional error must not linger on a SUCCEEDED child.
+    const recoveredToDone =
+      existing.status === "error" && patch.status === "done";
     if (args.resultText !== undefined) patch.resultText = args.resultText;
     if (args.errorMessage !== undefined) patch.errorMessage = args.errorMessage;
+    else if (recoveredToDone && existing.errorMessage !== undefined) {
+      // Explicit undefined => Convex removes the field.
+      patch.errorMessage = undefined;
+    }
     // Drop a stale phase update once the child is terminal.
     if (args.phase !== undefined && !terminal) patch.phase = args.phase;
     // Merge the child's tools (accumulates across frames — a finished child KEEPS
@@ -258,8 +268,10 @@ export const upsertSubAgent = internalMutation({
     // Telemetry: last-write-wins while running; once terminal the FINAL numbers stand
     // (a stale straggler heartbeat must not roll runtime/tokens backwards) — unless
     // the terminal write carried none, then a late value is better than nothing.
+    // The overflow-recovery done supersedes the provisional error's numbers: the
+    // resumed run's terminal write carries the REAL final runtime/tokens/cost.
     if (args.telemetry !== undefined) {
-      if (!terminal) {
+      if (!terminal || recoveredToDone) {
         patch.telemetry = { ...existing.telemetry, ...args.telemetry };
       } else if (existing.telemetry === undefined) {
         patch.telemetry = args.telemetry;
@@ -285,10 +297,15 @@ export const upsertSubAgent = internalMutation({
     // summarize watermark (its parent was held back while it ran) AND its result
     // is fresh summarizable content — re-evaluate (scheduled, guard-quiet; codex
     // P2: without this the settle only mattered at the NEXT user turn).
+    // The overflow-recovery transition (error -> done) is ALSO a summarizable
+    // settle: the recovered child's resultText only lands now, and the summary
+    // engine counts only done children — without this the recovered digest
+    // never reaches summarization/rehydration until an unrelated later event.
     const settledNow =
-      patch.status !== undefined &&
-      patch.status !== "running" &&
-      existing.status === "running";
+      (patch.status !== undefined &&
+        patch.status !== "running" &&
+        existing.status === "running") ||
+      recoveredToDone;
     if (settledNow) {
       await ctx.scheduler.runAfter(
         0,

@@ -376,10 +376,46 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
       phase: "error",
     });
     expect(obs.size).toBe(1); // still held through lifecycle:error
-    // The child's chat:error (which FOLLOWS in the capture) is the real terminal + reap.
+    // The child's chat:error (which FOLLOWS in the capture) writes the error row —
+    // but the observation STAYS ALIVE: the gateway's mid-turn overflow recovery
+    // abandons an attempt with chat:error, truncates tool results, resumes the
+    // same run and can finish clean (NAS capture 2026-07-03). Reaping here froze
+    // a succeeded child as "failed" forever. A truly-dead child emits nothing
+    // more and the TTL sweep reaps it (covered by the TTL test above).
     const chatErr = obs.observe(ERR_CHAT_ERROR, 1001);
     expect(chatErr[0]).toMatchObject({ status: "error", childSessionKey: ERR_CHILD });
-    expect(obs.size).toBe(0); // reaped only at chat:error
+    expect(obs.size).toBe(1); // NOT reaped on error — recovery stays observable
+  });
+
+  it("overflow RECOVERY: chat:error then chat:final -> the done overwrites (reap at done)", () => {
+    // The exact NAS sequence (2026-07-03 14:39): precheck overflow -> attempt
+    // abandoned (chat:error) -> tool results truncated -> run resumes -> clean
+    // final 43s later. The observer must deliver BOTH rows so Convex ends on
+    // done+resultText (upsertSubAgent allows error->done and purges the error).
+    const obs = new SubAgentObserver(ERR_PARENT, "chatErr");
+    const err = obs.observe(ERR_CHAT_ERROR, 1000);
+    expect(err[0]).toMatchObject({ status: "error", childSessionKey: ERR_CHILD });
+    expect(obs.size).toBe(1);
+    const recoveredFinal = {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: ERR_CHILD,
+        spawnedBy: ERR_PARENT,
+        state: "final",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "RECOVERED_OK" }],
+        },
+      },
+    };
+    const fin = obs.observe(recoveredFinal, 44_000);
+    expect(fin[0]).toMatchObject({
+      status: "done",
+      resultText: "RECOVERED_OK",
+      childSessionKey: ERR_CHILD,
+    });
+    expect(obs.size).toBe(0); // the REAL terminal reaps
   });
 });
 
