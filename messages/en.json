@@ -1512,5 +1512,9 @@
   "spanel_summary_save": "Save",
   "spanel_summary_save_error": "Save failed (a summary may be in progress) — try again.",
   "spanel_summary_edit_help": "Your version replaces the current text and seeds the next automatic summary.",
-  "spanel_summarize_bridge_outdated": "The bridge must be updated (0.20+) to enable history summaries."
+  "spanel_summarize_bridge_outdated": "The bridge must be updated (0.20+) to enable history summaries.",
+  "subagents_badge_done": "{count} done",
+  "subagents_badge_running": "{count} running",
+  "subagents_badge_failed": "{count} failed",
+  "subagent_tel_cost_unreported": "not reported"
 }

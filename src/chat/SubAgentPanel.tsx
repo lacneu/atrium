@@ -479,8 +479,19 @@ function AdvancedMeta({
   if (telemetry?.totalTokens !== undefined)
     rows.push([m.subagent_tel_tokens(), telemetry.totalTokens.toLocaleString()]);
   if (telemetry?.estimatedCostUsd !== undefined) {
-    const v = formatCostUsd(telemetry.estimatedCostUsd);
-    if (v) rows.push([m.subagent_tel_cost(), v]);
+    // The gateway computes a child's cost at SETTLE (persist), not live: a child
+    // that overflowed/failed streams its tokens but never its final cost, so we
+    // receive 0. Showing "0,00 $" beside a real token count is misleading (it was
+    // not free) — surface it as UNREPORTED instead of a fake zero. A genuine
+    // zero-token child (no work) keeps "0,00 $".
+    const hasTokens =
+      typeof telemetry.totalTokens === "number" && telemetry.totalTokens > 0;
+    if (telemetry.estimatedCostUsd <= 0 && hasTokens) {
+      rows.push([m.subagent_tel_cost(), m.subagent_tel_cost_unreported()]);
+    } else {
+      const v = formatCostUsd(telemetry.estimatedCostUsd);
+      if (v) rows.push([m.subagent_tel_cost(), v]);
+    }
   }
   return (
     <dl className="oc-subpanel__adv-list">

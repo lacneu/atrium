@@ -1512,5 +1512,9 @@
   "spanel_summary_save": "Enregistrer",
   "spanel_summary_save_error": "Échec de l’enregistrement (une synthèse est peut-être en cours) — réessayez.",
   "spanel_summary_edit_help": "Votre version remplace le texte actuel et servira de base à la prochaine synthèse automatique.",
-  "spanel_summarize_bridge_outdated": "Le bridge doit être mis à jour (0.20+) pour activer la synthèse d’historique."
+  "spanel_summarize_bridge_outdated": "Le bridge doit être mis à jour (0.20+) pour activer la synthèse d’historique.",
+  "subagents_badge_done": "{count} terminé(s)",
+  "subagents_badge_running": "{count} en cours",
+  "subagents_badge_failed": "{count} en échec",
+  "subagent_tel_cost_unreported": "non communiqué"
 }

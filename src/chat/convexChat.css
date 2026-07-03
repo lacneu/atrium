@@ -2004,22 +2004,40 @@
    badges) — now a shared ActivityRow; the badges render in its trailing slot. The
    tone colors mirror the card left-rail (running = primary, done = muted, failed =
    destructive). */
+/* Sub-agent status summary: ONE colored PILL per status (icon + count) so
+   "how many done / running / failed" is unambiguous at a glance — each status is a
+   distinct tinted chunk (green = done, primary = running, red = failed), never a
+   bare icon+number the eye has to pair up. */
 .oc-subagent-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0.22rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid transparent;
 }
 .oc-subagent-badge__count {
   font-variant-numeric: tabular-nums;
 }
+/* Done = SUCCESS green (the design's canonical --meter is-ok hue), not muted grey
+   — a returned sub-agent reads as a positive completion, not a disabled state. */
 .oc-subagent-badge--done {
-  color: var(--muted-foreground);
+  color: oklch(0.62 0.15 150);
+  background: color-mix(in oklch, oklch(0.62 0.15 150) 14%, transparent);
+  border-color: color-mix(in oklch, oklch(0.62 0.15 150) 35%, transparent);
 }
 .oc-subagent-badge--running {
   color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  border-color: color-mix(in oklch, var(--primary) 35%, transparent);
 }
 .oc-subagent-badge--failed {
   color: var(--destructive);
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  border-color: color-mix(in oklch, var(--destructive) 38%, transparent);
 }
 
 /* Persistent failure beacon, centered above the composer (Bug C). */

@@ -27,12 +27,12 @@ import {
 
 /** The status label reused for a progress-badge title/aria (same wording as a
  *  card's status line). */
-function progressBadgeTitle(tone: SubAgentTone): string {
+function progressBadgeTitle(tone: SubAgentTone, count: number): string {
   return tone === "done"
-    ? m.subagents_status_done()
+    ? m.subagents_badge_done({ count })
     : tone === "running"
-      ? m.subagents_status_running()
-      : m.subagents_status_failed();
+      ? m.subagents_badge_running({ count })
+      : m.subagents_badge_failed({ count });
 }
 
 // Sub-agent monitor UI — READ-ONLY consumer of the `subAgents` store the bridge
@@ -198,7 +198,8 @@ export function MessageSubAgents() {
             <span
               key={b.tone}
               className={`oc-subagent-badge oc-subagent-badge--${b.tone}`}
-              title={progressBadgeTitle(b.tone)}
+              title={progressBadgeTitle(b.tone, b.count)}
+              aria-label={progressBadgeTitle(b.tone, b.count)}
             >
               {b.tone === "done" ? (
                 <Check size={12} aria-hidden />
