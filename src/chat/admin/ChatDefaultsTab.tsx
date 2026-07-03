@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../convexApi";
+import type { Id } from "../../../convex/_generated/dataModel";
+import { Input } from "@/components/ui/input";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +46,93 @@ type LoadState =
   | { status: "loading" }
   | { status: "error" }
   | { status: "done"; current: ChatDefaultsView };
+
+/** Atrium-side per-instance chat default: the summarize trigger threshold.
+ *  Separate card below the GATEWAY defaults (this one is stored in the instance
+ *  config, not on the gateway — it works even when the gateway is unreachable). */
+function SummarizeThresholdCard({
+  instance,
+}: {
+  instance: { _id: string; name: string; config?: Record<string, unknown> };
+}) {
+  const upsert = useMutation(api.admin.upsertInstanceConfig);
+  const stored =
+    typeof instance.config?.summarizeThresholdChars === "number"
+      ? (instance.config.summarizeThresholdChars as number)
+      : null;
+  const [value, setValue] = useState<string>(stored !== null ? String(stored) : "");
+  const [state, setState] = useState<"idle" | "saving" | "done" | "error">(
+    "idle",
+  );
+  useEffect(() => {
+    setValue(stored !== null ? String(stored) : "");
+    setState("idle");
+  }, [instance._id, stored]);
+  // Validate the WHOLE string (parseInt would silently truncate "1500.5" to
+  // 1500 — the admin would save a value different from the one typed).
+  const trimmed = value.trim();
+  const parsed = trimmed === "" ? null : /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+  const valid =
+    parsed === null ||
+    (Number.isInteger(parsed) && parsed >= 1_000 && parsed <= 200_000);
+  const dirty = (parsed ?? null) !== stored;
+  async function save(): Promise<void> {
+    setState("saving");
+    try {
+      const next: Record<string, unknown> = { ...(instance.config ?? {}) };
+      if (parsed === null) delete next.summarizeThresholdChars;
+      else next.summarizeThresholdChars = parsed;
+      await upsert({
+        instanceId: instance._id as Id<"instances">,
+        config: next,
+      });
+      setState("done");
+    } catch {
+      setState("error");
+    }
+  }
+  return (
+    <div className="oc-cdefaults__row">
+      <span className="oc-cdefaults__label">
+        {m.cdefaults_summarize_threshold_label()}
+      </span>
+      <div className="oc-cdefaults__inline">
+        <Input
+          type="number"
+          min={1000}
+          max={200000}
+          step={1000}
+          placeholder="8000"
+          value={value}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
+          className="oc-cdefaults__number"
+          aria-invalid={!valid}
+        />
+        <Button size="sm" disabled={!dirty || !valid || state === "saving"} onClick={() => void save()}>
+          {state === "saving" ? m.conf_applying() : m.cdefaults_save()}
+        </Button>
+      </div>
+      {!valid ? (
+        <p className="oc-cdefaults__error" role="alert">
+          {m.cdefaults_summarize_threshold_invalid()}
+        </p>
+      ) : null}
+      {state === "done" ? (
+        <p className="oc-admin__hint" role="status">
+          {m.cdefaults_saved()}
+        </p>
+      ) : null}
+      {state === "error" ? (
+        <p className="oc-cdefaults__error" role="alert">
+          {m.cdefaults_save_error()}
+        </p>
+      ) : null}
+      <p className="oc-cdefaults__help">
+        {m.cdefaults_summarize_threshold_help()}
+      </p>
+    </div>
+  );
+}
 
 export function ChatDefaultsTab() {
   const getDefaults = useAction(api.agentFiles.getChatDefaults);
@@ -265,6 +354,19 @@ export function ChatDefaultsTab() {
           <p className="oc-cdefaults__note">{m.cdefaults_note()}</p>
         </>
       )}
+
+      {(() => {
+        const inst = instances?.find((i) => i.name === (instanceName ?? instances[0]?.name));
+        return inst ? (
+          <SummarizeThresholdCard
+            instance={inst as unknown as {
+              _id: string;
+              name: string;
+              config?: Record<string, unknown>;
+            }}
+          />
+        ) : null;
+      })()}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>

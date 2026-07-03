@@ -1100,6 +1100,38 @@ export async function resolveDocumentaryTarget(
 }
 
 /**
+ * Resolve the user's DEDICATED SUMMARIZER agent on a REQUIRED instance (hybrid
+ * rehydration): the admin marks an agent `type:"summarizer"` to own the
+ * conversation-summary jobs; default-first among the user's grants, exactly like
+ * resolveDocumentaryTarget. The instance is REQUIRED equal to the summarized
+ * chat's instance — conversation content never leaves its gateway. Null = no
+ * dedicated agent granted there (the engine falls back to the chat's own agent).
+ */
+export async function resolveSummarizerTarget(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  requiredInstance: string,
+): Promise<{ instanceName: string; agentId: string } | null> {
+  const grants = [...(await getEffectiveGrants(ctx, userId))].sort(
+    (a, b) => Number(b.isDefault) - Number(a.isDefault),
+  );
+  for (const g of grants) {
+    if (g.instanceName !== requiredInstance) continue;
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", g.instanceName).eq("agentId", g.agentId),
+      )
+      .first();
+    if (agent === null || agent.presentInLastOk === false) continue;
+    if (resolveAgentTypes(agent.types).includes("summarizer")) {
+      return { instanceName: g.instanceName, agentId: g.agentId };
+    }
+  }
+  return null;
+}
+
+/**
  * Is a documentary agent available to the caller? Drives the "Joindre les documents"
  * action's enablement (the capability gate — like the bridge-capability pattern).
  * Returns the agent's non-secret display label, or null.
@@ -1297,6 +1329,26 @@ export async function enrichUserAgents(
   );
   const out: EnrichedUserAgent[] = [];
   for (const r of grants) {
+    // UTILITY-ONLY grants (summarizer/documentary without "conversational") are
+    // consumed by dedicated Atrium actions, never by the user's chat surfaces —
+    // hide them from the picker/chip/multiAgent count (and routing refuses them).
+    // Resolve the row via the SAME cache agentDisplay uses (a Map hit on the
+    // all-pool path — no per-grant point read on the hot list; the indexed
+    // fallback only serves the few non-present grants, like agentDisplay's).
+    const typeRow =
+      cx.agentByKey.get(grantKey(r.instanceName, r.agentId)) ??
+      (await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", r.instanceName).eq("agentId", r.agentId),
+        )
+        .first());
+    if (
+      typeRow != null &&
+      !resolveAgentTypes(typeRow.types).includes("conversational")
+    ) {
+      continue;
+    }
     const d = await agentDisplay(ctx, r.instanceName, r.agentId, cx);
     out.push({
       instanceName: r.instanceName,
@@ -1379,7 +1431,24 @@ export const getChatAgent = query({
         multiAgent: false as const,
         multiInstance: false as const,
         readOnly,
-        agent: null,
+        // The resolved agent rides along even mono-agent (additive): the header
+        // chip still gates on multiAgent, but the Session panel's AGENT section
+        // names the agent + its gateway instance for EVERY user. Same projected
+        // shape as the multi-agent branch (one union member for consumers).
+        agent: resolved
+          ? {
+              instanceName: resolved.instanceName,
+              agentId: resolved.agentId,
+              displayName: resolved.displayName,
+              emoji: resolved.emoji,
+              state: resolved.state,
+              isDefault: resolved.isDefault,
+              inheritedDefault: !(
+                chat.instanceName === resolved.instanceName &&
+                chat.agentId === resolved.agentId
+              ),
+            }
+          : null,
       };
     }
 

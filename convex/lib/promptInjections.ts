@@ -80,6 +80,33 @@ export const PROMPT_INJECTIONS = {
     placeholders: ["files"],
     defaultTemplate: "[FICHIERS REÇUS]\n{files}",
   },
+  // Hybrid rehydration: the brief sent (in a hidden summarizer chat, to the DEDICATED
+  // summarizer agent when the admin granted one — agent type "summarizer" — else the
+  // target chat's own agent) to maintain the rolling conversation summary. DISABLING
+  // it removes ONLY Atrium's framing (the CORE-prompt pattern, like documentary_fetch):
+  // the job still dispatches with the bare material, for an agent whose own system
+  // prompt/briefing carries the summarization instructions. The FEATURE switch is the
+  // instance's `rehydration` config (Bridge settings) — no rehydration, no summaries.
+  history_summary: {
+    key: "history_summary",
+    appliedIn: "convex",
+    togglable: true,
+    placeholders: ["previous_summary", "new_messages", "max_chars"],
+    defaultTemplate:
+      "[SYNTHÈSE DE CONVERSATION]\n" +
+      "Tu maintiens le résumé cumulatif d'une conversation entre un utilisateur et " +
+      "un assistant. Mets à jour le résumé existant en y intégrant les nouveaux " +
+      "messages. Conserve : décisions, faits, chiffres, engagements, préférences " +
+      "exprimées, questions ouvertes. Style : factuel, compact, même langue que la " +
+      "conversation. Réponds UNIQUEMENT avec le résumé mis à jour, sans commentaire, " +
+      "en {max_chars} caractères au maximum.\n\n" +
+      "[RÉSUMÉ EXISTANT]\n{previous_summary}\n\n" +
+      "[NOUVEAUX MESSAGES]\n{new_messages}",
+    // Disabled → bare material only (the dedicated agent supplies the task itself).
+    disabledTemplate:
+      "[RÉSUMÉ EXISTANT]\n{previous_summary}\n\n" +
+      "[NOUVEAUX MESSAGES]\n{new_messages}",
+  },
 } as const satisfies Record<string, PromptInjectionDef>;
 
 export type PromptInjectionKey = keyof typeof PROMPT_INJECTIONS;

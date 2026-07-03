@@ -692,7 +692,9 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
     const chatId = await mkChat();
     const res = await as.query(api.agents.getChatAgent, { chatId });
     expect(res?.multiAgent).toBe(false);
-    expect(res?.agent).toBeNull();
+    // The chip still never shows (multiAgent gates it) but the agent is NAMED so
+    // the Session panel's AGENT section shows agent + gateway instance for all.
+    expect(res?.agent).toMatchObject({ agentId: "solo" });
   });
 
   test("multi-agent, BOUND chat: chip names the bound (non-default) agent", async () => {

@@ -7,6 +7,7 @@
 // SECURITY: emits ONLY non-secret names — instanceName, agentId, canonical.
 // Gateway tokens / device identities live in the bridge env, never here.
 
+import { resolveAgentTypes } from "./lib/agentTypes";
 import { Doc, Id } from "./_generated/dataModel";
 import { QueryCtx, MutationCtx } from "./_generated/server";
 import { getProfile } from "./lib/access";
@@ -41,18 +42,41 @@ export interface ChatResolution {
  *  binding; the gateway arbitrates) — assignment only ever grants discovered
  *  agents anyway, and a present agent during a blip keeps presentInLastOk===true
  *  (so it is served, the stale-blip case). */
-async function isDeleted(
+async function readAgentRow(
   ctx: QueryCtx | MutationCtx,
   instanceName: string,
   agentId: string,
-): Promise<boolean> {
-  const agent = await ctx.db
+) {
+  return await ctx.db
     .query("agents")
     .withIndex("by_instance_agent", (q) =>
       q.eq("instanceName", instanceName).eq("agentId", agentId),
     )
     .first();
+}
+
+async function isDeleted(
+  ctx: QueryCtx | MutationCtx,
+  instanceName: string,
+  agentId: string,
+): Promise<boolean> {
+  const agent = await readAgentRow(ctx, instanceName, agentId);
   return agent !== null && agent.presentInLastOk === false;
+}
+
+/** A UTILITY-ONLY agent (e.g. type "summarizer"/"documentary" without
+ *  "conversational") must never be routable for user chats: the admin granted it
+ *  for a dedicated Atrium action, not for conversation. An UNKNOWN row keeps the
+ *  legacy default (conversational). */
+async function isNonConversational(
+  ctx: QueryCtx | MutationCtx,
+  instanceName: string,
+  agentId: string,
+): Promise<boolean> {
+  const agent = await readAgentRow(ctx, instanceName, agentId);
+  return (
+    agent !== null && !resolveAgentTypes(agent.types).includes("conversational")
+  );
 }
 
 /** The user's OpenClaw canonical (profile slug, or the stable u-<id> fallback) —
@@ -82,6 +106,11 @@ export async function resolveTargetForChat(
   // preserving the exact pre-P2 "absent row + successful poll => still served"
   // semantics that `state` cannot reconstruct.
   const uas = await getEffectiveGrants(ctx, userId);
+  // The conversational-type requirement protects USER chats from routing to a
+  // utility-only agent. HIDDEN utility chats (documentary/summarizer) are bound to
+  // exactly such agents BY DESIGN — exempt them (codex P1: the filter would mark
+  // every dedicated documentary/summarizer dispatch agent_restricted).
+  const requireConversational = chat.kind === undefined;
   // NOTE: no early `uas.length === 0 -> no_agent` shortcut. A chat bound to a
   // PRESENT agent the user is no longer entitled to must classify as
   // agent_restricted (read-only) EVEN when the admin removed the user's last grant
@@ -108,7 +137,13 @@ export async function resolveTargetForChat(
       a.isDefault === b.isDefault ? 0 : a.isDefault ? -1 : 1,
     );
     for (const u of ordered) {
-      if (!(await isDeleted(ctx, u.instanceName, u.agentId))) return u;
+      if (await isDeleted(ctx, u.instanceName, u.agentId)) continue;
+      if (
+        requireConversational &&
+        (await isNonConversational(ctx, u.instanceName, u.agentId))
+      )
+        continue;
+      return u;
     }
     return null;
   };
@@ -121,6 +156,14 @@ export async function resolveTargetForChat(
     );
     if (member) {
       if (!(await isDeleted(ctx, member.instanceName, member.agentId))) {
+        if (
+          requireConversational &&
+          (await isNonConversational(ctx, member.instanceName, member.agentId))
+        ) {
+          // Present but retyped UTILITY-ONLY: read-only, never silently re-routed
+          // (the agent_restricted semantics).
+          return { target: null, rebind: null, failReason: "agent_restricted" };
+        }
         return {
           target: asTarget(member, "chat-binding"),
           rebind: null,
@@ -151,6 +194,15 @@ export async function resolveTargetForChat(
     }
   }
 
+  // HIDDEN utility chats (documentary/summarizer) never fall back: their binding
+  // IS the content boundary (the prompt carries conversation excerpts targeted at
+  // THAT agent on THAT instance). A deleted/purged bound agent fails the job —
+  // re-routing to an arbitrary remaining grant would cross an agent/instance
+  // boundary the engine guarantees it never crosses (codex P2). The dispatch-fail
+  // path releases the job lock with backoff.
+  if (chat.kind !== undefined) {
+    return { target: null, rebind: null, failReason: "no_agent" };
+  }
   const fb = await pickFallback();
   if (fb === null) {
     return { target: null, rebind: null, failReason: "no_agent" };
@@ -198,6 +250,14 @@ export async function resolveTargetForTurn(
   if (await isDeleted(ctx, member.instanceName, member.agentId)) {
     // Entitled but gone on the gateway (the composer should have filtered it out).
     return { target: null, rebind: null, failReason: "no_agent" };
+  }
+  if (
+    chat.kind === undefined &&
+    (await isNonConversational(ctx, member.instanceName, member.agentId))
+  ) {
+    // A forged/stale pick of a utility-only agent — same per-option restriction.
+    // (Hidden utility chats never route per-turn, but keep the exemption aligned.)
+    return { target: null, rebind: null, failReason: "agent_restricted" };
   }
   return {
     target: {

@@ -18,6 +18,10 @@ export interface RehydrateTraceInput {
   routedInstanceName: string | null;
   switchedFromAgentId: string | null;
   switchedFromInstanceName: string | null;
+  /** Hybrid rehydration: a rolling summary rode in the injected block (+ its bounded
+   *  size). Optional (absent on skips / pre-feature bridges) — still content-free. */
+  summaryUsed?: boolean;
+  summaryChars?: number;
 }
 
 /** Build the `openclaw.rehydrate` trace meta — content-free by construction. The
@@ -40,6 +44,9 @@ export function rehydrateTraceMeta(
       : {}),
     ...(b.switchedFromInstanceName !== null
       ? { switchedFromInstanceName: b.switchedFromInstanceName }
+      : {}),
+    ...(b.summaryUsed === true
+      ? { summaryUsed: true, summaryChars: b.summaryChars ?? 0 }
       : {}),
   };
 }

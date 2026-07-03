@@ -34,7 +34,8 @@ import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { enrichUserAgents, resolveAgentForChat } from "./agents";
-import { compareOrder } from "./lib/messageOrder";
+import { invalidateSummaryOnDeletion } from "./chatSummaries";
+import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 import {
   classifySubAgentError,
@@ -874,7 +875,7 @@ export const listChats = query({
       .order("desc")) {
       if (++scanned > CHAT_RECENT_SCAN_CAP) break;
       if (c.archived) continue;
-      if (c.kind === "documentary") continue; // hidden L2 fetch chat — never in the sidebar
+      if (c.kind !== undefined) continue; // hidden utility chats (documentary/summarizer) — never in the sidebar
       recent.push(c);
       if (recent.length >= CHAT_WINDOW) break;
     }
@@ -1007,6 +1008,20 @@ export const deleteMessage = mutation({
     }
 
     const wasAssistant = message.role === "assistant";
+    // Hybrid rehydration: deleting at-or-before the summary watermark makes the
+    // rolling summary describe content that no longer exists — reset it (the engine
+    // rebuilds on subsequent turns). Truncate-forward deletes everything from
+    // `message` on, so ITS effectiveOrder is the earliest deleted order.
+    try {
+      await invalidateSummaryOnDeletion(
+        ctx,
+        chat._id,
+        chat.userId,
+        effectiveOrder(message),
+      );
+    } catch (e) {
+      console.error("[chatsum] invalidate on delete:", (e as Error)?.message ?? e);
+    }
     // Truncate-forward in LOGICAL turn order (see lib/messageOrder.compareOrder), NOT
     // raw _creationTime: a mid-turn QUEUE follow-up has an early _creationTime but a
     // later orderTime, so by _creationTime it would survive a delete of the turn it

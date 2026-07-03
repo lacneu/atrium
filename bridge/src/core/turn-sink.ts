@@ -59,6 +59,11 @@ export class TurnSink {
   private readonly chatId: string;
   private readonly writer: ConvexWriter;
   private readonly outboundScan?: OutboundScan;
+  // The gateway session key this sink's turns run under. Echoed into
+  // startAssistant so Convex can DETERMINISTICALLY join an assistant reply to
+  // the send that produced it (the hybrid-rehydration correlate relies on the
+  // openclawChatId nonce embedded in it; time-based joins race on late replies).
+  private readonly sessionKey?: string;
 
   private messageId: string | null = null;
   /** The assistant message id for the CURRENT/last turn (null before the first
@@ -81,10 +86,16 @@ export class TurnSink {
   // turn the sources affordance into a flood of parts.
   private provenanceCount = 0;
 
-  constructor(chatId: string, writer: ConvexWriter, outboundScan?: OutboundScan) {
+  constructor(
+    chatId: string,
+    writer: ConvexWriter,
+    outboundScan?: OutboundScan,
+    sessionKey?: string,
+  ) {
     this.chatId = chatId;
     this.writer = writer;
     this.outboundScan = outboundScan;
+    this.sessionKey = sessionKey;
   }
 
   /** True between beginTurn and the terminal flush; gates driving the provider. */
@@ -113,7 +124,11 @@ export class TurnSink {
     // RunManager.feed buffering them (the buffer is still armed); the replay loop
     // drains them right after this returns. (No await between the two lines, so
     // there is no active-with-null-messageId window.)
-    this.messageId = await this.writer.startAssistant(this.chatId, ackRunId);
+    this.messageId = await this.writer.startAssistant(
+      this.chatId,
+      ackRunId,
+      this.sessionKey ?? null,
+    );
     this.turnActive = true;
   }
 

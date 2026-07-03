@@ -60,8 +60,12 @@ describe("agent-types pure registry", () => {
       "documentary",
     ]);
     expect(resolveAgentTypes(["documentary", "conversational"])).toEqual([
-      ...AGENT_TYPE_CODES,
+      "conversational",
+      "documentary",
     ]);
+    expect(
+      resolveAgentTypes(["summarizer", "documentary", "conversational"]),
+    ).toEqual([...AGENT_TYPE_CODES]);
   });
 
   test("normalizeAgentTypes throws on an unknown code; dedups + orders valid ones", () => {
@@ -69,8 +73,11 @@ describe("agent-types pure registry", () => {
       /Unknown agent type/,
     );
     expect(normalizeAgentTypes(["documentary", "conversational", "documentary"])).toEqual(
-      [...AGENT_TYPE_CODES],
+      ["conversational", "documentary"],
     );
+    expect(
+      normalizeAgentTypes(["summarizer", "conversational", "documentary"]),
+    ).toEqual([...AGENT_TYPE_CODES]);
   });
 });
 

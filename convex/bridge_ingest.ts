@@ -103,7 +103,12 @@ function constantTimeEqual(a: string, b: string): boolean {
 // Mirror of bridge/src/convex-writer.ts IngestOp (kept in sync by hand; the
 // bridge owns the canonical shape).
 type IngestOp =
-  | { op: "startAssistant"; chatId: string; runId: string | null }
+  | {
+      op: "startAssistant";
+      chatId: string;
+      runId: string | null;
+      sessionKey?: string | null;
+    }
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
   | { op: "calibrate" }
@@ -323,6 +328,7 @@ export const ingest = httpAction(async (ctx, request) => {
       const messageId = await ctx.runMutation(internal.stream.startAssistant, {
         chatId: body.chatId as Id<"chats">,
         runId: body.runId ?? undefined,
+        turnSessionKey: body.sessionKey ?? undefined,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
       // whether this turn is recorded + under which session. When OFF the bridge sends

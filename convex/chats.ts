@@ -4,6 +4,7 @@
 // "pending" user is rejected by requireActive. Profile creation happens at login
 // via me.bootstrap (the only thing a pending user may call), not here.
 
+import { resolveAgentTypes } from "./lib/agentTypes";
 import { v } from "convex/values";
 import { mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
@@ -14,6 +15,7 @@ import { getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
+import { purgeSummaryForChat } from "./chatSummaries";
 
 async function requireOwnedProject(
   ctx: MutationCtx,
@@ -78,6 +80,19 @@ async function requireAgentMembership(
   );
   if (!ok) {
     throw new Error("Forbidden: agent not assigned to this user");
+  }
+  // A UTILITY-ONLY agent (summarizer/documentary without "conversational") is
+  // never a valid binding for a NORMAL chat: the picker hides it and routing
+  // refuses it — refusing at creation too keeps a forged/stale client from
+  // persisting a chat that is born agent_restricted (codex P2).
+  const row = await ctx.db
+    .query("agents")
+    .withIndex("by_instance_agent", (q) =>
+      q.eq("instanceName", instanceName).eq("agentId", agentId),
+    )
+    .first();
+  if (row !== null && !resolveAgentTypes(row.types).includes("conversational")) {
+    throw new Error("Forbidden: agent is utility-only (not conversational)");
   }
 }
 
@@ -349,6 +364,15 @@ export async function cascadeDeleteChat(
   // hidden chat's lock (same as deleteMessage). `chatId` is skipped when IT is the
   // documentary chat — it is being deleted here anyway.
   if (chat) await releaseDanglingDocumentaryFetch(ctx, chat.userId, chatId);
+  // Hybrid rehydration: drop the chat's rolling-summary row and, if this chat was
+  // the target of an in-flight summarize job, release the hidden chat's lock.
+  if (chat) {
+    try {
+      await purgeSummaryForChat(ctx, chatId, chat.userId);
+    } catch (e) {
+      console.error("[chatsum] purge on delete:", (e as Error)?.message ?? e);
+    }
+  }
   await ctx.db.delete(chatId);
 }
 

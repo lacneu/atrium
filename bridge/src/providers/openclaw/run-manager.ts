@@ -74,7 +74,7 @@ export class RunManager {
   ) {
     this.sessionKey = sessionKey;
     this.normalizer = new Normalizer(sessionKey);
-    this.sink = new TurnSink(chatId, writer, outboundScan);
+    this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey);
   }
 
   private tallyFrame(frame: unknown): void {

@@ -151,8 +151,14 @@ export interface SubAgentToolPartRecord {
  * order by the run-manager so appendDelta ordering is deterministic.
  */
 export interface ConvexWriter {
-  /** run start -> internal.stream.startAssistant; returns the new message id. */
-  startAssistant(chatId: string, runId: string | null): Promise<string>;
+  /** run start -> internal.stream.startAssistant; returns the new message id.
+   *  `sessionKey` (optional, additive) is the gateway session the turn runs
+   *  under — the deterministic reply-to-send join key. */
+  startAssistant(
+    chatId: string,
+    runId: string | null,
+    sessionKey?: string | null,
+  ): Promise<string>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
   /** message.snapshot -> internal.stream.setSnapshot. */
@@ -202,7 +208,14 @@ export interface ConvexWriter {
   getRehydrationContext(
     chatId: string,
     excludeMessageId?: string | null,
-  ): Promise<{ history: string | null; turnCount: number }>;
+  ): Promise<{
+    history: string | null;
+    turnCount: number;
+    /** Hybrid rehydration counters (absent on a pre-feature Convex): content-free,
+     *  echoed into the openclaw.rehydrate trace. */
+    summaryUsed?: boolean;
+    summaryChars?: number;
+  }>;
   /**
    * Mirror the gateway session meta onto the chat (LIVE model/reasoning/context
    * for the header strip). Fire-and-forget at the call site: never block or fail
@@ -258,6 +271,10 @@ export interface RehydrateTraceArgs {
    *  "switched from X to Y" half. Non-secret names. */
   switchedFromAgentId: string | null;
   switchedFromInstanceName: string | null;
+  /** Hybrid rehydration: a rolling summary was part of the injected history (and its
+   *  bounded size) — content-free counters, absent on skip decisions. */
+  summaryUsed?: boolean;
+  summaryChars?: number;
 }
 
 /** Operations the Convex ingest httpAction understands (its JSON `op` field). */
@@ -297,7 +314,12 @@ interface RecTags {
 }
 
 type IngestOp =
-  | { op: "startAssistant"; chatId: string; runId: string | null }
+  | {
+      op: "startAssistant";
+      chatId: string;
+      runId: string | null;
+      sessionKey?: string | null;
+    }
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
@@ -658,11 +680,15 @@ export class HttpConvexWriter implements ConvexWriter {
     return (await response.json()) as T;
   }
 
-  async startAssistant(chatId: string, runId: string | null): Promise<string> {
+  async startAssistant(
+    chatId: string,
+    runId: string | null,
+    sessionKey?: string | null,
+  ): Promise<string> {
     const ack = await this.post<{
       messageId: string;
       rec?: { recording: boolean; sessionId: string | null };
-    }>({ op: "startAssistant", chatId, runId });
+    }>({ op: "startAssistant", chatId, runId, sessionKey: sessionKey ?? null });
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
     // this turn's deltas with, and trigger a one-time clock calibration. The skew is
     // NOT derived from this round-trip (startAssistant does heavy server work between
@@ -1138,8 +1164,18 @@ export class HttpConvexWriter implements ConvexWriter {
   async getRehydrationContext(
     chatId: string,
     excludeMessageId?: string | null,
-  ): Promise<{ history: string | null; turnCount: number }> {
-    return this.post<{ history: string | null; turnCount: number }>({
+  ): Promise<{
+    history: string | null;
+    turnCount: number;
+    summaryUsed?: boolean;
+    summaryChars?: number;
+  }> {
+    return this.post<{
+      history: string | null;
+      turnCount: number;
+      summaryUsed?: boolean;
+      summaryChars?: number;
+    }>({
       op: "getRehydrationContext",
       chatId,
       excludeMessageId: excludeMessageId ?? null,

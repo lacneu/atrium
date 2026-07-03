@@ -832,6 +832,8 @@ async function performSend(
       enabled: rehydrationEnabled,
     });
     let prependedTurns = 0;
+    let summaryUsed = false;
+    let summaryChars = 0;
     if (decision === "skip_attachment") {
       // Ship the bare message — prepending history to an attachment turn crashes the
       // gateway. KNOWN GAP (best-effort, strictly better than crashing): this chat
@@ -848,6 +850,8 @@ async function performSend(
       if (ctx.history) {
         message = `${ctx.history}\n\n${body.text}`;
         prependedTurns = ctx.turnCount;
+        summaryUsed = ctx.summaryUsed ?? false;
+        summaryChars = ctx.summaryChars ?? 0;
         // Decision log (no PHI — counts + chatId only).
         console.error(
           `[rehydrate] chat=${body.chatId} fresh session -> prepended ${ctx.turnCount} prior turn(s)`,
@@ -878,6 +882,7 @@ async function performSend(
       routedInstanceName: body.instanceName,
       switchedFromAgentId: body.switchedFromAgentId,
       switchedFromInstanceName: body.switchedFromInstanceName,
+      ...(summaryUsed ? { summaryUsed, summaryChars } : {}),
     });
   } catch (err) {
     console.error(
@@ -1594,6 +1599,15 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // compat poller persists them so the banner can flag a divergence.
         buildVersion: process.env.ATRIUM_VERSION ?? null,
         buildRevision: process.env.ATRIUM_REVISION ?? null,
+        // The env-level rehydration KILL-SWITCH state (OPENCLAW_REHYDRATION=off).
+        // Convex aligns the summarize engine on it: when this bridge would never
+        // consume a summary, no summarize job should burn model turns.
+        rehydrationDefault: process.env.OPENCLAW_REHYDRATION !== "off",
+        // This bridge echoes the turn's session key into startAssistant — the
+        // DETERMINISTIC reply-to-send join the summarize correlate requires. The
+        // engine refuses to dispatch against a bridge without it (a time-based
+        // fallback can settle the wrong job during a rolling upgrade).
+        turnSessionEcho: true,
         protocolVersion: PROTOCOL_VERSION,
         compat: COMPAT_MANIFEST,
         targets,

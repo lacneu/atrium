@@ -51,6 +51,9 @@ export const instanceConfigValidator = v.object({
   ),
   rehydration: v.optional(v.boolean()),
   mediaMaxMb: v.optional(v.number()),
+  // Hybrid rehydration: unsummarized-content size (chars) that triggers an
+  // AUTOMATIC summarize job (the manual trigger ignores it). Bounds below.
+  summarizeThresholdChars: v.optional(v.number()),
   // GATEWAY/AGENT-visible shared-fs paths (where the AGENT reads inbound files /
   // writes outbound files — i.e. the gateway container's mount of the shared
   // volume). Used only in shared-fs mode. Non-secret.
@@ -99,6 +102,7 @@ export type InstanceConfig = {
   inboundMediaMode?: InboundMediaMode;
   rehydration?: boolean;
   mediaMaxMb?: number;
+  summarizeThresholdChars?: number;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
   promptInjections?: PromptInjectionConfig;
@@ -113,6 +117,11 @@ export type ResolvedInstanceConfig = {
   inboundAgentMount: string;
   outboundAgentMount: string;
 };
+
+/** Bounds for the summarize trigger threshold (chars). The floor keeps the engine
+ *  from spamming a model call per turn; the cap keeps a typo from disabling it. */
+export const SUMMARIZE_THRESHOLD_MIN = 1_000;
+export const SUMMARIZE_THRESHOLD_MAX = 200_000;
 
 /** Single source of the per-instance config defaults (the legacy env behaviour). */
 export const DEFAULT_INSTANCE_CONFIG: ResolvedInstanceConfig = {
@@ -140,6 +149,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "inboundMediaMode",
     "rehydration",
     "mediaMaxMb",
+    "summarizeThresholdChars",
     "inboundAgentMount",
     "outboundAgentMount",
     "promptInjections",
@@ -167,6 +177,18 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.rehydration !== undefined) {
     if (typeof o.rehydration !== "boolean") return "invalid";
     out.rehydration = o.rehydration;
+  }
+  if (o.summarizeThresholdChars !== undefined) {
+    const n = o.summarizeThresholdChars;
+    if (
+      typeof n !== "number" ||
+      !Number.isInteger(n) ||
+      n < SUMMARIZE_THRESHOLD_MIN ||
+      n > SUMMARIZE_THRESHOLD_MAX
+    ) {
+      return "invalid";
+    }
+    out.summarizeThresholdChars = n;
   }
   if (o.mediaMaxMb !== undefined) {
     const n = o.mediaMaxMb;

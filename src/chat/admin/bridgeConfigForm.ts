@@ -108,7 +108,18 @@ export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
  *  injection overrides. Matches the `upsertInstanceConfig` mutation arg / InstanceConfig. */
 export type ConfigOverride = Partial<
   Omit<ConfigForm, "promptInjections">
-> & { promptInjections?: PromptInjectionConfig };
+> & {
+  promptInjections?: PromptInjectionConfig;
+  /** Passthrough (owned by the Chat-defaults tab, not this form). */
+  summarizeThresholdChars?: number;
+};
+
+/** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
+ *  threshold today) that share the same `instance.config` blob: they must ride
+ *  through this form's rebuild UNCHANGED, or a Bridge/injections save would
+ *  silently erase them (codex P2). Explicit list — never a blind spread (the
+ *  closed server validator rejects unknown keys; stale junk must not resurrect). */
+const PASSTHROUGH_KEYS = ["summarizeThresholdChars"] as const;
 
 export function buildConfigOverride(
   form: ConfigForm,
@@ -129,5 +140,12 @@ export function buildConfigOverride(
   keep("outboundAgentMount");
   const injections = buildInjectionsOverride(form.promptInjections);
   if (Object.keys(injections).length > 0) out.promptInjections = injections;
+  // Carry the other surfaces' fields through (see PASSTHROUGH_KEYS). `stored` is
+  // the RAW instance.config at both call sites, so the values are present even
+  // though ConfigForm does not type them.
+  const raw = stored as Record<string, unknown>;
+  for (const k of PASSTHROUGH_KEYS) {
+    if (typeof raw[k] === "number") out[k] = raw[k] as number;
+  }
   return out;
 }

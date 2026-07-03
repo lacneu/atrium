@@ -78,6 +78,8 @@ export const pollBridgeCompat = internalAction({
     let bridgeVersion: string | null = null;
     let buildVersion: string | null = null;
     let buildRevision: string | null = null;
+    let rehydrationDefault: boolean | null = null;
+    let turnSessionEcho: boolean | null = null;
     let protocolVersion: number | null = null;
     let compat: NormalizedCapabilities["compat"] = null;
     let anyReachable = false;
@@ -98,13 +100,22 @@ export const pollBridgeCompat = internalAction({
         if (bridgeVersion === null) bridgeVersion = n.bridgeVersion;
         if (buildVersion === null) buildVersion = n.buildVersion;
         if (buildRevision === null) buildRevision = n.buildRevision;
+        if (rehydrationDefault === null)
+          rehydrationDefault = n.rehydrationDefault;
+        if (turnSessionEcho === null) turnSessionEcho = n.turnSessionEcho;
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
         if (compat === null) compat = n.compat;
         for (const t of n.targets) {
-          // Dedupe across bridges by instance (first reachable wins).
+          // Dedupe across bridges by instance (first reachable wins). Stamp the
+          // SERVING bridge's rehydration default onto its own targets so a
+          // multi-bridge deployment keeps per-instance kill-switch fidelity.
           if (seenInstance.has(t.instanceName)) continue;
           seenInstance.add(t.instanceName);
-          mergedTargets.push(t);
+          mergedTargets.push({
+            ...t,
+            rehydrationDefault: n.rehydrationDefault,
+            turnSessionEcho: n.turnSessionEcho,
+          });
         }
       } catch {
         lastError = "unreachable";
@@ -121,6 +132,8 @@ export const pollBridgeCompat = internalAction({
       bridgeVersion,
       buildVersion,
       buildRevision,
+      rehydrationDefault,
+      turnSessionEcho,
       protocolVersion,
       compat,
       targets: mergedTargets,
@@ -135,6 +148,8 @@ export const upsertBridgeCompat = internalMutation({
     bridgeVersion: v.union(v.string(), v.null()),
     buildVersion: v.optional(v.union(v.string(), v.null())),
     buildRevision: v.optional(v.union(v.string(), v.null())),
+    rehydrationDefault: v.optional(v.union(v.boolean(), v.null())),
+    turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
     protocolVersion: v.union(v.number(), v.null()),
     compat: v.any(),
     targets: v.array(bridgeCompatTarget),
@@ -148,6 +163,8 @@ export const upsertBridgeCompat = internalMutation({
       bridgeVersion: args.bridgeVersion,
       buildVersion: args.buildVersion ?? null,
       buildRevision: args.buildRevision ?? null,
+      rehydrationDefault: args.rehydrationDefault ?? null,
+      turnSessionEcho: args.turnSessionEcho ?? null,
       protocolVersion: args.protocolVersion,
       compat: args.compat,
       targets: args.targets,

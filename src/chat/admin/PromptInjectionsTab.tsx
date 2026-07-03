@@ -53,6 +53,10 @@ const INJECTION_I18N: Record<
     label: m.injection_inbound_files_label,
     help: m.injection_inbound_files_help,
   },
+  history_summary: {
+    label: m.injection_history_summary_label,
+    help: m.injection_history_summary_help,
+  },
 };
 
 // Example values for the "Preview" — realistic stand-ins for each placeholder so the admin
@@ -61,6 +65,9 @@ const PLACEHOLDER_EXAMPLES: Record<string, string> = {
   outboundDir: "/home/node/.openclaw/media/outbound",
   references: "- gdrive/1a2b3c4d5e6f7890abcd\n- gdrive/0f9e8d7c6b5a4321dcba",
   files: "- /home/node/.openclaw/media/inbound/rapport.pdf (124800 o, application/pdf)",
+  previous_summary: "Projet Alpha : budget 40 000 EUR ; choix du serveur en cours.",
+  new_messages: "Utilisateur : Compare OVH et Scaleway.\nAssistant : Comparaison en cours.",
+  max_chars: "6000",
 };
 
 // What each placeholder corresponds to (shown in a per-placeholder help bubble so an admin
@@ -69,6 +76,9 @@ const PLACEHOLDER_I18N: Record<string, () => string> = {
   outboundDir: m.placeholder_outboundDir,
   references: m.placeholder_references,
   files: m.placeholder_files,
+  previous_summary: m.placeholder_previous_summary,
+  new_messages: m.placeholder_new_messages,
+  max_chars: m.placeholder_max_chars,
 };
 
 export function PromptInjectionsTab() {

@@ -281,6 +281,21 @@ export const upsertSubAgent = internalMutation({
     // the unchanged `existing.status` (the reorder guard dropped a late `running`
     // over a terminal row → it stays terminal). Drain when terminal so a follow-up
     // held behind this child dispatches the moment it goes done/error/aborted.
+    // Hybrid rehydration: a child reaching a TERMINAL state may unblock the
+    // summarize watermark (its parent was held back while it ran) AND its result
+    // is fresh summarizable content — re-evaluate (scheduled, guard-quiet; codex
+    // P2: without this the settle only mattered at the NEXT user turn).
+    const settledNow =
+      patch.status !== undefined &&
+      patch.status !== "running" &&
+      existing.status === "running";
+    if (settledNow) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chatSummaries.maybeScheduleSummarize,
+        { chatId: existing.chatId },
+      );
+    }
     await maybeDrainOnTerminal(
       ctx,
       args.chatId,

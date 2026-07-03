@@ -109,7 +109,9 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "gatewayVersion",
       "instanceName",
       "protocolVersion",
+      "rehydrationDefault",
       "targets",
+      "turnSessionEcho",
     ]);
   });
 

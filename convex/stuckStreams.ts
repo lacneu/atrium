@@ -22,6 +22,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { writeTraceEvent } from "./observability";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
+import { failSummarizeForChat } from "./chatSummaries";
 
 /**
  * When the watchdog flips a stale streaming message, also release a documentary
@@ -41,6 +42,31 @@ async function releaseStuckDocumentaryFetch(
     await failDocumentaryFetchForChat(ctx, chat, "stuck_stream");
   } catch {
     /* never let an L2 cleanup error break the stuck-stream watchdog */
+  }
+}
+
+/** Twin of the above for a stuck SUMMARIZE job (hybrid rehydration): release the
+ *  `pendingSummarize` lock + apply the failure backoff. When NO lock remains (the
+ *  job was already released mid-stream by an invalidation), still sweep the hidden
+ *  chat — the watchdog just settled an ORPHAN reply that may hold a summary of
+ *  deleted content, and no correlate will ever clean it (codex P2). Best-effort. */
+async function releaseStuckSummarize(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+): Promise<void> {
+  if (chat?.kind !== "summarizer") return;
+  try {
+    if (chat.pendingSummarize) {
+      await failSummarizeForChat(ctx, chat, "stuck_stream");
+    } else {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chatSummaries.cleanupSummarizerChat,
+        { hiddenChatId: chat._id },
+      );
+    }
+  } catch {
+    /* never let a summarize cleanup error break the stuck-stream watchdog */
   }
 }
 
@@ -135,6 +161,15 @@ export const reconcileChatStuckStreams = internalMutation({
       await releaseStuckDocumentaryFetch(ctx, chat);
       docReleased = true;
     }
+    if (chat?.kind === "summarizer") {
+      if (chat.pendingSummarize && chat.pendingSummarize.createdAt < cutoff) {
+        await releaseStuckSummarize(ctx, chat);
+        docReleased = true;
+      } else if (!chat.pendingSummarize) {
+        // No live job: sweep settled orphans (released-then-flipped replies).
+        await releaseStuckSummarize(ctx, chat);
+      }
+    }
     // Releasing a stuck stream/fetch ends that turn → drain any send queued behind it.
     if (reconciled > 0 || docReleased) await drainNextQueued(ctx, id);
     return { ok: true as const, reconciled };
@@ -207,7 +242,9 @@ export const reconcileStuckStreams = internalMutation({
         }),
       });
       // If this stale stream is a documentary FETCH turn, release its stuck lock too.
-      await releaseStuckDocumentaryFetch(ctx, await ctx.db.get(msg.chatId));
+      const stuckChat = await ctx.db.get(msg.chatId);
+      await releaseStuckDocumentaryFetch(ctx, stuckChat);
+      await releaseStuckSummarize(ctx, stuckChat);
     }
 
     // Each chat whose turn we just released is now idle → drain its queue.

@@ -276,12 +276,15 @@ function SubAgentSessionBar({
   meta,
   telemetry,
   childAgentId,
+  instanceName,
   parentAgentLabel,
   onExport,
 }: {
   meta: SubAgentSessionMeta | undefined;
   telemetry?: SubAgentTelemetry;
   childAgentId?: string;
+  /** The gateway instance the child runs on (= the parent chat's instance). */
+  instanceName?: string;
   parentAgentLabel?: string;
   onExport?: (format: "md" | "json") => void;
 }) {
@@ -399,6 +402,7 @@ function SubAgentSessionBar({
           meta={meta ?? {}}
           telemetry={telemetry}
           childAgentId={childAgentId}
+          instanceName={instanceName}
         />
       ) : null}
     </div>
@@ -422,10 +426,13 @@ function AdvancedMeta({
   meta,
   telemetry,
   childAgentId,
+  instanceName,
 }: {
   meta: SubAgentSessionMeta;
   telemetry?: SubAgentTelemetry;
   childAgentId?: string;
+  /** The gateway instance the child runs on (= the parent chat's instance). */
+  instanceName?: string;
 }) {
   const rows: Array<[string, string]> = [];
   if (meta.model) rows.push([m.subagent_bar_model(), meta.model]);
@@ -435,6 +442,7 @@ function AdvancedMeta({
   // differs from the parent chip when the spawn delegated to another agent.
   const childAgent = meta.agentId ?? childAgentId;
   if (childAgent) rows.push([m.subagent_bar_agent(), childAgent]);
+  if (instanceName) rows.push([m.spanel_agent_instance(), instanceName]);
   if (meta.label) rows.push([m.subagent_bar_label(), meta.label]);
   if (meta.thinkingLevel)
     rows.push([m.subagent_bar_reasoning(), meta.thinkingLevel]);
@@ -461,9 +469,6 @@ function AdvancedMeta({
     rows.push([m.subagent_bar_depth(), String(meta.spawnDepth)]);
   const capability = subAgentCapability(meta.subagentRole);
   if (capability) rows.push([m.subagent_bar_capability(), capability]);
-  // Effective working directory (child session static) beats the requested cwd arg.
-  const workDir = meta.spawnedWorkspaceDir ?? meta.cwd;
-  if (workDir) rows.push([m.subagent_bar_workdir(), workDir]);
   if (meta.sessionId) rows.push([m.subagent_bar_session_id(), meta.sessionId]);
   if (meta.gatewayKind) rows.push([m.subagent_bar_gateway(), meta.gatewayKind]);
   // Run telemetry — live-ish while running (heartbeat cadence), final once settled.
@@ -503,6 +508,18 @@ export function SubAgentPanelContent({
   const rows = useQuery(api.subAgents.listSubAgents, {
     chatId: chatId as Id<"chats">,
   }) as SubAgentRow[] | undefined;
+  // The child runs on the PARENT chat's gateway instance by construction — but a
+  // per-turn ROUTED chat can switch instances between turns, so the chat-level
+  // instance is only trustworthy when per-turn routing is OFF (else omit the row
+  // rather than risk naming the wrong gateway).
+  const chatAgentInfo = useQuery(api.agents.getChatAgent, {
+    chatId: chatId as Id<"chats">,
+  });
+  const chatMeta = useQuery(api.messages.getSessionMeta, { chatId });
+  const instanceForChild =
+    chatMeta?.perTurnRouting === true
+      ? undefined
+      : chatAgentInfo?.agent?.instanceName;
   const row = (rows ?? []).find((r) => r.childSessionKey === childKey);
   const card = row ? buildSubAgentActivityView([row]).cards[0] : undefined;
   const taskName = row?.taskName?.trim();
@@ -774,6 +791,7 @@ export function SubAgentPanelContent({
         meta={card?.sessionMeta}
         telemetry={card?.telemetry}
         childAgentId={card?.childAgentId}
+        instanceName={instanceForChild}
         parentAgentLabel={parentAgentLabel}
         onExport={card ? doExport : undefined}
       />

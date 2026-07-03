@@ -27,7 +27,16 @@ import { drainNextQueued } from "./lib/outboxQueue";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
-import { compareOrder } from "./lib/messageOrder";
+import {
+  correlateSummarize,
+  enrichedTurnText,
+  loadChildResults,
+} from "./chatSummaries";
+import { compareOrder, effectiveOrder } from "./lib/messageOrder";
+import {
+  composeRehydration,
+  rehydrationBudgetChars,
+} from "./lib/rehydration";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -112,8 +121,13 @@ export const startAssistant = internalMutation({
   args: {
     chatId: v.id("chats"),
     runId: v.optional(v.string()),
+    // The gateway session key the turn runs under (additive; old bridges omit it).
+    // The DETERMINISTIC reply-to-send join: the hybrid-rehydration correlate
+    // matches the summarize job's openclawChatId nonce inside it instead of
+    // racing on message creation times.
+    turnSessionKey: v.optional(v.string()),
   },
-  handler: async (ctx, { chatId, runId }) => {
+  handler: async (ctx, { chatId, runId, turnSessionKey }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       throw new Error("startAssistant: chat not found");
@@ -122,6 +136,7 @@ export const startAssistant = internalMutation({
     const messageId = await ctx.db.insert("messages", {
       chatId,
       userId: chat.userId,
+      ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),
       role: "assistant",
       runId,
       status: "streaming",
@@ -543,6 +558,48 @@ export const finalize = internalMutation({
         console.error("[docfetch] correlate failed:", (e as Error)?.message ?? e);
       }
     }
+    // Hybrid rehydration: a finished SUMMARIZE turn → store the reply as the target
+    // chat's rolling summary. Same best-effort shape + late-finalize guard as the
+    // documentary correlate above (an old released job's late reply must not
+    // correlate against a NEWER job's lock).
+    if (chat?.kind === "summarizer") {
+      let settled = false;
+      if (chat.pendingSummarize) {
+        try {
+          // `message` was read BEFORE this handler's finalize patch (status still
+          // "streaming", text possibly stale) — re-read the FINALIZED doc, or every
+          // successful summary would be misread as a failure (codex P2). The job
+          // identity check (session-key nonce) lives INSIDE correlateSummarize.
+          const finalized = await ctx.db.get(message._id);
+          if (finalized) {
+            settled = await correlateSummarize(ctx, chat, finalized);
+          }
+        } catch (e) {
+          console.error("[chatsum] correlate failed:", (e as Error)?.message ?? e);
+        }
+      }
+      if (!settled) {
+        // A LATE/FOREIGN reply that settled nothing (released job, or an old
+        // cancelled job's reply arriving under a NEWER lock): it may hold a summary
+        // of deleted content and no correlate will ever sweep it — schedule the
+        // settled-rows cleanup (its internal guard protects a live job's rows).
+        await ctx.scheduler.runAfter(
+          0,
+          internal.chatSummaries.cleanupSummarizerChat,
+          { hiddenChatId: chat._id },
+        );
+      }
+    }
+    // Hybrid rehydration: a REGULAR chat's finished turn may have accumulated enough
+    // new content for a summarize job — check OUTSIDE this transaction (scheduled,
+    // fire-and-forget; every guard in maybeScheduleSummarize fails quiet).
+    if (chat && chat.kind === undefined) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chatSummaries.maybeScheduleSummarize,
+        { chatId: chat._id },
+      );
+    }
   },
 });
 
@@ -604,9 +661,22 @@ export const rehydrationContext = internalQuery({
   handler: async (
     ctx,
     { chatId, excludeMessageId },
-  ): Promise<{ history: string | null; turnCount: number }> => {
+  ): Promise<{
+    history: string | null;
+    turnCount: number;
+    // Additive (hybrid rehydration): content-free counters for the bridge's
+    // `openclaw.rehydrate` trace. Older bridges ignore them.
+    summaryUsed: boolean;
+    summaryChars: number;
+  }> => {
+    const empty = {
+      history: null,
+      turnCount: 0,
+      summaryUsed: false,
+      summaryChars: 0,
+    };
     const chat = await ctx.db.get(chatId);
-    if (chat === null) return { history: null, turnCount: 0 };
+    if (chat === null) return empty;
 
     // History is everything LOGICALLY BEFORE the current turn (see lib/messageOrder).
     // Ordering by raw _creationTime is wrong here: a mid-turn QUEUE follow-up inserted
@@ -616,55 +686,97 @@ export const rehydrationContext = internalQuery({
     // KEEPS the prior assistant and EXCLUDES still-queued later follow-ups.
     const current = excludeMessageId ? await ctx.db.get(excludeMessageId) : null;
 
-    // Budget: reserve ~50% of the window for the system prompt, the new user
-    // message, and the reply. ~3 chars/token (conservative). Fallback window
-    // when we have not yet learned the real one from a prior turn's meta.
+    // Budget: the legacy window-derived formula (50% of the window, ~3 chars/token)
+    // BOUNDED by the hard ceiling — a large-window model must not re-ingest hundreds
+    // of kilochars of raw history on every cold start. The rolling summary (below)
+    // carries the older conversation instead (docs/design/hybrid-rehydration.md).
     const windowTokens = chat.sessionMeta?.contextTokens ?? 32_000;
-    const budgetChars = Math.max(2_000, Math.floor(windowTokens * 0.5) * 3);
+    const budgetChars = rehydrationBudgetChars(windowTokens);
+
+    // Rolling summary (maintained asynchronously by chatSummaries.ts). An empty
+    // summary string = reset/none. The verbatim tail starts AFTER its watermark so
+    // summarized turns are never re-sent raw. NOTE: the history_summary INJECTION
+    // toggle only shapes the summarizer PROMPT (dedicated agents carry their own
+    // briefing) — it never gates using a stored summary here; the FEATURE switch is
+    // the instance `rehydration` config, which gates this whole query's caller.
+    const summaryRow = await ctx.db
+      .query("chatSummaries")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .unique();
+    const hasSummary = summaryRow !== null && summaryRow.summary.length > 0;
+    const watermark = hasSummary ? summaryRow.watermarkOrderTime : 0;
 
     // Bounded tail read by _creationTime (valid: an orderTime-bearing row has a recent
     // _creationTime), then keep usable PRIOR turns in LOGICAL order within budget.
-    const recent = await ctx.db
+    const TAIL_READ = 80;
+    // Read ONE extra row: a chat of exactly TAIL_READ messages must not be flagged
+    // as clipped (a false "omitted" marker misinforms the agent — codex P3).
+    const recentProbe = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
-      .take(80);
+      .take(TAIL_READ + 1);
+    // Drop the CURRENT turn's row BEFORE judging the clip: with exactly TAIL_READ
+    // prior turns + the current send, the probe returns 81 rows of which only 80
+    // are history — slicing first would evict the oldest prior turn AND render a
+    // false gap marker (codex P3).
+    const priorProbe = recentProbe.filter(
+      (m) => !(excludeMessageId && m._id === excludeMessageId),
+    );
+    // Judge the clip on UNCOVERED rows only: a summary-covered bonus row is already
+    // represented by the summary, not omitted — counting it would render a false
+    // gap marker at exactly TAIL_READ uncovered turns (codex P3). The watermark is
+    // a single boundary on a newest-first read, so once the probe reaches covered
+    // territory everything older is covered too — no false negative.
+    const uncoveredProbe = priorProbe.filter(
+      (m) => effectiveOrder(m) > watermark,
+    );
+    const clippedByRead = uncoveredProbe.length > TAIL_READ;
+    const recent = clippedByRead
+      ? uncoveredProbe.slice(0, TAIL_READ)
+      : uncoveredProbe;
+    // Sub-agent results anchored to a turn ARE its content (a sessions_spawn
+    // turn's parent text is often EMPTY — without this join, a session reset
+    // loses the sub-agent-produced answers entirely). One bounded read.
+    const childResults = await loadChildResults(ctx, chatId);
     const usableDesc = recent
-      .filter((m) => !(excludeMessageId && m._id === excludeMessageId))
       .filter((m) => current === null || compareOrder(m, current) < 0) // strictly before the current turn
       .filter(
         (m) =>
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
-          m.text.trim().length > 0,
+          (m.text.trim().length > 0 ||
+            (childResults.byMsg.get(m._id as string)?.length ?? 0) > 0),
       )
+      .filter((m) => effectiveOrder(m) > watermark) // summary-covered turns stay summarized
       .sort((a, b) => compareOrder(b, a)); // newest logical first, for the budget walk
 
-    const lines: string[] = [];
-    let chars = 0;
-    let truncated = false;
-    for (const m of usableDesc) {
-      const label = m.role === "user" ? "Utilisateur" : "Assistant";
-      const line = `${label} : ${m.text.trim()}`;
-      if (lines.length > 0 && chars + line.length > budgetChars) {
-        truncated = true;
-        break;
-      }
-      lines.push(line);
-      chars += line.length + 1;
-    }
-    if (lines.length === 0) return { history: null, turnCount: 0 };
+    // The bounded read may hide messages between the summary coverage (or the chat
+    // start) and the oldest row read — surface that as an honest omission marker.
+    const oldestRead = recent[recent.length - 1];
+    const readWindowClipped =
+      clippedByRead &&
+      (oldestRead ? effectiveOrder(oldestRead) > watermark : false);
 
-    lines.reverse(); // chronological (oldest -> newest)
-    const header =
-      "[Reprise d’une conversation antérieure de ce même fil. Pour continuité, " +
-      "voici l’historique des messages précédents de cette conversation :]";
-    const opener = truncated ? "[…début de la conversation plus ancien, omis…]\n" : "";
-    const footer =
-      "[Fin de l’historique. Le nouveau message de l’utilisateur suit ci-dessous.]";
+    const composed = composeRehydration({
+      turns: usableDesc
+        .slice()
+        .reverse()
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          text: enrichedTurnText(m, childResults),
+        })),
+      summary: hasSummary
+        ? { text: summaryRow.summary, coveredCount: summaryRow.coveredCount }
+        : null,
+      readWindowClipped,
+      budgetChars,
+    });
     return {
-      history: `${header}\n${opener}${lines.join("\n")}\n${footer}`,
-      turnCount: lines.length,
+      history: composed.history,
+      turnCount: composed.turnCount,
+      summaryUsed: composed.summaryUsed,
+      summaryChars: composed.summaryChars,
     };
   },
 });

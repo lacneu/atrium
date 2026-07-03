@@ -51,7 +51,7 @@ export const searchConversations = query({
         .query("chats")
         .withIndex("by_user", (q) => q.eq("userId", userId))
         .collect()
-    ).filter((c) => c.kind !== "documentary"); // hidden L2 fetch chats — never in
+    ).filter((c) => c.kind === undefined); // hidden utility chats (documentary/summarizer) — never in
     // search (mirrors the sidebar exclusion). Filtering the SET here covers BOTH the
     // title-match loop AND the message-hit path (its chat lookup uses chatById below,
     // so a hit in a documentary chat resolves to undefined and is dropped).

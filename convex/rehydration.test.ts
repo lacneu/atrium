@@ -58,11 +58,48 @@ function run(t: ReturnType<typeof convexTest>, chatId: Id<"chats">, excludeMessa
 }
 
 describe("stream.rehydrationContext", () => {
+  test("EXACTLY tail-read prior turns + the current send: all kept, no false marker", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageIds } = await seedChat(
+      t,
+      Array.from({ length: 81 }, (_, i) => ({
+        role: (i % 2 === 0 ? "user" : "assistant") as MsgRole,
+        text: `t${i}`,
+      })),
+      { contextTokens: 200_000 },
+    );
+    // The 81st row is the CURRENT send (excluded) -> exactly 80 prior turns.
+    const r = await run(t, chatId, messageIds[80]);
+    expect(r.turnCount).toBe(80);
+    expect(r.history).toContain("Utilisateur : t0");
+    expect(r.history).not.toContain("omis");
+  });
+
+  test("a chat of EXACTLY the tail-read size shows no false omission marker", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedChat(
+      t,
+      Array.from({ length: 80 }, (_, i) => ({
+        role: (i % 2 === 0 ? "user" : "assistant") as MsgRole,
+        text: `t${i}`,
+      })),
+      { contextTokens: 200_000 },
+    );
+    const r = await run(t, chatId);
+    expect(r.turnCount).toBe(80);
+    expect(r.history).not.toContain("omis");
+  });
+
   test("empty chat -> null history, 0 turns", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedChat(t, []);
     const r = await run(t, chatId);
-    expect(r).toEqual({ history: null, turnCount: 0 });
+    expect(r).toEqual({
+      history: null,
+      turnCount: 0,
+      summaryUsed: false,
+      summaryChars: 0,
+    });
   });
 
   test("formats user/assistant turns chronologically with header + footer", async () => {

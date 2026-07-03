@@ -18,6 +18,9 @@ export type CompatTarget = {
   gatewayVersion: string | null;
   capabilities: Record<string, boolean>;
   versionBeyondValidated: boolean;
+  /** The serving bridge's env rehydration default (stamped by the poller). */
+  rehydrationDefault?: boolean | null;
+  turnSessionEcho?: boolean | null;
 };
 
 /** The normalized, storable projection of a /capabilities response body. */
@@ -28,6 +31,12 @@ export type NormalizedCapabilities = {
    *  means the deployed container is not the build it claims. */
   buildVersion: string | null;
   buildRevision: string | null;
+  /** The bridge's env-level rehydration default (OPENCLAW_REHYDRATION kill-switch;
+   *  null on pre-feature bridges = assume enabled). */
+  rehydrationDefault: boolean | null;
+  /** The bridge echoes turn session keys (deterministic summarize correlation).
+   *  null = pre-feature bridge. */
+  turnSessionEcho: boolean | null;
   protocolVersion: number | null;
   /** CompatManifest verbatim (bounded), or null = legacy bridge / bad shape. */
   compat: unknown;
@@ -238,6 +247,10 @@ export function normalizeCapabilitiesBody(
     bridgeVersion: str(o.bridgeVersion),
     buildVersion: str(o.buildVersion),
     buildRevision: str(o.buildRevision),
+    rehydrationDefault:
+      typeof o.rehydrationDefault === "boolean" ? o.rehydrationDefault : null,
+    turnSessionEcho:
+      typeof o.turnSessionEcho === "boolean" ? o.turnSessionEcho : null,
     protocolVersion:
       typeof o.protocolVersion === "number" ? o.protocolVersion : null,
     compat,

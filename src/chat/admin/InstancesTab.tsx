@@ -792,10 +792,12 @@ function SecretRow({
 const AGENT_TYPE_LABEL: Record<string, () => string> = {
   conversational: m.agent_type_conversational,
   documentary: m.agent_type_documentary,
+  summarizer: m.agent_type_summarizer,
 };
 const AGENT_TYPE_DESC: Record<string, () => string> = {
   conversational: m.agent_type_conversational_desc,
   documentary: m.agent_type_documentary_desc,
+  summarizer: m.agent_type_summarizer_desc,
 };
 const agentTypeLabel = (code: string): string =>
   (AGENT_TYPE_LABEL[code] ?? (() => code))();

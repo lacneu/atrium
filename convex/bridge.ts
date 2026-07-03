@@ -37,6 +37,7 @@ import { bridgeDispatchConfig, resolveInstanceConfig } from "./lib/instanceConfi
 import { classifyAttachment } from "./lib/mediaTransport";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
+import { failSummarizeForChat } from "./chatSummaries";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -260,6 +261,19 @@ export const failDispatch = internalMutation({
         );
       }
     }
+    // Hybrid rehydration: same shape for a SUMMARIZE job whose dispatch failed —
+    // release the lock + apply the failure backoff, or the user's summarize engine
+    // stays wedged until the watchdog. Best-effort like the docfetch release.
+    if (chat.kind === "summarizer" && chat.pendingSummarize) {
+      try {
+        await failSummarizeForChat(ctx, chat, "dispatch_error");
+      } catch (e) {
+        console.error(
+          "[chatsum] release on failed dispatch:",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
 
     // A failed dispatch is a turn-end: the chat is now idle, so drain the next
     // QUEUED send (mirrors markOutbox + finalize; drainNextQueued is documented as
@@ -390,7 +404,7 @@ export const getChatRouting = internalQuery({
       // treat the still-warm gateway session as fresh and re-inject the whole history
       // (duplicate). `rehydration` stays the admin/env enable knob.
       configOverrides:
-        chat.kind === "documentary"
+        chat.kind === "documentary" || chat.kind === "summarizer"
           ? { ...bridgeDispatchConfig(instance?.config), rehydration: false }
           : chat.perTurnRouting && routedAgent
             ? {
@@ -962,6 +976,16 @@ export const dispatch = internalAction({
       // frame and close the gateway connection). Fail with a clear, file-specific
       // code so the user sees "trop volumineuse" — never a silent text-only send.
       errorCode = "ATTACHMENT_TOO_LARGE";
+    } else if (
+      // LAST-INSTANT revalidation: a summarize job invalidated by a deletion
+      // CANCELS by deleting its outbox row — but this action may have loaded the
+      // row before the deletion landed. Re-read just before the POST so a
+      // cancelled prompt (which can carry deleted content) is never sent. Narrows
+      // the race to the network call itself; a residual late reply correlates
+      // against nothing and is swept (codex P2).
+      (await ctx.runQuery(internal.bridge.getOutbox, { outboxId })) === null
+    ) {
+      return;
     } else {
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {

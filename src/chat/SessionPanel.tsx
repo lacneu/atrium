@@ -1,6 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { LoaderCircle } from "lucide-react";
+import { Check,
+  Copy,
+  LoaderCircle,
+  Maximize2,
+  Minimize2,
+  Pencil } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -10,6 +15,13 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
@@ -38,6 +50,11 @@ import {
 type ActionState = "idle" | "pending" | "done" | "error";
 
 /** One ACTIONS-zone entry: confirm upstream; this renders button + states. */
+/** Compact char-count for the summary gauge label (mirrors the context meter's k). */
+function fmtChars(n: number): string {
+  return n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(n);
+}
+
 function ActionRow({
   label,
   state,
@@ -96,6 +113,10 @@ export function SessionPanel({
     api.messages.getSessionMeta,
     open ? { chatId: chatId as Id<"chats"> } : "skip",
   );
+  const summaryInfo = useQuery(
+    api.chatSummaries.getChatSummary,
+    open ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
   const agentInfo = useQuery(
     api.agents.getChatAgent,
     open ? { chatId: chatId as Id<"chats"> } : "skip",
@@ -110,8 +131,64 @@ export function SessionPanel({
   const confirm = useConfirm();
   const compactAction = useAction(api.agentFiles.compactSession);
   const resetMutation = useMutation(api.chats.resetSession);
+  const summarizeMutation = useMutation(api.chatSummaries.requestSummarize);
   const [compactState, setCompactState] = useState<ActionState>("idle");
   const [resetState, setResetState] = useState<ActionState>("idle");
+  const [summarizeState, setSummarizeState] = useState<ActionState>("idle");
+  // The manual trigger's OUTCOME (why nothing was dispatched, or confirmation) —
+  // shown as a hint under the action row.
+  const [summarizeNotice, setSummarizeNotice] = useState<string | null>(null);
+  // Summary viewer states: copy feedback, expanded reading, inline edit buffer.
+  const [summaryCopied, setSummaryCopied] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState<string | null>(null);
+  const [summarySaveState, setSummarySaveState] = useState<
+    "idle" | "saving" | "error"
+  >("idle");
+  const updateSummaryMutation = useMutation(api.chatSummaries.updateSummary);
+  // Switching CONVERSATIONS while the panel stays mounted must drop every
+  // summary-viewer state — a lingering draft would otherwise be SAVED into the
+  // new chat and overwrite the wrong summary (codex P2).
+  useEffect(() => {
+    setSummaryDraft(null);
+    setSummarySaveState("idle");
+    setSummaryExpanded(false);
+    setSummaryCopied(false);
+    setSummarizeNotice(null);
+    setSummarizeState("idle");
+  }, [chatId]);
+  async function copySummary(): Promise<void> {
+    if (!summaryInfo?.summary) return;
+    try {
+      await navigator.clipboard.writeText(summaryInfo.summary);
+      setSummaryCopied(true);
+      window.setTimeout(() => setSummaryCopied(false), 2_000);
+    } catch {
+      /* clipboard denied: no feedback beats a crash */
+    }
+  }
+  async function saveSummaryDraft(): Promise<void> {
+    if (summaryDraft === null || summaryDraft.trim().length === 0) return;
+    setSummarySaveState("saving");
+    try {
+      await updateSummaryMutation({
+        chatId: chatId as Id<"chats">,
+        summary: summaryDraft,
+      });
+      setSummaryDraft(null);
+      setSummarySaveState("idle");
+    } catch {
+      setSummarySaveState("error");
+    }
+  }
+  // Live elapsed indicator for an in-flight summarize job (1s tick while running).
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const jobRunning = summaryInfo?.jobInFlight === true;
+  useEffect(() => {
+    if (!jobRunning) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, [jobRunning]);
 
   // Retry re-runs the action WITHOUT re-confirming (the intent was confirmed;
   // only the transport failed) — A11 inline-error-with-retry.
@@ -122,6 +199,31 @@ export function SessionPanel({
       setCompactState("done");
     } catch {
       setCompactState("error");
+    }
+  }
+  async function runSummarize(): Promise<void> {
+    setSummarizeState("pending");
+    setSummarizeNotice(null);
+    try {
+      const { outcome } = await summarizeMutation({
+        chatId: chatId as Id<"chats">,
+      });
+      const notices: Record<string, () => string> = {
+        dispatched: m.spanel_summarize_dispatched,
+        in_flight: m.spanel_summarize_in_flight,
+        nothing_to_do: m.spanel_summarize_nothing,
+        scanning: m.spanel_summarize_scanning,
+        bridge_outdated: m.spanel_summarize_bridge_outdated,
+        engine_off: m.spanel_summarize_engine_off,
+        no_agent: m.spanel_summarize_no_agent,
+        backoff: m.spanel_summarize_nothing,
+      };
+      setSummarizeNotice((notices[outcome] ?? m.spanel_summarize_nothing)());
+      setSummarizeState(
+        outcome === "dispatched" || outcome === "scanning" ? "done" : "idle",
+      );
+    } catch {
+      setSummarizeState("error");
     }
   }
   async function runReset(): Promise<void> {
@@ -279,9 +381,250 @@ export function SessionPanel({
                   </dl>
                 </section>
               ) : null}
+              <section>
+                <h3 className="oc-spanel__cat">{m.spanel_section_summary()}</h3>
+                {/* The chat's ROLLING SUMMARY (hybrid rehydration): the exact text
+                    injected — beside the recent verbatim turns — when the gateway
+                    session resumes. The user's own content, shown verbatim. */}
+                {summaryInfo ? (
+                  /* Accumulation gauge: unsummarized content vs the AUTO trigger
+                     threshold — full bar = the next turn can dispatch a summary. */
+                  <div className="oc-spanel__static">
+                    <span className="oc-spanel__label">
+                      {m.spanel_summary_gauge_label()}
+                    </span>
+                    <span className="oc-meter oc-spanel__meter is-ok">
+                      <span className="oc-meter__track">
+                        <span
+                          className="oc-meter__fill"
+                          style={{
+                            width: `${Math.min(
+                              (summaryInfo.pendingChars /
+                                Math.max(summaryInfo.thresholdChars, 1)) *
+                                100,
+                              100,
+                            )}%`,
+                          }}
+                        />
+                      </span>
+                      <span className="oc-meter__label">
+                        {m.spanel_summary_gauge({
+                          pending: `${fmtChars(summaryInfo.pendingChars)}${
+                            summaryInfo.pendingApprox ? "+" : ""
+                          }`,
+                          threshold: fmtChars(summaryInfo.thresholdChars),
+                        })}
+                      </span>
+                    </span>
+                  </div>
+                ) : null}
+                {summaryInfo &&
+                !summaryInfo.jobInFlight &&
+                summaryInfo.pendingChars >= summaryInfo.thresholdChars ? (
+                  <p className="oc-spanel__hint">
+                    {m.spanel_summary_gauge_ready()}
+                  </p>
+                ) : null}
+                {summaryInfo?.jobInFlight ? (
+                  <p className="oc-spanel__hint oc-spanel__job" role="status">
+                    <LoaderCircle
+                      size={13}
+                      className="oc-spanel__job-spin"
+                      aria-hidden
+                    />
+                    {summaryInfo.jobStreaming
+                      ? m.spanel_summary_job_writing()
+                      : m.spanel_summary_job_sent()}
+                    {summaryInfo.jobStartedAt
+                      ? ` · ${Math.max(0, Math.round((nowTick - summaryInfo.jobStartedAt) / 1000))} s`
+                      : ""}
+                  </p>
+                ) : null}
+                {summaryInfo && summaryInfo.summary.length > 0 ? (
+                  <>
+                    <p className="oc-spanel__hint">
+                      {m.spanel_summary_meta({
+                        count: String(summaryInfo.coveredCount),
+                        date: new Intl.DateTimeFormat(undefined, {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        }).format(new Date(summaryInfo.updatedAt)),
+                      })}
+                      {summaryInfo.lastAgentId
+                        ? ` ${m.spanel_summary_agent({
+                            agent: summaryInfo.lastInstanceName
+                              ? `${summaryInfo.lastAgentId} (${summaryInfo.lastInstanceName})`
+                              : summaryInfo.lastAgentId,
+                          })}`
+                        : ""}
+                    </p>
+                    {summaryInfo.failureCount > 0 ? (
+                      <p className="oc-spanel__hint oc-spanel__hint--warn">
+                        {m.spanel_summary_failing({
+                          count: String(summaryInfo.failureCount),
+                        })}
+                      </p>
+                    ) : null}
+                    <div className="oc-spanel__summary-tools">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="oc-spanel__summary-tool"
+                        onClick={() => void copySummary()}
+                        title={m.spanel_summary_copy()}
+                        aria-label={m.spanel_summary_copy()}
+                      >
+                        {summaryCopied ? (
+                          <Check size={14} aria-hidden />
+                        ) : (
+                          <Copy size={14} aria-hidden />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="oc-spanel__summary-tool"
+                        onClick={() => setSummaryExpanded(true)}
+                        title={m.spanel_summary_expand()}
+                        aria-label={m.spanel_summary_expand()}
+                      >
+                        <Maximize2 size={14} aria-hidden />
+                      </Button>
+                      {!summaryInfo.jobInFlight ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="oc-spanel__summary-tool"
+                          onClick={() => {
+                            // Edit happens in the READING dialog (real space).
+                            setSummaryDraft(summaryInfo.summary);
+                            setSummaryExpanded(true);
+                          }}
+                          title={m.spanel_summary_edit()}
+                          aria-label={m.spanel_summary_edit()}
+                        >
+                          <Pencil size={14} aria-hidden />
+                        </Button>
+                      ) : null}
+                    </div>
+                    <div className="oc-spanel__summary">
+                      {summaryInfo.summary}
+                    </div>
+                  </>
+                ) : summaryInfo && summaryInfo.failureCount > 0 ? (
+                  <p className="oc-spanel__hint oc-spanel__hint--warn">
+                    {m.spanel_summary_failing({
+                      count: String(summaryInfo.failureCount),
+                    })}
+                  </p>
+                ) : summaryInfo?.jobInFlight ? null : (
+                  <p className="oc-spanel__hint">{m.spanel_summary_none()}</p>
+                )}
+              </section>
             </>
           )}
         </div>
+        <Dialog
+          open={summaryExpanded}
+          onOpenChange={(open) => {
+            setSummaryExpanded(open);
+            if (!open) {
+              // Closing the dialog abandons an unsaved draft.
+              setSummaryDraft(null);
+              setSummarySaveState("idle");
+            }
+          }}
+        >
+          <DialogContent className="oc-summary-dialog">
+            <DialogHeader>
+              <DialogTitle>{m.spanel_section_summary()}</DialogTitle>
+              <DialogDescription>
+                {summaryDraft !== null
+                  ? m.spanel_summary_edit_help()
+                  : summaryInfo && summaryInfo.summary.length > 0
+                    ? m.spanel_summary_meta({
+                        count: String(summaryInfo.coveredCount),
+                        date: new Intl.DateTimeFormat(undefined, {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        }).format(new Date(summaryInfo.updatedAt)),
+                      })
+                    : ""}
+              </DialogDescription>
+            </DialogHeader>
+            {summaryDraft !== null ? (
+              <textarea
+                className="oc-summary-dialog__body oc-summary-dialog__edit"
+                value={summaryDraft}
+                onChange={(e) => setSummaryDraft(e.target.value)}
+              />
+            ) : (
+              <div className="oc-summary-dialog__body">
+                {summaryInfo?.summary ?? ""}
+              </div>
+            )}
+            {summarySaveState === "error" ? (
+              <p className="oc-spanel__hint oc-spanel__hint--warn">
+                {m.spanel_summary_save_error()}
+              </p>
+            ) : null}
+            <div className="oc-summary-dialog__actions">
+              {summaryDraft !== null ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSummaryDraft(null);
+                      setSummarySaveState("idle");
+                    }}
+                  >
+                    {m.chat_cancel()}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={
+                      summaryDraft.trim().length === 0 ||
+                      summarySaveState === "saving"
+                    }
+                    onClick={() => void saveSummaryDraft()}
+                  >
+                    {summarySaveState === "saving"
+                      ? m.conf_applying()
+                      : m.spanel_summary_save()}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {summaryInfo &&
+                  summaryInfo.summary.length > 0 &&
+                  !summaryInfo.jobInFlight ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSummaryDraft(summaryInfo.summary)}
+                    >
+                      <Pencil size={14} aria-hidden />
+                      {m.spanel_summary_edit()}
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void copySummary()}
+                  >
+                    {summaryCopied ? (
+                      <Check size={14} aria-hidden />
+                    ) : (
+                      <Copy size={14} aria-hidden />
+                    )}
+                    {m.spanel_summary_copy()}
+                  </Button>
+                </>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
         <SheetFooter className="oc-spanel__actions">
           <h3 className="oc-spanel__cat">{m.spanel_section_actions()}</h3>
           {can("sessionCompact") ? (
@@ -291,6 +634,15 @@ export function SessionPanel({
               onClick={() => void onCompact()}
               onRetry={() => void runCompact()}
             />
+          ) : null}
+          <ActionRow
+            label={m.spanel_generate_summary()}
+            state={jobRunning ? "pending" : summarizeState}
+            onClick={() => void runSummarize()}
+            onRetry={() => void runSummarize()}
+          />
+          {summarizeNotice !== null ? (
+            <p className="oc-spanel__hint">{summarizeNotice}</p>
           ) : null}
           <ActionRow
             label={m.spanel_reset()}

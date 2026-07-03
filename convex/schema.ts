@@ -148,6 +148,11 @@ export const bridgeCompatTarget = v.object({
   gatewayVersion: v.union(v.string(), v.null()),
   capabilities: v.record(v.string(), v.boolean()), // capability -> enabled
   versionBeyondValidated: v.boolean(), // gateway newer than the validated max
+  // The SERVING bridge's env-level rehydration default, stamped per target at
+  // poll time (multi-bridge: each instance follows ITS OWN bridge's kill-switch,
+  // not the first-reachable one). Optional/null = pre-feature.
+  rehydrationDefault: v.optional(v.union(v.boolean(), v.null())),
+  turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
 });
 
 export default defineSchema({
@@ -717,17 +722,35 @@ export default defineSchema({
     lastRoutedInstanceName: v.optional(v.string()),
     lastRoutedAgentId: v.optional(v.string()),
     routingSegment: v.optional(v.string()),
-    // L2 ("Joindre les documents"): a HIDDEN, per-user chat that hosts the
-    // DOCUMENTARY fetch turns. It routes to a documentary agent in its OWN gateway
-    // session (distinct chatId) so the conversational chats are never re-keyed.
-    // Excluded from listChats. Absent = a normal conversational chat.
-    kind: v.optional(v.literal("documentary")),
+    // HIDDEN per-user utility chats (absent = a normal conversational chat):
+    //  - "documentary": hosts L2 document-fetch turns (own gateway session so the
+    //    conversational chats are never re-keyed);
+    //  - "summarizer": hosts hybrid-rehydration rolling-summary turns (same hidden
+    //    pattern; see docs/design/hybrid-rehydration.md).
+    // Both are excluded from the sidebar/search.
+    kind: v.optional(
+      v.union(v.literal("documentary"), v.literal("summarizer")),
+    ),
     // The in-flight documentary fetch this hidden chat is serving — its CONVERSATIONAL
     // source message. Set at dispatch, read at finalize to correlate returned files to
     // the source's references, then cleared. Only meaningful on a `kind:"documentary"`
     // chat. Fetches serialize (one in flight per hidden chat).
     pendingFetch: v.optional(
       v.object({ sourceMessageId: v.id("messages"), createdAt: v.number() }),
+    ),
+    // Hybrid rehydration: the in-flight SUMMARIZE job this hidden chat is serving.
+    // Set at dispatch, read at finalize to store the reply as the target chat's new
+    // rolling summary, then cleared. Only meaningful on a `kind:"summarizer"` chat;
+    // jobs serialize (one in flight per hidden chat, i.e. per user).
+    pendingSummarize: v.optional(
+      v.object({
+        targetChatId: v.id("chats"),
+        // The effectiveOrder of the LAST message the dispatched chunk covers — the
+        // summary watermark to advance to on success.
+        watermarkTarget: v.number(),
+        coveredCountTarget: v.number(),
+        createdAt: v.number(),
+      }),
     ),
     archived: v.optional(v.boolean()),
     updatedAt: v.number(),
@@ -785,6 +808,9 @@ export default defineSchema({
     ),
   })
     .index("by_user", ["userId"])
+    // Hidden-utility-chat lookups (the summarizer engine checks per turn-finalize):
+    // point-read instead of scanning all the user's chats (codex P2).
+    .index("by_user_kind", ["userId", "kind"])
     // Bounded sidebar read (listChats): most-recent window by updatedAt + the
     // pinned set of ANY age, so a user's chat list can grow without listChats
     // ever doing an unbounded .collect() (which busts Convex's per-function op
@@ -796,6 +822,11 @@ export default defineSchema({
   // Individual messages within a chat. Streaming assistant text is patched in
   // place on `text` (reactivity -> assistant-ui re-render).
   messages: defineTable({
+    // The gateway session key this ASSISTANT turn ran under (bridge echo via
+    // startAssistant; absent on user rows + pre-feature turns). Internal join key
+    // (deterministic reply-to-send correlation for the summarize engine); never
+    // projected to clients.
+    turnSessionKey: v.optional(v.string()),
     chatId: v.id("chats"),
     userId: v.id("users"), // owner (denormalized for cheap access checks)
     role: v.union(
@@ -1924,6 +1955,12 @@ export default defineSchema({
     // bridgeVersion = the container is not the build it claims (banner warning).
     buildVersion: v.optional(v.union(v.string(), v.null())),
     buildRevision: v.optional(v.union(v.string(), v.null())),
+    // The bridge's env-level rehydration default (OPENCLAW_REHYDRATION kill-switch;
+    // null = pre-feature bridge, assumed enabled). Aligns the summarize engine.
+    rehydrationDefault: v.optional(v.union(v.boolean(), v.null())),
+    // The bridge echoes turn session keys (deterministic summarize correlation);
+    // null = pre-feature bridge (the engine refuses to dispatch against it).
+    turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
     protocolVersion: v.union(v.number(), v.null()), // bridge contract version (2)
     // CompatManifest stored VERBATIM (forward-compatible), bounded at write time
     // by lib/compat.boundCompatManifest (plain JSON object, size-capped). null =
@@ -1932,4 +1969,33 @@ export default defineSchema({
     targets: v.array(bridgeCompatTarget), // one per instance (deduped)
     fetchedAt: v.number(), // last poll time (success OR failure)
   }).index("by_key", ["key"]),
+
+  // Hybrid rehydration (docs/design/hybrid-rehydration.md): ONE rolling summary per
+  // conversational chat, maintained asynchronously by convex/chatSummaries.ts and
+  // consumed by internal.stream.rehydrationContext. The summary is USER CHAT CONTENT
+  // (same sensitivity class as messages — it never leaves the chat's own agent);
+  // observability traces about it stay content-free.
+  chatSummaries: defineTable({
+    chatId: v.id("chats"),
+    // The rolling summary text (clamped to lib/rehydration.SUMMARY_MAX_CHARS).
+    // Empty string = row reset (invalidated) — treated as "no summary".
+    summary: v.string(),
+    // Messages with effectiveOrder <= watermark are covered by the summary; the
+    // rehydration verbatim tail starts strictly after it. 0 = nothing covered.
+    watermarkOrderTime: v.number(),
+    coveredCount: v.number(),
+    updatedAt: v.number(),
+    // Failure backoff for the summarize engine (dispatch/correlate failures).
+    failureCount: v.number(),
+    nextEligibleAt: v.number(),
+    // Which agent produced the CURRENT summary (stamped at correlate; the panel's
+    // "générée par" line). Optional — absent before the first success.
+    lastAgentId: v.optional(v.string()),
+    lastInstanceName: v.optional(v.string()),
+    // Persisted paging cursor: every message with _creationTime <= this floor is
+    // KNOWN fully covered/ignorable — chunk scans start here instead of re-reading
+    // a dense covered region wider than one attempt's page budget (which would
+    // stall the engine forever). Monotonic; reset with the watermark.
+    scanFloorCreationTime: v.optional(v.number()),
+  }).index("by_chat", ["chatId"]),
 });

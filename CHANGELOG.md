@@ -8,6 +8,64 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.20.0] — Hybrid rehydration: long conversations without the token bill
+
+A feature release. When a gateway session resets (daily/idle resets, agent switches), Atrium
+re-grounds the agent by re-injecting the conversation. Until now that block was purely verbatim:
+its cost grew with the model's context window (up to hundreds of kilocharacters re-sent on EVERY
+cold start), and everything beyond the budget was silently dropped — long conversations lost their
+beginning entirely. No breaking changes; all Convex changes are additive.
+
+- **Session resumes now inject a rolling summary + the recent messages verbatim.** Atrium
+  maintains, per conversation, a cumulative summary of the older exchanges and injects it alongside
+  the verbatim recent tail — the agent keeps BOTH the long-term thread (decisions, facts, open
+  questions from weeks ago) and full-fidelity recent context, within a hard cap (~60k characters)
+  whatever the model's window size. Everything the block omits is explicitly marked; the agent is
+  never silently misled about its context.
+- **The summary is maintained by an agent you choose, off the hot path.** After a turn completes,
+  when enough new content accumulated, Atrium dispatches a summarization turn in a dedicated hidden
+  session. The admin can mark an agent as the instance's "Conversation summary" specialist (a new
+  agent type, like the documentary type) — it then owns these jobs; otherwise each chat's own agent
+  summarizes itself, so conversation content never crosses an agent boundary it hasn't already
+  crossed (the dedicated agent must live on the same gateway). Resuming a session stays instant —
+  it never waits for summarization; with no summary yet, rehydration falls back to the capped
+  verbatim behavior. Works on every supported OpenClaw version: no gateway plugin, no GPU, no new
+  credentials.
+- **Admins control the summarization brief and the trigger volume.** A new `history_summary` entry
+  in Settings ▸ Agents ▸ Prompt injections: customize Atrium's framing per instance, or disable it
+  to send only the bare material (existing summary + new messages) to an agent whose own briefing
+  already carries the instructions. The framing toggle never turns the feature off — that is the
+  instance's rehydration switch (Bridge settings). Settings ▸ Agents ▸ Chat defaults adds a
+  per-instance **summary threshold** (how much unsummarized conversation accumulates before a
+  summary is generated automatically).
+- **See, generate, and edit the summary from Session settings.** Each conversation's Session
+  settings panel gains a "History summary" section: the current summary text (with who generated
+  it and when), a **"Next summary" gauge** showing how close the conversation is to the automatic
+  trigger, live processing indicators while a summary is being written, and a **"Generate summary"**
+  action to trigger one on demand. The summary can be copied, opened in a full reading dialog, and
+  **edited** — an edited summary is used as the basis for the next automatic pass.
+- **Sub-agent results count as conversation content.** For conversations driven by sub-agents (where
+  the visible answer is the sub-agent's result and the parent turn carries no text), the summary and
+  the rehydration block now include those results — so resetting such a session no longer loses the
+  work the sub-agents produced.
+- **Clearer agent details.** The Session settings AGENT section now names the agent and its gateway
+  instance for every user (not only multi-agent users), and the sub-agent panel shows the gateway
+  instance the sub-agent ran on.
+- **Deletion-aware.** Deleting a message that the summary covers resets the summary (it is rebuilt
+  from scratch); an in-flight summarization job covering deleted content is cancelled and its
+  copies purged. The hidden session retains no conversation copies beyond the job in progress.
+- **Content-free observability, anomaly-wired.** New `chat.summary` trace events (dispatch/
+  correlate/fail with reason codes, counts only) and the `openclaw.rehydrate` trace now records
+  whether a summary rode along and its size. Three consecutive summarization failures for a chat
+  raise a `chat.summary_failing` anomaly — visible in Settings ▸ Observabilité, queryable via the
+  MCP tools, and pushed to every admin's notification bell; rehydration meanwhile falls back to
+  the verbatim behavior, so users never feel the failure.
+
+Deploy note: `npx convex deploy` (new table + additive fields) + frontend image (Settings UI) +
+bridge image REQUIRED for the summarize engine (it echoes the turn identity the correlation relies
+on and advertises the capability — against an older bridge the engine refuses to dispatch and the
+panel says the bridge must be updated; rehydration itself keeps working).
+
 ## [0.19.3] — Deploy-verification built in: two version truths per image
 
 A small operability release. No breaking changes; Convex changes are additive.

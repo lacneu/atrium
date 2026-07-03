@@ -1,8 +1,10 @@
 // Fixed, NON-administrable catalogue of agent TYPES. An agent's type tells Atrium
 // HOW it may be used: a "conversational" agent backs normal chat; a "documentary"
 // (source documentaire) agent is invoked by a specific Atrium action for a dedicated
-// treatment (wired separately). An agent may hold SEVERAL types (e.g. conversational
-// AND documentary) or just one.
+// treatment (wired separately); a "summarizer" agent is invoked by the hybrid-
+// rehydration engine to maintain conversation summaries (falls back to the chat's
+// own agent when none is granted on the chat's instance). An agent may hold SEVERAL
+// types (e.g. conversational AND documentary) or just one.
 //
 // The `code` is the STABLE, non-visible identifier — stored on `agents.types` and
 // referenced by Atrium actions; it is NEVER shown to users and never changes. The
@@ -11,7 +13,11 @@
 // CODES; labels are resolved per-locale in the UI). This list is code-defined and
 // not editable from any admin screen.
 
-export const AGENT_TYPE_CODES = ["conversational", "documentary"] as const;
+export const AGENT_TYPE_CODES = [
+  "conversational",
+  "documentary",
+  "summarizer",
+] as const;
 export type AgentTypeCode = (typeof AGENT_TYPE_CODES)[number];
 
 /** Membership guard for validating a stored / incoming code. */

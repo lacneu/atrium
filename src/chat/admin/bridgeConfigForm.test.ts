@@ -116,3 +116,21 @@ describe("buildConfigOverride", () => {
     expect(buildConfigOverride({ ...defaults, rehydration: true }, {})).toEqual({});
   });
 });
+
+describe("cross-tab passthrough (shared instance.config blob)", () => {
+  test("a Bridge-form save PRESERVES the summarize threshold owned by Défauts de chat", () => {
+    const stored = {
+      mediaMode: "shared-fs",
+      summarizeThresholdChars: 12_000,
+    } as unknown as Partial<ConfigForm>;
+    const form = formFromConfig(stored);
+    const out = buildConfigOverride(form, stored);
+    expect(out.summarizeThresholdChars).toBe(12_000);
+  });
+
+  test("no threshold stored -> none resurrected", () => {
+    const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored), stored);
+    expect("summarizeThresholdChars" in out).toBe(false);
+  });
+});
