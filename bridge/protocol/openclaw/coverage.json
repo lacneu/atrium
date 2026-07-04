@@ -1,0 +1,386 @@
+{
+  "$comment": "Protocol coverage manifest (Inc 1 of docs/design/protocol-contract.md). Every schema exported by the vendored gateway-protocol modules (protocol/openclaw/<version>/) must be classified here — either whole-schema or field-by-field. The ratchet test (test/protocol-coverage.test.ts) walks the vendored TypeBox schemas and fails on any unclassified schema/field, so a validated-version bump that introduces new protocol surface stays RED until a human classifies it. statuses: handled (consumed/emitted by the bridge, `by` = where) | ignored (deliberate, `why` required) | gap (known-unsupported, `note` required). Seeded from the audit in docs/design/protocol-schema-coverage.md.",
+  "version": "2026.6.11",
+  "schemas": {
+    "ChatDeltaEvent": {
+      "fields": {
+        "runId": {
+          "status": "handled",
+          "by": "normalizer ownRunIds filter (isolation gate)"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "normalizer isolation gate (exact match)"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "the connection is already session-scoped per agent (buildSessionKey)"
+        },
+        "spawnedBy": {
+          "status": "handled",
+          "by": "normalizer sub-agent admission -> handleSubAgent"
+        },
+        "seq": {
+          "status": "handled",
+          "by": "handleChat dedup key component; NOTE: no ordering/gap detection (ordered WS transport)"
+        },
+        "state": {
+          "status": "handled",
+          "by": "handleChat state routing (delta/final/error/aborted)"
+        },
+        "message": {
+          "status": "handled",
+          "by": "handleChat textFromMessage (snapshot precedence)"
+        },
+        "deltaText": {
+          "status": "handled",
+          "by": "handleChat applyVisible append path"
+        },
+        "replace": {
+          "status": "gap",
+          "note": "a bare-deltaText replacement delta (replace:true, no message) APPENDS instead of replacing — corrupts streamed text; message-carrying replacements are covered incidentally by the snapshot path. No fixture observed yet."
+        },
+        "usage": {
+          "status": "gap",
+          "note": "main-turn token/cost telemetry absent (child telemetry reads payload.session.*, not usage)"
+        }
+      }
+    },
+    "ChatFinalEvent": {
+      "fields": {
+        "runId": {
+          "status": "handled",
+          "by": "normalizer ownRunIds filter"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "normalizer isolation gate"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "session-scoped connection per agent"
+        },
+        "spawnedBy": {
+          "status": "handled",
+          "by": "sub-agent admission"
+        },
+        "seq": {
+          "status": "handled",
+          "by": "dedup key component"
+        },
+        "state": {
+          "status": "handled",
+          "by": "handleChat final path (+ empty-final grace)"
+        },
+        "message": {
+          "status": "handled",
+          "by": "handleChat textFromMessage -> finalize"
+        },
+        "usage": {
+          "status": "gap",
+          "note": "main-turn token/cost telemetry absent"
+        },
+        "stopReason": {
+          "status": "gap",
+          "note": "informational; not surfaced (low impact)"
+        }
+      }
+    },
+    "ChatAbortedEvent": {
+      "fields": {
+        "runId": {
+          "status": "handled",
+          "by": "normalizer ownRunIds filter"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "normalizer isolation gate"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "session-scoped connection per agent"
+        },
+        "spawnedBy": {
+          "status": "handled",
+          "by": "sub-agent admission"
+        },
+        "seq": {
+          "status": "handled",
+          "by": "dedup key component"
+        },
+        "state": {
+          "status": "handled",
+          "by": "handleChat terminalizes aborted -> finalize(aborted)"
+        },
+        "message": {
+          "status": "ignored",
+          "why": "an aborted turn carries no reply to persist"
+        },
+        "stopReason": {
+          "status": "gap",
+          "note": "informational; not surfaced (low impact)"
+        }
+      }
+    },
+    "ChatErrorEvent": {
+      "fields": {
+        "runId": {
+          "status": "handled",
+          "by": "normalizer ownRunIds filter"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "normalizer isolation gate"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "session-scoped connection per agent"
+        },
+        "spawnedBy": {
+          "status": "handled",
+          "by": "sub-agent admission (child terminal errors)"
+        },
+        "seq": {
+          "status": "handled",
+          "by": "dedup key component"
+        },
+        "state": {
+          "status": "handled",
+          "by": "handleChat terminalizes error -> finalize(error, errorKind)"
+        },
+        "message": {
+          "status": "handled",
+          "by": "handleChat error-reason fallback (textFromMessage)"
+        },
+        "errorMessage": {
+          "status": "handled",
+          "by": "handleChat -> message.final error -> message.error"
+        },
+        "errorKind": {
+          "status": "handled",
+          "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow)"
+        },
+        "usage": {
+          "status": "gap",
+          "note": "main-turn token/cost telemetry absent"
+        },
+        "stopReason": {
+          "status": "gap",
+          "note": "informational; not surfaced (low impact)"
+        }
+      }
+    },
+    "AgentEvent": {
+      "fields": {
+        "runId": {
+          "status": "handled",
+          "by": "normalizer ownRunIds filter"
+        },
+        "seq": {
+          "status": "handled",
+          "by": "frame dedup/tally; no gap detection (ordered WS)"
+        },
+        "stream": {
+          "status": "handled",
+          "by": "handleAgent per-stream routing (lifecycle/tool/assistant/item/provenance)"
+        },
+        "ts": {
+          "status": "ignored",
+          "why": "the normalizer runs on an injected monotonic clock; frame timestamps unused"
+        },
+        "spawnedBy": {
+          "status": "handled",
+          "by": "sub-agent admission (child lane observation)"
+        },
+        "isHeartbeat": {
+          "status": "ignored",
+          "why": "keep-alive; any own frame already refreshes the recv budget (armRecv)"
+        },
+        "data": {
+          "status": "handled",
+          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields)"
+        }
+      }
+    },
+    "AgentInternalEvent": {
+      "status": "ignored",
+      "why": "the FORMAL announce contract (task_completion: childSessionKey/status/result/attachments) — but these are run INPUT params (AgentParams.internalEvents), invisible on the event stream by construction; the bridge reconstructs announce deliveries from the announce:v1 run's normal chat/assistant frames. Future structured source if the gateway ever surfaces them."
+    },
+    "AgentGeneratedAttachment": {
+      "status": "ignored",
+      "why": "carried inside AgentInternalEvent (run input params) — see AgentInternalEvent"
+    },
+    "ChatSendParams": {
+      "fields": {
+        "sessionKey": {
+          "status": "handled",
+          "by": "server.ts chat.send dispatch (buildSessionKey)"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "redundant with the agent baked into sessionKey"
+        },
+        "sessionId": {
+          "status": "ignored",
+          "why": "the gateway resolves the session from sessionKey"
+        },
+        "message": {
+          "status": "handled",
+          "by": "server.ts chat.send dispatch (+ rehydration prefix)"
+        },
+        "thinking": {
+          "status": "ignored",
+          "why": "reasoning level is set via sessions.patch (knob), not per-send"
+        },
+        "fastMode": {
+          "status": "ignored",
+          "why": "fast mode is set via sessions.patch (knob), not per-send"
+        },
+        "fastAutoOnSeconds": {
+          "status": "ignored",
+          "why": "auto fast-mode cutoff not exposed by Atrium"
+        },
+        "deliver": {
+          "status": "ignored",
+          "why": "Atrium consumes the event stream; channel delivery unused"
+        },
+        "originatingChannel": {
+          "status": "ignored",
+          "why": "no channel-mirroring semantics in Atrium sends"
+        },
+        "originatingTo": {
+          "status": "ignored",
+          "why": "no channel-mirroring semantics"
+        },
+        "originatingAccountId": {
+          "status": "ignored",
+          "why": "no channel-mirroring semantics"
+        },
+        "originatingThreadId": {
+          "status": "ignored",
+          "why": "no channel-mirroring semantics"
+        },
+        "attachments": {
+          "status": "handled",
+          "by": "server.ts inbound attachment path (inline/shared-fs)"
+        },
+        "timeoutMs": {
+          "status": "ignored",
+          "why": "turn timeouts are owned by the normalizer's recv deadlines"
+        },
+        "systemInputProvenance": {
+          "status": "ignored",
+          "why": "operator-injection provenance not applicable to user sends"
+        },
+        "systemProvenanceReceipt": {
+          "status": "ignored",
+          "why": "operator-injection provenance not applicable"
+        },
+        "suppressCommandInterpretation": {
+          "status": "ignored",
+          "why": "Atrium sends are user turns; command interpretation stays default"
+        },
+        "idempotencyKey": {
+          "status": "handled",
+          "by": "server.ts chat.send dispatch (retry-safe sends)"
+        }
+      }
+    },
+    "ChatAbortParams": {
+      "status": "gap",
+      "note": "chat.abort is NEVER called: Atrium's stop button ends the turn client/Convex-side but the gateway run keeps executing (audit finding). Wiring it = a real cancel."
+    },
+    "ChatInjectParams": {
+      "status": "ignored",
+      "why": "operator-visible synthetic transcript injection — no Atrium feature maps to it"
+    },
+    "ChatHistoryParams": {
+      "status": "ignored",
+      "why": "history recovery uses sessions.get (bounded, keyed) instead of chat.history"
+    },
+    "ChatMetadataParams": {
+      "status": "ignored",
+      "why": "chat metadata listing unused; agent discovery goes through agents.list"
+    },
+    "ChatMessageGetParams": {
+      "status": "ignored",
+      "why": "single-message lookup unused (Convex is the message store)"
+    },
+    "ChatMessageGetResult": {
+      "status": "ignored",
+      "why": "result envelope of the unused chat.message.get"
+    },
+    "ChatEvent": {
+      "status": "ignored",
+      "why": "the union wrapper of the four chat event schemas classified field-by-field above"
+    },
+    "LogsTailParams": {
+      "status": "ignored",
+      "why": "dashboard log tailing — not an Atrium surface (SOC2: no raw gateway logs in-product)"
+    },
+    "LogsTailResult": {
+      "status": "ignored",
+      "why": "result of the unused logs.tail"
+    },
+    "MessageActionToolContext": {
+      "status": "ignored",
+      "why": "channel message-action tooling — Atrium is not a channel adapter"
+    },
+    "MessageActionParams": {
+      "status": "ignored",
+      "why": "channel message actions — not an Atrium surface"
+    },
+    "SendParams": {
+      "status": "ignored",
+      "why": "outbound channel sends (Telegram-style) — Atrium consumes the event stream instead"
+    },
+    "PollParams": {
+      "status": "ignored",
+      "why": "native channel polls — not an Atrium surface"
+    },
+    "AgentParams": {
+      "status": "ignored",
+      "why": "the direct agent-run RPC — the bridge dispatches turns via chat.send exclusively (session-keyed, idempotent)"
+    },
+    "AgentIdentityParams": {
+      "status": "ignored",
+      "why": "identity display comes from agents.list at discovery time"
+    },
+    "AgentIdentityResult": {
+      "status": "ignored",
+      "why": "result of the unused agent.identity"
+    },
+    "AgentWaitParams": {
+      "status": "ignored",
+      "why": "run completion is observed on the event stream, never polled"
+    },
+    "WakeParams": {
+      "status": "ignored",
+      "why": "external scheduler wake — not an Atrium surface"
+    },
+    "InputProvenance": {
+      "status": "ignored",
+      "why": "operator-injection provenance primitive — Atrium sends never set systemInputProvenance (see ChatSendParams)"
+    },
+    "GatewayClientId": {
+      "status": "ignored",
+      "why": "handshake client-id vocabulary — the bridge identifies via its own connect params, not this enum"
+    },
+    "GatewayClientMode": {
+      "status": "ignored",
+      "why": "handshake client-mode vocabulary — same as GatewayClientId"
+    },
+    "SecretRefSource": {
+      "status": "ignored",
+      "why": "secret-reference primitive for config schemas — the bridge never writes gateway config"
+    },
+    "SecretRef": {
+      "status": "ignored",
+      "why": "secret-reference primitive — the bridge never writes gateway config"
+    },
+    "SecretInput": {
+      "status": "ignored",
+      "why": "secret-input primitive — the bridge never writes gateway config"
+    }
+  }
+}

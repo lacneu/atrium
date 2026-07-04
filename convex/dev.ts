@@ -225,6 +225,35 @@ export const seedChat = mutation({
 // their per-document RETRIEVED content as `text` (the fix for "documents show only an
 // id, no text") plus the synthesized context blob. Lets a human SEE the Sources panel
 // render each document's excerpt locally, before trusting the live gateway path.
+// Dev-only: seed a CLASSIFIED failed turn (gateway errorKind) into a chat so
+// the error-card presentation (localized actionable headline + demoted raw
+// detail) can be reviewed in the browser without provoking a real overflow.
+export const seedErrorDemo = mutation({
+  args: {
+    chatId: v.id("chats"),
+    errorKind: v.optional(v.string()), // default: context_length
+  },
+  handler: async (ctx, { chatId, errorKind }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (!chat) return { ok: false, reason: "chat not found" };
+    const now = Date.now();
+    const messageId = await ctx.db.insert("messages", {
+      chatId,
+      userId: chat.userId,
+      role: "assistant",
+      status: "error",
+      text: "",
+      error:
+        "The request exceeded the model's maximum context length (272000 tokens).",
+      errorCode: errorKind ?? "context_length",
+      updatedAt: now,
+    });
+    await ctx.db.patch(chatId, { updatedAt: now });
+    return { ok: true, messageId };
+  },
+});
+
 export const seedProvenanceDemo = mutation({
   args: { canonical: v.optional(v.string()) },
   handler: async (ctx, { canonical }) => {

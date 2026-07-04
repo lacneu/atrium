@@ -27,6 +27,11 @@ import {
   type ProvenancePart,
 } from "./provenance.js";
 
+// Bound on events buffered before a deferred open. Tiny in practice: the first
+// tool/media/meaningful-text event OPENS the message, so only provenance +
+// non-meaningful deltas ever accumulate here.
+const MAX_DEFERRED_EVENTS = 500;
+
 const TERMINAL_STATUS: Record<string, FinalizeStatus> = {
   final: "complete",
   complete: "complete",
@@ -81,6 +86,9 @@ export class TurnSink {
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
   private pendingFinalError: string | null = null;
+  // Stable gateway failure class (refusal|timeout|rate_limit|context_length)
+  // from message.final — persisted as the message's errorCode at finalize.
+  private pendingFinalErrorKind: string | null = null;
   private hasPendingFinal = false;
   // Per-turn provenance budget: a misbehaving plugin (or several) must never
   // turn the sources affordance into a flood of parts.
@@ -94,6 +102,26 @@ export class TurnSink {
     contextTokens: number | null;
   } | null = null;
   private compactionPhase: string | null = null;
+  // --- Deferred open (SPONTANEOUS announce turns) ---------------------------
+  // A gateway-initiated announce run may be entirely silent (the NO_REPLY
+  // protocol sentinel: "nothing to show the user"). For those turns the
+  // assistant message is NOT created up-front: normalized events buffer here
+  // until the first USER-VISIBLE one (meaningful text / tool / media) proves
+  // there is something to show — the NORMALIZER is the sole judge of content
+  // (all gateway shapes: string content, deltas, message-tool, history
+  // recovery). A run that reaches its terminal with nothing visible is
+  // discarded without ever creating a message — zero transient bubble.
+  private pendingOpen = false;
+  private deferredRunId: string | null = null;
+  private deferredEvents: NormalizedEvent[] = [];
+  private openPromise: Promise<void> | null = null;
+  private sawDeferredVisible = false;
+  // Turn GENERATION token: bumped by every beginTurn/discard. An in-flight
+  // deferred open (startAssistant awaited) captures it and re-checks before
+  // mutating sink state — a user send preempting the open must never have the
+  // stale closure overwrite the NEW turn's messageId or replay old events
+  // into it (codex P1).
+  private turnEpoch = 0;
 
   constructor(
     chatId: string,
@@ -112,6 +140,12 @@ export class TurnSink {
     return this.turnActive;
   }
 
+  /** True while a deferred (spontaneous) turn is active but its assistant
+   *  message has not been created yet — the preemption-sensitive window. */
+  get deferredUnopened(): boolean {
+    return this.turnActive && this.pendingOpen;
+  }
+
   /**
    * Start a new assistant turn: reset the finalize buffer and create the
    * streaming assistant message up-front (run.status begin is not guaranteed
@@ -121,15 +155,40 @@ export class TurnSink {
   async beginTurn(
     ackRunId: string | null,
     pressure?: { totalTokens: number | null; contextTokens: number | null },
+    deferOpen = false,
   ): Promise<void> {
+    this.turnEpoch++;
+    // A REAL turn preempting a DEFERRED (announce) turn that never opened must
+    // deactivate the sink BEFORE the startAssistant await below: leaving
+    // turnActive=true across that await would route the new run's racing
+    // frames into apply() (null messageId / stale deferred state) instead of
+    // the armed pre-ack buffer — losing the start of the user's reply. No-op
+    // on the normal path (a finalized turn already left turnActive false).
+    this.turnActive = false;
     this.pendingFinalText = "";
     this.pendingFinalError = null;
+    this.pendingFinalErrorKind = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
     this.compactionPhase = null;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
+    this.pendingOpen = false;
+    this.deferredRunId = null;
+    this.deferredEvents = [];
+    this.openPromise = null;
+    this.sawDeferredVisible = false;
+    if (deferOpen) {
+      // SPONTANEOUS (announce) turn: go active WITHOUT creating the assistant
+      // message — apply() opens it on the first user-visible event, or discards
+      // the whole turn silently if none ever arrives (NO_REPLY announce).
+      this.deferredRunId = ackRunId;
+      this.pendingOpen = true;
+      this.messageId = null;
+      this.turnActive = true;
+      return;
+    }
     // Create the streaming message FIRST, go active SECOND. If we flipped
     // turnActive before awaiting startAssistant, frames arriving during that
     // network round-trip would see an ACTIVE sink with a null messageId and be
@@ -148,11 +207,147 @@ export class TurnSink {
 
   /** Apply a batch of normalized events to the writer, strictly in order. */
   async apply(events: NormalizedEvent[]): Promise<void> {
-    const messageId = this.messageId;
-    if (messageId === null) {
-      return; // beginTurn not called: nothing to write to
-    }
     for (const event of events) {
+      if (this.pendingOpen) {
+        const consumed = await this.applyDeferred(event);
+        if (consumed) continue;
+        // The turn just opened — fall through to the normal path.
+      }
+      const messageId = this.messageId;
+      if (messageId === null) {
+        return; // beginTurn not called: nothing to write to
+      }
+      await this.applyOne(event, messageId);
+    }
+  }
+
+  /**
+   * Deferred-open gate for spontaneous (announce) turns. Returns true when the
+   * event was consumed here (buffered, or the whole silent turn discarded);
+   * false when the message just got created and the event should flow through
+   * the normal path.
+   */
+  private async applyDeferred(event: NormalizedEvent): Promise<boolean> {
+    const epoch = this.turnEpoch;
+    if (event.type === "run.status") {
+      const status = asString(event.status);
+      if (TERMINAL_STATUS[status] === undefined) {
+        return true; // intermediate status — dropped anyway
+      }
+      if (this.sawDeferredVisible) {
+        // Visible content WAS seen but a transient create failure kept us
+        // unopened — one last attempt so a brief Convex outage doesn't eat the
+        // report; only a persistent failure (nothing writable anyway) loses it.
+        const opened = await this.tryOpenDeferred();
+        if (this.turnEpoch !== epoch) return true; // preempted: dead turn's event
+        if (opened) return false; // finalize normally
+        console.error(
+          "[announce] report LOST: message create kept failing through the terminal",
+        );
+      } else {
+        // The run terminated with nothing user-visible (the NO_REPLY protocol
+        // sentinel / an empty reply): no message was ever created — silence.
+        console.log("[announce] silent run discarded (no visible content)");
+      }
+      this.resetDeferred();
+      return true;
+    }
+    if (!eventIsVisible(event)) {
+      if (this.deferredEvents.length < MAX_DEFERRED_EVENTS) {
+        this.deferredEvents.push(event);
+      }
+      return true;
+    }
+    this.sawDeferredVisible = true;
+    const opened = await this.tryOpenDeferred();
+    if (this.turnEpoch !== epoch) {
+      return true; // preempted while opening: this event belongs to a dead turn
+    }
+    if (!opened) {
+      // Transient create failure: keep the event so the next visible one (or
+      // the terminal's last attempt) replays it.
+      if (this.deferredEvents.length < MAX_DEFERRED_EVENTS) {
+        this.deferredEvents.push(event);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /** Create the deferred assistant message once (mutex via openPromise: the
+   *  consume loop and a stash flush can apply concurrently) and replay the
+   *  buffered pre-open events in arrival order. */
+  private async tryOpenDeferred(): Promise<boolean> {
+    if (!this.pendingOpen) return true;
+    if (this.openPromise === null) {
+      const epoch = this.turnEpoch;
+      this.openPromise = (async () => {
+        const id = await this.writer.startAssistant(
+          this.chatId,
+          this.deferredRunId,
+          this.sessionKey ?? null,
+        );
+        if (this.turnEpoch !== epoch) {
+          // A new turn preempted this open while the write was in flight: do
+          // NOT touch the sink (the new turn owns it). The created message is
+          // an orphan streaming row — the stuck-stream watchdog settles it.
+          console.error(
+            "[announce] deferred open superseded by a new turn — orphan message",
+            id,
+          );
+          return;
+        }
+        this.messageId = id;
+        this.pendingOpen = false;
+        const buffered = this.deferredEvents;
+        this.deferredEvents = [];
+        for (const ev of buffered) {
+          try {
+            await this.applyOne(ev, id);
+          } catch (e) {
+            // The message EXISTS: a replay failure must not reject this
+            // promise — the caller's catch would treat it as a CREATE failure
+            // and re-buffer behind a now-closed gate (events never replayed,
+            // message stuck streaming). Best-effort per event: log, keep
+            // replaying; the terminal run.status still finalizes the message.
+            console.error(
+              "[announce] deferred replay event failed (skipped, non-fatal):",
+              (e as Error)?.message ?? e,
+            );
+          }
+        }
+      })();
+    }
+    try {
+      await this.openPromise;
+      return true;
+    } catch (e) {
+      this.openPromise = null; // allow a retry on the next visible event
+      console.error(
+        "[announce] deferred message create failed (will retry):",
+        (e as Error)?.message ?? e,
+      );
+      return false;
+    }
+  }
+
+  /** Abandon a deferred turn that produced nothing visible. */
+  private resetDeferred(): void {
+    this.turnEpoch++;
+    this.turnActive = false;
+    this.pendingOpen = false;
+    this.deferredRunId = null;
+    this.deferredEvents = [];
+    this.openPromise = null;
+    this.sawDeferredVisible = false;
+  }
+
+  /** Apply ONE normalized event to the writer (the turn's message exists). */
+  private async applyOne(
+    event: NormalizedEvent,
+    messageId: string,
+  ): Promise<void> {
+    {
       switch (event.type) {
         case "message.delta": {
           const text = asString(event.text);
@@ -221,6 +416,10 @@ export class TurnSink {
             event.error === undefined || event.error === null
               ? null
               : String(event.error);
+          this.pendingFinalErrorKind =
+            typeof event.errorKind === "string" && event.errorKind
+              ? event.errorKind
+              : null;
           this.hasPendingFinal = true;
           break;
         }
@@ -287,17 +486,25 @@ export class TurnSink {
       status,
       this.hasPendingFinal ? this.pendingFinalText : "",
       this.pendingFinalError,
+      this.pendingFinalErrorKind,
     );
     // Context-pressure trace (Inc 2): one content-free record per turn — the
     // pre-turn fill counters + whether the gateway compacted. Fire-and-forget
     // AFTER finalize so observability never delays the visible reply; a write
     // failure only loses the trace, never the turn.
-    if (this.pressure !== null || this.compactionPhase !== null) {
+    if (
+      this.pressure !== null ||
+      this.compactionPhase !== null ||
+      this.pendingFinalErrorKind === "context_length"
+    ) {
       void this.writer
         .recordGatewayPressure(this.chatId, messageId, {
           totalTokens: this.pressure?.totalTokens ?? null,
           contextTokens: this.pressure?.contextTokens ?? null,
           compaction: this.compactionPhase,
+          // The HARD-overflow marker: the gateway reported errorKind
+          // "context_length" (un-recovered), vs `compaction` = handled silently.
+          errorKind: this.pendingFinalErrorKind,
         })
         .catch((e) =>
           console.error(
@@ -307,6 +514,40 @@ export class TurnSink {
         );
     }
   }
+}
+
+/**
+ * True when a normalized event carries USER-VISIBLE content — the deferred-open
+ * trigger for spontaneous turns. Tools and media always show in the UI;
+ * text counts only when meaningful (non-empty and not the NO_REPLY protocol
+ * sentinel, which the gateway emits to mean "nothing to show the user").
+ * Provenance/compaction/diagnostics never justify a message on their own.
+ */
+function eventIsVisible(event: NormalizedEvent): boolean {
+  switch (event.type) {
+    case "message.delta":
+    case "message.snapshot":
+      return meaningfulText(asString((event as { text?: unknown }).text));
+    case "message.final": {
+      // An ERRORED final counts as visible even with no text: a failed announce
+      // must surface as an error banner, never vanish silently (codex P2).
+      const ev = event as { text?: unknown; error?: unknown };
+      return (
+        meaningfulText(asString(ev.text)) ||
+        (ev.error != null && asString(ev.error) !== "")
+      );
+    }
+    case "tool.status":
+    case "media":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function meaningfulText(text: string): boolean {
+  const t = text.trim();
+  return t.length > 0 && t !== "NO_REPLY";
 }
 
 function asString(value: unknown): string {

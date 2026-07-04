@@ -22,6 +22,11 @@ import {
 // Cap on the pre-ack frame stash (see `pendingFrames`): bounds memory if a
 // dispatch fails and beginTurn never drains it. Generous — a whole turn's worth.
 const MAX_PENDING_FRAMES = 1000;
+// Cap on the ANNOUNCE stash: it can hold a WHOLE late report streamed during a
+// long user turn (deltas + tools), so it is much larger than the pre-ack cap.
+// Overflow is logged loudly (a truncated report must never be silent) — the
+// bound exists only as an OOM backstop for a pathological gateway.
+const MAX_PENDING_ANNOUNCE_FRAMES = 5000;
 
 /**
  * Drives one OpenClaw session's normalized stream into Convex (via TurnSink).
@@ -65,6 +70,34 @@ export class RunManager {
   // late/background frame arriving AFTER a turn finalizes is NEVER buffered and
   // can never be replayed into the next turn (no stale-frame leak).
   private replayArmed = false;
+  // ANNOUNCE frames that arrived while a REAL dispatch was in flight (or while a
+  // real turn streamed): they must not open a spontaneous turn mid-send (the real
+  // beginTurn would clobber it) NOR ride the pre-ack buffer (the replay seeds
+  // ownRunIds with the REAL run -> the announce would be dropped as foreign,
+  // losing the report — codex P2). Stash them here; flushed once the sink is
+  // inactive again (feed()/tick() flush on the next frame — gateway health/tick
+  // frames arrive every ~30s, bounding the delay).
+  private pendingAnnounce: { frame: unknown; now: number }[] = [];
+  // Announce runs ALREADY turned into a spontaneous turn: a gateway retransmit
+  // of the same run's chat:final after finalize must not open a SECOND turn and
+  // duplicate the report (codex P2). Bounded FIFO.
+  private readonly handledAnnounceRuns = new Set<string>();
+  private readonly handledAnnounceOrder: string[] = [];
+  // The announce run whose SPONTANEOUS turn is currently driving the sink
+  // (null when the current turn is a real dispatch). Lets a real beginTurn
+  // detect that it is preempting a deferred announce whose message was never
+  // created and un-handle it so the report re-opens later (codex P2).
+  private currentSpontaneousRun: string | null = null;
+  // Copy of the CURRENT spontaneous run's frames while its deferred message is
+  // still unopened: a real dispatch preempting that window un-handles the run,
+  // but the frames already fed are gone from the (reset) normalizer — for a
+  // final-only/delta-only announce THE report frame itself would be lost. The
+  // copy is re-stashed into pendingAnnounce at preemption and purged the moment
+  // the deferred message opens (the sink owns delivery from there). Bounded.
+  private spontaneousReplayCopy: { frame: unknown; now: number }[] = [];
+  // The announce run whose spontaneous turn is being CREATED right now
+  // (startAssistant's Convex write in flight): its frames racing that write on
+  // the concurrent consume loop must be stashed, not dropped-as-stale (codex P2).
 
   constructor(
     chatId: string,
@@ -167,10 +200,33 @@ export class RunManager {
    * THREW before beginTurn could run (so beginTurn's normal disarm never fired).
    * Leaves no armed window lingering between a failed send and the next one (which
    * would otherwise buffer stray/background frames until the next arm). Idempotent.
+   *
+   * ANNOUNCE frames stashed during the failed send window are NOT dropped with
+   * the pre-ack buffer: no turn will finalize to trigger their flush (codex P2),
+   * so deliver them now (fire-and-forget — the failed-send error path must not
+   * await or fail on the announce delivery).
    */
-  disarmReplayBuffer(): void {
+  disarmReplayBuffer(now: number, onFlushed?: () => void): void {
     this.replayArmed = false;
     this.pendingFrames = [];
+    if (this.pendingAnnounce.length > 0) {
+      // `now` MUST be the session's monotonic clock (the normalizer arms its
+      // recv deadlines against it — an epoch value would park them forever).
+      // `onFlushed` fires AFTER the flush settles (the spontaneous turn's
+      // deadlines are armed by then) — a caller's wake() issued synchronously
+      // would race the async open and could leave the consume loop parked on a
+      // null timeout (codex P2).
+      void this.flushPendingAnnounce(now)
+        .catch((e) =>
+          console.error(
+            "[announce] post-failed-send flush skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
+        )
+        .finally(() => onFlushed?.());
+    } else {
+      onFlushed?.();
+    }
   }
 
   /**
@@ -190,8 +246,35 @@ export class RunManager {
     turnContext?: {
       expectedSessionId: string | null;
       pressure?: { totalTokens: number | null; contextTokens: number | null };
+      /** Spontaneous (announce) turn: the sink DEFERS creating the assistant
+       *  message until the normalizer proves visible content (turn-sink). */
+      spontaneous?: boolean;
     },
   ): Promise<void> {
+    // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
+    // announce turn is still INVISIBLE (no assistant message created — the chat
+    // did not look busy, so a user send slipped in) would leave that run marked
+    // handled with nothing delivered; its later frames would then drop as stale
+    // retransmissions and the report would be lost (codex P2). Un-handle it:
+    // the remaining frames re-stash via the normal announce paths and re-open a
+    // fresh spontaneous turn after this real turn ends.
+    if (
+      this.currentSpontaneousRun !== null &&
+      turnContext?.spontaneous !== true &&
+      this.sink.deferredUnopened
+    ) {
+      this.unmarkAnnounceHandled(this.currentSpontaneousRun);
+      // Requeue the already-fed frames (in order, ahead of anything stashed):
+      // a final-only announce's ONLY frame lives here — without the requeue
+      // the un-handling alone could not resurrect the report (codex P2).
+      this.pendingAnnounce = [
+        ...this.spontaneousReplayCopy,
+        ...this.pendingAnnounce,
+      ].slice(0, MAX_PENDING_ANNOUNCE_FRAMES);
+    }
+    this.spontaneousReplayCopy = [];
+    this.currentSpontaneousRun =
+      turnContext?.spontaneous === true ? ackRunId : null;
     this.normalizer.beginTurn(now);
     this.normalizer.noteExpectedSessionId(
       turnContext?.expectedSessionId ?? null,
@@ -202,7 +285,11 @@ export class RunManager {
     if (ackRunId) {
       this.normalizer.noteRunStarted(ackRunId, now);
     }
-    await this.sink.beginTurn(ackRunId, turnContext?.pressure);
+    await this.sink.beginTurn(
+      ackRunId,
+      turnContext?.pressure,
+      turnContext?.spontaneous === true,
+    );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.
     const matched = ackRunId
@@ -228,11 +315,98 @@ export class RunManager {
     // Disarm: between turns (sink inactive, NOT armed) feed() drops non-provenance
     // frames, so a late/background frame can't accumulate and replay later.
     this.replayArmed = false;
+    // The replay itself can FINALIZE the turn (a whole response raced the ack):
+    // deliver any announce stashed during the send window now — no later
+    // feed/tick is guaranteed once the loop goes idle (codex P2). No-op while
+    // the turn is still streaming (sink active) or when called FROM the flush
+    // (the spontaneous turn just went active).
+    if (!this.sink.active) {
+      await this.flushPendingAnnounce(now);
+    }
   }
 
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
   async feed(frame: unknown, now: number): Promise<void> {
     if (!this.sink.active) {
+      // --- GATEWAY-INITIATED POST-TURN RUN (the "announce" delivery) ----------
+      // When a sub-agent finishes AFTER its parent turn ended (sessions_yield /
+      // the maxConcurrent queue), the gateway starts a run ON OUR OWN SESSION
+      // with runId `announce:v1:<childSessionKey>:<childRunId>` and streams the
+      // parent's consolidated report as a NORMAL turn (lifecycle start ->
+      // assistant/chat deltas -> chat final; live-captured 2026-07-03). Without
+      // admission, that final answer (and any generated files) is silently
+      // dropped here — the user never sees the result they paid for. Open a
+      // SPONTANEOUS turn: same beginTurn as a real dispatch (startAssistant
+      // creates the assistant message; ownRunIds seeded with the announce run),
+      // then feed this frame through. Guards: the frame must carry EXACTLY our
+      // sessionKey (no isolation relaxation) and must not race an in-flight
+      // chat.send (replayArmed) — in that rare window the pre-ack buffer keeps
+      // its existing semantics.
+      const announceRun = announceRunIdFor(frame, this.sessionKey);
+      if (announceRun !== null && this.handledAnnounceRuns.has(announceRun)) {
+        // Stale retransmit of a finished announce: NEVER the pre-ack buffer
+        // (beginTurn's replay could admit it as a follow-up during a
+        // lifecycle-end/compaction grace and overwrite the user's reply with
+        // the old report — codex P1), never a new turn. Drop outright.
+        return;
+      }
+      if (announceRun !== null) {
+        if (this.replayArmed) {
+          // A real dispatch is in flight: stash — flushed after that turn ends.
+          // Never the pre-ack buffer (the replay would drop it as foreign-run).
+          this.stashAnnounceFrame(frame, now);
+          return;
+        }
+        if (this.pendingAnnounce.length > 0) {
+          // Earlier frames of this (or a prior) announce run are stashed from a
+          // send/turn overlap — they must replay FIRST or the run would start
+          // mid-stream (deltas before its lifecycle start — codex P2). Append
+          // the current frame and drain the whole stash in arrival order; the
+          // recursive feed() below opens the spontaneous turn on the oldest.
+          this.stashAnnounceFrame(frame, now);
+          await this.flushPendingAnnounce(now);
+          return;
+        }
+        // Open the SPONTANEOUS turn immediately — but with a DEFERRED message
+        // (turn-sink deferOpen): the normalizer is the sole judge of content
+        // across every gateway shape (string content, delta-only, message-tool,
+        // history recovery...), and the sink only creates the assistant message
+        // on the first user-visible normalized event. A run that terminates
+        // silent (the NO_REPLY sentinel) never creates anything — zero bubble.
+        this.noteAnnounceHandled(announceRun);
+        await this.beginTurn(now, announceRun, {
+          expectedSessionId: null,
+          spontaneous: true,
+        });
+        this.noteSpontaneousFrame(frame, now);
+        this.tallyFrame(frame);
+        await this.sink.apply(this.normalizer.feed(frame, now));
+        // Earlier frames of this run stashed from a send/turn overlap replay
+        // through the now-active pipeline (other runs' frames re-stash via the
+        // active branch).
+        if (this.pendingAnnounce.length > 0) {
+          const raced = this.pendingAnnounce;
+          this.pendingAnnounce = [];
+          for (const entry of raced) {
+            await this.feed(entry.frame, entry.now);
+          }
+        }
+        return;
+      }
+      // Any inactive-window activity (gateway health/tick frames arrive every
+      // ~30s) flushes announce frames stashed during a real turn.
+      if (this.pendingAnnounce.length > 0) {
+        await this.flushPendingAnnounce(now);
+        // The current frame still gets its normal inactive-window treatment
+        // below (it may itself be a provenance report or a raced response).
+        if (this.sink.active) {
+          // The flush opened a spontaneous turn — feed the current frame through
+          // the ACTIVE pipeline instead of the inactive branches.
+          this.tallyFrame(frame);
+          await this.sink.apply(this.normalizer.feed(frame, now));
+          return;
+        }
+      }
       // Inactive window (pre-ack / between turns). Keep two things for the
       // upcoming run: a provenance report (flushed by runId in beginTurn) and any
       // RESPONSE frame that raced ahead of the ack (replayed in beginTurn) — both
@@ -261,17 +435,143 @@ export class RunManager {
       }
       return;
     }
+    // ACTIVE turn: a late announce for ANOTHER run must not reach the
+    // normalizer (its foreign-run filter would drop it — the report would be
+    // lost whenever the user sends a new message before a slow child's announce,
+    // codex P2). Stash it; the post-turn flush opens its spontaneous turn. The
+    // CURRENT spontaneous announce turn's own frames pass through. A RETRANSMIT
+    // of an already-handled announce that is NOT the current turn's run is
+    // DROPPED outright (codex P1): during a lifecycle-end/compaction grace the
+    // normalizer admits foreign runIds as follow-ups — a stale announce
+    // chat:final slipping in there could finalize/replace the user's in-flight
+    // reply.
+    const activeAnnounce = announceRunIdFor(frame, this.sessionKey);
+    if (activeAnnounce !== null) {
+      if (!this.handledAnnounceRuns.has(activeAnnounce)) {
+        this.stashAnnounceFrame(frame, now);
+        return;
+      }
+      if (!this.normalizer.ownRunIds.has(activeAnnounce)) {
+        return; // stale retransmit of a finished announce — never the normalizer
+      }
+      this.noteSpontaneousFrame(frame, now);
+    }
+    // PRE-ACK window DURING an active (announce) turn: a user send can arm the
+    // replay buffer while a spontaneous turn still drives the sink (the chat
+    // did not look busy). A frame of the UPCOMING real run racing its ack must
+    // reach the pre-ack buffer — fed to the normalizer now it would be dropped
+    // as foreign (ownRunIds still = the announce run) and the start of the
+    // user's reply would be lost (codex P2). Frames of the CURRENT run (in
+    // ownRunIds) keep flowing; child-lane frames carry the child's sessionKey
+    // and are unaffected.
+    if (this.replayArmed) {
+      const rid = sessionRunIdFor(frame, this.sessionKey);
+      if (rid !== null && !this.normalizer.ownRunIds.has(rid)) {
+        if (this.pendingFrames.length < MAX_PENDING_FRAMES) {
+          this.pendingFrames.push({ frame, now });
+        }
+        return;
+      }
+    }
     this.tallyFrame(frame);
     await this.sink.apply(this.normalizer.feed(frame, now));
     this.dumpTallyOnce();
+    // If that frame FINALIZED the turn, deliver any announce stashed during it
+    // RIGHT NOW: the consume loop may go idle (nextTimeout null) with no later
+    // tick guaranteed — waiting for the next frame could park the report
+    // indefinitely (codex P2).
+    if (!this.sink.active) {
+      await this.flushPendingAnnounce(now);
+    }
   }
 
   /** Resolve expired normalizer deadlines; apply any emitted events. */
   async tick(now: number): Promise<void> {
     if (!this.sink.active) {
+      // Between turns: drain announce frames stashed while a real turn streamed
+      // (the other flush point beside feed(); whichever fires first wins).
+      await this.flushPendingAnnounce(now);
       return;
     }
     await this.sink.apply(this.normalizer.tick(now));
+    // A deadline-driven finalize must also deliver stashed announces (same
+    // no-later-tick-guaranteed rationale as feed()).
+    if (!this.sink.active) {
+      await this.flushPendingAnnounce(now);
+    }
+  }
+
+  /**
+   * Drain stashed ANNOUNCE frames once no real turn is active: re-feed them in
+   * arrival order — feed() re-evaluates each one (the first opens the
+   * spontaneous turn; frames of an already-handled run fall through and drop).
+   * Re-entrancy-safe: the stash is taken before feeding, and a frame that must
+   * wait again (a new send armed mid-flush) simply re-stashes.
+   */
+  private async flushPendingAnnounce(now: number): Promise<void> {
+    if (this.sink.active || this.replayArmed || this.pendingAnnounce.length === 0) {
+      return;
+    }
+    const stashed = this.pendingAnnounce;
+    this.pendingAnnounce = [];
+    for (const entry of stashed) {
+      if (entry.frame === null) continue; // overflow marker, not a frame
+      await this.feed(entry.frame, now);
+    }
+  }
+
+
+  /** Keep a bounded replay copy of the current spontaneous run's frames while
+   *  its deferred message is UNOPENED (preemption insurance); purge the copy —
+   *  it is dead weight — the moment the message opens. */
+  private noteSpontaneousFrame(frame: unknown, now: number): void {
+    if (!this.sink.deferredUnopened) {
+      if (this.spontaneousReplayCopy.length > 0) {
+        this.spontaneousReplayCopy = [];
+      }
+      return;
+    }
+    if (this.spontaneousReplayCopy.length < MAX_PENDING_ANNOUNCE_FRAMES) {
+      this.spontaneousReplayCopy.push({ frame, now });
+    }
+  }
+
+  /** Stash an announce frame (bounded). Overflow is LOUD: dropping part of a
+   *  late report must be visible in the logs, never a silent truncation. */
+  private stashAnnounceFrame(frame: unknown, now: number): void {
+    if (this.pendingAnnounce.length >= MAX_PENDING_ANNOUNCE_FRAMES) {
+      if (this.pendingAnnounce.length === MAX_PENDING_ANNOUNCE_FRAMES) {
+        // Log once per overflow episode (the marker entry below keeps length
+        // above the cap so this branch logs a single time).
+        console.error(
+          "[announce] stash overflow: a late report is being TRUNCATED (cap",
+          MAX_PENDING_ANNOUNCE_FRAMES,
+          "frames) — pathological gateway stream",
+        );
+        this.pendingAnnounce.push({ frame: null, now });
+      }
+      return;
+    }
+    this.pendingAnnounce.push({ frame, now });
+  }
+
+  /** Roll back a handled mark whose spontaneous turn never delivered (the
+   *  message was never created before a real dispatch preempted it). */
+  private unmarkAnnounceHandled(runId: string): void {
+    this.handledAnnounceRuns.delete(runId);
+    const idx = this.handledAnnounceOrder.lastIndexOf(runId);
+    if (idx >= 0) this.handledAnnounceOrder.splice(idx, 1);
+  }
+
+  /** Record an announce run as handled (bounded FIFO — a retransmitted terminal
+   *  frame for the same run must never open a duplicate spontaneous turn). */
+  private noteAnnounceHandled(runId: string): void {
+    this.handledAnnounceRuns.add(runId);
+    this.handledAnnounceOrder.push(runId);
+    while (this.handledAnnounceOrder.length > 100) {
+      const oldest = this.handledAnnounceOrder.shift();
+      if (oldest !== undefined) this.handledAnnounceRuns.delete(oldest);
+    }
   }
 
   /**
@@ -293,6 +593,9 @@ export class RunManager {
       return;
     }
     await this.sink.apply(this.normalizer.recoverVisibleText(text, now));
+    if (!this.sink.active) {
+      await this.flushPendingAnnounce(now);
+    }
   }
 
   /**
@@ -308,5 +611,37 @@ export class RunManager {
       return;
     }
     await this.sink.apply(this.normalizer.endTurn(now, status, error));
+    if (!this.sink.active) {
+      await this.flushPendingAnnounce(now);
+    }
   }
 }
+
+/**
+ * The gateway-initiated post-turn run detector: returns the frame's runId when
+ * it is an ANNOUNCE run addressed to THIS session, else null. Contract pinned
+ * on live capture (2026-07-03): `event: "agent" | "chat"`, `payload.sessionKey`
+ * EXACTLY our session (never a prefix match — isolation stays strict), and
+ * `payload.runId` prefixed `announce:` (v1 today:
+ * `announce:v1:<childSessionKey>:<childRunId>`; the version segment is treated
+ * as opaque so a future v2 keeps being admitted).
+ */
+function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
+  const runId = sessionRunIdFor(frame, sessionKey);
+  return runId !== null && runId.startsWith("announce:") ? runId : null;
+}
+
+/** The frame's runId when it is an agent/chat event addressed EXACTLY to this
+ *  session (child-lane frames carry the child's key -> null). */
+function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
+  if (typeof frame !== "object" || frame === null) return null;
+  const f = frame as Record<string, unknown>;
+  if (f.event !== "agent" && f.event !== "chat") return null;
+  const payload = f.payload;
+  if (typeof payload !== "object" || payload === null) return null;
+  const p = payload as Record<string, unknown>;
+  if (p.sessionKey !== sessionKey) return null;
+  const runId = p.runId;
+  return typeof runId === "string" && runId ? runId : null;
+}
+

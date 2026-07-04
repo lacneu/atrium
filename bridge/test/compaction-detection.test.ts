@@ -256,6 +256,7 @@ describe("TurnSink compaction part + pressure trace", () => {
       totalTokens: 19698,
       contextTokens: 272000,
       compaction: "preflight",
+      errorKind: null, // no hard overflow this turn (compaction handled it)
     });
   });
 

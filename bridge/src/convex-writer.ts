@@ -187,6 +187,9 @@ export interface ConvexWriter {
       totalTokens: number | null;
       contextTokens: number | null;
       compaction: string | null;
+      /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
+       *  context_length (vs `compaction` = handled silently). Null otherwise. */
+      errorKind?: string | null;
     },
   ): Promise<void>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
@@ -221,6 +224,9 @@ export interface ConvexWriter {
     status: FinalizeStatus,
     text: string,
     error: string | null,
+    /** Stable gateway failure class (refusal|timeout|rate_limit|context_length)
+     *  — persisted as the message's errorCode; null on clean turns. */
+    errorKind?: string | null,
   ): Promise<void>;
   /**
    * Session re-hydration: a bounded block of this chat's prior turns (excluding
@@ -366,6 +372,8 @@ type IngestOp =
       totalTokens: number | null;
       contextTokens: number | null;
       compaction: string | null;
+      // Hard-overflow marker (errorKind "context_length" on a FAILED turn).
+      errorKind?: string | null;
     }
   // Outbound media is a 3-step, base64-free flow (Convex upload URL pattern):
   //   1. getUploadUrl -> Convex `ctx.storage.generateUploadUrl()` (no size limit)
@@ -407,6 +415,7 @@ type IngestOp =
       status: FinalizeStatus;
       text: string;
       error: string | null;
+      errorKind?: string | null;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -1004,6 +1013,7 @@ export class HttpConvexWriter implements ConvexWriter {
       totalTokens: number | null;
       contextTokens: number | null;
       compaction: string | null;
+      errorKind?: string | null;
     },
   ): Promise<void> {
     await this.doPost({ op: "gatewayPressure", chatId, messageId, ...data });
@@ -1199,11 +1209,12 @@ export class HttpConvexWriter implements ConvexWriter {
     status: FinalizeStatus,
     text: string,
     error: string | null,
+    errorKind: string | null = null,
   ): Promise<void> {
     try {
       await this.flushDelta(messageId); // never strand buffered deltas behind final
       const postStart = Date.now();
-      await this.post({ op: "finalize", messageId, status, text, error });
+      await this.post({ op: "finalize", messageId, status, text, error, errorKind });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its
       // wall-clock here vs the gateway's turn end is the end-to-end lag readout.
       console.log(

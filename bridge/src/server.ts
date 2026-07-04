@@ -1009,7 +1009,11 @@ async function performSend(
     // either way — disarm it (idempotent) so no armed window lingers buffering stray
     // frames until the next send. Then re-throw for the /send handler to classify +
     // report — a failed turn must NEVER wedge the session (bridge robustness #1).
-    session.runManager.disarmReplayBuffer();
+    // The disarm may open a SPONTANEOUS announce turn (frames stashed during
+    // the failed send window) — the wake fires AFTER that async open settles
+    // (its recv deadline is armed by then), so the consume loop re-evaluates
+    // with the fresh deadline instead of racing back to a null-timeout park.
+    session.runManager.disarmReplayBuffer(session.clock(), () => session.wake());
     throw err;
   }
   // beginTurn armed the recv/grace deadline from OUTSIDE the consume loop. If

@@ -5,18 +5,12 @@ import type { MessageStatus } from "./convexTypes";
 import {
   runStatusView,
   runStatusOutageLabel,
+  errorDetailView,
   messageHasText,
 } from "./runStatusView";
 import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
-import { m } from "@/paraglide/messages.js";
 
-// Map a stored, stable error CODE to a localized, actionable message; any other
-// (gateway-provided) error text is shown verbatim. Keep the code in sync with
-// convex/stuckStreams.STUCK_STREAM_ERROR_CODE.
-function errorMessageFor(error: string): string {
-  return error === "stream_orphaned" ? m.runstatus_error_orphaned() : error;
-}
 
 // Renders the run lifecycle for an assistant message, driven by the normalizer's
 // `run.status {status, runId}` events which the bridge materialises into the
@@ -33,6 +27,7 @@ interface RunMeta {
   status?: MessageStatus;
   runId?: string | null;
   error?: string | null;
+  errorCode?: string | null;
 }
 
 export function RunStatus() {
@@ -40,6 +35,9 @@ export function RunStatus() {
   const status = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.status);
   const runId = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.runId);
   const error = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.error);
+  const errorCode = useMessage(
+    (m) => (m.metadata?.custom as RunMeta | undefined)?.errorCode,
+  );
   // Boolean selector -> this only re-renders on the empty<->non-empty crossing,
   // not on every streamed token. Drives the thinking (no text) vs generating
   // (has text) distinction.
@@ -71,13 +69,28 @@ export function RunStatus() {
   // error presentation. The transient states (thinking/generating/aborted) stay
   // as the lightweight inline chip.
   if (view.kind === "error") {
+    // Actionable presentation: a CLASSIFIED failure (gateway errorKind such as
+    // context_length, or a curated code) shows a localized headline; the raw
+    // gateway text demotes to a technical detail line underneath.
+    const { headline, detail } = errorDetailView(error, errorCode);
     return (
       <div className="oc-error-card" role="alert" title={runId ? `run ${runId}` : undefined}>
         <CircleAlert size={18} className="oc-error-card__icon" aria-hidden />
         <div className="oc-error-card__body">
           <span className="oc-error-card__title">{view.label}</span>
-          {error ? (
-            <span className="oc-error-card__msg">{errorMessageFor(error)}</span>
+          {headline ? (
+            <span className="oc-error-card__msg">{headline}</span>
+          ) : null}
+          {detail ? (
+            <span
+              className={
+                headline
+                  ? "oc-error-card__msg oc-error-card__msg--detail"
+                  : "oc-error-card__msg"
+              }
+            >
+              {detail}
+            </span>
           ) : null}
         </div>
       </div>

@@ -99,6 +99,16 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 //   ^\s*(?:envoy[éè]+|message\s+envoy[éè]+|réponse\s+envoy[éè]+|done|ok|fait)
 //   (?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$
 // JS \s matches Unicode whitespace by default; `i` and `u` flags applied.
+// ChatErrorEventSchema.errorKind enum (gateway-protocol logs-chat.ts), minus
+// "unknown" (nothing actionable to classify). Only these values may persist as
+// the message's stable errorCode.
+const CHAT_ERROR_KINDS = new Set([
+  "refusal",
+  "timeout",
+  "rate_limit",
+  "context_length",
+]);
+
 const PRIVATE_ACK_RE =
   /^\s*(?:envoy[éè]+|message\s+envoy[éè]+|r[éè]ponse\s+envoy[éè]+|done|ok|fait)(?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$/iu;
 
@@ -671,6 +681,40 @@ export class Normalizer {
     }
     this.lastDedupKey = dedupKey;
 
+    // TERMINAL error/abort on the MAIN chat stream (ChatErrorEventSchema /
+    // ChatAbortedEventSchema). Previously unhandled: the turn hung until the
+    // 180s recv timeout and the failure class was lost. `errorKind`
+    // (refusal|timeout|rate_limit|context_length|unknown) classifies it —
+    // `context_length` = a HARD un-recovered overflow (distinct from the
+    // silently-handled compaction this normalizer detects via session-id
+    // rotation). The message text here is an error description, never the
+    // reply — do NOT let it fall through to applyVisible.
+    if (state === "error" || state === "aborted") {
+      if (state === "aborted") {
+        events.push(...this.finalize(now, "aborted"));
+        return;
+      }
+      const reason = isString(payload.errorMessage)
+        ? payload.errorMessage
+        : textFromMessage(message);
+      // ALLOWLIST the wire value against the schema enum before persisting it
+      // as a trusted stable code (never a raw network string as errorCode).
+      const kind =
+        isString(payload.errorKind) &&
+        CHAT_ERROR_KINDS.has(payload.errorKind)
+          ? payload.errorKind
+          : null;
+      events.push(
+        ...this.finalize(
+          now,
+          "error",
+          this.safeSanitizeText(reason) || "gateway error",
+          kind,
+        ),
+      );
+      return;
+    }
+
     const snapshotText = textFromMessage(message);
     if (snapshotText) {
       this.applyVisible(snapshotText, true, isFinal, now, events);
@@ -1062,7 +1106,12 @@ export class Normalizer {
 
   // -- finalization & deadlines --------------------------------------------
 
-  private finalize(now: number, status = "final", error: string | null = null): BridgeEvent[] {
+  private finalize(
+    now: number,
+    status = "final",
+    error: string | null = null,
+    errorKind: string | null = null,
+  ): BridgeEvent[] {
     if (this.finalized) {
       return [];
     }
@@ -1083,6 +1132,14 @@ export class Normalizer {
     if (error) {
       finalEvent.error = error;
       statusEvent.message = error;
+    }
+    if (errorKind) {
+      // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:
+      // refusal|timeout|rate_limit|context_length|unknown). Rides message.final
+      // so the sink can persist it as the message's stable errorCode —
+      // `context_length` is the hard-overflow signal the context-overflow
+      // observability chain keys on.
+      finalEvent.errorKind = errorKind;
     }
     const result: BridgeEvent[] = [finalEvent, statusEvent];
     // The agent ran native media generation this turn but delivered NO media

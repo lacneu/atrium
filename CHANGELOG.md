@@ -8,6 +8,46 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.22.0] — No answer left behind: late sub-agent reports, classified failures
+
+A reliability release closing the last ways a gateway's work could silently never reach the
+user: reports produced after a turn ended now arrive as messages, hard failures are classified
+and explained, and the bridge's protocol support is now machine-checked against the exact
+gateway version it validates. No breaking changes; all Convex changes are additive.
+
+- **Reports finished after the turn now arrive in the conversation.** When a sub-agent outlives
+  its parent turn (delegation queue, `sessions_yield`), the gateway delivers the consolidated
+  report — text and generated files — in a follow-up run AFTER the reply ended. Atrium previously
+  dropped that delivery entirely: the user saw an empty reply, the file never appeared, and the
+  late sub-agent sat "running" until it was mislabeled timed-out (observed live with a 24 KB
+  analysis report that never displayed). These announce runs now open a spontaneous assistant
+  message that streams like any turn — with one refinement: the message is only created once the
+  report shows real content, so a gateway "nothing to say" sentinel produces no empty bubble at
+  all. Duplicate retransmissions, overlaps with an in-flight user send, and preemption races are
+  all handled (pinned on live-captured frames).
+- **A sub-agent that recovers from a context overflow is no longer frozen as "failed".** When a
+  gateway hits its context limit mid-run, it can abandon the attempt with an error, condense the
+  oversized tool results and resume the same run to a clean finish (observed live: error at t+0,
+  recovery, success 43 s later). Atrium previously locked the sub-agent card on that intermediate
+  error forever — even though the child actually succeeded and delivered its result. The monitor
+  now keeps observing after an error: the real success overwrites the provisional failure (result,
+  final runtime/tokens/cost, error banner cleared) and feeds the recovered result into conversation
+  summarization; a child that truly died keeps its original error, shown immediately.
+- **Failed turns are classified and explained, not just red.** The gateway's error taxonomy
+  (context overflow, provider rate limit, timeout, model refusal) now reaches the error card as an
+  actionable, localized headline — e.g. a hard context overflow reads "the conversation is too
+  large for this turn: retry, trim the request, or start a new chat" — with the raw technical
+  message demoted to a detail line. Turns that failed or were aborted at the gateway also finalize
+  immediately instead of hanging up to 3 minutes on a receive timeout. Observability
+  distinguishes a hard, un-recovered overflow from the silently-handled compaction of 0.21.0 in
+  the per-turn context-pressure trace.
+- **The bridge's protocol support is now a checked contract, not tribal knowledge.** The exact
+  gateway protocol schema of the validated OpenClaw version is vendored into the repo with a
+  field-by-field coverage manifest (supported / deliberately ignored / known gap — each with its
+  reason), enforced by a CI test: bumping the validated gateway version enumerates every new
+  protocol field and fails until each one is triaged. Operators get a factual, always-current
+  answer to "what does this bridge support against which gateway version".
+
 ## [0.21.0] — See what the gateway is doing: compaction visibility, clearer sub-agent status
 
 A feature release focused on transparency: when the gateway works hard (summarizing a long

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   runStatusView,
   runStatusOutageLabel,
+  errorDetailView,
   messageHasText,
 } from "./runStatusView";
 
@@ -95,5 +96,38 @@ describe("runStatusOutageLabel (honest in-flight label on gateway outage)", () =
   it("returns null when the gateway is healthy (normal labels untouched)", () => {
     expect(runStatusOutageLabel("thinking", false)).toBeNull();
     expect(runStatusOutageLabel("generating", false)).toBeNull();
+  });
+});
+
+describe("errorDetailView (actionable error classification)", () => {
+  it("context_length -> localized headline + raw gateway text demoted to detail", () => {
+    const v = errorDetailView("Context window exceeded", "context_length");
+    expect(v.headline).toBeTruthy();
+    expect(v.headline).not.toBe("Context window exceeded");
+    expect(v.detail).toBe("Context window exceeded");
+  });
+
+  it("unknown code -> no headline, raw text stays the message", () => {
+    const v = errorDetailView("some gateway error", "weird_code");
+    expect(v.headline).toBeNull();
+    expect(v.detail).toBe("some gateway error");
+  });
+
+  it("stream_orphaned via error string (legacy path, no errorCode) keeps its headline", () => {
+    const v = errorDetailView("stream_orphaned", null);
+    expect(v.headline).toBeTruthy();
+    expect(v.detail).toBeNull(); // the code string is not a useful detail
+  });
+
+  it("rate_limit / timeout / refusal all classify", () => {
+    for (const code of ["rate_limit", "timeout", "refusal"]) {
+      expect(errorDetailView(null, code).headline).toBeTruthy();
+    }
+  });
+
+  it("no error, no code -> nothing", () => {
+    const v = errorDetailView(null, null);
+    expect(v.headline).toBeNull();
+    expect(v.detail).toBeNull();
   });
 });

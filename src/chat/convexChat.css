@@ -4596,6 +4596,13 @@
   overflow-wrap: anywhere;
 }
 
+/* Technical detail line under a CLASSIFIED error headline (gateway errorKind):
+   demoted visually — the actionable message stays the primary line. */
+.oc-error-card__msg--detail {
+  font-size: 0.76rem;
+  color: var(--muted-foreground);
+}
+
 /* Bridge tab — health dot on the tab label + detailed health view. */
 .oc-bridge-dot {
   display: inline-block;

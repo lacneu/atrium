@@ -145,6 +145,9 @@ export interface ConvexMessageView {
   status: MessageStatus;
   text: string;
   error?: string;
+  /** Stable failure class: gateway errorKind (context_length|rate_limit|timeout|
+   *  refusal) or a curated dispatch code — maps to a localized headline. */
+  errorCode?: string;
   /** MULTI-AGENT per-turn routing: which agent this turn was addressed to (absent on
    *  a single-agent message). The thread attributes each reply from these (an
    *  assistant without its own inherits the preceding user turn's agent); the

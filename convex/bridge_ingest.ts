@@ -186,6 +186,7 @@ type IngestOp =
       totalTokens: number | null;
       contextTokens: number | null;
       compaction: string | null;
+      errorKind?: string | null;
     }
   | {
       op: "finalize";
@@ -193,6 +194,7 @@ type IngestOp =
       status: "complete" | "error" | "aborted";
       text: string;
       error: string | null;
+      errorKind?: string | null;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -548,6 +550,10 @@ export const ingest = httpAction(async (ctx, request) => {
           contextTokens: body.contextTokens,
           fillPct,
           compaction: body.compaction,
+          // Hard, UN-recovered overflow (gateway errorKind "context_length") —
+          // the counterpart of `compaction` (= handled silently). Distinguishes
+          // "the gateway coped" from "the turn FAILED on context".
+          ...(body.errorKind ? { errorKind: body.errorKind } : {}),
         },
       });
       return json({ ok: true });
@@ -558,6 +564,7 @@ export const ingest = httpAction(async (ctx, request) => {
         status: body.status,
         text: body.text,
         error: body.error ?? undefined,
+        errorKind: body.errorKind ?? undefined,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -570,6 +577,9 @@ export const ingest = httpAction(async (ctx, request) => {
           textLen: body.text.length,
           // Whether an error was surfaced (boolean only — never the error text).
           hasError: body.error != null,
+          // Stable failure class (refusal|timeout|rate_limit|context_length) —
+          // non-PHI by construction (schema enum), safe in the trace.
+          ...(body.errorKind ? { errorKind: body.errorKind } : {}),
           ok: true,
         },
       });

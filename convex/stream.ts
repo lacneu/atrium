@@ -493,8 +493,12 @@ export const finalize = internalMutation({
     ),
     text: v.optional(v.string()),
     error: v.optional(v.string()),
+    // Stable gateway failure class (ChatErrorEventSchema.errorKind: refusal|
+    // timeout|rate_limit|context_length) — persisted into the message's existing
+    // `errorCode` field so the UI maps it to an actionable localized label.
+    errorKind: v.optional(v.string()),
   },
-  handler: async (ctx, { messageId, status, text, error }) => {
+  handler: async (ctx, { messageId, status, text, error, errorKind }) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("finalize: message not found");
@@ -514,6 +518,9 @@ export const finalize = internalMutation({
       text: finalText,
       liveText: undefined, // clear the legacy live field (optional → field removed)
       ...(error !== undefined ? { error } : {}),
+      // Reuses the existing stable-code field (failDispatch codes live there
+      // too) — the UI maps context_length/rate_limit/... to actionable labels.
+      ...(errorKind !== undefined ? { errorCode: errorKind } : {}),
       updatedAt: Date.now(),
     });
     // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the

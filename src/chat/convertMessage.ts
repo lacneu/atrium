@@ -188,6 +188,9 @@ export function convertConvexMessage(
         status: message.status,
         runId: message.runId ?? null,
         error: message.error ?? null,
+        // Stable failure class (gateway errorKind or dispatch code) — drives
+        // the actionable localized headline on the error card.
+        errorCode: message.errorCode ?? null,
         // Tool invocations for this turn, in part order. Re-emitted on every
         // conversion (useExternalStoreRuntime reconverts whenever the reactive
         // listByChat result changes), so the ToolActivity summary counter and

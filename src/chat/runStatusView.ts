@@ -57,6 +57,45 @@ export function runStatusOutageLabel(
   return m.runstatus_gateway_unreachable();
 }
 
+/**
+ * Actionable error presentation: maps the message's STABLE failure class
+ * (gateway ChatErrorEventSchema.errorKind, or a curated dispatch/watchdog code)
+ * to a localized, user-actionable headline; the raw gateway error text stays as
+ * the technical detail underneath (never shown as the primary line when a
+ * classification exists). Pure — testable without React.
+ *
+ *   context_length -> the HARD un-recovered overflow (the context-overflow
+ *                     initiative's user-facing end): explain + suggest recovery
+ *   rate_limit / timeout / refusal -> honest, specific one-liners
+ *   stream_orphaned -> the stuck-stream watchdog's code (kept from RunStatus)
+ */
+export interface ErrorDetailView {
+  /** Localized headline (actionable) — null when the code is unknown. */
+  headline: string | null;
+  /** Raw technical detail (gateway text) — null when empty or redundant. */
+  detail: string | null;
+}
+
+const ERROR_CODE_LABEL: Record<string, () => string> = {
+  context_length: m.runstatus_error_context_length,
+  rate_limit: m.runstatus_error_rate_limit,
+  timeout: m.runstatus_error_timeout,
+  refusal: m.runstatus_error_refusal,
+  stream_orphaned: m.runstatus_error_orphaned,
+};
+
+export function errorDetailView(
+  error: string | null | undefined,
+  errorCode: string | null | undefined,
+): ErrorDetailView {
+  const code = errorCode ?? (error === "stream_orphaned" ? error : null);
+  const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
+  const raw = (error ?? "").trim();
+  // The orphaned code's `error` IS the code string — showing it twice is noise.
+  const detail = raw && raw !== code ? raw : null;
+  return { headline, detail };
+}
+
 /** Re-exported from the shared module so existing importers (RunStatus) are
  *  unchanged while the implementation stays single-source. */
 export const messageHasText = sharedMessageHasText;

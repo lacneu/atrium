@@ -960,3 +960,123 @@ describe("sub-agent observation (spawnedBy admission)", () => {
     expect(n.finalized).toBe(true);
   });
 });
+
+describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", () => {
+  // Shapes pinned on the OFFICIAL protocol schema (gateway-protocol
+  // logs-chat.ts): ChatErrorEventSchema = { state:"error", errorMessage?,
+  // errorKind? (refusal|timeout|rate_limit|context_length|unknown), message? },
+  // ChatAbortedEventSchema = { state:"aborted", stopReason? }. Previously these
+  // frames fell through handleChat (only "final" was recognized) — the turn
+  // hung until the 180s recv timeout and the failure class was lost.
+  function chatFrame(payload: Record<string, unknown>): unknown {
+    return {
+      type: "event",
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 5, ...payload },
+    };
+  }
+
+  it("chat error with errorKind context_length finalizes the turn as a classified error", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        errorMessage: "Context window exceeded for this model",
+        errorKind: "context_length",
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    const status = events.find((e) => e.type === "run.status");
+    expect(final?.error).toBe("Context window exceeded for this model");
+    expect(final?.errorKind).toBe("context_length");
+    expect(status?.status).toBe("error");
+    expect(normalizer.finalized).toBe(true);
+  });
+
+  it("an UNLISTED wire errorKind is never persisted as a code (allowlist)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({ state: "error", errorMessage: "boom", errorKind: "totally_new_kind" }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.error).toBe("boom");
+    expect(final?.errorKind).toBeUndefined();
+  });
+
+  it("chat error with errorKind unknown carries NO kind (nothing actionable to classify)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({ state: "error", errorMessage: "boom", errorKind: "unknown" }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.error).toBe("boom");
+    expect(final?.errorKind).toBeUndefined();
+  });
+
+  it("chat error without errorMessage falls back to the message text, never applyVisible", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        message: { role: "assistant", content: [{ type: "text", text: "Error: provider 500" }] },
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    // The description became the ERROR, not the reply text.
+    expect(final?.error).toBe("Error: provider 500");
+    expect(final?.text).toBe(""); // no streamed reply — the error text is not the answer
+  });
+
+  it("chat aborted finalizes as aborted (no error)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({ state: "aborted", stopReason: "user" }),
+      clock.tick(),
+    );
+    const status = events.find((e) => e.type === "run.status");
+    expect(status?.status).toBe("aborted");
+    expect(normalizer.finalized).toBe(true);
+  });
+
+  it("a foreign-run chat error is still dropped (isolation unchanged)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "some-other-run",
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "not ours",
+          errorKind: "context_length",
+        },
+      },
+      clock.tick(),
+    );
+    expect(events.filter((e) => e.type === "message.final")).toHaveLength(0);
+    expect(normalizer.finalized).toBe(false);
+  });
+});

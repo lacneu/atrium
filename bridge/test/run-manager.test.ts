@@ -51,7 +51,7 @@ type Call =
   | ["addToolPart", string, ToolPart]
   | ["addProvenancePart", string, ProvenancePart]
   | ["addMedia", string, { filename: string; path: string }]
-  | ["finalize", string, FinalizeStatus, string, string | null]
+  | ["finalize", string, FinalizeStatus, string, string | null, string | null]
   | ["addCompactionPart", string, string]
   | [
       "recordGatewayPressure",
@@ -61,6 +61,7 @@ type Call =
         totalTokens: number | null;
         contextTokens: number | null;
         compaction: string | null;
+        errorKind?: string | null;
       },
     ];
 
@@ -127,8 +128,9 @@ class FakeWriter implements ConvexWriter {
     status: FinalizeStatus,
     text: string,
     error: string | null,
+    errorKind: string | null = null,
   ): Promise<void> {
-    this.calls.push(["finalize", messageId, status, text, error]);
+    this.calls.push(["finalize", messageId, status, text, error, errorKind]);
   }
   async getRehydrationContext(): Promise<{
     history: string | null;
@@ -206,7 +208,7 @@ describe("run-manager -> convex-writer mapping", () => {
       ["startAssistant", CHAT_ID, OWN_RUN],
       ["setSnapshot", MESSAGE_ID, "Bon"],
       ["setSnapshot", MESSAGE_ID, "Bonjour !"],
-      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null],
+      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null, null],
     ]);
   });
 
@@ -221,6 +223,7 @@ describe("run-manager -> convex-writer mapping", () => {
       MESSAGE_ID,
       "complete",
       "Réponse en texte simple.",
+      null,
       null,
     ]);
   });
@@ -246,7 +249,7 @@ describe("run-manager -> convex-writer mapping", () => {
       ["startAssistant", CHAT_ID, OWN_RUN],
       ["setSnapshot", MESSAGE_ID, "Bon"],
       ["setSnapshot", MESSAGE_ID, "Bonjour !"],
-      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null],
+      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null, null],
     ]);
   });
 
@@ -261,7 +264,7 @@ describe("run-manager -> convex-writer mapping", () => {
     const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
     const clock = new Clock();
     manager.armReplayBuffer();
-    manager.disarmReplayBuffer(); // chat.send rejected before beginTurn
+    manager.disarmReplayBuffer(clock.now); // chat.send rejected before beginTurn
     for (const frame of frames("chat-final-content")) {
       await manager.feed(frame, clock.tick()); // disarmed -> dropped, not buffered
     }
@@ -325,7 +328,7 @@ describe("run-manager -> convex-writer mapping", () => {
       ["startAssistant", CHAT_ID, OWN_RUN],
       ["setSnapshot", MESSAGE_ID, "Bon"],
       ["setSnapshot", MESSAGE_ID, "Bonjour !"],
-      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null],
+      ["finalize", MESSAGE_ID, "complete", "Bonjour !", null, null],
     ]);
   });
 
@@ -344,6 +347,7 @@ describe("run-manager -> convex-writer mapping", () => {
       string,
       FinalizeStatus,
       string,
+      string | null,
       string | null,
     ];
     expect(final[0]).toBe("finalize");
@@ -364,6 +368,7 @@ describe("run-manager -> convex-writer mapping", () => {
       string,
       FinalizeStatus,
       string,
+      string | null,
       string | null,
     ];
     expect(final[0]).toBe("finalize");
@@ -392,6 +397,7 @@ describe("run-manager -> convex-writer mapping", () => {
       FinalizeStatus,
       string,
       string | null,
+      string | null,
     ];
     expect(final[0]).toBe("finalize");
   });
@@ -404,6 +410,7 @@ describe("run-manager -> convex-writer mapping", () => {
       string,
       FinalizeStatus,
       string,
+      string | null,
       string | null,
     ];
     expect(final[0]).toBe("finalize");
@@ -443,5 +450,37 @@ describe("history recovery arming (6.5 message-tool item frame)", () => {
   it("a private-ack WITHOUT a message-tool item does NOT arm recovery (discriminant)", async () => {
     const { manager } = await drive("private-ack-only", { advanceToFinalize: false });
     expect(manager.takeRecoveryRequest()).toBe(false);
+  });
+});
+
+describe("gateway errorKind propagation (context_length hard overflow)", () => {
+  it("chat error{context_length} -> finalize carries the kind + the pressure trace flags it", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "Context window exceeded",
+          errorKind: "context_length",
+        },
+      },
+      clock.tick(),
+    );
+    const fin = writer.calls.find((c) => c[0] === "finalize");
+    expect(fin?.[2]).toBe("error");
+    expect(fin?.[4]).toBe("Context window exceeded");
+    expect(fin?.[5]).toBe("context_length");
+    // The content-free pressure trace records the HARD overflow even without
+    // pre-send counters (the observability chain distinguishes it from the
+    // silently-handled compaction).
+    const pressure = writer.calls.find((c) => c[0] === "recordGatewayPressure");
+    expect(pressure?.[3]?.errorKind).toBe("context_length");
   });
 });
