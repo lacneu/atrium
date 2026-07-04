@@ -354,3 +354,31 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
     reg.closeAll();
   });
 });
+
+describe("close mid-turn = connection lost, NOT a user interruption", () => {
+  it("a connection close while a turn streams finalizes as error(connection_lost), never aborted", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    // A conn that yields nothing then closes (socket drop mid-turn).
+    const conn = fakeConn();
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => conn as never,
+    );
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    // The gateway drops the socket mid-turn.
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    // finalize(messageId, status, text, error) — status is arg[1], error arg[3].
+    expect(last?.[1]).toBe("error"); // NOT "aborted"
+    expect(String(last?.[3] ?? "")).toContain("connection_lost");
+    reg.closeAll();
+  });
+});

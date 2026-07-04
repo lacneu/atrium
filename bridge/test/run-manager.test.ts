@@ -488,3 +488,54 @@ describe("gateway errorKind propagation (context_length hard overflow)", () => {
     expect(pressure?.[3]?.errorKind).toBe("context_length");
   });
 });
+
+describe("toolCalls + costUsd in the pressure trace (causal overflow reading)", () => {
+  it("counts COALESCED real tools + the message tool once, and carries the pre-turn cost", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN, {
+      expectedSessionId: null,
+      pressure: { totalTokens: 100_000, contextTokens: 272_000, costUsd: 0.42 },
+    });
+    const agent = (data: Record<string, unknown>) => ({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        stream: "tool",
+        data,
+      },
+    });
+    // Two REAL tools: start is coalesced (held), the result emits ONE completed.
+    await manager.feed(agent({ name: "web_search", phase: "start", toolCallId: "t1", args: { q: "x" } }), clock.tick());
+    await manager.feed(agent({ name: "web_search", phase: "result", toolCallId: "t1", result: "ok" }), clock.tick());
+    await manager.feed(agent({ name: "exec", phase: "start", toolCallId: "t2", args: { command: "ls" } }), clock.tick());
+    await manager.feed(agent({ name: "exec", phase: "result", toolCallId: "t2", result: "ok" }), clock.tick());
+    // The message tool emits every phase — counted ONCE (its start).
+    await manager.feed(agent({ name: "message", phase: "start", args: { message: "salut" } }), clock.tick());
+    await manager.feed(agent({ name: "message", phase: "result", result: "sent" }), clock.tick());
+    // Terminal.
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "fin" }] },
+        },
+      },
+      clock.tick(),
+    );
+    const pressure = writer.calls.find((c) => c[0] === "recordGatewayPressure");
+    expect(pressure?.[3]).toMatchObject({
+      totalTokens: 100_000,
+      contextTokens: 272_000,
+      costUsd: 0.42,
+      toolCalls: 3, // 2 coalesced real tools + message once
+    });
+  });
+});

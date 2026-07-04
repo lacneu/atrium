@@ -8,6 +8,40 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.26.0] — Launch hardening: dropped connections read honestly, richer diagnostics
+
+Reliability pass ahead of opening Atrium to users, grounded in live testing on the dev
+deployment. The common conversation path was hammered clean, a real dropped-connection failure
+mode was fixed, and the operator diagnostics learned the new failure classes. No breaking
+changes; Convex changes are additive.
+
+- **A dropped gateway connection now reads as "connection lost — retry", not a user
+  "Interrupted".** On the dev deployment a turn that ended because the gateway dropped its
+  socket mid-reply (a large-session compaction that recreates the session, a restart, a network
+  blip) was frozen as if the user had pressed Stop — misleading, since the user did nothing. A
+  mid-turn connection drop now settles as a clear, localized "the connection dropped, this is
+  not a stop on your side, retry" error. A user Stop is never mistaken for it (Stop keeps the
+  socket open), and the close path is now logged so any unclear terminal is diagnosable on its
+  next occurrence.
+- **Streamed replies survive mid-stream refreshes without locking up.** A replacement delta (a
+  full-content refresh the protocol allows) now replaces the accumulated text AND lets the
+  stream continue — an earlier form could freeze a reply mid-way. Verified across a batch of
+  normal turns (short, long, multi-tool, markdown-heavy) that all rendered flawlessly.
+- **Hard context overflows are explained, and the trace tells the story.** The overflow error
+  (which real gateways report as plain text with no machine class) is recognized and shown with
+  an actionable headline that names the real cause — the context meter reflects the state
+  *before* the turn, while the overflow happens mid-turn as tool results pile up — and the
+  per-turn diagnostic trace now records how many tool calls the turn ran, so a hard overflow at
+  a low pre-turn fill is explained at a glance instead of by hand.
+- **The operator diagnostics name the new failure classes instead of "unknown".** The shared,
+  PHI-safe error allowlist behind `/api/v1/chat-state` and the observability MCP now includes
+  `connection_lost` and the gateway's hard classes (`context_length`, `rate_limit`, `timeout`,
+  `refusal`), so a support diagnosis reads the real class instead of collapsing to "unknown".
+- **Broader test coverage on the recent work.** Added unit coverage for the Stop route's error
+  paths, the coalesced tool-call counting and per-turn cost in the pressure trace, the
+  connection-lost close path, the overflow fallback classification, and the diagnostic
+  allowlist.
+
 ## [0.25.0] — Compaction is not an interruption: honest turn survival and causal overflow reading
 
 A reliability release grounded in live testing: a gateway that pauses a turn to compact its

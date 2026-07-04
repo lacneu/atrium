@@ -39,6 +39,10 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
   test("known codes pass; anything else collapses to 'unknown'", () => {
     expect(normalizeMessageErrorCode("stream_orphaned")).toBe("stream_orphaned");
     expect(normalizeMessageErrorCode("gateway_timeout")).toBe("gateway_timeout");
+    // Newly allowlisted infra + gateway-errorKind classes reach the obs MCP.
+    expect(normalizeMessageErrorCode("connection_lost")).toBe("connection_lost");
+    expect(normalizeMessageErrorCode("context_length")).toBe("context_length");
+    expect(normalizeMessageErrorCode("rate_limit")).toBe("rate_limit");
     expect(normalizeMessageErrorCode("Patient Jean Dupont not found at /records")).toBe(
       "unknown",
     );

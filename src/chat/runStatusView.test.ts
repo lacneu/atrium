@@ -113,6 +113,13 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.detail).toBe("some gateway error");
   });
 
+  it("connection_lost (error-string code, socket drop) maps to an actionable headline, not the raw code", () => {
+    const v = errorDetailView("connection_lost", null);
+    expect(v.headline).toBeTruthy();
+    expect(v.headline).not.toBe("connection_lost");
+    expect(v.detail).toBeNull(); // the bare code is not a useful detail
+  });
+
   it("stream_orphaned via error string (legacy path, no errorCode) keeps its headline", () => {
     const v = errorDetailView("stream_orphaned", null);
     expect(v.headline).toBeTruthy();

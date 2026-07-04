@@ -60,6 +60,17 @@ export const KNOWN_ERROR_CODES = [
   "gateway_timeout",
   "gateway_error",
   "aborted_by_user",
+  // The bridge's infrastructure-end code (a socket drop mid-turn — session
+  // close / large-session compaction). Non-PHI by construction; allowlisted so
+  // /api/v1/chat-state + the obs MCP report it as a real class, not "unknown".
+  "connection_lost",
+  // The gateway's normalized hard failure classes (errorKind, from
+  // ChatErrorEventSchema) that the bridge persists as errorCode — allowlisted
+  // so the diagnostic surface names them instead of collapsing to "unknown".
+  "context_length",
+  "rate_limit",
+  "timeout",
+  "refusal",
 ] as const;
 
 export function normalizeMessageErrorCode(

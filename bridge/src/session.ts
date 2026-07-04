@@ -20,6 +20,11 @@ import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 
+// Stable errorCode for a bridge-side infrastructure end (socket drop / crash
+// mid-turn): the UI maps it to "connection lost — retry", never the user
+// "Interrompu". Distinct from the user Stop (Convex-set "aborted").
+const CONNECTION_LOST_CODE = "connection_lost";
+
 /**
  * Everything needed to serve ONE instance: its full per-instance config (gateway
  * URL + creds + media dirs), its Convex writer (with that instance's media fetcher
@@ -305,7 +310,11 @@ class Session implements BridgeSession {
     this.registeredChildren.clear();
     if (!this.runManager.isFinalized) {
       try {
-        await this.runManager.endTurn(this.clock(), "aborted");
+        // A crash/close mid-turn is an INFRASTRUCTURE end, not a user stop —
+        // finalize as a clear "connection lost" error, never "aborted" (which
+        // the UI renders as the user's "Interrompu"). A user Stop set Convex
+        // status "aborted" already; first-terminal-wins keeps it.
+        await this.runManager.endTurn(this.clock(), "error", CONNECTION_LOST_CODE);
       } catch (err) {
         console.error(
           `[session] crash finalize error chat=${this.chatId}:`,
@@ -412,7 +421,7 @@ class Session implements BridgeSession {
                   console.log(
                     `[session] compaction resume never arrived — settling aborted chat=${this.chatId}`,
                   );
-                  void rm.endTurn(settleClock(), "aborted").catch((e) =>
+                  void rm.endTurn(settleClock(), "error", CONNECTION_LOST_CODE).catch((e) =>
                     console.error(
                       "[session] deferred compaction settle failed:",
                       (e as Error)?.message ?? e,
@@ -425,7 +434,7 @@ class Session implements BridgeSession {
                 `[session] close mid-turn — force-abort chat=${this.chatId} (no compaction pending)`,
               );
               try {
-                await this.runManager.endTurn(now, "aborted");
+                await this.runManager.endTurn(now, "error", CONNECTION_LOST_CODE);
               } catch (err) {
                 console.error("session close finalize error:", (err as Error)?.message ?? err);
               }

@@ -703,6 +703,15 @@ export class Normalizer {
         if (this.compactionPending) {
           return;
         }
+        // A chat:aborted terminalizes as aborted ("Interrompu"). We do NOT try to
+        // reclassify it by stopReason: the field is optional in the protocol
+        // schema, and the user Stop (chat.abort RPC) is a chat:aborted on the
+        // SAME socket (verified live) — keying "Interrompu" off a stopReason
+        // value would risk showing a real Stop as a connection error (codex P2).
+        // The DISTINCT gateway-side infrastructure end — a socket DROP mid-turn
+        // (e.g. a large-session self-compact recreating the session) — is caught
+        // unambiguously by the session close path (connection_lost), which never
+        // fires for a user Stop (that keeps the socket open).
         events.push(...this.finalize(now, "aborted"));
         return;
       }

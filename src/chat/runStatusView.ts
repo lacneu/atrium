@@ -82,13 +82,21 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   timeout: m.runstatus_error_timeout,
   refusal: m.runstatus_error_refusal,
   stream_orphaned: m.runstatus_error_orphaned,
+  connection_lost: m.runstatus_error_connection_lost,
 };
+
+// Error-STRING codes (a stable code stored in `error` rather than `errorCode`):
+// the bridge finalizes some infrastructure ends with the code as the error text
+// (stream_orphaned watchdog, connection_lost socket drop). Recognized here so a
+// message carrying only the string still gets its actionable headline.
+const ERROR_STRING_CODES = new Set(["stream_orphaned", "connection_lost"]);
 
 export function errorDetailView(
   error: string | null | undefined,
   errorCode: string | null | undefined,
 ): ErrorDetailView {
-  const code = errorCode ?? (error === "stream_orphaned" ? error : null);
+  const raw0 = (error ?? "").trim();
+  const code = errorCode ?? (ERROR_STRING_CODES.has(raw0) ? raw0 : null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
   const raw = (error ?? "").trim();
   // The orphaned code's `error` IS the code string — showing it twice is noise.

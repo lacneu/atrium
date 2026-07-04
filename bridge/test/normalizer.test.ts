@@ -1043,13 +1043,13 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(final?.text).toBe(""); // no streamed reply — the error text is not the answer
   });
 
-  it("chat aborted finalizes as aborted (no error)", () => {
+  it("chat aborted from the USER stop (stopReason rpc) finalizes as aborted", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();
     normalizer.beginTurn(clock.now);
     normalizer.noteRunStarted(OWN_RUN, clock.now);
     const events = normalizer.feed(
-      chatFrame({ state: "aborted", stopReason: "user" }),
+      chatFrame({ state: "aborted", stopReason: "rpc" }),
       clock.tick(),
     );
     const status = events.find((e) => e.type === "run.status");
@@ -1223,7 +1223,7 @@ describe("compaction abandon must not read as a user stop (live report 2026-07-0
     );
   });
 
-  it("a NORMAL chat:aborted (no compaction pending) still terminalizes", () => {
+  it("a chat:aborted terminalizes as aborted (Interrompu) regardless of stopReason", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();
     normalizer.beginTurn(clock.now);
@@ -1238,4 +1238,5 @@ describe("compaction abandon must not read as a user stop (live report 2026-07-0
     );
     expect(events.find((e) => e.type === "run.status")?.status).toBe("aborted");
   });
+
 });

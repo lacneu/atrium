@@ -711,6 +711,12 @@ export const testSend = mutation({
       }));
 
     // Mirror send.sendMessage: optimistic user message + outbox + dispatch.
+    // CAVEAT (live-testing gotcha, verified 2026-07-04): this DEV helper does
+    // NOT run the mid-turn QUEUE serialization (isChatBusy -> queued) that the
+    // real send.sendMessage does — it dispatches directly. So sending two
+    // testSend calls back-to-back on ONE chat dispatches BOTH concurrently,
+    // which a real user CANNOT do (the composer queues). Do not mistake that
+    // for a production race: the real path is serialized (outboxQueue tests).
     const messageId = await ctx.db.insert("messages", {
       chatId: cid,
       userId,
