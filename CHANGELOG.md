@@ -8,12 +8,14 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
-## [0.22.0] — No answer left behind: late sub-agent reports, classified failures
+## [0.22.0] — No answer left behind: late sub-agent reports, classified failures, a real Stop
 
 A reliability release closing the last ways a gateway's work could silently never reach the
-user: reports produced after a turn ended now arrive as messages, hard failures are classified
-and explained, and the bridge's protocol support is now machine-checked against the exact
-gateway version it validates. No breaking changes; all Convex changes are additive.
+user — or silently keep running against their will: reports produced after a turn ended now
+arrive as messages, hard failures are classified and explained, the new Stop button really
+cancels the run at the gateway, and the bridge's protocol support is now machine-checked
+against the exact gateway version it validates. No breaking changes; all Convex changes are
+additive.
 
 - **Reports finished after the turn now arrive in the conversation.** When a sub-agent outlives
   its parent turn (delegation queue, `sessions_yield`), the gateway delivers the consolidated
@@ -41,6 +43,18 @@ gateway version it validates. No breaking changes; all Convex changes are additi
   immediately instead of hanging up to 3 minutes on a receive timeout. Observability
   distinguishes a hard, un-recovered overflow from the silently-handled compaction of 0.21.0 in
   the per-turn context-pressure trace.
+- **The Stop button now really stops the agent.** A stop control appears in the composer while
+  a reply streams. Clicking it keeps the text received so far (the reply settles as
+  "Interrupted"), releases the conversation for the next message, and — new — actually cancels
+  the run at the gateway, targeting the exact run of that turn: the agent stops burning tokens
+  on an answer that is no longer wanted, and a follow-up already queued cannot collide with a
+  zombie run. Races are settled honestly in both directions: a reply that completed right
+  before the stop stays complete; a stopped reply is never overwritten by a late completion.
+- **Operators can see when a gateway speaks newer protocol than the bridge understands.** The
+  bridge now classifies every incoming gateway event against the vendored protocol schema and
+  reports unknown fields (names only, never content) on its `/capabilities` endpoint — the
+  early warning for "the gateway was upgraded before the bridge image", which previously
+  surfaced as unexplained UI weirdness. Frames are never rejected: detection is observe-only.
 - **The bridge's protocol support is now a checked contract, not tribal knowledge.** The exact
   gateway protocol schema of the validated OpenClaw version is vendored into the repo with a
   field-by-field coverage manifest (supported / deliberately ignored / known gap — each with its

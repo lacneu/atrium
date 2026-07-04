@@ -3114,6 +3114,16 @@
   background: var(--primary);
   color: var(--primary-foreground);
 }
+
+/* STOP variant of the composer action: same footprint as send, tinted
+   destructive so "stop the reply" reads distinctly from "queue the message". */
+.oc-composer__stop {
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+.oc-composer__stop:hover {
+  background: color-mix(in oklab, var(--destructive) 22%, transparent);
+}
 .oc-composer__send:hover {
   background: color-mix(in srgb, var(--primary) 88%, var(--foreground));
 }

@@ -1209,6 +1209,99 @@ export const dispatchPatch = internalAction({
  * Best-effort: a missing config / unrouted user / bridge error is logged and
  * traced but never throws (a thrown action would be retried by Convex).
  */
+// Best-effort kill of the chat's ACTIVE gateway run (the stop button's second
+// half — Convex already finalized the message as aborted). Same routing
+// resolution as dispatchReset; failure is LOG-ONLY (the UI is already settled;
+// worst case the gateway finishes a run whose frames drop as stale).
+export const dispatchAbort = internalAction({
+  args: {
+    chatId: v.id("chats"),
+    userId: v.id("users"),
+    // The streaming turn's exact gateway session key (preferred: per-turn
+    // routing + epoch baked in); the bridge derives from routing when absent.
+    sessionKey: v.optional(v.string()),
+    // The streaming run's exact id — chat.abort kills the NAMED run, immune to
+    // a queued follow-up starting a new run on the same session meanwhile.
+    runId: v.optional(v.string()),
+    // Settle THIS message as aborted AFTER the kill attempt — ordering matters:
+    // finalize drains the queued follow-up, which must not dispatch while the
+    // gateway still runs the old turn (one-turn-per-session).
+    finalizeMessageId: v.optional(v.id("messages")),
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (
+    ctx,
+    { chatId, userId, sessionKey, runId, finalizeMessageId, routedAgent },
+  ) => {
+    try {
+      const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+      if (!sharedSecret) {
+        console.error(
+          "bridge.dispatchAbort: BRIDGE_SHARED_SECRET not configured",
+        );
+        return;
+      }
+      const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
+        chatId,
+        userId,
+        ...(routedAgent ? { routedAgent } : {}),
+      });
+      if (!routing || routing.target === null) {
+        console.error(
+          "bridge.dispatchAbort: no routing target (nothing to kill)",
+        );
+        return;
+      }
+      const bridgeUrl = routing.bridgeUrl;
+      if (!bridgeUrl) {
+        console.error(
+          "bridge.dispatchAbort: no bridgeUrl for the routed instance",
+        );
+        return;
+      }
+      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/abort`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: sharedSecret,
+        },
+        body: JSON.stringify({
+          chatId,
+          openclawChatId: routing.openclawChatId,
+          instanceName: routing.target.instanceName,
+          agentId: routing.target.agentId,
+          canonical: routing.target.canonical,
+          ...(sessionKey ? { sessionKey } : {}),
+          ...(runId ? { runId } : {}),
+        }),
+      });
+      if (!response.ok) {
+        console.error(`bridge POST /abort -> HTTP ${response.status}`);
+      }
+    } catch (err) {
+      console.error("bridge POST /abort failed:", err);
+    } finally {
+      // GUARANTEED settle, whatever the kill did: the user asked to stop.
+      // TRADE-OFF (reviewed, deliberate): when the kill itself failed (legacy
+      // bridge without /abort, gateway 502, missing secret), we still settle —
+      // leaving the row `streaming` until the stuck-stream watchdog (minutes)
+      // is strictly worse UX than the residual risk. That risk is bounded by
+      // the GATEWAY's own one-turn-per-session guard: a drained follow-up
+      // reaching a still-busy session is refused cleanly (OCC "reply session
+      // initialization conflicted") and surfaces as a visible failed dispatch,
+      // never as run interference.
+      if (finalizeMessageId) {
+        await ctx.runMutation(internal.stream.finalize, {
+          messageId: finalizeMessageId,
+          status: "aborted",
+        });
+      }
+    }
+  },
+});
+
 export const dispatchReset = internalAction({
   args: {
     chatId: v.id("chats"),

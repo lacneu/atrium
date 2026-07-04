@@ -1005,6 +1005,84 @@ export const listChats = query({
 // TRUNCATED Convex state, realigning the gateway. Without it the model would keep
 // reasoning over turns the user deleted and no longer sees — a trust violation.
 // (docs/SESSION_CONTINUITY_DESIGN.md; OUTCOME proof gated on NAS #62.)
+// The user's STOP button: end the chat's active turn NOW (optimistic — the
+// same internal finalize the gateway path uses, so text streamed so far is
+// kept, the queue drains, chunks GC) and best-effort KILL the run at the
+// gateway (bridge POST /abort -> chat.abort). Without the kill the gateway
+// keeps generating for minutes and its late frames are dropped as stale; with
+// it, the gateway's own chat:aborted frame finalizes idempotently after ours.
+export const abortTurn = mutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedChat(ctx, userId, chatId);
+    const streaming = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", chatId).eq("status", "streaming"),
+      )
+      .order("desc")
+      .first();
+    if (streaming === null) {
+      return { ok: false as const, reason: "no_active_turn" as const };
+    }
+    // MULTI-AGENT: per-turn routing stamps routedAgent on the USER message, not
+    // the assistant row — resolve the turn's routing from the most recent user
+    // message so the abort reaches the RIGHT bridge/instance (the exact
+    // sessionKey alone cannot pick the bridgeUrl).
+    // The ACTIVE turn's user message = the last user row created BEFORE the
+    // streaming assistant row. A follow-up already QUEUED during the stream has
+    // a LATER _creationTime and must not win (routed elsewhere, it would send
+    // the abort to the wrong bridge/instance — codex P2).
+    const lastUser = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("role"), "user"),
+          q.lt(q.field("_creationTime"), streaming._creationTime),
+        ),
+      )
+      .first();
+    const routedAgent =
+      lastUser?.routedAgentId && lastUser.routedInstanceName
+        ? {
+            instanceName: lastUser.routedInstanceName,
+            agentId: lastUser.routedAgentId,
+          }
+        : streaming.routedAgentId && streaming.routedInstanceName
+          ? {
+              instanceName: streaming.routedInstanceName,
+              agentId: streaming.routedAgentId,
+            }
+          : null;
+    // ONE action does kill-THEN-finalize, in that order: finalize runs
+    // drainNextQueued, and dispatching a queued follow-up while the gateway
+    // still runs the old turn would break one-turn-per-session (the send gets
+    // refused or interleaved — codex P1). The message stays `streaming` for the
+    // ~1s the kill takes; the UI's "Interrompu" lands right after. The
+    // assistant row carries the turn's EXACT gateway session key (per-turn
+    // routing + session epochs included); routing derivation is the legacy
+    // fallback. Finalize happens even when the kill fails (best-effort kill,
+    // guaranteed settle).
+    await ctx.scheduler.runAfter(0, internal.bridge.dispatchAbort, {
+      chatId,
+      userId,
+      finalizeMessageId: streaming._id,
+      // Target the EXACT run: if the reply finishes and a queued follow-up
+      // starts a NEW run on the same session before the abort lands, a
+      // session-only abort would kill the wrong run (codex P2).
+      ...(streaming.runId ? { runId: streaming.runId } : {}),
+      ...(streaming.turnSessionKey
+        ? { sessionKey: streaming.turnSessionKey }
+        : {}),
+      ...(routedAgent ? { routedAgent } : {}),
+    });
+    return { ok: true as const };
+  },
+});
+
 export const deleteMessage = mutation({
   args: { messageId: v.id("messages") },
   handler: async (ctx, { messageId }) => {

@@ -85,7 +85,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.capabilities).toEqual({
       kind: "openclaw",
       agentDiscovery: true,
-      abort: false,
+      abort: true,
       history: false,
       attachments: true,
       media: true,
@@ -108,6 +108,8 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "compat",
       "gatewayVersion",
       "instanceName",
+      // Protocol-contract Inc 2: vendored schema version + runtime drift.
+      "protocol",
       "protocolVersion",
       "rehydrationDefault",
       "targets",

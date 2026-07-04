@@ -287,8 +287,20 @@
       }
     },
     "ChatAbortParams": {
-      "status": "gap",
-      "note": "chat.abort is NEVER called: Atrium's stop button ends the turn client/Convex-side but the gateway run keeps executing (audit finding). Wiring it = a real cancel."
+      "fields": {
+        "sessionKey": {
+          "status": "handled",
+          "by": "server.ts /abort route (buildSessionKey -> chat.abort over a dedicated operator connection)"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "redundant with the agent baked into sessionKey"
+        },
+        "runId": {
+          "status": "handled",
+          "by": "server.ts /abort route (targets the streaming message's exact run — immune to a queued follow-up's new run)"
+        }
+      }
     },
     "ChatInjectParams": {
       "status": "ignored",

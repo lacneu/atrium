@@ -503,6 +503,18 @@ export const finalize = internalMutation({
     if (message === null) {
       throw new Error("finalize: message not found");
     }
+    // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
+    // aborted when the gateway's late chat:final loses the race — and a reply
+    // that COMPLETED before the abort RPC landed stays complete (the kill's
+    // guaranteed-settle finalize must not repaint a finished answer as
+    // interrupted). Same-status re-finalize stays idempotent; the first
+    // finalize already drained the queue and scheduled the GC.
+    if (message.status !== "streaming" && message.status !== status) {
+      console.log(
+        `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
+      );
+      return;
+    }
     // A2: write the authoritative final text into the searchable/indexed `text`
     // ONCE here, and CLEAR `liveText` (so listByChat now reads `text`). Prefer the
     // normalizer's final text; fall back to whatever streamed into `liveText` (so

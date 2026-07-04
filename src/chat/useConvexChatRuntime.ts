@@ -562,6 +562,8 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // same `sendMessage` updater) makes the queued user message appear instantly,
   // below the streaming reply. Returns true if accepted, false if rejected
   // (e.g. QUEUE_FULL) so the caller can keep the text for a retry.
+  const abortTurnMutation = useMutation(api.messages.abortTurn);
+
   const queueSend = useCallback(
     async (text: string): Promise<boolean> => {
       const trimmed = text.trim();
@@ -620,10 +622,32 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     ],
   );
 
+  // The STOP button: settle the active turn instantly (server-side optimistic
+  // finalize) and best-effort kill the gateway run. Releases the local pending
+  // gate too, so the composer unfreezes even if the reactive flip lags.
+  const abortTurn = useCallback(async (): Promise<void> => {
+    if (!chatId) return;
+    try {
+      const res = await abortTurnMutation({ chatId: chatId as Id<"chats"> });
+      if (res.ok) {
+        setPendingSince(null);
+        return;
+      }
+      // No streaming message yet (the turn is still dispatching): releasing
+      // the gate here would let a second send race a turn that is NOT stopped.
+      // Keep the composer held and tell the user to retry in a moment.
+      toast.error(m.chat_stop_too_early());
+    } catch (e) {
+      // The turn keeps running — keep the gate held (honest UI).
+      toast.error(m.chat_stop_failed(), e);
+    }
+  }, [chatId, abortTurnMutation, toast]);
+
   return {
     runtime: useExternalStoreRuntime(adapter),
     turnGate,
     queueSend,
+    abortTurn,
     routing,
     lastUserTurnQueued,
   };

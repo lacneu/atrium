@@ -151,6 +151,9 @@ describe(`protocol coverage ratchet (openclaw @ ${VENDORED_VERSION})`, () => {
     expect(chatError?.errorMessage?.status).toBe("handled");
     // And the known-unsupported ones stay honestly declared as gaps.
     expect(MANIFEST.schemas.ChatDeltaEvent?.fields?.replace?.status).toBe("gap");
-    expect(MANIFEST.schemas.ChatAbortParams?.status).toBe("gap");
+    // chat.abort is WIRED now (the stop button kills the gateway run).
+    expect(MANIFEST.schemas.ChatAbortParams?.fields?.sessionKey?.status).toBe(
+      "handled",
+    );
   });
 });

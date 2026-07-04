@@ -82,6 +82,9 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   configDefaults: "2026.6.5",
   messageToolRecovery: "2026.5.19",
   agentsDiscovery: "2026.5.19",
+  // chat.abort is core gateway RPC across the whole validated range; the
+  // bridge wires it via POST /abort (the stop button's real kill).
+  abort: "2026.5.19",
   mediaOutbound: "2026.5.19",
   inboundAttachments: "2026.6.1",
   subagents: "2026.5.19",

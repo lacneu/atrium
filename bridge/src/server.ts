@@ -56,6 +56,10 @@ import {
   PROTOCOL_VERSION,
   resolveCapabilities,
 } from "./compat.js";
+import {
+  DRIFT_VENDORED_VERSION,
+  protocolDrift,
+} from "./providers/openclaw/protocol-drift.js";
 import type { ConvexWriter, SessionMetaReport } from "./convex-writer.js";
 import type { ConfigIssue } from "./core/credential-resolver.js";
 import type {
@@ -1303,13 +1307,14 @@ async function discoverAgents(
 }
 
 /** Static provider capabilities for a mono-tenant OpenClaw bridge. Mirrors the
- *  ground truth in docs/OPENCLAW_RESEARCH.md (abort synthesized, no chat.history).
+ *  ground truth in docs/OPENCLAW_RESEARCH.md (no chat.history). abort is REAL:
+ *  POST /abort -> gateway chat.abort kills the session's active run.
  *  Phase 2 sources this per-instance from the provider abstraction. */
 function openclawCapabilities() {
   return {
     kind: "openclaw" as const,
     agentDiscovery: true,
-    abort: false,
+    abort: true,
     history: false,
     attachments: true,
     media: true,
@@ -1692,6 +1697,14 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         turnSessionEcho: true,
         protocolVersion: PROTOCOL_VERSION,
         compat: COMPAT_MANIFEST,
+        // Protocol-contract Inc 2 (additive; the Convex poller picks known
+        // fields, so older consumers ignore it): the vendored schema version
+        // this build understands + the runtime DRIFT observed against it
+        // (unknown chat/agent payload fields — names only, never values).
+        protocol: {
+          vendoredVersion: DRIFT_VENDORED_VERSION,
+          drift: protocolDrift.report(),
+        },
         targets,
       });
       return;
@@ -1801,6 +1814,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/send",
       "/patch",
       "/reset",
+      "/abort",
       "/compact",
       "/compaction-history",
       "/agent-files",
@@ -1877,6 +1891,73 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         console.error("bridge /reset failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: "upstream reset failed" });
+      }
+      return;
+    }
+
+    if (req.url === "/abort") {
+      // KILL the chat's active gateway run (the user's stop button). Same body
+      // shape + session-key derivation as /reset. Like /compaction-history this
+      // must NOT go through registry.acquire() (it re-keys/closes a live
+      // session — the very turn being aborted); `chat.abort` is routed by
+      // sessionKey server-side, so a SHORT dedicated operator connection kills
+      // the run without touching the streaming session. Convex has already
+      // finalized the message as aborted (optimistic stop); the gateway's
+      // chat:aborted frame that follows finalizes idempotently.
+      const abort = parseResetBody(raw);
+      if (abort === null) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const abortInstance = abort.instanceName;
+      const abortBundle = abortInstance ? served.get(abortInstance) : undefined;
+      if (!abortInstance || !abortBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      try {
+        // Prefer the EXACT session key of the streaming turn (Convex reads it
+        // off the assistant row — per-turn routing/epoch included); derive from
+        // the chat routing only for legacy rows without one.
+        let explicitKey: string | null = null;
+        let runId: string | null = null;
+        try {
+          const o = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof o.sessionKey === "string" && o.sessionKey) {
+            explicitKey = o.sessionKey;
+          }
+          if (typeof o.runId === "string" && o.runId) {
+            runId = o.runId;
+          }
+        } catch {
+          /* parseResetBody already validated the body shape */
+        }
+        const sessionKey =
+          explicitKey ??
+          buildSessionKey(
+            abort.openclawChatId ?? abort.chatId,
+            abort.agentId,
+            abort.canonical,
+          );
+        await withOperatorConnection(
+          abortBundle.config,
+          // With runId, the gateway cancels the NAMED run (immune to a newer
+          // run having started on the session); without, the active one.
+          (conn) =>
+            conn.request("chat.abort", {
+              sessionKey,
+              ...(runId ? { runId } : {}),
+            }),
+          noteHandshakeFor(abortInstance),
+        );
+        sendJson(res, 200, { ok: true });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /abort failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
     }

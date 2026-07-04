@@ -1,8 +1,12 @@
 # Protocol Contract — schema-driven, per-version bridge compatibility
 
-Status: Increment 1 SHIPPED (vendored schema @2026.6.11 + coverage manifest +
-CI ratchet — `bridge/protocol/openclaw/` + `bridge/test/protocol-coverage.test.ts`);
-Increments 2–3 proposed. Companion to the factual audit in
+Status: Increments 1–2 SHIPPED. Inc 1 = vendored schema @2026.6.11 + coverage
+manifest + CI ratchet (`bridge/protocol/openclaw/` +
+`bridge/test/protocol-coverage.test.ts`). Inc 2 = runtime drift detector
+(`bridge/src/providers/openclaw/protocol-drift.ts`, observe-only, wired into
+RunManager.feed; exposed as the additive `protocol` section of /capabilities;
+runtime sets bijection-tested against the manifest). Inc 3 (Convex persistence
++ Bridge tab matrix) proposed. Companion to the factual audit in
 [protocol-schema-coverage.md](protocol-schema-coverage.md).
 
 ## Problem

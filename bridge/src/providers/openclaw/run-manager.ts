@@ -10,6 +10,7 @@
 // One RunManager handles one OpenClaw session (one chat).
 
 import { Normalizer } from "./normalizer.js";
+import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import {
@@ -327,6 +328,8 @@ export class RunManager {
 
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
   async feed(frame: unknown, now: number): Promise<void> {
+    // Observe-only protocol-drift classification (never gates the frame).
+    protocolDrift.observe(frame);
     if (!this.sink.active) {
       // --- GATEWAY-INITIATED POST-TURN RUN (the "announce" delivery) ----------
       // When a sub-agent finishes AFTER its parent turn ended (sessions_yield /

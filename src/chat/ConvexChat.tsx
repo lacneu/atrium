@@ -62,6 +62,7 @@ import {
   Download,
   Plus,
   ArrowUp,
+  Square,
   Mic,
   Trash2,
   Code,
@@ -190,6 +191,10 @@ const QueueSendContext = createContext<
   ((text: string) => Promise<boolean>) | null
 >(null);
 
+// STOP button context: ends the chat's active turn (optimistic finalize) and
+// best-effort kills the gateway run. Null when no chat is mounted.
+const AbortTurnContext = createContext<(() => Promise<void>) | null>(null);
+
 
 // MULTI-AGENT per-turn router context: the routing surface from the runtime hook
 // (the entitled agent pool + selection + per-message attribution). Null when no
@@ -232,7 +237,7 @@ function BrandAvatar({ className }: { className: string }) {
 }
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
-  const { runtime, turnGate, queueSend, routing, lastUserTurnQueued } =
+  const { runtime, turnGate, queueSend, abortTurn, routing, lastUserTurnQueued } =
     useConvexChatRuntime({
     chatId,
   });
@@ -367,6 +372,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     <AssistantRuntimeProvider runtime={runtime}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
+      <AbortTurnContext.Provider value={abortTurn}>
       <QueuedTurnContext.Provider value={lastUserTurnQueued}>
       <ChatRoutingContext.Provider value={routing}>
       <UiPrefsContext.Provider value={ui}>
@@ -457,6 +463,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </UiPrefsContext.Provider>
       </ChatRoutingContext.Provider>
       </QueuedTurnContext.Provider>
+      </AbortTurnContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
     </AssistantRuntimeProvider>
@@ -1910,6 +1917,26 @@ function QueueSendButton({ reason }: { reason: ComposerQueueReason }) {
   );
 }
 
+// STOP button (shown beside the queue-send while a TURN is streaming): settles
+// the reply instantly with what streamed so far and kills the gateway run so it
+// stops burning tokens on an answer the user no longer wants. Not shown for the
+// sub-agent hold (the parent turn is already finalized — nothing to stop).
+function StopTurnButton() {
+  const abortTurn = useContext(AbortTurnContext);
+  if (abortTurn === null) return null;
+  return (
+    <button
+      type="button"
+      className="oc-composer__send oc-composer__stop"
+      aria-label={m.chat_stop_aria()}
+      title={m.chat_stop_title()}
+      onClick={() => void abortTurn()}
+    >
+      <Square size={14} aria-hidden />
+    </button>
+  );
+}
+
 // MULTI-AGENT: inline per-turn agent selector for the composer action bar. Lets a
 // user with more than one agent route the NEXT turn to a chosen specialist within
 // the SAME conversation (the reply is then attributed to it). Reuses AgentPicker's
@@ -2211,7 +2238,10 @@ function Composer({
                the Input's onKeyDown). `reason` only swaps the label. Driven by
                queueMode (NOT ThreadPrimitive.If running) so the sub-agent case —
                where the thread is NOT running — also shows the queue affordance. */
-            <QueueSendButton reason={queueMode.reason} />
+            <>
+              {queueMode.reason === "turn" ? <StopTurnButton /> : null}
+              <QueueSendButton reason={queueMode.reason} />
+            </>
           ) : (
             <ComposerPrimitive.Send
               className="oc-composer__send"
