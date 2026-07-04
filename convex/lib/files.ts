@@ -77,6 +77,7 @@ export async function recordFileForPart(
     instanceName?: string;
     part: FileLikePart;
     createdAt: number;
+    origin?: "pasted";
   },
 ): Promise<void> {
   await ctx.db.insert("files", {
@@ -91,6 +92,7 @@ export async function recordFileForPart(
     instanceName: args.instanceName,
     category: mimeCategory(args.part.mimeType),
     createdAt: args.createdAt,
+    ...(args.origin ? { origin: args.origin } : {}),
   });
 }
 

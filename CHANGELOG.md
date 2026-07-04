@@ -8,6 +8,33 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.28.0] — Large pastes become attachments: the context stays light
+
+Robustness release focused on one high-impact behavior: what happens when a user pastes a huge
+text into the composer. No breaking changes.
+
+- **A huge pasted text no longer blows the agent's context.** Pasting a big log or document
+  into the composer used to inline it into the prompt — a single paste could overflow the
+  agent's context window before compaction had any chance to run (observed live on a pasted
+  config log). A paste above ~8,000 characters (or 150 lines) is now automatically converted
+  into a text attachment: the composer shows the file chip, a toast explains the conversion,
+  and the agent receives the full content by reference through the existing attachment pipeline
+  (with its gateway-derived size caps). Ordinary snippets keep pasting inline with zero
+  friction — the same pattern Claude Code and VS Code use for large pastes. Verified live
+  end-to-end: a 300-line pasted log became `texte-colle-1.txt`, and the agent opened and
+  answered from the file while the prompt stayed light.
+- **Auto-generated paste files are kept out of your file listing.** Files created by the
+  paste-as-file conversion are stamped as auto-generated end-to-end and hidden by default in
+  Settings › Files — the listing shows your real files. A toggle ("Show auto-generated files")
+  reveals them, each tagged with an "Auto-generated" badge. Files from before this release are
+  unmarked and keep appearing as regular files.
+- **The conversion is careful about every edge.** Sending is held (Enter and the send button)
+  until the pasted attachment has actually landed, including when several pastes overlap; while
+  a reply is already running, a large paste is refused with a clear message (queued follow-ups
+  are text-only) and the clipboard keeps the content; a paste that exceeds even the attachment
+  cap fails loudly WITHOUT falling back to inlining; and a clipboard carrying files (an image
+  copied from an office document) keeps the native file handling — nothing is silently dropped.
+
 ## [0.27.0] — A killed gateway no longer swallows the answer; images get a real viewer
 
 Robustness + UX release. The headline fix closes a real observed gap: the gateway restarting

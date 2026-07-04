@@ -504,6 +504,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           storageId: a.storageId as Id<"_storage">,
           filename: a.filename,
           mimeType: a.mimeType,
+          ...(a.origin ? { origin: a.origin } : {}),
         }));
 
         // MULTI-AGENT: the agent this turn is routed to, per the single-agent-path

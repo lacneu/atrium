@@ -111,6 +111,7 @@ import { CompactionNotice } from "./CompactionNotice";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
+import { markPastedFile, routePaste } from "./pasteRouting";
 import type { ToolActivityPart } from "./toolActivityView";
 import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
 import {
@@ -2181,7 +2182,71 @@ function Composer({
   const queued = queueMode.mode === "queue";
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
+  // Large-paste routing: a big pasted text becomes a FILE attachment instead
+  // of inlining into the prompt (a single paste could overflow the agent's
+  // context before compaction ran — live 2026-07-04). The attachment pipeline
+  // (upload chip, size policy derived from the gateway, shared-fs/inline
+  // transport) takes over; the composer text stays untouched.
+  const pasteSeq = useRef(1);
+  const pasteToast = useToast();
+  // True while a routed paste's attachment is being ADDED (the adapter runs
+  // async size-policy checks before it lands in the composer state): submit is
+  // held so an immediate Enter can never send the message WITHOUT its pasted
+  // file (codex P2).
+  const [pasteAttachCount, setPasteAttachCount] = useState(0);
+  const pasteAttaching = pasteAttachCount > 0;
+  const onInputPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // A clipboard carrying FILES (e.g. an image + text from an office app) is
+    // the built-in handler's job — preventDefault here would silently drop
+    // those files (codex P2). Only pure-text pastes are routed.
+    if ((e.clipboardData?.files?.length ?? 0) > 0) return;
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!text) return;
+    const route = routePaste(text, pasteSeq.current);
+    if (route.kind !== "file") return;
+    e.preventDefault();
+    if (queued) {
+      // A queued follow-up is TEXT-ONLY (the attach button is already disabled
+      // in this mode) — refuse loudly instead of creating an attachment that
+      // would silently NOT ride along (codex P2). The clipboard is untouched.
+      pasteToast.error(m.chat_paste_queue_blocked());
+      return;
+    }
+    pasteSeq.current += 1;
+    const file = new File([text], route.filename ?? "texte-colle.txt", {
+      type: "text/plain; charset=utf-8",
+    });
+    markPastedFile(file);
+    // COUNTER (not a boolean): two rapid pastes overlap their async policy
+    // checks; the first settle must not re-enable send while the second is
+    // still adding (codex P2).
+    setPasteAttachCount((n) => n + 1);
+    void composerRuntime
+      .addAttachment(file)
+      .then(() => {
+        // Announce success only once the attachment actually landed — a
+        // premature toast followed by a reject read as contradictory (codex P3).
+        pasteToast.success(
+          m.chat_paste_as_file({ lines: String(route.lines) }),
+        );
+      })
+      .catch((err) => {
+        // NEVER fall back to inlining (a paste too big for the ATTACHMENT cap
+        // inlined into the prompt would be the original context blow-up, worse
+        // — codex P2). The adapter already toasts its reject reason; the
+        // content is still in the user's clipboard, nothing is lost.
+        console.error("[paste] attachment routing failed:", err);
+        pasteToast.error(m.chat_paste_attach_failed());
+      })
+      .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
+  };
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Hold submit while a routed paste's attachment is still being added.
+    if (pasteAttaching && e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (!queued || queueSend === null) return;
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
@@ -2227,6 +2292,7 @@ function Composer({
         rows={1}
         disabled={unavailable}
         onKeyDownCapture={onInputKeyDown}
+        onPaste={onInputPaste}
         autoCorrect="off"
         autoCapitalize="off"
         autoComplete="off"
@@ -2309,6 +2375,7 @@ function Composer({
             <ComposerPrimitive.Send
               className="oc-composer__send"
               aria-label={m.chat_send()}
+              disabled={pasteAttaching}
             >
               <ArrowUp size={18} aria-hidden />
             </ComposerPrimitive.Send>

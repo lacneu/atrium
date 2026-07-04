@@ -1,3 +1,4 @@
+import { isPastedFile } from "./pasteRouting";
 import type {
   Attachment,
   AttachmentAdapter,
@@ -51,6 +52,9 @@ export interface ConvexAttachmentContent {
   storageId: string;
   filename: string;
   mimeType: string;
+  /** "pasted" when the file was auto-generated from a large composer paste —
+   *  Settings › Files hides those by default. Absent for real user files. */
+  origin?: "pasted";
 }
 
 /** assistant-ui Attachment carrying our Convex storage metadata. */
@@ -86,6 +90,7 @@ export function attachmentParts(
         storageId: convex.storageId,
         filename: convex.filename,
         mimeType: convex.mimeType,
+        ...(convex.origin ? { origin: convex.origin } : {}),
       });
     }
   }
@@ -256,6 +261,7 @@ export function createConvexAttachmentAdapter(
             storageId,
             filename: file.name,
             mimeType: file.type || "application/octet-stream",
+            ...(isPastedFile(file) ? { origin: "pasted" as const } : {}),
           },
         };
         return result;

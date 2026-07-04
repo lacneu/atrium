@@ -1262,6 +1262,11 @@ export default defineSchema({
       ),
     ),
     createdAt: v.number(),
+    // Provenance of the file. "pasted" = auto-generated from a large composer
+    // paste (the paste-as-file guard) — Settings › Fichiers hides those by
+    // default behind a toggle, so the listing shows REAL user/agent files.
+    // Absent = a real file. Additive; extensible (future: "dictated", ...).
+    origin: v.optional(v.literal("pasted")),
     // SOFT DELETE: owner hides a file from their Settings › Fichiers listing
     // (files.softDelete). The row is KEPT (so the table invariant "a files row
     // exists iff a file/media part exists" still holds — the part is untouched)
