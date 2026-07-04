@@ -1223,6 +1223,121 @@ describe("compaction abandon must not read as a user stop (live report 2026-07-0
     );
   });
 
+  it("a chat:error AFTER a streamed reply finalizes COMPLETE (post-reply compaction failure, live 2026-07-04)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // The reply streams fully...
+    normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "delta",
+          deltaText: "La réponse complète livrée au user.",
+        },
+      },
+      clock.tick(),
+    );
+    // ...the run ENDS (lifecycle end arms the follow-on grace)...
+    normalizer.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          sessionId: "sess-1",
+          stream: "lifecycle",
+          data: { phase: "end" },
+        },
+      },
+      clock.tick(),
+    );
+    // ...then the gateway's post-turn compaction fails on the SAME run.
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "Context overflow: prompt too large for the model.",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("complete");
+    expect(final?.text).toContain("La réponse complète livrée");
+    expect(final?.error ?? null).toBeNull();
+    // The error CLASS still reaches diagnostics — through the trace-only
+    // channel, never the message's errorCode.
+    expect(final?.diagnosticErrorKind).toBe("context_length");
+    expect(final?.errorKind ?? null).toBeNull();
+  });
+
+  it("a chat:error RIGHT AFTER a delta (mid-generation failure) keeps the honest error card", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "delta",
+          deltaText: "Un début de réponse tron",
+        },
+      },
+      clock.tick(),
+    );
+    // The failure lands while the run is STILL generating (no lifecycle end).
+    clock.tick(1);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "Context overflow: prompt too large for the model.",
+        },
+      },
+      clock.tick(),
+    );
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("error");
+  });
+
+  it("a chat:error with NO streamed content keeps the honest error card", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "Context overflow: prompt too large for the model.",
+        },
+      },
+      clock.tick(),
+    );
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("error");
+  });
+
   it("a chat:aborted terminalizes as aborted (Interrompu) regardless of stopReason", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();

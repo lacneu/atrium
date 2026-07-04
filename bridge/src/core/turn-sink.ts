@@ -89,6 +89,12 @@ export class TurnSink {
   // Stable gateway failure class (refusal|timeout|rate_limit|context_length)
   // from message.final — persisted as the message's errorCode at finalize.
   private pendingFinalErrorKind: string | null = null;
+  // Trace-only error class: set even when the turn finalizes COMPLETE (a
+  // post-reply gateway failure keeps the delivered answer but its class must
+  // still reach the gateway_pressure trace). Never sent to writer.finalize —
+  // an errorCode on a complete message would paint an error card on a
+  // successful reply.
+  private pendingDiagErrorKind: string | null = null;
   private hasPendingFinal = false;
   // Per-turn provenance budget: a misbehaving plugin (or several) must never
   // turn the sources affordance into a flood of parts.
@@ -177,6 +183,7 @@ export class TurnSink {
     this.pendingFinalText = "";
     this.pendingFinalError = null;
     this.pendingFinalErrorKind = null;
+    this.pendingDiagErrorKind = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
@@ -442,6 +449,11 @@ export class TurnSink {
             typeof event.errorKind === "string" && event.errorKind
               ? event.errorKind
               : null;
+          this.pendingDiagErrorKind =
+            typeof event.diagnosticErrorKind === "string" &&
+            event.diagnosticErrorKind
+              ? event.diagnosticErrorKind
+              : this.pendingFinalErrorKind;
           this.hasPendingFinal = true;
           break;
         }
@@ -517,7 +529,12 @@ export class TurnSink {
     if (
       this.pressure !== null ||
       this.compactionPhase !== null ||
-      this.pendingFinalErrorKind === "context_length"
+      // Either error-class channel triggers the trace: the message's own
+      // errorKind, OR the trace-only diagnostic kind (a post-reply failure
+      // finalizes COMPLETE with errorKind null — the diag channel is then the
+      // only copy of the class; codex P2).
+      this.pendingFinalErrorKind === "context_length" ||
+      this.pendingDiagErrorKind !== null
     ) {
       void this.writer
         .recordGatewayPressure(this.chatId, messageId, {
@@ -530,7 +547,7 @@ export class TurnSink {
           compaction: this.compactionPhase,
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.
-          errorKind: this.pendingFinalErrorKind,
+          errorKind: this.pendingDiagErrorKind,
         })
         .catch((e) =>
           console.error(

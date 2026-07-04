@@ -718,6 +718,40 @@ export class Normalizer {
       const reason = isString(payload.errorMessage)
         ? payload.errorMessage
         : textFromMessage(message);
+      // A chat:error arriving AFTER the run finished generating is a
+      // POST-reply failure (observed live 2026-07-04: 78 tool calls, full
+      // answer streamed, run ended, then the gateway's post-turn compaction
+      // timed out and emitted a context overflow on the same run). The Control
+      // UI shows the answer + a separate warning banner; painting the
+      // DELIVERED answer as a failed turn misled the user. Discriminator
+      // (codex P1, structural not temporal): real visible content AND the
+      // lifecycle-end grace is armed — the run's generation had ENDED and we
+      // were only waiting for a possible follow-on. A mid-generation or
+      // mid-tool failure (no lifecycle end yet) keeps the honest error card —
+      // a truncated reply is never silently marked complete. The error CLASS
+      // still reaches the diagnostic trace via diagnosticErrorKind (a
+      // trace-only channel — never the message's errorCode, which would paint
+      // an error card on a successful reply).
+      if (this.hasRealContent() && this.deadlines.has("lifecycle_end")) {
+        const diagKind =
+          isString(payload.errorKind) && CHAT_ERROR_KINDS.has(payload.errorKind)
+            ? payload.errorKind
+            : CONTEXT_OVERFLOW_TEXT_RE.test(reason ?? "")
+              ? "context_length"
+              : null;
+        console.log(
+          "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
+        );
+        const evs = this.finalize(now, "complete");
+        for (const e of evs) {
+          if (e.type === "message.final") {
+            (e as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
+              diagKind;
+          }
+        }
+        events.push(...evs);
+        return;
+      }
       // ALLOWLIST the wire value against the schema enum before persisting it
       // as a trusted stable code (never a raw network string as errorCode).
       const kind =

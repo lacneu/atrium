@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.28.1] — Corrective: a delivered answer is never repainted as a failed turn
+
+Corrective patch, bridge only. When the gateway finished streaming a full reply and THEN failed
+after it (observed live: the post-turn compaction timed out and emitted a context-overflow
+error on the same run), Atrium showed the complete answer buried under an error card — while
+the gateway's own Control UI showed the answer with a separate warning. A gateway error
+arriving after real streamed content AND after the run's own end-of-generation signal now
+finalizes the turn as complete: the answer stands, and the per-turn diagnostic trace keeps the
+error class through a trace-only channel (never the message's error code, which would paint an
+error card on a successful reply). A failure during generation or tool work, or before any
+content, keeps its honest error card — a truncated reply is never silently marked complete.
+
 ## [0.28.0] — Large pastes become attachments: the context stays light
 
 Robustness release focused on one high-impact behavior: what happens when a user pastes a huge
