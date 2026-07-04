@@ -139,7 +139,35 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
     );
     // The wire envelope the gateway stamps beyond AgentEventSchema (documented
     // in protocol-drift.ts; pinned on the live capture):
-    for (const f of ["sessionKey", "sessionId", "agentId"]) manifest.add(f);
+    for (const f of [
+      "sessionKey",
+      "sessionId",
+      "agentId",
+      // session/run metadata envelope (see protocol-drift.ts, live dev 2026-07-04)
+      "session",
+      "updatedAt",
+      "kind",
+      "channel",
+      "chatType",
+      "origin",
+      "deliveryContext",
+      "verboseLevel",
+      "systemSent",
+      "lastChannel",
+      "totalTokens",
+      "totalTokensFresh",
+      "goal",
+      "estimatedCostUsd",
+      "modelProvider",
+      "model",
+      "status",
+      "startedAt",
+      "abortedLastRun",
+      "inputTokens",
+      "outputTokens",
+      "contextTokens",
+    ])
+      manifest.add(f);
     expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());
   });
 });

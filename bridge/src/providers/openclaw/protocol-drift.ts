@@ -53,6 +53,34 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "sessionKey",
   "sessionId",
   "agentId",
+  // SESSION/RUN METADATA the gateway flattens onto agent events on live
+  // deployments (observed on dev 2026-07-04, x248 per field — names only, per
+  // the SOC2 contract). Same family as the envelope above: metadata about the
+  // session, not conversation content. The usage members (inputTokens/
+  // outputTokens/totalTokens/estimatedCostUsd) are CONSUMED defensively by the
+  // normalizer to enrich the per-turn pressure trace with real usage.
+  "session",
+  "updatedAt",
+  "kind",
+  "channel",
+  "chatType",
+  "origin",
+  "deliveryContext",
+  "verboseLevel",
+  "systemSent",
+  "lastChannel",
+  "totalTokens",
+  "totalTokensFresh",
+  "goal",
+  "estimatedCostUsd",
+  "modelProvider",
+  "model",
+  "status",
+  "startedAt",
+  "abortedLastRun",
+  "inputTokens",
+  "outputTokens",
+  "contextTokens",
 ]);
 
 /**
@@ -64,18 +92,11 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * the vendored TypeBox schemas.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 38,
-  ignored: 47,
-  gaps: 6,
+  handled: 41,
+  ignored: 50,
+  gaps: 0,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
-  gapList: [
-    "ChatDeltaEvent.usage",
-    "ChatFinalEvent.usage",
-    "ChatFinalEvent.stopReason",
-    "ChatAbortedEvent.stopReason",
-    "ChatErrorEvent.usage",
-    "ChatErrorEvent.stopReason",
-  ],
+  gapList: [] as string[],
 } as const;
 
 export interface DriftEntry {

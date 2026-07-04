@@ -1,9 +1,10 @@
 # Releasing Atrium
 
 Atrium is an **application** shipped as a cohesive whole — two Docker images
-(`atrium`, `atrium-bridge`), a thin npm package (`@lacneu/atrium`), and an MCP
-server — so every artifact carries the **same version, in lockstep**. This is not
-a library monorepo with independent per-package cadences.
+(`atrium`, `atrium-bridge`) and two npm packages (`@lacneu/atrium`, and the
+observability MCP server `@lacneu/atrium-mcp`) — so every artifact carries the
+**same version, in lockstep**. This is not a library monorepo with independent
+per-package cadences.
 
 ## The single source of truth is the git tag
 
@@ -28,6 +29,7 @@ On the tag push, CI does all of the following automatically:
 | Step | Workflow | Version source |
 |------|----------|----------------|
 | Run the test gate, then `npm publish @lacneu/atrium --provenance` | `release.yml` | the tag |
+| Publish the MCP server: `npm publish @lacneu/atrium-mcp --provenance` (from `mcp/`) | `release.yml` | the tag |
 | Build + push both Docker images (`{version}`, `{major}.{minor}`, `latest`) | `build-and-push.yml` | the tag |
 | Create the **GitHub Release**, notes from the `CHANGELOG.md` section | `release.yml` | the tag |
 | **Commit the version back to `main`** (real numbers in all 6 files) | `release.yml` | the tag |
@@ -75,6 +77,12 @@ when you see it.
 - npm refuses to republish an existing version, so each tag must be a new version.
   `@lacneu/atrium` **0.1.0 and 0.1.1 are already published**, so the first tag under
   this model must be **`v0.1.2` or higher** (the committed baseline is `0.1.2`).
+- `@lacneu/atrium-mcp` needs its **own npmjs.com Trusted Publisher** before the first
+  tag that includes it: repo `lacneu/atrium`, workflow `release.yml`, **Environment
+  left blank**. Without it, the OIDC token exchange 404s and `publish-npm-mcp` fails
+  (the exact failure mode `@lacneu/atrium` hit before its publisher was recreated).
+  Since it is a first-ever publish for this name, create it via npmjs.com ▸ org
+  `lacneu` ▸ Trusted Publishing (first publish happens FROM the workflow).
 - `main` must stay unprotected for the commit-back push to succeed (or grant the
   release token bypass). If you protect `main`, switch the commit-back job to open
   a PR instead.
@@ -86,7 +94,8 @@ secret. It works only when ALL of these hold:
 
 - the job has `permissions: id-token: write` (it does);
 - npmjs.com has a **Trusted Publisher** for `@lacneu/atrium` matching this repo +
-  `release.yml` + (empty environment);
+  `release.yml` + (empty environment) — and one for `@lacneu/atrium-mcp` (the
+  `publish-npm-mcp` job authenticates the same way);
 - the runner's **npm CLI is >= 11.5.1** (the workflow upgrades it with `npm install -g
   npm@latest`);
 - **`package.json` has a `repository.url` pointing at THIS repo** (`git+https://github.com/lacneu/atrium.git`,

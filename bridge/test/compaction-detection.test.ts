@@ -259,6 +259,11 @@ describe("TurnSink compaction part + pressure trace", () => {
       toolCalls: 0, // no tools in this fixture turn
       compaction: "preflight",
       errorKind: null, // no hard overflow this turn (compaction handled it)
+      stopReason: null,
+      postTotalTokens: null,
+      postInputTokens: null,
+      postOutputTokens: null,
+      postCostUsd: null,
     });
   });
 

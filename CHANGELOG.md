@@ -8,6 +8,28 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.30.0] — The protocol matrix closes its last gaps; the observability MCP goes to npm
+
+Observability release. The bridge's protocol contract now covers its whole vendored surface,
+per-turn diagnostics get real usage numbers, and the observability MCP server becomes an
+installable npm package. No breaking changes; Convex changes are additive.
+
+- **The protocol matrix reads 0 gaps, and the "unknown fields" alarm is silenced for good
+  reason.** The 22 unknown fields the drift detector flagged on live deployments are the
+  gateway's session/run metadata flattened onto agent events (model, tokens, cost, status…) —
+  now part of the documented wire envelope, so the detector stays armed for genuinely new
+  fields only. The six declared gaps are closed: the terminal `stopReason` is recorded into the
+  per-turn diagnostic trace (allowlisted values only — never a raw network string; diagnosis,
+  never classification), and real post-turn usage (input/output/total tokens, cost) is consumed
+  from the agent-event metadata when the gateway stamps it — per-turn cost read directly
+  instead of by delta between turns. Settings › Bridge now shows
+  41 handled · 50 deliberately ignored · 0 gaps.
+- **The observability MCP server is published to npm as `@lacneu/atrium-mcp`.** Same
+  tag-driven, lockstep release as the app images (npm Trusted Publishing / OIDC), so
+  `npx @lacneu/atrium-mcp@<version>` always matches the deployed `/api/v1` surface — the
+  building block for wiring the observability tools into an agent (the meta/critic agent
+  pattern) without cloning the repo.
+
 ## [0.29.0] — A report's reference becomes actionable for support
 
 Small observability release. The reference shown after submitting a report can now be used to

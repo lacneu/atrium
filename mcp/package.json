@@ -1,9 +1,14 @@
 {
-  "name": "atrium-mcp",
+  "name": "@lacneu/atrium-mcp",
   "version": "0.29.0",
-  "private": true,
   "type": "module",
   "description": "Thin MCP server + CLI that proxy the atrium /api/v1 observability surface using an oc_live_ Bearer key. Talks HTTP only — no Convex imports.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lacneu/atrium.git",
+    "directory": "mcp"
+  },
   "bin": {
     "atrium-mcp": "dist/server.js",
     "atrium": "dist/cli.js"

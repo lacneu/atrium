@@ -21,7 +21,35 @@ The `/api/v1` prefix is added internally; you point `API_BASE` at the bare
 `.site` origin. The key is only ever sent in the `Authorization` header — never
 in a URL/query string and never logged.
 
-## Build
+## Install (released artifact)
+
+Published on every tagged release as **`@lacneu/atrium-mcp`** (npm, OIDC +
+provenance), at the same lockstep version as the app images. Being HTTP-only and
+provider-neutral, the same package serves any MCP-capable gateway (OpenClaw,
+Hermes, Claude Code, …).
+
+```bash
+# ad hoc (any MCP client with stdio command support)
+npx -y @lacneu/atrium-mcp
+
+# pinned, baked into a gateway image
+npm install -g @lacneu/atrium-mcp@<version>   # provides `atrium-mcp` + `atrium` (CLI)
+```
+
+Example OpenClaw declaration (`mcp.servers`, stdio) — one server per deployment,
+credentials injected via a wrapper or the process environment, never in config:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "atrium-prod": { "command": "atrium-mcp-prod" }
+    }
+  }
+}
+```
+
+## Build (from source)
 
 ```bash
 cd mcp

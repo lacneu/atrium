@@ -1355,3 +1355,99 @@ describe("compaction abandon must not read as a user stop (live report 2026-07-0
   });
 
 });
+
+describe("protocol-matrix gaps closed: stopReason + agent usage reach the diagnostics", () => {
+  it("an UNKNOWN free-string stopReason buckets to 'other' (never raw into traces)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          stopReason: "patient Jean Dupont demande un rappel",
+          message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        },
+      },
+      clock.tick(),
+    );
+    // The final may be held by a short grace — expire it.
+    const flushed = normalizer.tick(clock.tick(30));
+    const final = [...events, ...flushed].find((e) => e.type === "message.final");
+    expect(final?.diagnosticStopReason).toBe("other");
+  });
+
+  it("terminal stopReason and flattened agent usage ride message.final as diagnostics", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // The gateway flattens session metadata onto an agent event (dev 2026-07-04).
+    normalizer.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "start" },
+          totalTokens: 120_000,
+          inputTokens: 100_000,
+          outputTokens: 20_000,
+          estimatedCostUsd: 1.23,
+        },
+      },
+      clock.tick(),
+    );
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          stopReason: "stop",
+          message: { role: "assistant", content: [{ type: "text", text: "réponse" }] },
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.diagnosticStopReason).toBe("stop");
+    // SOC2: a free-string stopReason never reaches traces raw — it buckets.
+    // (pinned in the dedicated test below via the "other" bucket)
+    expect(final?.diagnosticUsage).toEqual({
+      totalTokens: 120_000,
+      inputTokens: 100_000,
+      outputTokens: 20_000,
+      estimatedCostUsd: 1.23,
+    });
+
+    // NEXT turn without those frames: diagnostics must NOT leak (codex P2).
+    normalizer.beginTurn(clock.tick());
+    normalizer.noteRunStarted("run-suivant", clock.now);
+    const events2 = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "run-suivant",
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        },
+      },
+      clock.tick(),
+    );
+    const final2 = events2.find((e) => e.type === "message.final");
+    expect(final2?.diagnosticStopReason ?? null).toBeNull();
+    expect(final2?.diagnosticUsage ?? null).toBeNull();
+  });
+});

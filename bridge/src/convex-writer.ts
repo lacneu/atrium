@@ -192,6 +192,14 @@ export interface ConvexWriter {
       /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
       errorKind?: string | null;
+      /** Terminal frame's optional stopReason — diagnosis only (matrix gap closed). */
+      stopReason?: string | null;
+      /** REAL post-turn usage when the gateway stamps session metadata on
+       *  agent events (vs the PRE-turn describe counters). Null when absent. */
+      postTotalTokens?: number | null;
+      postInputTokens?: number | null;
+      postOutputTokens?: number | null;
+      postCostUsd?: number | null;
     },
   ): Promise<void>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
@@ -378,6 +386,11 @@ type IngestOp =
       compaction: string | null;
       // Hard-overflow marker (errorKind "context_length" on a FAILED turn).
       errorKind?: string | null;
+      stopReason?: string | null;
+      postTotalTokens?: number | null;
+      postInputTokens?: number | null;
+      postOutputTokens?: number | null;
+      postCostUsd?: number | null;
     }
   // Outbound media is a 3-step, base64-free flow (Convex upload URL pattern):
   //   1. getUploadUrl -> Convex `ctx.storage.generateUploadUrl()` (no size limit)

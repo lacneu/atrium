@@ -107,6 +107,24 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 const CONTEXT_OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded/i;
 
+// Terminal stopReason values we persist into the (metadata-only) pressure
+// trace. The schema types stopReason as a FREE string — anything outside this
+// allowlist buckets to "other" so a raw network string never reaches traces
+// (SOC2; codex P2). Values: live captures ("stop" = natural end, "rpc" = the
+// user Stop via chat.abort) + the schema-adjacent classic finish reasons.
+const KNOWN_STOP_REASONS = new Set([
+  "stop",
+  "rpc",
+  "length",
+  "tool_use",
+  "aborted",
+  "error",
+  "timeout",
+  "content_filter",
+]);
+const bucketStopReason = (v: string): string =>
+  KNOWN_STOP_REASONS.has(v) ? v : "other";
+
 const CHAT_ERROR_KINDS = new Set([
   "refusal",
   "timeout",
@@ -362,6 +380,16 @@ export class Normalizer {
   private suppressNextRotation = false;
   private compactionSignaled = false;
   private recoveryAttempted = false;
+  // Diagnostic captures for the per-turn pressure trace (never classification):
+  // the terminal frame's optional stopReason, and the REAL post-turn usage the
+  // gateway flattens onto agent events on live deployments (dev 2026-07-04).
+  private diagStopReason: string | null = null;
+  private diagUsage: {
+    totalTokens: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    estimatedCostUsd: number | null;
+  } | null = null;
   // Buffered tool args by toolCallId: a real tool's start(args) + result(result)
   // coalesce into ONE `completed` tool.status carrying input+output, so the UI
   // shows a single clean card per tool instead of a start card + a result card.
@@ -393,6 +421,11 @@ export class Normalizer {
 
   /** Reset per-turn state when the user sends a message (before chat.send). */
   beginTurn(now: number): void {
+    // Per-turn diagnostics reset (codex P2: without this, a turn without
+    // stopReason/usage frames would inherit the PREVIOUS turn's values in its
+    // pressure trace).
+    this.diagStopReason = null;
+    this.diagUsage = null;
     this.turnActive = true;
     this.finalized = false;
     this.compactionPending = false;
@@ -699,10 +732,17 @@ export class Normalizer {
         // An abort while a COMPACTION is pending is the gateway abandoning the
         // run to compact (it resumes after the replay) — terminalizing it here
         // froze real turns as "Interrompu" (live report 2026-07-04). Let the
-        // widened compaction grace keep the turn open instead.
+        // widened compaction grace keep the turn open instead. Its stopReason
+        // belongs to the ABANDONED attempt — never captured (codex P2: it
+        // would pollute the successful replay's trace).
         if (this.compactionPending) {
           return;
         }
+      }
+      if (isString(payload.stopReason)) {
+        this.diagStopReason = bucketStopReason(payload.stopReason);
+      }
+      if (state === "aborted") {
         // A chat:aborted terminalizes as aborted ("Interrompu"). We do NOT try to
         // reclassify it by stopReason: the field is optional in the protocol
         // schema, and the user Stop (chat.abort RPC) is a chat:aborted on the
@@ -770,6 +810,9 @@ export class Normalizer {
       return;
     }
 
+    if (isFinal && isString(payload.stopReason)) {
+      this.diagStopReason = bucketStopReason(payload.stopReason);
+    }
     const snapshotText = textFromMessage(message);
     if (snapshotText) {
       this.applyVisible(snapshotText, true, isFinal, now, events);
@@ -803,6 +846,23 @@ export class Normalizer {
   // -- agent (5.7 legacy + tool/lifecycle streams) --------------------------
 
   private handleAgent(payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
+    // Defensive usage sniff: live gateways flatten session metadata onto agent
+    // events (dev 2026-07-04: inputTokens/outputTokens/totalTokens/
+    // estimatedCostUsd x248). Latest-wins per turn; absent fields stay null —
+    // a gateway that never stamps them (local bench) costs nothing here.
+    const num = (v: unknown): number | null =>
+      typeof v === "number" && Number.isFinite(v) ? v : null;
+    if (
+      num(payload.totalTokens) !== null ||
+      num(payload.estimatedCostUsd) !== null
+    ) {
+      this.diagUsage = {
+        totalTokens: num(payload.totalTokens),
+        inputTokens: num(payload.inputTokens),
+        outputTokens: num(payload.outputTokens),
+        estimatedCostUsd: num(payload.estimatedCostUsd),
+      };
+    }
     const stream = payload.stream;
     // Codex NATIVE media generation (e.g. an `imageGeneration` item, stream
     // "codex_app_server.item") is a lifecycle marker with NO path/url/bytes — there
@@ -1188,7 +1248,9 @@ export class Normalizer {
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,
       text: this.safeSanitizeText(text),
-    };
+      diagnosticStopReason: this.diagStopReason,
+      diagnosticUsage: this.diagUsage,
+};
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,
       status: error ? "error" : status,
@@ -1224,6 +1286,10 @@ export class Normalizer {
   }
 
   private resetForCompaction(now: number): void {
+    // The abandoned run's terminal diagnostics must not leak onto the replay
+    // (codex P2): its stopReason/usage belong to the aborted attempt.
+    this.diagStopReason = null;
+    this.diagUsage = null;
     // Everything the abandoned run produced is invalidated by the replay.
     this.compactionPending = true;
     this.text = "";

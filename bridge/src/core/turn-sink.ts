@@ -95,6 +95,15 @@ export class TurnSink {
   // an errorCode on a complete message would paint an error card on a
   // successful reply.
   private pendingDiagErrorKind: string | null = null;
+  // Terminal stopReason + real post-turn usage (agent-event session metadata),
+  // trace-only diagnostics (the protocol matrix's former gaps, closed here).
+  private pendingDiagStopReason: string | null = null;
+  private pendingDiagUsage: {
+    totalTokens: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    estimatedCostUsd: number | null;
+  } | null = null;
   private hasPendingFinal = false;
   // Per-turn provenance budget: a misbehaving plugin (or several) must never
   // turn the sources affordance into a flood of parts.
@@ -184,6 +193,8 @@ export class TurnSink {
     this.pendingFinalError = null;
     this.pendingFinalErrorKind = null;
     this.pendingDiagErrorKind = null;
+    this.pendingDiagStopReason = null;
+    this.pendingDiagUsage = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
@@ -454,6 +465,21 @@ export class TurnSink {
             event.diagnosticErrorKind
               ? event.diagnosticErrorKind
               : this.pendingFinalErrorKind;
+          this.pendingDiagStopReason =
+            typeof event.diagnosticStopReason === "string" &&
+            event.diagnosticStopReason
+              ? event.diagnosticStopReason
+              : null;
+          this.pendingDiagUsage =
+            typeof event.diagnosticUsage === "object" &&
+            event.diagnosticUsage !== null
+              ? (event.diagnosticUsage as {
+                  totalTokens: number | null;
+                  inputTokens: number | null;
+                  outputTokens: number | null;
+                  estimatedCostUsd: number | null;
+                })
+              : null;
           this.hasPendingFinal = true;
           break;
         }
@@ -534,7 +560,12 @@ export class TurnSink {
       // finalizes COMPLETE with errorKind null — the diag channel is then the
       // only copy of the class; codex P2).
       this.pendingFinalErrorKind === "context_length" ||
-      this.pendingDiagErrorKind !== null
+      this.pendingDiagErrorKind !== null ||
+      // The new diagnostics (terminal stopReason / post-turn usage) must also
+      // trigger the trace: a spontaneous turn has no pre-turn describe, and
+      // its telemetry would otherwise be silently dropped (codex P2).
+      this.pendingDiagStopReason !== null ||
+      this.pendingDiagUsage !== null
     ) {
       void this.writer
         .recordGatewayPressure(this.chatId, messageId, {
@@ -548,6 +579,13 @@ export class TurnSink {
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.
           errorKind: this.pendingDiagErrorKind,
+          stopReason: this.pendingDiagStopReason,
+          // REAL post-turn usage when the gateway stamps it on agent events
+          // (vs the pre-turn describe counters above) — the delta per turn.
+          postTotalTokens: this.pendingDiagUsage?.totalTokens ?? null,
+          postInputTokens: this.pendingDiagUsage?.inputTokens ?? null,
+          postOutputTokens: this.pendingDiagUsage?.outputTokens ?? null,
+          postCostUsd: this.pendingDiagUsage?.estimatedCostUsd ?? null,
         })
         .catch((e) =>
           console.error(

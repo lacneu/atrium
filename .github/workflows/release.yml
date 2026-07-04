@@ -1,6 +1,7 @@
 name: Release
 
-# Tag-driven npm release of @lacneu/atrium (versioned community artifact).
+# Tag-driven npm release of @lacneu/atrium and @lacneu/atrium-mcp (versioned
+# community artifacts, same lockstep version).
 # The Docker image is built separately by build-and-push.yml (also runs on tags,
 # plus main + manual "Run workflow") — so the image is decoupled from npm and can
 # be regenerated on demand.
@@ -59,6 +60,40 @@ jobs:
       - name: Publish to npm (OIDC + provenance)
         run: npm publish --access public --provenance
 
+  # ---- npm: the observability MCP server (same OIDC pattern as above) ----------
+  # Published in lockstep so `npx @lacneu/atrium-mcp@<version>` (or a pinned global
+  # install in a gateway image) always matches the deployed /api/v1 surface. Its
+  # own npmjs.com Trusted Publisher must exist BEFORE the first tagged publish
+  # (same release.yml, Environment left blank) — see RELEASE.md pre-flight.
+  publish-npm-mcp:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm Trusted Publishing (OIDC)
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm CLI to >=11.5.1 (required for Trusted Publishing)
+        run: npm install -g npm@latest
+      - name: Stamp version from tag
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+      - run: npm ci || npm install
+      - run: npm run typecheck
+      - name: Build dist (the published artifact)
+        run: npm run build
+      - run: npm test
+      - name: Publish to npm (OIDC + provenance)
+        run: npm publish --access public --provenance
+
   # ---- GitHub Release (additive; never blocks publish) -------------------------
   # Runs only AFTER npm publish succeeds. Notes come from the CHANGELOG.md section
   # for this version (CURATED, rich — like 0.1.0/0.1.1). GitHub's auto-generated
@@ -66,7 +101,7 @@ jobs:
   # commits straight to main (no PRs), so auto-notes are near-empty. Pattern mirrors
   # the sibling repo openclaw-knowledge-plugin.
   github-release:
-    needs: publish-npm
+    needs: [publish-npm, publish-npm-mcp]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the Release for the pushed tag

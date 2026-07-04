@@ -189,6 +189,11 @@ type IngestOp =
       toolCalls?: number;
       compaction: string | null;
       errorKind?: string | null;
+      stopReason?: string | null;
+      postTotalTokens?: number | null;
+      postInputTokens?: number | null;
+      postOutputTokens?: number | null;
+      postCostUsd?: number | null;
     }
   | {
       op: "finalize";
@@ -562,6 +567,25 @@ export const ingest = httpAction(async (ctx, request) => {
           // the counterpart of `compaction` (= handled silently). Distinguishes
           // "the gateway coped" from "the turn FAILED on context".
           ...(body.errorKind ? { errorKind: body.errorKind } : {}),
+          // Terminal stopReason (diagnosis only — protocol-matrix gap closed).
+          ...(typeof body.stopReason === "string" && body.stopReason
+            ? { stopReason: body.stopReason }
+            : {}),
+          // REAL post-turn usage when the gateway stamps session metadata on
+          // agent events (vs the PRE-turn counters above): per-turn tokens/cost
+          // read directly instead of by delta.
+          ...(typeof body.postTotalTokens === "number"
+            ? { postTotalTokens: body.postTotalTokens }
+            : {}),
+          ...(typeof body.postInputTokens === "number"
+            ? { postInputTokens: body.postInputTokens }
+            : {}),
+          ...(typeof body.postOutputTokens === "number"
+            ? { postOutputTokens: body.postOutputTokens }
+            : {}),
+          ...(typeof body.postCostUsd === "number"
+            ? { postCostUsd: body.postCostUsd }
+            : {}),
         },
       });
       return json({ ok: true });

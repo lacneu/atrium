@@ -41,8 +41,8 @@
           "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
         },
         "usage": {
-          "status": "gap",
-          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
+          "status": "ignored",
+          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
         }
       }
     },
@@ -77,12 +77,13 @@
           "by": "handleChat textFromMessage -> finalize"
         },
         "usage": {
-          "status": "gap",
-          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
+          "status": "ignored",
+          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
         },
         "stopReason": {
-          "status": "gap",
-          "note": "informational; not surfaced (low impact)"
+          "status": "handled",
+          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
         }
       }
     },
@@ -117,8 +118,9 @@
           "why": "an aborted turn carries no reply to persist"
         },
         "stopReason": {
-          "status": "gap",
-          "note": "informational; not surfaced (low impact)"
+          "status": "handled",
+          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
         }
       }
     },
@@ -161,12 +163,13 @@
           "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow)"
         },
         "usage": {
-          "status": "gap",
-          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
+          "status": "ignored",
+          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
         },
         "stopReason": {
-          "status": "gap",
-          "note": "informational; not surfaced (low impact)"
+          "status": "handled",
+          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
         }
       }
     },
