@@ -57,7 +57,20 @@ jobs:
       # `--provenance` is REQUIRED the first time a package is published via OIDC
       # when its earlier versions were published WITHOUT provenance (here 0.1.0/0.1.1
       # were manual); it can stay on afterwards (harmless). See RELEASE.md.
+      # Idempotent re-runs: npm is write-once, so a "Re-run all jobs" after a partial
+      # failure used to die on "cannot publish over previously published versions"
+      # (lived on v0.30.0). If the version is already up, succeed as a no-op so the
+      # downstream jobs (github-release) can still run.
+      - name: Skip if this version is already on npm (idempotent re-runs)
+        id: already
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if npm view "@lacneu/atrium@${VERSION}" version >/dev/null 2>&1; then
+            echo "@lacneu/atrium@${VERSION} already published — skipping."
+            echo "PUBLISHED=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish to npm (OIDC + provenance)
+        if: steps.already.outputs.PUBLISHED != 'true'
         run: npm publish --access public --provenance
 
   # ---- npm: the observability MCP server (same OIDC pattern as above) ----------
@@ -91,7 +104,17 @@ jobs:
       - name: Build dist (the published artifact)
         run: npm run build
       - run: npm test
+      # Same idempotence guard as publish-npm (see comment there).
+      - name: Skip if this version is already on npm (idempotent re-runs)
+        id: already
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if npm view "@lacneu/atrium-mcp@${VERSION}" version >/dev/null 2>&1; then
+            echo "@lacneu/atrium-mcp@${VERSION} already published — skipping."
+            echo "PUBLISHED=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish to npm (OIDC + provenance)
+        if: steps.already.outputs.PUBLISHED != 'true'
         run: npm publish --access public --provenance
 
   # ---- GitHub Release (additive; never blocks publish) -------------------------

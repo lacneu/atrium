@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.30.1] — Corrective: a release re-run can no longer be blocked by npm's write-once wall
+
+Corrective patch, release pipeline only — no runtime artifact changes. Lived on 0.30.0: the
+MCP package's Trusted Publisher was misconfigured on the first pass, and the subsequent
+"Re-run all jobs" re-ran the root npm publish too, which died on npm's write-once registry
+("You cannot publish over the previously published versions") — leaving the GitHub Release
+step permanently skipped for that tag. Both npm publish jobs now carry an idempotence guard:
+if the tag's version is already on the registry, the job succeeds as a no-op instead of
+failing, so any re-run converges to a green pipeline and the GitHub Release is always
+created. The 0.30.0 release notes remain in the section below; that tag has no GitHub
+Release page.
+
 ## [0.30.0] — The protocol matrix closes its last gaps; the observability MCP goes to npm
 
 Observability release. The bridge's protocol contract now covers its whole vendored surface,
