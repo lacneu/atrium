@@ -23,6 +23,20 @@ import { m } from "@/paraglide/messages.js";
 // Flow (Convex file upload pattern):
 //   1) mutation api.chats.generateUploadUrl   -> uploadUrl
 //   2) POST the raw bytes to uploadUrl         -> { storageId }
+
+/** Text-like uploads carry an explicit charset so the blob, re-served verbatim
+ *  by Convex storage, renders as UTF-8 when opened in a tab (not Latin-1). */
+function uploadContentType(mimeType: string): string {
+  const base = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  const textLike =
+    base.startsWith("text/") ||
+    base === "application/json" ||
+    base === "application/xml" ||
+    base === "image/svg+xml";
+  if (!textLike || mimeType.toLowerCase().includes("charset")) return mimeType;
+  return `${mimeType}; charset=utf-8`;
+}
+
 //   3) mutation api.uploads.registerUpload     -> record ownership (IDOR gate)
 //   4) keep {storageId, filename, mimeType}    -> read by onNew/sendMessage
 //
@@ -191,9 +205,12 @@ export function createConvexAttachmentAdapter(
         const storageId = await new Promise<string>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", uploadUrl);
+          // Text-like types get an explicit charset: Convex storage re-serves
+          // the stored Content-Type verbatim, and without a charset a text file
+          // opened in a tab renders as Latin-1 (mojibake on accents).
           xhr.setRequestHeader(
             "Content-Type",
-            file.type || "application/octet-stream",
+            uploadContentType(file.type || "application/octet-stream"),
           );
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {

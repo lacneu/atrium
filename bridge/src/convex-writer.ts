@@ -515,6 +515,25 @@ export function bytesBucket(size: number | null | undefined): string {
   return ">10MB";
 }
 
+/**
+ * Content-Type for a storage UPLOAD: text-like types get an explicit
+ * `charset=utf-8`. Convex storage re-serves blobs with the stored
+ * Content-Type verbatim; without a charset the browser renders text/* opened
+ * in a tab as Latin-1 -> mojibake on every accent (live report 2026-07-04:
+ * an agent-generated .md displayed "lâ€™historique"). Agent-produced files
+ * are UTF-8 by construction (the gateway container writes UTF-8).
+ */
+export function uploadContentType(mimeType: string): string {
+  const base = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  const textLike =
+    base.startsWith("text/") ||
+    base === "application/json" ||
+    base === "application/xml" ||
+    base === "image/svg+xml";
+  if (!textLike || mimeType.toLowerCase().includes("charset")) return mimeType;
+  return `${mimeType}; charset=utf-8`;
+}
+
 /** Base type of a mime (e.g. "image" from "image/png") — the SOC2 mimeType base. */
 export function mimeBaseOf(mimeType: string): string {
   const slash = mimeType.indexOf("/");
@@ -1191,7 +1210,7 @@ export class HttpConvexWriter implements ConvexWriter {
   ): Promise<string> {
     const response = await this.fetchImpl(uploadUrl, {
       method: "POST",
-      headers: { "Content-Type": mimeType },
+      headers: { "Content-Type": uploadContentType(mimeType) },
       body: Readable.toWeb(stream) as ReadableStream,
       // `duplex` is not in the DOM RequestInit type but is required by undici
       // for a streaming body; cast keeps the rest of the init type-checked.

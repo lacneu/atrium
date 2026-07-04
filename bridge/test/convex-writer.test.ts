@@ -10,7 +10,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import { Readable } from "node:stream";
-import { HttpConvexWriter, bytesBucket } from "../src/convex-writer";
+import { HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
 import {
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
@@ -933,5 +933,28 @@ describe("delivery recorder tagging (Phase 2)", () => {
     expect(w.hasMessageState("m1")).toBe(true);
     await w.finalize("m1", "complete", "done", null);
     expect(w.hasMessageState("m1")).toBe(false);
+  });
+});
+
+describe("uploadContentType (text blobs must serve as UTF-8, live mojibake report)", () => {
+  test("adds charset=utf-8 to text-like types", () => {
+    expect(uploadContentType("text/markdown")).toBe("text/markdown; charset=utf-8");
+    expect(uploadContentType("text/plain")).toBe("text/plain; charset=utf-8");
+    expect(uploadContentType("application/json")).toBe(
+      "application/json; charset=utf-8",
+    );
+    expect(uploadContentType("image/svg+xml")).toBe(
+      "image/svg+xml; charset=utf-8",
+    );
+  });
+  test("leaves binary types and existing charsets untouched", () => {
+    expect(uploadContentType("application/pdf")).toBe("application/pdf");
+    expect(uploadContentType("image/png")).toBe("image/png");
+    expect(uploadContentType("application/octet-stream")).toBe(
+      "application/octet-stream",
+    );
+    expect(uploadContentType("text/plain; charset=iso-8859-1")).toBe(
+      "text/plain; charset=iso-8859-1",
+    );
   });
 });

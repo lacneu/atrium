@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.26.1] — Corrective: accents render correctly in generated text files
+
+Corrective patch. A text file produced by an agent (or uploaded by a user) and opened in a
+browser tab displayed mangled characters on every accent ("lâ€™historique" instead of
+"l'historique"): the stored blob was UTF-8 but served without a charset, so browsers fell back
+to Latin-1. Text-like uploads (markdown, plain text, CSV, JSON, XML, SVG) now carry an explicit
+`charset=utf-8`, on both upload paths (agent-generated files through the bridge, user
+attachments through the composer). Verified live end-to-end: an agent-generated French file now
+serves as `text/markdown; charset=utf-8` and renders every accent correctly. Files stored
+before this release keep their old header — re-generate them to fix their display. No other
+changes.
+
 ## [0.26.0] — Launch hardening: dropped connections read honestly, richer diagnostics
 
 Reliability pass ahead of opening Atrium to users, grounded in live testing on the dev

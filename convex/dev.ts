@@ -228,6 +228,15 @@ export const seedChat = mutation({
 // Dev-only: seed a CLASSIFIED failed turn (gateway errorKind) into a chat so
 // the error-card presentation (localized actionable headline + demoted raw
 // detail) can be reviewed in the browser without provoking a real overflow.
+// Dev-only: resolve a storage file's served URL (charset/content-type checks).
+export const storageUrlDev = query({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, { storageId }) => {
+    assertDev();
+    return await ctx.storage.getUrl(storageId);
+  },
+});
+
 export const seedErrorDemo = mutation({
   args: {
     chatId: v.id("chats"),
