@@ -355,15 +355,287 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
   });
 });
 
-describe("close mid-turn = connection lost, NOT a user interruption", () => {
-  it("a connection close while a turn streams finalizes as error(connection_lost), never aborted", async () => {
+describe("close mid-turn = transcript recovery, then connection lost (never a user interruption)", () => {
+  // The registry injects a transcript fetcher (its polls run on the mocked
+  // OpenClawConnection.connect), so a close mid-turn STARTS recovery instead
+  // of finalizing immediately — the gateway restart-recovery case (live CSV
+  // 2026-07-04: a resumed run delivered its answer 7 min after the SIGTERM).
+
+  it("recovers the RESUMED run's reply from the transcript and finalizes COMPLETE", async () => {
     vi.useFakeTimers();
     let now = 1000;
-    // A conn that yields nothing then closes (socket drop mid-turn).
     const conn = fakeConn();
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
-      async () => conn as never,
-    );
+    // First connect = the session socket; later connects = the recovery polls.
+    // The transcript starts WITHOUT a reply (gateway rebooting), then the
+    // resumed run finishes and the assistant entry appears.
+    let transcriptReady = false;
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request(method: string) {
+        expect(method).toBe("sessions.get");
+        return {
+          payload: {
+            messages: [
+              { role: "user", content: "analyse ça s'il te plaît" },
+              ...(transcriptReady
+                ? [{ role: "assistant", content: [{ text: "réponse reprise après redémarrage" }] }]
+                : []),
+            ],
+          },
+        };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.noteTurnUserAnchor("analyse ça s'il te plaît");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    // The gateway is SIGTERMed mid-turn.
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finalized.length).toBe(0); // NOT settled — recovery is polling
+    // Two polls come back empty (run still resuming)...
+    now += 40_000;
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(finalized.length).toBe(0);
+    // ...then the resumed run finishes.
+    transcriptReady = true;
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("complete"); // the REAL answer, not an error
+    expect(String(last?.[2] ?? "")).toContain("réponse reprise après redémarrage");
+    reg.closeAll();
+  });
+
+  it("prefers a message-tool DELIVERY over the private ack when the resumed run used it", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = fakeConn();
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        return {
+          payload: {
+            messages: [
+              { role: "user", content: "question suffisamment longue" },
+              {
+                role: "toolResult",
+                toolName: "message",
+                content: [
+                  {
+                    text: JSON.stringify({
+                      deliveryStatus: "sent",
+                      channel: "webchat",
+                      target: "current-run",
+                      sourceReply: { text: "la VRAIE réponse livrée par le message-tool" },
+                    }),
+                  },
+                ],
+              },
+              { role: "assistant", content: "Envoyé dans le webchat." },
+            ],
+          },
+        };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.noteTurnUserAnchor("question suffisamment longue");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("complete");
+    expect(String(last?.[2] ?? "")).toContain("la VRAIE réponse livrée par le message-tool");
+    expect(String(last?.[2] ?? "")).not.toContain("Envoyé dans le webchat");
+    reg.closeAll();
+  });
+
+  it("rejects a STALE transcript (previous turn's reply) until the current turn appears", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = fakeConn();
+    let staleServed = 0;
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        staleServed++;
+        if (staleServed < 2) {
+          // Mid-reboot: the transcript still predates the current turn.
+          return {
+            payload: {
+              messages: [
+                { role: "user", content: "ANCIENNE question" },
+                { role: "assistant", content: "ANCIENNE réponse à ne jamais livrer" },
+              ],
+            },
+          };
+        }
+        return {
+          payload: {
+            messages: [
+              { role: "user", content: "question du tour COURANT" },
+              { role: "assistant", content: "réponse reprise correcte" },
+            ],
+          },
+        };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.noteTurnUserAnchor("question du tour COURANT");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    // First poll serves the STALE transcript — must be rejected, nothing finalized.
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBe(0);
+    // Second poll serves the current-turn transcript — recovered.
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("complete");
+    expect(String(last?.[2] ?? "")).toContain("réponse reprise correcte");
+    expect(String(last?.[2] ?? "")).not.toContain("ANCIENNE");
+    reg.closeAll();
+  });
+
+  it("an ANCHOR-LESS turn (attachment-only) accepts only a transcript that GREW", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = fakeConn();
+    let served = 0;
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        served++;
+        const base = [
+          { role: "user", content: "" }, // attachment-only send
+          { role: "assistant", content: "réponse du tour précédent" },
+        ];
+        // Polls 1-2: stale, constant transcript. Poll 3+: the resumed run grew it.
+        return {
+          payload: {
+            messages:
+              served < 3
+                ? base
+                : [...base, { role: "user", content: "" }, { role: "assistant", content: "réponse du run repris (pièce jointe)" }],
+          },
+        };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    // NO anchor (attachment-only) — the structural baseline is the only guard.
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    // Polls 1-2 (baseline + constant): nothing finalized — the stale reply is NEVER delivered.
+    now += 40_000;
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(finalized.length).toBe(0);
+    // Poll 3: the transcript grew — the resumed reply is accepted.
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("complete");
+    expect(String(last?.[2] ?? "")).toContain("réponse du run repris");
+    reg.closeAll();
+  });
+
+  it("settles as error(connection_lost) when no resumed reply ever appears (deadline)", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = fakeConn();
+    const emptyPollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        return { payload: { messages: [{ role: "user", content: "question" }] } };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return emptyPollConn as never;
+    });
     const { writer, finalized } = fakeWriter();
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
@@ -371,12 +643,15 @@ describe("close mid-turn = connection lost, NOT a user interruption", () => {
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
     await vi.advanceTimersByTimeAsync(0);
-    // The gateway drops the socket mid-turn.
     conn.close();
     await vi.advanceTimersByTimeAsync(0);
+    // Poll to the deadline (9 min) with no reply.
+    for (let i = 0; i < 30; i++) {
+      now += 20_000;
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
     expect(finalized.length).toBeGreaterThan(0);
     const last = finalized[finalized.length - 1] as unknown[];
-    // finalize(messageId, status, text, error) — status is arg[1], error arg[3].
     expect(last?.[1]).toBe("error"); // NOT "aborted"
     expect(String(last?.[3] ?? "")).toContain("connection_lost");
     reg.closeAll();

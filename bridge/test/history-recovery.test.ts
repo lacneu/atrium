@@ -2,7 +2,8 @@
 // Pure-extractor tests + normalizer wiring (flag → wantsHistoryRecovery →
 // recoverVisibleText), pinned against the bench-captured 2026.6.5 shapes.
 import { describe, expect, it } from "vitest";
-import { extractMessageToolReplies } from "../src/providers/openclaw/history-recovery.js";
+import {
+  extractLatestAssistantReply, extractMessageToolReplies } from "../src/providers/openclaw/history-recovery.js";
 import { Normalizer } from "../src/providers/openclaw/normalizer.js";
 
 const deliveryResult = (text: string, extra: Record<string, unknown> = {}) =>
@@ -176,5 +177,55 @@ describe("normalizer history-recovery wiring", () => {
     n.tick(100); // grace expired → finalized with ack
     expect(n.finalized).toBe(true);
     expect(n.recoverVisibleText("late text", 101)).toEqual([]);
+  });
+});
+
+describe("extractLatestAssistantReply (restart-recovery transcript scan)", () => {
+  it("returns the assistant reply AFTER the last user entry", () => {
+    const payload = {
+      messages: [
+        { role: "user", content: "vieille question" },
+        { role: "assistant", content: "vieille réponse" },
+        { role: "user", content: "question du tour" },
+        { role: "toolResult", toolName: "exec", content: "sortie outil" },
+        { role: "assistant", content: [{ text: "réponse du run repris" }] },
+      ],
+    };
+    expect(extractLatestAssistantReply(payload)).toBe("réponse du run repris");
+  });
+
+  it("returns empty while the resumed run has not answered yet (no assistant after user)", () => {
+    const payload = {
+      messages: [
+        { role: "assistant", content: "réponse du tour PRÉCÉDENT" },
+        { role: "user", content: "question du tour" },
+        { role: "toolResult", toolName: "exec", content: "en cours" },
+      ],
+    };
+    expect(extractLatestAssistantReply(payload)).toBe("");
+  });
+
+  it("never leaks a PREVIOUS turn's reply (user boundary respected)", () => {
+    const payload = {
+      messages: [
+        { role: "assistant", content: "ancienne réponse" },
+        { role: "user", content: "nouvelle question" },
+      ],
+    };
+    expect(extractLatestAssistantReply(payload)).toBe("");
+  });
+
+  it("joins multiple assistant entries chronologically; tolerates malformed payloads", () => {
+    expect(
+      extractLatestAssistantReply({
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "partie 1" },
+          { role: "assistant", content: "partie 2" },
+        ],
+      }),
+    ).toBe("partie 1\n\npartie 2");
+    expect(extractLatestAssistantReply(null)).toBe("");
+    expect(extractLatestAssistantReply({ messages: "garbage" })).toBe("");
   });
 });

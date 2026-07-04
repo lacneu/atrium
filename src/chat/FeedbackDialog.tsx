@@ -2,7 +2,7 @@ import * as React from "react";
 import { useState } from "react";
 import { useMessage } from "@assistant-ui/react";
 import { useMutation, useQuery } from "convex/react";
-import { Flag } from "lucide-react";
+import { Check, Copy, Flag } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import {
@@ -139,12 +139,18 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [verdict, setVerdict] = useState<boolean | null | undefined>(null);
+  // The submitted report's reference — shown + copyable so the user can hand
+  // it to support/another user on any channel (live request 2026-07-04).
+  const [reference, setReference] = useState<string | null>(null);
+  const [refCopied, setRefCopied] = useState(false);
 
   const open: FeedbackApi = React.useCallback((t) => {
     setCategory("");
     setComment("");
     setSubmitting(false);
     setVerdict(null);
+    setReference(null);
+    setRefCopied(false);
     setTarget(t);
   }, []);
 
@@ -174,6 +180,7 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
         },
       });
       setVerdict(res.displayedMatchesStored);
+      setReference(String(res.feedbackId));
     } catch {
       setSubmitting(false);
     }
@@ -222,6 +229,30 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
                     {m.feedbackdlg_fidelity_closed()}
                   </p>
                 )}
+                {reference ? (
+                  <div className="oc-feedback__ref">
+                    <span className="oc-feedback__ref-label">
+                      {m.feedbackdlg_ref_label()}
+                    </span>
+                    <code className="oc-feedback__ref-id" title={reference}>
+                      {reference}
+                    </code>
+                    <button
+                      type="button"
+                      className="oc-iconbtn"
+                      title={m.feedbackdlg_ref_copy()}
+                      aria-label={m.feedbackdlg_ref_copy()}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(reference).then(() => {
+                          setRefCopied(true);
+                          window.setTimeout(() => setRefCopied(false), 1500);
+                        });
+                      }}
+                    >
+                      {refCopied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="oc-feedback__form">

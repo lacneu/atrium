@@ -1029,7 +1029,7 @@
   "runstatus_generating": "Génération…",
   "runstatus_error": "Erreur",
   "runstatus_error_orphaned": "La réponse a été générée côté agent mais n’a pas pu être finalisée (connexion au bridge interrompue en cours de route). Vous pouvez supprimer ou régénérer ce message.",
-  "runstatus_error_connection_lost": "La connexion à la passerelle a été interrompue pendant la réponse (compaction, redémarrage ou coupure réseau). Ce n'est pas une interruption de votre part — réessayez, la réponse sera reprise.",
+  "runstatus_error_connection_lost": "La connexion à la passerelle a été interrompue pendant la réponse (compaction, redémarrage ou coupure réseau). Ce n'est pas une interruption de votre part. Renvoyez votre message, ou supprimez ce tour pour le régénérer.",
   "runstatus_error_context_length": "La fenêtre de contexte de l'agent a débordé pendant ce tour : l'historique plus les résultats d'outils accumulés en cours de tour ont dépassé la capacité du modèle (la jauge en haut reflète l'état d'avant le tour). Réessayez en demandant de déléguer aux sous-agents, compactez la session, ou démarrez un nouveau chat.",
   "runstatus_error_rate_limit": "Le fournisseur du modèle limite temporairement les requêtes. Patientez quelques instants puis réessayez.",
   "runstatus_error_timeout": "Le tour a expiré côté passerelle avant d'aboutir. Réessayez.",
@@ -1534,5 +1534,13 @@
   "subagent_tel_cost_unreported": "non communiqué",
   "compaction_label": "Contexte optimisé par la passerelle",
   "compaction_detail_preflight": "Avant de répondre, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés.",
-  "compaction_detail_midturn": "Pendant cette réponse, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle, puis a repris. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés."
+  "compaction_detail_midturn": "Pendant cette réponse, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle, puis a repris. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés.",
+  "lightbox_fit": "Ajuster à l'écran",
+  "lightbox_actual_size": "Taille réelle",
+  "lightbox_fullscreen": "Plein écran",
+  "lightbox_exit_fullscreen": "Quitter le plein écran",
+  "lightbox_open_tab": "Ouvrir dans un onglet",
+  "lightbox_close": "Fermer",
+  "feedbackdlg_ref_label": "Référence du rapport :",
+  "feedbackdlg_ref_copy": "Copier la référence"
 }

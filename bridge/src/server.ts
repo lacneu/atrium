@@ -1009,6 +1009,12 @@ async function performSend(
     // is fine to consume past (the gateway already has the re-grounded message).
     session.firstSendPending = false;
     const ackRunId = extractRunId(response);
+    // Anchor the RAW user text for orphan-recovery boundary validation — NOT
+    // params.message: the enriched message can END with static injections (the
+    // [LIVRAISON] media-delivery block) identical on every turn, which would
+    // make a stale previous-turn transcript pass the endsWith check (codex P1).
+    // The transcript's user entry CONTAINS the raw text even when wrapped.
+    session.noteTurnUserAnchor(String(body.text ?? ""));
     await session.runManager.beginTurn(now, ackRunId, {
       expectedSessionId: preSendSessionId,
       pressure: {

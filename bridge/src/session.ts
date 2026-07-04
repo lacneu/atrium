@@ -12,7 +12,12 @@
 
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
-import { extractMessageToolReplies } from "./providers/openclaw/history-recovery.js";
+import {
+  extractLatestAssistantReply,
+  extractMessageToolReplies,
+  lastUserEntryText,
+  transcriptEntryCount,
+} from "./providers/openclaw/history-recovery.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
@@ -24,6 +29,25 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 // mid-turn): the UI maps it to "connection lost — retry", never the user
 // "Interrompu". Distinct from the user Stop (Convex-set "aborted").
 const CONNECTION_LOST_CODE = "connection_lost";
+
+// Orphan-turn recovery (gateway restart mid-turn): the gateway's
+// main-session-restart-recovery RESUMES the run after boot and the answer
+// lands only in the session transcript. Poll it over a fresh connection until
+// the resumed reply appears, bounded WELL under the Convex stuck-stream
+// watchdog (12 min) so the backstop keeps the last word.
+const ORPHAN_RECOVERY_POLL_MS = 20_000;
+// DOUBLE deadline: poll ticks AND wall clock. Ticks alone can stretch past the
+// Convex watchdog when the gateway is down (each tick may burn the WS connect +
+// request timeouts BEFORE arming the next 20s timer — codex P2); a wall bound
+// alone tied to the injected Clock would misread its SECONDS unit (codex P1).
+// Date.now() is used for the wall bound (vitest fake timers advance it, so the
+// tests stay deterministic). 9 min, well under the 12-min stuck-stream watchdog.
+const ORPHAN_RECOVERY_MAX_POLLS = 27;
+const ORPHAN_RECOVERY_WALL_MS = 9 * 60_000;
+
+/** Fetches the raw `sessions.get` payload for a sessionKey over a FRESH
+ *  connection (the session's own socket is dead when recovery runs). */
+export type TranscriptFetcher = (sessionKey: string) => Promise<unknown>;
 
 /**
  * Everything needed to serve ONE instance: its full per-instance config (gateway
@@ -82,6 +106,8 @@ export interface BridgeSession {
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
    *  hang the turn forever in "streaming". */
   wake(): void;
+  /** Anchor the current turn's sent user text for orphan-recovery validation. */
+  noteTurnUserAnchor(sentMessage: string): void;
   /** Test/diagnostic seam: count of children with an ordered registration recorded
    *  (registeredChildren). Asserts the set never leaks across terminated/swept children. */
   readonly registeredChildCount: number;
@@ -133,6 +159,13 @@ class Session implements BridgeSession {
   // WebSocket/FD — once this is older than IDLE_SESSION_TTL_SECONDS, so idle sockets
   // don't accumulate to FD exhaustion (the next send transparently reconnects).
   lastActivityAt: number;
+  private readonly transcriptFetcher?: TranscriptFetcher;
+  // Tail of the CURRENT turn's sent user message (set by the send path at
+  // beginTurn). The orphan recovery only accepts a transcript whose last user
+  // entry ends with this anchor — a stale transcript served mid-reboot may
+  // still predate the current turn (codex P2: without the check, the PREVIOUS
+  // turn's reply could be finalized as the current answer).
+  private turnUserAnchor: string | null = null;
   // See BridgeSession.firstSendPending. True until performSend runs the first turn.
   firstSendPending = true;
   private consumerStarted = false;
@@ -152,6 +185,7 @@ class Session implements BridgeSession {
     writer: ConvexWriter,
     clock: Clock,
     outboundScan?: OutboundScan,
+    transcriptFetcher?: TranscriptFetcher,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
@@ -164,6 +198,18 @@ class Session implements BridgeSession {
     this.observer = new SubAgentObserver(sessionKey, chatId);
     this.clock = clock;
     this.lastActivityAt = clock();
+    this.transcriptFetcher = transcriptFetcher;
+  }
+
+  /** Anchor the current turn's sent user text (tail) for orphan-recovery
+   *  boundary validation. Called by the send path right after beginTurn. */
+  noteTurnUserAnchor(sentMessage: string): void {
+    // RAW user text only (never the enriched message — its static injection
+    // suffixes are identical across turns and would defeat the guard). The
+    // transcript entry may WRAP the raw text (history prefix, delivery
+    // suffix), so the recovery checks CONTAINMENT of this tail.
+    const trimmed = sentMessage.trim();
+    this.turnUserAnchor = trimmed ? trimmed.slice(-120) : null;
   }
 
   /** Test/diagnostic seam (mirrors observer.size): how many children currently hold an
@@ -403,24 +449,22 @@ class Session implements BridgeSession {
           // (live report 2026-07-04). The reconnect/replay resumes it; the
           // stuck-stream watchdog stays the backstop if it never does.
           if (!this.runManager.isFinalized) {
-            if (this.runManager.compactionPending) {
+            if (this.transcriptFetcher) {
+              // Unified orphan-turn recovery (gateway restart OR compaction
+              // recreated the session and dropped this socket): the gateway's
+              // restart-recovery resumes the run and the answer lands in the
+              // TRANSCRIPT. Poll it over a fresh connection; settle as
+              // connection_lost only when the deadline passes with no reply.
               console.log(
-                `[session] close mid-turn with compaction pending — NOT aborting chat=${this.chatId} (resume expected)`,
+                `[session] close mid-turn — starting transcript recovery chat=${this.chatId} (compactionPending=${this.runManager.compactionPending})`,
               );
-              // BOUNDED settle: nothing ticks this turn once the consumer exits
-              // (the socket is gone), so if no resume/recovery lands, settle it
-              // after the compaction-scale grace instead of leaving it to the
-              // slower global stuck-stream watchdog. isFinalized guards the
-              // race with any recovery that did land meanwhile. (True resume —
-              // transcript re-fetch over a fresh operator connection — is the
-              // follow-up; this bound guarantees "never an eternal stream".)
+              this.scheduleOrphanRecovery();
+            } else if (this.runManager.compactionPending) {
+              // No fetcher injected (test harness): keep the bounded settle.
               const rm = this.runManager;
               const settleClock = this.clock;
               setTimeout(() => {
                 if (!rm.isFinalized) {
-                  console.log(
-                    `[session] compaction resume never arrived — settling aborted chat=${this.chatId}`,
-                  );
                   void rm.endTurn(settleClock(), "error", CONNECTION_LOST_CODE).catch((e) =>
                     console.error(
                       "[session] deferred compaction settle failed:",
@@ -493,6 +537,109 @@ class Session implements BridgeSession {
         }
       }
     }
+  }
+
+  /**
+   * Orphan-turn recovery: the socket died mid-turn (gateway restart /
+   * compaction session-recreate) but the gateway RESUMES the run and its
+   * answer lands in the session transcript (main-session-restart-recovery,
+   * live CSV 2026-07-04). Poll `sessions.get` over a fresh connection until
+   * the resumed assistant reply appears, then finalize the turn COMPLETE with
+   * the real text. Bounded well under the Convex stuck-stream watchdog; on
+   * deadline the turn settles as connection_lost. A user Stop meanwhile wins:
+   * Convex finalize is first-terminal-wins, so a late recovery write is a
+   * no-op there (and isFinalized stops the poll bridge-side).
+   */
+  private scheduleOrphanRecovery(): void {
+    const rm = this.runManager;
+    const fetcher = this.transcriptFetcher;
+    if (!fetcher) return;
+    const chatId = this.chatId;
+    const sessionKey = this.sessionKey;
+    const clock = this.clock;
+    let polls = 0;
+    const startedWallMs = Date.now();
+    // Structural baseline for ANCHOR-LESS turns (attachment-only sends, or a
+    // trivial anchor like "ok" that any old transcript would contain): a
+    // resumed run always GROWS the transcript; a stale one never does. Set on
+    // the first successful poll, so acceptance requires growth beyond it.
+    // DELIBERATE trade-off (correctness > completeness): if the resumed reply
+    // is ALREADY complete at the first poll, an anchor-less turn cannot
+    // distinguish it from the previous turn's reply — that residual case (an
+    // attachment-only turn finishing within the first ~20s after the drop)
+    // settles honestly as connection_lost instead of risking delivering the
+    // WRONG turn's answer into the conversation.
+    let baselineCount: number | null = null;
+    const tick = async (): Promise<void> => {
+      if (rm.isFinalized) return;
+      polls++;
+      if (
+        polls > ORPHAN_RECOVERY_MAX_POLLS ||
+        Date.now() - startedWallMs >= ORPHAN_RECOVERY_WALL_MS
+      ) {
+        console.log(
+          `[session] transcript recovery deadline — settling connection_lost chat=${chatId}`,
+        );
+        await rm.endTurn(clock(), "error", CONNECTION_LOST_CODE).catch((e) =>
+          console.error(
+            "[session] orphan settle failed:",
+            (e as Error)?.message ?? e,
+          ),
+        );
+        return;
+      }
+      try {
+        const payload = await fetcher(sessionKey);
+        // STALE-transcript guard: mid-reboot the gateway can serve a transcript
+        // that predates the current turn; its last user entry is then the
+        // PREVIOUS turn's. Only accept a transcript anchored to the message
+        // this turn actually sent (codex P2). No anchor (no send through this
+        // session) -> accept as before.
+        // Boundary validation — NEVER finalize the previous turn's reply as
+        // the current answer (codex P2 x2). A >=12-char anchor validates by
+        // containment; an absent/trivial anchor falls back to the structural
+        // baseline (the transcript must have GROWN since the first poll).
+        const anchor =
+          this.turnUserAnchor && this.turnUserAnchor.length >= 12
+            ? this.turnUserAnchor
+            : null;
+        if (anchor) {
+          if (!lastUserEntryText(payload).includes(anchor)) {
+            setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
+            return;
+          }
+        } else {
+          const count = transcriptEntryCount(payload);
+          if (baselineCount === null || count <= baselineCount) {
+            if (baselineCount === null) baselineCount = count;
+            setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
+            return;
+          }
+        }
+        // A resumed run may have delivered its REAL answer through the gateway
+        // message-tool (the assistant entry is then only a private ack like
+        // "Envoyé dans le webchat.") — prefer that delivery; fall back to the
+        // plain assistant reply (codex P2). Both scan only the current turn
+        // (backwards to the latest user entry).
+        const text =
+          extractMessageToolReplies(payload) ||
+          extractLatestAssistantReply(payload);
+        if (text && !rm.isFinalized) {
+          console.log(
+            `[session] transcript recovery SUCCESS chat=${chatId} (${text.length} chars after ${polls} polls)`,
+          );
+          await rm.recoverVisibleText(text, clock());
+          return;
+        }
+      } catch (err) {
+        // Gateway may still be rebooting — keep polling until the deadline.
+        console.log(
+          `[session] transcript recovery poll failed (retrying): ${(err as Error)?.message ?? err}`,
+        );
+      }
+      setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
+    };
+    setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
   }
 
   private async recoverDeliveredReply(): Promise<void> {
@@ -731,6 +878,28 @@ export class SessionRegistry {
       bundle.config.openclawToken!,
       bundle.config.deviceIdentity!,
     );
+    // Transcript fetcher for orphan-turn recovery: a SHORT dedicated
+    // connection per poll (the session's own socket is dead when recovery
+    // runs; the gateway may be mid-reboot — connect errors are the caller's
+    // retry signal).
+    const cfg = bundle.config;
+    const transcriptFetcher: TranscriptFetcher = async (key) => {
+      const conn = await OpenClawConnection.connect(
+        cfg.openclawGatewayUrl,
+        cfg.openclawToken!,
+        cfg.deviceIdentity!,
+      );
+      try {
+        const raw = await conn.request("sessions.get", { key }, 10_000);
+        // request() resolves the response ENVELOPE; the transcript is .payload
+        // (same unwrap as recoverDeliveredReply).
+        return raw && typeof raw === "object" && "payload" in raw
+          ? (raw as { payload: unknown }).payload
+          : raw;
+      } finally {
+        conn.close();
+      }
+    };
     const session = new Session(
       chatId,
       sessionKey,
@@ -743,6 +912,7 @@ export class SessionRegistry {
       bundle.writer,
       this.clock,
       bundle.outboundScan,
+      transcriptFetcher,
     );
     session.startConsumer();
     this.sessions.set(chatId, session);

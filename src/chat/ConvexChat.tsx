@@ -109,7 +109,8 @@ import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
 import { assistantEmptyState } from "./assistantEmptyState";
-import { messageHasText } from "./runStatusView";
+import { errorDetailView, messageHasText } from "./runStatusView";
+import { LightboxProvider } from "./ImageLightbox";
 import type { ToolActivityPart } from "./toolActivityView";
 import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
 import {
@@ -379,6 +380,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
       <SubAgentPanelContext.Provider value={subAgentApi}>
+      <LightboxProvider>
         <div className="oc-chat">
           <div className="oc-chat__convo">
             {chatId ? (
@@ -457,6 +459,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
+      </LightboxProvider>
       </SubAgentPanelContext.Provider>
       </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>
@@ -1208,6 +1211,50 @@ function IconArrowDown() {
   );
 }
 
+// Copy button that stays USEFUL on errored turns: copies the message text, or
+// — when the turn produced no text (a connection-lost / overflow error) — the
+// displayed error itself (actionable headline + technical detail). assistant-ui's
+// ActionBarPrimitive.Copy silently DISABLES on empty content, which read as a
+// dead button on error messages (live report 2026-07-04).
+function CopyAssistantButton() {
+  const [copied, setCopied] = useState(false);
+  const text = useMessage((msg) =>
+    (msg.content as ReadonlyArray<{ type?: string; text?: string }>)
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("\n"),
+  );
+  const error = useMessage(
+    (msg) => (msg.metadata?.custom as { error?: string | null } | undefined)?.error ?? null,
+  );
+  const errorCode = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { errorCode?: string | null } | undefined)?.errorCode ?? null,
+  );
+  const detail = errorDetailView(error, errorCode);
+  const payload =
+    text.trim() ||
+    [detail.headline, detail.detail].filter(Boolean).join("\n");
+  const disabled = payload.length === 0;
+  return (
+    <button
+      type="button"
+      className="oc-iconbtn"
+      title={m.chat_copy_response()}
+      aria-label={m.chat_copy_response()}
+      disabled={disabled}
+      onClick={() => {
+        void navigator.clipboard.writeText(payload).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? <IconCheck /> : <IconCopy />}
+    </button>
+  );
+}
+
 function IconCopy() {
   return (
     <Icon>
@@ -1755,16 +1802,7 @@ function AssistantMessage() {
           hideWhenRunning
           autohide="not-last"
         >
-          {ui.copyAssistant ? (
-            <ActionBarPrimitive.Copy className="oc-iconbtn" title={m.chat_copy_response()}>
-              <MessagePrimitive.If copied>
-                <IconCheck />
-              </MessagePrimitive.If>
-              <MessagePrimitive.If copied={false}>
-                <IconCopy />
-              </MessagePrimitive.If>
-            </ActionBarPrimitive.Copy>
-          ) : null}
+          {ui.copyAssistant ? <CopyAssistantButton /> : null}
           {ui.showSource ? (
             <SourceToggleButton
               active={showSource}
@@ -1811,6 +1849,23 @@ function SystemMessage() {
 function ComposerAttachmentChip() {
   const status = useAttachment((a) => a.status?.type);
   const type = useAttachment((a) => a.type);
+  // Image attachments show a THUMBNAIL preview (the user pasted an image and
+  // wants to SEE it, not a generic file chip). The pending attachment carries
+  // the File; an object URL renders it locally with zero upload wait, revoked
+  // on unmount to avoid a leak.
+  const file = useAttachment(
+    (a) => (a as { file?: File }).file ?? null,
+  );
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (type !== "image" || !file) {
+      setPreviewUrl(null);
+      return;
+    }
+    const u = URL.createObjectURL(file);
+    setPreviewUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [type, file]);
   // The chip shows the selected file + filename; the live upload PROGRESS (which
   // runs in adapter.send() on send, the slow part for a big file) is surfaced
   // separately by <UploadProgress> (a % bar) so this chip stays simple. Only a
@@ -1819,21 +1874,29 @@ function ComposerAttachmentChip() {
   const failed = status === "incomplete";
   return (
     <AttachmentPrimitive.Root
-      className={`oc-attach${failed ? " oc-attach--error" : ""}`}
+      className={`oc-attach${failed ? " oc-attach--error" : ""}${
+        previewUrl && !failed ? " oc-attach--image" : ""
+      }`}
       data-status={status}
     >
-      <span className="oc-attach__icon" aria-hidden>
-        {failed ? (
-          <CircleAlert size={14} />
-        ) : type === "image" ? (
-          <ImageIcon size={14} />
-        ) : (
-          <Paperclip size={14} />
-        )}
-      </span>
-      <span className="oc-attach__name">
-        <AttachmentPrimitive.Name />
-      </span>
+      {previewUrl && !failed ? (
+        <img src={previewUrl} alt="" className="oc-attach__thumb" />
+      ) : (
+        <span className="oc-attach__icon" aria-hidden>
+          {failed ? (
+            <CircleAlert size={14} />
+          ) : type === "image" ? (
+            <ImageIcon size={14} />
+          ) : (
+            <Paperclip size={14} />
+          )}
+        </span>
+      )}
+      {previewUrl && !failed ? null : (
+        <span className="oc-attach__name">
+          <AttachmentPrimitive.Name />
+        </span>
+      )}
       {failed ? (
         <span className="oc-attach__state">{m.chat_attach_failed()}</span>
       ) : null}

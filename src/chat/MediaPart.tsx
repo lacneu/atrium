@@ -1,3 +1,4 @@
+import { useLightbox } from "./ImageLightbox";
 // Renders a `file` content part produced by convertMessage from the bridge's
 // `media {items}` events (kind:"media") and from kind:"file" parts. The data URL
 // is a resolved Convex storage URL (server-side ctx.storage.getUrl); the browser
@@ -43,18 +44,7 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
   }
 
   if (mime.startsWith("image/")) {
-    return (
-      <figure className="oc-media oc-media--image">
-        <img
-          src={url}
-          alt={name}
-          className="oc-media__img"
-          loading="lazy"
-          decoding="async"
-        />
-        <figcaption className="oc-media__name">{name}</figcaption>
-      </figure>
-    );
+    return <ImageThumb url={url} name={name} />;
   }
 
   if (mime.startsWith("video/")) {
@@ -84,5 +74,29 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
       </span>
       <span className="oc-media__name">{name}</span>
     </a>
+  );
+}
+
+/** Image rendered as a bounded THUMBNAIL that opens the app lightbox on click
+ *  (a wall of full-width images makes a conversation unreadable). Applies to
+ *  user attachments AND agent/Hermes-generated images alike. */
+function ImageThumb({ url, name }: { url: string; name: string }) {
+  const { open } = useLightbox();
+  return (
+    <button
+      type="button"
+      className="oc-media oc-media--thumb"
+      onClick={() => open({ url, name })}
+      title={name}
+      aria-label={name}
+    >
+      <img
+        src={url}
+        alt={name}
+        className="oc-media__thumbimg"
+        loading="lazy"
+        decoding="async"
+      />
+    </button>
   );
 }

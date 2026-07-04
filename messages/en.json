@@ -1029,7 +1029,7 @@
   "runstatus_generating": "Generating…",
   "runstatus_error": "Error",
   "runstatus_error_orphaned": "The reply was generated on the agent side but could not be finalized (the bridge connection dropped mid-stream). You can delete or regenerate this message.",
-  "runstatus_error_connection_lost": "The connection to the gateway dropped during the reply (compaction, restart, or a network blip). This is not a stop on your side — retry, the reply will resume.",
+  "runstatus_error_connection_lost": "The connection to the gateway dropped during the reply (compaction, restart, or a network blip). This is not a stop on your side. Send your message again, or delete this turn to regenerate it.",
   "runstatus_error_context_length": "The agent's context window overflowed during this turn: the history plus the tool results accumulated mid-turn exceeded the model's capacity (the meter above reflects the pre-turn state). Retry asking to delegate to sub-agents, compact the session, or start a new chat.",
   "runstatus_error_rate_limit": "The model provider is temporarily rate-limiting requests. Wait a moment and retry.",
   "runstatus_error_timeout": "The turn timed out on the gateway before completing. Retry.",
@@ -1534,5 +1534,13 @@
   "subagent_tel_cost_unreported": "not reported",
   "compaction_label": "Context optimized by the gateway",
   "compaction_detail_preflight": "Before answering, the gateway summarized the beginning of the conversation to stay within the model limit. Recent exchanges are kept verbatim; older ones are now condensed.",
-  "compaction_detail_midturn": "During this reply, the gateway summarized the beginning of the conversation to stay within the model limit, then resumed. Recent exchanges are kept verbatim; older ones are now condensed."
+  "compaction_detail_midturn": "During this reply, the gateway summarized the beginning of the conversation to stay within the model limit, then resumed. Recent exchanges are kept verbatim; older ones are now condensed.",
+  "lightbox_fit": "Fit to screen",
+  "lightbox_actual_size": "Actual size",
+  "lightbox_fullscreen": "Fullscreen",
+  "lightbox_exit_fullscreen": "Exit fullscreen",
+  "lightbox_open_tab": "Open in a tab",
+  "lightbox_close": "Close",
+  "feedbackdlg_ref_label": "Report reference:",
+  "feedbackdlg_ref_copy": "Copy the reference"
 }

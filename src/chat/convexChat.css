@@ -6606,3 +6606,146 @@
   flex-direction: column;
   gap: 0.15rem;
 }
+
+
+/* --- Images: thumbnails in the thread + app lightbox ------------------------ */
+/* A message image renders as a bounded, clickable thumbnail (a wall of
+   full-width images makes a conversation unreadable). Multiple images in one
+   message flow as a wrap grid. */
+.oc-media--thumb {
+  display: inline-block;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: zoom-in;
+  background: var(--muted);
+  line-height: 0;
+  max-width: 220px;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.oc-media--thumb:hover {
+  border-color: var(--ring);
+}
+.oc-media__thumbimg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  object-fit: cover;
+}
+
+/* Lightbox overlay (portaled to body). */
+.oc-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(2px);
+}
+.oc-lightbox__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  color: #fff;
+}
+.oc-lightbox__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-lightbox__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.oc-lightbox__btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.oc-lightbox__stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 1rem 1rem;
+}
+.oc-lightbox__stage--scroll {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.oc-lightbox__img--fit {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.oc-lightbox__img--actual {
+  max-width: none;
+  max-height: none;
+}
+
+/* Composer image attachment: a thumbnail preview instead of a generic chip. */
+.oc-attach--image {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  width: 44px;
+  height: 44px;
+}
+.oc-attach__thumb {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+/* Remove button overlays the image thumb (top-right), readable on any image. */
+.oc-attach--image .oc-attach__remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+
+/* Submitted-report reference row (copyable for sharing on any channel). */
+.oc-feedback__ref {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+}
+.oc-feedback__ref-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--muted);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+}

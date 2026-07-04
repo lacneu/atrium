@@ -97,3 +97,57 @@ export function extractMessageToolReplies(payload: Json): string {
   collected.reverse();
   return collected.join("\n\n");
 }
+
+/**
+ * Extract the assistant reply of the CURRENT turn from a `sessions.get`
+ * payload — the transcript-recovery half of gateway restart-recovery. When the
+ * gateway is SIGTERMed mid-turn it marks the orphaned main session for restart
+ * recovery, resumes the run after boot, and the finished answer lands ONLY in
+ * the session transcript (the bridge socket died with the old gateway — live
+ * CSV evidence 2026-07-04: a 429s resumed run delivered to the Control UI
+ * while Atrium showed nothing). Scans backwards to the latest `user` entry
+ * (the turn boundary) collecting `assistant` texts; empty string while the
+ * resumed run hasn't answered yet (the caller keeps polling).
+ */
+export function extractLatestAssistantReply(payload: Json): string {
+  const messages = isObject(payload) && Array.isArray(payload.messages)
+    ? payload.messages
+    : [];
+  const collected: string[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const entry = messages[i];
+    if (!isObject(entry)) continue;
+    const role = entry.role;
+    if (role === "user") break; // current-turn boundary
+    if (role !== "assistant") continue;
+    const text = contentStrings(entry.content).join("").trim();
+    if (text) collected.push(text);
+  }
+  collected.reverse();
+  return collected.join("\n\n");
+}
+
+/** Text of the LAST `user` entry in a `sessions.get` payload — the turn-boundary
+ *  anchor the orphan recovery validates against (a STALE transcript served
+ *  mid-reboot may predate the current turn; matching the anchor prevents
+ *  finalizing the PREVIOUS turn's reply as the current one). */
+export function lastUserEntryText(payload: Json): string {
+  const messages = isObject(payload) && Array.isArray(payload.messages)
+    ? payload.messages
+    : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const entry = messages[i];
+    if (!isObject(entry) || entry.role !== "user") continue;
+    return contentStrings(entry.content).join("");
+  }
+  return "";
+}
+
+/** Number of transcript entries in a `sessions.get` payload (0 when malformed).
+ *  The orphan recovery's STRUCTURAL baseline for anchor-less turns: a resumed
+ *  run always GROWS the transcript, a stale one never does. */
+export function transcriptEntryCount(payload: Json): number {
+  return isObject(payload) && Array.isArray(payload.messages)
+    ? payload.messages.length
+    : 0;
+}
