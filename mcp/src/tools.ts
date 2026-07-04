@@ -169,6 +169,32 @@ export const listAnomaliesInput = {
   kind: z.string().optional().describe("Filter by anomaly kind/type."),
 } as const;
 
+export const getFeedbackReportInput = {
+  feedbackId: z
+    .string()
+    .describe("The report reference (the id the feedback dialog shows after submit)"),
+};
+
+/**
+ * GET /api/v1/feedback-report — one user-submitted report by its shareable
+ * REFERENCE. Returns the frozen forensic snapshot (message text/parts, prompt,
+ * context window, session settings — volunteered by the reporter) + survival
+ * flags (chatExists/messageExists: the report OUTLIVES message/chat deletion).
+ * Requires `traces.read`.
+ */
+export function getFeedbackReport(
+  config: Config,
+  args: { feedbackId: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    `/feedback-report${qs({ feedbackId: args.feedbackId })}`,
+    {},
+    options,
+  );
+}
+
 export const getChatStateInput = {
   chatId: z.string().describe(
     "The chat id (the /chat/<id> path segment) to inspect (required).",

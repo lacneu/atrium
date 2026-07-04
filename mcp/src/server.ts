@@ -20,6 +20,8 @@ import { ApiError, resolveConfig } from "./config.js";
 import {
   getChatState,
   getChatStateInput,
+  getFeedbackReport,
+  getFeedbackReportInput,
   getCompactionHistory,
   getCompactionHistoryInput,
   getTraceEnrichment,
@@ -163,6 +165,21 @@ function main(): void {
       inputSchema: {},
     },
     async () => run(() => getIntegrations(config)),
+  );
+
+  server.registerTool(
+    "get_feedback_report",
+    {
+      title: "Read a user-submitted report",
+      description:
+        "One feedback report by its shareable reference (GET /feedback-report). " +
+        "Key must have traces.read. Returns the FROZEN forensic snapshot the " +
+        "reporter volunteered (message text/parts, prompt, bounded context, " +
+        "session settings) + chatExists/messageExists flags — the report " +
+        "survives deletion of its message or chat.",
+      inputSchema: getFeedbackReportInput,
+    },
+    async (args) => run(() => getFeedbackReport(config, args)),
   );
 
   server.registerTool(

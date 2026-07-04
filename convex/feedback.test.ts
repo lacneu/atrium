@@ -646,3 +646,47 @@ describe("feedback admin view (increment B)", () => {
     expect(r2?.userCloseReason).toBeUndefined();
   });
 });
+
+describe("a report SURVIVES deletion of the reported message and its chat", () => {
+  test("snapshot + admin listing stay intact after the message AND the chat are deleted", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const REPLY = "réponse serveur signalée puis supprimée";
+    const { replyId } = await seedTurn(t, chatId, userId, "ma question", REPLY);
+    const res = await as.mutation(api.feedback.submitFeedback, {
+      chatId,
+      messageId: replyId,
+      category: "incorrect",
+      client: { displayedText: REPLY },
+    });
+    const feedbackId = res.feedbackId;
+
+    // The user deletes the reported AI message (retry), then the whole chat.
+    await t.run(async (ctx) => {
+      for (const p of await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", replyId))
+        .collect())
+        await ctx.db.delete(p._id);
+      await ctx.db.delete(replyId);
+      await ctx.db.delete(chatId);
+    });
+
+    // Admin listing still shows the report, its FROZEN snapshot text intact.
+    const admin = await seedUser(t, "admin");
+    const list = await admin.as.query(api.feedback.listForAdmin, {});
+    const row = list.find((r) => String(r._id) === String(feedbackId));
+    expect(row).toBeTruthy();
+
+    // The forensic snapshot view is intact too (server-frozen copy).
+    const snap = await admin.as.mutation(api.feedback.readSnapshot, {
+      feedbackId,
+    });
+    expect(JSON.stringify(snap)).toContain("réponse serveur signalée");
+
+    // The reporter's own flag query never crashes on dead ids.
+    const mine = await as.query(api.feedback.myReportedMessageIds, { chatId });
+    expect(Array.isArray(mine)).toBe(true);
+  });
+});

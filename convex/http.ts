@@ -1387,6 +1387,58 @@ http.route({
   }),
 });
 
+// Feedback-report reader (key-authed): fetch one user-submitted report by its
+// REFERENCE — the id the dialog shows after submit, made for sharing with
+// support. Returns the FROZEN forensic snapshot (volunteered by the reporter
+// for analysis) + survival flags; the report outlives its message/chat.
+// Mirrors /api/v1/chat-state EXACTLY (authenticate -> traces.read -> audit ->
+// return). The audit trace carries only the feedbackId, never content.
+http.route({
+  path: "/api/v1/feedback-report",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+    const feedbackId = strParam(url, "feedbackId");
+    if (feedbackId === undefined) {
+      return apiJson({ ok: false, error: "feedbackId required" }, 400);
+    }
+    let result;
+    try {
+      result = await ctx.runQuery(internal.feedback.readForApi, {
+        feedbackId: feedbackId as Id<"feedback">,
+      });
+    } catch {
+      // A malformed id must read as not-found, not a 500.
+      result = { ok: false as const, error: "not_found" as const };
+    }
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/feedback-report",
+      method: "GET",
+      status: result.ok ? 200 : 404,
+      latencyMs: Date.now() - startedAt,
+      meta: JSON.stringify({ feedbackId, found: result.ok }),
+    });
+    return apiJson(result, result.ok ? 200 : 404);
+  }),
+});
+
 // Gateway compaction HISTORY for one chat's session (key-authed, Inc 3 of the
 // gateway-observability initiative). LAZY: the ONLY caller of the gateway's
 // `sessions.compaction.list` — never on the turn path. Mirrors /api/v1/chat-state

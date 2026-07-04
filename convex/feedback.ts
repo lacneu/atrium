@@ -23,7 +23,8 @@
 // captures the environment (best available diagnostic), nothing more.
 
 import { v } from "convex/values";
-import { mutation, query, internalMutation } from "./_generated/server";
+import {
+  internalQuery, mutation, query, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc } from "./_generated/dataModel";
 import {
@@ -744,5 +745,33 @@ export const backfillFeedbackNotifications = internalMutation({
       );
     }
     return { scanned: result.page.length, notified, done: result.isDone };
+  },
+});
+
+/**
+ * INTERNAL: one report by id, for the key-authed diagnostic API. Returns the
+ * FROZEN forensic snapshot (the user volunteered it for analysis — that is the
+ * report's purpose) plus survival flags (the report outlives its message/chat).
+ */
+export const readForApi = internalQuery({
+  args: { feedbackId: v.id("feedback") },
+  handler: async (ctx, { feedbackId }) => {
+    const fb = await ctx.db.get(feedbackId);
+    if (!fb) return { ok: false as const, error: "not_found" as const };
+    const chat = await ctx.db.get(fb.chatId);
+    const message = await ctx.db.get(fb.messageId);
+    return {
+      ok: true as const,
+      report: {
+        feedbackId: String(fb._id),
+        at: fb.at,
+        category: fb.category,
+        comment: fb.comment ?? null,
+        displayedMatchesStored: fb.snapshot.displayedMatchesStored ?? null,
+        snapshot: fb.snapshot,
+        chatExists: chat !== null,
+        messageExists: message !== null,
+      },
+    };
   },
 });

@@ -8,6 +8,15 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.29.0] — A report's reference becomes actionable for support
+
+Small observability release. The reference shown after submitting a report can now be used to
+fetch the report itself: a key-authed diagnostic endpoint (`GET /api/v1/feedback-report`) and a
+matching observability-MCP tool (`get_feedback_report`) return the frozen forensic snapshot by
+reference — including after the reported message or its whole conversation has been deleted
+(the report survives deletion, now pinned by a test). Requires `traces.read`; every read is
+audit-logged with the reference only, never content.
+
 ## [0.28.2] — Corrective: message actions stay available while a reply is running
 
 Corrective patch, frontend only. The per-message actions (copy, source view, report, delete)
