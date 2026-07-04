@@ -246,7 +246,11 @@ export class RunManager {
     ackRunId: string | null,
     turnContext?: {
       expectedSessionId: string | null;
-      pressure?: { totalTokens: number | null; contextTokens: number | null };
+      pressure?: {
+        totalTokens: number | null;
+        contextTokens: number | null;
+        costUsd?: number | null;
+      };
       /** Spontaneous (announce) turn: the sink DEFERS creating the assistant
        *  message until the normalizer proves visible content (turn-sink). */
       spontaneous?: boolean;

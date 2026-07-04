@@ -1,12 +1,15 @@
 # Protocol Contract — schema-driven, per-version bridge compatibility
 
-Status: Increments 1–2 SHIPPED. Inc 1 = vendored schema @2026.6.11 + coverage
-manifest + CI ratchet (`bridge/protocol/openclaw/` +
+Status: ALL THREE increments SHIPPED. Inc 1 = vendored schema @2026.6.11 +
+coverage manifest + CI ratchet (`bridge/protocol/openclaw/` +
 `bridge/test/protocol-coverage.test.ts`). Inc 2 = runtime drift detector
 (`bridge/src/providers/openclaw/protocol-drift.ts`, observe-only, wired into
-RunManager.feed; exposed as the additive `protocol` section of /capabilities;
-runtime sets bijection-tested against the manifest). Inc 3 (Convex persistence
-+ Bridge tab matrix) proposed. Companion to the factual audit in
+RunManager.feed; exposed as the additive `protocol` section of /capabilities —
+version + COVERAGE_SUMMARY matrix + drift; runtime sets bijection-tested
+against the manifest). Inc 3 = the compat poller picks + bounds + persists the
+section (drift UNIONED across multi-bridge deployments) and Settings ▸ Bridge
+renders it per provider: "aligned"/drift badge, vendored version, coverage
+counts, collapsed declared-gap list. Companion to the factual audit in
 [protocol-schema-coverage.md](protocol-schema-coverage.md).
 
 ## Problem
@@ -129,7 +132,11 @@ visible statement instead of implied parity.
    `chat:error`/`chat:aborted`, allowlists `errorKind`, persists it as the
    message's `errorCode` (actionable localized headline in the error card) and
    flags `context_length` on the `chat.gateway_pressure` trace.
-2. `usage` on main-lane final — main-turn token/cost telemetry.
+2. ~~`usage` on main-lane final~~ — RESOLVED at the source that actually
+   exists: the real gateway never emits `usage` on chat events (0 occurrences
+   across live captures — the manifest note documents it); main-turn cost rides
+   `sessions.describe` instead (SessionPanel cumulative + `chat.gateway_pressure`
+   `costUsd`, per-turn = delta between consecutive traces).
 3. `replace=true` on bare `deltaText` — honor replacement (one-line fix +
    fixture).
 4. ~~Main-lane `chat:error`/`aborted` terminalization~~ — DONE (same code

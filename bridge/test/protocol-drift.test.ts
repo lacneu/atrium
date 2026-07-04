@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  COVERAGE_SUMMARY,
   KNOWN_AGENT_FIELDS,
   KNOWN_CHAT_FIELDS,
   protocolDrift,
@@ -108,6 +109,28 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       }
     }
     expect([...KNOWN_CHAT_FIELDS].sort()).toEqual([...union].sort());
+  });
+
+  it("COVERAGE_SUMMARY == a recount of the manifest (counts + gap list)", () => {
+    const counts = { handled: 0, ignored: 0, gap: 0 };
+    const gaps: string[] = [];
+    for (const [name, entry] of Object.entries(MANIFEST.schemas)) {
+      if (entry.fields !== undefined) {
+        for (const [f, fe] of Object.entries(entry.fields)) {
+          const st = (fe as { status: keyof typeof counts }).status;
+          counts[st]++;
+          if (st === "gap") gaps.push(`${name}.${f}`);
+        }
+      } else {
+        const st = (entry as { status: keyof typeof counts }).status;
+        counts[st]++;
+        if (st === "gap") gaps.push(name);
+      }
+    }
+    expect(COVERAGE_SUMMARY.handled).toBe(counts.handled);
+    expect(COVERAGE_SUMMARY.ignored).toBe(counts.ignored);
+    expect(COVERAGE_SUMMARY.gaps).toBe(counts.gap);
+    expect([...COVERAGE_SUMMARY.gapList].sort()).toEqual(gaps.sort());
   });
 
   it("KNOWN_AGENT_FIELDS == AgentEvent manifest fields + the documented wire envelope", () => {

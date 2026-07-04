@@ -80,6 +80,19 @@ function useBridgeHealth() {
   return useQuery(api.bridgeHealth.getBridgeHealth, {});
 }
 type Compat = NonNullable<FunctionReturnType<typeof api.compat.getBridgeCompat>>;
+
+// The protocol-contract section shape (stored as bounded v.any(); parsed by the
+// bridge poller via lib/compat.boundProtocolInfo — this mirrors that type).
+type BridgeProtocolView = {
+  vendoredVersion: string;
+  coverage: {
+    handled: number;
+    ignored: number;
+    gaps: number;
+    gapList: string[];
+  } | null;
+  drift: { shape: string; count: number }[];
+};
 // Exported so the Instances tab can pass its own listInstances row to the shared
 // InstanceConfigDialog (same query → identical type).
 export type Instance = NonNullable<
@@ -136,6 +149,11 @@ export function BridgeTab() {
           manifest={manifest}
           compatStatus={compatStatus}
           compatReachable={compat?.reachable ?? true}
+          protocol={
+            b.key === "openclaw"
+              ? ((compat?.protocol ?? null) as BridgeProtocolView | null)
+              : null
+          }
         />
       ))}
       {hermesAnnounced ? (
@@ -272,6 +290,7 @@ function ProviderCard({
   manifest,
   compatStatus,
   compatReachable,
+  protocol,
 }: {
   providerKey: string;
   connections: Health["targets"];
@@ -279,6 +298,7 @@ function ProviderCard({
   manifest: Compat["compat"] | null;
   compatStatus: "loading" | "nodata" | "ready";
   compatReachable: boolean;
+  protocol: BridgeProtocolView | null;
 }) {
   const support = manifest ? providerSupport(manifest, providerKey) : null;
   // Per-instance compatibility from the PER-INSTANCE health targets (each carries
@@ -342,6 +362,10 @@ function ProviderCard({
         instanceRows={instanceRows}
       />
 
+      {/* Protocol contract — the vendored-schema coverage matrix + live drift
+          (openclaw only; null on other providers / pre-0.23 bridges). */}
+      {protocol ? <ProtocolSection protocol={protocol} /> : null}
+
       {/* Connexions — collapsed by default, rendered as a list of rows. */}
       <button
         type="button"
@@ -364,6 +388,76 @@ function ProviderCard({
       ) : null}
 
     </section>
+  );
+}
+
+// Protocol-contract section: what this bridge build supports of the gateway
+// wire protocol, against the EXACT version it vendors — counts up front, the
+// declared gaps behind a collapsed toggle, and the live drift (fields the
+// connected gateway emits that this build does not know) as a loud badge.
+function ProtocolSection({ protocol }: { protocol: BridgeProtocolView }) {
+  const [gapsOpen, setGapsOpen] = useState(false);
+  const cov = protocol.coverage;
+  const drift = protocol.drift ?? [];
+  return (
+    <>
+      <h4 className="oc-bridge-provider__sub">
+        {m.bridge_protocol_section()}
+        {drift.length > 0 ? (
+          <Badge variant="destructive">
+            {m.bridge_protocol_drift_badge({ count: drift.length })}
+          </Badge>
+        ) : (
+          <Badge variant="secondary">{m.bridge_protocol_ok_badge()}</Badge>
+        )}
+      </h4>
+      <p className="oc-admin__hint">
+        {m.bridge_protocol_vendored({ version: protocol.vendoredVersion })}
+        {cov
+          ? " · " +
+            m.bridge_protocol_counts({
+              handled: cov.handled,
+              ignored: cov.ignored,
+              gaps: cov.gaps,
+            })
+          : null}
+      </p>
+      {drift.length > 0 ? (
+        <ul className="oc-bridge-protocol__list" role="list">
+          {drift.map((d) => (
+            <li key={d.shape}>
+              <code className="oc-traces__mono">{d.shape}</code> × {d.count}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {cov && cov.gapList.length > 0 ? (
+        <>
+          <button
+            type="button"
+            className="oc-bridge-provider__sub oc-bridge-provider__sub--toggle"
+            aria-expanded={gapsOpen}
+            onClick={() => setGapsOpen((o) => !o)}
+          >
+            {gapsOpen ? (
+              <ChevronDown size={13} aria-hidden />
+            ) : (
+              <ChevronRight size={13} aria-hidden />
+            )}
+            {m.bridge_protocol_gaps_toggle({ count: cov.gapList.length })}
+          </button>
+          {gapsOpen ? (
+            <ul className="oc-bridge-protocol__list" role="list">
+              {cov.gapList.map((g) => (
+                <li key={g}>
+                  <code className="oc-traces__mono">{g}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </>
   );
 }
 

@@ -100,6 +100,7 @@ export class TurnSink {
   private pressure: {
     totalTokens: number | null;
     contextTokens: number | null;
+    costUsd?: number | null;
   } | null = null;
   private compactionPhase: string | null = null;
   // --- Deferred open (SPONTANEOUS announce turns) ---------------------------
@@ -154,7 +155,11 @@ export class TurnSink {
    */
   async beginTurn(
     ackRunId: string | null,
-    pressure?: { totalTokens: number | null; contextTokens: number | null },
+    pressure?: {
+      totalTokens: number | null;
+      contextTokens: number | null;
+      costUsd?: number | null;
+    },
     deferOpen = false,
   ): Promise<void> {
     this.turnEpoch++;
@@ -501,6 +506,9 @@ export class TurnSink {
         .recordGatewayPressure(this.chatId, messageId, {
           totalTokens: this.pressure?.totalTokens ?? null,
           contextTokens: this.pressure?.contextTokens ?? null,
+          // Session-cumulative cost BEFORE this turn (sessions.describe): the
+          // delta between consecutive turns' traces IS the per-turn cost.
+          costUsd: this.pressure?.costUsd ?? null,
           compaction: this.compactionPhase,
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.

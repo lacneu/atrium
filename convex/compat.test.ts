@@ -15,6 +15,8 @@ import {
   capabilitiesForInstance,
   compareVersions,
   dedupeTargetsByInstance,
+  boundProtocolInfo,
+  mergeProtocolInfo,
   normalizeCapabilitiesBody,
   normalizeCompatTarget,
   parseVersion,
@@ -818,5 +820,84 @@ describe("forChat (active user, OWN chat only)", () => {
     await expect(
       pending.as.query(api.compat.forChat, { chatId }),
     ).rejects.toThrow(/pending approval/);
+  });
+});
+
+describe("boundProtocolInfo (protocol-contract section)", () => {
+  test("picks + bounds a valid section", () => {
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 37, ignored: 47, gaps: 7, gapList: ["A.b", "C.d"] },
+      drift: [{ shape: "chat.newField", count: 12 }],
+    });
+    expect(p).toEqual({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 37, ignored: 47, gaps: 7, gapList: ["A.b", "C.d"] },
+      drift: [{ shape: "chat.newField", count: 12 }],
+    });
+  });
+
+  test("null on a pre-0.23 bridge (absent/foreign shapes)", () => {
+    expect(boundProtocolInfo(undefined)).toBeNull();
+    expect(boundProtocolInfo(null)).toBeNull();
+    expect(boundProtocolInfo("junk")).toBeNull();
+    expect(boundProtocolInfo({ coverage: {} })).toBeNull(); // no vendoredVersion
+  });
+
+  test("hostile input is bounded (lists capped, strings truncated, junk dropped)", () => {
+    const p = boundProtocolInfo({
+      vendoredVersion: "x".repeat(500),
+      coverage: {
+        handled: 1,
+        ignored: 2,
+        gaps: 3,
+        gapList: Array.from({ length: 500 }, (_, i) => `g${i}`),
+      },
+      drift: [
+        { shape: "ok.field", count: 1 },
+        { shape: 42, count: "junk" },
+        "garbage",
+      ],
+    });
+    expect(p?.vendoredVersion.length).toBeLessThanOrEqual(120);
+    expect(p?.coverage?.gapList.length).toBeLessThanOrEqual(100);
+    expect(p?.drift).toEqual([{ shape: "ok.field", count: 1 }]);
+  });
+
+  test("normalizeCapabilitiesBody carries the section (and null when absent)", () => {
+    const withIt = normalizeCapabilitiesBody({
+      bridgeVersion: "0.23.0",
+      protocol: { vendoredVersion: "2026.6.11", drift: [] },
+    });
+    expect(withIt.protocol?.vendoredVersion).toBe("2026.6.11");
+    const without = normalizeCapabilitiesBody({ bridgeVersion: "0.22.0" });
+    expect(without.protocol).toBeNull();
+  });
+});
+
+describe("mergeProtocolInfo (multi-bridge drift union)", () => {
+  const base = {
+    vendoredVersion: "2026.6.11",
+    coverage: { handled: 37, ignored: 47, gaps: 7, gapList: [] as string[] },
+  };
+  test("drift unions across bridges (counts summed per shape) — never first-wins", () => {
+    const a = { ...base, drift: [{ shape: "chat.x", count: 2 }] };
+    const b = {
+      ...base,
+      drift: [
+        { shape: "chat.x", count: 3 },
+        { shape: "agent.y", count: 1 },
+      ],
+    };
+    expect(mergeProtocolInfo(a, b)?.drift).toEqual([
+      { shape: "chat.x", count: 5 },
+      { shape: "agent.y", count: 1 },
+    ]);
+  });
+  test("null sides pass through", () => {
+    const a = { ...base, drift: [] };
+    expect(mergeProtocolInfo(null, a)).toBe(a);
+    expect(mergeProtocolInfo(a, null)).toBe(a);
+    expect(mergeProtocolInfo(null, null)).toBeNull();
   });
 });

@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.24.0] — The protocol contract on screen: coverage matrix, drift, and per-turn cost
+
+Completes the protocol-contract initiative started in 0.22.0/0.23.0 and closes the last
+observability gap on turn economics. No breaking changes; Convex changes are additive.
+
+- **Settings ▸ Bridge now shows exactly what the bridge supports of the gateway protocol.**
+  The provider card gains a "Protocol" section: the vendored contract version the bridge was
+  built against, the coverage counts (fields handled / deliberately ignored / declared gaps —
+  each gap listed behind a collapsible toggle with its reason recorded in the repo), and an
+  "aligned" badge that flips to a red "N unknown field(s)" warning the day a connected gateway
+  starts emitting protocol this bridge build does not understand. In multi-bridge deployments
+  the drift of ALL bridges is merged (never first-bridge-wins), so a single drifting instance
+  cannot hide behind an aligned one.
+- **Each turn's cost is now visible to observability.** The per-turn context-pressure trace
+  (`chat.gateway_pressure`) carries the session's cumulative cost before the turn, sourced from
+  the session snapshot the bridge already fetches (zero extra gateway calls) — the difference
+  between two consecutive turns' traces is the cost of the turn. Chosen over the protocol's
+  `usage` field after live captures showed real gateways never populate it (the coverage
+  manifest documents that finding); the session panel keeps showing the cumulative cost.
+
 ## [0.23.0] — A Stop button that really stops, and protocol drift you can see
 
 Two follow-ups to 0.22.0's reliability push. The Stop control ends the run at the gateway

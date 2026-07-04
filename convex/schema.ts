@@ -1978,6 +1978,9 @@ export default defineSchema({
     // by lib/compat.boundCompatManifest (plain JSON object, size-capped). null =
     // LEGACY bridge without the additive fields — the frontend's legacy policy.
     compat: v.any(),
+    // Protocol-contract section (vendored schema version + coverage matrix +
+    // runtime drift), bounded by lib/compat.boundProtocolInfo. null = pre-0.23.
+    protocol: v.optional(v.any()),
     targets: v.array(bridgeCompatTarget), // one per instance (deduped)
     fetchedAt: v.number(), // last poll time (success OR failure)
   }).index("by_key", ["key"]),

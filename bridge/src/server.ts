@@ -57,6 +57,7 @@ import {
   resolveCapabilities,
 } from "./compat.js";
 import {
+  COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
   protocolDrift,
 } from "./providers/openclaw/protocol-drift.js";
@@ -777,6 +778,7 @@ async function performSend(
   let preSendSessionId: string | null = null;
   let preTurnTotalTokens: number | null = null;
   let preTurnContextTokens: number | null = null;
+  let preTurnCostUsd: number | null = null;
   try {
     const desc = await conn.request(
       "sessions.describe",
@@ -799,6 +801,14 @@ async function performSend(
         typeof sess.contextTokens === "number" &&
         Number.isFinite(sess.contextTokens)
           ? sess.contextTokens
+          : null;
+      // Session-cumulative cost from the SAME describe (the gateway never
+      // emits `usage` on chat events — live capture 2026-07-03 — so this is
+      // the real per-turn cost source: consecutive traces' deltas).
+      preTurnCostUsd =
+        typeof sess.estimatedCostUsd === "number" &&
+        Number.isFinite(sess.estimatedCostUsd)
+          ? sess.estimatedCostUsd
           : null;
     }
 
@@ -1004,6 +1014,7 @@ async function performSend(
       pressure: {
         totalTokens: preTurnTotalTokens,
         contextTokens: preTurnContextTokens,
+        costUsd: preTurnCostUsd,
       },
     });
   } catch (err) {
@@ -1703,6 +1714,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // (unknown chat/agent payload fields — names only, never values).
         protocol: {
           vendoredVersion: DRIFT_VENDORED_VERSION,
+          coverage: COVERAGE_SUMMARY,
           drift: protocolDrift.report(),
         },
         targets,

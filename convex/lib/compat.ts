@@ -40,7 +40,23 @@ export type NormalizedCapabilities = {
   protocolVersion: number | null;
   /** CompatManifest verbatim (bounded), or null = legacy bridge / bad shape. */
   compat: unknown;
+  /** Protocol-contract section (vendored schema version + coverage matrix +
+   *  runtime drift), bounded; null = pre-0.23 bridge. */
+  protocol: BridgeProtocolInfo | null;
   targets: CompatTarget[];
+}
+
+/** The bridge's protocol-contract self-description (see the bridge's
+ *  protocol-drift.ts): all fields defensive-parsed + size-bounded here. */
+export type BridgeProtocolInfo = {
+  vendoredVersion: string;
+  coverage: {
+    handled: number;
+    ignored: number;
+    gaps: number;
+    gapList: string[];
+  } | null;
+  drift: { shape: string; count: number }[];
 };
 
 /** A provider's support window as read from the CompatManifest. */
@@ -195,6 +211,77 @@ export function boundCompatManifest(raw: unknown): unknown {
  *  resolving capabilities from the manifest ourselves. This removes the bridge's
  *  need to echo OPENCLAW_INSTANCE_NAME for the version-gated UI to resolve (an
  *  idle bridge with no live session still yields the served instance's caps). */
+// Bounds for the protocol section (a hostile/buggy bridge must not bloat the
+// singleton doc): short strings, capped lists.
+const PROTOCOL_MAX_LIST = 100;
+const PROTOCOL_MAX_STR = 120;
+
+/** Defensive parse of the /capabilities `protocol` section. null on any
+ *  missing/foreign shape (pre-0.23 bridge). */
+export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const vendored = str(o.vendoredVersion);
+  if (vendored === null) return null;
+  let coverage: BridgeProtocolInfo["coverage"] = null;
+  if (typeof o.coverage === "object" && o.coverage !== null) {
+    const c = o.coverage as Record<string, unknown>;
+    const n = (v: unknown): number | null =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+    const handled = n(c.handled);
+    const ignored = n(c.ignored);
+    const gaps = n(c.gaps);
+    if (handled !== null && ignored !== null && gaps !== null) {
+      const gapList = (Array.isArray(c.gapList) ? c.gapList : [])
+        .filter((g): g is string => typeof g === "string")
+        .slice(0, PROTOCOL_MAX_LIST)
+        .map((g) => g.slice(0, PROTOCOL_MAX_STR));
+      coverage = { handled, ignored, gaps, gapList };
+    }
+  }
+  const drift = (Array.isArray(o.drift) ? o.drift : [])
+    .map((d): { shape: string; count: number } | null => {
+      if (typeof d !== "object" || d === null) return null;
+      const e = d as Record<string, unknown>;
+      const shape = typeof e.shape === "string" ? e.shape : null;
+      const count =
+        typeof e.count === "number" && Number.isFinite(e.count) ? e.count : null;
+      return shape !== null && count !== null
+        ? { shape: shape.slice(0, PROTOCOL_MAX_STR), count }
+        : null;
+    })
+    .filter((d): d is { shape: string; count: number } => d !== null)
+    .slice(0, PROTOCOL_MAX_LIST);
+  return { vendoredVersion: vendored.slice(0, PROTOCOL_MAX_STR), coverage, drift };
+}
+
+/**
+ * Merge two bridges' protocol sections (multi-bridge deployments): drift is a
+ * PER-BRIDGE runtime observation, so it must UNION across bridges (counts
+ * summed per shape) — first-wins would hide a drifting instance behind an
+ * aligned one. vendoredVersion/coverage keep the first bridge's values (one
+ * image per deployment; a rolling-upgrade divergence is transient and does not
+ * change the counts' meaning).
+ */
+export function mergeProtocolInfo(
+  a: BridgeProtocolInfo | null,
+  b: BridgeProtocolInfo | null,
+): BridgeProtocolInfo | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const merged = new Map(a.drift.map((d) => [d.shape, d.count]));
+  for (const d of b.drift) {
+    merged.set(d.shape, (merged.get(d.shape) ?? 0) + d.count);
+  }
+  return {
+    ...a,
+    drift: [...merged.entries()]
+      .map(([shape, count]) => ({ shape, count }))
+      .sort((x, y) => y.count - x.count)
+      .slice(0, PROTOCOL_MAX_LIST),
+  };
+}
+
 export function normalizeCapabilitiesBody(
   raw: unknown,
   servedInstance?: string | null,
@@ -254,6 +341,7 @@ export function normalizeCapabilitiesBody(
     protocolVersion:
       typeof o.protocolVersion === "number" ? o.protocolVersion : null,
     compat,
+    protocol: boundProtocolInfo(o.protocol),
     targets,
   };
 }

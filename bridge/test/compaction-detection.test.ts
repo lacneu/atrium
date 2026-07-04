@@ -255,6 +255,7 @@ describe("TurnSink compaction part + pressure trace", () => {
     expect(traces[0]?.[3]).toEqual({
       totalTokens: 19698,
       contextTokens: 272000,
+      costUsd: null, // pressure seeded without a cost in this fixture
       compaction: "preflight",
       errorKind: null, // no hard overflow this turn (compaction handled it)
     });

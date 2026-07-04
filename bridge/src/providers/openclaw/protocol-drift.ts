@@ -55,6 +55,30 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "agentId",
 ]);
 
+/**
+ * Coverage summary of the vendored protocol surface — the operator-facing
+ * matrix ("what does this bridge support against its validated gateway
+ * version"). Like the known-field sets above, these numbers are NOT
+ * hand-trusted: the drift test asserts they equal a recount of
+ * protocol/openclaw/coverage.json, which the coverage ratchet pins against
+ * the vendored TypeBox schemas.
+ */
+export const COVERAGE_SUMMARY = {
+  handled: 37,
+  ignored: 47,
+  gaps: 7,
+  /** The declared gaps, by schema path — the actionable part of the matrix. */
+  gapList: [
+    "ChatDeltaEvent.replace",
+    "ChatDeltaEvent.usage",
+    "ChatFinalEvent.usage",
+    "ChatFinalEvent.stopReason",
+    "ChatAbortedEvent.stopReason",
+    "ChatErrorEvent.usage",
+    "ChatErrorEvent.stopReason",
+  ],
+} as const;
+
 export interface DriftEntry {
   /** `chat.<field>` or `agent.<field>` — schema vocabulary only. */
   shape: string;

@@ -42,7 +42,7 @@
         },
         "usage": {
           "status": "gap",
-          "note": "main-turn token/cost telemetry absent (child telemetry reads payload.session.*, not usage)"
+          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
         }
       }
     },
@@ -78,7 +78,7 @@
         },
         "usage": {
           "status": "gap",
-          "note": "main-turn token/cost telemetry absent"
+          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
         },
         "stopReason": {
           "status": "gap",
@@ -162,7 +162,7 @@
         },
         "usage": {
           "status": "gap",
-          "note": "main-turn token/cost telemetry absent"
+          "note": "schema allows it but the real 2026.6.11 gateway NEVER emits usage on chat events (0 occurrences across live captures); main-turn tokens/cost are sourced from sessions.describe instead (sessionMeta panel + chat.gateway_pressure costUsd — per-turn = delta between consecutive traces)"
         },
         "stopReason": {
           "status": "gap",

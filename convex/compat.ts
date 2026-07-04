@@ -31,6 +31,7 @@ import { PERMISSIONS } from "./lib/rbac";
 import { bridgeCompatTarget } from "./schema";
 import {
   capabilitiesForInstance,
+  mergeProtocolInfo,
   normalizeCapabilitiesBody,
   summarizeCompat,
   type CompatSummary,
@@ -82,6 +83,7 @@ export const pollBridgeCompat = internalAction({
     let turnSessionEcho: boolean | null = null;
     let protocolVersion: number | null = null;
     let compat: NormalizedCapabilities["compat"] = null;
+    let protocolInfo: NormalizedCapabilities["protocol"] = null;
     let anyReachable = false;
     let lastError = "unreachable";
 
@@ -105,6 +107,7 @@ export const pollBridgeCompat = internalAction({
         if (turnSessionEcho === null) turnSessionEcho = n.turnSessionEcho;
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
         if (compat === null) compat = n.compat;
+        protocolInfo = mergeProtocolInfo(protocolInfo, n.protocol);
         for (const t of n.targets) {
           // Dedupe across bridges by instance (first reachable wins). Stamp the
           // SERVING bridge's rehydration default onto its own targets so a
@@ -136,6 +139,7 @@ export const pollBridgeCompat = internalAction({
       turnSessionEcho,
       protocolVersion,
       compat,
+      protocol: protocolInfo,
       targets: mergedTargets,
     });
   },
@@ -152,6 +156,8 @@ export const upsertBridgeCompat = internalMutation({
     turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
     protocolVersion: v.union(v.number(), v.null()),
     compat: v.any(),
+    // Protocol-contract section (bounded upstream by lib/compat.boundProtocolInfo).
+    protocol: v.optional(v.any()),
     targets: v.array(bridgeCompatTarget),
   },
   handler: async (ctx, args) => {
@@ -167,6 +173,7 @@ export const upsertBridgeCompat = internalMutation({
       turnSessionEcho: args.turnSessionEcho ?? null,
       protocolVersion: args.protocolVersion,
       compat: args.compat,
+      protocol: args.protocol ?? null,
       targets: args.targets,
       fetchedAt: now,
     };
@@ -226,6 +233,7 @@ export const getBridgeCompat = query({
       buildRevision: doc.buildRevision ?? null,
       protocolVersion: doc.protocolVersion,
       compat: doc.compat,
+      protocol: doc.protocol ?? null,
       targets: doc.targets,
       configuredInstances: instances.map((r) => r.name),
       fetchedAt: doc.fetchedAt,

@@ -185,6 +185,7 @@ type IngestOp =
       messageId: string;
       totalTokens: number | null;
       contextTokens: number | null;
+      costUsd?: number | null;
       compaction: string | null;
       errorKind?: string | null;
     }
@@ -549,6 +550,9 @@ export const ingest = httpAction(async (ctx, request) => {
           totalTokens: body.totalTokens,
           contextTokens: body.contextTokens,
           fillPct,
+          // Session-cumulative cost BEFORE the turn (per-turn cost = the delta
+          // between consecutive gateway_pressure traces of the chat).
+          ...(typeof body.costUsd === "number" ? { costUsd: body.costUsd } : {}),
           compaction: body.compaction,
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —
           // the counterpart of `compaction` (= handled silently). Distinguishes

@@ -6594,3 +6594,15 @@
   color: var(--muted-foreground);
   white-space: nowrap;
 }
+
+
+/* Bridge tab — protocol-contract section: compact mono lists for drift/gaps. */
+.oc-bridge-protocol__list {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
