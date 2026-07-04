@@ -8,6 +8,15 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.28.2] — Corrective: message actions stay available while a reply is running
+
+Corrective patch, frontend only. The per-message actions (copy, source view, report, delete)
+used to disappear entirely while a reply was streaming — you could not copy an earlier answer
+until the current turn finished. The action bars now stay available during a running turn; only
+Delete is held while a reply streams (with an explanatory tooltip), since truncating and
+regenerating mid-stream would race the running turn. Verified live: copying an earlier message
+works while a reply streams, and the delete button re-enables the moment the turn settles.
+
 ## [0.28.1] — Corrective: a delivered answer is never repainted as a failed turn
 
 Corrective patch, bridge only. When the gateway finished streaming a full reply and THEN failed

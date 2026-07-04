@@ -1321,6 +1321,10 @@ function DeleteMessageButton({ kind }: { kind: "user" | "assistant" }) {
   // (visible system status — the optimistic paths make the window tiny, but the
   // affordance must exist for the slow/failure cases).
   const [busy, setBusy] = useState(false);
+  // Read/copy actions stay AVAILABLE while a turn runs (the bars are no longer
+  // hidden), but DELETE keeps a guard: truncating/regenerating mid-stream would
+  // race the running turn's writes.
+  const isRunning = useThread((t) => t.isRunning);
   if (!messageId) return null;
 
   async function onDelete(): Promise<void> {
@@ -1367,13 +1371,15 @@ function DeleteMessageButton({ kind }: { kind: "user" | "assistant" }) {
       type="button"
       className="oc-iconbtn oc-iconbtn--danger"
       title={
-        kind === "assistant"
-          ? m.chat_delete_assistant_btn_title()
-          : m.chat_delete_user_btn_title()
+        isRunning
+          ? m.chat_delete_while_running()
+          : kind === "assistant"
+            ? m.chat_delete_assistant_btn_title()
+            : m.chat_delete_user_btn_title()
       }
       aria-label={m.chat_delete_message_aria()}
       aria-busy={busy}
-      disabled={busy}
+      disabled={busy || isRunning}
       onClick={() => void onDelete()}
     >
       {busy ? (
@@ -1496,7 +1502,6 @@ function UserMessage() {
         ) : (
           <ActionBarPrimitive.Root
             className="oc-msg__actions oc-msg__actions--user"
-            hideWhenRunning
             autohide="not-last"
           >
           {ui.copyUser ? (
@@ -1800,7 +1805,6 @@ function AssistantMessage() {
             (see messages.deleteMessage) — no confirm (recoverable). */}
         <ActionBarPrimitive.Root
           className="oc-msg__actions"
-          hideWhenRunning
           autohide="not-last"
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
