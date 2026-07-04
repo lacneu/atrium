@@ -179,6 +179,12 @@ export class RunManager {
     return this.normalizer.finalized;
   }
 
+  /** True while the gateway abandoned the run to COMPACT (it will resume): a
+   *  connection close in this window must not force-abort the turn. */
+  get compactionPending(): boolean {
+    return this.normalizer.compactionPending;
+  }
+
   /** The assistant message id for the current/last turn (from the sink) -- the
    *  parent message a sub-agent observation is tagged with for robust correlation. */
   get currentMessageId(): string | null {

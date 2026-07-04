@@ -8,6 +8,39 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.25.0] — Compaction is not an interruption: honest turn survival and causal overflow reading
+
+A reliability release grounded in live testing: a gateway that pauses a turn to compact its
+context no longer reads as a user interruption, hard overflows are classified even on gateways
+that never send an error taxonomy, and the observability trace now tells the overflow story
+causally. No breaking changes; Convex changes are additive.
+
+- **A turn that pauses for context compaction no longer settles as "Interrupted".** When an
+  agent (or the gateway itself) compacts a session mid-turn, the gateway abandons the run and
+  resumes it after the replay — an intermediate state Atrium previously froze as an
+  interruption (observed live: the reply never arrived even though the agent kept working).
+  Both trigger paths are now guarded: an abort signal arriving while a compaction is pending
+  keeps the turn open (the resumed run finishes in the same message), and a connection drop in
+  that window defers instead of aborting, settling honestly after a bounded grace only if the
+  resume never lands. A user stop keeps interrupting immediately.
+- **Hard context overflows are classified even without a gateway error taxonomy.** Live
+  captures showed real gateways report an overflow as bare text with no machine-readable kind;
+  the known phrasings are now recognized so the actionable headline and the observability
+  marker fire anyway. The headline also explains the confusing part: the context meter shows
+  the pre-turn state, while the overflow happens mid-turn as tool results accumulate — with
+  the advice that matters (delegate to sub-agents, compact, or start fresh).
+- **The per-turn pressure trace now reads causally.** It carries the number of tool calls the
+  turn executed, so a hard overflow at a low pre-turn fill is immediately explained
+  ("40% before the turn + 66 tool calls → overflowed mid-turn") instead of requiring a manual
+  reconstruction. Tool counting matches the coalesced delivery of real tools.
+- **Streamed text survives mid-stream refreshes.** A replacement delta (a full-content refresh
+  the protocol allows) now replaces the accumulated text and lets the stream continue —
+  previously it either corrupted the reply (appended) or silently dropped everything after the
+  refresh. The protocol coverage matrix moves to 38 handled / 47 ignored / 6 gaps.
+- **The bridge status card says "Bridge contract" instead of "Protocol".** The version shown
+  there is the bridge↔Atrium exchange contract, not the gateway protocol of the provider
+  section below — the two no longer share a name.
+
 ## [0.24.0] — The protocol contract on screen: coverage matrix, drift, and per-turn cost
 
 Completes the protocol-contract initiative started in 0.22.0/0.23.0 and closes the last

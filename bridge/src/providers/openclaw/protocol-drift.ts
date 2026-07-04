@@ -64,12 +64,11 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * the vendored TypeBox schemas.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 37,
+  handled: 38,
   ignored: 47,
-  gaps: 7,
+  gaps: 6,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
   gapList: [
-    "ChatDeltaEvent.replace",
     "ChatDeltaEvent.usage",
     "ChatFinalEvent.usage",
     "ChatFinalEvent.stopReason",

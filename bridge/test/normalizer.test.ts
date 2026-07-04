@@ -1080,3 +1080,162 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(normalizer.finalized).toBe(false);
   });
 });
+
+describe("errorKind fallback + replace delta (gateway 6.11 realities)", () => {
+  it("a bare-text overflow error (no wire errorKind — live-verified) still classifies context_length", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBe("context_length");
+  });
+
+  it("a non-overflow bare error stays unclassified", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "error", errorMessage: "boom" },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBeUndefined();
+  });
+
+  it("deltas AFTER a replace keep streaming (replace never locks snapshot precedence)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const mk = (deltaText: string, extra: Record<string, unknown> = {}) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "delta", deltaText, seq: 1, ...extra },
+    });
+    normalizer.feed(mk("brouillon"), clock.tick());
+    normalizer.feed(mk("Refresh complet", { replace: true }), clock.tick());
+    normalizer.feed(mk(" + la suite"), clock.tick()); // must NOT be dropped
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "final", seq: 9 },
+      },
+      clock.tick(),
+    );
+    expect(events.find((e) => e.type === "message.final")?.text).toBe(
+      "Refresh complet + la suite",
+    );
+  });
+
+  it("replace:true on a bare deltaText REPLACES the accumulated text (never appends)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const mk = (deltaText: string, extra: Record<string, unknown> = {}) => ({
+      type: "event",
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "delta", deltaText, seq: 1, ...extra },
+    });
+    normalizer.feed(mk("Bonjour"), clock.tick());
+    normalizer.feed(mk("Bonjour, monde corrigé", { replace: true }), clock.tick());
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "final", seq: 3 },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.text).toBe("Bonjour, monde corrigé");
+  });
+});
+
+describe("compaction abandon must not read as a user stop (live report 2026-07-04)", () => {
+  it("chat:aborted DURING compactionPending keeps the turn open (the run resumes)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // The gateway abandons the run to compact (the pinned mid-turn signal).
+    normalizer.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "end", livenessState: "abandoned" },
+        },
+      },
+      clock.tick(),
+    );
+    // A chat:aborted rides along with the abandon — it is NOT a user stop.
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "aborted" },
+      },
+      clock.tick(),
+    );
+    expect(events.filter((e) => e.type === "message.final")).toHaveLength(0);
+    expect(normalizer.finalized).toBe(false);
+    // The RESUMED run then finishes normally in the same turn.
+    const final = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "DONE_AFTER_COMPACT" }] },
+        },
+      },
+      clock.tick(),
+    );
+    expect(final.find((e) => e.type === "message.final")?.text).toBe(
+      "DONE_AFTER_COMPACT",
+    );
+  });
+
+  it("a NORMAL chat:aborted (no compaction pending) still terminalizes", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "aborted", stopReason: "rpc" },
+      },
+      clock.tick(),
+    );
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("aborted");
+  });
+});

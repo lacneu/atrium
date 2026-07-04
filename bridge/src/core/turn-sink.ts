@@ -103,6 +103,10 @@ export class TurnSink {
     costUsd?: number | null;
   } | null = null;
   private compactionPhase: string | null = null;
+  // Tool calls emitted THIS turn: rides the pressure trace so a mid-turn
+  // overflow reads causally at a glance ("40% pre-turn + 66 tool calls ->
+  // overflow") instead of needing a manual reconstruction.
+  private toolCallCount = 0;
   // --- Deferred open (SPONTANEOUS announce turns) ---------------------------
   // A gateway-initiated announce run may be entirely silent (the NO_REPLY
   // protocol sentinel: "nothing to show the user"). For those turns the
@@ -177,6 +181,7 @@ export class TurnSink {
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
     this.compactionPhase = null;
+    this.toolCallCount = 0;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
     this.pendingOpen = false;
@@ -366,6 +371,18 @@ export class TurnSink {
           break;
         }
         case "tool.status": {
+          // Real tools arrive COALESCED (one completed/error event per call);
+          // the message tool emits every phase — count it once, on its start.
+          {
+            const ph = asString(event.phase);
+            if (
+              ph === "completed" ||
+              ph === "error" ||
+              (ph === "start" && asString(event.name) === "message")
+            ) {
+              this.toolCallCount++;
+            }
+          }
           const part: ToolPart = {
             kind: "tool",
             name: asString(event.name),
@@ -509,6 +526,7 @@ export class TurnSink {
           // Session-cumulative cost BEFORE this turn (sessions.describe): the
           // delta between consecutive turns' traces IS the per-turn cost.
           costUsd: this.pressure?.costUsd ?? null,
+          toolCalls: this.toolCallCount,
           compaction: this.compactionPhase,
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.

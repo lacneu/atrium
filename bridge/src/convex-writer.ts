@@ -187,6 +187,7 @@ export interface ConvexWriter {
       totalTokens: number | null;
       contextTokens: number | null;
       costUsd?: number | null;
+      toolCalls?: number;
       compaction: string | null;
       /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
@@ -373,6 +374,7 @@ type IngestOp =
       totalTokens: number | null;
       contextTokens: number | null;
       costUsd?: number | null;
+      toolCalls?: number;
       compaction: string | null;
       // Hard-overflow marker (errorKind "context_length" on a FAILED turn).
       errorKind?: string | null;
@@ -1015,6 +1017,7 @@ export class HttpConvexWriter implements ConvexWriter {
       totalTokens: number | null;
       contextTokens: number | null;
       costUsd?: number | null;
+      toolCalls?: number;
       compaction: string | null;
       errorKind?: string | null;
     },

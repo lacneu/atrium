@@ -102,6 +102,11 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 // ChatErrorEventSchema.errorKind enum (gateway-protocol logs-chat.ts), minus
 // "unknown" (nothing actionable to classify). Only these values may persist as
 // the message's stable errorCode.
+// Known gateway overflow phrasings (live capture: "Context overflow: prompt
+// too large for the model. Try /reset (or /new) ...").
+const CONTEXT_OVERFLOW_TEXT_RE =
+  /context overflow|prompt too large|maximum context length|context[- ]length exceeded/i;
+
 const CHAT_ERROR_KINDS = new Set([
   "refusal",
   "timeout",
@@ -691,6 +696,13 @@ export class Normalizer {
     // reply — do NOT let it fall through to applyVisible.
     if (state === "error" || state === "aborted") {
       if (state === "aborted") {
+        // An abort while a COMPACTION is pending is the gateway abandoning the
+        // run to compact (it resumes after the replay) — terminalizing it here
+        // froze real turns as "Interrompu" (live report 2026-07-04). Let the
+        // widened compaction grace keep the turn open instead.
+        if (this.compactionPending) {
+          return;
+        }
         events.push(...this.finalize(now, "aborted"));
         return;
       }
@@ -721,6 +733,16 @@ export class Normalizer {
       return;
     }
     if (isString(deltaText) && deltaText) {
+      // ChatDeltaEventSchema.replace: a non-prefix replacement delta must
+      // REPLACE the accumulated text (appending corrupts the reply) — via the
+      // snapshot path so the UI resyncs — but WITHOUT flipping the snapshot
+      // precedence: a mid-stream refresh is followed by MORE deltas, which a
+      // locked hasSnapshot would silently drop (stream stuck to timeout).
+      if (payload.replace === true) {
+        this.applyVisible(deltaText, true, isFinal, now, events);
+        this.hasSnapshot = false; // stay in delta mode; the stream continues
+        return;
+      }
       this.applyVisible(deltaText, false, isFinal, now, events);
       return;
     }
@@ -1132,6 +1154,13 @@ export class Normalizer {
     if (error) {
       finalEvent.error = error;
       statusEvent.message = error;
+    }
+    if (!errorKind && error) {
+      // FALLBACK classification: real 2026.6.11 gateways do not populate
+      // errorKind (live-verified — like `usage`), so a hard overflow arrived
+      // as bare text. Pin the known overflow phrasings to context_length so
+      // the actionable headline + pressure-trace marker still fire.
+      errorKind = CONTEXT_OVERFLOW_TEXT_RE.test(error) ? "context_length" : null;
     }
     if (errorKind) {
       // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:

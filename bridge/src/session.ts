@@ -387,12 +387,48 @@ class Session implements BridgeSession {
       if (winner.kind === "frame") {
         if (winner.done) {
           // Connection closed. If a turn was mid-flight, finalize it as aborted
-          // so the UI never stays stuck on a "streaming" message.
+          // so the UI never stays stuck on a "streaming" message — UNLESS the
+          // gateway abandoned the run to COMPACT (a session compaction can
+          // recreate the session and drop this socket): the run resumes after
+          // the replay, so aborting here freezes a live turn as "Interrompu"
+          // (live report 2026-07-04). The reconnect/replay resumes it; the
+          // stuck-stream watchdog stays the backstop if it never does.
           if (!this.runManager.isFinalized) {
-            try {
-              await this.runManager.endTurn(now, "aborted");
-            } catch (err) {
-              console.error("session close finalize error:", (err as Error)?.message ?? err);
+            if (this.runManager.compactionPending) {
+              console.log(
+                `[session] close mid-turn with compaction pending — NOT aborting chat=${this.chatId} (resume expected)`,
+              );
+              // BOUNDED settle: nothing ticks this turn once the consumer exits
+              // (the socket is gone), so if no resume/recovery lands, settle it
+              // after the compaction-scale grace instead of leaving it to the
+              // slower global stuck-stream watchdog. isFinalized guards the
+              // race with any recovery that did land meanwhile. (True resume —
+              // transcript re-fetch over a fresh operator connection — is the
+              // follow-up; this bound guarantees "never an eternal stream".)
+              const rm = this.runManager;
+              const settleClock = this.clock;
+              setTimeout(() => {
+                if (!rm.isFinalized) {
+                  console.log(
+                    `[session] compaction resume never arrived — settling aborted chat=${this.chatId}`,
+                  );
+                  void rm.endTurn(settleClock(), "aborted").catch((e) =>
+                    console.error(
+                      "[session] deferred compaction settle failed:",
+                      (e as Error)?.message ?? e,
+                    ),
+                  );
+                }
+              }, 120_000).unref?.();
+            } else {
+              console.log(
+                `[session] close mid-turn — force-abort chat=${this.chatId} (no compaction pending)`,
+              );
+              try {
+                await this.runManager.endTurn(now, "aborted");
+              } catch (err) {
+                console.error("session close finalize error:", (err as Error)?.message ?? err);
+              }
             }
           }
           // Drop every sub-agent observation (status left as last-known): the

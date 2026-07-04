@@ -405,7 +405,10 @@ describe("run-manager -> convex-writer mapping", () => {
   it("lifecycle error: finalize(error) with partial text + error string", async () => {
     const { writer, manager } = await drive("lifecycle-error");
     expect(manager.isFinalized).toBe(true);
-    const final = writer.calls[writer.calls.length - 1] as [
+    // The fixture's error text is a REAL overflow phrasing, so the fallback
+    // classifier now tags it context_length and ships the pressure trace AFTER
+    // the finalize — find the finalize by kind, not by last position.
+    const final = writer.calls.find((c) => c[0] === "finalize") as [
       "finalize",
       string,
       FinalizeStatus,
@@ -417,6 +420,7 @@ describe("run-manager -> convex-writer mapping", () => {
     expect(final[2]).toBe("error"); // status mapped from the terminal run.status
     expect(final[3]).toBe("moitié"); // partial content preserved
     expect(String(final[4] ?? "")).toContain("Context overflow");
+    expect(final[5]).toBe("context_length"); // fallback classification fired
   });
 
   it("isolation: a foreign-session turn writes nothing but the streaming message", async () => {

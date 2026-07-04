@@ -256,6 +256,7 @@ describe("TurnSink compaction part + pressure trace", () => {
       totalTokens: 19698,
       contextTokens: 272000,
       costUsd: null, // pressure seeded without a cost in this fixture
+      toolCalls: 0, // no tools in this fixture turn
       compaction: "preflight",
       errorKind: null, // no hard overflow this turn (compaction handled it)
     });

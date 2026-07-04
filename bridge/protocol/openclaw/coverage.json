@@ -37,8 +37,8 @@
           "by": "handleChat applyVisible append path"
         },
         "replace": {
-          "status": "gap",
-          "note": "a bare-deltaText replacement delta (replace:true, no message) APPENDS instead of replacing — corrupts streamed text; message-carrying replacements are covered incidentally by the snapshot path. No fixture observed yet."
+          "status": "handled",
+          "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
         },
         "usage": {
           "status": "gap",

@@ -186,6 +186,7 @@ type IngestOp =
       totalTokens: number | null;
       contextTokens: number | null;
       costUsd?: number | null;
+      toolCalls?: number;
       compaction: string | null;
       errorKind?: string | null;
     }
@@ -553,6 +554,9 @@ export const ingest = httpAction(async (ctx, request) => {
           // Session-cumulative cost BEFORE the turn (per-turn cost = the delta
           // between consecutive gateway_pressure traces of the chat).
           ...(typeof body.costUsd === "number" ? { costUsd: body.costUsd } : {}),
+          // Tool calls this turn: the mid-turn growth driver (a hard overflow at
+          // a low pre-turn fill reads causally: many tool results accumulated).
+          ...(typeof body.toolCalls === "number" ? { toolCalls: body.toolCalls } : {}),
           compaction: body.compaction,
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —
           // the counterpart of `compaction` (= handled silently). Distinguishes
