@@ -90,6 +90,23 @@ describe("admin.upsertInstanceConfig", () => {
     expect(inst?.config).toBeUndefined();
   });
 
+  test("contentLocale: accepts a supported locale, rejects an unknown one", async () => {
+    const t = convexTest(schema, modules);
+    const { as, instanceId } = await seed(t, "admin");
+    await as.mutation(api.admin.upsertInstanceConfig, {
+      instanceId,
+      config: { contentLocale: "en" },
+    });
+    const inst = await t.run((ctx) => ctx.db.get(instanceId));
+    expect(inst?.config).toEqual({ contentLocale: "en" });
+    await expect(
+      as.mutation(api.admin.upsertInstanceConfig, {
+        instanceId,
+        config: { contentLocale: "xx" },
+      }),
+    ).rejects.toThrow(/Invalid instance config/);
+  });
+
   test("an empty config clears overrides (stores {})", async () => {
     const t = convexTest(schema, modules);
     const { as, instanceId } = await seed(t, "admin");

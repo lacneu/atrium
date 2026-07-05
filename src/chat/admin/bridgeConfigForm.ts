@@ -7,6 +7,7 @@ import {
   type InboundMediaMode,
   type MediaMode,
 } from "../../../convex/lib/instanceConfig";
+import { type Locale } from "../../../convex/lib/locales";
 import {
   PROMPT_INJECTION_KEYS,
   PROMPT_INJECTIONS,
@@ -33,6 +34,9 @@ export type ConfigForm = {
  *  effective enabled state + its effective text (custom, else the registry default). */
 export function injectionsFromConfig(
   stored: PromptInjectionConfig | undefined,
+  // The instance's CONTENT locale: which language's DEFAULT text fills an
+  // un-overridden row (must match what the backend actually sends).
+  contentLocale: Locale,
 ): Record<string, InjectionForm> {
   const out: Record<string, InjectionForm> = {};
   for (const key of PROMPT_INJECTION_KEYS) {
@@ -42,7 +46,7 @@ export function injectionsFromConfig(
       template:
         typeof ov?.template === "string" && ov.template.length > 0
           ? ov.template
-          : PROMPT_INJECTIONS[key].defaultTemplate,
+          : PROMPT_INJECTIONS[key].defaultTemplate[contentLocale],
     };
   }
   return out;
@@ -54,6 +58,10 @@ export function injectionsFromConfig(
  *  defaults contributes nothing — so a bare Save never freezes the defaults as overrides. */
 export function buildInjectionsOverride(
   rows: Record<string, InjectionForm>,
+  // The ACTIVE content locale: only ITS default is "untouched" — an admin who
+  // deliberately pastes another language's built-in text IS overriding (codex
+  // P3: comparing against every locale's default silently dropped that intent).
+  contentLocale: Locale,
 ): PromptInjectionConfig {
   const out: PromptInjectionConfig = {};
   for (const key of PROMPT_INJECTION_KEYS) {
@@ -63,7 +71,9 @@ export function buildInjectionsOverride(
     const entry: { enabled?: boolean; template?: string } = {};
     if (def.togglable && row.enabled === false) entry.enabled = false;
     const t = row.template.trim();
-    if (t.length > 0 && t !== def.defaultTemplate) entry.template = t;
+    if (t.length > 0 && t !== def.defaultTemplate[contentLocale]) {
+      entry.template = t;
+    }
     if (entry.enabled !== undefined || entry.template !== undefined) {
       out[key] = entry;
     }
@@ -76,7 +86,10 @@ export function buildInjectionsOverride(
  * field shows its env/Convex default for display. The inverse of
  * `buildConfigOverride` (which strips the unset defaults back out on save).
  */
-export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
+export function formFromConfig(
+  stored: Partial<ConfigForm>,
+  contentLocale: Locale,
+): ConfigForm {
   return {
     mediaMode: stored.mediaMode ?? DEFAULT_INSTANCE_CONFIG.mediaMode,
     inboundMediaMode:
@@ -87,7 +100,7 @@ export function formFromConfig(stored: Partial<ConfigForm>): ConfigForm {
       stored.inboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.inboundAgentMount,
     outboundAgentMount:
       stored.outboundAgentMount ?? DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
-    promptInjections: injectionsFromConfig(stored.promptInjections),
+    promptInjections: injectionsFromConfig(stored.promptInjections, contentLocale),
   };
 }
 
@@ -114,6 +127,7 @@ export type ConfigOverride = Partial<
   summarizeThresholdChars?: number;
   curationEnabled?: boolean;
   curationBudgetChars?: number;
+  contentLocale?: string;
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -125,11 +139,13 @@ const PASSTHROUGH_KEYS = [
   "summarizeThresholdChars",
   "curationEnabled",
   "curationBudgetChars",
+  "contentLocale",
 ] as const;
 
 export function buildConfigOverride(
   form: ConfigForm,
   stored: Partial<ConfigForm>,
+  contentLocale: Locale,
 ): ConfigOverride {
   const out: ConfigOverride = {};
   type FlatKey = keyof Omit<ConfigForm, "promptInjections">;
@@ -144,7 +160,7 @@ export function buildConfigOverride(
   keep("mediaMaxMb");
   keep("inboundAgentMount");
   keep("outboundAgentMount");
-  const injections = buildInjectionsOverride(form.promptInjections);
+  const injections = buildInjectionsOverride(form.promptInjections, contentLocale);
   if (Object.keys(injections).length > 0) out.promptInjections = injections;
   // Carry the other surfaces' fields through (see PASSTHROUGH_KEYS). `stored` is
   // the RAW instance.config at both call sites, so the values are present even
@@ -152,8 +168,13 @@ export function buildConfigOverride(
   const raw = stored as Record<string, unknown>;
   for (const k of PASSTHROUGH_KEYS) {
     const val = raw[k];
-    if (typeof val === "number") (out as Record<string, unknown>)[k] = val;
-    else if (typeof val === "boolean") (out as Record<string, unknown>)[k] = val;
+    if (
+      typeof val === "number" ||
+      typeof val === "boolean" ||
+      typeof val === "string"
+    ) {
+      (out as Record<string, unknown>)[k] = val;
+    }
   }
   return out;
 }

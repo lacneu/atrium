@@ -12,7 +12,7 @@ import {
 import { coercePredicateValue, type Op, type Predicate } from "./types";
 import { m } from "@/paraglide/messages.js";
 
-// Collapsible "Filtre avancé" predicate builder (Traces + Audit). Each row is a
+// Collapsible advanced-filter predicate builder (Traces + Audit). Each row is a
 // field <Select> (resource-provided list) + op <Select> + value <Input>. Rows
 // are ANDed. On every change it emits the FULLY-COERCED predicate list (number/
 // bool/string) so the backend's typed comparisons behave (see

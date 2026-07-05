@@ -1,5 +1,6 @@
 import * as React from "react"
 
+import { m } from "@/paraglide/messages.js"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -144,11 +145,11 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
             {confirmWord ? (
               <label className="flex flex-col gap-1.5">
                 <span className="text-sm text-muted-foreground">
-                  Pour confirmer, saisissez{" "}
+                  {m.confirm_type_word_before()}{" "}
                   <span className="font-medium text-foreground">
-                    « {confirmWord} »
+                    {m.confirm_word_quoted({ word: confirmWord })}
                   </span>{" "}
-                  ci-dessous.
+                  {m.confirm_type_word_after()}
                 </span>
                 <Input
                   ref={inputRef}
@@ -167,15 +168,17 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
             ) : null}
 
             <AlertDialogFooter>
+              {/* Prop defaults resolve at RENDER time (not module load) so the
+                  labels always follow the active locale. */}
               <AlertDialogCancel onClick={() => settle(false)}>
-                {req.opts.cancelLabel ?? "Annuler"}
+                {req.opts.cancelLabel ?? m.confirm_cancel()}
               </AlertDialogCancel>
               <Button
                 variant={req.opts.destructive ? "destructive" : "default"}
                 disabled={!canConfirm}
                 onClick={() => settle(true)}
               >
-                {req.opts.confirmLabel ?? "Supprimer"}
+                {req.opts.confirmLabel ?? m.confirm_delete()}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -224,13 +227,13 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
 
             <DialogFooter>
               <Button variant="outline" onClick={() => settle(null)}>
-                {req.opts.cancelLabel ?? "Annuler"}
+                {req.opts.cancelLabel ?? m.confirm_cancel()}
               </Button>
               <Button
                 disabled={!promptValid}
                 onClick={() => settle(value.trim())}
               >
-                {req.opts.confirmLabel ?? "Valider"}
+                {req.opts.confirmLabel ?? m.confirm_ok()}
               </Button>
             </DialogFooter>
           </DialogContent>

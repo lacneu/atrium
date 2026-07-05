@@ -5,6 +5,7 @@ import type { Id } from "../convexApi";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "./DataTableShell";
+import { formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 
 // Increment B — admin administration of recorded feedback (Settings › Feedbacks).
@@ -368,7 +369,7 @@ export function FeedbacksTab() {
         columns={[
           {
             header: m.feedbacks_col_when(),
-            cell: (r) => new Date(r.at).toLocaleString("fr-FR"),
+            cell: (r) => formatDateTime(r.at),
             sort: (r) => r.at, // sort by the timestamp, not the formatted string
           },
           {

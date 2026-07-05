@@ -17,6 +17,7 @@
 // streamed message.
 
 import { v } from "convex/values";
+import { contentLocaleForInstance } from "./lib/serverLocale";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -784,7 +785,25 @@ export const rehydrationContext = internalQuery({
     // Sub-agent results anchored to a turn ARE its content (a sessions_spawn
     // turn's parent text is often EMPTY — without this join, a session reset
     // loses the sub-agent-produced answers entirely). One bounded read.
-    const childResults = await loadChildResults(ctx, chatId);
+    // Content locale (instance override -> admin default -> base): the language
+    // of the framing strings AND the sub-agent digest labels — same locale as
+    // the prompt injections. On a PER-TURN ROUTED chat the current message
+    // carries the ROUTED instance (getChatRouting sends the injections for that
+    // instance) — the history block must follow the SAME instance, not the
+    // chat's primary (codex P2: a routed turn otherwise mixed languages).
+    const rehydInstanceName =
+      (current?.routedInstanceName ?? chat?.instanceName) || null;
+    const rehydInstance = rehydInstanceName
+      ? await ctx.db
+          .query("instances")
+          .withIndex("by_name", (q) => q.eq("name", rehydInstanceName))
+          .first()
+      : null;
+    const contentLocale = await contentLocaleForInstance(
+      ctx,
+      rehydInstance?.config,
+    );
+    const childResults = await loadChildResults(ctx, chatId, contentLocale);
     const usableDesc = recent
       .filter((m) => current === null || compareOrder(m, current) < 0) // strictly before the current turn
       .filter(
@@ -805,6 +824,7 @@ export const rehydrationContext = internalQuery({
       (oldestRead ? effectiveOrder(oldestRead) > watermark : false);
 
     const composed = composeRehydration({
+      locale: contentLocale,
       turns: usableDesc
         .slice()
         .reverse()

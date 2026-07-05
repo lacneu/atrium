@@ -44,6 +44,10 @@ export async function notifyUser(
     kind: NotifKind;
     title: string;
     body: string;
+    // i18n key + params — the client renders these in the READER's language;
+    // title/body above remain the write-time fallback (legacy rows, old clients).
+    messageKey?: string;
+    params?: Record<string, string>;
     href?: string;
     dedupeKey?: string;
     // Override the row's timestamp (e.g. a backfill replaying a past event at its
@@ -66,6 +70,8 @@ export async function notifyUser(
     userId: args.userId,
     kind: args.kind,
     title: args.title,
+    ...(args.messageKey ? { messageKey: args.messageKey } : {}),
+    ...(args.params ? { params: args.params } : {}),
     body: args.body,
     href: args.href,
     dedupeKey: args.dedupeKey,
@@ -86,6 +92,8 @@ export const fanOutAnomalyToAdmins = internalMutation({
     ),
     title: v.string(),
     body: v.string(),
+    messageKey: v.optional(v.string()),
+    params: v.optional(v.record(v.string(), v.string())),
     href: v.optional(v.string()),
     dedupeKey: v.optional(v.string()),
     cursor: v.optional(v.union(v.string(), v.null())),
@@ -101,6 +109,8 @@ export const fanOutAnomalyToAdmins = internalMutation({
         kind: args.kind,
         title: args.title,
         body: args.body,
+        messageKey: args.messageKey,
+        params: args.params,
         href: args.href,
         dedupeKey: args.dedupeKey,
       });
@@ -123,6 +133,8 @@ export async function notifyAdmins(
     kind: "anomaly_open" | "anomaly_resolved";
     title: string;
     body: string;
+    messageKey?: string;
+    params?: Record<string, string>;
     href?: string;
     dedupeKey?: string;
   },
@@ -150,6 +162,10 @@ export const myNotifications = query({
       kind: r.kind,
       title: r.title,
       body: r.body,
+      // i18n rendering inputs — the client localizes known keys in the READER's
+      // language; title/body above are the fallback.
+      messageKey: r.messageKey ?? null,
+      params: r.params ?? null,
       href: r.href ?? null,
       createdAt: r.createdAt,
       unread: r.readAt === undefined,

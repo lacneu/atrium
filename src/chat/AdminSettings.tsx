@@ -5,6 +5,8 @@
 // (src/router.tsx); each tab below is mounted by its own route. `TABS` is the
 // single source of truth the router and the nav both read.
 
+import { m } from "@/paraglide/messages.js";
+
 // Tab order = nav order. The router declares one STATIC route per FILTERED tab
 // (its own typed search schema) and one shared `$tab` route for the paramless
 // tabs (roles/integrations/instances/theme) — but the user-facing URL is always
@@ -52,28 +54,32 @@ export const PARAMLESS_TABS = [
 ] as const;
 export type ParamlessTab = (typeof PARAMLESS_TABS)[number];
 
-// FR labels for tabs whose raw key isn't a clean capitalized word. Tabs absent
-// from this map fall back to the CSS text-transform: capitalize on the raw key.
-export const TAB_LABELS: Partial<Record<Tab, string>> = {
-  groups: "Groupes", // FR fallback; the nav renders m.settings_tab_groups
-  access: "Accès", // FR fallback; the nav renders m.settings_tab_access
-  serviceAccounts: "Comptes de service",
-  roles: "Rôles",
-  traces: "Traces",
-  kpi: "KPI",
-  anomalies: "Anomalies",
-  integrations: "Intégrations",
-  feedbacks: "Feedbacks",
-  subagentReports: "Rapports sous-agents",
-  bridge: "Bridge",
-  injections: "Injections", // FR fallback; the nav renders m.settings_tab_injections
-
-  files: "Fichiers", // FR fallback; the nav renders the i18n label (m.files_tab_label)
-  agentFiles: "Fichiers d'agent", // FR fallback; nav renders m.afiles_tab_label
-  theme: "Apparence", // FR fallback; nav renders m.appearance_tab_label
-  preferences: "Préférences", // FR fallback; nav renders m.settings_tab_preferences
-  // chatDefaults has NO ASCII-safe FR fallback; the nav renders
-  // m.cdefaults_tab_label and the tab is admin-only (never in the grant editor).
+// i18n labels for the Settings tabs, shared by every consumer (nav tab bar,
+// grant editor…). Thunks — NOT resolved strings — so each render reads the
+// ACTIVE locale (a module-level m.*() call would freeze the boot locale).
+// Total over TABS (Record<Tab, ...> enforces it): adding a tab without its
+// label is a compile error, so no FR fallback map is needed anymore.
+export const TAB_I18N: Record<Tab, () => string> = {
+  users: () => m.settings_tab_users(),
+  groups: () => m.settings_tab_groups(),
+  instances: () => m.settings_tab_instances(),
+  bridge: () => m.settings_tab_bridge(),
+  injections: () => m.settings_tab_injections(),
+  serviceAccounts: () => m.settings_tab_serviceaccounts(),
+  roles: () => m.settings_tab_roles(),
+  access: () => m.settings_tab_access(),
+  traces: () => m.settings_tab_traces(),
+  kpi: () => m.settings_tab_kpi(),
+  anomalies: () => m.settings_tab_anomalies(),
+  files: () => m.files_tab_label(),
+  agentFiles: () => m.afiles_tab_label(),
+  preferences: () => m.settings_tab_preferences(),
+  integrations: () => m.settings_tab_integrations(),
+  theme: () => m.appearance_tab_label(),
+  chatDefaults: () => m.cdefaults_tab_label(),
+  audit: () => m.settings_tab_audit(),
+  feedbacks: () => m.settings_tab_feedbacks(),
+  subagentReports: () => m.settings_tab_subagentreports(),
 };
 
 // --- Per-tab RBAC ----------------------------------------------------------
@@ -163,7 +169,7 @@ export function tabFromPathname(pathname: string): Tab | undefined {
 // working instead of 404ing. Sources must NOT be in TABS; targets must be
 // (tabAccess.test.ts pins both).
 export const SETTINGS_TAB_REDIRECTS = {
-  // The admin "Préférences UI" governance tab merged into Preferences (per-row
+  // The admin "UI preferences" governance tab merged into Preferences (per-row
   // governance controls behind the admin-only "manage defaults & locks" mode).
   uiprefs: "preferences",
 } as const satisfies Record<string, Tab>;

@@ -8,7 +8,7 @@
 //
 // Exit 0 = parity holds. Exit 1 = drift (with a per-locale missing-key report).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -18,7 +18,30 @@ const messagesDir = resolve(here, "..", "messages");
 // Keys that are metadata, not translatable messages.
 const IGNORED = new Set(["$schema"]);
 
-const LOCALES = ["fr", "en"]; // keep in sync with project.inlang/settings.json
+// The locale list is DERIVED from project.inlang/settings.json — the single
+// declaration Paraglide compiles from. A hardcoded copy here once silently
+// skipped any newly added language (the gate stayed green without checking it).
+const inlangSettings = JSON.parse(
+  readFileSync(resolve(here, "..", "project.inlang", "settings.json"), "utf8"),
+);
+const LOCALES = inlangSettings.locales;
+if (!Array.isArray(LOCALES) || LOCALES.length === 0) {
+  console.error("i18n parity: no locales found in project.inlang/settings.json");
+  process.exit(1);
+}
+
+// A catalog file with NO matching locale declaration is dead weight that
+// silently rots (never compiled, never checked) — fail loudly instead.
+const catalogFiles = readdirSync(messagesDir).filter((f) => f.endsWith(".json"));
+const orphans = catalogFiles.filter(
+  (f) => !LOCALES.includes(f.replace(/\.json$/, "")),
+);
+if (orphans.length > 0) {
+  console.error(
+    `i18n parity: orphan catalog(s) not declared in project.inlang/settings.json: ${orphans.join(", ")}`,
+  );
+  process.exit(1);
+}
 
 /** @type {Record<string, Set<string>>} */
 const keysByLocale = {};

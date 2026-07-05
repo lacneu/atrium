@@ -7,6 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { m } from "@/paraglide/messages.js";
+import { formatTime } from "@/lib/format";
 
 // Live health dot on the "Bridge" settings tab: green when up, red when down,
 // grey before the first poll. Hover shows a one-line summary; the full detail
@@ -24,7 +25,7 @@ export function BridgeStatusBadge() {
       ? `${m.bridgebadge_operational()}${
           a.checkedAt
             ? m.bridgebadge_verified_at({
-                time: new Date(a.checkedAt).toLocaleTimeString("fr-FR"),
+                time: formatTime(a.checkedAt),
               })
             : ""
         }`

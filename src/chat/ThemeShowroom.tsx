@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { localeOptions } from "./localePickerView";
 import { MoreVertical, Check, X, Upload, Download } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
@@ -1214,14 +1215,16 @@ function AppearanceAdminSection({
           </p>
         </div>
         <div className="oc-show__row">
-          {(["fr", "en"] as const).map((loc) => (
+          {/* Derived from SUPPORTED_LOCALES (endonym labels) — adding a
+              language never edits this picker. */}
+          {localeOptions().map((opt) => (
             <Button
-              key={loc}
-              variant={localeDefault === loc ? "default" : "outline"}
+              key={opt.value}
+              variant={localeDefault === opt.value ? "default" : "outline"}
               size="sm"
-              onClick={() => void setDefaultLocale({ locale: loc })}
+              onClick={() => void setDefaultLocale({ locale: opt.value })}
             >
-              {loc === "fr" ? m.language_fr() : m.language_en()}
+              {opt.label}
             </Button>
           ))}
         </div>

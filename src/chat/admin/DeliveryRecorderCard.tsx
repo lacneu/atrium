@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Check, Copy, Eye, EyeOff } from "lucide-react";
 import { APP_HOST } from "@/lib/appHost";
+import { formatDateTime, formatTime } from "@/lib/format";
 import { api } from "../convexApi";
 import {
   reportToText,
@@ -110,7 +111,7 @@ export function DeliveryRecorderCard() {
           {status?.startedAt ? (
             <span className="text-muted-foreground">
               {m.delivery_since({
-                time: new Date(status.startedAt).toLocaleTimeString(),
+                time: formatTime(status.startedAt),
               })}
             </span>
           ) : null}
@@ -257,7 +258,7 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
             sort: (r) => r.startedAt,
             cell: (r) => (
               <span className="tabular-nums">
-                {new Date(r.startedAt).toLocaleString()}
+                {formatDateTime(r.startedAt)}
               </span>
             ),
           },
@@ -268,7 +269,7 @@ function DeliverySessionsTable({ isAdmin }: { isAdmin: boolean }) {
             cell: (r) =>
               r.stoppedAt !== null ? (
                 <span className="tabular-nums">
-                  {new Date(r.stoppedAt).toLocaleString()}
+                  {formatDateTime(r.stoppedAt)}
                 </span>
               ) : (
                 <span className="text-muted-foreground">-</span>

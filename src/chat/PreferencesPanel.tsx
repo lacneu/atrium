@@ -31,7 +31,7 @@ import {
 // is the real gate (setUiPref rejects a locked feature); here locked rows are
 // greyed with a "locked" note.
 //
-// GOVERNANCE (merged from the former admin "Préférences UI" tab): an admin gets
+// GOVERNANCE (merged from the former admin "UI preferences" tab): an admin gets
 // a "manage defaults & locks" switch (OFF by default — disclosure of the rare).
 // When on, each row reveals ITS key's governance controls — the admin default
 // (on/off/inherit -> admin.setUiPrefDefault) and, for system-gated prefs, the

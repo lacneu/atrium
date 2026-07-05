@@ -84,6 +84,14 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   stream_orphaned: m.runstatus_error_orphaned,
   connection_lost: m.runstatus_error_connection_lost,
   compaction_timeout: m.runstatus_error_compaction_timeout,
+  // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
+  // reader's language — formerly pre-rendered French sentences).
+  not_configured: m.runstatus_error_not_configured,
+  no_agent: m.runstatus_error_no_agent,
+  agent_restricted: m.runstatus_error_agent_restricted,
+  send_failed: m.runstatus_error_send_failed,
+  ATTACHMENT_TOO_LARGE: m.runstatus_error_attachment_too_large,
+  ATTACHMENT_REJECTED: m.runstatus_error_attachment_rejected,
 };
 
 // Defense-in-depth: overflow phrasings the UI recognizes CLIENT-side, so a bare
@@ -97,24 +105,41 @@ const OVERFLOW_TEXT_RE =
 // the bridge finalizes some infrastructure ends with the code as the error text
 // (stream_orphaned watchdog, connection_lost socket drop). Recognized here so a
 // message carrying only the string still gets its actionable headline.
-const ERROR_STRING_CODES = new Set(["stream_orphaned", "connection_lost"]);
+const ERROR_STRING_CODES = new Set([
+  "stream_orphaned",
+  "connection_lost",
+  // failDispatch stores the code string in `error` too (raw === code -> the
+  // detail line is suppressed, only the localized headline shows).
+  "not_configured",
+  "no_agent",
+  "agent_restricted",
+  "send_failed",
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_REJECTED",
+]);
 
 export function errorDetailView(
   error: string | null | undefined,
   errorCode: string | null | undefined,
 ): ErrorDetailView {
   const raw0 = (error ?? "").trim();
+  // Prefer a MAPPED errorCode; a curated-but-unmapped one (e.g.
+  // BRIDGE_UNREACHABLE, kept for diagnostics) falls through to the error
+  // STRING code (the localizable reason failDispatch stores), then the
+  // overflow phrasing fallback, then the raw errorCode (headline null).
   const code =
-    errorCode ??
-    (ERROR_STRING_CODES.has(raw0)
-      ? raw0
-      : OVERFLOW_TEXT_RE.test(raw0)
-        ? "context_length"
-        : null);
+    errorCode && ERROR_CODE_LABEL[errorCode]
+      ? errorCode
+      : ERROR_STRING_CODES.has(raw0)
+        ? raw0
+        : OVERFLOW_TEXT_RE.test(raw0)
+          ? "context_length"
+          : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
   const raw = (error ?? "").trim();
-  // The orphaned code's `error` IS the code string — showing it twice is noise.
-  const detail = raw && raw !== code ? raw : null;
+  // A code string in `error` (orphaned/dispatch pattern) is not a useful detail.
+  const detail =
+    raw && raw !== code && !ERROR_STRING_CODES.has(raw) ? raw : null;
   return { headline, detail };
 }
 

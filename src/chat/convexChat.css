@@ -6806,3 +6806,8 @@
 .oc-afiles__review-removed { margin-top: 0.5rem; }
 .oc-afiles__review-removed ul { margin: 0.25rem 0 0; padding-left: 1rem; font-size: 0.78rem; opacity: 0.85; }
 .oc-afiles__review-removed li { white-space: pre-wrap; word-break: break-word; color: var(--oc-danger, #c0392b); }
+
+/* Injections tab: content-language selector */
+.oc-injtab__content-locale { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+.oc-injtab__content-locale > span { font-size: 0.9rem; font-weight: 600; }
+.oc-injtab__content-locale .oc-admin__hint { flex-basis: 100%; margin: 0; }

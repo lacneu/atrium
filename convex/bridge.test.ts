@@ -68,8 +68,9 @@ describe("bridge.failDispatch", () => {
     expect(msgs[0]!.role).toBe("assistant");
     expect(msgs[0]!.status).toBe("error");
     expect(msgs[0]!.text).toBe(""); // RunStatus renders from `error`, not `text`
-    expect(msgs[0]!.error).toMatch(/administrateur/i);
-    expect(msgs[0]!.error).toMatch(/no-agent/); // reason-specific ref
+    // Code-stable contract: the stored error IS the code; the UI localizes it.
+    expect(msgs[0]!.error).toBe("no_agent");
+    expect(msgs[0]!.errorCode).toBe("no_agent");
   });
 
   test("is idempotent — a retry inserts NO second error bubble", async () => {
@@ -117,7 +118,8 @@ describe("bridge.failDispatch", () => {
     });
 
     const msgs = await messagesOf(t, chatId);
-    expect(msgs[0]!.error).toMatch(/bridge-config/);
+    expect(msgs[0]!.error).toBe("not_configured");
+    expect(msgs[0]!.errorCode).toBe("not_configured");
   });
 
   test("an attachment errorCode is PRESERVED on the message (so diagnose can classify it) + drives the user message", async () => {
@@ -136,7 +138,7 @@ describe("bridge.failDispatch", () => {
     // text to "unknown" (the codex-review gap this fixes).
     expect(msgs[0]!.errorCode).toBe("ATTACHMENT_TOO_LARGE");
     // The user still sees the attachment-specific message, not the generic one.
-    expect(msgs[0]!.error).toMatch(/volumineuse/i);
+    expect(msgs[0]!.error).toBe("ATTACHMENT_TOO_LARGE");
   });
 });
 
@@ -225,7 +227,7 @@ describe("bridge.dispatchReset — regenerate with NO agent surfaces an error (n
         (m) => m.role === "assistant" && m.status === "error",
       );
       expect(err).toBeTruthy();
-      expect(err?.error ?? "").toMatch(/agent/i); // the "no agent" bubble
+      expect(err?.error ?? "").toBe("no_agent"); // the code-stable bubble
     } finally {
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;
       else process.env.BRIDGE_URL = prevUrl;
@@ -312,7 +314,7 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
       expect(fetchSpy).not.toHaveBeenCalled(); // never POSTed the socket-killing frame
       const msgs = await messagesOf(t, chatId);
       const err = msgs.find((m) => m.role === "assistant" && m.status === "error");
-      expect(err?.error ?? "").toMatch(/attach-size/); // the ATTACHMENT_TOO_LARGE message
+      expect(err?.error ?? "").toBe("ATTACHMENT_TOO_LARGE"); // code-stable
     } finally {
       globalThis.fetch = origFetch;
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;
@@ -396,7 +398,7 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
       expect(row?.status).toBe("failed"); // the aggregate frame is over -> fail
       expect(fetchSpy).not.toHaveBeenCalled();
       const msgs = await messagesOf(t, chatId);
-      expect(msgs.some((m) => /attach-size/.test(m.error ?? ""))).toBe(true);
+      expect(msgs.some((m) => m.error === "ATTACHMENT_TOO_LARGE")).toBe(true);
     } finally {
       globalThis.fetch = origFetch;
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;
@@ -472,7 +474,7 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
       expect(row?.status).toBe("failed"); // enforced by the conservative default
       expect(fetchSpy).not.toHaveBeenCalled(); // never POSTed to the (guard-less) old bridge
       const msgs = await messagesOf(t, chatId);
-      expect(msgs.some((m) => /attach-size/.test(m.error ?? ""))).toBe(true);
+      expect(msgs.some((m) => m.error === "ATTACHMENT_TOO_LARGE")).toBe(true);
     } finally {
       globalThis.fetch = origFetch;
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;

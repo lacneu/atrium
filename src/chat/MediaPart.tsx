@@ -1,3 +1,4 @@
+import { m } from "@/paraglide/messages.js";
 import { useLightbox } from "./ImageLightbox";
 // Renders a `file` content part produced by convertMessage from the bridge's
 // `media {items}` events (kind:"media") and from kind:"file" parts. The data URL
@@ -35,7 +36,7 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
         {/* TTS playback for OpenClaw audio output. */}
         <audio controls preload="metadata" src={url} className="oc-media__audio">
           <a href={url} download={name}>
-            Download audio
+            {m.media_download_audio()}
           </a>
         </audio>
         <span className="oc-media__name">{name}</span>

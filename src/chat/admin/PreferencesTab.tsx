@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { localeOptions } from "../localePickerView";
 import { APP_HOST } from "@/lib/appHost";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../convexApi";
@@ -76,22 +77,25 @@ export function PreferencesTab() {
           <p className="oc-show__desc">{m.preferences_language_desc()}</p>
         </div>
         <div className="oc-show__row">
-          {(["fr", "en", "default"] as const).map((opt) => (
+          {/* Derived from SUPPORTED_LOCALES (endonym labels) + the "default"
+              (inherit admin) entry — scales to any number of languages. */}
+          {localeOptions().map((opt) => (
             <Button
-              key={opt}
-              variant={localePref === opt ? "default" : "outline"}
+              key={opt.value}
+              variant={localePref === opt.value ? "default" : "outline"}
               size="sm"
-              onClick={() =>
-                void setLocale({ locale: opt === "default" ? null : opt })
-              }
+              onClick={() => void setLocale({ locale: opt.value })}
             >
-              {opt === "fr"
-                ? m.language_fr()
-                : opt === "en"
-                  ? m.language_en()
-                  : m.usermenu_theme_default()}
+              {opt.label}
             </Button>
           ))}
+          <Button
+            variant={localePref === "default" ? "default" : "outline"}
+            size="sm"
+            onClick={() => void setLocale({ locale: null })}
+          >
+            {m.usermenu_theme_default()}
+          </Button>
         </div>
         <p className="oc-show__desc">{m.preferences_language_note()}</p>
       </section>

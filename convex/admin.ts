@@ -6,6 +6,7 @@
 // live only in the bridge env; these tables hold non-secret names).
 
 import { v } from "convex/values";
+import { isSupportedLocale } from "./lib/locales";
 import { mutation, query, MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { getProfile, requireAdmin, requirePermission, roleOf } from "./lib/access";
@@ -398,10 +399,14 @@ export const setDefaultThemeMode = mutation({
 // (Paraglide's setLocale) — the Apparence panel warns the admin about this.
 export const setDefaultLocale = mutation({
   args: {
-    locale: v.union(v.literal("fr"), v.literal("en"), v.null()),
+    // Plain string validated against SUPPORTED_LOCALES (single source).
+    locale: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { locale }) => {
     await requireAdmin(ctx);
+    if (locale !== null && !isSupportedLocale(locale)) {
+      throw new Error(`Unsupported locale: ${locale}`);
+    }
     const meta = await ctx.db
       .query("appMeta")
       .withIndex("by_key", (q) => q.eq("key", APP_META_KEY))

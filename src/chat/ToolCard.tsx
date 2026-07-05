@@ -23,8 +23,8 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       className="oc-copybtn"
-      title="Copier"
-      aria-label="Copier le contenu"
+      title={m.common_copy()}
+      aria-label={m.toolcard_copy_content()}
       onClick={() => {
         void navigator.clipboard?.writeText(text).then(() => {
           setCopied(true);

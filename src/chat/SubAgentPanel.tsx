@@ -36,6 +36,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatNumber } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -477,7 +478,7 @@ function AdvancedMeta({
     if (v) rows.push([m.subagent_tel_runtime(), v]);
   }
   if (telemetry?.totalTokens !== undefined)
-    rows.push([m.subagent_tel_tokens(), telemetry.totalTokens.toLocaleString()]);
+    rows.push([m.subagent_tel_tokens(), formatNumber(telemetry.totalTokens)]);
   if (telemetry?.estimatedCostUsd !== undefined) {
     // The gateway computes a child's cost at SETTLE (persist), not live: a child
     // that overflowed/failed streams its tokens but never its final cost, so we

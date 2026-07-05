@@ -32,8 +32,11 @@ export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
 
   const bindAndOpen = useCallback(
     async (instanceName: string, agentId: string) => {
+      // Deliberately NO title: the chat is created untitled and every surface
+      // (sidebar, search) renders its own localized "untitled" fallback
+      // (m.sidebar_untitled / m.search_untitled_chat), so the label follows the
+      // viewer's locale instead of freezing the creator's.
       const id = (await createChat({
-        title: "New chat",
         instanceName,
         agentId,
       })) as Id<"chats">;

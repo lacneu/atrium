@@ -8,6 +8,44 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.33.0] — Atrium goes fully multi-language: user-language UI everywhere, per-instance content language
+
+Internationalization release, preparing the arrival of many more languages. No breaking
+changes: schema changes are additive, and existing notifications/error rows render as before.
+
+- **Every piece of UI text now follows the user's language.** The last ~30 hardcoded
+  strings were migrated to the translation system (time-range picker, confirmation
+  dialogs, toasts, admin filter/field labels, settings tab names…), and all dates and
+  numbers now format in the user's locale through one shared formatter — previously 23
+  spots were pinned to French formatting regardless of the chosen language. A stricter
+  per-file CI gate now enforces **zero** hardcoded literals (down from a tolerated 36).
+
+- **New: a content language per instance.** The instructions Atrium generates *for
+  agents* — the default prompt injections (including the file-curation brief), the
+  conversation-history rehydration framing, and sub-agent digest labels — now follow a
+  configurable content language: per-instance override (Settings › Prompt injections ›
+  "Language of generated texts") → the app's default language → French. Built-in French
+  **and English** templates ship for all five injections, the injections editor previews
+  and resets in the effective language, and a per-turn routed chat follows the *routed*
+  instance's language so a whole turn stays in one language.
+
+- **Notifications are localized when read, not when written.** The bell renders each
+  notification from a stable key + parameters in the *reader's current* language:
+  switching languages re-translates past notifications, and every admin in a fan-out
+  reads in their own language. (Also fixes a bell crash that a file-curation
+  notification could trigger.)
+
+- **Send failures show localized, actionable messages.** Dispatch errors (no agent
+  assigned, service unavailable, attachment too large or rejected…) are now stored as
+  stable codes and translated in the UI — they were previously frozen French sentences.
+  The finer diagnostic codes are preserved for the observability API.
+
+- **Adding a language is now a two-step, CI-guarded change.** One locale module drives
+  the account/profile validation, both language pickers (labeled by each language's own
+  name), the translation-parity gate (now derived from the Paraglide config, refusing
+  orphan catalogs), and the first-paint `<html lang>` seed. A synchronization test turns
+  every formerly-silent omission — the old process had five — into a CI failure.
+
 ## [0.32.0] — Agent-file curation, sturdier context-overflow handling, and text-first media
 
 Feature + reliability release. Adds opt-in auto-management of over-budget agent files, hardens

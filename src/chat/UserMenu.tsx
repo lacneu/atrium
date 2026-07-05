@@ -19,7 +19,7 @@ import type { ThemeMode } from "@/lib/useTheme";
 
 // Single top-right account menu: identity header + theme mode (radio) + sign out.
 // Deliberately minimal — the most usual shortcuts only. Language and the detailed
-// UI preferences moved to Settings → Préférences (gated on chats.read, visible to
+// UI preferences moved to Settings → Preferences (gated on chats.read, visible to
 // all). `mode` is the user's OWN theme preference (null = following the admin
 // default); writing it is an optimistic Convex mutation, the reactive getMe then
 // re-applies the theme everywhere.

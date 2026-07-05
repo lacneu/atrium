@@ -74,6 +74,13 @@ export const KNOWN_ERROR_CODES = [
   // Synthesized by the bridge when a compaction never completes (#40295): a
   // distinct actionable class, not a silent empty turn.
   "compaction_timeout",
+  // Dispatch-failure codes (failDispatch stores the CODE, the UI localizes):
+  "not_configured",
+  "no_agent",
+  "agent_restricted",
+  "send_failed",
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_REJECTED",
 ] as const;
 
 export function normalizeMessageErrorCode(

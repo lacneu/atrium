@@ -462,8 +462,8 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // A turn is mid-flight while EITHER an assistant message is streaming OR a send
   // is awaiting its first reply. This flips the composer Send->disabled (closes
   // the double-send hole — Nielsen heuristic #1) AND triggers assistant-ui's
-  // upcoming-message placeholder, which RunStatus renders as "Réflexion…" to fill
-  // the gap (see runStatusView's `undefined` case).
+  // upcoming-message placeholder, which RunStatus renders as the thinking label
+  // (m.runstatus_thinking) to fill the gap (see runStatusView's `undefined` case).
   const isRunning = pendingSince !== null || anyStreaming;
 
   // The LAST user turn is parked in the mid-turn QUEUE (its outbox is `queued`),

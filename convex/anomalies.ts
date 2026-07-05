@@ -231,6 +231,8 @@ async function upsertDetectorAnomaly(
     await notifyAdmins(ctx, {
       kind: "anomaly_open",
       title: `Anomalie : ${args.kind}`,
+      messageKey: "notif_anomaly_open",
+      params: { kind: args.kind },
       body: args.message,
       href: "/settings/anomalies",
       dedupeKey: `anomaly_open:${id}`,
@@ -676,6 +678,8 @@ export const reportAnomalyInternal = internalMutation({
     await notifyAdmins(ctx, {
       kind: "anomaly_open",
       title: `Anomalie : ${kind}`,
+      messageKey: "notif_anomaly_open",
+      params: { kind: kind },
       body: message,
       href: "/settings/anomalies",
       dedupeKey: `anomaly_open:${id}`,
@@ -715,6 +719,8 @@ async function resolveAnomalyDoc(
     await notifyAdmins(ctx, {
       kind: "anomaly_resolved",
       title: `Anomalie résolue : ${row.kind}`,
+      messageKey: "notif_anomaly_resolved",
+      params: { kind: row.kind },
       body: row.message,
       // Deep-link to the RESOLVED view — the tab defaults to status=open, which
       // would filter out the very anomaly this notification is about.

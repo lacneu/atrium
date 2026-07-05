@@ -20,6 +20,7 @@
 //      download URL, read into each source card's slot.
 
 import { v } from "convex/values";
+import { contentLocaleForInstance } from "./lib/serverLocale";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -260,13 +261,15 @@ export const attachDocuments = mutation({
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", target.instanceName))
       .first();
+    const docLocale = await contentLocaleForInstance(ctx, docInstance?.config);
     const docInjection = resolveInjection(
       "documentary_fetch",
       docInstance?.config?.promptInjections,
+      docLocale,
     );
     // Disabled → the registry disabled fallback (bare reference list, no Atrium framing);
     // the gateway's documentary agent supplies the task. Enabled → the configured brief.
-    const fetchTemplate = effectiveTemplate("documentary_fetch", docInjection);
+    const fetchTemplate = effectiveTemplate("documentary_fetch", docInjection, docLocale);
 
     // Dispatch the fetch turn in the hidden chat (separate session, documentary agent).
     const text = buildFetchPrompt(refs, fetchTemplate);

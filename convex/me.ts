@@ -13,6 +13,11 @@
 // on requireUserId, not requireActive.
 
 import { v } from "convex/values";
+import {
+  isSupportedLocale,
+  resolveLocale,
+  asSupportedLocale,
+} from "./lib/locales";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
@@ -43,11 +48,6 @@ import {
 const APP_META_KEY = "singleton";
 
 type ThemeMode = "light" | "dark" | "system";
-type Locale = "fr" | "en";
-
-// Mirror project.inlang/settings.json baseLocale. The UI language resolves to
-// this when neither the user nor the admin has set a preference.
-const BASE_LOCALE: Locale = "fr";
 
 async function readAppMeta(ctx: QueryCtx | MutationCtx) {
   return await ctx.db
@@ -63,14 +63,6 @@ function resolveThemeMode(
   adminDefault: ThemeMode | undefined,
 ): ThemeMode {
   return userMode ?? adminDefault ?? "system";
-}
-
-// Resolve the effective UI language: user pref -> admin default -> baseLocale.
-function resolveLocale(
-  userLocale: Locale | undefined,
-  adminDefault: Locale | undefined,
-): Locale {
-  return userLocale ?? adminDefault ?? BASE_LOCALE;
 }
 
 export const bootstrap = mutation({
@@ -109,8 +101,8 @@ export const getMe = query({
     const meta = await readAppMeta(ctx);
     const adminDefaultMode = meta?.defaultThemeMode as ThemeMode | undefined;
     const userMode = profile?.themeMode as ThemeMode | undefined;
-    const adminDefaultLocale = meta?.defaultLocale as Locale | undefined;
-    const userLocale = profile?.locale as Locale | undefined;
+    const adminDefaultLocale = meta?.defaultLocale;
+    const userLocale = profile?.locale;
     // Chart (charte graphique): resolve the user's pick against availability, then
     // against the admin global default. BOUNDED hot path: only the user's OWN pick
     // needs an availability check (resolveChart applies the admin default WITHOUT
@@ -188,9 +180,9 @@ export const getMe = query({
       // UI language (mirror of theme): the user's own pref (or null) + the
       // resolved effective locale the client applies via Paraglide + the admin
       // default. The client's useApplyLocale reconciles localStorage to this.
-      locale: userLocale ?? null,
+      locale: asSupportedLocale(userLocale) ?? null,
       resolvedLocale: resolveLocale(userLocale, adminDefaultLocale),
-      defaultLocale: adminDefaultLocale ?? null,
+      defaultLocale: asSupportedLocale(adminDefaultLocale) ?? null,
       // Unified UI preferences (the interface-config module): the resolved
       // effective values the chat renders by, plus the user's own overrides, the
       // admin defaults, and which features are system-enabled (so the Préférences
@@ -314,9 +306,14 @@ export const setThemeMode = mutation({
 // setLocale (which writes localStorage + reloads ONCE on a real change).
 export const setLocale = mutation({
   args: {
-    locale: v.union(v.literal("fr"), v.literal("en"), v.null()),
+    // Plain string + runtime membership check against SUPPORTED_LOCALES: the
+    // single-source module is the validator, never a per-language union.
+    locale: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { locale }) => {
+    if (locale !== null && !isSupportedLocale(locale)) {
+      throw new Error(`Unsupported locale: ${locale}`);
+    }
     // Effective identity: while impersonating, this acts on the TARGET's locale
     // (full "act as the user" scope) and is audited.
     const actor = await getActor(ctx);

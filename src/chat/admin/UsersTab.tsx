@@ -33,11 +33,26 @@ import { FilterBar } from "./filters/FilterBar";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 // Light shared metadata (tab list + RBAC maps) — stays in the eager AdminSettings barrel.
-import { GRANTABLE_TABS, TAB_PERMISSION, TAB_LABELS } from "../AdminSettings";
+import { GRANTABLE_TABS, TAB_PERMISSION, TAB_I18N } from "../AdminSettings";
 
 // "Select all" sentinel for the quick <Select>s (radix Select has no empty value),
 // mapped back to `undefined` (no filter) when building the query arg.
 const ALL = "__all__";
+
+// Localized display label for a role. The stored VALUES stay technical
+// ("pending"/"user"/"admin"); a custom role from a deployment shows raw.
+function roleLabel(role: string): string {
+  switch (role) {
+    case "pending":
+      return m.role_pending();
+    case "user":
+      return m.role_user();
+    case "admin":
+      return m.role_admin();
+    default:
+      return role;
+  }
+}
 
 function SettingsAccessCell({
   granted,
@@ -82,7 +97,7 @@ function SettingsAccessCell({
                 tabIndex={-1}
                 className="pointer-events-none"
               />
-              <span>{TAB_LABELS[t] ?? t}</span>
+              <span>{TAB_I18N[t]()}</span>
             </DropdownMenuItem>
           );
         })}
@@ -218,7 +233,7 @@ export function UsersTab() {
           <SelectItem value={ALL}>{m.settings_all_roles()}</SelectItem>
           {roleOptions.map((r) => (
             <SelectItem key={r} value={r}>
-              {r}
+              {roleLabel(r)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -313,9 +328,9 @@ export function UsersTab() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="pending">pending</SelectItem>
-                <SelectItem value="user">user</SelectItem>
-                <SelectItem value="admin">admin</SelectItem>
+                <SelectItem value="pending">{roleLabel("pending")}</SelectItem>
+                <SelectItem value="user">{roleLabel("user")}</SelectItem>
+                <SelectItem value="admin">{roleLabel("admin")}</SelectItem>
               </SelectContent>
             </Select>
           ),

@@ -26,7 +26,11 @@
       // in sync with the Convex-resolved value after hydration.
       (function () {
         var l = localStorage.getItem("PARAGLIDE_LOCALE");
-        if (l === "fr" || l === "en") document.documentElement.lang = l;
+        // Shape check only (BCP-47-ish) — NOT a locale whitelist: this is a
+        // pre-hydration a11y seed and useApplyLocale reconciles right after, so
+        // adding a language must never require editing this file.
+        if (l && /^[a-z]{2,3}(-[A-Za-z0-9-]+)?$/.test(l))
+          document.documentElement.lang = l;
       })();
       // PROTOTYPE — ambient visual effects (token-driven glows/mesh/halo). The
       // whole effect set is gated by one data attribute so it is a single toggle.

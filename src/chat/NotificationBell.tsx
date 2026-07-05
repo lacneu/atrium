@@ -10,6 +10,7 @@ import {
   MessageSquare,
   ChevronDown,
   ChevronRight,
+  FileText,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -44,12 +45,15 @@ type NotifKind =
   | "anomaly_open"
   | "anomaly_resolved"
   | "feedback_reply"
-  | "feedback_resolved";
+  | "feedback_resolved"
+  | "curation";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
   title: string;
   body: string;
+  messageKey: string | null;
+  params: Record<string, string> | null;
   href: string | null;
   createdAt: number;
   unread: boolean;
@@ -60,13 +64,66 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   anomaly_resolved: CircleCheck,
   feedback_reply: MessageSquare,
   feedback_resolved: MessageSquare,
+  curation: FileText,
 };
 
-// Render the notification text. `feedback_reply` is fully static → rendered from
-// its `kind` code (i18n, no server change). Anomaly notifications carry a
-// server-generated detail (the anomaly kind + message) in the stored title/body,
-// kept as-is for now — full {code,params} i18n of anomaly content is a follow-up.
+// READ-TIME localization: a notification is stored as {messageKey, params} and
+// rendered here in the READER's current language — never frozen in the language
+// the recipient had when it was written. Unknown/absent key -> the stored
+// title/body fallback (legacy rows, free-form producers). An anomaly's BODY
+// stays the stored technical message (evidence), only its title localizes.
+const KEY_RENDERERS: Record<
+  string,
+  (p: Record<string, string>, n: Notif) => { title: string; body: string }
+> = {
+  notif_feedback_reply_admin: () => ({
+    title: m.notif_feedback_reply_title(),
+    body: m.notif_feedback_reply_body(),
+  }),
+  notif_feedback_reply: () => ({
+    title: m.notif_feedback_reply_title(),
+    body: m.notif_feedback_reply_body(),
+  }),
+  notif_feedback_resolved: () => ({
+    title: m.notif_feedback_resolved_title(),
+    body: m.notif_feedback_resolved_body(),
+  }),
+  notif_curation_proposed: (p) => ({
+    title: m.notif_curation_proposed_title(),
+    body: m.notif_curation_proposed_body({
+      name: p.name ?? "?",
+      agentId: p.agentId ?? "?",
+    }),
+  }),
+  notif_curation_failed: (p) => ({
+    title: m.notif_curation_failed_title(),
+    body: m.notif_curation_failed_body({
+      name: p.name ?? "?",
+      reason: p.reason ?? "unknown",
+    }),
+  }),
+  notif_curation_relaunch_refused: (p) => ({
+    title: m.notif_curation_relaunch_refused_title(),
+    body: m.notif_curation_relaunch_refused_body({
+      name: p.name ?? "?",
+      reason: p.reason ?? "unknown",
+    }),
+  }),
+  notif_anomaly_open: (p, n) => ({
+    title: m.notif_anomaly_open_title({ kind: p.kind ?? "?" }),
+    body: n.body, // technical evidence, not localized
+  }),
+  notif_anomaly_resolved: (p, n) => ({
+    title: m.notif_anomaly_resolved_title({ kind: p.kind ?? "?" }),
+    body: n.body,
+  }),
+};
+
 function notifText(n: Notif): { title: string; body: string } {
+  const render = n.messageKey ? KEY_RENDERERS[n.messageKey] : undefined;
+  if (render) return render(n.params ?? {}, n);
+  // Legacy rows written before read-time localization: the kind-level shortcuts
+  // (static texts), then the stored labels.
   if (n.kind === "feedback_reply") {
     return {
       title: m.notif_feedback_reply_title(),

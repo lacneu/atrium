@@ -25,7 +25,7 @@ import { api } from "../convexApi";
 import {
   PARAMLESS_TABS,
   TABS,
-  TAB_LABELS,
+  TAB_I18N,
   pathForTab,
   tabFromPathname,
   visibleTabs,
@@ -40,31 +40,6 @@ import {
 } from "./settingsGroups";
 import { BridgeStatusBadge } from "./BridgeStatusBadge";
 import { m } from "@/paraglide/messages.js";
-
-// i18n overrides for tab nav labels, applied as they get internationalized
-// (the rest still fall back to the FR TAB_LABELS until the full migration).
-const TAB_I18N: Partial<Record<Tab, () => string>> = {
-  users: () => m.settings_tab_users(),
-  groups: () => m.settings_tab_groups(),
-  instances: () => m.settings_tab_instances(),
-  bridge: () => m.settings_tab_bridge(),
-  injections: () => m.settings_tab_injections(),
-  serviceAccounts: () => m.settings_tab_serviceaccounts(),
-  roles: () => m.settings_tab_roles(),
-  traces: () => m.settings_tab_traces(),
-  kpi: () => m.settings_tab_kpi(),
-  anomalies: () => m.settings_tab_anomalies(),
-  files: () => m.files_tab_label(),
-  agentFiles: () => m.afiles_tab_label(),
-  preferences: () => m.settings_tab_preferences(),
-  chatDefaults: () => m.cdefaults_tab_label(),
-  access: () => m.settings_tab_access(),
-  integrations: () => m.settings_tab_integrations(),
-  theme: () => m.appearance_tab_label(),
-  audit: () => m.settings_tab_audit(),
-  feedbacks: () => m.settings_tab_feedbacks(),
-  subagentReports: () => m.settings_tab_subagentreports(),
-};
 
 // Two-level settings navigation (layer-cake, docs/CONF_RESEARCH.md):
 // - SettingsNav (left column) lists the 4 GROUPS; the active group derives
@@ -114,7 +89,9 @@ export function applyGroupReorder(
 }
 
 function TabLink({ tab, active }: { tab: Tab; active: boolean }) {
-  const label = TAB_I18N[tab]?.() ?? TAB_LABELS[tab] ?? tab;
+  // TAB_I18N is total over TABS (shared from AdminSettings), so every tab has
+  // a locale-aware label — no FR fallback map anymore.
+  const label = TAB_I18N[tab]();
   const className = "oc-settings-tabs__tab" + (active ? " is-active" : "");
   const content = (
     <>

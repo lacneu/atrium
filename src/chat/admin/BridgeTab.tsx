@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { resolveContentLocale } from "../../../convex/lib/locales";
 import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { useNavigate } from "@tanstack/react-router";
@@ -15,6 +16,7 @@ import {
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
 import { APP_HOST } from "@/lib/appHost";
+import { formatDateTime } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -232,11 +234,9 @@ function BridgeStatusCard({
   const unreachable = !health.reachable;
   const healthy = isBridgeHealthy(health);
   const tone = healthy ? "ok" : "error";
-  const checkedAt = new Date(health.checkedAt).toLocaleString("fr-FR");
+  const checkedAt = formatDateTime(health.checkedAt);
   const startedAt =
-    health.startedAt != null
-      ? new Date(health.startedAt).toLocaleString("fr-FR")
-      : null;
+    health.startedAt != null ? formatDateTime(health.startedAt) : null;
 
   return (
     <div className={`oc-bridge-card oc-bridge-card--${tone}`}>
@@ -635,8 +635,14 @@ function InstanceConfigEditor({
   const toast = useToast();
   // Form seeded from THIS instance's stored config. The dialog is keyed by
   // instance id, so a fresh editor mounts per instance (no stale state to clear).
+  // The instance's CONTENT locale fills un-overridden injection rows with the
+  // default text the backend will actually send.
+  const contentLocale = resolveContentLocale(
+    (instance.config as { contentLocale?: string } | undefined)?.contentLocale,
+    undefined,
+  );
   const [form, setForm] = useState<ConfigForm>(() =>
-    formFromConfig((instance.config ?? {}) as Partial<ConfigForm>),
+    formFromConfig((instance.config ?? {}) as Partial<ConfigForm>, contentLocale),
   );
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -677,7 +683,7 @@ function InstanceConfigEditor({
       const stored = (instance.config ?? {}) as Partial<ConfigForm>;
       await save({
         instanceId: instance._id as Id<"instances">,
-        config: buildConfigOverride(form, stored),
+        config: buildConfigOverride(form, stored, contentLocale),
       });
       // Silent-on-success (app convention); only a FAILURE surfaces a toast.
       onClose();

@@ -38,6 +38,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 
 // "Traces" tab — recent observability events (D2: redacted metadata only, no
@@ -94,13 +95,16 @@ const DIRECTIONS = ["inbound", "outbound", "internal"] as const;
 const DEFAULT_RANGE: TimeRange = { kind: "relative", from: "now-30d", to: "now" };
 
 // Field list for the traces advanced builder (view fields the backend exposes).
+// kind/status/direction/route/correlationId stay TECHNICAL names (they mirror
+// the backend fields); the human labels are localized. Module-level m.*() calls
+// are safe: a locale switch reloads the page (same pattern as RELATIVE_PRESETS).
 const TRACES_ADV_FIELDS = [
   { value: "kind", label: "kind" },
   { value: "status", label: "status" },
-  { value: "latencyMs", label: "latence (ms)" },
-  { value: "principalType", label: "principal" },
+  { value: "latencyMs", label: m.traces_field_latency_ms() },
+  { value: "principalType", label: m.traces_field_principal() },
   { value: "direction", label: "direction" },
-  { value: "roleKey", label: "rôle" },
+  { value: "roleKey", label: m.traces_field_role() },
   { value: "route", label: "route" },
   { value: "correlationId", label: "correlationId" },
 ];
@@ -394,7 +398,7 @@ export function TracesTab() {
             sort: (r) => r.at,
             cell: (r) => (
               <span className="oc-traces__time">
-                {new Date(r.at).toLocaleString("fr-FR")}
+                {formatDateTime(r.at)}
               </span>
             ),
           },
@@ -553,7 +557,7 @@ function shortId(id: string): string {
 
 // A trace row's failure code (curated, non-PHI) if it represents an error, else
 // null. Cross-kind: HTTP >=400, a failed dispatch (with its errorCode), a stream
-// error/aborted finalize, or an ingest denial. Drives the red "Résultat" marker.
+// error/aborted finalize, or an ingest denial. Drives the red result marker.
 function traceFailureCode(r: TraceEventView): string | null {
   if (typeof r.status === "number" && r.status >= 400) return String(r.status);
   if (!r.meta) return null;

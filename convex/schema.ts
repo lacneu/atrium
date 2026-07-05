@@ -210,10 +210,12 @@ export default defineSchema({
     themeName: v.optional(v.string()),
 
     // Per-user UI language preference (identity-level, like themeMode). OPTIONAL:
-    // unset => resolver falls back to the admin default, then baseLocale "fr".
-    // Mirror of the theme pref so the locale follows the user cross-device. Keep
-    // in sync with project.inlang/settings.json locales.
-    locale: v.optional(v.union(v.literal("fr"), v.literal("en"))),
+    // unset => resolver falls back to the admin default, then BASE_LOCALE.
+    // Stored as a PLAIN string: membership is validated at the setter against
+    // lib/locales.SUPPORTED_LOCALES (single source), so adding a language never
+    // needs a schema migration; a stored value that becomes unsupported narrows
+    // to the next fallback tier at read (lib/locales.resolveLocale).
+    locale: v.optional(v.string()),
 
     // DEPRECATED — superseded by `uiPrefs.showTools`. No longer READ by the
     // resolver (it shadowed the admin default + mislabeled as "default"); kept as
@@ -626,10 +628,9 @@ export default defineSchema({
     // (CHARTS_MANAGE), which rejects a key not in BUILTIN_CHART_KEYS.
     defaultThemeName: v.optional(v.string()),
     // Admin-defined default UI language, used when a user has no `locale` pref.
-    // OPTIONAL: unset => resolver falls back to baseLocale "fr". (The admin setter
-    // lands with the Theme/Settings refonte; the field exists now so the getMe
-    // resolution chain is complete.)
-    defaultLocale: v.optional(v.union(v.literal("fr"), v.literal("en"))),
+    // OPTIONAL: unset => resolver falls back to BASE_LOCALE. Plain string like
+    // profiles.locale — validated at the setter against SUPPORTED_LOCALES.
+    defaultLocale: v.optional(v.string()),
     // Admin-defined DEFAULTS for the UI preferences module (inherited by users
     // who have no override). Same keys as profiles.uiPrefs / UI_PREF_KEYS.
     uiPrefDefaults: v.optional(
@@ -1748,8 +1749,17 @@ export default defineSchema({
       // Agent-file curation proposal ready / failed (admin-facing).
       v.literal("curation"),
     ),
+    // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
+    // producer without a key) still display. New producers ALSO store a
+    // messageKey + params and the client renders those through Paraglide in the
+    // READER's language — a notification is never frozen in the language the
+    // recipient had when it was written.
     title: v.string(),
     body: v.string(),
+    // i18n message key (e.g. "notif_feedback_reply") + its fill-in parameters.
+    // The client maps known keys to localized text; unknown/absent -> title/body.
+    messageKey: v.optional(v.string()),
+    params: v.optional(v.record(v.string(), v.string())),
     href: v.optional(v.string()), // in-app deep link (e.g. "/settings/anomalies")
     // De-dupe / correlation key so a producer never double-notifies for the same
     // event (e.g. one anomaly_open per (user, anomalyId)).

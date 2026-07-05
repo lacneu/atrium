@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { ConvexReactClient } from "convex/react";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { RouterProvider } from "@tanstack/react-router";
+import { m } from "@/paraglide/messages.js";
 import { router } from "./router";
 import { DialogsProvider } from "@/components/ConfirmDialog";
 import { FeedbackProvider } from "./chat/FeedbackDialog";
@@ -45,10 +46,12 @@ function BootMessage({ children }: { children: React.ReactNode }) {
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 
 // Splash immediately to avoid a blank flash while the runtime config resolves
-// (a fast static fetch; see lib/runtimeConfig).
+// (a fast static fetch; see lib/runtimeConfig). Paraglide messages are
+// compile-time functions on the localStorage/baseLocale strategy, so they are
+// safe to call this early (no provider needed).
 root.render(
   <React.StrictMode>
-    <BootMessage>Chargement…</BootMessage>
+    <BootMessage>{m.common_loading()}</BootMessage>
   </React.StrictMode>,
 );
 
@@ -84,7 +87,7 @@ resolveConvexUrl()
     root.render(
       <React.StrictMode>
         <BootMessage>
-          Configuration manquante&nbsp;:{" "}
+          {m.boot_config_missing()}{" "}
           {err instanceof Error ? err.message : String(err)}
         </BootMessage>
       </React.StrictMode>,

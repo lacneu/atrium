@@ -9,6 +9,7 @@ import { FilterBar } from "./filters/FilterBar";
 import { useResolvedRange } from "./filters/TimeRangePicker";
 import type { TimeRange } from "./filters/types";
 import { decodeRange, encodeRange } from "@/lib/routing/searchSchemas";
+import { formatDateTime } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 import { Badge } from "@/components/ui/badge";
@@ -300,7 +301,7 @@ export function AnomaliesTab() {
             header: m.anomalies_col_when(),
             cell: (r) => (
               <span className="oc-traces__time">
-                {new Date(r.at).toLocaleString("fr-FR")}
+                {formatDateTime(r.at)}
               </span>
             ),
             sort: (r) => r.at,

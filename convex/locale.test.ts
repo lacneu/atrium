@@ -159,3 +159,44 @@ describe("locale preference (cross-device, mirror of theme)", () => {
     expect(me.resolvedLocale).toBe("en");
   });
 });
+
+// v.string() schema + runtime membership validation (the single-source module
+// is the validator now — these rejections MUST be pinned or a typo'd locale
+// would silently persist).
+describe("unsupported locale rejection (runtime validation)", () => {
+  test("setLocale rejects a locale outside SUPPORTED_LOCALES", async () => {
+    const t = convexTest(schema, modules);
+    const as = t.withIdentity({ subject: "u1|s" });
+    await expect(
+      as.mutation(api.me.setLocale, { locale: "de" }),
+    ).rejects.toThrow(/Unsupported locale/);
+  });
+
+  test("admin.setDefaultLocale rejects an unsupported locale", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: uid, role: "admin" });
+      return uid;
+    });
+    const as = t.withIdentity({ subject: `${userId}|s` });
+    await expect(
+      as.mutation(api.admin.setDefaultLocale, { locale: "xx" }),
+    ).rejects.toThrow(/Unsupported locale/);
+  });
+
+  test("a STORED locale that is no longer supported resolves to the admin default, then base", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      // Simulate a language removed after being stored (schema is v.string now).
+      await ctx.db.insert("profiles", { userId: uid, role: "user", locale: "removed" });
+      return uid;
+    });
+    const as = t.withIdentity({ subject: `${userId}|s` });
+    const me = await as.query(api.me.getMe, { host: "app.example.com" });
+    expect(me?.resolvedLocale).toBe("fr"); // narrowed through the chain, no crash
+    expect(me?.locale).toBeNull(); // the raw unsupported pref is not leaked
+  });
+});
+

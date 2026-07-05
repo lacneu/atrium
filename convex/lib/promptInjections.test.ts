@@ -8,18 +8,19 @@ import {
   resolveInjection,
 } from "./promptInjections";
 import { parseInstanceConfig } from "./instanceConfig";
+import { SUPPORTED_LOCALES } from "./locales";
 
 describe("prompt injection registry + resolve", () => {
   test("resolveInjection: defaults ON with the registry default text", () => {
-    const r = resolveInjection("media_delivery", undefined);
+    const r = resolveInjection("media_delivery", undefined, "fr");
     expect(r.enabled).toBe(true);
-    expect(r.template).toBe(PROMPT_INJECTIONS.media_delivery.defaultTemplate);
+    expect(r.template).toBe(PROMPT_INJECTIONS.media_delivery.defaultTemplate.fr);
   });
 
   test("resolveInjection: an admin can DISABLE (the load-bearing case)", () => {
     const r = resolveInjection("media_delivery", {
       media_delivery: { enabled: false },
-    });
+    }, "fr");
     expect(r.enabled).toBe(false);
     // Even disabled, a template is still resolved (the UI shows it) — what matters is
     // that `enabled:false` reaches the consumer.
@@ -30,16 +31,16 @@ describe("prompt injection registry + resolve", () => {
     expect(
       resolveInjection("media_delivery", {
         media_delivery: { template: "MA CONSIGNE {outboundDir}" },
-      }).template,
+      }, "fr").template,
     ).toBe("MA CONSIGNE {outboundDir}");
     expect(
-      resolveInjection("media_delivery", { media_delivery: { template: "" } })
+      resolveInjection("media_delivery", { media_delivery: { template: "" } }, "fr")
         .template,
-    ).toBe(PROMPT_INJECTIONS.media_delivery.defaultTemplate);
+    ).toBe(PROMPT_INJECTIONS.media_delivery.defaultTemplate.fr);
   });
 
   test("resolveBridgeInjections: only the BRIDGE-applied injections, resolved", () => {
-    const out = resolveBridgeInjections(undefined);
+    const out = resolveBridgeInjections(undefined, "fr");
     // media_delivery + inbound_files are bridge-applied; documentary_fetch is convex-applied.
     expect(Object.keys(out).sort()).toEqual(["inbound_files", "media_delivery"]);
     expect(out.documentary_fetch).toBeUndefined();
@@ -48,7 +49,7 @@ describe("prompt injection registry + resolve", () => {
 
   test("resolveBridgeInjections: a stored DISABLE survives resolution to the wire shape", () => {
     // The #1 use case (turn an injection off) must reach the bridge as enabled:false.
-    const out = resolveBridgeInjections({ media_delivery: { enabled: false } });
+    const out = resolveBridgeInjections({ media_delivery: { enabled: false } }, "fr");
     expect(out.media_delivery.enabled).toBe(false);
     expect(out.inbound_files.enabled).toBe(true); // others unaffected
   });
@@ -56,18 +57,18 @@ describe("prompt injection registry + resolve", () => {
   test("effectiveTemplate: enabled → the template; disabled → the registry fallback", () => {
     // Enabled → exactly the (custom/default) text.
     expect(
-      effectiveTemplate("media_delivery", { enabled: true, template: "X {outboundDir}" }),
+      effectiveTemplate("media_delivery", { enabled: true, template: "X {outboundDir}" }, "fr"),
     ).toBe("X {outboundDir}");
     // Disabled ADD-ON → "" (nothing injected — what the agent actually gets).
     expect(
-      effectiveTemplate("media_delivery", { enabled: false, template: "X" }),
+      effectiveTemplate("media_delivery", { enabled: false, template: "X" }, "fr"),
     ).toBe("");
     expect(
-      effectiveTemplate("inbound_files", { enabled: false, template: "X" }),
+      effectiveTemplate("inbound_files", { enabled: false, template: "X" }, "fr"),
     ).toBe("");
     // Disabled documentary_fetch → the bare reference list (its disabledTemplate).
     expect(
-      effectiveTemplate("documentary_fetch", { enabled: false, template: "X" }),
+      effectiveTemplate("documentary_fetch", { enabled: false, template: "X" }, "fr"),
     ).toBe("{references}");
   });
 
@@ -133,5 +134,61 @@ describe("parseInstanceConfig — promptInjections", () => {
     }) as { promptInjections?: unknown };
     expect(r).not.toBe("invalid");
     expect(r.promptInjections).toBeUndefined();
+  });
+});
+
+describe("per-locale defaults (content language)", () => {
+  test("every injection has a default (and any disabled fallback) for EVERY supported locale", () => {
+    for (const key of Object.keys(PROMPT_INJECTIONS) as Array<
+      keyof typeof PROMPT_INJECTIONS
+    >) {
+      const def = PROMPT_INJECTIONS[key];
+      for (const locale of SUPPORTED_LOCALES) {
+        expect(
+          def.defaultTemplate[locale],
+          `missing ${String(key)} default for "${locale}"`,
+        ).toBeTruthy();
+        // Every locale variant must keep the SAME required placeholders — a
+        // translation that drops one silently breaks the feature in that language.
+        expect(
+          missingRequiredPlaceholders(key, def.defaultTemplate[locale]),
+          `${String(key)} [${locale}] dropped a required placeholder`,
+        ).toEqual([]);
+        const dis = (def as { disabledTemplate?: Record<string, string> })
+          .disabledTemplate;
+        if (dis) {
+          expect(
+            dis[locale],
+            `missing ${String(key)} disabledTemplate for "${locale}"`,
+          ).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  test("resolveInjection picks the locale's default; the admin override wins regardless", () => {
+    expect(resolveInjection("media_delivery", undefined, "en").template).toBe(
+      PROMPT_INJECTIONS.media_delivery.defaultTemplate.en,
+    );
+    expect(
+      resolveInjection("media_delivery", undefined, "en").template,
+    ).toContain("[DELIVERY]");
+    expect(
+      resolveInjection(
+        "media_delivery",
+        { media_delivery: { template: "CUSTOM {outboundDir}" } },
+        "en",
+      ).template,
+    ).toBe("CUSTOM {outboundDir}");
+  });
+
+  test("effectiveTemplate picks the locale's DISABLED fallback", () => {
+    expect(
+      effectiveTemplate(
+        "history_summary",
+        { enabled: false, template: "ignored" },
+        "en",
+      ),
+    ).toContain("[EXISTING SUMMARY]");
   });
 });

@@ -247,7 +247,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // the active transport + the SSE samples to close segment C on the displayed leg — Phase 5.)
   // Resolved UI preferences (reactive): the single source for which interface
   // elements render. The composer "Outils" quick toggle writes through the same
-  // single path (setUiPref), so it stays consistent with the Préférences panel.
+  // single path (setUiPref), so it stays consistent with the Preferences panel.
   // `showTools` semantics: the ANALYSIS view toggle. ON shows the tool-activity
   // block (summary + click-to-expand detail) AND the Sources block; OFF is the
   // clean, content-focused view (both hidden, in-progress signal kept via
@@ -664,7 +664,7 @@ function GatewayDegradedBanner() {
 
 // Standardized, user-facing "chat unavailable" notice shown above a greyed-out
 // composer. Generic on purpose (the technical reason is admin-only, in Settings →
-// Santé / Traces); the user just needs to know not to type and to retry.
+// Health / Traces); the user just needs to know not to type and to retry.
 function BridgeUnavailableBanner() {
   return (
     <div className="oc-chat-banner oc-chat-banner--error" role="status">
@@ -688,7 +688,7 @@ function ChatReadOnlyBanner() {
 }
 
 // Screen-reader announcement of turn COMPLETION (CHAT_UX_DESIGN a11y). The
-// RunStatus chip (role="status") announces "Réflexion…"/"Erreur" but goes to null
+// RunStatus chip (role="status") announces the thinking/error labels but goes to null
 // on complete — so without this a SR user hears the start then SILENCE. This is a
 // PERSISTENT, initially-EMPTY aria-live region (mounting it WITH text suppresses
 // the announcement on many SRs); it is populated with a SHORT CUE once per
@@ -1839,7 +1839,7 @@ function SystemMessage() {
 // NOTE: the send->first-token "thinking" gap is filled by assistant-ui's own
 // upcoming-message placeholder (it injects an assistant frame whenever the
 // runtime is `isRunning` and the last message is not an assistant). That
-// placeholder carries no status, so RunStatus renders it as "Réflexion…" (see
+// placeholder carries no status, so RunStatus renders it as the thinking label (see
 // runStatusView's `undefined` case) and hands off seamlessly to the real
 // streaming doc. We deliberately do NOT render a second gap-filler frame here —
 // doing so double-stacks the assistant avatar/name during every gap.

@@ -4,6 +4,7 @@
 // (no React, no Convex) so it stays trivially testable and importable anywhere.
 
 import { m } from "@/paraglide/messages.js";
+import { formatDateTime } from "@/lib/format";
 
 /** Comparison operator for an advanced predicate (matches the backend `Op`). */
 export type Op = "eq" | "neq" | "contains" | "gt" | "gte" | "lt" | "lte";
@@ -83,9 +84,9 @@ export const RELATIVE_PRESETS: RelativePreset[] = [
   { label: m.filters_preset_all(), from: "now-520w" },
 ];
 
-/** Format an absolute instant for the trigger label (compact, fr-FR). */
+/** Format an absolute instant for the trigger label (compact, locale-aware). */
 function formatInstant(ms: number): string {
-  return new Date(ms).toLocaleString("fr-FR", {
+  return formatDateTime(ms, {
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",
@@ -95,7 +96,7 @@ function formatInstant(ms: number): string {
 
 /**
  * Human label for the picker trigger. A relative range that matches a known
- * preset shows the preset label ("Dernières 24 heures"); any other relative
+ * preset shows the preset label (e.g. "Last 24 hours"); any other relative
  * range falls back to its tokens; an absolute range shows both instants.
  */
 export function rangeLabel(r: TimeRange): string {

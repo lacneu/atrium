@@ -548,6 +548,8 @@ export const respondToFeedback = mutation({
         kind: "feedback_reply",
         title: "Réponse à votre signalement",
         body: "Un administrateur a répondu à un signalement que vous avez envoyé.",
+        messageKey: "notif_feedback_reply_admin",
+        params: {},
         // Deep-link to the reported conversation (the bell's "Mes signalements"
         // section holds the reply text; the top-list item just needs to be
         // openable — restoring the link the old feedback panel exposed).
@@ -749,6 +751,8 @@ export const backfillFeedbackNotifications = internalMutation({
         kind: "feedback_reply",
         title: "Réponse à votre signalement",
         body: "Un administrateur a répondu à un signalement que vous avez envoyé.",
+        messageKey: "notif_feedback_reply_admin",
+        params: {},
         href: `/chat/${fb.chatId}`, // deep-link to the reported conversation
         dedupeKey,
         createdAt: latest.at, // original reply time (label only; feed sorts by insert)
@@ -903,6 +907,8 @@ export const replyForApi = internalMutation({
       kind: "feedback_reply",
       title: "Réponse à votre signalement",
       body: "Votre signalement a reçu une réponse.",
+      messageKey: "notif_feedback_reply",
+      params: {},
       href: `/chat/${fb.chatId}`,
       dedupeKey: `feedback_reply:${feedbackId}:${now}`,
     });
@@ -958,6 +964,8 @@ export const closeForApi = internalMutation({
         kind: "feedback_resolved",
         title: "Signalement résolu",
         body: "Votre signalement a été résolu, avec une explication.",
+        messageKey: "notif_feedback_resolved",
+        params: {},
         href: `/chat/${fb.chatId}`,
         dedupeKey: `feedback_reply:${feedbackId}:${now}`,
       });

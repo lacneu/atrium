@@ -3,7 +3,14 @@
 // instances from the Convex records (api.admin.listInstances) — so an instance can be
 // configured BEFORE it is connected / made available to users.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { APP_HOST } from "@/lib/appHost";
+import {
+  LOCALE_ENDONYMS,
+  resolveContentLocale,
+  type Locale,
+} from "../../../convex/lib/locales";
+import { localeOptions } from "../localePickerView";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -143,8 +150,28 @@ export function PromptInjectionsTab() {
 function InstanceInjectionsEditor({ instance }: { instance: Instance }) {
   const save = useMutation(api.admin.upsertInstanceConfig);
   const toast = useToast();
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as
+    | { defaultLocale?: string | null }
+    | undefined;
   const stored = (instance.config ?? {}) as Partial<ConfigForm>;
-  const [form, setForm] = useState<ConfigForm>(() => formFromConfig(stored));
+  // Content locale chain (instance override -> admin default -> base): fills the
+  // un-overridden rows with the default text the backend actually sends.
+  const contentLocale = resolveContentLocale(
+    (instance.config as { contentLocale?: string } | undefined)?.contentLocale,
+    me?.defaultLocale ?? undefined,
+  );
+  const [form, setForm] = useState<ConfigForm>(() =>
+    formFromConfig(stored, contentLocale),
+  );
+  // Re-seed when the EFFECTIVE content locale changes (me.defaultLocale arriving
+  // after first render, or the selector below persisting a new override): the
+  // un-overridden rows must show the default text the backend now sends (codex
+  // P2). Stored overrides survive re-seeding; only unsaved edits are reset —
+  // acceptable on an explicit language switch.
+  useEffect(() => {
+    setForm(formFromConfig(stored, contentLocale));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentLocale, instance._id]);
   const [saving, setSaving] = useState(false);
 
   const rows = form.promptInjections;
@@ -162,7 +189,7 @@ function InstanceInjectionsEditor({ instance }: { instance: Instance }) {
       // never freezes defaults, and editing injections here never wipes the bridge config.
       await save({
         instanceId: instance._id as Id<"instances">,
-        config: buildConfigOverride(form, stored),
+        config: buildConfigOverride(form, stored, contentLocale),
       });
       // Silent-on-success (app convention); only a FAILURE surfaces a toast.
     } catch (err) {
@@ -172,15 +199,65 @@ function InstanceInjectionsEditor({ instance }: { instance: Instance }) {
     }
   }
 
+  // Persist the content-locale override (or clear it back to the app default).
+  async function setContentLocale(value: string): Promise<void> {
+    const next: Record<string, unknown> = {
+      ...((instance.config ?? {}) as Record<string, unknown>),
+    };
+    if (value === "default") delete next.contentLocale;
+    else next.contentLocale = value;
+    try {
+      await save({
+        instanceId: instance._id as Id<"instances">,
+        config: next,
+      });
+    } catch (err) {
+      toast.error(m.bridge_config_save_failed(), err);
+    }
+  }
+  const storedContentLocale =
+    (instance.config as { contentLocale?: string } | undefined)?.contentLocale ??
+    "default";
+  const adminDefaultLabel =
+    LOCALE_ENDONYMS[
+      resolveContentLocale(undefined, me?.defaultLocale ?? undefined)
+    ];
+
   return (
     <div className="oc-injtab__body">
+      <div className="oc-injtab__content-locale">
+        <span>{m.injections_content_locale_label()}</span>
+        <Select
+          value={storedContentLocale}
+          onValueChange={(v) => void setContentLocale(v)}
+        >
+          <SelectTrigger size="sm" className="min-w-44">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">
+              {m.injections_content_locale_default({ locale: adminDefaultLabel })}
+            </SelectItem>
+            {localeOptions().map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="oc-admin__hint">{m.injections_content_locale_help()}</p>
+      </div>
       {PROMPT_INJECTION_KEYS.map((key) => (
         <InjectionCard
           key={key}
           injKey={key}
           def={PROMPT_INJECTIONS[key]}
           i18n={INJECTION_I18N[key]}
-          row={rows[key] ?? { enabled: true, template: PROMPT_INJECTIONS[key].defaultTemplate }}
+          row={rows[key] ?? {
+            enabled: true,
+            template: PROMPT_INJECTIONS[key].defaultTemplate[contentLocale],
+          }}
+          contentLocale={contentLocale}
           onChange={(patch) => setRow(key, patch)}
         />
       ))}
@@ -198,16 +275,18 @@ function InjectionCard({
   def,
   i18n,
   row,
+  contentLocale,
   onChange,
 }: {
   injKey: PromptInjectionKey;
   def: PromptInjectionDef;
   i18n: { label: () => string; help: () => string };
   row: InjectionForm;
+  contentLocale: Locale;
   onChange: (patch: Partial<InjectionForm>) => void;
 }) {
   const [showPreview, setShowPreview] = useState(false);
-  const isCustom = row.template.trim() !== def.defaultTemplate;
+  const isCustom = row.template.trim() !== def.defaultTemplate[contentLocale];
   const disabled = def.togglable && !row.enabled;
   // Fill the placeholders with realistic example values. Preview the template ACTUALLY
   // applied (effectiveTemplate) — when disabled, that's the registry fallback (empty for
@@ -216,7 +295,7 @@ function InjectionCard({
   const exampleVars = Object.fromEntries(
     def.placeholders.map((p) => [p, PLACEHOLDER_EXAMPLES[p] ?? `{${p}}`]),
   );
-  const effTemplate = effectiveTemplate(injKey, row);
+  const effTemplate = effectiveTemplate(injKey, row, contentLocale);
   const preview = effTemplate ? fillTemplate(effTemplate, exampleVars) : "";
 
   return (
@@ -269,7 +348,7 @@ function InjectionCard({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => onChange({ template: def.defaultTemplate })}
+              onClick={() => onChange({ template: def.defaultTemplate[contentLocale] })}
             >
               {m.injection_reset()}
             </Button>

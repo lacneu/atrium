@@ -36,6 +36,8 @@ import { requireActive } from "./lib/access";
 import { resolveSummarizerTarget } from "./agents";
 import { resolveTargetForChat } from "./routing";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
+import { contentLocaleForInstance } from "./lib/serverLocale";
+import { BASE_LOCALE, type Locale } from "./lib/locales";
 import {
   effectiveTemplate,
   fillTemplate,
@@ -49,6 +51,7 @@ import {
   clampSummary,
   freshTailCount,
   summaryBackoffMs,
+  REHYDRATION_STRINGS,
 } from "./lib/rehydration";
 
 /** Bounded newest-window read when building a chunk (mirrors rehydration's bounded
@@ -221,6 +224,22 @@ export const SUBAGENT_RESULT_HISTORY_CAP = 8_000;
  *  answer) — without this join, rehydration, the summarizer and the gauge are all
  *  blind to the conversation's real content (live-diagnosed: a 30k-token digest
  *  chat whose usable text totalled 2.6k chars). ONE bounded by_chat read per walk. */
+// Sub-agent digest labels per CONTENT locale (they ride into the summarizer
+// prompt AND the rehydration verbatim tail — agent-facing).
+export const SUBAGENT_DIGEST_LABELS: Record<
+  Locale,
+  { withTask: (task: string) => string; bare: string }
+> = {
+  fr: {
+    withTask: (task) => `[Résultat du sous-agent « ${task} » :]`,
+    bare: "[Résultat du sous-agent :]",
+  },
+  en: {
+    withTask: (task) => `[Sub-agent result "${task}":]`,
+    bare: "[Sub-agent result:]",
+  },
+};
+
 export interface ChildResultsIndex {
   /** parentMessageId -> formatted, capped result blocks (done children only). */
   byMsg: Map<string, string[]>;
@@ -232,6 +251,8 @@ export interface ChildResultsIndex {
 export async function loadChildResults(
   ctx: QueryCtx | MutationCtx,
   chatId: Id<"chats">,
+  // Content locale for the digest labels (agent-facing).
+  locale: Locale,
   // OPTIONAL creation-time range (the engine's page walk): children are CREATED
   // during their parent's turn, so a ranged read reaches the children of OLD
   // unsummarized parents even when the chat holds more children than the newest
@@ -280,8 +301,8 @@ export async function loadChildResults(
         ? `${text.slice(0, SUBAGENT_RESULT_HISTORY_CAP - 1)}…`
         : text;
     const label = r.taskName
-      ? `[Résultat du sous-agent « ${r.taskName} » :]`
-      : "[Résultat du sous-agent :]";
+      ? SUBAGENT_DIGEST_LABELS[locale].withTask(r.taskName)
+      : SUBAGENT_DIGEST_LABELS[locale].bare;
     const list = byMsg.get(key) ?? [];
     list.push(`${label}\n${capped}`);
     byMsg.set(key, list);
@@ -319,9 +340,13 @@ function usableTurnsDesc(
     .sort((a, b) => effectiveOrder(b) - effectiveOrder(a) || b._creationTime - a._creationTime);
 }
 
-function renderTurn(m: Doc<"messages">, children: ChildResultsIndex): string {
-  const label = m.role === "user" ? "Utilisateur" : "Assistant";
-  return `${label} : ${enrichedTurnText(m, children)}`;
+function renderTurn(
+  m: Doc<"messages">,
+  children: ChildResultsIndex,
+  locale: Locale,
+): string {
+  const t9n = REHYDRATION_STRINGS[locale];
+  return `${m.role === "user" ? t9n.userLabel : t9n.assistantLabel} : ${enrichedTurnText(m, children)}`;
 }
 
 /** Outcome of one scheduling attempt — returned to the MANUAL caller so the panel
@@ -437,9 +462,11 @@ async function scheduleSummarizeJob(
         ? (compatTarget.turnSessionEcho ?? null)
         : (compatDoc?.turnSessionEcho ?? null);
     if (echo !== true) return "bridge_outdated";
+    const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
     const injection = resolveInjection(
       "history_summary",
       instance?.config?.promptInjections,
+      contentLocale,
     );
 
     const row = await ctx.db
@@ -472,7 +499,7 @@ async function scheduleSummarizeJob(
     // index range is on _creationTime with a slack for queued rows (their
     // effectiveOrder — orderTime — trails their _creationTime by minutes at most);
     // the exact cut is the effectiveOrder filter below.
-    const children = await loadChildResults(ctx, chatId);
+    const children = await loadChildResults(ctx, chatId, contentLocale);
     const newestProbe = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
@@ -540,7 +567,7 @@ async function scheduleSummarizeJob(
       pageFull = rows.length === CHUNK_READ_WINDOW;
       pageChildren =
         rows.length > 0
-          ? await loadChildResults(ctx, chatId, {
+          ? await loadChildResults(ctx, chatId, contentLocale, {
               fromMs: rows[0]!._creationTime,
               toMs: rows[rows.length - 1]!._creationTime,
             })
@@ -616,7 +643,7 @@ async function scheduleSummarizeJob(
     let backlogChars = 0;
     for (const m of chunkPoolChrono) {
       if (pageChildren.unsettled.has(m._id as string)) break;
-      backlogChars += renderTurn(m, pageChildren).length + 1;
+      backlogChars += renderTurn(m, pageChildren, contentLocale).length + 1;
     }
     for (const m of chunkPoolChrono) {
       // A turn whose sub-agent is STILL RUNNING is not settled: summarizing it
@@ -624,7 +651,7 @@ async function scheduleSummarizeJob(
       // the chunk (and the watermark) right before it; the child's settle
       // triggers a later job that picks it up complete.
       if (pageChildren.unsettled.has(m._id as string)) break;
-      let line = renderTurn(m, pageChildren);
+      let line = renderTurn(m, pageChildren, contentLocale);
       if (chunkMsgs.length > 0 && chunkChars + line.length + 1 > CHUNK_MAX_CHARS)
         break;
       // A SINGLE turn larger than the whole per-job bound would otherwise ride
@@ -677,10 +704,14 @@ async function scheduleSummarizeJob(
     // COPIES) are settled — purge them before this job writes its own rows.
     await cleanupHiddenChatContent(ctx, hidden._id);
 
-    const template = effectiveTemplate("history_summary", injection);
+    const template = effectiveTemplate("history_summary", injection, contentLocale);
     const text = fillTemplate(template, {
       previous_summary:
-        row && row.summary.length > 0 ? row.summary : "(aucun — première synthèse)",
+        row && row.summary.length > 0
+          ? row.summary
+          : contentLocale === "fr"
+            ? "(aucun — première synthèse)"
+            : "(none — first summary)",
       new_messages: chunkLines.join("\n"),
       max_chars: String(SUMMARY_MAX_CHARS),
     });
@@ -950,10 +981,13 @@ async function recordSummarizeFailure(
       await ctx.runMutation(internal.anomalies.reportAnomalyInternal, {
         kind: "chat.summary_failing",
         severity: "warn",
+        // Anomaly evidence messages are TECHNICAL detail, uniformly English
+        // (every other producer already is); the notification TITLE is localized
+        // at read via its messageKey.
         message:
-          `Le moteur de synthèse d'historique échoue en boucle pour une conversation ` +
-          `(${failureCount} échecs consécutifs, dernière raison : ${reason}). ` +
-          `La réhydratation retombe sur l'historique verbatim tronqué pour ce chat.`,
+          `The history-summary engine is failing repeatedly for one conversation ` +
+          `(${failureCount} consecutive failures, last reason: ${reason}). ` +
+          `Rehydration falls back to the truncated verbatim history for this chat.`,
         correlationId: summaryCorrelationId(targetChatId, jobCreatedAt),
         evidence: JSON.stringify({
           chatId: targetChatId,
@@ -1070,7 +1104,9 @@ export const getChatSummary = query({
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .take(GAUGE_READ);
-    const gaugeChildren = await loadChildResults(ctx, chatId);
+    // Size ESTIMATE only (backlog gauge): label-length differences between
+    // locales are noise here — the base locale keeps this read appMeta-free.
+    const gaugeChildren = await loadChildResults(ctx, chatId, BASE_LOCALE);
     const usable = probe
       .filter(
         (m) =>

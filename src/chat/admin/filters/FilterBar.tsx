@@ -8,7 +8,7 @@ import type { TimeRange } from "./types";
 
 // Generic filter row that sits ABOVE the DataTableShell/table: a debounced
 // search Input (the `q` clause), a `children` slot for the resource's quick
-// <Select> filters, an optional TimeRangePicker, and a "Réinitialiser" clear.
+// <Select> filters, an optional TimeRangePicker, and a reset-filters clear.
 // Token-styled; reusable across every admin tab.
 
 const DEBOUNCE_MS = 250;
@@ -44,7 +44,7 @@ export function FilterBar({
   const [draft, setDraft] = useState(q);
 
   // Keep the local draft in sync if the parent resets `q` externally (e.g. the
-  // Réinitialiser button), without clobbering active typing of the same value.
+  // reset button), without clobbering active typing of the same value.
   useEffect(() => {
     setDraft(q);
   }, [q]);

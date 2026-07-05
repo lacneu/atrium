@@ -19,7 +19,7 @@ import { GatewayDegradedContext } from "./gatewayDegradedContext";
 // and this re-renders without any HTTP turn.
 //
 // a11y: the chip carries `role="status"` (an implicit aria-live="polite" region)
-// so a screen reader announces the STATE change ("Réflexion…", "Erreur"). We do
+// so a screen reader announces the STATE change (thinking, error). We do
 // NOT wrap the streaming message BODY in a live region — that would re-announce
 // the answer on every token delta (spam). The body is read once it settles.
 

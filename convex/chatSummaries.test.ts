@@ -1562,7 +1562,7 @@ describe("failure-streak anomaly + admin notification", () => {
       const atThree = await anomalies();
       expect(atThree).toHaveLength(1);
       expect(atThree[0]!.severity).toBe("warn");
-      expect(atThree[0]!.message).toContain("3 échecs consécutifs");
+      expect(atThree[0]!.message).toContain("3 consecutive failures");
       // Threshold-EXACT: a 4th failure of the same streak does not re-report.
       await failOnce();
       expect(await anomalies()).toHaveLength(1);

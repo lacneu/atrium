@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
+import { m } from "@/paraglide/messages.js";
 import {
   Sheet,
   SheetContent,
@@ -20,7 +21,7 @@ export function EntitySheet({
   description,
   children,
   onSubmit,
-  submitLabel = "Enregistrer",
+  submitLabel,
   submitting = false,
   canSubmit = true,
 }: {
@@ -73,14 +74,16 @@ export function EntitySheet({
           <SheetFooter className="border-t px-6 py-4">
             <Button type="submit" disabled={!canSubmit || busy}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : null}
-              {submitLabel}
+              {/* Default label resolves at RENDER time so it follows the
+                  active locale (never a module-level m.*() call). */}
+              {submitLabel ?? m.entitysheet_save()}
             </Button>
             <Button
               type="button"
               variant="ghost"
               onClick={() => onOpenChange(false)}
             >
-              Annuler
+              {m.entitysheet_cancel()}
             </Button>
           </SheetFooter>
         </form>

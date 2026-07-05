@@ -46,6 +46,8 @@ import {
   validateCuration,
 } from "./lib/curation";
 import { curationSessionNonce } from "./lib/rehydration";
+import { contentLocaleForInstance } from "./lib/serverLocale";
+import type { Locale } from "./lib/locales";
 import {
   effectiveTemplate,
   fillTemplate,
@@ -68,19 +70,23 @@ function buildCurationPrompt(
   budgetChars: number,
   feedback: string | undefined,
   injections: PromptInjectionConfig | undefined,
+  // The instance's CONTENT locale — language of the default brief + fillers.
+  locale: Locale,
 ): string {
   // The briefing is the per-instance `file_curation` PROMPT INJECTION (admin
   // customizes it per gateway type in Settings > Injections de prompt; disabling
   // it sends bare material for a dedicated curator agent that carries its own).
-  const resolved = resolveInjection("file_curation", injections);
-  const template = effectiveTemplate("file_curation", resolved);
+  const resolved = resolveInjection("file_curation", injections, locale);
+  const template = effectiveTemplate("file_curation", resolved, locale);
   return fillTemplate(template, {
     file_name: fileName,
     budget_chars: String(budgetChars),
     feedback:
       feedback && feedback.trim().length > 0
         ? feedback.trim()
-        : "(aucun — première proposition)",
+        : locale === "fr"
+          ? "(aucun — première proposition)"
+          : "(none — first proposal)",
     content,
   });
 }
@@ -257,12 +263,14 @@ export const dispatchCuration = internalMutation({
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", args.instanceName))
       .first();
+    const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
     const prompt = buildCurationPrompt(
       args.name,
       args.content,
       args.budgetChars,
       args.feedback,
       instance?.config?.promptInjections,
+      contentLocale,
     );
     const msgId = await ctx.db.insert("messages", {
       chatId: hidden._id,
@@ -407,6 +415,14 @@ async function notifyCurationOutcome(
     await notifyUser(ctx, {
       userId: curation.requestedByUserId,
       kind: "curation",
+      // Localized at READ by the client (the reader's language); title/body are
+      // the write-time fallback for legacy rows/clients.
+      messageKey:
+        outcome === "proposed" ? "notif_curation_proposed" : "notif_curation_failed",
+      params:
+        outcome === "proposed"
+          ? { name: curation.name, agentId: curation.agentId }
+          : { name: curation.name, reason: reason ?? "unknown" },
       title,
       body,
       href: "/settings/agentFiles",
@@ -579,10 +595,14 @@ export const recurateAfterReject = internalAction({
   },
   handler: async (ctx, args): Promise<null> => {
     const refuse = async (reason: string): Promise<null> => {
+      // `reason` is a stable code (disabled/bridge_error/…): it rides as a param
+      // so the client renders the whole line in the reader's language.
       await ctx.runMutation(internal.agentFileCuration.notifyCurationEvent, {
         userId: args.userId,
         title: "Relance de curation impossible",
         body: `La nouvelle curation de ${args.name} n'a pas pu être lancée (${reason}).`,
+        messageKey: "notif_curation_relaunch_refused",
+        params: { name: args.name, reason },
         dedupeKey: `curation-relaunch:${args.instanceName}:${args.agentId}:${args.name}:${reason}`,
       });
       return null;
@@ -590,7 +610,7 @@ export const recurateAfterReject = internalAction({
     const cfg = await ctx.runQuery(internal.agentFileCuration.instanceCuration, {
       instanceName: args.instanceName,
     });
-    if (!cfg.enabled) return refuse("curation désactivée");
+    if (!cfg.enabled) return refuse("disabled");
     const budgetChars = clampCurationBudget(cfg.budgetChars);
     const bridgeUrl = await ctx.runQuery(
       internal.agentFiles.bridgeUrlForInstance,
@@ -612,14 +632,14 @@ export const recurateAfterReject = internalAction({
       baseUpdatedAtMs =
         typeof file?.updatedAtMs === "number" ? file.updatedAtMs : null;
     } catch {
-      return refuse("bridge injoignable");
+      return refuse("bridge_error");
     }
-    if (content.length === 0) return refuse("fichier vide ou manquant");
+    if (content.length === 0) return refuse("empty_or_missing");
     if (!isCurationCandidate(content.length, budgetChars)) {
-      return refuse("fichier déjà sous le budget");
+      return refuse("under_budget");
     }
     if (content.length > CURATION_ONE_SHOT_MAX_SOURCE_CHARS) {
-      return refuse("fichier trop volumineux pour une passe unique");
+      return refuse("too_large_for_one_shot");
     }
     const res = await ctx.runMutation(internal.agentFileCuration.dispatchCuration, {
       instanceName: args.instanceName,
@@ -632,7 +652,7 @@ export const recurateAfterReject = internalAction({
       feedback: args.feedback.length > 0 ? args.feedback : undefined,
       userId: args.userId,
     });
-    if (!res.ok) return refuse(res.reason ?? "raison inconnue");
+    if (!res.ok) return refuse(res.reason ?? "unknown");
     return null;
   },
 });
@@ -643,15 +663,22 @@ export const notifyCurationEvent = internalMutation({
     userId: v.id("users"),
     title: v.string(),
     body: v.string(),
+    messageKey: v.optional(v.string()),
+    params: v.optional(v.record(v.string(), v.string())),
     dedupeKey: v.optional(v.string()),
   },
-  handler: async (ctx, { userId, title, body, dedupeKey }): Promise<null> => {
+  handler: async (
+    ctx,
+    { userId, title, body, messageKey, params, dedupeKey },
+  ): Promise<null> => {
     try {
       await notifyUser(ctx, {
         userId,
         kind: "curation",
         title,
         body,
+        ...(messageKey ? { messageKey } : {}),
+        ...(params ? { params } : {}),
         href: "/settings/agentFiles",
         ...(dedupeKey ? { dedupeKey } : {}),
       });

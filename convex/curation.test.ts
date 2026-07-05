@@ -123,8 +123,8 @@ describe("isCurationCandidate + clampCurationBudget", () => {
 
 describe("file_curation prompt injection (the curator briefing)", () => {
   test("default template names the file, the budget, the feedback, and the content", () => {
-    const resolved = resolveInjection("file_curation", undefined);
-    const filled = fillTemplate(effectiveTemplate("file_curation", resolved), {
+    const resolved = resolveInjection("file_curation", undefined, "fr");
+    const filled = fillTemplate(effectiveTemplate("file_curation", resolved, "fr"), {
       file_name: "MEMORY.md",
       budget_chars: "16000",
       feedback: "Trop agressif : conserve les références.",
@@ -142,7 +142,7 @@ describe("file_curation prompt injection (the curator briefing)", () => {
 
   test("disabled -> bare material (a dedicated curator agent carries its own brief)", () => {
     const filled = fillTemplate(
-      effectiveTemplate("file_curation", { enabled: false, template: "ignored" }),
+      effectiveTemplate("file_curation", { enabled: false, template: "ignored" }, "fr"),
       { file_name: "MEMORY.md", budget_chars: "16000", feedback: "(aucun)", content: "X" },
     );
     expect(filled).toContain("MEMORY.md");

@@ -6,6 +6,7 @@
 
 import { v } from "convex/values";
 import { CURATION_BUDGET_MIN, CURATION_BUDGET_MAX } from "./curation";
+import { isSupportedLocale, type Locale } from "./locales";
 
 import {
   missingRequiredPlaceholders,
@@ -62,6 +63,11 @@ export const instanceConfigValidator = v.object({
   // auto-write.
   curationEnabled: v.optional(v.boolean()),
   curationBudgetChars: v.optional(v.number()),
+  // CONTENT language override for this instance's server-generated, agent-facing
+  // material (prompt injections, rehydration framing, briefs). Unset -> the
+  // app's admin default language -> base locale. Validated against
+  // lib/locales.SUPPORTED_LOCALES.
+  contentLocale: v.optional(v.string()),
   // GATEWAY/AGENT-visible shared-fs paths (where the AGENT reads inbound files /
   // writes outbound files — i.e. the gateway container's mount of the shared
   // volume). Used only in shared-fs mode. Non-secret.
@@ -113,6 +119,7 @@ export type InstanceConfig = {
   summarizeThresholdChars?: number;
   curationEnabled?: boolean;
   curationBudgetChars?: number;
+  contentLocale?: string;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
   promptInjections?: PromptInjectionConfig;
@@ -162,6 +169,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "summarizeThresholdChars",
     "curationEnabled",
     "curationBudgetChars",
+    "contentLocale",
     "inboundAgentMount",
     "outboundAgentMount",
     "promptInjections",
@@ -205,6 +213,12 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.curationEnabled !== undefined) {
     if (typeof o.curationEnabled !== "boolean") return "invalid";
     out.curationEnabled = o.curationEnabled;
+  }
+  if (o.contentLocale !== undefined) {
+    if (typeof o.contentLocale !== "string" || !isSupportedLocale(o.contentLocale)) {
+      return "invalid";
+    }
+    out.contentLocale = o.contentLocale;
   }
   if (o.curationBudgetChars !== undefined) {
     const n = o.curationBudgetChars;
@@ -335,9 +349,11 @@ export type BridgeDispatchConfig = Omit<InstanceConfig, "promptInjections"> & {
 
 export function bridgeDispatchConfig(
   cfg: InstanceConfig | undefined | null,
+  // The instance's CONTENT locale — picks the language of default injection texts.
+  contentLocale: Locale,
 ): BridgeDispatchConfig {
   const { promptInjections, ...transport } = cfg ?? {};
-  return { ...transport, injections: resolveBridgeInjections(promptInjections) };
+  return { ...transport, injections: resolveBridgeInjections(promptInjections, contentLocale) };
 }
 
 /** Stable signature (fixed key order) — for "did the applied config change?". */

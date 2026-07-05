@@ -5,6 +5,7 @@ import type { Id } from "../convexApi";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "./DataTableShell";
+import { formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 
 // Admin administration of USER reports on sub-agent failures (Settings ›
@@ -280,7 +281,7 @@ export function SubAgentReportsTab() {
         columns={[
           {
             header: m.sareports_col_when(),
-            cell: (r) => new Date(r.at).toLocaleString("fr-FR"),
+            cell: (r) => formatDateTime(r.at),
             sort: (r) => r.at,
           },
           {

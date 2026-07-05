@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
+import { formatTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { FilterBar } from "./filters/FilterBar";
 import { showsBridgeErrorDetail, showsDownstreamReject } from "./bridgeHealthView";
@@ -336,7 +337,7 @@ function ConnectionRows({ r }: { r: RowView }) {
         <TableCell>
           {r.lastOkAt ? (
             <span className="oc-traces__mono">
-              {new Date(r.lastOkAt).toLocaleTimeString("fr-FR")}
+              {formatTime(r.lastOkAt)}
             </span>
           ) : (
             <span className="oc-traces__muted">—</span>
@@ -350,9 +351,7 @@ function ConnectionRows({ r }: { r: RowView }) {
               <div className="oc-bridge-target__error">
                 <strong>{info.label}</strong>{" "}
                 <code className="oc-traces__mono">{r.lastErrorCode}</code>
-                {r.lastErrorAt
-                  ? ` · ${new Date(r.lastErrorAt).toLocaleTimeString("fr-FR")}`
-                  : ""}
+                {r.lastErrorAt ? ` · ${formatTime(r.lastErrorAt)}` : ""}
                 <p className="oc-bridge-card__hint">{info.hint}</p>
               </div>
             ) : null}
@@ -363,7 +362,7 @@ function ConnectionRows({ r }: { r: RowView }) {
                   {r.lastDownstreamRejectCode}
                 </code>
                 {r.lastDownstreamRejectAt
-                  ? ` · ${new Date(r.lastDownstreamRejectAt).toLocaleTimeString("fr-FR")}`
+                  ? ` · ${formatTime(r.lastDownstreamRejectAt)}`
                   : ""}
               </div>
             ) : null}

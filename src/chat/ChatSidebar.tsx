@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
+import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -686,7 +687,7 @@ function ChatItem({
           // with the kebab menu that fades in (same swap as OpenWebUI).
           <span
             className="oc-chatitem__age group-hover/row:opacity-0 group-focus-within/row:opacity-0"
-            title={new Date(chat.updatedAt).toLocaleString("fr-FR")}
+            title={formatDateTime(chat.updatedAt)}
           >
             {relativeAge(chat.updatedAt, Date.now())}
           </span>

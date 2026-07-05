@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { m } from "@/paraglide/messages.js";
+import { formatDateTime } from "@/lib/format";
 import { api } from "../convexApi";
 import {
   Select,
@@ -40,13 +41,15 @@ const DEFAULT_RANGE: TimeRange = {
 // mapped back to `undefined` (no filter) when building the query arg.
 const ALL = "__all__";
 
+// Module-level m.*() calls are safe here: a locale switch reloads the page
+// (same pattern as RELATIVE_PRESETS in filters/types.ts).
 const AUDIT_ADV_FIELDS = [
-  { value: "action", label: "action" },
-  { value: "realLabel", label: "acteur réel" },
-  { value: "targetLabel", label: "au nom de" },
-  { value: "impersonated", label: "usurpation" },
-  { value: "resource", label: "ressource" },
-  { value: "resourceId", label: "id ressource" },
+  { value: "action", label: m.audit_field_action() },
+  { value: "realLabel", label: m.audit_field_real_actor() },
+  { value: "targetLabel", label: m.audit_field_on_behalf_of() },
+  { value: "impersonated", label: m.audit_field_impersonation() },
+  { value: "resource", label: m.audit_field_resource() },
+  { value: "resourceId", label: m.audit_field_resource_id() },
 ];
 
 export function AuditTab() {
@@ -182,7 +185,7 @@ export function AuditTab() {
         columns={[
           {
             header: m.settings_col_when(),
-            cell: (r) => new Date(r.at).toLocaleString("fr-FR"),
+            cell: (r) => formatDateTime(r.at),
             sort: (r) => r.at,
           },
           { header: m.settings_action(), cell: (r) => r.action, sort: (r) => r.action },

@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -445,10 +446,10 @@ export function SessionPanel({
                     <p className="oc-spanel__hint">
                       {m.spanel_summary_meta({
                         count: String(summaryInfo.coveredCount),
-                        date: new Intl.DateTimeFormat(undefined, {
+                        date: formatDateTime(summaryInfo.updatedAt, {
                           dateStyle: "short",
                           timeStyle: "short",
-                        }).format(new Date(summaryInfo.updatedAt)),
+                        }),
                       })}
                       {summaryInfo.lastAgentId
                         ? ` ${m.spanel_summary_agent({
@@ -544,10 +545,10 @@ export function SessionPanel({
                   : summaryInfo && summaryInfo.summary.length > 0
                     ? m.spanel_summary_meta({
                         count: String(summaryInfo.coveredCount),
-                        date: new Intl.DateTimeFormat(undefined, {
+                        date: formatDateTime(summaryInfo.updatedAt, {
                           dateStyle: "short",
                           timeStyle: "short",
-                        }).format(new Date(summaryInfo.updatedAt)),
+                        }),
                       })
                     : ""}
               </DialogDescription>

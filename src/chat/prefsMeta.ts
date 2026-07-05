@@ -2,7 +2,7 @@ import { m } from "@/paraglide/messages.js";
 
 // Shared display metadata for the UI-preferences module (the interface-config
 // toggles). Consumed by BOTH the user Preferences dialog (checkboxes) and the
-// admin "Préférences UI" tab (default-value selects), so categorization +
+// admin "UI preferences" tab (default-value selects), so categorization +
 // filtering live here ONCE. Server keys are the source of truth (UI_PREF_KEYS);
 // this is display-only — a key with no entry still renders (in "other").
 

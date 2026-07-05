@@ -1,5 +1,5 @@
 // Pure helpers for the merged Preferences tab: the user toggles AND the admin
-// governance of the SAME keys (the former "Préférences UI" tab) now live on one
+// governance of the SAME keys (the former "UI preferences" tab) now live on one
 // surface — each row optionally reveals its governance controls when an admin
 // switches the "manage defaults & locks" mode on. Extracted so the visibility
 // rule and the tri-state mappings are unit-testable without rendering

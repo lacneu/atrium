@@ -319,6 +319,8 @@ export const createSubAgentReport = mutation({
     await notifyAdmins(ctx, {
       kind: "anomaly_open",
       title: "Anomalie : subagent.failure",
+      messageKey: "notif_anomaly_open",
+      params: { kind: "subagent.failure" },
       body: message,
       href: "/settings/anomalies",
       dedupeKey: `anomaly_open:${anomalyId}`,

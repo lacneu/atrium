@@ -16,16 +16,16 @@ import { PROMPT_INJECTIONS } from "../../../convex/lib/promptInjections";
 
 const defaults: ConfigForm = {
   ...DEFAULT_INSTANCE_CONFIG,
-  promptInjections: injectionsFromConfig(undefined),
+  promptInjections: injectionsFromConfig(undefined, "fr"),
 };
 
 describe("formFromConfig", () => {
   test("nothing stored → every field shows its default (no undefined leaks)", () => {
-    expect(formFromConfig({})).toEqual(defaults);
+    expect(formFromConfig({}, "fr")).toEqual(defaults);
   });
 
   test("a stored override is reflected verbatim, the rest stay default", () => {
-    const form = formFromConfig({ mediaMode: "shared-fs", mediaMaxMb: 200 });
+    const form = formFromConfig({ mediaMode: "shared-fs", mediaMaxMb: 200 }, "fr");
     expect(form.mediaMode).toBe("shared-fs");
     expect(form.mediaMaxMb).toBe(200);
     // Untouched fields keep their defaults — not the other instance's values.
@@ -38,41 +38,54 @@ describe("formFromConfig", () => {
     // hitting Save unchanged must not materialize the displayed defaults as overrides.
     // (If formFromConfig leaked `undefined` for unset fields, buildConfigOverride would
     // persist them — this round-trip is what catches that regression.)
-    expect(buildConfigOverride(formFromConfig({}), {})).toEqual({});
+    expect(buildConfigOverride(formFromConfig({}, "fr"), {}, "fr")).toEqual({});
   });
 
   test("injections: defaults-only Save persists NO injection overrides (no bloat)", () => {
     // Opening + saving an unconfigured instance must not freeze the default injection
     // texts as overrides — the registry default stays the source of truth.
     expect(
-      buildConfigOverride(formFromConfig({}), {}).promptInjections,
+      buildConfigOverride(formFromConfig({}, "fr"), {}, "fr").promptInjections,
     ).toBeUndefined();
   });
 
   test("injections: DISABLING a togglable injection persists only {enabled:false}", () => {
-    const form = formFromConfig({});
+    const form = formFromConfig({}, "fr");
     form.promptInjections.media_delivery.enabled = false;
-    expect(buildConfigOverride(form, {}).promptInjections).toEqual({
+    expect(buildConfigOverride(form, {}, "fr").promptInjections).toEqual({
       media_delivery: { enabled: false },
     });
   });
 
   test("injections: a CUSTOM template persists only {template}; default text does not", () => {
-    const form = formFromConfig({});
+    const form = formFromConfig({}, "fr");
     form.promptInjections.documentary_fetch.template = "Donne {references} stp";
-    const ov = buildConfigOverride(form, {}).promptInjections;
+    const ov = buildConfigOverride(form, {}, "fr").promptInjections;
     expect(ov).toEqual({ documentary_fetch: { template: "Donne {references} stp" } });
     // Re-typing the exact default is NOT an override.
     form.promptInjections.documentary_fetch.template =
-      PROMPT_INJECTIONS.documentary_fetch.defaultTemplate;
+      PROMPT_INJECTIONS.documentary_fetch.defaultTemplate.fr;
     expect(
-      buildConfigOverride(form, {}).promptInjections,
+      buildConfigOverride(form, {}, "fr").promptInjections,
     ).toBeUndefined();
+  });
+
+  test("pasting ANOTHER locale's built-in default IS an override (active-locale compare)", () => {
+    const form = formFromConfig({}, "fr");
+    form.promptInjections.media_delivery.template =
+      PROMPT_INJECTIONS.media_delivery.defaultTemplate.en;
+    expect(
+      buildConfigOverride(form, {}, "fr").promptInjections,
+    ).toEqual({
+      media_delivery: {
+        template: PROMPT_INJECTIONS.media_delivery.defaultTemplate.en,
+      },
+    });
   });
 
   test("round-trip: a stored override survives load → Save", () => {
     const stored: Partial<ConfigForm> = { mediaMode: "shared-fs" };
-    expect(buildConfigOverride(formFromConfig(stored), stored)).toEqual(stored);
+    expect(buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr")).toEqual(stored);
   });
 });
 
@@ -80,12 +93,12 @@ describe("buildConfigOverride", () => {
   test("all-defaults form + nothing stored → {} (a bare Save shadows NOTHING)", () => {
     // The regression: returning the full form here would force gateway-http/1024/etc
     // as overrides, flipping an env-configured shared-fs/off bridge on the next send.
-    expect(buildConfigOverride({ ...defaults }, {})).toEqual({});
+    expect(buildConfigOverride({ ...defaults }, {}, "fr")).toEqual({});
   });
 
   test("only a field the admin CHANGED from the default is persisted", () => {
     expect(
-      buildConfigOverride({ ...defaults, mediaMode: "shared-fs" }, {}),
+      buildConfigOverride({ ...defaults, mediaMode: "shared-fs" }, {}, "fr"),
     ).toEqual({ mediaMode: "shared-fs" });
   });
 
@@ -95,7 +108,7 @@ describe("buildConfigOverride", () => {
     const stored: Partial<ConfigForm> = {
       outboundAgentMount: DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
     };
-    expect(buildConfigOverride({ ...defaults }, stored)).toEqual({
+    expect(buildConfigOverride({ ...defaults }, stored, "fr")).toEqual({
       outboundAgentMount: DEFAULT_INSTANCE_CONFIG.outboundAgentMount,
     });
   });
@@ -105,15 +118,16 @@ describe("buildConfigOverride", () => {
       buildConfigOverride(
         { ...defaults, mediaMode: "off", mediaMaxMb: 200 },
         {},
+        "fr",
       ),
     ).toEqual({ mediaMode: "off", mediaMaxMb: 200 });
   });
 
   test("rehydration=false (≠ default true) is persisted; true is omitted", () => {
-    expect(buildConfigOverride({ ...defaults, rehydration: false }, {})).toEqual({
+    expect(buildConfigOverride({ ...defaults, rehydration: false }, {}, "fr")).toEqual({
       rehydration: false,
     });
-    expect(buildConfigOverride({ ...defaults, rehydration: true }, {})).toEqual({});
+    expect(buildConfigOverride({ ...defaults, rehydration: true }, {}, "fr")).toEqual({});
   });
 });
 
@@ -123,14 +137,14 @@ describe("cross-tab passthrough (shared instance.config blob)", () => {
       mediaMode: "shared-fs",
       summarizeThresholdChars: 12_000,
     } as unknown as Partial<ConfigForm>;
-    const form = formFromConfig(stored);
-    const out = buildConfigOverride(form, stored);
+    const form = formFromConfig(stored, "fr");
+    const out = buildConfigOverride(form, stored, "fr");
     expect(out.summarizeThresholdChars).toBe(12_000);
   });
 
   test("no threshold stored -> none resurrected", () => {
     const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
-    const out = buildConfigOverride(formFromConfig(stored), stored);
+    const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
     expect("summarizeThresholdChars" in out).toBe(false);
   });
 
@@ -140,16 +154,25 @@ describe("cross-tab passthrough (shared instance.config blob)", () => {
       curationEnabled: true,
       curationBudgetChars: 18_000,
     } as unknown as Partial<ConfigForm>;
-    const out = buildConfigOverride(formFromConfig(stored), stored);
+    const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
     // Both types survive the rebuild (a boolean was previously dropped — only
     // numbers were carried through).
     expect(out.curationEnabled).toBe(true);
     expect(out.curationBudgetChars).toBe(18_000);
   });
 
+  test("a save PRESERVES the contentLocale owned by the Injections tab selector", () => {
+    const stored = {
+      mediaMode: "shared-fs",
+      contentLocale: "en",
+    } as unknown as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored, "en"), stored, "fr");
+    expect(out.contentLocale).toBe("en");
+  });
+
   test("no curation config stored -> none resurrected", () => {
     const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
-    const out = buildConfigOverride(formFromConfig(stored), stored);
+    const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
     expect("curationEnabled" in out).toBe(false);
     expect("curationBudgetChars" in out).toBe(false);
   });

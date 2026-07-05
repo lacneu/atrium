@@ -1,3 +1,4 @@
+import { BASE_LOCALE, type Locale } from "./locales";
 // Hybrid rehydration — the PURE composition half (see docs/design/hybrid-rehydration.md).
 //
 // A fresh gateway session is re-grounded from Atrium's message store by prepending a
@@ -102,6 +103,9 @@ export interface RehydrationSummary {
 }
 
 export interface ComposeRehydrationInput {
+  /** Content locale for the framing strings (header/labels). Optional so pure
+   *  callers/tests default to the base locale. */
+  locale?: Locale;
   /** Chronological (oldest -> newest) verbatim candidates: complete user/assistant
    *  text turns strictly before the current turn and AFTER the summary watermark. */
   turns: RehydrationTurn[];
@@ -122,17 +126,48 @@ export interface ComposedRehydration {
   omitted: boolean;
 }
 
-const HEADER =
-  "[Reprise d’une conversation antérieure de ce même fil. Pour continuité, " +
-  "voici l’historique des messages précédents de cette conversation :]";
-const FOOTER =
-  "[Fin de l’historique. Le nouveau message de l’utilisateur suit ci-dessous.]";
-const GAP_WITH_SUMMARY = "[…messages intermédiaires omis…]";
-const GAP_NO_SUMMARY = "[…début de la conversation plus ancien, omis…]";
-
-function summaryIntro(coveredCount: number): string {
-  return `[Résumé de la partie antérieure de la conversation (${coveredCount} messages) :]`;
-}
+// Framing strings PER CONTENT LOCALE (the instance's content language — a
+// French framing nudges an agent to answer in French even for an EN user, so
+// the framing follows the same locale as the prompt injections). Keys pinned
+// to SUPPORTED_LOCALES by the rehydration tests.
+export const REHYDRATION_STRINGS: Record<
+  Locale,
+  {
+    header: string;
+    footer: string;
+    gapWithSummary: string;
+    gapNoSummary: string;
+    summaryIntro: (coveredCount: number) => string;
+    userLabel: string;
+    assistantLabel: string;
+  }
+> = {
+  fr: {
+    header:
+      "[Reprise d’une conversation antérieure de ce même fil. Pour continuité, " +
+      "voici l’historique des messages précédents de cette conversation :]",
+    footer:
+      "[Fin de l’historique. Le nouveau message de l’utilisateur suit ci-dessous.]",
+    gapWithSummary: "[…messages intermédiaires omis…]",
+    gapNoSummary: "[…début de la conversation plus ancien, omis…]",
+    summaryIntro: (n) =>
+      `[Résumé de la partie antérieure de la conversation (${n} messages) :]`,
+    userLabel: "Utilisateur",
+    assistantLabel: "Assistant",
+  },
+  en: {
+    header:
+      "[Resuming an earlier conversation in this same thread. For continuity, " +
+      "here is the history of this conversation's previous messages:]",
+    footer: "[End of history. The user's new message follows below.]",
+    gapWithSummary: "[…intermediate messages omitted…]",
+    gapNoSummary: "[…older beginning of the conversation omitted…]",
+    summaryIntro: (n) =>
+      `[Summary of the earlier part of the conversation (${n} messages):]`,
+    userLabel: "User",
+    assistantLabel: "Assistant",
+  },
+};
 
 /**
  * Compose the history block. Layout:
@@ -152,6 +187,7 @@ function summaryIntro(coveredCount: number): string {
 export function composeRehydration(
   input: ComposeRehydrationInput,
 ): ComposedRehydration {
+  const t9n = REHYDRATION_STRINGS[input.locale ?? BASE_LOCALE];
   const summaryText = input.summary?.text.trim() ?? "";
   const hasSummary = summaryText.length > 0;
 
@@ -169,7 +205,7 @@ export function composeRehydration(
   let truncated = false;
   for (let i = input.turns.length - 1; i >= 0; i--) {
     const t = input.turns[i]!;
-    const label = t.role === "user" ? "Utilisateur" : "Assistant";
+    const label = t.role === "user" ? t9n.userLabel : t9n.assistantLabel;
     let line = `${label} : ${t.text}`;
     if (keptDesc.length > 0 && chars + line.length > verbatimBudget) {
       truncated = true;
@@ -198,14 +234,14 @@ export function composeRehydration(
   }
 
   const omitted = truncated || input.readWindowClipped;
-  const parts: string[] = [HEADER];
+  const parts: string[] = [t9n.header];
   if (hasSummary) {
-    parts.push(summaryIntro(input.summary!.coveredCount));
+    parts.push(t9n.summaryIntro(input.summary!.coveredCount));
     parts.push(summaryBlock);
   }
-  if (omitted) parts.push(hasSummary ? GAP_WITH_SUMMARY : GAP_NO_SUMMARY);
+  if (omitted) parts.push(hasSummary ? t9n.gapWithSummary : t9n.gapNoSummary);
   if (lines.length > 0) parts.push(lines.join("\n"));
-  parts.push(FOOTER);
+  parts.push(t9n.footer);
 
   return {
     history: parts.join("\n"),

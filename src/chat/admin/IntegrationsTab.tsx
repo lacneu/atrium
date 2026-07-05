@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
+import { formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../convexApi";
 import { DataTableShell } from "./DataTableShell";
@@ -15,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-// Settings › Intégrations. Configures NON-SECRET integration knobs (host /
+// Settings › Integrations. Configures NON-SECRET integration knobs (host /
 // baseUrl / workspace / enabled + the tts/talk settings). API KEYS are NEVER
 // edited here — they live in the deployment env; this UI only shows a per-vendor
 // "configured" indicator derived server-side from env presence. Resolution
@@ -24,7 +25,7 @@ import {
 //
 // Status honesty: Langfuse/Opik have a REAL consumer (the trace shipper) → live.
 // TTS/Talk are consumed by the bridge worker (not built yet) → stored + labeled
-// "appliqué par le bridge (à venir)".
+// as applied by the bridge (upcoming).
 
 type VendorKnobs = {
   host?: string;
@@ -388,8 +389,7 @@ export function IntegrationsTab() {
           },
           {
             header: m.integrations_col_last_send(),
-            cell: (c) =>
-              c.lastAt > 0 ? new Date(c.lastAt).toLocaleString("fr-FR") : "—",
+            cell: (c) => (c.lastAt > 0 ? formatDateTime(c.lastAt) : "—"),
             sort: (c) => (c.lastAt > 0 ? c.lastAt : null),
           },
           {

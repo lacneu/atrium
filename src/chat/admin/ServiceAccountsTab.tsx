@@ -10,6 +10,7 @@ import { roleDescription } from "./roleDescriptions";
 import { FilterBar } from "./filters/FilterBar";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -107,7 +108,7 @@ export function ServiceAccountsTab() {
       q: q || undefined,
       // The service-account role filter key is `role` (-> roleKey server-side).
       role: roleFilter === ALL ? undefined : roleFilter,
-      // Status maps to the `disabled` bool (active = false, désactivé = true).
+      // Status maps to the `disabled` bool (active = false, disabled = true).
       disabled: statusFilter === ALL ? undefined : statusFilter === "disabled",
     },
   }) as ServiceAccountRow[] | undefined;
@@ -140,7 +141,7 @@ export function ServiceAccountsTab() {
   // (`minting`) only updates on the next render, so two near-simultaneous clicks
   // can both pass a state check; a ref flips synchronously before the await.
   const mintingRef = useRef(false);
-  // L7: keyIds with an in-flight revoke — the per-key "Révoquer" button is
+  // L7: keyIds with an in-flight revoke — the per-key revoke button is
   // disabled while its mutation runs (mirrors the mint guard).
   const [revoking, setRevoking] = useState<Set<string>>(new Set());
   const [expiryByAccount, setExpiryByAccount] = useState<
@@ -587,7 +588,10 @@ function AccountKeys({
                 <td>
                   <Badge variant="secondary">{account.roleKey}</Badge>
                 </td>
-                <td>{formatDate(k.createdAt)}</td>
+                {/* Creation shows date + TIME (Image #15): a key's creation
+                    instant is more useful with the time, and mirrors the
+                    datetime format used elsewhere (lastUsed, audit). */}
+                <td>{formatDateTime(k.createdAt)}</td>
                 <td className={isStale(k.lastUsedAt) ? "oc-sa__stale" : ""}>
                   {formatLastUsed(k.lastUsedAt)}
                 </td>
@@ -655,7 +659,7 @@ function MintedKeyDialog({
           className="max-w-lg"
           // Irreversible secret shown exactly once: block accidental dismissal
           // (overlay click / Escape / X). The ONLY close path is the explicit
-          // "J'ai copié la clé" button — research §"Mint modal" item 5.
+          // "I copied the key" button — research §"Mint modal" item 5.
           showCloseButton={false}
           onInteractOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
@@ -702,12 +706,6 @@ function MintedKeyDialog({
   );
 }
 
-// "Créée" shows date + time (Image #15): a key's creation instant is more useful
-// with the time, and mirrors the toLocaleString used elsewhere (lastUsed, audit).
-function formatDate(ms: number): string {
-  return new Date(ms).toLocaleString("fr-FR");
-}
-
 function isStale(lastUsedAt: number | null): boolean {
   if (lastUsedAt === null) return false;
   return Date.now() - lastUsedAt > STALE_MS;
@@ -715,12 +713,12 @@ function isStale(lastUsedAt: number | null): boolean {
 
 function formatLastUsed(lastUsedAt: number | null): string {
   if (lastUsedAt === null) return m.serviceaccounts_never();
-  return new Date(lastUsedAt).toLocaleString("fr-FR");
+  return formatDateTime(lastUsedAt);
 }
 
 function formatExpiry(expiresAt: number | null): string {
   if (expiresAt === null) return "—";
-  return new Date(expiresAt).toLocaleDateString("fr-FR");
+  return formatDate(expiresAt);
 }
 
 function statusBadge(k: ApiKeyRow) {

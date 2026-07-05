@@ -3,6 +3,7 @@ import { Popover as PopoverPrimitive } from "radix-ui";
 import { Clock, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { m } from "@/paraglide/messages.js";
 import {
   RELATIVE_PRESETS,
   localInputToMs,
@@ -129,9 +130,11 @@ export function TimeRangePicker({
           <div className="oc-timerange__cols">
             {/* Absolute panel (left) */}
             <div className="oc-timerange__absolute">
-              <div className="oc-timerange__section-title">Plage absolue</div>
+              <div className="oc-timerange__section-title">
+                {m.timerange_absolute()}
+              </div>
               <label className="oc-field">
-                <span className="oc-field__label">De</span>
+                <span className="oc-field__label">{m.timerange_from()}</span>
                 <Input
                   type="datetime-local"
                   value={fromDraft}
@@ -139,7 +142,7 @@ export function TimeRangePicker({
                 />
               </label>
               <label className="oc-field">
-                <span className="oc-field__label">À</span>
+                <span className="oc-field__label">{m.timerange_to()}</span>
                 <Input
                   type="datetime-local"
                   value={toDraft}
@@ -152,7 +155,7 @@ export function TimeRangePicker({
                 disabled={!absoluteValid}
                 onClick={applyAbsolute}
               >
-                Appliquer
+                {m.timerange_apply()}
               </Button>
             </div>
 
@@ -163,13 +166,13 @@ export function TimeRangePicker({
                 <Input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Rechercher une plage"
-                  aria-label="Rechercher une plage relative"
+                  placeholder={m.timerange_search_placeholder()}
+                  aria-label={m.timerange_search_aria()}
                 />
               </div>
               <ul className="oc-timerange__list">
                 {filteredPresets.length === 0 ? (
-                  <li className="oc-timerange__empty">Aucune plage.</li>
+                  <li className="oc-timerange__empty">{m.timerange_empty()}</li>
                 ) : (
                   filteredPresets.map((p) => {
                     const active =

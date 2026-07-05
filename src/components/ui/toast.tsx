@@ -2,6 +2,7 @@ import * as React from "react";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { m } from "@/paraglide/messages.js";
 
 // Minimal, dependency-free toast primitive for surfacing server-side mutation
 // errors (and the occasional success). Deliberately small: a context provider
@@ -47,7 +48,7 @@ export function errorMessage(err: unknown): string {
   try {
     return String(err);
   } catch {
-    return "Erreur inconnue";
+    return m.toast_unknown_error();
   }
 }
 
@@ -109,7 +110,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="oc-toast__viewport" role="region" aria-label="Notifications">
+      <div
+        className="oc-toast__viewport"
+        role="region"
+        aria-label={m.toast_region_aria()}
+      >
         {items.map((t) => (
           <div
             key={t.id}
@@ -125,7 +130,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               className="oc-toast__close"
-              aria-label="Fermer"
+              aria-label={m.common_close()}
               onClick={() => dismiss(t.id)}
             >
               <X aria-hidden />

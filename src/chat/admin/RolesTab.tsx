@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { m } from "@/paraglide/messages.js";
 
-// "Rôles" tab — permission MATRIX.
+// "Roles" tab — permission MATRIX.
 //
 // Layout: rows = roles (built-in + custom), columns = permission keys grouped
 // into sections. Checkboxes toggle a role's permission via

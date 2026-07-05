@@ -33,6 +33,7 @@ import {
   DEFAULT_GATEWAY_MAX_PAYLOAD,
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
+import { contentLocaleForInstance } from "./lib/serverLocale";
 import { bridgeDispatchConfig, resolveInstanceConfig } from "./lib/instanceConfig";
 import { classifyAttachment } from "./lib/mediaTransport";
 import { drainNextQueued } from "./lib/outboxQueue";
@@ -168,32 +169,15 @@ export const markOutbox = internalMutation({
   },
 });
 
-// User-facing message shown when a turn could NOT be dispatched. FR (the app is
-// mono-lingual; the message `error` field already carries free-text). Each ends
-// with a short non-secret `(réf. …)` so a user has something concrete to tell
-// their admin and the admin a key to grep traces/logs by — no gateway detail,
-// token, or PHI ever crosses into this user-visible string.
-const DISPATCH_FAILURE_MESSAGE: Record<string, string> = {
-  not_configured:
-    "Le service de chat n’est pas encore configuré. Contactez votre administrateur. (réf. bridge-config)",
-  no_agent:
-    "Aucun agent ne vous est assigné. Contactez votre administrateur pour qu’il vous en attribue un. (réf. no-agent)",
-  agent_restricted:
-    "Cet agent ne vous est plus disponible : votre accès aux agents a été modifié. Démarrez un nouveau chat avec un agent disponible. (réf. agent-restricted)",
-  send_failed:
-    "Le service de chat est momentanément indisponible. Réessayez ; si le problème persiste, contactez votre administrateur. (réf. bridge)",
-};
-
-// A FINER, attachment-scoped user message keyed by the curated errorCode, when the
-// generic `send_failed` reason has one. Same discipline: non-secret, no gateway
-// detail/PHI, ends with a short `(réf. …)`. Lets the user know it's the FILE (and
-// that text-only or a smaller file works) instead of a blanket "try again".
-const CODE_FAILURE_MESSAGE: Record<string, string> = {
-  ATTACHMENT_TOO_LARGE:
-    "La pièce jointe est trop volumineuse pour cet agent. Réessayez avec un fichier plus petit, ou envoyez votre message sans la pièce jointe. (réf. attach-size)",
-  ATTACHMENT_REJECTED:
-    "La pièce jointe n’a pas pu être traitée par le service. Réessayez avec un fichier plus petit, ou envoyez votre message sans la pièce jointe. (réf. attach-parse)",
-};
+// Dispatch failures are surfaced as STABLE CODES (never a pre-rendered
+// sentence): the code is stored in BOTH `error` and `errorCode`, and the UI
+// translates it into the READER's language (runStatusView ERROR_CODE_LABEL) —
+// the former hardcoded French sentences assumed a mono-lingual app and froze
+// the language at write time. Non-PHI by construction.
+const ATTACHMENT_FAILURE_CODES = new Set([
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_REJECTED",
+]);
 
 // Terminal FAILURE transition for a dispatch, in ONE transaction: mark the outbox
 // row failed AND surface the failure to the user as an assistant `error` turn (the
@@ -233,14 +217,17 @@ export const failDispatch = internalMutation({
       role: "assistant",
       status: "error",
       text: "",
+      // `error` carries the LOCALIZABLE code string (the stream_orphaned
+      // pattern): the attachment codes get their file-specific headline, every
+      // other failure the generic reason headline. `errorCode` PRESERVES the
+      // finest CURATED code when one exists (BRIDGE_UNREACHABLE, GATEWAY_*,
+      // NO_AGENT, ...) — the diagnose/chat-state remediation flows key on it
+      // (codex P2: collapsing it to the reason lost the root cause).
       error:
-        (errorCode ? CODE_FAILURE_MESSAGE[errorCode] : undefined) ??
-        DISPATCH_FAILURE_MESSAGE[reason] ??
-        DISPATCH_FAILURE_MESSAGE.send_failed,
-      // Keep the STABLE code too (non-PHI) so /api/v1/diagnose can classify the
-      // failure precisely (e.g. ATTACHMENT_TOO_LARGE) instead of seeing the
-      // localized `error` phrase normalize to "unknown".
-      ...(errorCode ? { errorCode } : {}),
+        errorCode && ATTACHMENT_FAILURE_CODES.has(errorCode)
+          ? errorCode
+          : reason,
+      errorCode: errorCode ?? reason,
       updatedAt: now,
     });
     // Keep the chat sorted-to-top so the failed turn is visible in the sidebar.
@@ -358,6 +345,9 @@ export const getChatRouting = internalQuery({
     // cheap take(2) decides "sole" without a full count.
     const someInstances = await ctx.db.query("instances").take(2);
     const isSole = someInstances.length <= 1;
+    // The instance's CONTENT locale drives the language of DEFAULT injection
+    // texts sent to the bridge (an admin override always wins as-is).
+    const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
     return {
       // On a REBIND (unbound/legacy chat, or the bound agent was revoked/deleted)
       // the stored openclawChatId belongs to the OLD agent's provider conversation
@@ -422,14 +412,14 @@ export const getChatRouting = internalQuery({
         chat.kind === "documentary" ||
         chat.kind === "summarizer" ||
         chat.kind === "curator"
-          ? { ...bridgeDispatchConfig(instance?.config), rehydration: false }
+          ? { ...bridgeDispatchConfig(instance?.config, contentLocale), rehydration: false }
           : chat.perTurnRouting && routedAgent
             ? {
-                ...bridgeDispatchConfig(instance?.config),
+                ...bridgeDispatchConfig(instance?.config, contentLocale),
                 rehydration: true,
                 ...(routedSwitch ? { routedSwitch: true } : {}),
               }
-            : bridgeDispatchConfig(instance?.config),
+            : bridgeDispatchConfig(instance?.config, contentLocale),
     };
   },
 });
