@@ -690,3 +690,103 @@ describe("a report SURVIVES deletion of the reported message and its chat", () =
     expect(Array.isArray(mine)).toBe(true);
   });
 });
+
+describe("the support loop API: list -> reply -> close (the meta/critic agent)", () => {
+  test("agent reply lands in the thread + notifies the owner; close resolves idempotently", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const { replyId } = await seedTurn(t, chatId, userId, "q", "réponse signalée");
+    const res = await as.mutation(api.feedback.submitFeedback, {
+      chatId,
+      messageId: replyId,
+      category: "incorrect",
+      client: { displayedText: "réponse signalée" },
+    });
+    const feedbackId = res.feedbackId;
+
+    // The inbox lists it as OPEN.
+    const inbox = await t.run((ctx) =>
+      ctx.runQuery(internal.feedback.listForApi, {}),
+    );
+    expect(inbox.reports.map((r) => r.feedbackId)).toContain(String(feedbackId));
+
+    // Agent reply -> thread entry role "agent" + owner notification.
+    const reply = await t.run((ctx) =>
+      ctx.runMutation(internal.feedback.replyForApi, {
+        feedbackId,
+        text: "Corrigé dans la prochaine version — merci du signalement.",
+        authorLabel: "agent (meta)",
+      }),
+    );
+    expect(reply.ok).toBe(true);
+    const fb1 = await t.run((ctx) => ctx.db.get(feedbackId));
+    expect(fb1?.thread?.[fb1.thread.length - 1]?.authorRole).toBe("agent");
+    expect(fb1?.thread?.[fb1.thread.length - 1]?.authorLabel).toBe("agent (meta)");
+    const notifs = await t.run((ctx) =>
+      ctx.db
+        .query("notifications")
+        .filter((q) => q.eq(q.field("userId"), userId))
+        .collect(),
+    );
+    expect(notifs.some((n) => n.kind === "feedback_reply")).toBe(true);
+
+    // Close: resolved + note rides the thread; second close = idempotent no-op.
+    const close1 = await t.run((ctx) =>
+      ctx.runMutation(internal.feedback.closeForApi, {
+        feedbackId,
+        resolvedBy: "agent (meta)",
+        note: "Résolu : correctif livré en 0.30.0.",
+      }),
+    );
+    expect(close1.ok).toBe(true);
+    const close2 = await t.run((ctx) =>
+      ctx.runMutation(internal.feedback.closeForApi, {
+        feedbackId,
+        resolvedBy: "agent (meta)",
+      }),
+    );
+    expect(close2).toEqual({ ok: true, alreadyResolved: true });
+    const fb2 = await t.run((ctx) => ctx.db.get(feedbackId));
+    expect(fb2?.resolvedAt).toBeTruthy();
+    expect(fb2?.thread?.[fb2.thread.length - 1]?.text).toContain("Résolu");
+
+    // The default inbox no longer lists it; all:true does.
+    const inbox2 = await t.run((ctx) =>
+      ctx.runQuery(internal.feedback.listForApi, {}),
+    );
+    expect(inbox2.reports.map((r) => r.feedbackId)).not.toContain(
+      String(feedbackId),
+    );
+    const inboxAll = await t.run((ctx) =>
+      ctx.runQuery(internal.feedback.listForApi, { openOnly: false }),
+    );
+    expect(inboxAll.reports.map((r) => r.feedbackId)).toContain(
+      String(feedbackId),
+    );
+  });
+
+  test("a USER-withdrawn report refuses agent replies (the owner cannot see the thread)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const { replyId } = await seedTurn(t, chatId, userId, "q", "r");
+    const res = await as.mutation(api.feedback.submitFeedback, {
+      chatId,
+      messageId: replyId,
+      category: "other",
+      client: { displayedText: "r" },
+    });
+    await as.mutation(api.feedback.closeMyFeedback, {
+      feedbackId: res.feedbackId,
+    });
+    const reply = await t.run((ctx) =>
+      ctx.runMutation(internal.feedback.replyForApi, {
+        feedbackId: res.feedbackId,
+        text: "trop tard",
+        authorLabel: "agent (meta)",
+      }),
+    );
+    expect(reply).toEqual({ ok: false, error: "user_closed" });
+  });
+});

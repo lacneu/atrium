@@ -1531,8 +1531,18 @@ export default defineSchema({
     thread: v.optional(
       v.array(
         v.object({
-          authorUserId: v.id("users"),
-          authorRole: v.union(v.literal("admin"), v.literal("user")),
+          // OPTIONAL since the "agent" author: a service account (the gateway's
+          // meta/critic agent replying via the key-authed API) has no users row.
+          authorUserId: v.optional(v.id("users")),
+          authorRole: v.union(
+            v.literal("admin"),
+            v.literal("user"),
+            // A service-account reply (key-authed API, permission
+            // feedback.respond) — e.g. the meta/critic gateway agent.
+            v.literal("agent"),
+          ),
+          // Display label for authorRole "agent" (the service account's name).
+          authorLabel: v.optional(v.string()),
           text: v.string(),
           at: v.number(),
         }),
@@ -1547,6 +1557,13 @@ export default defineSchema({
     // The row is KEPT (not deleted) so the admin still sees it + the reason. NOT
     // written under impersonation.
     userClosedAt: v.optional(v.number()),
+    // Support-side resolution (admin UI or the key-authed API — e.g. the
+    // meta/critic agent closing a handled report). The row is KEPT; the owner
+    // still sees their report + thread, with a "resolved" state. Distinct from
+    // userClosedAt (the OWNER's withdrawal).
+    resolvedAt: v.optional(v.number()),
+    // Who resolved it: a service-account/admin display label (never a secret).
+    resolvedBy: v.optional(v.string()),
     userCloseReason: v.optional(v.string()),
   })
     .index("by_chat", ["chatId"])
@@ -1658,6 +1675,8 @@ export default defineSchema({
       v.literal("anomaly_open"),
       v.literal("anomaly_resolved"),
       v.literal("feedback_reply"),
+      // Support-side resolution of the user's report (distinct rendering).
+      v.literal("feedback_resolved"),
     ),
     title: v.string(),
     body: v.string(),

@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.31.0] — User reports get a support loop: an agent can read, answer, and resolve them
+
+Observability + support release. A key-authed service account (the gateway's meta/critic agent,
+or any role holding the new support permission) can now work through the user-report inbox end
+to end. No breaking changes; Convex changes are additive.
+
+- **User reports can be listed, answered, and resolved by a support agent.** The support loop is
+  now API-complete: a key-authed service account holding the new `feedback.respond` permission
+  (granted to the built-in `agent` role, and grantable to custom roles in Settings › Roles) can
+  list the open reports, read one by its reference, reply into its thread — the report owner is
+  notified in Atrium, the reply attributed to a support agent — and mark it resolved. Resolution
+  is idempotent and keeps the report and its thread visible to the owner (a "resolved" state in
+  their notification bell and in the admin table), with an optional closing note that explains
+  why. Three matching observability-MCP tools (`list_feedback_reports`, `reply_feedback_report`,
+  `close_feedback_report`) make this the meta/critic gateway agent's inbox: check reports, fix or
+  explain, answer, close. Every call is audit-logged (reference and lengths only, never content),
+  a report the user withdrew refuses further replies, and reading the inbox requires the support
+  permission (a report's free-text comment is user content, not metadata). Note for existing
+  deployments: an already-seeded `agent` role picks up the new permission the next time an admin
+  opens Settings › Access or mints a key.
+
 ## [0.30.1] — Corrective: a release re-run can no longer be blocked by npm's write-once wall
 
 Corrective patch, release pipeline only — no runtime artifact changes. Lived on 0.30.0: the

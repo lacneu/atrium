@@ -39,6 +39,10 @@ export const PERMISSIONS = {
   // Trigger a BOUNDED self-correction (e.g. reconcile a chat's stuck stream). A
   // sensitive WRITE — admin / service-account only, never in GRANTABLE_USER below.
   SELF_HEAL: "selfheal",
+  // Respond to / resolve user-submitted feedback reports via the key-authed API
+  // (the meta/critic gateway agent's support loop). A WRITE that reaches the
+  // report owner's notification bell — service-account (agent role) + admin.
+  FEEDBACK_RESPOND: "feedback.respond",
   // Read agent RULE files (AGENTS/SOUL/IDENTITY/TOOLS .md) via the bridge.
   // Amendment A3: covers ONLY the rules allowlist — memory/user/boot files stay
   // admin-only even in read (agents are shared; memory holds others' data).
@@ -166,6 +170,8 @@ export const BUILTIN_ROLES: Record<
       // it the self-correction loop's diagnose_chat could only RECOMMEND a fix the
       // agent key was 403'd from applying. Reconciled onto existing rows by seed.
       PERMISSIONS.SELF_HEAL,
+      // The support loop: read/reply/resolve user reports (meta/critic agent).
+      PERMISSIONS.FEEDBACK_RESPOND,
     ],
   },
 };

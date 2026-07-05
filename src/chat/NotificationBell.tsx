@@ -40,7 +40,11 @@ const CATEGORY_LABELS: Record<string, () => string> = {
 };
 const cat = (id: string) => CATEGORY_LABELS[id]?.() ?? id;
 
-type NotifKind = "anomaly_open" | "anomaly_resolved" | "feedback_reply";
+type NotifKind =
+  | "anomaly_open"
+  | "anomaly_resolved"
+  | "feedback_reply"
+  | "feedback_resolved";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
@@ -55,6 +59,7 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   anomaly_open: TriangleAlert,
   anomaly_resolved: CircleCheck,
   feedback_reply: MessageSquare,
+  feedback_resolved: MessageSquare,
 };
 
 // Render the notification text. `feedback_reply` is fully static → rendered from
@@ -68,10 +73,21 @@ function notifText(n: Notif): { title: string; body: string } {
       body: m.notif_feedback_reply_body(),
     };
   }
+  if (n.kind === "feedback_resolved") {
+    return {
+      title: m.notif_feedback_resolved_title(),
+      body: m.notif_feedback_resolved_body(),
+    };
+  }
   return { title: n.title, body: n.body };
 }
 
-type ThreadMsg = { authorRole: "admin" | "user"; text: string; at: number };
+type ThreadMsg = {
+  authorRole: "admin" | "user" | "agent";
+  authorLabel?: string;
+  text: string;
+  at: number;
+};
 type FeedbackItem = {
   _id: string;
   at: number;
@@ -83,6 +99,7 @@ type FeedbackItem = {
   messageId: string;
   thread: ThreadMsg[];
   answered: boolean;
+  resolvedAt?: number | null;
   unread: boolean;
 };
 
@@ -297,9 +314,15 @@ function ReportItem({
       <div className="oc-notif__item-head">
         <span className="oc-notif__title">{cat(it.category)}</span>
         <span
-          className={`oc-notif__status${it.answered ? " is-answered" : ""}`}
+          className={`oc-notif__status${
+            it.answered || it.resolvedAt ? " is-answered" : ""
+          }`}
         >
-          {it.answered ? m.notif_answered() : m.notif_pending()}
+          {it.resolvedAt
+            ? m.notif_resolved()
+            : it.answered
+              ? m.notif_answered()
+              : m.notif_pending()}
         </span>
       </div>
       {/* When the report was submitted (its frozen snapshot timestamp), mirroring
@@ -317,7 +340,9 @@ function ReportItem({
               <span className="oc-notif__msg-who">
                 {msg.authorRole === "admin"
                   ? m.notif_author_admin()
-                  : m.notif_author_you()}
+                  : msg.authorRole === "agent"
+                    ? m.notif_author_agent()
+                    : m.notif_author_you()}
               </span>
               <span className="oc-notif__msg-text">{msg.text}</span>
             </div>

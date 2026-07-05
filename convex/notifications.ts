@@ -16,7 +16,11 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { getActor } from "./lib/access";
 
-type NotifKind = "anomaly_open" | "anomaly_resolved" | "feedback_reply";
+type NotifKind =
+  | "anomaly_open"
+  | "anomaly_resolved"
+  | "feedback_reply"
+  | "feedback_resolved";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-

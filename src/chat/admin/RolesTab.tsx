@@ -77,6 +77,7 @@ const PERMISSION_GROUPS: {
       // Built into the `agent` role; exposed here so CUSTOM service roles can be
       // granted/audited the same key instead of silently 403-ing.
       { key: "selfheal", label: () => m.roles_perm_selfheal() },
+      { key: "feedback.respond", label: () => m.roles_perm_feedback_respond() },
     ],
   },
   {

@@ -25,6 +25,7 @@
 import { v } from "convex/values";
 import {
   internalQuery, mutation, query, internalMutation } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { Doc } from "./_generated/dataModel";
 import {
@@ -380,6 +381,10 @@ export const listForAdmin = query({
           // they know why it was withdrawn. (METADATA + this reason only — never
           // messageText/promptText/the original comment here.)
           userClosedAt: r.userClosedAt ?? null,
+          // API-side resolution: the admin tab shows "resolved" instead of
+          // an eternal "pending" for agent-closed reports (codex P2).
+          resolvedAt: r.resolvedAt ?? null,
+          resolvedBy: r.resolvedBy ?? null,
           userCloseReason: r.userCloseReason ?? null,
         };
       }),
@@ -437,6 +442,7 @@ export const readSnapshot = mutation({
       messageId: fb.messageId,
       thread: (fb.thread ?? []).map((m) => ({
         authorRole: m.authorRole,
+        authorLabel: m.authorLabel ?? null,
         text: m.text,
         at: m.at,
       })),
@@ -482,7 +488,12 @@ const RESPONSE_MAX = 2000;
 
 function latestAdminAt(thread: Doc<"feedback">["thread"]): number {
   let mx = 0;
-  for (const m of thread ?? []) if (m.authorRole === "admin" && m.at > mx) mx = m.at;
+  // A SUPPORT reply is an admin's or a service agent's (the key-authed API) —
+  // both count for "answered"/unread (codex P2: agent replies must not leave
+  // the report looking pending).
+  for (const m of thread ?? [])
+    if ((m.authorRole === "admin" || m.authorRole === "agent") && m.at > mx)
+      mx = m.at;
   return mx;
 }
 
@@ -497,7 +508,10 @@ function latestAdminMessage(
   let latest: { authorUserId: ThreadMessage["authorUserId"]; at: number } | null =
     null;
   for (const m of thread ?? []) {
-    if (m.authorRole === "admin" && (latest === null || m.at > latest.at)) {
+    if (
+      (m.authorRole === "admin" || m.authorRole === "agent") &&
+      (latest === null || m.at > latest.at)
+    ) {
       latest = { authorUserId: m.authorUserId, at: m.at };
     }
   }
@@ -585,10 +599,14 @@ export const myFeedback = query({
           // Thread WITHOUT author ids (the user only needs role + text + time).
           thread: (r.thread ?? []).map((m) => ({
             authorRole: m.authorRole,
+            authorLabel: m.authorLabel ?? null,
             text: m.text,
             at: m.at,
           })),
           answered: adminAt > 0,
+          // Support-side resolution (the key-authed close): the owner sees a
+          // "resolved" state even when the close carried no reply (codex P2).
+          resolvedAt: r.resolvedAt ?? null,
           unread: adminAt > (r.userReadAt ?? 0),
         };
       });
@@ -773,5 +791,172 @@ export const readForApi = internalQuery({
         messageExists: message !== null,
       },
     };
+  },
+});
+
+/**
+ * INTERNAL: list reports for the key-authed API (the meta/critic agent's
+ * inbox). METADATA ONLY — reference/category/comment/age/state, never the
+ * forensic snapshot (get one by reference via readForApi for that). `openOnly`
+ * filters to actionable reports (not user-withdrawn, not resolved).
+ */
+export const listForApi = internalQuery({
+  args: { openOnly: v.optional(v.boolean()), limit: v.optional(v.number()) },
+  handler: async (ctx, { openOnly, limit }) => {
+    const cap = Math.min(Math.max(limit ?? 50, 1), 200);
+    // Paginated scan until `cap` matching reports are collected — a fixed
+    // take(N)-then-filter would silently omit an OLD still-open report behind
+    // N closed newer ones (codex P2). Bounded at MAX_SCAN rows; if the bound
+    // is hit the response says so instead of reading as complete.
+    const MAX_SCAN = 2000;
+    let scanned = 0;
+    let truncatedScan = false;
+    const out = [];
+    let cursor: string | null = null;
+    while (out.length < cap) {
+      const page = await ctx.db
+        .query("feedback")
+        .order("desc")
+        .paginate({ cursor, numItems: 200 });
+      for (const fb of page.page) {
+        scanned++;
+        const open = fb.userClosedAt == null && fb.resolvedAt == null;
+        if (openOnly !== false && !open) continue;
+        if (out.length >= cap) break;
+        out.push(projectReport(fb));
+      }
+      if (page.isDone) break;
+      if (scanned >= MAX_SCAN) {
+        truncatedScan = true;
+        break;
+      }
+      cursor = page.continueCursor;
+    }
+    return { ok: true as const, reports: out, truncatedScan };
+  },
+});
+
+function projectReport(fb: {
+  _id: Id<"feedback">;
+  at: number;
+  category: string;
+  comment?: string;
+  userClosedAt?: number;
+  resolvedAt?: number;
+  thread?: unknown[];
+  snapshot: { displayedMatchesStored?: boolean };
+}) {
+  const open = fb.userClosedAt == null && fb.resolvedAt == null;
+  return {
+    feedbackId: String(fb._id),
+    at: fb.at,
+    category: fb.category,
+    comment: fb.comment ?? null,
+    open,
+    resolvedAt: fb.resolvedAt ?? null,
+    userClosedAt: fb.userClosedAt ?? null,
+    threadLength: (fb.thread ?? []).length,
+    displayedMatchesStored: fb.snapshot.displayedMatchesStored ?? null,
+  };
+}
+
+/**
+ * INTERNAL: append a SERVICE reply to a report's thread (key-authed API,
+ * permission feedback.respond — e.g. the meta/critic gateway agent). Mirrors
+ * respondToFeedback: the owner is notified (label only, never the reply text).
+ */
+export const replyForApi = internalMutation({
+  args: {
+    feedbackId: v.id("feedback"),
+    text: v.string(),
+    authorLabel: v.string(),
+  },
+  handler: async (ctx, { feedbackId, text, authorLabel }) => {
+    const fb = await ctx.db.get(feedbackId);
+    if (!fb) return { ok: false as const, error: "not_found" as const };
+    // A report the OWNER withdrew is invisible in their "Mes signalements" —
+    // replying would notify them about a thread they cannot see (codex P2).
+    if (fb.userClosedAt != null)
+      return { ok: false as const, error: "user_closed" as const };
+    const trimmed = text.trim().slice(0, RESPONSE_MAX);
+    if (trimmed.length === 0)
+      return { ok: false as const, error: "empty" as const };
+    const now = Date.now();
+    await ctx.db.patch(feedbackId, {
+      thread: [
+        ...(fb.thread ?? []),
+        {
+          authorRole: "agent" as const,
+          authorLabel: authorLabel.slice(0, 80),
+          text: trimmed,
+          at: now,
+        },
+      ],
+    });
+    await notifyUser(ctx, {
+      userId: fb.userId,
+      kind: "feedback_reply",
+      title: "Réponse à votre signalement",
+      body: "Votre signalement a reçu une réponse.",
+      href: `/chat/${fb.chatId}`,
+      dedupeKey: `feedback_reply:${feedbackId}:${now}`,
+    });
+    return { ok: true as const, at: now };
+  },
+});
+
+/**
+ * INTERNAL: resolve a report (key-authed API). The row is KEPT; the owner still
+ * sees their report + thread with the resolved state. Idempotent. Distinct from
+ * the owner's own withdrawal (userClosedAt).
+ */
+export const closeForApi = internalMutation({
+  args: {
+    feedbackId: v.id("feedback"),
+    resolvedBy: v.string(),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, { feedbackId, resolvedBy, note }) => {
+    const fb = await ctx.db.get(feedbackId);
+    if (!fb) return { ok: false as const, error: "not_found" as const };
+    if (fb.resolvedAt != null)
+      return { ok: true as const, alreadyResolved: true as const };
+    const now = Date.now();
+    // On a report the OWNER already withdrew, the thread is invisible to them:
+    // resolve silently (state only) — a note would be written for nobody.
+    const trimmedNote =
+      fb.userClosedAt == null ? note?.trim().slice(0, RESPONSE_MAX) : undefined;
+    await ctx.db.patch(feedbackId, {
+      resolvedAt: now,
+      resolvedBy: resolvedBy.slice(0, 80),
+      // A closing note rides the thread so the owner sees WHY it was resolved.
+      ...(trimmedNote
+        ? {
+            thread: [
+              ...(fb.thread ?? []),
+              {
+                authorRole: "agent" as const,
+                authorLabel: resolvedBy.slice(0, 80),
+                text: trimmedNote,
+                at: now,
+              },
+            ],
+          }
+        : {}),
+    });
+    // A closing note is a visible thread message — notify like a reply, else
+    // the owner never learns an explanation awaits them (codex P2). A bare
+    // close (no note) stays silent: there is nothing new to read.
+    if (trimmedNote && fb.userClosedAt == null) {
+      await notifyUser(ctx, {
+        userId: fb.userId,
+        kind: "feedback_resolved",
+        title: "Signalement résolu",
+        body: "Votre signalement a été résolu, avec une explication.",
+        href: `/chat/${fb.chatId}`,
+        dedupeKey: `feedback_reply:${feedbackId}:${now}`,
+      });
+    }
+    return { ok: true as const, at: now };
   },
 });

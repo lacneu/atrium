@@ -31,10 +31,17 @@ type Row = {
   chatId: string;
   messageId: string;
   userClosedAt: number | null;
+  resolvedAt?: number | null;
+  resolvedBy?: string | null;
   userCloseReason: string | null;
 };
 
-type ThreadMsg = { authorRole: "admin" | "user"; text: string; at: number };
+type ThreadMsg = {
+  authorRole: "admin" | "user" | "agent";
+  authorLabel?: string;
+  text: string;
+  at: number;
+};
 
 type Snapshot = {
   _id: string;
@@ -176,7 +183,9 @@ function Detail({
                 <span className="oc-notif__msg-who">
                   {msg.authorRole === "admin"
                     ? m.feedbacks_role_admin()
-                    : m.feedbacks_role_user()}
+                    : msg.authorRole === "agent"
+                      ? (msg.authorLabel ?? m.feedbacks_role_agent())
+                      : m.feedbacks_role_user()}
                 </span>
                 <span className="oc-notif__msg-text">{msg.text}</span>
               </div>
@@ -409,13 +418,21 @@ export function FeedbacksTab() {
                 <span className="oc-fbadmin__pill is-closed">
                   {m.feedbacks_status_closed_by_user()}
                 </span>
+              ) : r.resolvedAt != null ? (
+                <span
+                  className="oc-fbadmin__pill is-ok"
+                  title={r.resolvedBy ?? undefined}
+                >
+                  {m.feedbacks_status_resolved()}
+                </span>
               ) : r.answered ? (
                 <span className="oc-fbadmin__pill is-ok">{m.feedbacks_status_answered()}</span>
               ) : (
                 <span className="oc-fbadmin__pill">{m.feedbacks_status_pending()}</span>
               ),
-            // rank: pending (0) < answered (1) < closed-by-user (2)
-            sort: (r) => (r.userClosedAt != null ? 2 : r.answered ? 1 : 0),
+            // rank: pending (0) < answered (1) < resolved (2) < closed-by-user (3)
+            sort: (r) =>
+              r.userClosedAt != null ? 3 : r.resolvedAt != null ? 2 : r.answered ? 1 : 0,
           },
         ]}
         rowActions={(r) => [

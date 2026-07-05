@@ -22,6 +22,12 @@ import {
   getChatStateInput,
   getFeedbackReport,
   getFeedbackReportInput,
+  listFeedbackReports,
+  listFeedbackReportsInput,
+  replyFeedbackReport,
+  replyFeedbackReportInput,
+  closeFeedbackReport,
+  closeFeedbackReportInput,
   getCompactionHistory,
   getCompactionHistoryInput,
   getTraceEnrichment,
@@ -165,6 +171,48 @@ function main(): void {
       inputSchema: {},
     },
     async () => run(() => getIntegrations(config)),
+  );
+
+  server.registerTool(
+    "list_feedback_reports",
+    {
+      title: "List user reports (support inbox)",
+      description:
+        "Open user-submitted reports (GET /feedback-reports): reference, " +
+        "category, comment, age, thread length — never the forensic snapshot " +
+        "(fetch one by reference with get_feedback_report). Key needs " +
+        "feedback.respond (the agent role). Pass all:true to include " +
+        "resolved/withdrawn.",
+      inputSchema: listFeedbackReportsInput,
+    },
+    async (args) => run(() => listFeedbackReports(config, args)),
+  );
+
+  server.registerTool(
+    "reply_feedback_report",
+    {
+      title: "Reply to a user report",
+      description:
+        "Append a reply to a report's thread (POST /feedback-report/reply) — " +
+        "the report owner is notified in Atrium. Key needs feedback.respond " +
+        "(the agent role has it). Write like support: short, factual, kind.",
+      inputSchema: replyFeedbackReportInput,
+    },
+    async (args) => run(() => replyFeedbackReport(config, args)),
+  );
+
+  server.registerTool(
+    "close_feedback_report",
+    {
+      title: "Resolve a user report",
+      description:
+        "Mark a report resolved (POST /feedback-report/close; idempotent — the " +
+        "report and its thread are kept, the owner keeps seeing them). An " +
+        "optional note rides the thread so the owner sees why. Key needs " +
+        "feedback.respond. Resolve ONLY after replying or when clearly stale.",
+      inputSchema: closeFeedbackReportInput,
+    },
+    async (args) => run(() => closeFeedbackReport(config, args)),
   );
 
   server.registerTool(

@@ -195,6 +195,72 @@ export function getFeedbackReport(
   );
 }
 
+export const listFeedbackReportsInput = {
+  all: z
+    .boolean()
+    .optional()
+    .describe("true = include resolved/withdrawn reports (default: open only)"),
+};
+
+/** GET /api/v1/feedback-reports — the support inbox: open reports as
+ *  references + metadata (category, age, thread length; never the snapshot).
+ *  Requires `traces.read`. Fetch one by reference via get_feedback_report. */
+export function listFeedbackReports(
+  config: Config,
+  args: { all?: boolean },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    `/feedback-reports${qs({ all: args.all ? "true" : undefined })}`,
+    {},
+    options,
+  );
+}
+
+export const replyFeedbackReportInput = {
+  feedbackId: z.string().describe("The report reference to reply to"),
+  text: z
+    .string()
+    .describe("The reply text (reaches the report owner's notification bell)"),
+};
+
+/** POST /api/v1/feedback-report/reply — append a service reply to a report's
+ *  thread; the owner is notified. Requires `feedback.respond` (agent role). */
+export function replyFeedbackReport(
+  config: Config,
+  args: { feedbackId: string; text: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, `/feedback-report/reply`, {
+    method: "POST",
+    body: JSON.stringify({ feedbackId: args.feedbackId, text: args.text }),
+    headers: { "Content-Type": "application/json" },
+  }, options);
+}
+
+export const closeFeedbackReportInput = {
+  feedbackId: z.string().describe("The report reference to resolve"),
+  note: z
+    .string()
+    .optional()
+    .describe("Optional closing note (rides the thread so the owner sees why)"),
+};
+
+/** POST /api/v1/feedback-report/close — resolve a report (idempotent; the row
+ *  and thread are kept). Requires `feedback.respond` (agent role). */
+export function closeFeedbackReport(
+  config: Config,
+  args: { feedbackId: string; note?: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, `/feedback-report/close`, {
+    method: "POST",
+    body: JSON.stringify({ feedbackId: args.feedbackId, note: args.note }),
+    headers: { "Content-Type": "application/json" },
+  }, options);
+}
+
 export const getChatStateInput = {
   chatId: z.string().describe(
     "The chat id (the /chat/<id> path segment) to inspect (required).",

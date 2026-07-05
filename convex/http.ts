@@ -1404,9 +1404,15 @@ http.route({
       return apiJson({ ok: false, error: authResult.error }, authResult.status);
     }
     const { principal } = authResult;
-    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+    // Readable with EITHER the metadata-read permission OR the support
+    // permission: a custom support role holding only feedback.respond must be
+    // able to read a report before replying (codex P3).
+    if (
+      !principalHasPermission(principal, PERMISSIONS.TRACES_READ) &&
+      !principalHasPermission(principal, PERMISSIONS.FEEDBACK_RESPOND)
+    ) {
       return apiJson(
-        { ok: false, error: "missing permission: traces.read" },
+        { ok: false, error: "missing permission: traces.read or feedback.respond" },
         403,
       );
     }
@@ -1434,6 +1440,179 @@ http.route({
       status: result.ok ? 200 : 404,
       latencyMs: Date.now() - startedAt,
       meta: JSON.stringify({ feedbackId, found: result.ok }),
+    });
+    return apiJson(result, result.ok ? 200 : 404);
+  }),
+});
+
+// Feedback-report LIST (key-authed): the meta/critic agent's inbox — open
+// reports as references + metadata + the reporter's free-text comment. The
+// comment is USER CONTENT, not metadata — so the whole inbox requires
+// feedback.respond (the support permission), NOT the metadata-only
+// traces.read (codex P1).
+http.route({
+  path: "/api/v1/feedback-reports",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.FEEDBACK_RESPOND)) {
+      return apiJson(
+        { ok: false, error: "missing permission: feedback.respond" },
+        403,
+      );
+    }
+    const openOnly = strParam(url, "all") !== "true";
+    const result = await ctx.runQuery(internal.feedback.listForApi, {
+      openOnly,
+    });
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/feedback-reports",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+      meta: JSON.stringify({ count: result.reports.length, openOnly }),
+    });
+    return apiJson(result);
+  }),
+});
+
+// Feedback-report REPLY (key-authed WRITE, permission feedback.respond): append
+// a service reply to a report's thread — the owner is notified. The support
+// loop of the meta/critic gateway agent.
+http.route({
+  path: "/api/v1/feedback-report/reply",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.FEEDBACK_RESPOND)) {
+      return apiJson(
+        { ok: false, error: "missing permission: feedback.respond" },
+        403,
+      );
+    }
+    let body: { feedbackId?: unknown; text?: unknown };
+    try {
+      const parsed: unknown = await request.json();
+      // `null`/arrays/scalars are VALID JSON — reject before field access
+      // turns a validation error into a 500 (codex P3).
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return apiJson({ ok: false, error: "invalid json body" }, 400);
+      }
+      body = parsed as typeof body;
+    } catch {
+      return apiJson({ ok: false, error: "invalid json body" }, 400);
+    }
+    if (
+      typeof body.feedbackId !== "string" ||
+      typeof body.text !== "string" ||
+      body.text.trim().length === 0
+    ) {
+      return apiJson({ ok: false, error: "feedbackId and text required" }, 400);
+    }
+    let result;
+    try {
+      result = await ctx.runMutation(internal.feedback.replyForApi, {
+        feedbackId: body.feedbackId as Id<"feedback">,
+        text: body.text,
+        // Display label: the role + a short principal id (no display name on
+        // ServicePrincipal). The owner sees e.g. "agent (k7f2…)".
+        authorLabel: `${principal.roleKey} (${principal.id.slice(0, 6)}…)`,
+      });
+    } catch {
+      result = { ok: false as const, error: "not_found" as const };
+    }
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/feedback-report/reply",
+      method: "POST",
+      status: result.ok ? 200 : 404,
+      latencyMs: Date.now() - startedAt,
+      // Audit: the reference + reply LENGTH only — never the text.
+      meta: JSON.stringify({
+        feedbackId: body.feedbackId,
+        textLen: body.text.length,
+        ok: result.ok,
+      }),
+    });
+    return apiJson(result, result.ok ? 200 : 404);
+  }),
+});
+
+// Feedback-report CLOSE/resolve (key-authed WRITE, permission feedback.respond).
+// Idempotent; an optional note rides the thread so the owner sees why.
+http.route({
+  path: "/api/v1/feedback-report/close",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.FEEDBACK_RESPOND)) {
+      return apiJson(
+        { ok: false, error: "missing permission: feedback.respond" },
+        403,
+      );
+    }
+    let body: { feedbackId?: unknown; note?: unknown };
+    try {
+      const parsed: unknown = await request.json();
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return apiJson({ ok: false, error: "invalid json body" }, 400);
+      }
+      body = parsed as typeof body;
+    } catch {
+      return apiJson({ ok: false, error: "invalid json body" }, 400);
+    }
+    if (typeof body.feedbackId !== "string" || body.feedbackId.length === 0) {
+      return apiJson({ ok: false, error: "feedbackId required" }, 400);
+    }
+    if (body.note !== undefined && typeof body.note !== "string") {
+      return apiJson({ ok: false, error: "note must be a string" }, 400);
+    }
+    let result;
+    try {
+      result = await ctx.runMutation(internal.feedback.closeForApi, {
+        feedbackId: body.feedbackId as Id<"feedback">,
+        resolvedBy: `${principal.roleKey} (${principal.id.slice(0, 6)}…)`,
+        note: body.note,
+      });
+    } catch {
+      result = { ok: false as const, error: "not_found" as const };
+    }
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/feedback-report/close",
+      method: "POST",
+      status: result.ok ? 200 : 404,
+      latencyMs: Date.now() - startedAt,
+      meta: JSON.stringify({ feedbackId: body.feedbackId, ok: result.ok }),
     });
     return apiJson(result, result.ok ? 200 : 404);
   }),
