@@ -20,7 +20,8 @@ type NotifKind =
   | "anomaly_open"
   | "anomaly_resolved"
   | "feedback_reply"
-  | "feedback_resolved";
+  | "feedback_resolved"
+  | "curation";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-

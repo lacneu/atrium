@@ -64,7 +64,7 @@ describe("agent-types pure registry", () => {
       "documentary",
     ]);
     expect(
-      resolveAgentTypes(["summarizer", "documentary", "conversational"]),
+      resolveAgentTypes(["summarizer", "curator", "documentary", "conversational"]),
     ).toEqual([...AGENT_TYPE_CODES]);
   });
 
@@ -76,7 +76,7 @@ describe("agent-types pure registry", () => {
       ["conversational", "documentary"],
     );
     expect(
-      normalizeAgentTypes(["summarizer", "conversational", "documentary"]),
+      normalizeAgentTypes(["summarizer", "conversational", "curator", "documentary"]),
     ).toEqual([...AGENT_TYPE_CODES]);
   });
 });

@@ -16,6 +16,13 @@
   <img alt="CI" src="https://github.com/lacneu/atrium/actions/workflows/ci.yml/badge.svg"> -->
 </p>
 
+<p align="center">
+  <img
+    alt="Left: a lone developer duct-taping a UI directly onto a raw gateway WebSocket — brittle, single-user, breaking on every version. Right: the same, through Atrium — one clean multi-user chat that streams smoothly, with built-in observability, across gateways."
+    src="docs/assets/atrium-hero.png"
+    width="820">
+</p>
+
 An open-source, self-hostable web chat UI for **AI agent gateways**. It gives a
 team a clean multi-user chat front end across one or more gateways, with streaming
 replies, file exchange, per-user agent routing, and a built-in observability
@@ -53,13 +60,14 @@ reconnect. Atrium embraces that model instead of fighting it:
 The front end never parses raw gateway frames; it subscribes to Convex, which is
 fed by the bridge. The result is a stable UI even as providers and versions evolve.
 
-```text
-Browser ──▶ Convex (queries/mutations, reactive)
-  ▲             │  schedules an outbound turn
-  │ live        ▼
-  └──────  Bridge ◀──▶ agent gateway (WebSocket: OpenClaw today, Hermes next)
-        (ingests normalized events back into Convex)
-```
+<p align="center">
+  <img
+    alt="Atrium is the layer between the browser and any agent gateway; Convex and the Bridge are its internals. The Browser has a single bidirectional 'live (reactive)' link to Convex — and to nothing else. Inside Atrium, Convex schedules an outbound turn to the Bridge, which ingests normalized events back into Convex. The Bridge holds the WebSocket to the external agent gateway you bring yourself (OpenClaw today, Hermes next)."
+    src="docs/assets/atrium-dataflow.png"
+    width="760">
+</p>
+
+The browser only ever talks to Convex; it has **no** direct connection to the bridge.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 

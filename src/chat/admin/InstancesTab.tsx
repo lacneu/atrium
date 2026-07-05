@@ -793,11 +793,13 @@ const AGENT_TYPE_LABEL: Record<string, () => string> = {
   conversational: m.agent_type_conversational,
   documentary: m.agent_type_documentary,
   summarizer: m.agent_type_summarizer,
+  curator: m.agent_type_curator,
 };
 const AGENT_TYPE_DESC: Record<string, () => string> = {
   conversational: m.agent_type_conversational_desc,
   documentary: m.agent_type_documentary_desc,
   summarizer: m.agent_type_summarizer_desc,
+  curator: m.agent_type_curator_desc,
 };
 const agentTypeLabel = (code: string): string =>
   (AGENT_TYPE_LABEL[code] ?? (() => code))();

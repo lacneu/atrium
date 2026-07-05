@@ -236,6 +236,16 @@ export function gatewaySafeSessionPart(value: string): string {
 
 /** The summarize job's identity as it appears as the FINAL segment of the echoed
  *  turnSessionKey (the rotated openclawChatId, sanitized). */
+/** Deterministic session nonce for an agent-file CURATION job — mirrors
+ *  summarizeSessionNonce so the bridge's echoed turnSessionKey settles the
+ *  right job (a late reply of a cancelled job can never match). */
+export function curationSessionNonce(
+  curationId: string,
+  createdAt: number,
+): string {
+  return gatewaySafeSessionPart(`curate:${curationId}:${createdAt}`);
+}
+
 export function summarizeSessionNonce(
   targetChatId: string,
   createdAt: number,

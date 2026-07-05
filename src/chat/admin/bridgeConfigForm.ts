@@ -112,6 +112,8 @@ export type ConfigOverride = Partial<
   promptInjections?: PromptInjectionConfig;
   /** Passthrough (owned by the Chat-defaults tab, not this form). */
   summarizeThresholdChars?: number;
+  curationEnabled?: boolean;
+  curationBudgetChars?: number;
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -119,7 +121,11 @@ export type ConfigOverride = Partial<
  *  through this form's rebuild UNCHANGED, or a Bridge/injections save would
  *  silently erase them (codex P2). Explicit list — never a blind spread (the
  *  closed server validator rejects unknown keys; stale junk must not resurrect). */
-const PASSTHROUGH_KEYS = ["summarizeThresholdChars"] as const;
+const PASSTHROUGH_KEYS = [
+  "summarizeThresholdChars",
+  "curationEnabled",
+  "curationBudgetChars",
+] as const;
 
 export function buildConfigOverride(
   form: ConfigForm,
@@ -145,7 +151,9 @@ export function buildConfigOverride(
   // though ConfigForm does not type them.
   const raw = stored as Record<string, unknown>;
   for (const k of PASSTHROUGH_KEYS) {
-    if (typeof raw[k] === "number") out[k] = raw[k] as number;
+    const val = raw[k];
+    if (typeof val === "number") (out as Record<string, unknown>)[k] = val;
+    else if (typeof val === "boolean") (out as Record<string, unknown>)[k] = val;
   }
   return out;
 }

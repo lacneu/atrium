@@ -70,6 +70,31 @@ async function releaseStuckSummarize(
   }
 }
 
+/** Curator twin of releaseStuckSummarize: a stuck curation turn → mark the job
+ *  failed (stuck_stream) + clear the lock, or sweep an orphan's rows. Best-effort. */
+async function releaseStuckCurate(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+): Promise<void> {
+  if (chat?.kind !== "curator") return;
+  try {
+    if (chat.pendingCurate) {
+      await ctx.runMutation(internal.agentFileCuration.failCurationForChat, {
+        chatId: chat._id,
+        reason: "stuck_stream",
+      });
+    } else {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.agentFileCuration.cleanupCuratorChat,
+        { hiddenChatId: chat._id },
+      );
+    }
+  } catch {
+    /* never let a curation cleanup error break the stuck-stream watchdog */
+  }
+}
+
 // A streaming message with NO update for this long is treated as orphaned.
 // Deliberately generous (12 min): a deep-reasoning, many-tool turn can have long
 // silent gaps between frames, and killing a still-live stream would be far worse
@@ -170,6 +195,14 @@ export const reconcileChatStuckStreams = internalMutation({
         await releaseStuckSummarize(ctx, chat);
       }
     }
+    if (chat?.kind === "curator") {
+      if (chat.pendingCurate && chat.pendingCurate.createdAt < cutoff) {
+        await releaseStuckCurate(ctx, chat);
+        docReleased = true;
+      } else if (!chat.pendingCurate) {
+        await releaseStuckCurate(ctx, chat);
+      }
+    }
     // Releasing a stuck stream/fetch ends that turn → drain any send queued behind it.
     if (reconciled > 0 || docReleased) await drainNextQueued(ctx, id);
     return { ok: true as const, reconciled };
@@ -245,6 +278,7 @@ export const reconcileStuckStreams = internalMutation({
       const stuckChat = await ctx.db.get(msg.chatId);
       await releaseStuckDocumentaryFetch(ctx, stuckChat);
       await releaseStuckSummarize(ctx, stuckChat);
+      await releaseStuckCurate(ctx, stuckChat);
     }
 
     // Each chat whose turn we just released is now idle → drain its queue.

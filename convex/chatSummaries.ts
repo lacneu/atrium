@@ -114,7 +114,11 @@ async function ensureSummarizerChat(
  * Streaming rows are left alone (a live gateway turn is finalizing into them); the
  * next dispatch's cleanup sweeps them once settled.
  */
-async function cleanupSummarizerRows(
+/** Cascade-purge EVERY content row of a hidden utility chat (messages +
+ *  messageParts + files + streamingText + streamChunks + outbox + sub-agent
+ *  tables). Generic by hiddenChatId — reused by the curator cleanup. Exported so
+ *  the copies-of-user-content hygiene is single-source across hidden kinds. */
+export async function cleanupHiddenChatContent(
   ctx: MutationCtx,
   hiddenChatId: Id<"chats">,
 ): Promise<void> {
@@ -204,7 +208,7 @@ export const cleanupSummarizerChat = internalMutation({
     const hidden = await ctx.db.get(hiddenChatId);
     if (!hidden || hidden.kind !== "summarizer") return;
     if (hidden.pendingSummarize) return "in_flight"; // a live job owns the current rows
-    await cleanupSummarizerRows(ctx, hiddenChatId);
+    await cleanupHiddenChatContent(ctx, hiddenChatId);
   },
 });
 
@@ -671,7 +675,7 @@ async function scheduleSummarizeJob(
     if (hidden.pendingSummarize) return "in_flight";
     // Retention hygiene: the previous job's prompt/reply (conversation-excerpt
     // COPIES) are settled — purge them before this job writes its own rows.
-    await cleanupSummarizerRows(ctx, hidden._id);
+    await cleanupHiddenChatContent(ctx, hidden._id);
 
     const template = effectiveTemplate("history_summary", injection);
     const text = fillTemplate(template, {
@@ -1014,7 +1018,7 @@ export async function invalidateSummaryOnDeletion(
     // settled rows and cancel an undispatched outbox row so it never reaches the
     // agent (codex P1). A turn already streaming on the gateway can't be unsent —
     // its rows settle and the next dispatch's cleanup sweeps them.
-    await cleanupSummarizerRows(ctx, hidden._id);
+    await cleanupHiddenChatContent(ctx, hidden._id);
   }
 }
 
@@ -1190,10 +1194,10 @@ export async function purgeSummaryForChat(
   if (hidden?.pendingSummarize?.targetChatId === chatId) {
     // The in-flight job served the DELETED chat: release + purge its rows.
     await ctx.db.patch(hidden._id, { pendingSummarize: undefined });
-    await cleanupSummarizerRows(ctx, hidden._id);
+    await cleanupHiddenChatContent(ctx, hidden._id);
   } else if (hidden && !hidden.pendingSummarize) {
     // No live job: sweep settled leftovers (may include this chat's old copies).
-    await cleanupSummarizerRows(ctx, hidden._id);
+    await cleanupHiddenChatContent(ctx, hidden._id);
   }
   // A live job for ANOTHER chat: leave its rows alone — sweeping them would kill
   // its undispatched outbox while the lock stays set, wedging the user's

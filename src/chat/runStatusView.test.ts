@@ -132,6 +132,33 @@ describe("errorDetailView (actionable error classification)", () => {
     }
   });
 
+  it("compaction_timeout -> actionable headline (the #40295 deadlock class)", () => {
+    const v = errorDetailView(
+      "The gateway did not finish optimizing (compacting) the session in time.",
+      "compaction_timeout",
+    );
+    expect(v.headline).toBeTruthy();
+    expect(v.headline).not.toBe(v.detail);
+  });
+
+  it("CLIENT-side fallback: a bare overflow error string with NO errorCode still gets the card", () => {
+    // Defense-in-depth if the bridge classifier ever misses a novel phrasing.
+    for (const text of [
+      "request_too_large: 300000 tokens",
+      "input exceeds the maximum number of tokens",
+      "input is too long for the model",
+      "This model's maximum context length is 272000 tokens",
+    ]) {
+      const v = errorDetailView(text, null);
+      expect(v.headline, `phrasing: ${text}`).toBeTruthy();
+    }
+  });
+
+  it("a non-overflow bare string with no code stays generic (no false positive)", () => {
+    const v = errorDetailView("some unrelated gateway hiccup", null);
+    expect(v.headline).toBeNull();
+  });
+
   it("no error, no code -> nothing", () => {
     const v = errorDetailView(null, null);
     expect(v.headline).toBeNull();

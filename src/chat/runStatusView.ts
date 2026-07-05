@@ -83,7 +83,15 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   refusal: m.runstatus_error_refusal,
   stream_orphaned: m.runstatus_error_orphaned,
   connection_lost: m.runstatus_error_connection_lost,
+  compaction_timeout: m.runstatus_error_compaction_timeout,
 };
+
+// Defense-in-depth: overflow phrasings the UI recognizes CLIENT-side, so a bare
+// overflow error string with no errorCode still gets the actionable card even if
+// the bridge classifier ever misses a novel provider phrasing (the bridge is the
+// primary classifier; this is the backstop).
+const OVERFLOW_TEXT_RE =
+  /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens/i;
 
 // Error-STRING codes (a stable code stored in `error` rather than `errorCode`):
 // the bridge finalizes some infrastructure ends with the code as the error text
@@ -96,7 +104,13 @@ export function errorDetailView(
   errorCode: string | null | undefined,
 ): ErrorDetailView {
   const raw0 = (error ?? "").trim();
-  const code = errorCode ?? (ERROR_STRING_CODES.has(raw0) ? raw0 : null);
+  const code =
+    errorCode ??
+    (ERROR_STRING_CODES.has(raw0)
+      ? raw0
+      : OVERFLOW_TEXT_RE.test(raw0)
+        ? "context_length"
+        : null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
   const raw = (error ?? "").trim();
   // The orphaned code's `error` IS the code string — showing it twice is noise.

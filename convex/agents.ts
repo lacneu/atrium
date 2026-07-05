@@ -1107,6 +1107,36 @@ export async function resolveDocumentaryTarget(
  * chat's instance — conversation content never leaves its gateway. Null = no
  * dedicated agent granted there (the engine falls back to the chat's own agent).
  */
+/**
+ * The agent that will curate an over-budget agent file: the first GRANTED,
+ * present agent typed "curator" on the REQUIRED instance (the file lives on that
+ * gateway — content never crosses instances). null -> no curator available (the
+ * feature stays off; there is no unsafe fallback for a lossy rewrite).
+ */
+export async function resolveCuratorTarget(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  requiredInstance: string,
+): Promise<{ instanceName: string; agentId: string } | null> {
+  const grants = [...(await getEffectiveGrants(ctx, userId))].sort(
+    (a, b) => Number(b.isDefault) - Number(a.isDefault),
+  );
+  for (const g of grants) {
+    if (g.instanceName !== requiredInstance) continue;
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", g.instanceName).eq("agentId", g.agentId),
+      )
+      .first();
+    if (agent === null || agent.presentInLastOk === false) continue;
+    if (resolveAgentTypes(agent.types).includes("curator")) {
+      return { instanceName: g.instanceName, agentId: g.agentId };
+    }
+  }
+  return null;
+}
+
 export async function resolveSummarizerTarget(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,

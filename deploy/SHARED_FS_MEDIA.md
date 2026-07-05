@@ -13,6 +13,14 @@ Use **gateway-http** when Atrium and the gateway run on different hosts. Use
 **shared-fs** when they share a host (or NFS) and you want reliable downloads and
 large (video/audio/big-doc) uploads.
 
+![Recommended shared-fs topology: the Atrium bridge is deployed on the same host as your agent gateway, and both mount the same media filesystem — this is what makes file delivery deterministic and lifts the upload size ceiling. Atrium's frontend and Convex run anywhere and reach the bridge over HTTP; the bridge holds the operator WebSocket to the gateway. In the default gateway-http mode the bridge and gateway may instead run on different hosts.](assets/atrium-deployment-topology.png)
+
+> **Deployment note.** The bridge is Atrium's code, but you deploy it **next to
+> your gateway** — same host (or NFS). That co-location both simplifies hosting
+> (run it where the gateway already runs, no separate host to stand up) and is
+> what enables the `shared-fs` mode below. The bridge still reaches Convex over
+> HTTP, so Atrium's frontend and Convex can live anywhere.
+
 > This is the **only** way to deliver agent-produced files deterministically: a
 > bare file write surfaces *nothing* over the gateway protocol (no `mediaUrls`, no
 > artifacts) — the gateway signals a file only if the LLM cooperates. shared-fs

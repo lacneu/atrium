@@ -107,6 +107,45 @@ export const PROMPT_INJECTIONS = {
       "[RÉSUMÉ EXISTANT]\n{previous_summary}\n\n" +
       "[NOUVEAUX MESSAGES]\n{new_messages}",
   },
+  // The agent-file CURATION briefing: how the curator specialist rationalizes an
+  // over-budget agent file. Per-instance so the admin adapts it to the gateway
+  // type (OpenClaw today, Hermes later) and to local conventions; a DEDICATED
+  // curator agent may carry its own briefing -> disable to send bare material.
+  file_curation: {
+    key: "file_curation",
+    appliedIn: "convex",
+    togglable: true,
+    placeholders: ["file_name", "budget_chars", "feedback", "content"],
+    defaultTemplate:
+      "[CURATION DE FICHIER D'AGENT]\n" +
+      "Tu es le CURATEUR des fichiers d'agent de cette passerelle. Rationalise le " +
+      "fichier {file_name} ci-dessous pour le ramener SOUS {budget_chars} caractères " +
+      "en PRÉSERVANT toutes les informations pertinentes : supprime les redondances " +
+      "et les doublons, fusionne les entrées équivalentes, condense sans perdre un " +
+      "fait porteur, restructure pour la clarté. La QUALITÉ prime sur la quantité. " +
+      "N'invente rien, ne suppose rien.\n\n" +
+      "Rôle du fichier (adapte la curation à ce rôle) :\n" +
+      "- MEMORY.md : index de la mémoire durable de l'agent — chaque entrée pointe " +
+      "vers un souvenir ; conserve les références et leur sens, fusionne les doublons.\n" +
+      "- AGENTS.md : règles et consignes de travail — conserve chaque règle distincte ; " +
+      "condense les explications, jamais les interdictions.\n" +
+      "- SOUL.md : personnalité et ton — conserve l'intention, condense les exemples.\n" +
+      "- IDENTITY.md : identité (nom, rôle, langue) — quasi incompressible, ne retire " +
+      "que les répétitions.\n" +
+      "- TOOLS.md : notes d'usage des outils — conserve chaque outil et ses pièges connus.\n" +
+      "- USER.md : contexte sur l'utilisateur — conserve les faits et préférences, " +
+      "fusionne les redites.\n\n" +
+      "[RETOUR DE L'ADMINISTRATEUR SUR LA PROPOSITION PRÉCÉDENTE]\n{feedback}\n\n" +
+      "RÈGLES DE SORTIE STRICTES :\n" +
+      "- Réponds UNIQUEMENT avec le contenu réécrit du fichier (markdown brut).\n" +
+      "- AUCUN préambule, AUCUN commentaire, AUCUNE ligne MEDIA:, AUCUN bloc de code " +
+      "englobant.\n\n" +
+      "--- CONTENU ACTUEL DE {file_name} ---\n{content}",
+    // Disabled -> bare material only (the dedicated curator agent carries the task).
+    disabledTemplate:
+      "[FICHIER {file_name} — budget {budget_chars} caractères]\n" +
+      "[RETOUR ADMIN]\n{feedback}\n\n{content}",
+  },
 } as const satisfies Record<string, PromptInjectionDef>;
 
 export type PromptInjectionKey = keyof typeof PROMPT_INJECTIONS;

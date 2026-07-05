@@ -7,6 +7,8 @@ auto-compaction restarts, and messages that arrive after a browser reconnect —
 handled naturally, and so that the UI stays stable even as a provider's event
 shapes change between versions.
 
+![A calm, light-filled hall where users chat with their agents. The gateway's raw event churn — tangled cables, shifting version numbers — stays behind the threshold in the machine room, smoothed into one clean stream by the bridge before it ever reaches the hall.](assets/atrium-overview.png)
+
 ## Components
 
 ```text
@@ -92,6 +94,8 @@ This indirection is the point: the browser only ever sees Convex state, so it is
 insulated from gateway frame churn. The bridge absorbs the version-specific
 quirks (see [OPENCLAW_VERSION_COMPAT.md](OPENCLAW_VERSION_COMPAT.md)), and the
 bridge↔Convex contract is documented in [BRIDGE_PROTOCOL.md](BRIDGE_PROTOCOL.md).
+
+![The bridge as a membrane: erratic, version-specific raw frames from the gateway enter on the left; one clean, steady signal — the stable shape the UI and observability consume — comes out on the right.](assets/atrium-normalization.png)
 
 ## Authentication
 

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../convexApi";
+import type { Id } from "../../../convex/_generated/dataModel";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +44,7 @@ import {
   isConflictError,
   totalSize,
 } from "./agentFilesView";
+import { CURATABLE_FILES, isCurationCandidate } from "../../../convex/lib/curation";
 import { instanceTabGate } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import "./confTabs.css";
@@ -194,6 +196,58 @@ export function AgentFilesTab() {
   // The file open in the editor dialog (null = closed).
   const [editing, setEditing] = useState<FileRow | null>(null);
 
+  // Agent-file CURATION (admin-only). Recent jobs for the selected agent — a
+  // reactive query so a freshly-proposed curation appears without a reload.
+  const curations = useQuery(
+    api.agentFileCuration.listCurations,
+    isAdmin && selInstance !== null && selAgent !== null
+      ? { instanceName: selInstance, agentId: selAgent }
+      : "skip",
+  );
+  // The EFFECTIVE budget + opt-in the server enforces (not the fixed 20k gauge),
+  // so the "Rationalize" button appears exactly when the server would accept it.
+  const curationSettings = useQuery(
+    api.agentFileCuration.curationSettings,
+    isAdmin && selInstance !== null ? { instanceName: selInstance } : "skip",
+  );
+  const requestCuration = useAction(api.agentFileCuration.requestCuration);
+  const [curating, setCurating] = useState<string | null>(null); // file name in flight
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const { toast } = useToast();
+  // The freshest job per file (list is desc by updatedAt).
+  const latestByFile = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof curations>[number]>();
+    for (const c of curations ?? []) if (!map.has(c.name)) map.set(c.name, c);
+    return map;
+  }, [curations]);
+  const runCuration = useCallback(
+    async (fileName: string) => {
+      if (selInstance === null || selAgent === null) return;
+      setCurating(fileName);
+      try {
+        const res = await requestCuration({
+          instanceName: selInstance,
+          agentId: selAgent,
+          name: fileName,
+          trigger: "manual",
+        });
+        if (res.ok) {
+          toast({ title: m.afiles_curation_dispatched(), variant: "success" });
+        } else {
+          toast({
+            title: m.afiles_curation_refused({ reason: res.reason ?? "unknown" }),
+            variant: "error",
+          });
+        }
+      } catch {
+        toast({ title: m.afiles_curation_error(), variant: "error" });
+      } finally {
+        setCurating(null);
+      }
+    },
+    [requestCuration, selInstance, selAgent, toast],
+  );
+
   const locale = getLocale();
   const numFmt = useMemo(
     () => new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }),
@@ -313,6 +367,20 @@ export function AgentFilesTab() {
                   >
                     {isAdmin ? m.afiles_edit() : m.afiles_view()}
                   </Button>
+                  {isAdmin && !f.missing ? (
+                    <CurationCell
+                      curatable={(CURATABLE_FILES as readonly string[]).includes(
+                        f.name,
+                      )}
+                      size={f.size ?? 0}
+                      budget={curationSettings?.budgetChars ?? null}
+                      enabled={curationSettings?.enabled ?? false}
+                      curation={latestByFile.get(f.name) ?? null}
+                      inFlight={curating === f.name}
+                      onCurate={() => void runCuration(f.name)}
+                      onReview={(id) => setReviewId(id)}
+                    />
+                  ) : null}
                 </div>
               );
             })}
@@ -337,8 +405,100 @@ export function AgentFilesTab() {
           onSaved={() => void loadFiles()}
         />
       ) : null}
+
+      {reviewId ? (
+        <CurationReviewDialog
+          curationId={reviewId}
+          onClose={() => setReviewId(null)}
+          onApplied={() => {
+            setReviewId(null);
+            void loadFiles();
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Curation cell (per file row, admin-only): a "Rationaliser" trigger when the
+// file is near/over its budget, and a status chip that surfaces an in-flight
+// job or a ready PROPOSAL to review. Silent when there's nothing to show.
+// ---------------------------------------------------------------------------
+
+type CurationRow = {
+  _id: string;
+  name: string;
+  status:
+    | "dispatched"
+    | "proposed"
+    | "applying"
+    | "applied"
+    | "rejected"
+    | "failed";
+  beforeSize: number;
+  proposedSize: number | null;
+  failureReason: string | null;
+};
+
+function CurationCell({
+  curatable,
+  size,
+  budget,
+  enabled,
+  curation,
+  inFlight,
+  onCurate,
+  onReview,
+}: {
+  curatable: boolean;
+  size: number;
+  budget: number | null;
+  enabled: boolean;
+  curation: CurationRow | null;
+  inFlight: boolean;
+  onCurate: () => void;
+  onReview: (id: string) => void;
+}) {
+  // A ready proposal takes precedence — the admin should review it.
+  if (curation?.status === "proposed") {
+    return (
+      <Button
+        variant="default"
+        size="sm"
+        className="oc-afiles__curate"
+        onClick={() => onReview(curation._id)}
+      >
+        {m.afiles_curation_review()}
+      </Button>
+    );
+  }
+  if (
+    inFlight ||
+    curation?.status === "dispatched" ||
+    curation?.status === "applying"
+  ) {
+    return (
+      <Badge variant="outline" className="oc-afiles__curate-status">
+        {m.afiles_curation_running()}
+      </Badge>
+    );
+  }
+  // Offer the trigger only when curation is ENABLED and the file is a candidate
+  // against the SERVER-configured budget (same threshold the action enforces).
+  if (curatable && enabled && budget !== null && isCurationCandidate(size, budget)) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="oc-afiles__curate"
+        onClick={onCurate}
+      >
+        {m.afiles_curation_run()}
+      </Button>
+    );
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +710,245 @@ function AgentFileEditor({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Curation review dialog (admin): shows the PROPOSED rewrite vs the current
+// file — the honest line-multiset mini-diff (same as the editor confirm) + the
+// size delta — then Approve (live write via CAS, records an agentFileRevisions
+// row for rollback) or Reject. The proposal is never written until approved.
+// ---------------------------------------------------------------------------
+
+function CurationReviewDialog({
+  curationId,
+  onClose,
+  onApplied,
+}: {
+  curationId: string;
+  onClose: () => void;
+  onApplied: () => void;
+}) {
+  const proposal = useQuery(api.agentFileCuration.getProposal, {
+    curationId: curationId as Id<"agentFileCurations">,
+  });
+  const approve = useAction(api.agentFileCuration.approveCuration);
+  const reject = useMutation(api.agentFileCuration.rejectCuration);
+  const { toast } = useToast();
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  // Reject flow: a small inline form asking WHY (the comment seeds the relaunch).
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectComment, setRejectComment] = useState("");
+  const locale = getLocale();
+
+  const diff = useMemo(
+    () =>
+      proposal
+        ? computeMiniDiff(proposal.beforeContent, proposal.proposedContent)
+        : null,
+    [proposal],
+  );
+
+  async function doApprove(): Promise<void> {
+    setBusy("approve");
+    try {
+      const res = await approve({
+        curationId: curationId as Id<"agentFileCurations">,
+      });
+      if (res.ok) {
+        toast({ title: m.afiles_curation_applied(), variant: "success" });
+        onApplied();
+      } else {
+        toast({
+          title:
+            res.reason === "conflict"
+              ? m.afiles_curation_conflict()
+              : m.afiles_curation_apply_error({ reason: res.reason ?? "unknown" }),
+          variant: "error",
+        });
+      }
+    } catch {
+      toast({ title: m.afiles_curation_error(), variant: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function doReject(relaunch: boolean): Promise<void> {
+    setBusy("reject");
+    try {
+      const comment = rejectComment.trim();
+      const res = await reject({
+        curationId: curationId as Id<"agentFileCurations">,
+        ...(comment ? { comment } : {}),
+        relaunch,
+      });
+      if (res.ok) {
+        toast({
+          title: relaunch
+            ? m.afiles_curation_rejected_relaunched()
+            : m.afiles_curation_rejected(),
+          variant: "success",
+        });
+      } else {
+        // Already applied/rejected by another admin — don't confirm a no-op.
+        toast({ title: m.afiles_curation_gone(), variant: "error" });
+      }
+      onClose();
+    } catch {
+      toast({ title: m.afiles_curation_error(), variant: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => (!o ? onClose() : undefined)}>
+      <DialogContent className="oc-afiles__review">
+        <DialogHeader>
+          <DialogTitle>
+            {proposal
+              ? m.afiles_curation_review_title({ name: proposal.name })
+              : m.common_loading()}
+          </DialogTitle>
+          <DialogDescription>
+            {m.afiles_curation_review_desc()}
+          </DialogDescription>
+        </DialogHeader>
+        {proposal === undefined ? (
+          <p className="oc-admin__hint">{m.common_loading()}</p>
+        ) : proposal === null ? (
+          <p className="oc-admin__hint">{m.afiles_curation_gone()}</p>
+        ) : (
+          <>
+            <p className="oc-afiles__review-sizes">
+              {m.afiles_curation_size_delta({
+                before: formatKb(proposal.beforeSize, locale),
+                after: formatKb(proposal.proposedSize, locale),
+              })}
+              {proposal.overBudget ? (
+                <>
+                  {" "}
+                  <AlertTriangle size={13} aria-hidden />{" "}
+                  {m.afiles_curation_still_over()}
+                </>
+              ) : null}
+            </p>
+            {diff ? (
+              <p className="oc-afiles__review-diff">
+                {m.afiles_curation_diff({
+                  added: diff.added,
+                  removed: diff.removed,
+                })}
+              </p>
+            ) : null}
+            {proposal.feedback ? (
+              // This proposal was RELAUNCHED with the admin's feedback — show it
+              // so the reviewer judges against what they asked for.
+              <p className="oc-afiles__review-feedback">
+                {m.afiles_curation_feedback_context({ feedback: proposal.feedback })}
+              </p>
+            ) : null}
+            {diff && diff.sampleRemoved.length > 0 ? (
+              // The CRITICAL safety view: sample of lines the curator DROPPED, so
+              // the admin can spot a lost load-bearing fact before approving.
+              <div className="oc-afiles__review-removed">
+                <p className="oc-afiles__review-label">
+                  {m.afiles_curation_removed_sample()}
+                </p>
+                <ul>
+                  {diff.sampleRemoved.map((l, i) => (
+                    <li key={i}>{l || " "}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {/* Full BEFORE and AFTER side by side — the honest "verify what was
+                lost" the propose-and-approve guarantee rests on (not just counts). */}
+            <div className="oc-afiles__review-panes oc-afiles__review-panes--2">
+              <div>
+                <p className="oc-afiles__review-label">
+                  {m.afiles_curation_before()}
+                </p>
+                <pre className="oc-afiles__review-pre">
+                  {proposal.beforeContent}
+                </pre>
+              </div>
+              <div>
+                <p className="oc-afiles__review-label">
+                  {m.afiles_curation_after()}
+                </p>
+                <pre className="oc-afiles__review-pre">
+                  {proposal.proposedContent}
+                </pre>
+              </div>
+            </div>
+          </>
+        )}
+        {rejecting ? (
+          // Reject form: WHY is this refused? The comment is recorded and, with
+          // "reject & relaunch", seeds the next curator attempt immediately.
+          <div className="oc-afiles__reject-form">
+            <label className="oc-afiles__review-label" htmlFor="curation-reject-comment">
+              {m.afiles_curation_reject_why()}
+            </label>
+            <textarea
+              id="curation-reject-comment"
+              className="oc-afiles__reject-textarea"
+              rows={3}
+              placeholder={m.afiles_curation_reject_placeholder()}
+              value={rejectComment}
+              onChange={(e) => setRejectComment(e.target.value)}
+            />
+            <div className="oc-afiles__review-actions">
+              <Button
+                variant="ghost"
+                onClick={() => setRejecting(false)}
+                disabled={busy !== null}
+              >
+                {m.afiles_curation_reject_cancel()}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => void doReject(false)}
+                disabled={busy !== null}
+              >
+                {busy === "reject"
+                  ? m.conf_applying()
+                  : m.afiles_curation_reject_only()}
+              </Button>
+              <Button
+                variant="default"
+                onClick={() => void doReject(true)}
+                disabled={busy !== null}
+              >
+                {busy === "reject"
+                  ? m.conf_applying()
+                  : m.afiles_curation_reject_relaunch()}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="oc-afiles__review-actions">
+            <Button
+              variant="outline"
+              onClick={() => setRejecting(true)}
+              disabled={busy !== null || proposal == null}
+            >
+              {m.afiles_curation_reject()}
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => void doApprove()}
+              disabled={busy !== null || proposal == null}
+            >
+              {busy === "approve"
+                ? m.conf_applying()
+                : m.afiles_curation_approve()}
+            </Button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

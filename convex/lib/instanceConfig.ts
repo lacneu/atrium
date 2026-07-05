@@ -5,6 +5,7 @@
 // here — they stay bridge-env only. See the plan + docs/MULTI_AGENT_REDESIGN.md.
 
 import { v } from "convex/values";
+import { CURATION_BUDGET_MIN, CURATION_BUDGET_MAX } from "./curation";
 
 import {
   missingRequiredPlaceholders,
@@ -54,6 +55,13 @@ export const instanceConfigValidator = v.object({
   // Hybrid rehydration: unsummarized-content size (chars) that triggers an
   // AUTOMATIC summarize job (the manual trigger ignores it). Bounds below.
   summarizeThresholdChars: v.optional(v.number()),
+  // Agent-file CURATION (auto-management of over-budget agent files). DEFAULT OFF:
+  // a lossy LLM rewrite of a memory/rules file only runs when an admin opts in
+  // per instance. `curationBudgetChars` = the per-file target the curator rewrites
+  // toward (bounded below). Every curation is a REVIEWABLE proposal, never a live
+  // auto-write.
+  curationEnabled: v.optional(v.boolean()),
+  curationBudgetChars: v.optional(v.number()),
   // GATEWAY/AGENT-visible shared-fs paths (where the AGENT reads inbound files /
   // writes outbound files — i.e. the gateway container's mount of the shared
   // volume). Used only in shared-fs mode. Non-secret.
@@ -103,6 +111,8 @@ export type InstanceConfig = {
   rehydration?: boolean;
   mediaMaxMb?: number;
   summarizeThresholdChars?: number;
+  curationEnabled?: boolean;
+  curationBudgetChars?: number;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
   promptInjections?: PromptInjectionConfig;
@@ -150,6 +160,8 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "rehydration",
     "mediaMaxMb",
     "summarizeThresholdChars",
+    "curationEnabled",
+    "curationBudgetChars",
     "inboundAgentMount",
     "outboundAgentMount",
     "promptInjections",
@@ -189,6 +201,22 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
       return "invalid";
     }
     out.summarizeThresholdChars = n;
+  }
+  if (o.curationEnabled !== undefined) {
+    if (typeof o.curationEnabled !== "boolean") return "invalid";
+    out.curationEnabled = o.curationEnabled;
+  }
+  if (o.curationBudgetChars !== undefined) {
+    const n = o.curationBudgetChars;
+    if (
+      typeof n !== "number" ||
+      !Number.isInteger(n) ||
+      n < CURATION_BUDGET_MIN ||
+      n > CURATION_BUDGET_MAX
+    ) {
+      return "invalid";
+    }
+    out.curationBudgetChars = n;
   }
   if (o.mediaMaxMb !== undefined) {
     const n = o.mediaMaxMb;

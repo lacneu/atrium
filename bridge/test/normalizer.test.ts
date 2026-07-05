@@ -976,6 +976,43 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     };
   }
 
+  it("EVERY documented overflow phrasing (no errorKind) classifies to context_length (fallback RE)", () => {
+    // The OpenClaw-documented provider overflow patterns (docs/concepts/compaction)
+    // + Atrium's UI phrasing — each must reach the actionable card, not a generic
+    // error. Real gateways send these as BARE text (no errorKind).
+    const phrasings = [
+      "Context overflow: prompt too large for the model.",
+      "request_too_large: 300000 tokens > 272000",
+      "This model's maximum context length is 272000 tokens",
+      "context length exceeded",
+      "input exceeds the maximum number of tokens",
+      "input token count exceeds the maximum number of input tokens",
+      "input is too long for the model",
+      "ollama error: context length exceeded",
+    ];
+    for (const text of phrasings) {
+      const normalizer = newNormalizer();
+      const clock = new Clock();
+      normalizer.beginTurn(clock.now);
+      normalizer.noteRunStarted(OWN_RUN, clock.now);
+      const events = normalizer.feed(
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: OWN_RUN,
+            sessionKey: SESSION_KEY,
+            state: "error",
+            errorMessage: text, // NO errorKind — the text fallback must fire
+          },
+        },
+        clock.tick(),
+      );
+      const final = events.find((e) => e.type === "message.final");
+      expect(final?.errorKind, `phrasing: ${text}`).toBe("context_length");
+    }
+  });
+
   it("chat error with errorKind context_length finalizes the turn as a classified error", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();

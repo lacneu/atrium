@@ -697,6 +697,57 @@ export default defineSchema({
     at: v.number(),
   }).index("by_agent_file", ["instanceName", "agentId", "name"]),
 
+  // Agent-file CURATION jobs (auto-management of over-budget agent files). A
+  // specialist rationalizes an over-budget file into a PROPOSED revision an admin
+  // reviews + approves — the file is NEVER auto-written (silent semantic data
+  // loss is the #1 risk). PII HYGIENE: `beforeContent`/`proposedContent` are
+  // copies of file content (MEMORY.md holds other users' data) — they are PURGED
+  // when the job resolves (applied/rejected/failed), the durable before/after
+  // living only in agentFileRevisions on apply.
+  agentFileCurations: defineTable({
+    instanceName: v.string(),
+    agentId: v.string(),
+    name: v.string(), // the agent workspace file, e.g. "MEMORY.md"
+    // Lifecycle: dispatched -> proposed (specialist replied) -> applied | rejected
+    //            | failed (dispatch/validation/stuck). Only "proposed" holds content.
+    status: v.union(
+      v.literal("dispatched"),
+      v.literal("proposed"),
+      // Transient: an approve CLAIMED the proposal (transactional lock) and is
+      // mid bridge-write. A reject can no longer touch it (race guard).
+      v.literal("applying"),
+      v.literal("applied"),
+      v.literal("rejected"),
+      v.literal("failed"),
+    ),
+    // The file's updatedAtMs when the job READ it — the CAS base for the apply
+    // (a concurrent edit since then -> 409, re-curate needed, never a clobber).
+    baseUpdatedAtMs: v.union(v.number(), v.null()),
+    beforeSize: v.number(), // bytes of the source (for the UI + the never-grow guard)
+    // TRANSIENT content (purged on resolve): the source + the specialist proposal.
+    beforeContent: v.optional(v.string()),
+    proposedContent: v.optional(v.string()),
+    proposedSize: v.optional(v.number()),
+    budgetChars: v.number(), // the target budget this job curated toward
+    requestedByUserId: v.id("users"),
+    // "auto" (cron) vs "manual" (admin button) — drives the notification copy.
+    trigger: v.union(v.literal("auto"), v.literal("manual")),
+    // Admin guidance THIS job was seeded with (the rejection comment of the
+    // previous proposal, woven into the curator prompt on a relaunch).
+    feedback: v.optional(v.string()),
+    // What the admin said when rejecting THIS row (kept for the loop's audit).
+    rejectionComment: v.optional(v.string()),
+    failureReason: v.optional(v.string()), // stable code on status "failed"
+    appliedRevisionAt: v.optional(v.number()), // links to agentFileRevisions on apply
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_target", ["instanceName", "agentId", "name"])
+    // For the admin list: newest-first ACROSS files (a fresh proposal for one
+    // file must not be masked by many rows of another under a name-first sort).
+    .index("by_target_updated", ["instanceName", "agentId", "updatedAt"])
+    .index("by_status", ["status", "updatedAt"]),
+
   // A user's project: a named grouping of chats in the sidebar. Per-user.
   projects: defineTable({
     userId: v.id("users"),
@@ -741,7 +792,14 @@ export default defineSchema({
     //    pattern; see docs/design/hybrid-rehydration.md).
     // Both are excluded from the sidebar/search.
     kind: v.optional(
-      v.union(v.literal("documentary"), v.literal("summarizer")),
+      v.union(
+        v.literal("documentary"),
+        v.literal("summarizer"),
+        // "curator": hosts agent-file curation turns — a specialist rationalizes
+        // an over-budget agent file (MEMORY.md, rules) into a PROPOSED revision an
+        // admin reviews + approves. Same hidden per-user pattern.
+        v.literal("curator"),
+      ),
     ),
     // The in-flight documentary fetch this hidden chat is serving — its CONVERSATIONAL
     // source message. Set at dispatch, read at finalize to correlate returned files to
@@ -761,6 +819,16 @@ export default defineSchema({
         // summary watermark to advance to on success.
         watermarkTarget: v.number(),
         coveredCountTarget: v.number(),
+        createdAt: v.number(),
+      }),
+    ),
+    // Agent-file curation: the in-flight CURATION job this hidden chat is serving.
+    // Set at dispatch, read at finalize to store the specialist's reply as a
+    // PROPOSED revision (never written live — an admin approves). Only meaningful
+    // on a `kind:"curator"` chat; jobs serialize (one in flight per hidden chat).
+    pendingCurate: v.optional(
+      v.object({
+        curationId: v.id("agentFileCurations"),
         createdAt: v.number(),
       }),
     ),
@@ -1677,6 +1745,8 @@ export default defineSchema({
       v.literal("feedback_reply"),
       // Support-side resolution of the user's report (distinct rendering).
       v.literal("feedback_resolved"),
+      // Agent-file curation proposal ready / failed (admin-facing).
+      v.literal("curation"),
     ),
     title: v.string(),
     body: v.string(),

@@ -274,6 +274,21 @@ export const failDispatch = internalMutation({
         );
       }
     }
+    // Agent-file curation: same shape — release the pendingCurate lock + mark the
+    // curation failed on a dispatch failure, else the curator chat stays wedged.
+    if (chat.kind === "curator" && chat.pendingCurate) {
+      try {
+        await ctx.runMutation(internal.agentFileCuration.failCurationForChat, {
+          chatId: chat._id,
+          reason: "dispatch_error",
+        });
+      } catch (e) {
+        console.error(
+          "[curation] release on failed dispatch:",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
 
     // A failed dispatch is a turn-end: the chat is now idle, so drain the next
     // QUEUED send (mirrors markOutbox + finalize; drainNextQueued is documented as
@@ -404,7 +419,9 @@ export const getChatRouting = internalQuery({
       // treat the still-warm gateway session as fresh and re-inject the whole history
       // (duplicate). `rehydration` stays the admin/env enable knob.
       configOverrides:
-        chat.kind === "documentary" || chat.kind === "summarizer"
+        chat.kind === "documentary" ||
+        chat.kind === "summarizer" ||
+        chat.kind === "curator"
           ? { ...bridgeDispatchConfig(instance?.config), rehydration: false }
           : chat.perTurnRouting && routedAgent
             ? {

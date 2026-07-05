@@ -8,6 +8,39 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.32.0] — Agent-file curation, sturdier context-overflow handling, and text-first media
+
+Feature + reliability release. Adds opt-in auto-management of over-budget agent files, hardens
+how context overflows are classified and surfaced, and makes a reply's text appear before a large
+attachment finishes uploading. No breaking changes; Convex changes are additive.
+
+- **Agent files can be rationalized instead of silently truncated (opt-in, propose-and-approve).**
+  When an agent file (MEMORY.md, AGENTS/SOUL/IDENTITY/TOOLS/USER) exceeds its budget, OpenClaw
+  truncates it at injection and the tail is lost. A new **File curator** specialist agent type can
+  now rewrite the file smaller while preserving the relevant content. The result is a **proposed**
+  revision an admin reviews (full before/after + the removed-lines sample) and approves — the file
+  is **never rewritten automatically**. Approving records a revertible revision; a concurrent edit
+  is caught by compare-and-set. **Off by default**, enabled per instance in Settings › Chat
+  defaults with a per-file budget; the "Rationalize" trigger + review live in Settings › Agent
+  files. Copies of file content are purged from the job once it resolves (PII hygiene). Works over
+  the provider-neutral file surface, so it is Hermes-ready.
+
+- **Context overflows are classified and surfaced more reliably.** The overflow detector now
+  recognizes every provider phrasing OpenClaw documents (previously it caught only two), so a hard
+  overflow always shows the actionable "delegate to sub-agents / compact / new chat" card instead
+  of a generic error. A **stuck compaction** (the gateway starts optimizing a large session then
+  goes silent) now ends with a clear, actionable message rather than ~15 minutes of "thinking"
+  followed by a blank reply. A lifecycle error that carries only a structured overflow code (no
+  matching text) is now classified too, and the UI keeps a client-side fallback so a novel phrasing
+  still gets the card.
+
+- **A reply's text no longer waits behind a large media upload.** When an agent delivers a big
+  file, the reply text now appears immediately and the attachment arrives once its upload finishes,
+  instead of the text being held until the (potentially slow) upload completed. Media delivery is
+  never dropped, part order is preserved, and a failed delivery is rescued by the deterministic
+  outbound scan. Media traces now carry the fetch + upload durations (and the chat id) so a
+  "the text lagged behind the video" report is diagnosable from the traces.
+
 ## [0.31.0] — User reports get a support loop: an agent can read, answer, and resolve them
 
 Observability + support release. A key-authed service account (the gateway's meta/critic agent,

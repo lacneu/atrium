@@ -9,7 +9,10 @@
 // (the pre-existing resetForCompaction path).
 
 import { describe, expect, it } from "vitest";
-import { Normalizer } from "../src/providers/openclaw/normalizer.js";
+import {
+  Normalizer,
+  COMPACTION_RECV_TIMEOUT,
+} from "../src/providers/openclaw/normalizer.js";
 import type { BridgeEvent } from "../src/core/events.js";
 import { TurnSink } from "../src/core/turn-sink.js";
 import type {
@@ -298,5 +301,53 @@ describe("TurnSink compaction part + pressure trace", () => {
     expect(
       writer.calls.filter((c) => c[0] === "recordGatewayPressure"),
     ).toHaveLength(0);
+  });
+});
+
+
+describe("compaction deadlock (#40295) -> actionable error, not empty complete", () => {
+  it("recv silence for the FULL widened budget while compaction pending -> compaction_timeout error", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "partial"), 1);
+    // Gateway abandons the run to compact (sets compactionPending, blanks buffer).
+    n.feed(
+      lifecycleFrame(PRE_SESSION_ID, {
+        phase: "end",
+        livenessState: "abandoned",
+        replayInvalid: true,
+      }),
+      2,
+    );
+    // No replay ever arrives. Tick PAST the widened recv budget (deadlock).
+    const ev = n.tick(2 + COMPACTION_RECV_TIMEOUT + 1);
+    const final = ev.find((e) => e.type === "message.final") as
+      | { errorKind?: string; error?: string }
+      | undefined;
+    const status = ev.find((e) => e.type === "run.status") as
+      | { status?: string }
+      | undefined;
+    // Actionable ERROR, not the former silent empty COMPLETE bubble.
+    expect(status?.status).toBe("error");
+    expect(final?.errorKind).toBe("compaction_timeout");
+  });
+});
+
+describe("lifecycle error carries a structured errorKind", () => {
+  it("a lifecycle error whose only overflow signal is the CODE classifies to context_length", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "working"), 1);
+    // A lifecycle error with a bare structured errorKind (no overflow phrasing
+    // in the text) — extractLifecycleError would miss it; the structured read wins.
+    const ev = n.feed(
+      lifecycleFrame(PRE_SESSION_ID, {
+        phase: "error",
+        error: { message: "run stopped", errorKind: "context_length" },
+      }),
+      2,
+    );
+    const final = ev.find((e) => e.type === "message.final") as
+      | { errorKind?: string }
+      | undefined;
+    expect(final?.errorKind).toBe("context_length");
   });
 });

@@ -72,6 +72,14 @@ export type { BridgeEvent };
 // --- Timing (seconds), absolute deadlines, mirror the OWUI pipe ---------------
 export const BASE_RECV_TIMEOUT = 180.0; // max gap between frames during an active turn
 export const COMPACTION_RECV_TIMEOUT = 900.0; // widened gap budget while compaction is pending
+// Synthetic error class when a compaction never completes within the widened
+// budget (#40295 deadlock signature: compaction started, then total silence for
+// COMPACTION_RECV_TIMEOUT). Finalizing this as an actionable ERROR beats the
+// former silent EMPTY-COMPLETE bubble (the buffer was blanked by
+// resetForCompaction) that left the user staring at ~15 min of "thinking".
+export const COMPACTION_TIMEOUT_CODE = "compaction_timeout";
+const COMPACTION_TIMEOUT_TEXT =
+  "The gateway did not finish optimizing (compacting) the session in time.";
 export const EMPTY_FINAL_GRACE = 90.0; // wait after an empty chat:final for real content
 export const PRIVATE_ACK_GRACE = 5.0; // wait after a private-ack final for the visible message
 export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follow-on run
@@ -104,8 +112,17 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 // the message's stable errorCode.
 // Known gateway overflow phrasings (live capture: "Context overflow: prompt
 // too large for the model. Try /reset (or /new) ...").
+// Every context-overflow phrasing a supported gateway can surface as BARE TEXT
+// (real 2026.6.11 never populates errorKind — live-verified). Covers the
+// OpenClaw-documented provider patterns (docs/concepts/compaction:
+// request_too_large, "context length exceeded", "input exceeds the maximum
+// number of tokens", "input token count exceeds the maximum number of input
+// tokens", "input is too long for the model", "ollama error: context length
+// exceeded") PLUS Atrium's own UI phrasings, so a hard overflow ALWAYS
+// classifies to context_length and shows the actionable card — never a generic
+// error (report 2026-07: 4 of 6 documented phrasings were previously missed).
 const CONTEXT_OVERFLOW_TEXT_RE =
-  /context overflow|prompt too large|maximum context length|context[- ]length exceeded/i;
+  /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens|reduce the length|exceeds? (?:the )?(?:model'?s )?(?:maximum )?context/i;
 
 // Terminal stopReason values we persist into the (metadata-only) pressure
 // trace. The schema types stopReason as a FREE string — anything outside this
@@ -517,7 +534,21 @@ export class Normalizer {
       }
       events.push(...this.finalize(now));
     } else if (expired.has("empty_final") || expired.has("lifecycle_end") || expired.has("recv")) {
-      events.push(...this.finalize(now));
+      if (this.compactionPending && expired.has("recv")) {
+        // #40295 DEADLOCK: a compaction started, then the gateway went silent for
+        // the FULL widened budget. Settle an actionable error (not an empty
+        // COMPLETE bubble) so the user knows to reset/retry rather than wait.
+        events.push(
+          ...this.finalize(
+            now,
+            "error",
+            COMPACTION_TIMEOUT_TEXT,
+            COMPACTION_TIMEOUT_CODE,
+          ),
+        );
+      } else {
+        events.push(...this.finalize(now));
+      }
     }
     return events;
   }
@@ -1032,7 +1063,19 @@ export class Normalizer {
     const phase = data.phase;
     if (phase === "error") {
       const message = extractLifecycleError(data.error);
-      events.push(...this.finalize(now, "error", message));
+      // A lifecycle error MAY carry a structured errorKind (like chat:error);
+      // read it so an overflow whose only signal is the CODE (not the text) still
+      // classifies to context_length — extractLifecycleError only sees text, and
+      // a bare "context_length" code never matches the phrasing regex. Fall back
+      // to the text regex inside finalize when no structured kind is present.
+      const errObj =
+        data.error && typeof data.error === "object" && !Array.isArray(data.error)
+          ? (data.error as JsonObject)
+          : null;
+      const rawKind = errObj?.errorKind ?? data.errorKind;
+      const kind =
+        isString(rawKind) && CHAT_ERROR_KINDS.has(rawKind) ? rawKind : null;
+      events.push(...this.finalize(now, "error", message, kind));
       return;
     }
     if (phase === "end") {

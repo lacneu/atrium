@@ -6761,3 +6761,48 @@
   cursor: pointer;
   user-select: none;
 }
+
+/* Agent-file curation cells + review dialog */
+.oc-afiles__curate { margin-left: 0.25rem; }
+.oc-afiles__curate-status { margin-left: 0.25rem; opacity: 0.8; }
+/* Near-fullscreen review (the before/after must be COMFORTABLY readable —
+   user feedback 2026-07-05): same sizing pattern as the file editor dialog. */
+[data-slot="dialog-content"].oc-afiles__review {
+  display: flex;
+  flex-direction: column;
+  width: calc(100vw - 2rem);
+  max-width: 96rem;
+  height: calc(100vh - 2rem);
+  max-height: none;
+}
+.oc-afiles__review-sizes { font-size: 0.9rem; opacity: 0.9; display: flex; align-items: center; gap: 0.3rem; }
+.oc-afiles__review-diff { font-size: 0.9rem; opacity: 0.75; margin-top: -0.25rem; }
+.oc-afiles__review-feedback {
+  font-size: 0.9rem; padding: 0.5rem 0.75rem; border-radius: 0.5rem;
+  background: var(--oc-surface-2, rgba(127,127,127,0.08));
+  border-left: 3px solid var(--oc-accent, #4a7dff);
+}
+.oc-afiles__review-panes { margin-top: 0.5rem; flex: 1; min-height: 0; }
+.oc-afiles__review-panes--2 > div { display: flex; flex-direction: column; min-height: 0; }
+.oc-afiles__review-label { font-size: 0.85rem; font-weight: 600; opacity: 0.75; margin-bottom: 0.3rem; }
+.oc-afiles__review-pre {
+  flex: 1; min-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-size: 0.9rem; line-height: 1.55; padding: 0.75rem 1rem;
+  background: var(--oc-surface-2, rgba(127,127,127,0.08)); border-radius: 0.5rem;
+  border: 1px solid var(--oc-border, rgba(127,127,127,0.2));
+}
+.oc-afiles__review-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
+.oc-afiles__reject-form { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.oc-afiles__reject-textarea {
+  width: 100%; resize: vertical; font-size: 0.9rem; line-height: 1.5;
+  padding: 0.6rem 0.75rem; border-radius: 0.5rem;
+  background: var(--oc-surface-2, rgba(127,127,127,0.08));
+  border: 1px solid var(--oc-border, rgba(127,127,127,0.25));
+  color: inherit; font-family: inherit;
+}
+
+.oc-afiles__review-panes--2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; height: 100%; }
+@media (max-width: 640px) { .oc-afiles__review-panes--2 { grid-template-columns: 1fr; } }
+.oc-afiles__review-removed { margin-top: 0.5rem; }
+.oc-afiles__review-removed ul { margin: 0.25rem 0 0; padding-left: 1rem; font-size: 0.78rem; opacity: 0.85; }
+.oc-afiles__review-removed li { white-space: pre-wrap; word-break: break-word; color: var(--oc-danger, #c0392b); }

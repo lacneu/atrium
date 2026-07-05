@@ -63,6 +63,33 @@ describe("admin.upsertInstanceConfig", () => {
     expect(inst?.config).toBeUndefined();
   });
 
+  test("the curation opt-in + budget persist (allowlisted; the ChatDefaults save path)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, instanceId } = await seed(t, "admin");
+    await as.mutation(api.admin.upsertInstanceConfig, {
+      instanceId,
+      config: { curationEnabled: true, curationBudgetChars: 18000 },
+    });
+    const inst = await t.run((ctx) => ctx.db.get(instanceId));
+    expect(inst?.config).toEqual({
+      curationEnabled: true,
+      curationBudgetChars: 18000,
+    });
+  });
+
+  test("an out-of-range curation budget is rejected (parse bounds it)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, instanceId } = await seed(t, "admin");
+    await expect(
+      as.mutation(api.admin.upsertInstanceConfig, {
+        instanceId,
+        config: { curationEnabled: true, curationBudgetChars: 1000 },
+      }),
+    ).rejects.toThrow(/Invalid instance config/);
+    const inst = await t.run((ctx) => ctx.db.get(instanceId));
+    expect(inst?.config).toBeUndefined();
+  });
+
   test("an empty config clears overrides (stores {})", async () => {
     const t = convexTest(schema, modules);
     const { as, instanceId } = await seed(t, "admin");

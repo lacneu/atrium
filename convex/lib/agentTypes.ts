@@ -17,6 +17,7 @@ export const AGENT_TYPE_CODES = [
   "conversational",
   "documentary",
   "summarizer",
+  "curator",
 ] as const;
 export type AgentTypeCode = (typeof AGENT_TYPE_CODES)[number];
 

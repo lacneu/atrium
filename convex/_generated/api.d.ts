@@ -9,6 +9,7 @@
  */
 
 import type * as admin from "../admin.js";
+import type * as agentFileCuration from "../agentFileCuration.js";
 import type * as agentFiles from "../agentFiles.js";
 import type * as agents from "../agents.js";
 import type * as anomalies from "../anomalies.js";
@@ -62,6 +63,7 @@ import type * as lib_compat from "../lib/compat.js";
 import type * as lib_crypto_cipher from "../lib/crypto/cipher.js";
 import type * as lib_crypto_convexValidator from "../lib/crypto/convexValidator.js";
 import type * as lib_crypto_keyProvider from "../lib/crypto/keyProvider.js";
+import type * as lib_curation from "../lib/curation.js";
 import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
 import type * as lib_files from "../lib/files.js";
@@ -109,6 +111,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
+  agentFileCuration: typeof agentFileCuration;
   agentFiles: typeof agentFiles;
   agents: typeof agents;
   anomalies: typeof anomalies;
@@ -162,6 +165,7 @@ declare const fullApi: ApiFromModules<{
   "lib/crypto/cipher": typeof lib_crypto_cipher;
   "lib/crypto/convexValidator": typeof lib_crypto_convexValidator;
   "lib/crypto/keyProvider": typeof lib_crypto_keyProvider;
+  "lib/curation": typeof lib_curation;
   "lib/diagnose": typeof lib_diagnose;
   "lib/domains": typeof lib_domains;
   "lib/files": typeof lib_files;

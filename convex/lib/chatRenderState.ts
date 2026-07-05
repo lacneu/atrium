@@ -71,6 +71,9 @@ export const KNOWN_ERROR_CODES = [
   "rate_limit",
   "timeout",
   "refusal",
+  // Synthesized by the bridge when a compaction never completes (#40295): a
+  // distinct actionable class, not a silent empty turn.
+  "compaction_timeout",
 ] as const;
 
 export function normalizeMessageErrorCode(

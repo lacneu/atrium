@@ -133,4 +133,24 @@ describe("cross-tab passthrough (shared instance.config blob)", () => {
     const out = buildConfigOverride(formFromConfig(stored), stored);
     expect("summarizeThresholdChars" in out).toBe(false);
   });
+
+  test("a Bridge-form save PRESERVES the curation opt-in (boolean) + budget (number)", () => {
+    const stored = {
+      mediaMode: "shared-fs",
+      curationEnabled: true,
+      curationBudgetChars: 18_000,
+    } as unknown as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored), stored);
+    // Both types survive the rebuild (a boolean was previously dropped — only
+    // numbers were carried through).
+    expect(out.curationEnabled).toBe(true);
+    expect(out.curationBudgetChars).toBe(18_000);
+  });
+
+  test("no curation config stored -> none resurrected", () => {
+    const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored), stored);
+    expect("curationEnabled" in out).toBe(false);
+    expect("curationBudgetChars" in out).toBe(false);
+  });
 });

@@ -57,6 +57,10 @@ const INJECTION_I18N: Record<
     label: m.injection_history_summary_label,
     help: m.injection_history_summary_help,
   },
+  file_curation: {
+    label: m.injection_file_curation_label,
+    help: m.injection_file_curation_help,
+  },
 };
 
 // Example values for the "Preview" — realistic stand-ins for each placeholder so the admin
@@ -68,6 +72,10 @@ const PLACEHOLDER_EXAMPLES: Record<string, string> = {
   previous_summary: "Projet Alpha : budget 40 000 EUR ; choix du serveur en cours.",
   new_messages: "Utilisateur : Compare OVH et Scaleway.\nAssistant : Comparaison en cours.",
   max_chars: "6000",
+  file_name: "MEMORY.md",
+  budget_chars: "20000",
+  feedback: "Trop de suppressions dans la section des liens, garde-les.",
+  content: "# Memory index\n- [Fait 1](fait-1.md) - note du projet",
 };
 
 // What each placeholder corresponds to (shown in a per-placeholder help bubble so an admin
@@ -79,6 +87,10 @@ const PLACEHOLDER_I18N: Record<string, () => string> = {
   previous_summary: m.placeholder_previous_summary,
   new_messages: m.placeholder_new_messages,
   max_chars: m.placeholder_max_chars,
+  file_name: m.placeholder_file_name,
+  budget_chars: m.placeholder_budget_chars,
+  feedback: m.placeholder_feedback,
+  content: m.placeholder_content,
 };
 
 export function PromptInjectionsTab() {

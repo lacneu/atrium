@@ -4,6 +4,7 @@ import { AlertTriangle } from "lucide-react";
 import { api } from "../convexApi";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +47,115 @@ type LoadState =
   | { status: "loading" }
   | { status: "error" }
   | { status: "done"; current: ChatDefaultsView };
+
+/** Agent-file CURATION opt-in (DEFAULT OFF): enable + the per-file budget the
+ *  curator rewrites over-budget files toward. Stored in the instance config; a
+ *  lossy rewrite only runs when an admin turns this on. */
+function CurationCard({
+  instance,
+}: {
+  instance: { _id: string; name: string; config?: Record<string, unknown> };
+}) {
+  const upsert = useMutation(api.admin.upsertInstanceConfig);
+  const enabledStored = instance.config?.curationEnabled === true;
+  const budgetStored =
+    typeof instance.config?.curationBudgetChars === "number"
+      ? (instance.config.curationBudgetChars as number)
+      : null;
+  const [enabled, setEnabled] = useState<boolean>(enabledStored);
+  const [budget, setBudget] = useState<string>(
+    budgetStored !== null ? String(budgetStored) : "",
+  );
+  const [state, setState] = useState<"idle" | "saving" | "done" | "error">(
+    "idle",
+  );
+  useEffect(() => {
+    setEnabled(enabledStored);
+    setBudget(budgetStored !== null ? String(budgetStored) : "");
+    setState("idle");
+  }, [instance._id, enabledStored, budgetStored]);
+  const trimmed = budget.trim();
+  const parsed =
+    trimmed === "" ? null : /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+  // Mirrors CURATION_BUDGET_MIN..MAX (convex/lib/curation.ts).
+  // When curation is OFF the budget is irrelevant (the disable must always be
+  // savable even if the field holds an invalid leftover value).
+  const valid =
+    !enabled ||
+    parsed === null ||
+    (Number.isInteger(parsed) && parsed >= 4_000 && parsed <= 60_000);
+  const dirty = enabled !== enabledStored || (parsed ?? null) !== budgetStored;
+  async function save(): Promise<void> {
+    setState("saving");
+    try {
+      const next: Record<string, unknown> = { ...(instance.config ?? {}) };
+      next.curationEnabled = enabled;
+      // When OFF, or with an empty/invalid field, never persist a budget (a NaN
+      // would fail the server validator and block the disable).
+      if (!enabled || parsed === null || Number.isNaN(parsed)) {
+        delete next.curationBudgetChars;
+      } else {
+        next.curationBudgetChars = parsed;
+      }
+      await upsert({ instanceId: instance._id as Id<"instances">, config: next });
+      setState("done");
+    } catch {
+      setState("error");
+    }
+  }
+  return (
+    <div className="oc-cdefaults__row">
+      <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
+        <Checkbox
+          checked={enabled}
+          onCheckedChange={(v) => setEnabled(v === true)}
+          aria-label={m.cdefaults_curation_enable_label()}
+        />
+        <span className="oc-cdefaults__label">
+          {m.cdefaults_curation_enable_label()}
+        </span>
+      </label>
+      <div className="oc-cdefaults__inline">
+        <Input
+          type="number"
+          min={4000}
+          max={60000}
+          step={1000}
+          placeholder="20000"
+          value={budget}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBudget(e.target.value)}
+          className="oc-cdefaults__number"
+          aria-invalid={!valid}
+          aria-label={m.cdefaults_curation_budget_label()}
+          disabled={!enabled}
+        />
+        <Button
+          size="sm"
+          disabled={!dirty || !valid || state === "saving"}
+          onClick={() => void save()}
+        >
+          {state === "saving" ? m.conf_applying() : m.cdefaults_save()}
+        </Button>
+      </div>
+      {!valid ? (
+        <p className="oc-cdefaults__error" role="alert">
+          {m.cdefaults_curation_budget_invalid()}
+        </p>
+      ) : null}
+      {state === "done" ? (
+        <p className="oc-admin__hint" role="status">
+          {m.cdefaults_saved()}
+        </p>
+      ) : null}
+      {state === "error" ? (
+        <p className="oc-cdefaults__error" role="alert">
+          {m.cdefaults_save_error()}
+        </p>
+      ) : null}
+      <p className="oc-cdefaults__help">{m.cdefaults_curation_help()}</p>
+    </div>
+  );
+}
 
 /** Atrium-side per-instance chat default: the summarize trigger threshold.
  *  Separate card below the GATEWAY defaults (this one is stored in the instance
@@ -358,13 +468,22 @@ export function ChatDefaultsTab() {
       {(() => {
         const inst = instances?.find((i) => i.name === (instanceName ?? instances[0]?.name));
         return inst ? (
-          <SummarizeThresholdCard
-            instance={inst as unknown as {
-              _id: string;
-              name: string;
-              config?: Record<string, unknown>;
-            }}
-          />
+          <>
+            <SummarizeThresholdCard
+              instance={inst as unknown as {
+                _id: string;
+                name: string;
+                config?: Record<string, unknown>;
+              }}
+            />
+            <CurationCard
+              instance={inst as unknown as {
+                _id: string;
+                name: string;
+                config?: Record<string, unknown>;
+              }}
+            />
+          </>
         ) : null;
       })()}
 

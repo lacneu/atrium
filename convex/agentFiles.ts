@@ -134,7 +134,7 @@ const CONFIG_DEFAULTS_SET_TIMEOUT_MS = 150_000; // connect 30 + ops ~35 + recove
  * conflict on set, etc.). `timeoutMs` is the caller-side abort; pass a value
  * above the bridge's own budget for long ops (see the constants above).
  */
-async function postBridge(
+export async function postBridge(
   path: string,
   body: Record<string, unknown>,
   timeoutMs: number = BRIDGE_TIMEOUT_MS,
@@ -179,7 +179,7 @@ async function postBridge(
   }
 }
 
-function requireOkStatus(status: number, op: string): void {
+export function requireOkStatus(status: number, op: string): void {
   if (status < 200 || status >= 300) {
     throw new Error(`bridge_error: ${op} -> HTTP ${status}`);
   }

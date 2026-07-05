@@ -27,6 +27,7 @@ import { drainNextQueued } from "./lib/outboxQueue";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
+import { correlateCuration } from "./agentFileCuration";
 import {
   correlateSummarize,
   enrichedTurnText,
@@ -605,6 +606,32 @@ export const finalize = internalMutation({
         await ctx.scheduler.runAfter(
           0,
           internal.chatSummaries.cleanupSummarizerChat,
+          { hiddenChatId: chat._id },
+        );
+      }
+    }
+    // Agent-file curation: a finished CURATOR turn → extract+validate the reply
+    // into a PROPOSED revision (never a live write). Same best-effort shape +
+    // FINALIZED re-read + nonce identity guard as the summarizer correlate above.
+    if (chat?.kind === "curator") {
+      let settled = false;
+      if (chat.pendingCurate) {
+        try {
+          const finalized = await ctx.db.get(message._id);
+          if (finalized) {
+            settled = await correlateCuration(ctx, chat, finalized);
+          }
+        } catch (e) {
+          console.error("[curation] correlate failed:", (e as Error)?.message ?? e);
+        }
+      }
+      if (!settled) {
+        // A LATE/FOREIGN reply that settled nothing (released/stuck job, or a
+        // stale nonce): it holds a COPY of the agent file — sweep the hidden
+        // chat's rows or it lingers indefinitely (codex P2; summarizer twin).
+        await ctx.scheduler.runAfter(
+          0,
+          internal.agentFileCuration.cleanupCuratorChat,
           { hiddenChatId: chat._id },
         );
       }
