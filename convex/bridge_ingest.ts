@@ -154,10 +154,13 @@ type IngestOp =
   | {
       op: "mediaTrace";
       messageId: string;
+      chatId?: string;
       phase: "received" | "stored" | "dropped";
       reason?: string;
       bytesBucket?: string;
       mimeBase?: string;
+      fetchMs?: number;
+      uploadMs?: number;
     }
   // Content-free re-hydration DECISION trace (no DB write, no message part): records
   // WHY a dispatch did/didn't re-inject history as an `openclaw.rehydrate` trace keyed
@@ -483,7 +486,13 @@ export const ingest = httpAction(async (ctx, request) => {
       // `received` at all = the gateway never surfaced it (normalizer/frame gap).
       await traceIngest(ctx, {
         kind: "openclaw.media",
-        correlationId: body.messageId,
+        // chatId makes the trace findable alongside the turn's other traces
+        // (list_traces q=chatId); correlationId chatId:messageId matches the
+        // assistant.stream / gateway_pressure of the same message.
+        ...(body.chatId ? { chatId: body.chatId } : {}),
+        correlationId: body.chatId
+          ? `${body.chatId}:${body.messageId}`
+          : body.messageId,
         meta: {
           op: body.op,
           messageId: body.messageId,
@@ -493,6 +502,11 @@ export const ingest = httpAction(async (ctx, request) => {
             ? { bytesBucket: body.bytesBucket }
             : {}),
           ...(body.mimeBase !== undefined ? { mimeBase: body.mimeBase } : {}),
+          // Delivery durations (phase "stored"): the media-latency breakdown.
+          ...(typeof body.fetchMs === "number" ? { fetchMs: body.fetchMs } : {}),
+          ...(typeof body.uploadMs === "number"
+            ? { uploadMs: body.uploadMs }
+            : {}),
         },
       });
       return json({ ok: true });

@@ -785,6 +785,11 @@ export const readForApi = internalQuery({
         at: fb.at,
         category: fb.category,
         comment: fb.comment ?? null,
+        // The reported conversation + message ids, so a diagnosis can chain
+        // straight into the chat's traces (list_traces / get_chat_state)
+        // without re-deriving the chatId from a runId search.
+        chatId: String(fb.chatId),
+        messageId: String(fb.messageId),
         displayedMatchesStored: fb.snapshot.displayedMatchesStored ?? null,
         snapshot: fb.snapshot,
         chatExists: chat !== null,

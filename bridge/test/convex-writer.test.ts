@@ -262,7 +262,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
       size: null,
     };
     const w = mediaWriter(fetchImpl, fakeFetcher(nullSize));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     const stored = sent
       .filter((s) => s.op === "mediaTrace")
@@ -274,6 +274,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen(5, "text/markdown")));
     await w.addMedia("m1", {
+      chatId: "c1",
       filename: "r.md",
       path: "/home/node/.openclaw/media/outbound/r.md",
     });
@@ -296,7 +297,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
   test("NO FETCHER: received -> dropped(no_fetcher), no upload at all", async () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, undefined); // no mediaFetcher
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
     const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -309,7 +310,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     // content-free diagnostic only, never an upload or a media part.
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl); // no fetcher needed — nothing is fetched
-    await w.noteMediaUndelivered("m1");
+    await w.noteMediaUndelivered("m1", "c1");
     await tick(10);
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces).toHaveLength(1);
@@ -332,7 +333,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     async (reason) => {
       const { fetchImpl, sent } = mediaFlowFetch();
       const w = mediaWriter(fetchImpl, fakeFetcher({ ok: false, reason }));
-      await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+      await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
       await tick(10);
       expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
       expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
@@ -345,7 +346,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
   test("UPLOAD ERROR: received -> getUploadUrl -> dropped(upload_error), no addMediaPart", async () => {
     const { fetchImpl, sent } = mediaFlowFetch({ uploadFails: true });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl");
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
@@ -369,7 +370,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     };
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, fakeFetcher(open));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl"); // got that far
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart"); // but never persisted
@@ -387,7 +388,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     });
     const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: capErr });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
     const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -404,7 +405,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     });
     const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: wrapped });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces[traces.length - 1]?.reason).toBe("too_large");
@@ -415,7 +416,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     // addMedia must catch it, persist NO part, and record the diagnostic.
     const { fetchImpl, sent } = mediaFlowFetch({ uploadNoStorageId: true });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
-    await w.addMedia("m1", { filename: "r.md", path: "/x/r.md" });
+    await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
     await tick(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl");
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
@@ -430,7 +431,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch({ hangMediaTrace: true });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     const outcome = await Promise.race([
-      w.addMedia("m1", { filename: "r.md", path: "/x/r.md" }).then(() => "DONE"),
+      w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" }).then(() => "DONE"),
       tick(300).then(() => "TIMEOUT" as const),
     ]);
     expect(outcome).toBe("DONE");

@@ -43,10 +43,12 @@ const warnedUnreadableDirs = new Set<string>();
 export async function scanAndHostOutbound(
   deps: OutboundScanDeps,
   messageId: string,
+  chatId: string,
   sinceMs: number,
   hosted: Set<string>,
-): Promise<void> {
-  if (!deps.enabled()) return;
+): Promise<{ candidates: string[]; host: () => Promise<void> }> {
+  const none = { candidates: [] as string[], host: async () => {} };
+  if (!deps.enabled()) return none;
   let entries: string[];
   try {
     entries = await readdir(deps.dir);
@@ -67,11 +69,15 @@ export async function scanAndHostOutbound(
           `mount of the shared dir, not the gateway container path.`,
       );
     }
-    return;
+    return none;
   }
+  // PHASE 1 — DETECT (fast: readdir + stat only, no upload). The candidate list
+  // drives the sink's text-first gate; PHASE 2 (host) runs AFTER the explicit
+  // media chain so it dedups/rescues against the real attach state.
+  const candidates: string[] = [];
   for (const name of entries) {
     if (name.startsWith(".")) continue; // dotfiles + validate markers
-    if (hosted.has(name)) continue; // already delivered via a MEDIA: directive
+    if (hosted.has(name)) continue; // already attached this turn (dedup)
     try {
       const s = await stat(join(deps.dir, name));
       if (!s.isFile()) continue; // skip subdirs (converted/, …)
@@ -79,10 +85,34 @@ export async function scanAndHostOutbound(
       if (s.size > deps.maxBytes) continue; // absurd
       // The fetcher basename-resolves under its baseDir (== deps.dir), so the
       // basename IS the path it opens.
-      await deps.writer.addMedia(messageId, { filename: name, path: name });
-      hosted.add(name);
+      candidates.push(name);
     } catch {
       // racing delete / unreadable entry — skip; the turn still finalizes.
     }
   }
+  // PHASE 2 — HOST (post-chain). Re-check `hosted` at EXECUTION so a file the
+  // explicit chain already attached is skipped (no duplicate), while one whose
+  // explicit delivery FAILED — or that had no MEDIA: directive — is hosted
+  // (rescue). Sequential chain preserves part order.
+  const host = async (): Promise<void> => {
+    let chain: Promise<void> = Promise.resolve();
+    for (const name of candidates) {
+      if (hosted.has(name)) continue; // attached by the explicit chain — dedup
+      hosted.add(name);
+      chain = chain.then(async () => {
+        try {
+          const attached = await deps.writer.addMedia(messageId, {
+            chatId,
+            filename: name,
+            path: name,
+          });
+          if (!attached) hosted.delete(name);
+        } catch {
+          hosted.delete(name);
+        }
+      });
+    }
+    await chain;
+  };
+  return { candidates, host };
 }

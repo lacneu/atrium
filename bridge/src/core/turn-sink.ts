@@ -56,9 +56,10 @@ interface MediaItem {
  */
 export type OutboundScan = (
   messageId: string,
+  chatId: string,
   sinceMs: number,
   hosted: Set<string>,
-) => Promise<void>;
+) => Promise<{ candidates: string[]; host: () => Promise<void> }>;
 
 export class TurnSink {
   private readonly chatId: string;
@@ -83,6 +84,16 @@ export class TurnSink {
   // skip ones already delivered.
   private turnStartMs = 0;
   private hostedThisTurn = new Set<string>();
+  // Media uploads run in a SEQUENTIAL background chain (not concurrent): part
+  // order = item order (a small file can't overtake a big one), and dedup +
+  // attach happen at EXECUTION time exactly as the old per-item await did (an
+  // explicit re-delivery after a failed mention still attaches). flushFinal
+  // awaits the chain AFTER writing the text visibly + before finalizing, so a
+  // large attachment never gates the reply text (report ms70hx1c… 2026-07-05)
+  // yet is never dropped and the busy-window stays streaming until finalize.
+  private mediaChain: Promise<void> = Promise.resolve();
+  private hasPendingMedia = false;
+
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
   private pendingFinalError: string | null = null;
@@ -202,6 +213,8 @@ export class TurnSink {
     this.toolCallCount = 0;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
+    this.mediaChain = Promise.resolve();
+    this.hasPendingMedia = false;
     this.pendingOpen = false;
     this.deferredRunId = null;
     this.deferredEvents = [];
@@ -424,21 +437,39 @@ export class TurnSink {
         }
         case "media": {
           for (const item of mediaItems(event.items)) {
-            // Already ATTACHED this turn (e.g. a fresh mention delivered, then the
-            // same path re-emitted as an explicit upgrade) -> never double-attach.
-            if (this.hostedThisTurn.has(item.filename)) continue;
-            const attached = await this.writer.addMedia(messageId, {
-              filename: item.filename,
-              path: item.path,
-              // Mention-only paths are freshness-gated against THIS turn's start,
-              // so an agent reading old notes never re-attaches last week's files.
-              ...(item.explicit !== undefined ? { explicit: item.explicit } : {}),
-              turnStartMs: this.turnStartMs,
+            const filename = item.filename;
+            const path = item.path;
+            const explicit = item.explicit;
+            const turnStartMs = this.turnStartMs;
+            // ALWAYS enqueue on the SEQUENTIAL chain — dedup is at ATTACH time
+            // only (hostedThisTurn), never at claim time. A delivery that fails
+            // (file not yet readable, not_found, upload_error) leaves a same-turn
+            // re-delivery — explicit OR mention — free to attach (codex P2), and
+            // an explicit rescues a stale mention. The chain's leading
+            // hostedThisTurn check keeps it to ONE real attach per file. Part
+            // order = item order (sequential chain).
+            this.hasPendingMedia = true;
+            this.mediaChain = this.mediaChain.then(async () => {
+              if (this.hostedThisTurn.has(filename)) return; // already attached
+              try {
+                const attached = await this.writer.addMedia(messageId, {
+                  chatId: this.chatId,
+                  filename,
+                  path,
+                  // Mention-only paths are freshness-gated against THIS turn's
+                  // start, so an agent reading old notes never re-attaches last
+                  // week's files.
+                  ...(explicit !== undefined ? { explicit } : {}),
+                  turnStartMs,
+                });
+                if (attached) this.hostedThisTurn.add(filename);
+              } catch (e) {
+                console.error(
+                  "[sink] media upload failed (non-fatal):",
+                  (e as Error)?.message ?? e,
+                );
+              }
             });
-            // Mark hosted ONLY on a real attach: a stale-dropped mention must stay
-            // eligible for a later EXPLICIT re-delivery of the same path (and the
-            // finalize-time outbound scan keys on actually-delivered files).
-            if (attached) this.hostedThisTurn.add(item.filename);
           }
           break;
         }
@@ -446,7 +477,7 @@ export class TurnSink {
           // The agent generated media (e.g. a codex imageGeneration item) but the
           // turn delivered none -> record a SOC2-safe diagnostic so the gap (missing
           // MEDIA:/mediaUrls delivery directive) is visible. No content, no part.
-          await this.writer.noteMediaUndelivered(messageId);
+          await this.writer.noteMediaUndelivered(messageId, this.chatId);
           break;
         }
         case "message.final": {
@@ -525,16 +556,61 @@ export class TurnSink {
       return;
     }
     this.turnActive = false;
-    // DETERMINISTIC outbound media: before finalizing, host any file the agent
-    // dropped in the outbound dir this turn that wasn't already delivered via a
-    // MEDIA: directive (the LLM often omits it / a space breaks the path parse).
-    // Best-effort — a scan failure must never block the finalize.
+    // DETERMINISTIC outbound media — PHASE 1 (DETECT, fast, no upload): list any
+    // file the agent dropped in the outbound dir this turn (LLM omitted MEDIA:,
+    // or an explicit delivery lost a readiness race). Runs first so the
+    // text-first gate below knows the FULL media set. Best-effort.
+    let scanHost: (() => Promise<void>) | null = null;
+    let scanCandidates = 0;
     if (this.outboundScan) {
       try {
-        await this.outboundScan(messageId, this.turnStartMs, this.hostedThisTurn);
+        const r = await this.outboundScan(
+          messageId,
+          this.chatId,
+          this.turnStartMs,
+          this.hostedThisTurn,
+        );
+        scanHost = r.host;
+        scanCandidates = r.candidates.length;
       } catch (e) {
         console.error(
-          "[outbound-scan] skipped (non-fatal):",
+          "[outbound-scan] detect skipped (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
+    // TEXT-FIRST: write the reply text VISIBLY before waiting on any media upload
+    // (explicit MEDIA: OR a scan candidate), so an attachment never gates the
+    // text (report ms70hx1c… 2026-07-05). Status stays `streaming` until
+    // writer.finalize() below (busy window unchanged). Gated on ACTUAL media
+    // this turn — a normal (no-media) turn writes its text once, at finalize,
+    // with no extra op.
+    const earlyText = this.hasPendingFinal ? this.pendingFinalText : "";
+    if (
+      (this.hasPendingMedia || scanCandidates > 0) &&
+      status === "complete" &&
+      earlyText
+    ) {
+      try {
+        await this.writer.setSnapshot(messageId, earlyText);
+      } catch (e) {
+        console.error(
+          "[sink] early text snapshot failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
+    // Await the explicit media chain, THEN host the scan candidates (PHASE 2):
+    // hosting re-checks hostedThisTurn so a file the chain already attached is
+    // deduped, while a failed/undelivered file is rescued. Media never dropped;
+    // the message finalizes complete only once every part has landed.
+    await this.mediaChain;
+    if (scanHost) {
+      try {
+        await scanHost();
+      } catch (e) {
+        console.error(
+          "[outbound-scan] host skipped (non-fatal):",
           (e as Error)?.message ?? e,
         );
       }

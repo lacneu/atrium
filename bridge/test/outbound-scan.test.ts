@@ -40,7 +40,7 @@ describe("scanAndHostOutbound", () => {
     await writeFile(join(dir, "IFOA Presentation.pdf"), "x");
     await utimes(join(dir, "IFOA Presentation.pdf"), new Date(NOW), new Date(NOW));
     const { writer, hosted } = fakeWriter();
-    await scanAndHostOutbound(deps(writer, dir), "m1", NOW - 1000, new Set());
+    await (await scanAndHostOutbound(deps(writer, dir), "m1", "c1", NOW - 1000, new Set())).host();
     expect(hosted).toEqual(["IFOA Presentation.pdf"]);
   });
 
@@ -49,7 +49,7 @@ describe("scanAndHostOutbound", () => {
     dirs.push(dir);
     await writeFile(join(dir, "f.pdf"), "x");
     const { writer, hosted } = fakeWriter();
-    await scanAndHostOutbound(deps(writer, dir, false), "m1", NOW - 1000, new Set());
+    await (await scanAndHostOutbound(deps(writer, dir, false), "m1", "c1", NOW - 1000, new Set())).host();
     expect(hosted).toEqual([]);
   });
 
@@ -73,18 +73,19 @@ describe("scanAndHostOutbound", () => {
     await utimes(join(dir, "big.pdf"), new Date(NOW), new Date(NOW));
 
     const { writer, hosted } = fakeWriter();
-    await scanAndHostOutbound(
+    await (await scanAndHostOutbound(
       deps(writer, dir),
       "m1",
+      "c1",
       NOW - 1000,
       new Set(["done.pdf"]),
-    );
+    )).host();
     expect(hosted).toEqual(["new.pdf"]);
   });
 
   it("a missing dir is a no-op (never throws)", async () => {
     const { writer, hosted } = fakeWriter();
-    await scanAndHostOutbound(deps(writer, "/no/such/atrium/os"), "m1", 0, new Set());
+    await (await scanAndHostOutbound(deps(writer, "/no/such/atrium/os"), "m1", "c1", 0, new Set())).host();
     expect(hosted).toEqual([]);
   });
 
@@ -98,8 +99,8 @@ describe("scanAndHostOutbound", () => {
       const { writer, hosted } = fakeWriter();
       // A UNIQUE path so the warn-once Set (keyed by dir) hasn't seen it.
       const badDir = "/no/such/atrium/os-misconfig-1";
-      await scanAndHostOutbound(deps(writer, badDir), "m1", 0, new Set());
-      await scanAndHostOutbound(deps(writer, badDir), "m1", 0, new Set());
+      await (await scanAndHostOutbound(deps(writer, badDir), "m1", "c1", 0, new Set())).host();
+      await (await scanAndHostOutbound(deps(writer, badDir), "m1", "c1", 0, new Set())).host();
       expect(hosted).toEqual([]);
       const misconfigWarns = warn.mock.calls.filter((c) =>
         String(c[0]).includes("outbound dir unreadable"),

@@ -53,7 +53,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
     deltaFlushMs: config.deltaFlushMs,
     getFetcher: () => mediaProvider.current(),
   });
-  const outboundScan: OutboundScan = (messageId, sinceMs, hosted) =>
+  const outboundScan: OutboundScan = (messageId, chatId, sinceMs, hosted) =>
     scanAndHostOutbound(
       {
         writer,
@@ -62,6 +62,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
         enabled: () => mediaProvider.currentMode() === "shared-fs",
       },
       messageId,
+      chatId,
       sinceMs,
       hosted,
     );

@@ -218,6 +218,7 @@ export interface ConvexWriter {
   addMedia(
     messageId: string,
     media: {
+      chatId: string;
       filename: string;
       path: string;
       mimeType?: string;
@@ -227,7 +228,7 @@ export interface ConvexWriter {
   ): Promise<boolean>;
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
-  noteMediaUndelivered(messageId: string): Promise<void>;
+  noteMediaUndelivered(messageId: string, chatId: string): Promise<void>;
   /** message.final -> internal.stream.finalize. */
   finalize(
     messageId: string,
@@ -418,10 +419,15 @@ type IngestOp =
   | {
       op: "mediaTrace";
       messageId: string;
+      chatId?: string;
       phase: "received" | "stored" | "dropped";
       reason?: string;
       bytesBucket?: string;
       mimeBase?: string;
+      // Delivery durations (phase "stored"): open/HTTP-fetch of the source, and
+      // the stream-to-storage upload. Together = the media-delivery cost.
+      fetchMs?: number;
+      uploadMs?: number;
     }
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
@@ -1068,6 +1074,7 @@ export class HttpConvexWriter implements ConvexWriter {
   async addMedia(
     messageId: string,
     media: {
+      chatId: string;
       filename: string;
       path: string;
       mimeType?: string;
@@ -1084,7 +1091,7 @@ export class HttpConvexWriter implements ConvexWriter {
     // called. This "received" trace is the load-bearing A/B discriminator — if it
     // is ABSENT for a file-gen turn, the gateway never surfaced the file (a
     // normalizer/frame gap), NOT a fetcher/mount problem.
-    this.emitMediaTrace(messageId, "received");
+    this.emitMediaTrace(messageId, media.chatId, "received");
     // Resolve the fetcher lazily so a hot mediaMode change (off ↔ shared-fs ↔
     // gateway-http) applied since boot takes effect on THIS attachment.
     const fetcher = this.getFetcher();
@@ -1095,7 +1102,7 @@ export class HttpConvexWriter implements ConvexWriter {
           "[media] no MediaFetcher configured -> outbound attachments are dropped",
         );
       }
-      this.emitMediaTrace(messageId, "dropped", { reason: "no_fetcher" });
+      this.emitMediaTrace(messageId, media.chatId, "dropped", { reason: "no_fetcher" });
       return false;
     }
     // Best-effort: an attachment failure must NEVER abort the assistant turn —
@@ -1112,12 +1119,14 @@ export class HttpConvexWriter implements ConvexWriter {
         media.explicit === false && typeof media.turnStartMs === "number"
           ? media.turnStartMs - STALE_MENTION_GRACE_MS
           : null;
+      const fetchStartMs = Date.now();
       const opened = await fetcher.open(media.path, { rejectOlderThanMs });
+      const fetchMs = Date.now() - fetchStartMs;
       if (!opened.ok) {
         // The structural reason (not_found / too_large / path_escape / ...) — the
         // single most useful signal: each is a DIFFERENT fix. Already warned
         // locally by the fetcher (with the filename); the trace stays code-only.
-        this.emitMediaTrace(messageId, "dropped", { reason: opened.reason });
+        this.emitMediaTrace(messageId, media.chatId, "dropped", { reason: opened.reason });
         return false;
       }
       const mimeType = media.mimeType ?? opened.mimeType;
@@ -1132,14 +1141,16 @@ export class HttpConvexWriter implements ConvexWriter {
       // always async, so a post-check error can only fire mid-read, where toWeb
       // propagates it -> the catch below reports the drop.)
       if (opened.readError?.()) {
-        this.emitMediaTrace(messageId, "dropped", { reason: "read_error" });
+        this.emitMediaTrace(messageId, media.chatId, "dropped", { reason: "read_error" });
         return false;
       }
+      const uploadStartMs = Date.now();
       const storageId = await this.streamToUploadUrl(
         uploadUrl,
         opened.stream,
         mimeType,
       );
+      const uploadMs = Date.now() - uploadStartMs;
       await this.post({
         op: "addMediaPart",
         messageId,
@@ -1147,9 +1158,16 @@ export class HttpConvexWriter implements ConvexWriter {
         filename: media.filename,
         mimeType,
       });
-      this.emitMediaTrace(messageId, "stored", {
+      // fetchMs (open/HTTP-fetch of the source) + uploadMs (stream to Convex
+      // storage): the two durations that, summed, ARE the media-delivery cost —
+      // the diagnostic that pins a "the text lagged behind the video" latency
+      // report to fetch vs upload (report ms70hx1c… 2026-07-05). Bytes bucket
+      // stays SOC2-safe (no exact size).
+      this.emitMediaTrace(messageId, media.chatId, "stored", {
         bytesBucket: bytesBucket(opened.size),
         mimeBase: mimeBaseOf(mimeType),
+        fetchMs,
+        uploadMs,
       });
       return true;
     } catch (err) {
@@ -1161,7 +1179,7 @@ export class HttpConvexWriter implements ConvexWriter {
       console.warn(
         `[media] attachment skipped: ${err instanceof Error ? err.message : String(err)}`,
       );
-      this.emitMediaTrace(messageId, "dropped", {
+      this.emitMediaTrace(messageId, media.chatId, "dropped", {
         reason: causedByTooLarge(err) ? "too_large" : "upload_error",
       });
       return false;
@@ -1175,8 +1193,8 @@ export class HttpConvexWriter implements ConvexWriter {
    * (reason `generated_no_delivery`, NO part, no content) so the #7 self-correction
    * loop can flag the agent's missing delivery directive.
    */
-  async noteMediaUndelivered(messageId: string): Promise<void> {
-    this.emitMediaTrace(messageId, "dropped", {
+  async noteMediaUndelivered(messageId: string, chatId: string): Promise<void> {
+    this.emitMediaTrace(messageId, chatId, "dropped", {
       reason: "generated_no_delivery",
     });
   }
@@ -1192,10 +1210,17 @@ export class HttpConvexWriter implements ConvexWriter {
    */
   private emitMediaTrace(
     messageId: string,
+    chatId: string,
     phase: "received" | "stored" | "dropped",
-    extra?: { reason?: string; bytesBucket?: string; mimeBase?: string },
+    extra?: {
+      reason?: string;
+      bytesBucket?: string;
+      mimeBase?: string;
+      fetchMs?: number;
+      uploadMs?: number;
+    },
   ): void {
-    void this.doPost({ op: "mediaTrace", messageId, phase, ...extra }).catch(
+    void this.doPost({ op: "mediaTrace", messageId, chatId, phase, ...extra }).catch(
       () => {
         // best-effort: never surface as an unhandled rejection.
       },
