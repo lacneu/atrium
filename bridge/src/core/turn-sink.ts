@@ -32,6 +32,28 @@ import {
 // non-meaningful deltas ever accumulate here.
 const MAX_DEFERRED_EVENTS = 500;
 
+// A turn that finalized COMPLETE but delivered NOTHING the user can act on (no
+// reply text, no attached media) despite the agent having WORKED (tool calls or
+// an attempted MEDIA: delivery) — a silent blank bubble. It is surfaced as an
+// actionable error instead. Covers BOTH observed causes: a recv-timeout that
+// cut a still-working/stuck turn, and an agent that "delivered" via a file whose
+// MEDIA: was dropped (not_found) downstream (report ms7b5j… 2026-07-05).
+const EMPTY_RESPONSE_CODE = "empty_response";
+// Silence-driven finalize causes (vs a real gateway terminal): these warrant a
+// gateway_pressure trace even when the turn had no pre-send describe.
+const AUTO_CLOSE_CAUSES = new Set([
+  "recv_timeout",
+  "empty_final_timeout",
+  "lifecycle_end_timeout",
+  "compaction_timeout",
+  "private_ack_grace",
+  // The silence-recovery settle (gateway never answered within the recovery
+  // budget) — same diagnostic family as the timeouts above.
+  "response_timeout",
+]);
+const EMPTY_RESPONSE_TEXT =
+  "The agent finished without a usable response (no text, and any file delivery failed).";
+
 const TERMINAL_STATUS: Record<string, FinalizeStatus> = {
   final: "complete",
   complete: "complete",
@@ -93,6 +115,13 @@ export class TurnSink {
   // yet is never dropped and the busy-window stays streaming until finalize.
   private mediaChain: Promise<void> = Promise.resolve();
   private hasPendingMedia = false;
+  // True once ANY non-empty text was made visible this turn (a streamed delta or
+  // a snapshot), even if message.final is later empty — Convex keeps the streamed
+  // text as the fallback, so the empty-result guard must NOT fire (codex P2).
+  private sawVisibleText = false;
+  // The turn generated media natively but delivered none (no MEDIA:/outbound) —
+  // read from the final event so the empty-result guard sees it (codex P2).
+  private pendingMediaGeneratedUndelivered = false;
 
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
@@ -109,6 +138,7 @@ export class TurnSink {
   // Terminal stopReason + real post-turn usage (agent-event session metadata),
   // trace-only diagnostics (the protocol matrix's former gaps, closed here).
   private pendingDiagStopReason: string | null = null;
+  private pendingDiagFinalizeCause: string | null = null;
   private pendingDiagUsage: {
     totalTokens: number | null;
     inputTokens: number | null;
@@ -205,6 +235,7 @@ export class TurnSink {
     this.pendingFinalErrorKind = null;
     this.pendingDiagErrorKind = null;
     this.pendingDiagStopReason = null;
+    this.pendingDiagFinalizeCause = null;
     this.pendingDiagUsage = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
@@ -215,6 +246,8 @@ export class TurnSink {
     this.hostedThisTurn = new Set<string>();
     this.mediaChain = Promise.resolve();
     this.hasPendingMedia = false;
+    this.sawVisibleText = false;
+    this.pendingMediaGeneratedUndelivered = false;
     this.pendingOpen = false;
     this.deferredRunId = null;
     this.deferredEvents = [];
@@ -393,12 +426,21 @@ export class TurnSink {
         case "message.delta": {
           const text = asString(event.text);
           if (text) {
+            // Only NON-whitespace makes the reply "visible" — a whitespace-only
+            // delta before an empty final is still a blank bubble (codex P2).
+            if (text.trim().length > 0) this.sawVisibleText = true;
             await this.writer.appendDelta(messageId, text);
           }
           break;
         }
         case "message.snapshot": {
-          await this.writer.setSnapshot(messageId, asString(event.text));
+          const snap = asString(event.text);
+          // A snapshot REPLACES the whole reply text, so visibility must track the
+          // new content: an empty/whitespace snapshot (e.g. the "" emitted to clear
+          // an invalidated prefix on compaction) RESETS visibility to false, so a
+          // replay that then ends empty still trips the empty-result guard (codex P2).
+          this.sawVisibleText = snap.trim().length > 0;
+          await this.writer.setSnapshot(messageId, snap);
           break;
         }
         case "tool.status": {
@@ -501,6 +543,11 @@ export class TurnSink {
             event.diagnosticStopReason
               ? event.diagnosticStopReason
               : null;
+          this.pendingDiagFinalizeCause =
+            typeof event.diagnosticFinalizeCause === "string" &&
+            event.diagnosticFinalizeCause
+              ? event.diagnosticFinalizeCause
+              : null;
           this.pendingDiagUsage =
             typeof event.diagnosticUsage === "object" &&
             event.diagnosticUsage !== null
@@ -511,6 +558,9 @@ export class TurnSink {
                   estimatedCostUsd: number | null;
                 })
               : null;
+          this.pendingMediaGeneratedUndelivered =
+            (event as { mediaGeneratedUndelivered?: unknown })
+              .mediaGeneratedUndelivered === true;
           this.hasPendingFinal = true;
           break;
         }
@@ -615,14 +665,40 @@ export class TurnSink {
         );
       }
     }
+    // EMPTY-RESULT guard: a COMPLETE turn with NO reply text AND no media
+    // actually attached (hostedThisTurn drained after the media chain above) —
+    // yet the agent WORKED (tool calls or an attempted MEDIA:) — is a silent
+    // blank bubble. Surface it as an actionable error (never overriding a real
+    // error already buffered). The `hostedThisTurn` check is AFTER the media
+    // chain, so a media that DROPPED not_found downstream correctly counts as
+    // "nothing delivered" (report ms7b5j…).
+    const replyText = this.hasPendingFinal ? this.pendingFinalText : "";
+    let effectiveStatus = status;
+    let effectiveError = this.pendingFinalError;
+    let effectiveErrorKind = this.pendingFinalErrorKind;
+    if (
+      status === "complete" &&
+      effectiveErrorKind === null &&
+      replyText.trim().length === 0 &&
+      !this.sawVisibleText &&
+      this.hostedThisTurn.size === 0 &&
+      (this.toolCallCount > 0 ||
+        this.hasPendingMedia ||
+        scanCandidates > 0 ||
+        this.pendingMediaGeneratedUndelivered)
+    ) {
+      effectiveStatus = "error";
+      effectiveError = EMPTY_RESPONSE_TEXT;
+      effectiveErrorKind = EMPTY_RESPONSE_CODE;
+    }
     // The error string (if any) was buffered from message.final; on a clean turn
     // it is null. lifecycle:error finalizes with both partial text + error.
     await this.writer.finalize(
       messageId,
-      status,
-      this.hasPendingFinal ? this.pendingFinalText : "",
-      this.pendingFinalError,
-      this.pendingFinalErrorKind,
+      effectiveStatus,
+      replyText,
+      effectiveError,
+      effectiveErrorKind,
     );
     // Context-pressure trace (Inc 2): one content-free record per turn — the
     // pre-turn fill counters + whether the gateway compacted. Fire-and-forget
@@ -641,7 +717,14 @@ export class TurnSink {
       // trigger the trace: a spontaneous turn has no pre-turn describe, and
       // its telemetry would otherwise be silently dropped (codex P2).
       this.pendingDiagStopReason !== null ||
-      this.pendingDiagUsage !== null
+      this.pendingDiagUsage !== null ||
+      // A silence AUTO-close (recv/empty_final/lifecycle_end/compaction timeout,
+      // private_ack grace) warrants a trace even with no pre-send pressure — it
+      // is the exact diagnostic the launch bug hinges on. A NORMAL gateway
+      // terminal does NOT force a trace (finalizeCause just rides one already
+      // firing), so the common path keeps its writer-call sequence.
+      (this.pendingDiagFinalizeCause !== null &&
+        AUTO_CLOSE_CAUSES.has(this.pendingDiagFinalizeCause))
     ) {
       void this.writer
         .recordGatewayPressure(this.chatId, messageId, {
@@ -656,6 +739,7 @@ export class TurnSink {
           // "context_length" (un-recovered), vs `compaction` = handled silently.
           errorKind: this.pendingDiagErrorKind,
           stopReason: this.pendingDiagStopReason,
+          finalizeCause: this.pendingDiagFinalizeCause,
           // REAL post-turn usage when the gateway stamps it on agent events
           // (vs the pre-turn describe counters above) — the delta per turn.
           postTotalTokens: this.pendingDiagUsage?.totalTokens ?? null,

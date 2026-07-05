@@ -342,7 +342,7 @@ describe("run-manager -> convex-writer mapping", () => {
       .filter((c) => c[0] === "appendDelta")
       .map((c) => (c as ["appendDelta", string, string])[2]);
     expect(deltas).toEqual(["Hello ", "world"]);
-    const final = writer.calls[writer.calls.length - 1] as [
+    const final = writer.calls.find((c) => c[0] === "finalize") as [
       "finalize",
       string,
       FinalizeStatus,
@@ -350,6 +350,8 @@ describe("run-manager -> convex-writer mapping", () => {
       string | null,
       string | null,
     ];
+    // A timeout-finalized turn now ships the diagnostic pressure trace AFTER the
+    // finalize (finalizeCause), so find the finalize by kind, not last position.
     expect(final[0]).toBe("finalize");
     expect(final[2]).toBe("complete");
     expect(final[3]).toBe("Hello world");
@@ -391,7 +393,7 @@ describe("run-manager -> convex-writer mapping", () => {
       "/home/node/.openclaw/media/outbound/a.pdf",
       "/home/node/.openclaw/media/outbound/c.pdf",
     ]);
-    const final = writer.calls[writer.calls.length - 1] as [
+    const final = writer.calls.find((c) => c[0] === "finalize") as [
       "finalize",
       string,
       FinalizeStatus,

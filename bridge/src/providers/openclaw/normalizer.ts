@@ -70,7 +70,12 @@ export {
 export type { BridgeEvent };
 
 // --- Timing (seconds), absolute deadlines, mirror the OWUI pipe ---------------
-export const BASE_RECV_TIMEOUT = 180.0; // max gap between frames during an active turn
+// Max gap between own-session frames during an active turn before a recv-timeout
+// finalize. Raised 180 -> 240s: a thinking:high turn on a large model with a big
+// context legitimately goes silent (no deltas) for minutes while reasoning; 180s
+// cut still-working turns into empty bubbles (report ms7b5j…). The 12-min Convex
+// stuck-stream watchdog remains the ultimate backstop for a truly hung turn.
+export const BASE_RECV_TIMEOUT = 240.0;
 export const COMPACTION_RECV_TIMEOUT = 900.0; // widened gap budget while compaction is pending
 // Synthetic error class when a compaction never completes within the widened
 // budget (#40295 deadlock signature: compaction started, then total silence for
@@ -401,6 +406,13 @@ export class Normalizer {
   // the terminal frame's optional stopReason, and the REAL post-turn usage the
   // gateway flattens onto agent events on live deployments (dev 2026-07-04).
   private diagStopReason: string | null = null;
+  // WHY the current turn finalized (set by finalize()); shipped in the pressure
+  // trace so the exact close path is unambiguous on the next live repro.
+  private finalizeCause: string | null = null;
+  // Set when a PURE recv-silence deadline elapsed on a live turn (no finalize):
+  // the session consumes it to trigger an active gateway status query instead of
+  // closing the turn. One-shot per elapse (the recv wait is cleared).
+  private recvSilence = false;
   private diagUsage: {
     totalTokens: number | null;
     inputTokens: number | null;
@@ -442,6 +454,8 @@ export class Normalizer {
     // stopReason/usage frames would inherit the PREVIOUS turn's values in its
     // pressure trace).
     this.diagStopReason = null;
+    this.finalizeCause = null;
+    this.recvSilence = false;
     this.diagUsage = null;
     this.turnActive = true;
     this.finalized = false;
@@ -488,14 +502,34 @@ export class Normalizer {
     this.armRecv(now);
   }
 
+  /** TRUE when the recv deadline is currently armed — i.e. an OWN frame arrived
+   *  since the last silence elapse (armRecv re-arms on every own frame). The
+   *  silence-recovery poll uses it to self-cancel when the live stream RESUMES. */
+  get recvDeadlineArmed(): boolean {
+    return this.deadlines.has("recv");
+  }
+
+  /** Consume the pure-recv-silence signal (returns true once per elapse). The
+   *  session reacts by querying the gateway, NOT by closing the turn. */
+  takeRecvSilence(): boolean {
+    if (!this.recvSilence) return false;
+    this.recvSilence = false;
+    return true;
+  }
+
   /** Finalize the active turn explicitly (e.g. on chat.abort or a send error). */
-  endTurn(now: number, status = "final", error: string | null = null): BridgeEvent[] {
-    return this.finalize(now, status, error);
+  endTurn(
+    now: number,
+    status = "final",
+    error: string | null = null,
+    cause = "external",
+  ): BridgeEvent[] {
+    return this.finalize(now, status, error, null, cause);
   }
 
   /** Finalize the active turn as failed after a per-message upstream error. */
   failTurn(now: number, message: string): BridgeEvent[] {
-    return this.finalize(now, "error", message);
+    return this.finalize(now, "error", message, null, "upstream_error");
   }
 
   // -- receive-loop timing --------------------------------------------------
@@ -532,7 +566,7 @@ export class Normalizer {
       if (!this.text && this.pendingAckText) {
         this.text = this.pendingAckText;
       }
-      events.push(...this.finalize(now));
+      events.push(...this.finalize(now, "final", null, null, "private_ack_grace"));
     } else if (expired.has("empty_final") || expired.has("lifecycle_end") || expired.has("recv")) {
       if (this.compactionPending && expired.has("recv")) {
         // #40295 DEADLOCK: a compaction started, then the gateway went silent for
@@ -544,10 +578,32 @@ export class Normalizer {
             "error",
             COMPACTION_TIMEOUT_TEXT,
             COMPACTION_TIMEOUT_CODE,
+            "compaction_timeout",
           ),
         );
+      } else if (
+        expired.has("recv") &&
+        !expired.has("lifecycle_end") &&
+        !expired.has("empty_final")
+      ) {
+        // PURE silence gap on a still-live turn (NOT a gateway-signaled grace
+        // end). The gateway is reasoning silently (confirmed live: a thinking
+        // turn stays silent for minutes while tick/health frames prove the
+        // socket alive; report ms7b5j finalizeCause=recv_timeout). Do NOT
+        // self-close — clear the recv wait and SIGNAL the session to QUERY the
+        // gateway for the real run status (self-heal), keeping the turn open so
+        // the late result is never discarded. The session's transcript poll (or
+        // the live socket, whichever delivers first) finalizes it; the recovery
+        // deadline + the Convex watchdog bound a genuine hang.
+        this.clearWait("recv");
+        this.recvSilence = true;
       } else {
-        events.push(...this.finalize(now));
+        // A lifecycle_end / empty_final GRACE elapsed = the gateway signaled the
+        // turn's end; that IS a terminal, so finalize (not a silence auto-close).
+        const cause = expired.has("lifecycle_end")
+          ? "lifecycle_end_timeout"
+          : "empty_final_timeout";
+        events.push(...this.finalize(now, "final", null, null, cause));
       }
     }
     return events;
@@ -783,7 +839,7 @@ export class Normalizer {
         // (e.g. a large-session self-compact recreating the session) — is caught
         // unambiguously by the session close path (connection_lost), which never
         // fires for a user Stop (that keeps the socket open).
-        events.push(...this.finalize(now, "aborted"));
+        events.push(...this.finalize(now, "aborted", null, null, "gateway_abort"));
         return;
       }
       const reason = isString(payload.errorMessage)
@@ -813,7 +869,7 @@ export class Normalizer {
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
-        const evs = this.finalize(now, "complete");
+        const evs = this.finalize(now, "complete", null, null, "gateway_terminal");
         for (const e of evs) {
           if (e.type === "message.final") {
             (e as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
@@ -836,6 +892,7 @@ export class Normalizer {
           "error",
           this.safeSanitizeText(reason) || "gateway error",
           kind,
+          "gateway_error",
         ),
       );
       return;
@@ -867,7 +924,7 @@ export class Normalizer {
     // follow-on content instead of ending the turn blank.
     if (isFinal && !this.finalized) {
       if (this.hasRealContent()) {
-        events.push(...this.finalize(now));
+        events.push(...this.finalize(now, "final", null, null, "gateway_final"));
       } else {
         this.arm("empty_final", now + EMPTY_FINAL_GRACE);
       }
@@ -1075,7 +1132,9 @@ export class Normalizer {
       const rawKind = errObj?.errorKind ?? data.errorKind;
       const kind =
         isString(rawKind) && CHAT_ERROR_KINDS.has(rawKind) ? rawKind : null;
-      events.push(...this.finalize(now, "error", message, kind));
+      events.push(
+        ...this.finalize(now, "error", message, kind, "gateway_error"),
+      );
       return;
     }
     if (phase === "end") {
@@ -1136,7 +1195,7 @@ export class Normalizer {
         // We already have the real reply; ignore the ack but still close the
         // turn if this was the terminal final.
         if (isFinal) {
-          events.push(...this.finalize(now));
+          events.push(...this.finalize(now, "final", null, null, "lifecycle_final"));
         }
         return;
       }
@@ -1171,7 +1230,7 @@ export class Normalizer {
     // surfaced from a tool result.
     this.collectMedia([candidate], events);
     if (isFinal) {
-      events.push(...this.finalize(now));
+      events.push(...this.finalize(now, "final", null, null, "gateway_final"));
     }
   }
 
@@ -1279,10 +1338,15 @@ export class Normalizer {
     status = "final",
     error: string | null = null,
     errorKind: string | null = null,
+    // WHY the turn closed — diagnosis only (rides the pressure trace). Lets an
+    // AUTO-close on a silence deadline (recv/empty_final/lifecycle_end) be told
+    // apart from a real gateway terminal, WITHOUT assuming the mechanism.
+    cause: string | null = null,
   ): BridgeEvent[] {
     if (this.finalized) {
       return [];
     }
+    this.finalizeCause = cause;
     this.finalized = true;
     this.turnActive = false;
     this.compactionPending = false;
@@ -1293,7 +1357,13 @@ export class Normalizer {
       text: this.safeSanitizeText(text),
       diagnosticStopReason: this.diagStopReason,
       diagnosticUsage: this.diagUsage,
-};
+      diagnosticFinalizeCause: this.finalizeCause,
+      // Native media generation with NO delivery directive (no MEDIA:/outbound):
+      // the sink's empty-result guard needs this AT finalize time (the separate
+      // EVENT_MEDIA_UNDELIVERED below is pushed AFTER run.status, too late).
+      mediaGeneratedUndelivered:
+        this.sawMediaGeneration && this.mediaPaths.size === 0,
+    };
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,
       status: error ? "error" : status,
@@ -1333,6 +1403,10 @@ export class Normalizer {
     // (codex P2): its stopReason/usage belong to the aborted attempt.
     this.diagStopReason = null;
     this.diagUsage = null;
+    // The abandoned attempt's media-generation flag would otherwise leak into
+    // the replay's mediaGeneratedUndelivered (a replay ending clean without
+    // media would be misflagged empty_response — codex P2).
+    this.sawMediaGeneration = false;
     // Everything the abandoned run produced is invalidated by the replay.
     this.compactionPending = true;
     this.text = "";

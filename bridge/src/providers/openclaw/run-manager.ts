@@ -175,6 +175,17 @@ export class RunManager {
     return this.normalizer.nextTimeout(now);
   }
 
+  /** Forward the normalizer's pure-recv-silence signal (see Normalizer.takeRecvSilence).
+   *  The session queries the gateway on it instead of closing the turn. */
+  takeRecvSilence(): boolean {
+    return this.normalizer.takeRecvSilence();
+  }
+
+  /** TRUE when own frames RESUMED since the silence elapse (recv re-armed). */
+  get recvDeadlineArmed(): boolean {
+    return this.normalizer.recvDeadlineArmed;
+  }
+
   get isFinalized(): boolean {
     return this.normalizer.finalized;
   }
@@ -247,6 +258,11 @@ export class RunManager {
    * the turn's content-free `chat.gateway_pressure` trace. Best-effort — absent
    * on paths that never described the session (sub-agent sends, tests).
    */
+  /** Monotonic turn counter — bumped on EVERY beginTurn (user send or spontaneous).
+   *  A cross-turn worker (the silence/orphan recovery poll) captures it and
+   *  self-cancels on mismatch, so it can never touch a LATER turn (codex P1). */
+  turnEpoch = 0;
+
   async beginTurn(
     now: number,
     ackRunId: string | null,
@@ -286,6 +302,7 @@ export class RunManager {
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun =
       turnContext?.spontaneous === true ? ackRunId : null;
+    this.turnEpoch++;
     this.normalizer.beginTurn(now);
     this.normalizer.noteExpectedSessionId(
       turnContext?.expectedSessionId ?? null,
@@ -619,11 +636,12 @@ export class RunManager {
     now: number,
     status = "final",
     error: string | null = null,
+    cause = "external",
   ): Promise<void> {
     if (!this.sink.active) {
       return;
     }
-    await this.sink.apply(this.normalizer.endTurn(now, status, error));
+    await this.sink.apply(this.normalizer.endTurn(now, status, error, cause));
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }

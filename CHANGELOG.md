@@ -8,6 +8,42 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.34.0] — A silent agent no longer loses its answer: turns self-heal by asking the gateway
+
+Reliability release, closing the launch-blocking "blank bubble" class observed while
+stress-testing: an agent that reasons silently for minutes had its turn closed empty,
+and the real answer — still being produced gateway-side — was discarded. No breaking
+changes.
+
+- **Long-thinking turns now survive and deliver.** When an agent goes silent past the
+  in-turn budget (raised 180 s → 240 s), Atrium no longer force-closes the turn: it keeps
+  it open and actively queries the gateway for the run's real status, so the answer lands
+  whenever it completes — whether it arrives over the live stream or has to be recovered
+  from the gateway's transcript (e.g. after a connection blip that swallowed the final).
+  Live-validated: a 7-minute mostly-silent turn now delivers its full 45k-character
+  answer where it previously produced an empty bubble.
+
+- **The recovery can never corrupt a conversation.** The status query is bound to its
+  exact turn (a stale poll self-cancels when a new turn starts), cancels itself the
+  moment the live stream resumes, only accepts a recovered answer once it is proven
+  complete (stable across two consecutive polls), never substitutes a previous turn's
+  reply for an unanchored one, and a real connection loss supersedes it with the
+  dedicated socket-drop recovery. Its budget stays under the stuck-stream watchdog, so
+  the two safety nets can no longer race each other.
+
+- **No more silent blank bubbles, ever.** If a turn genuinely ends with nothing usable —
+  no text, no delivered file — while the agent did work (tool calls, an attempted or
+  failed file delivery, an undelivered generated image), it now shows an actionable
+  error instead of an empty "completed" message, with guidance to retry, rephrase, or
+  curate an over-eager agent's files. If the gateway never answers within the recovery
+  window, the turn settles as a distinct, explained "response timeout" instead of a
+  generic failure.
+
+- **Operators can now see exactly why any turn ended.** Every turn's closing cause
+  (real gateway terminal, silence, compaction timeout, abort, upstream error…) is
+  recorded in the content-free pressure trace, turning "why is this bubble empty?"
+  from guesswork into a one-lookup diagnosis.
+
 ## [0.33.0] — Atrium goes fully multi-language: user-language UI everywhere, per-instance content language
 
 Internationalization release, preparing the arrival of many more languages. No breaking

@@ -64,6 +64,8 @@ export const KNOWN_ERROR_CODES = [
   // close / large-session compaction). Non-PHI by construction; allowlisted so
   // /api/v1/chat-state + the obs MCP report it as a real class, not "unknown".
   "connection_lost",
+  // Recv-silence self-heal exhausted: the agent worked past the recovery budget.
+  "response_timeout",
   // The gateway's normalized hard failure classes (errorKind, from
   // ChatErrorEventSchema) that the bridge persists as errorCode — allowlisted
   // so the diagnostic surface names them instead of collapsing to "unknown".
@@ -74,6 +76,8 @@ export const KNOWN_ERROR_CODES = [
   // Synthesized by the bridge when a compaction never completes (#40295): a
   // distinct actionable class, not a silent empty turn.
   "compaction_timeout",
+  // The turn finished COMPLETE but delivered nothing usable (no text + no media).
+  "empty_response",
   // Dispatch-failure codes (failDispatch stores the CODE, the UI localizes):
   "not_configured",
   "no_agent",

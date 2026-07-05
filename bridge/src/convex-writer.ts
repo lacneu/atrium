@@ -194,6 +194,10 @@ export interface ConvexWriter {
       errorKind?: string | null;
       /** Terminal frame's optional stopReason — diagnosis only (matrix gap closed). */
       stopReason?: string | null;
+      /** WHY the turn closed (recv_timeout / lifecycle_end_timeout / gateway_terminal
+       *  / compaction_timeout / external / …) — tells an auto-close on a silence
+       *  deadline apart from a real gateway terminal. Diagnosis only. */
+      finalizeCause?: string | null;
       /** REAL post-turn usage when the gateway stamps session metadata on
        *  agent events (vs the PRE-turn describe counters). Null when absent. */
       postTotalTokens?: number | null;

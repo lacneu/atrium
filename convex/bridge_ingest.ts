@@ -193,6 +193,7 @@ type IngestOp =
       compaction: string | null;
       errorKind?: string | null;
       stopReason?: string | null;
+      finalizeCause?: string | null;
       postTotalTokens?: number | null;
       postInputTokens?: number | null;
       postOutputTokens?: number | null;
@@ -584,6 +585,12 @@ export const ingest = httpAction(async (ctx, request) => {
           // Terminal stopReason (diagnosis only — protocol-matrix gap closed).
           ...(typeof body.stopReason === "string" && body.stopReason
             ? { stopReason: body.stopReason }
+            : {}),
+          // WHY the turn closed — the label that tells an auto-close on a silence
+          // deadline (recv_timeout / lifecycle_end_timeout / empty_final_timeout)
+          // apart from a real gateway terminal (gateway_final / gateway_terminal).
+          ...(typeof body.finalizeCause === "string" && body.finalizeCause
+            ? { finalizeCause: body.finalizeCause }
             : {}),
           // REAL post-turn usage when the gateway stamps session metadata on
           // agent events (vs the PRE-turn counters above): per-turn tokens/cost

@@ -263,6 +263,7 @@ describe("TurnSink compaction part + pressure trace", () => {
       compaction: "preflight",
       errorKind: null, // no hard overflow this turn (compaction handled it)
       stopReason: null,
+      finalizeCause: null, // diagnosis field rides the trace (null on this path)
       postTotalTokens: null,
       postInputTokens: null,
       postOutputTokens: null,

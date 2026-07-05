@@ -29,6 +29,10 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 // mid-turn): the UI maps it to "connection lost — retry", never the user
 // "Interrompu". Distinct from the user Stop (Convex-set "aborted").
 const CONNECTION_LOST_CODE = "connection_lost";
+// The gateway kept reasoning past the recovery budget (a recv-silence turn whose
+// active status-query never resolved) — an actionable class distinct from a
+// dropped connection (the socket was fine; the agent simply took too long).
+const RESPONSE_TIMEOUT_CODE = "response_timeout";
 
 // Orphan-turn recovery (gateway restart mid-turn): the gateway's
 // main-session-restart-recovery RESUMES the run after boot and the answer
@@ -44,6 +48,13 @@ const ORPHAN_RECOVERY_POLL_MS = 20_000;
 // tests stay deterministic). 9 min, well under the 12-min stuck-stream watchdog.
 const ORPHAN_RECOVERY_MAX_POLLS = 27;
 const ORPHAN_RECOVERY_WALL_MS = 9 * 60_000;
+// The recv-silence recovery starts LATE (after BASE_RECV_TIMEOUT = 240s of
+// silence), so its budget must keep the TOTAL under the Convex stuck-stream
+// watchdog (12 min): 240s + 6.5min = ~10.5min, 1.5min of margin. A 9-min wall
+// here would reach ~13min and the watchdog would orphan the turn first,
+// discarding a delivery landing in the 12-13min window (codex P2).
+const SILENCE_RECOVERY_MAX_POLLS = 19;
+const SILENCE_RECOVERY_WALL_MS = 6.5 * 60_000;
 
 /** Fetches the raw `sessions.get` payload for a sessionKey over a FRESH
  *  connection (the session's own socket is dead when recovery runs). */
@@ -166,6 +177,21 @@ class Session implements BridgeSession {
   // still predate the current turn (codex P2: without the check, the PREVIOUS
   // turn's reply could be finalized as the current answer).
   private turnUserAnchor: string | null = null;
+  // The turnEpoch the anchor was set for: a SPONTANEOUS (announce) turn never
+  // calls noteTurnUserAnchor, so its epoch differs — the recovery must then
+  // treat the turn as anchor-less (baseline-growth gate) instead of matching
+  // the PREVIOUS user turn's anchor against a stale transcript (codex R10 P2).
+  private turnUserAnchorEpoch = -1;
+  // The turnEpoch a transcript-recovery poll is currently bound to (socket-drop OR
+  // recv-silence), or null. Per-EPOCH: the same turn never gets two polls, while a
+  // NEW turn can always start its own (a stale poll self-cancels on mismatch).
+  private recoveryEpoch: number | null = null;
+  // Why the active recovery is running: a socket_drop SUPERSEDES a recv_silence
+  // one on the same turn (graver event, longer budget, connection_lost class).
+  private recoveryReason: "socket_drop" | "recv_silence" | null = null;
+  // Poll-generation token: bumped on every accepted schedule; a superseded poll
+  // sees the mismatch on its next wake and dies WITHOUT touching the new claim.
+  private recoveryGen = 0;
   // See BridgeSession.firstSendPending. True until performSend runs the first turn.
   firstSendPending = true;
   private consumerStarted = false;
@@ -210,6 +236,7 @@ class Session implements BridgeSession {
     // suffix), so the recovery checks CONTAINMENT of this tail.
     const trimmed = sentMessage.trim();
     this.turnUserAnchor = trimmed ? trimmed.slice(-120) : null;
+    this.turnUserAnchorEpoch = this.runManager.turnEpoch;
   }
 
   /** Test/diagnostic seam (mirrors observer.size): how many children currently hold an
@@ -524,6 +551,35 @@ class Session implements BridgeSession {
         } catch (err) {
           console.error("session tick error:", (err as Error)?.message ?? err);
         }
+        // A PURE recv-silence elapsed (the gateway is reasoning silently, socket
+        // still alive) — do NOT let the turn close empty. QUERY the gateway for
+        // the real status (self-heal): the SAME transcript-recovery machinery used
+        // on a socket drop, but triggered by silence. Guarded so the live socket
+        // and the poll don't both start it; a late live frame still finalizes
+        // normally (recovery stops on isFinalized). No fetcher (tests) -> the
+        // normalizer's own finalize path already handled it.
+        if (this.runManager.takeRecvSilence() && !this.runManager.isFinalized) {
+          if (this.transcriptFetcher) {
+            if (this.recoveryEpoch !== this.runManager.turnEpoch) {
+              console.log(
+                `[session] recv-silence — querying gateway status (self-heal) chat=${this.chatId}`,
+              );
+              this.scheduleOrphanRecovery("recv_silence");
+            }
+          } else {
+            // No fetcher (test harness / degraded deploy): the self-heal query is
+            // unavailable, so keep the LIVENESS guarantee the old way — settle the
+            // turn rather than hang it open forever.
+            await this.runManager
+              .endTurn(now, "final", null, "recv_timeout")
+              .catch((e) =>
+                console.error(
+                  "[session] recv-silence settle failed:",
+                  (e as Error)?.message ?? e,
+                ),
+              );
+          }
+        }
         try {
           // The TTL sweep returns visible terminal upserts for silently-hung
           // sub-agents (Bug C). Route them through the SAME observed-flush helper (not a
@@ -550,10 +606,30 @@ class Session implements BridgeSession {
    * Convex finalize is first-terminal-wins, so a late recovery write is a
    * no-op there (and isFinalized stops the poll bridge-side).
    */
-  private scheduleOrphanRecovery(): void {
+  private scheduleOrphanRecovery(
+    reason: "socket_drop" | "recv_silence" = "socket_drop",
+  ): void {
     const rm = this.runManager;
     const fetcher = this.transcriptFetcher;
     if (!fetcher) return;
+    // Bind this recovery to the CURRENT turn: if the live socket finalizes it and
+    // a NEW turn begins before the next poll wakes, the epoch mismatch kills the
+    // stale poll instead of letting it settle/recover the wrong turn (codex P1).
+    // Per-EPOCH claim (not a global boolean): the same turn never double-polls,
+    // while a NEWER turn can always start its own recovery.
+    const boundEpoch = rm.turnEpoch;
+    if (this.recoveryEpoch === boundEpoch) {
+      // Same-turn re-entry: a socket_drop SUPERSEDES a running recv_silence
+      // (fresh 9-min budget + connection_lost class + the stale-transcript
+      // baseline gate — the gateway may be REBOOTING now; codex R8 P2). Any
+      // other combination is already covered by the active poll.
+      if (!(reason === "socket_drop" && this.recoveryReason === "recv_silence")) {
+        return;
+      }
+    }
+    this.recoveryEpoch = boundEpoch;
+    this.recoveryReason = reason;
+    const boundGen = ++this.recoveryGen;
     const chatId = this.chatId;
     const sessionKey = this.sessionKey;
     const clock = this.clock;
@@ -570,26 +646,80 @@ class Session implements BridgeSession {
     // settles honestly as connection_lost instead of risking delivering the
     // WRONG turn's answer into the conversation.
     let baselineCount: number | null = null;
+    // recv_silence acceptance gate: the run is ALIVE, so sessions.get can show a
+    // reply STILL BEING WRITTEN — accepting it would truncate the answer (codex
+    // R12 P2). Require the extracted reply to be IDENTICAL on two consecutive
+    // polls (a finished reply is stable across 20s; a streaming one grows).
+    let lastSeenReply: string | null = null;
     const tick = async (): Promise<void> => {
-      if (rm.isFinalized) return;
+      if (this.recoveryGen !== boundGen) {
+        return; // superseded by a newer recovery (do NOT touch its claim)
+      }
+      if (rm.turnEpoch !== boundEpoch) {
+        // A NEWER turn is running — this recovery belongs to a finished one.
+        // Only release the claim if a newer recovery hasn't already re-claimed it.
+        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        return;
+      }
+      if (rm.isFinalized) {
+        // The live socket delivered the real result first — nothing to recover.
+        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        return;
+      }
+      if (reason === "recv_silence" && rm.recvDeadlineArmed) {
+        // The live stream RESUMED (own frames re-armed the recv deadline): the
+        // turn is healthy again — cancel this recovery instead of racing it
+        // (its wall could truncate a long in-flight reply as response_timeout;
+        // codex P1). A NEW silence elapse re-raises the signal and a fresh
+        // recovery re-claims the epoch (released here).
+        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        return;
+      }
       polls++;
-      if (
-        polls > ORPHAN_RECOVERY_MAX_POLLS ||
-        Date.now() - startedWallMs >= ORPHAN_RECOVERY_WALL_MS
-      ) {
+      const maxPolls =
+        reason === "recv_silence"
+          ? SILENCE_RECOVERY_MAX_POLLS
+          : ORPHAN_RECOVERY_MAX_POLLS;
+      const wallMs =
+        reason === "recv_silence"
+          ? SILENCE_RECOVERY_WALL_MS
+          : ORPHAN_RECOVERY_WALL_MS;
+      if (polls > maxPolls || Date.now() - startedWallMs >= wallMs) {
+        const settleCode =
+          reason === "recv_silence"
+            ? RESPONSE_TIMEOUT_CODE
+            : CONNECTION_LOST_CODE;
         console.log(
-          `[session] transcript recovery deadline — settling connection_lost chat=${chatId}`,
+          `[session] transcript recovery deadline — settling ${settleCode} chat=${chatId}`,
         );
-        await rm.endTurn(clock(), "error", CONNECTION_LOST_CODE).catch((e) =>
-          console.error(
-            "[session] orphan settle failed:",
-            (e as Error)?.message ?? e,
-          ),
-        );
+        await rm
+          .endTurn(clock(), "error", settleCode, settleCode)
+          .catch((e) =>
+            console.error(
+              "[session] orphan settle failed:",
+              (e as Error)?.message ?? e,
+            ),
+          );
+        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
         return;
       }
       try {
         const payload = await fetcher(sessionKey);
+        // The fetch AWAIT is long: the live socket may have finalized this turn
+        // AND a new turn may have begun meanwhile. Re-validate BEFORE any
+        // acceptance/recovery so a stale poll can never touch the new turn
+        // (codex P1 — anchor-less turns would otherwise pass the checks below).
+        if (rm.turnEpoch !== boundEpoch || rm.isFinalized) {
+          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+          return;
+        }
+        if (reason === "recv_silence" && rm.recvDeadlineArmed) {
+          // The live stream resumed WHILE we were fetching — same cancel as the
+          // pre-fetch check, or a partial transcript could finalize a turn that
+          // is actively streaming again (codex R9 P2).
+          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+          return;
+        }
         // STALE-transcript guard: mid-reboot the gateway can serve a transcript
         // that predates the current turn; its last user entry is then the
         // PREVIOUS turn's. Only accept a transcript anchored to the message
@@ -600,7 +730,9 @@ class Session implements BridgeSession {
         // containment; an absent/trivial anchor falls back to the structural
         // baseline (the transcript must have GROWN since the first poll).
         const anchor =
-          this.turnUserAnchor && this.turnUserAnchor.length >= 12
+          this.turnUserAnchor &&
+          this.turnUserAnchor.length >= 12 &&
+          this.turnUserAnchorEpoch === boundEpoch
             ? this.turnUserAnchor
             : null;
         if (anchor) {
@@ -609,6 +741,14 @@ class Session implements BridgeSession {
             return;
           }
         } else {
+          // ANCHOR-LESS turns (attachment-only / <12-char text): require transcript
+          // GROWTH before acceptance — for EVERY reason. Deliberate trade-off
+          // (codex R5 vs R6): skipping this gate on recv_silence could accept a
+          // lagging pre-turn snapshot and deliver the PREVIOUS turn's reply as the
+          // current answer (content corruption). The residual cost of keeping it —
+          // an anchor-less turn whose reply was already complete at the first poll
+          // settles response_timeout instead of recovering — is the same honest
+          // trade-off the socket-drop path already documents above.
           const count = transcriptEntryCount(payload);
           if (baselineCount === null || count <= baselineCount) {
             if (baselineCount === null) baselineCount = count;
@@ -624,11 +764,19 @@ class Session implements BridgeSession {
         const text =
           extractMessageToolReplies(payload) ||
           extractLatestAssistantReply(payload);
+        if (text && reason === "recv_silence" && text !== lastSeenReply) {
+          // First sighting (or still growing): remember and re-poll — only a
+          // reply UNCHANGED across two polls is proven finished.
+          lastSeenReply = text;
+          setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
+          return;
+        }
         if (text && !rm.isFinalized) {
           console.log(
             `[session] transcript recovery SUCCESS chat=${chatId} (${text.length} chars after ${polls} polls)`,
           );
           await rm.recoverVisibleText(text, clock());
+          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
           return;
         }
       } catch (err) {

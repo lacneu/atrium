@@ -83,6 +83,12 @@ function drive(
     // Jump past every armed grace so any pending turn finalizes.
     clock.tick(BASE_RECV_TIMEOUT + 1);
     events.push(...normalizer.tick(clock.now));
+    // NEW CONTRACT: a pure recv-silence no longer self-finalizes (the session
+    // queries the gateway instead). Mirror the session's no-fetcher settle so
+    // finalize-time behavior stays observable in these normalizer-level tests.
+    if (!normalizer.finalized && normalizer.takeRecvSilence()) {
+      events.push(...normalizer.endTurn(clock.now, "final", null, "recv_timeout"));
+    }
   }
   return { events, normalizer, clock };
 }
@@ -688,6 +694,12 @@ describe("native media generation without delivery", () => {
     for (const f of feedFrames) ev.push(...n.feed(f, c.tick()));
     c.tick(BASE_RECV_TIMEOUT + 1);
     ev.push(...n.tick(c.now));
+    // New contract: pure recv-silence signals instead of finalizing — settle
+    // explicitly (as the session's degraded fallback does) so finalize-time
+    // diagnostics (media.undelivered) stay observable here.
+    if (!n.finalized && n.takeRecvSilence()) {
+      ev.push(...n.endTurn(c.now, "final", null, "recv_timeout"));
+    }
     return ev;
   }
 
@@ -956,8 +968,11 @@ describe("sub-agent observation (spawnedBy admission)", () => {
     );
     clock.tick(BASE_RECV_TIMEOUT * 0.6); // now past the parent's recv deadline since beginTurn
     n.tick(clock.now);
-    // The child did NOT extend the parent — it finalized on its own (silent) recv timeout.
-    expect(n.finalized).toBe(true);
+    // The child did NOT extend the parent: the parent's silence deadline elapsed
+    // ON TIME (new contract: it raises the gateway-query signal instead of
+    // self-finalizing — a re-armed timer would leave the signal unraised here).
+    expect(n.finalized).toBe(false);
+    expect(n.takeRecvSilence()).toBe(true);
   });
 });
 
@@ -1486,5 +1501,100 @@ describe("protocol-matrix gaps closed: stopReason + agent usage reach the diagno
     const final2 = events2.find((e) => e.type === "message.final");
     expect(final2?.diagnosticStopReason ?? null).toBeNull();
     expect(final2?.diagnosticUsage ?? null).toBeNull();
+  });
+});
+
+
+describe("finalizeCause diagnostic (report ms7b5j — which close fired)", () => {
+  it("a PURE recv-silence does NOT finalize — it signals the gateway-status query (new contract)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // an own delta, then silence past the recv budget
+    normalizer.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          data: { delta: "working" },
+        },
+      },
+      clock.tick(),
+    );
+    clock.tick(BASE_RECV_TIMEOUT + 1);
+    const events = normalizer.tick(clock.now);
+    // NO finalize — the turn stays OPEN (report ms7b5j: the gateway was still
+    // reasoning; closing here is what produced the silent blank bubble).
+    expect(normalizer.finalized).toBe(false);
+    expect(events.find((e) => e.type === "message.final")).toBeUndefined();
+    // The one-shot silence signal is raised for the session to query the gateway.
+    expect(normalizer.takeRecvSilence()).toBe(true);
+    expect(normalizer.takeRecvSilence()).toBe(false); // one-shot
+    // A LATE real frame still finalizes the turn normally afterwards.
+    const late = normalizer.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Réponse tardive complète." }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const final = late.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(normalizer.finalized).toBe(true);
+    expect(String(final?.text)).toContain("Réponse tardive complète");
+  });
+
+  it("an explicit settle after the silence stamps finalizeCause=recv_timeout (degraded fallback)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    clock.tick(BASE_RECV_TIMEOUT + 1);
+    normalizer.tick(clock.now);
+    expect(normalizer.takeRecvSilence()).toBe(true);
+    const events = normalizer.endTurn(clock.now, "final", null, "recv_timeout");
+    const final = events.find((e) => e.type === "message.final") as
+      | { diagnosticFinalizeCause?: string }
+      | undefined;
+    expect(final?.diagnosticFinalizeCause).toBe("recv_timeout");
+  });
+
+  it("a real gateway chat:final stamps a gateway_* cause (NOT a silence timeout)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Voici la réponse." }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final") as
+      | { diagnosticFinalizeCause?: string }
+      | undefined;
+    expect(final?.diagnosticFinalizeCause).toBeDefined();
+    expect(final?.diagnosticFinalizeCause).not.toBe("recv_timeout");
+    expect(String(final?.diagnosticFinalizeCause)).toMatch(/gateway/);
   });
 });

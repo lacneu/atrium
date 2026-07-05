@@ -1014,7 +1014,6 @@ async function performSend(
     // [LIVRAISON] media-delivery block) identical on every turn, which would
     // make a stale previous-turn transcript pass the endsWith check (codex P1).
     // The transcript's user entry CONTAINS the raw text even when wrapped.
-    session.noteTurnUserAnchor(String(body.text ?? ""));
     await session.runManager.beginTurn(now, ackRunId, {
       expectedSessionId: preSendSessionId,
       pressure: {
@@ -1023,6 +1022,11 @@ async function performSend(
         costUsd: preTurnCostUsd,
       },
     });
+    // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
+    // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —
+    // stamping before beginTurn bound it to the PREVIOUS epoch, disabling the
+    // anchored fast-accept for every normal user send).
+    session.noteTurnUserAnchor(String(body.text ?? ""));
   } catch (err) {
     // ANY failure in the armed send→turn-start window: chat.send rejected (e.g. the
     // gateway refused the attachment), OR beginTurn threw AFTER the ack (e.g. its

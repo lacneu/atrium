@@ -102,11 +102,98 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
     await vi.advanceTimersByTimeAsync(0); // loop re-evaluates -> installs recv timer
 
     // No frame will ever arrive. Move the logical clock past the recv deadline and
-    // fire the loop's installed timer (BASE_RECV_TIMEOUT = 180s).
+    // fire the loop's installed timer (BASE_RECV_TIMEOUT = 240s).
     now += 300;
     await vi.advanceTimersByTimeAsync(300_000);
 
+    // NEW CONTRACT: the recv-silence no longer closes the turn instantly — the
+    // session QUERIES the gateway (transcript recovery). Here every poll fails
+    // (fakeConn has no request), so liveness is now BOUNDED by the recovery
+    // budget: after ~9 min of failed polls the turn settles response_timeout.
+    expect(finalized.length).toBe(0); // still open right after the deadline
+    now += 600;
+    await vi.advanceTimersByTimeAsync(600_000);
     expect(finalized.length).toBeGreaterThan(0); // turn closed — no stuck stream
+    const last = finalized[finalized.length - 1]!;
+    expect(last[1]).toBe("error");
+    expect(String(last[3])).toBe("response_timeout");
+    reg.closeAll();
+  });
+
+  it("a stale recovery poll NEVER touches the NEXT turn (epoch guard, codex P1)", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => fakeConn() as never,
+    );
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Turn 1: silence past the recv deadline -> recovery scheduled (first poll +20s).
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    now += 300;
+    await vi.advanceTimersByTimeAsync(300_000 - 10_000); // recv fired; polls pending
+
+    // Turn 1 finalizes via an EXPLICIT settle (stands in for a live final frame),
+    // then turn 2 begins BEFORE the next poll wakes.
+    await s.runManager.endTurn(now, "final", null, "gateway_final");
+    const settledSoFar = finalized.length;
+    await s.runManager.beginTurn(now, "run-2");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Let the STALE poll run its full budget: it must self-cancel (epoch mismatch),
+    // never settling turn 2 as response_timeout.
+    now += 700;
+    await vi.advanceTimersByTimeAsync(700_000);
+    const turn2Settles = finalized
+      .slice(settledSoFar)
+      .filter((c) => String(c[3]) === "response_timeout");
+    expect(turn2Settles.length).toBe(0);
+    reg.closeAll();
+  });
+
+  it("the silence recovery SELF-CANCELS when the live stream resumes (codex R7 P1)", async () => {
+    vi.useFakeTimers();
+    let now = 1000;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => fakeConn() as never,
+    );
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    // Silence past recv -> recovery scheduled.
+    now += 300;
+    await vi.advanceTimersByTimeAsync(300_000 - 10_000);
+
+    // The live stream RESUMES: an own frame re-arms the recv deadline.
+    await s.runManager.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: s.sessionKey,
+          runId: "run-1",
+          data: { delta: "still working…" },
+        },
+      },
+      now,
+    );
+
+    // Let the recovery run FAR past its silence wall: it must have self-canceled,
+    // never settling response_timeout while the live turn streams.
+    now += 900;
+    await vi.advanceTimersByTimeAsync(900_000);
+    const timeouts = finalized.filter((c) => String(c[3]) === "response_timeout");
+    expect(timeouts.length).toBe(0);
     reg.closeAll();
   });
 

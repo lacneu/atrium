@@ -83,7 +83,12 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   refusal: m.runstatus_error_refusal,
   stream_orphaned: m.runstatus_error_orphaned,
   connection_lost: m.runstatus_error_connection_lost,
+  // The agent kept working past the recovery budget (recv-silence self-heal
+  // exhausted) — the turn is closed but the agent may still finish gateway-side.
+  response_timeout: m.runstatus_error_response_timeout,
   compaction_timeout: m.runstatus_error_compaction_timeout,
+  // The turn finished but delivered nothing usable (no text, failed file).
+  empty_response: m.runstatus_error_empty_response,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
   // reader's language — formerly pre-rendered French sentences).
   not_configured: m.runstatus_error_not_configured,
@@ -108,6 +113,7 @@ const OVERFLOW_TEXT_RE =
 const ERROR_STRING_CODES = new Set([
   "stream_orphaned",
   "connection_lost",
+  "response_timeout",
   // failDispatch stores the code string in `error` too (raw === code -> the
   // detail line is suppressed, only the localized headline shows).
   "not_configured",

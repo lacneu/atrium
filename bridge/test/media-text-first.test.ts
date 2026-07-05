@@ -56,8 +56,16 @@ class OrderingWriter implements ConvexWriter {
     return true;
   }
   async noteMediaUndelivered(): Promise<void> {}
-  async finalize(_messageId: string, status: FinalizeStatus): Promise<void> {
-    this.order.push(`finalize:${status}`);
+  lastFinalizeKind: string | null = null;
+  async finalize(
+    _messageId: string,
+    status: FinalizeStatus,
+    _text: string,
+    _error: string | null,
+    errorKind: string | null,
+  ): Promise<void> {
+    this.lastFinalizeKind = errorKind;
+    this.order.push(`finalize:${status}${errorKind ? `:${errorKind}` : ""}`);
   }
   async getRehydrationContext(): Promise<{
     history: string | null;
@@ -210,5 +218,131 @@ describe("text-first media delivery (report ms70hx1c…)", () => {
     // Both fired (the first did NOT block the retry); the second attached.
     expect(writer.order.filter((e) => e.startsWith("addMedia:"))).toHaveLength(2);
     expect(writer.order[writer.order.length - 1]).toBe("finalize:complete");
+  });
+});
+
+describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => {
+  it("a COMPLETE turn that WORKED (tool) but delivered no text and no media -> empty_response error", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_er", writer);
+    await sink.beginTurn("run-er");
+    await sink.apply([
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "message.final", text: "" }, // no reply text
+      { type: "run.status", status: "final" }, // -> complete
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+    expect(writer.order[writer.order.length - 1]).toBe(
+      "finalize:error:empty_response",
+    );
+  });
+
+  it("a COMPLETE turn with a media that DROPPED (not attached) + no text -> empty_response", async () => {
+    const writer = new OrderingWriter();
+    writer.release();
+    // addMedia returns FALSE (dropped not_found) — nothing attaches.
+    writer.addMedia = async () => false;
+    const sink = new TurnSink("chat_dr", writer);
+    await sink.beginTurn("run-dr");
+    await sink.apply([
+      { type: "media", items: [{ filename: "g.md", path: "/out/g.md", explicit: true }] },
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("a turn that STREAMED text via deltas then an empty final is NOT converted (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_st", writer);
+    await sink.beginTurn("run-st");
+    await sink.apply([
+      { type: "message.delta", text: "Réponse déjà streamée" },
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "message.final", text: "" }, // empty final, but text was streamed
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull();
+  });
+
+  it("a FAILED outbound scan (candidate detected, host fails) + no text -> empty_response (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    writer.release();
+    writer.addMedia = async () => false; // scan host attaches nothing
+    const scan = async (): Promise<{
+      candidates: string[];
+      host: () => Promise<void>;
+    }> => ({ candidates: ["dropped.md"], host: async () => {} });
+    const sink = new TurnSink("chat_sf", writer, scan);
+    await sink.beginTurn("run-sf");
+    await sink.apply([
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("an empty snapshot (compaction clear) after streamed text -> empty_response (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_cc", writer);
+    await sink.beginTurn("run-cc");
+    await sink.apply([
+      { type: "message.delta", text: "prefix being written" },
+      { type: "message.snapshot", text: "" }, // compaction clears the invalid prefix
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("a WHITESPACE-ONLY delta before an empty final still -> empty_response (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_ws", writer);
+    await sink.beginTurn("run-ws");
+    await sink.apply([
+      { type: "message.delta", text: "   \n  " }, // whitespace only
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("native media GENERATED but not delivered (no MEDIA:) + no text -> empty_response (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_ig", writer);
+    await sink.beginTurn("run-ig");
+    await sink.apply([
+      { type: "message.final", text: "", mediaGeneratedUndelivered: true },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("a normal COMPLETE turn WITH text is untouched (no false positive)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_ok", writer);
+    await sink.beginTurn("run-ok");
+    await sink.apply([
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "message.final", text: "Voici la réponse." },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull();
+    expect(writer.order[writer.order.length - 1]).toBe("finalize:complete");
+  });
+
+  it("a COMPLETE turn with an ATTACHED media + no text is NOT an error (file delivered)", async () => {
+    const writer = new OrderingWriter();
+    writer.release(); // addMedia resolves attached=true
+    const sink = new TurnSink("chat_md", writer);
+    await sink.beginTurn("run-md");
+    await sink.apply([
+      { type: "media", items: [{ filename: "f.png", path: "/out/f.png", explicit: true }] },
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull();
   });
 });

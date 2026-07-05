@@ -129,6 +129,14 @@ export class SessionMultiplexer {
       const t = turn.normalizer.nextTimeout(now);
       if (t !== null && t <= 0) {
         const events = turn.normalizer.tick(now);
+        // A pure recv-silence no longer self-finalizes (the Session consumes the
+        // signal and queries the gateway). THIS driver has no self-heal path, so
+        // preserve its termination guarantee the old way: settle the turn.
+        if (turn.normalizer.takeRecvSilence() && !turn.normalizer.finalized) {
+          events.push(
+            ...turn.normalizer.endTurn(now, "final", null, "recv_timeout"),
+          );
+        }
         if (events.length) {
           out.push({ chatId: turn.chatId, events });
         }
