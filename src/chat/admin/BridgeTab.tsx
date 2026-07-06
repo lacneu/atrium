@@ -56,6 +56,7 @@ import {
 } from "./bridgeConfigForm";
 import { FieldLabel } from "./FieldLabel";
 import { m } from "@/paraglide/messages.js";
+import { usageBadgeView } from "../usageView";
 import {
   badgeStateFromVersion,
   hasProvider,
@@ -109,6 +110,9 @@ export function BridgeTab() {
   // Admin-gated query — skip for non-admins (it would throw). Used both for the
   // config editor and to map connections → provider (instance kind).
   const instances = useQuery(api.admin.listInstances, isAdmin ? {} : "skip");
+  // Subscription-usage snapshots (per instance, content-free) — admin detail of
+  // the chat header's usage gauge. Same skip-gating as listInstances.
+  const usageRows = useQuery(api.agents.usageForInstances, isAdmin ? {} : "skip");
   const navigate = useNavigate();
 
   const onSeeAnomalies = () =>
@@ -142,6 +146,33 @@ export function BridgeTab() {
       {/* Trust / capability-transparency note (active polling, non-secret only,
           secrets live in the bridge env) — a caption for the whole tab. */}
       <p className="oc-admin__hint oc-bridge__caption">{m.bridge_health_hint()}</p>
+      {usageRows && usageRows.length > 0 ? (
+        <section className="oc-bridge__usage">
+          <h3 className="oc-bridge__usage-title">{m.bridge_usage_title()}</h3>
+          {usageRows.map((r) => {
+            const v = usageBadgeView(r.usage, Date.now());
+            if (!v) return null;
+            return (
+              <div key={r.instanceName} className="oc-bridge__usage-row">
+                <span className="oc-bridge__usage-instance">{r.instanceName}</span>
+                <span className="oc-bridge__usage-windows">
+                  {v.windows.map((w) => (
+                    <span
+                      key={`${w.provider}:${w.label}`}
+                      className={`oc-meter ${w.percentLeft <= 10 ? "is-critical" : w.percentLeft <= 25 ? "is-warn" : "is-ok"}`}
+                    >
+                      <span className="oc-meter__label">
+                        {w.provider} {w.label}: {w.percentLeft}%
+                        {w.resetText ? ` ⏱${w.resetText}` : ""}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              </div>
+            );
+          })}
+        </section>
+      ) : null}
       {buckets.map((b) => (
         <ProviderCard
           key={b.key}

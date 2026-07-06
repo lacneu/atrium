@@ -108,6 +108,7 @@ import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
+import { usageBadgeView, type ProviderUsageView } from "./usageView";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
@@ -165,6 +166,7 @@ export type UiEffective = {
   showDelete: boolean;
   showTools: boolean;
   voiceInput: boolean;
+  showUsage: boolean;
 };
 const DEFAULT_UI: UiEffective = {
   showSource: true,
@@ -174,6 +176,7 @@ const DEFAULT_UI: UiEffective = {
   showDelete: true,
   showTools: false, // clean/content-focused view by default (see UI_PREF_CODE_DEFAULTS)
   voiceInput: false,
+  showUsage: true, // subscription-quota transparency (admin can disable fleet-wide)
 };
 const UiPrefsContext = createContext<UiEffective>(DEFAULT_UI);
 // Exported: RunStatus gates the live phase detail on the Tools toggle.
@@ -764,6 +767,54 @@ function ThreadEmptyState() {
 // inside the "Advanced" popover, so the usage stays reachable when a narrow workspace
 // compacts the header (the popover is portalled out of the @container, so it keeps
 // the full detail there). Renders nothing when usage is unknown.
+// Subscription-usage gauge (the routed instance's most constrained provider
+// rate-limit window, captured by the bridge poll). Same meter language as the
+// context meter; gated by the showUsage pref at the CALL site. Renders nothing
+// until a snapshot exists (bench/idle gateways have none).
+function UsageBadge({ chatId }: { chatId: ConvexId<"chats"> }) {
+  // MULTI-AGENT per-turn: follow the composer's ACTIVE target — the quota shown
+  // is the one the NEXT send will consume, not the chat's primary (codex P2).
+  // Server-side the override is per-option AUTHENTICATED (resolveTargetForTurn).
+  const routing = useChatRouting();
+  const selected = routing?.selected ?? null;
+  const data = useQuery(api.agents.usageForChat, {
+    chatId: chatId as Id<"chats">,
+    ...(selected
+      ? {
+          routedAgent: {
+            instanceName: selected.instanceName,
+            agentId: selected.agentId,
+          },
+        }
+      : {}),
+  }) as { usage: ProviderUsageView[]; updatedAt: number } | null | undefined;
+  const view = usageBadgeView(data?.usage ?? null, Date.now());
+  if (!view) return null;
+  const detail = view.windows
+    .map(
+      (w) =>
+        `${w.provider} ${w.label}: ${w.percentLeft}%` +
+        (w.resetText ? ` ⏱${w.resetText}` : ""),
+    )
+    .join(" · ");
+  return (
+    <span
+      className={`oc-meter ${view.level}`}
+      title={m.chat_usage_tooltip({ detail })}
+    >
+      <span className="oc-meter__track">
+        <span
+          className="oc-meter__fill"
+          style={{ width: `${100 - view.percentLeft}%` }}
+        />
+      </span>
+      <span className="oc-meter__label">
+        {m.chat_usage_label({ pct: view.percentLeft })}
+      </span>
+    </span>
+  );
+}
+
 function ContextMeter({
   sm,
   detail = true,
@@ -887,6 +938,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
         </span>
       ) : null}
       {ui.showTools && sm ? <ContextMeter sm={sm} detail={!isCompact} /> : null}
+      {ui.showUsage ? <UsageBadge chatId={chatId} /> : null}
       <ExportMenu
         chatId={chatId}
         title={meta?.title ?? null}
@@ -936,6 +988,11 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(head);
+    // ALSO observe the ghost: its width changes when ASYNC content lands (the
+    // usage gauge's snapshot, late i18n, a model chip) without the header
+    // resizing — measuring only the header would keep a stale compact state
+    // and let the chips overflow (codex P2).
+    if (ghostRef.current) ro.observe(ghostRef.current);
     return () => ro.disconnect();
   }, [measureKey]);
 

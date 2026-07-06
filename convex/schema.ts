@@ -242,6 +242,7 @@ export default defineSchema({
         voiceInput: v.optional(v.boolean()),
         showChatAge: v.optional(v.boolean()),
         showChatProvider: v.optional(v.boolean()),
+        showUsage: v.optional(v.boolean()),
       }),
     ),
 
@@ -375,6 +376,30 @@ export default defineSchema({
     lastPollOk: v.boolean(), // last discovery succeeded? (down/error => false)
     lastOkAt: v.optional(v.number()), // last time it succeeded (staleness window)
     error: v.optional(v.string()), // non-secret reason code when !lastPollOk
+  }).index("by_instance", ["instanceName"]),
+
+  // Subscription-usage snapshot per instance (gateway `usage.status` via the
+  // bridge /agents ride-along): per provider, rate-limit windows {label,
+  // usedPercent, resetAt}. Content-free. A DEDICATED table (NOT a field on
+  // instanceDiscovery): discovery is deliberately cache-stable — it is read by
+  // the per-grant chat queries, and a per-poll usage write there would
+  // invalidate every chat query on every poll (the listChats-saturation
+  // lesson). Only the usage queries read THIS table, so its churn is cheap.
+  instanceUsage: defineTable({
+    instanceName: v.string(), // -> instances.name
+    usage: v.array(
+      v.object({
+        provider: v.string(),
+        windows: v.array(
+          v.object({
+            label: v.string(),
+            usedPercent: v.number(),
+            resetAt: v.union(v.number(), v.null()),
+          }),
+        ),
+      }),
+    ),
+    updatedAt: v.number(),
   }).index("by_instance", ["instanceName"]),
 
   // Resilient cache of bridge-discovered agents (last-good, NEVER emptied by a
@@ -644,6 +669,7 @@ export default defineSchema({
         voiceInput: v.optional(v.boolean()),
         showChatAge: v.optional(v.boolean()),
         showChatProvider: v.optional(v.boolean()),
+        showUsage: v.optional(v.boolean()),
       }),
     ),
     // System-level feature enablement. A gated UI pref (e.g. voiceInput) stays

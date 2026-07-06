@@ -19,6 +19,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireActive, requireAdmin } from "./lib/access";
 import { resolvePollTargets } from "./lib/bridgeRouting";
+import { resolveTargetForTurn } from "./routing";
 import { normalizeAgentTypes, resolveAgentTypes } from "./lib/agentTypes";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
@@ -88,6 +89,114 @@ async function upsertInstanceDiscovery(
 /** Apply a SUCCESSFUL discovery: upsert seen agents (presentInLastOk=true) and
  *  flip absent DISCOVERED rows to presentInLastOk=false (deleted on the gateway).
  *  NEVER deletes rows (a binding must still resolve to surface the re-bind). */
+// Bound + re-validate the bridge's usage ride-along before storing (the wire is
+// not the schema): per provider, rate-limit windows {label, usedPercent, resetAt}.
+type StoredUsage = {
+  provider: string;
+  windows: { label: string; usedPercent: number; resetAt: number | null }[];
+}[];
+function normalizeUsageForStore(raw: unknown): StoredUsage | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: StoredUsage = [];
+  for (const p of raw.slice(0, 8)) {
+    const provider = (p as { provider?: unknown })?.provider;
+    const windows = (p as { windows?: unknown })?.windows;
+    if (typeof provider !== "string" || !Array.isArray(windows)) continue;
+    const ws = [];
+    for (const w of windows.slice(0, 6)) {
+      const label = (w as { label?: unknown })?.label;
+      const usedPercent = (w as { usedPercent?: unknown })?.usedPercent;
+      const resetAt = (w as { resetAt?: unknown })?.resetAt;
+      if (typeof label !== "string" || typeof usedPercent !== "number") continue;
+      ws.push({
+        label: label.slice(0, 24),
+        usedPercent: Math.min(100, Math.max(0, usedPercent)),
+        resetAt: typeof resetAt === "number" ? resetAt : null,
+      });
+    }
+    if (ws.length > 0) out.push({ provider: provider.slice(0, 32), windows: ws });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+// Subscription-usage read models. Content-free (labels/percent/reset) — safe
+// for every authenticated user; the CHAT-scoped query resolves the chat's
+// EFFECTIVE instance (owner-checked), the admin one lists all instances.
+export const usageForChat = query({
+  args: {
+    chatId: v.id("chats"),
+    // MULTI-AGENT per-turn: the composer's ACTIVE target (what the NEXT send
+    // will use) — per-option AUTHENTICATED below, so a user can only read the
+    // quota of instances their grants actually reach (codex P2).
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (ctx, { chatId, routedAgent }) => {
+    const { userId } = await requireActive(ctx);
+    const chat = await ctx.db.get(chatId);
+    if (chat === null || chat.userId !== userId) return null;
+    // ALWAYS resolve the EFFECTIVE target (chosen per-turn agent, or the chat's
+    // own resolution): a chat whose agent access was revoked resolves to a null
+    // target — return null rather than leaking the revoked instance's quota
+    // through the raw binding (codex P2 ×2).
+    const resolved = await resolveTargetForTurn(
+      ctx,
+      chat,
+      userId,
+      routedAgent ?? null,
+    );
+    if (resolved.target === null) return null;
+    const instanceName = resolved.target.instanceName;
+    const row = await ctx.db
+      .query("instanceUsage")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .first();
+    if (!row) return null;
+    return { usage: row.usage, updatedAt: row.updatedAt };
+  },
+});
+
+export const usageForInstances = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const rows = await ctx.db.query("instanceUsage").collect();
+    return rows.map((r) => ({
+      instanceName: r.instanceName,
+      usage: r.usage,
+      updatedAt: r.updatedAt,
+    }));
+  },
+});
+
+export const recordInstanceUsage = internalMutation({
+  args: {
+    instanceName: v.string(),
+    usage: v.array(
+      v.object({
+        provider: v.string(),
+        windows: v.array(
+          v.object({
+            label: v.string(),
+            usedPercent: v.number(),
+            resetAt: v.union(v.number(), v.null()),
+          }),
+        ),
+      }),
+    ),
+  },
+  handler: async (ctx, { instanceName, usage }) => {
+    const existing = await ctx.db
+      .query("instanceUsage")
+      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .first();
+    const fields = { instanceName, usage, updatedAt: Date.now() };
+    if (existing) await ctx.db.patch(existing._id, fields);
+    else await ctx.db.insert("instanceUsage", fields);
+  },
+});
+
 export const applyDiscovery = internalMutation({
   args: {
     instanceName: v.string(),
@@ -243,6 +352,7 @@ export async function discoverInstanceAgents(
       return { synced: false, reached: true, httpStatus: res.status, agentCount: 0 };
     }
     const body = (await res.json()) as {
+      usage?: unknown;
       agents?: Array<Record<string, unknown>>;
       count?: number;
     };
@@ -280,6 +390,16 @@ export async function discoverInstanceAgents(
       return { synced: false, reached: true, httpStatus: 200, agentCount: 0 };
     }
     await ctx.runMutation(internal.agents.applyDiscovery, { instanceName, agents });
+    // Usage ride-along -> the DEDICATED table (never instanceDiscovery: that one
+    // is cache-stable for the chat queries). Best-effort, last-good semantics:
+    // an absent/empty snapshot never clears the previous one.
+    const usage = normalizeUsageForStore(body.usage);
+    if (usage !== undefined) {
+      await ctx.runMutation(internal.agents.recordInstanceUsage, {
+        instanceName,
+        usage,
+      });
+    }
     return { synced: true, reached: true, httpStatus: 200, agentCount: agents.length };
   } catch {
     await ctx.runMutation(internal.agents.recordDiscoveryFailure, {

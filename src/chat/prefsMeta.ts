@@ -52,6 +52,11 @@ export const PREF_META: Record<string, PrefMeta> = {
     label: () => m.pref_voiceInput_label(),
     help: () => m.pref_voiceInput_help(),
   },
+  showUsage: {
+    category: "composer",
+    label: () => m.pref_showUsage_label(),
+    help: () => m.pref_showUsage_help(),
+  },
   showChatAge: {
     category: "sidebar",
     label: () => m.pref_showChatAge_label(),

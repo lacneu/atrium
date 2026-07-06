@@ -733,6 +733,13 @@ export const deleteInstance = mutation({
       .withIndex("by_instance", (q) => q.eq("instanceName", name))
       .collect();
     for (const d of discRows) await ctx.db.delete(d._id);
+    // Subscription-usage snapshot (same by-name reference — an orphan row would
+    // show a stale quota for a deleted/recreated instance; codex P2).
+    const usageRows = await ctx.db
+      .query("instanceUsage")
+      .withIndex("by_instance", (q) => q.eq("instanceName", name))
+      .collect();
+    for (const u of usageRows) await ctx.db.delete(u._id);
     // Discovered/known agents for this instance.
     const agentRows = await ctx.db
       .query("agents")

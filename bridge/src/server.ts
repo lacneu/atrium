@@ -1300,7 +1300,11 @@ export function normalizeOpenClawAgent(
 async function discoverAgents(
   config: BridgeConfig,
   onHandshake?: (conn: OpenClawConnection) => void,
-): Promise<{ agents: NormalizedAgent[]; rawCount: number }> {
+): Promise<{
+  agents: NormalizedAgent[];
+  rawCount: number;
+  usage: ProviderUsage[] | null;
+}> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
     // Boot-resolved (index.ts) — non-null by construction.
@@ -1329,10 +1333,65 @@ async function discoverAgents(
     // Convex poller uses it to tell a GENUINELY empty gateway (rawCount 0 → a real
     // "all agents deleted", apply it) from shape-drift (rawCount > 0 but all
     // dropped by the normalizer → fail-closed, keep last-good). See agents cache.
-    return { agents, rawCount: list.length };
+    // Subscription usage rides the SAME short-lived connection (one extra RPC,
+    // zero extra sockets). Best-effort: a gateway without the method (or with an
+    // empty snapshot) yields null — discovery itself is NEVER failed by usage.
+    let usage: ProviderUsage[] | null = null;
+    try {
+      const ures = (await conn.request("usage.status", {}, 8_000)) as {
+        payload?: unknown;
+      };
+      usage = normalizeUsagePayload(ures?.payload ?? ures);
+    } catch {
+      usage = null;
+    }
+    return { agents, rawCount: list.length, usage };
   } finally {
     conn.close();
   }
+}
+
+/** Subscription-usage snapshot from the gateway's `usage.status` RPC (the same
+ *  data the Control UI's "Utilisation N%" and `openclaw models status` show):
+ *  per provider, rate-limit WINDOWS {label, usedPercent, resetAt}. Normalized +
+ *  bounded here; `null` when the gateway has no snapshot (observed on an idle
+ *  bench) — callers treat that as "unknown", never an error. */
+export interface UsageWindow {
+  label: string;
+  usedPercent: number;
+  resetAt: number | null;
+}
+export interface ProviderUsage {
+  provider: string;
+  windows: UsageWindow[];
+}
+function normalizeUsagePayload(payload: unknown): ProviderUsage[] | null {
+  const providers = (payload as { providers?: unknown })?.providers;
+  if (!Array.isArray(providers)) return null;
+  const out: ProviderUsage[] = [];
+  for (const p of providers.slice(0, 8)) {
+    if (typeof p !== "object" || p === null) continue;
+    const provider = (p as { provider?: unknown }).provider;
+    const windows = (p as { windows?: unknown }).windows;
+    if (typeof provider !== "string" || !Array.isArray(windows)) continue;
+    const normWindows: UsageWindow[] = [];
+    for (const w of windows.slice(0, 6)) {
+      if (typeof w !== "object" || w === null) continue;
+      const label = (w as { label?: unknown }).label;
+      const usedPercent = (w as { usedPercent?: unknown }).usedPercent;
+      const resetAt = (w as { resetAt?: unknown }).resetAt;
+      if (typeof label !== "string" || typeof usedPercent !== "number") continue;
+      normWindows.push({
+        label: label.slice(0, 24),
+        usedPercent: Math.min(100, Math.max(0, usedPercent)),
+        resetAt: typeof resetAt === "number" ? resetAt : null,
+      });
+    }
+    if (normWindows.length > 0) {
+      out.push({ provider: provider.slice(0, 32), windows: normWindows });
+    }
+  }
+  return out.length > 0 ? out : null;
 }
 
 /** Static provider capabilities for a mono-tenant OpenClaw bridge. Mirrors the
@@ -1768,7 +1827,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       try {
-        const { agents, rawCount } = await discoverAgents(
+        const { agents, rawCount, usage } = await discoverAgents(
           bundle.config,
           noteHandshakeFor(instanceName!),
         );
@@ -1779,6 +1838,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           instanceName,
           agents,
           count: rawCount,
+          // Subscription-usage windows (null when the gateway has no snapshot):
+          // per provider, {label, usedPercent, resetAt} — the chat gauge + the
+          // Settings ▸ Bridge detail read the stored copy of this.
+          usage,
           capturedAt: Date.now(),
         });
       } catch (err) {

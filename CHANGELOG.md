@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.36.0] — Subscription quota, visible: a usage gauge in the chat and per-instance windows for admins
+
+Transparency release. No breaking changes.
+
+- **New: users can see the provider plan's remaining quota.** The chat header shows a
+  compact gauge with the most constrained rate window of the instance the NEXT message
+  will use (multi-agent chats follow the composer's selected agent, with per-option
+  authorization), colored like the context meter and detailed per window on hover.
+  The data is the gateway's own usage snapshot (the same numbers as its Control UI),
+  captured content-free by the bridge during the existing discovery poll — no extra
+  connections. A user preference ("Subscription usage gauge", ON by default,
+  admin-overridable) controls it; admins additionally get every instance's quota
+  windows in Settings › Bridge. This is what turns a raw "API rate limit reached"
+  failure into something a user can anticipate.
+
+- **The context-optimization marker explains itself instantly.** Its explanation used
+  the browser's native tooltip, whose OS-imposed delay made it look absent; it now
+  opens in ~150 ms like the other status tooltips.
+
 ## [0.35.0] — Delegation-aware turns: no false errors on sub-agent work, live phase detail, self-describing report references
 
 Follow-up to 0.34.0's reliability work, driven by live stress-testing on two

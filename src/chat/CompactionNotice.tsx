@@ -14,6 +14,12 @@
 import { useMessage } from "@assistant-ui/react";
 import { FoldVertical } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface CompactionMeta {
   phase: string;
@@ -39,14 +45,24 @@ export function CompactionNotice() {
     compaction.phase === "midturn"
       ? m.compaction_detail_midturn()
       : m.compaction_detail_preflight();
+  // An INSTANT tooltip (shadcn, 150ms — matching BridgeStatusBadge), replacing
+  // the native `title` whose OS-imposed ~1-2s delay made the explanation feel
+  // absent (user feedback 2026-07-05: several hover attempts to find it).
   return (
-    <div className="oc-compaction" role="note" title={detail}>
-      <span className="oc-compaction__rule" aria-hidden />
-      <span className="oc-compaction__label">
-        <FoldVertical size={12} aria-hidden />
-        {m.compaction_label()}
-      </span>
-      <span className="oc-compaction__rule" aria-hidden />
-    </div>
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="oc-compaction" role="note" aria-label={detail}>
+            <span className="oc-compaction__rule" aria-hidden />
+            <span className="oc-compaction__label">
+              <FoldVertical size={12} aria-hidden />
+              {m.compaction_label()}
+            </span>
+            <span className="oc-compaction__rule" aria-hidden />
+          </div>
+        </TooltipTrigger>
+        <TooltipContent className="oc-compaction__tip">{detail}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
