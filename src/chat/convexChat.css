@@ -6811,3 +6811,35 @@
 .oc-injtab__content-locale { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
 .oc-injtab__content-locale > span { font-size: 0.9rem; font-weight: 600; }
 .oc-injtab__content-locale .oc-admin__hint { flex-basis: 100%; margin: 0; }
+
+/* Routed-paste chip announcement: a one-shot shimmer when the chip appears —
+   the visual confirmation that replaced the success toast (user feedback
+   2026-07-05: seeing the file added is enough; no validation message). */
+.oc-attach--flash {
+  animation: oc-attach-flash 1.4s ease-out 1;
+}
+@keyframes oc-attach-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--oc-accent, #6ea8fe) 65%, transparent);
+    background-color: color-mix(in oklab, var(--oc-accent, #6ea8fe) 22%, transparent);
+  }
+  60% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-attach--flash {
+    animation: none;
+  }
+}
+
+/* Exact searched-term highlight inside the focused message (?m + ?q): painted
+   by the CSS Custom Highlight API — no DOM mutation over rendered markdown. */
+::highlight(oc-search-terms) {
+  background-color: color-mix(in oklab, var(--oc-accent, #6ea8fe) 45%, transparent);
+  color: inherit;
+}

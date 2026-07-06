@@ -262,6 +262,7 @@ export const THINKING_DEFAULT_VALUES = [
 
 export type ConfigDefaultsBody =
   | { op: "get"; instanceName: string | null }
+  | { op: "clear"; instanceName: string | null }
   | {
       op: "set";
       instanceName: string | null;
@@ -289,6 +290,9 @@ export function parseConfigDefaultsBody(raw: string): ConfigDefaultsBody | null 
       ? obj.instanceName
       : null;
   if (obj.op === "get") return { op: "get", instanceName };
+  // clear = remove both defaults (config.patch null-merge DELETES a key —
+  // bench-verified on 2026.6.11): the gateway's own baseline applies again.
+  if (obj.op === "clear") return { op: "clear", instanceName };
   if (obj.op !== "set") return null;
 
   let thinkingDefault: string | null = null;
@@ -353,9 +357,13 @@ export function extractAgentDefaults(
  * confirms the values landed.
  */
 export function defaultsApplied(
-  body: Extract<ConfigDefaultsBody, { op: "set" }>,
+  body: Extract<ConfigDefaultsBody, { op: "set" | "clear" }>,
   confirmed: { thinkingDefault: string | null; fastModeDefault: boolean | null },
 ): boolean {
+  if (body.op === "clear") {
+    // A clear applied ⇔ both keys are gone from the gateway config.
+    return confirmed.thinkingDefault === null && confirmed.fastModeDefault === null;
+  }
   if (
     body.thinkingDefault !== null &&
     confirmed.thinkingDefault !== body.thinkingDefault
@@ -400,10 +408,19 @@ export async function performConfigDefaultsOp(
   conn: GatewayRequester,
   body: ConfigDefaultsBody,
 ): Promise<OpResult> {
-  if (body.op === "set") {
+  if (body.op === "set" || body.op === "clear") {
     const defaults: Record<string, unknown> = {};
-    if (body.thinkingDefault !== null) defaults.thinkingDefault = body.thinkingDefault;
-    if (body.fastModeDefault !== null) defaults.fastModeDefault = body.fastModeDefault;
+    if (body.op === "clear") {
+      // null-merge DELETES the keys (bench-verified 2026.6.11) — the gateway's
+      // own built-in defaults apply again.
+      defaults.thinkingDefault = null;
+      defaults.fastModeDefault = null;
+    } else {
+      if (body.thinkingDefault !== null)
+        defaults.thinkingDefault = body.thinkingDefault;
+      if (body.fastModeDefault !== null)
+        defaults.fastModeDefault = body.fastModeDefault;
+    }
     const raw = JSON.stringify({ agents: { defaults } });
     const attempt = async (): Promise<void> => {
       const pre = await conn.request("config.get", {}, 10_000);

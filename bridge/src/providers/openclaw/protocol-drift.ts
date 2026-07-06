@@ -76,6 +76,17 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "modelProvider",
   "model",
   "status",
+  // CONFIG-DEPENDENT session metadata: stamped onto agent events ONLY when the
+  // gateway's chat defaults define them (observed on a deployment right after
+  // the admin set Réflexion/Vitesse par défaut, 2026-07-06 — names only). A
+  // deployment without those defaults never emits them, which is why two
+  // same-version gateways can differ here. Benign: consumed nowhere.
+  "thinkingLevel",
+  "fastMode",
+  // Spawn statics on child frames (observed on the 2026.6.11 bench during the
+  // sub-agent work): parameters of the spawn itself, not content.
+  "spawnedWorkspaceDir",
+  "spawnDepth",
   "startedAt",
   "abortedLastRun",
   "inputTokens",

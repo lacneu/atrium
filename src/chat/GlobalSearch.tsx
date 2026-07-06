@@ -18,6 +18,7 @@ import {
 } from "react";
 import { useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
+import { setPendingFocusTerms } from "./pendingFocusTerms";
 import { Search, MessageSquare, Hash } from "lucide-react";
 import { api } from "./convexApi";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -95,11 +96,20 @@ export function GlobalSearch() {
   }, [active]);
 
   const select = useCallback(
-    (chatId: string) => {
+    (chatId: string, messageId?: string) => {
       setOpen(false);
-      void navigate({ to: "/chat/$chatId", params: { chatId } });
+      // A MESSAGE hit lands the thread exactly on the matched message (?m
+      // scroll+flash). The TERMS ride an ephemeral store — never the URL
+      // (search terms can be sensitive; codex P1) — so their occurrences get
+      // highlighted inside it. A title hit opens the chat as before.
+      if (messageId && q.trim()) setPendingFocusTerms(messageId, q.trim());
+      void navigate({
+        to: "/chat/$chatId",
+        params: { chatId },
+        ...(messageId ? { search: { m: messageId } } : {}),
+      });
     },
-    [navigate],
+    [navigate, q],
   );
 
   const onInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -112,7 +122,7 @@ export function GlobalSearch() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const hit = list[active];
-      if (hit) select(hit.chatId);
+      if (hit) select(hit.chatId, hit.messageId);
     }
   };
 
@@ -184,7 +194,7 @@ export function GlobalSearch() {
                     i === active && "is-active",
                   )}
                   onMouseMove={() => setActive(i)}
-                  onClick={() => select(hit.chatId)}
+                  onClick={() => select(hit.chatId, hit.messageId)}
                 >
                   <span className="oc-search-result__icon" aria-hidden>
                     {hit.matchedIn === "title" ? (

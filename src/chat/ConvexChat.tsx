@@ -112,7 +112,8 @@ import { usageBadgeView, type ProviderUsageView } from "./usageView";
 import { assistantEmptyState } from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
-import { markPastedFile, routePaste } from "./pasteRouting";
+import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
+import { takePendingFocusTerms } from "./pendingFocusTerms";
 import type { ToolActivityPart } from "./toolActivityView";
 import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
 import {
@@ -508,6 +509,44 @@ function ChatNotFound() {
 // deleted / older than the loaded window) — so we poll briefly then give up
 // gracefully (the feedback bell still shows the frozen message text). The `?m`
 // param is cleared after a hit so a re-render / browser-back doesn't re-jump.
+// Highlight every occurrence of the searched terms INSIDE the focused message,
+// via the CSS Custom Highlight API — zero DOM mutation (safe over rendered
+// markdown). Feature-detected: absent support (older Firefox) degrades to the
+// message flash alone. Cleared on unmount/renav.
+function highlightTermsIn(el: HTMLElement, terms: string[]): (() => void) | null {
+  const registry = (
+    CSS as unknown as { highlights?: Map<string, unknown> }
+  ).highlights;
+  const HighlightCtor = (
+    window as unknown as { Highlight?: new (...r: Range[]) => unknown }
+  ).Highlight;
+  if (!registry || !HighlightCtor) return null;
+  const needles = terms.map((t) => t.toLowerCase()).filter((t) => t.length >= 2);
+  if (needles.length === 0) return null;
+  const ranges: Range[] = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.textContent ?? "";
+    const lower = text.toLowerCase();
+    for (const needle of needles) {
+      let at = lower.indexOf(needle);
+      while (at !== -1) {
+        const r = document.createRange();
+        r.setStart(node, at);
+        r.setEnd(node, at + needle.length);
+        ranges.push(r);
+        if (ranges.length >= 200) break; // bounded (pathological repeats)
+        at = lower.indexOf(needle, at + needle.length);
+      }
+      if (ranges.length >= 200) break;
+    }
+    if (ranges.length >= 200) break;
+  }
+  if (ranges.length === 0) return null;
+  registry.set("oc-search-terms", new HighlightCtor(...ranges));
+  return () => registry.delete("oc-search-terms");
+}
+
 function useFocusMessage(
   chatId: ConvexId<"chats">,
   focusMessageId: string | null,
@@ -517,6 +556,7 @@ function useFocusMessage(
     let cancelled = false;
     let tries = 0;
     let timer = 0;
+    let clearHighlight: (() => void) | null = null;
     const attempt = () => {
       if (cancelled) return;
       const el = document.querySelector<HTMLElement>(
@@ -532,6 +572,10 @@ function useFocusMessage(
         void el.offsetWidth; // reflow so re-adding restarts the animation
         el.classList.add("oc-msg--highlight");
         window.setTimeout(() => el.classList.remove("oc-msg--highlight"), 2400);
+        const terms = takePendingFocusTerms(focusMessageId);
+        if (terms) {
+          clearHighlight = highlightTermsIn(el, terms.split(/\s+/).filter(Boolean));
+        }
         return;
       }
       if (tries++ < 40) timer = window.setTimeout(attempt, 150); // ~6s window
@@ -541,6 +585,7 @@ function useFocusMessage(
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      clearHighlight?.();
     };
     // chatId is intentionally a dep so re-opening another chat re-runs.
   }, [chatId, focusMessageId]);
@@ -1940,11 +1985,14 @@ function ComposerAttachmentChip() {
   // genuine failure ("incomplete") surfaces a state here, so an upload error is
   // never silent.
   const failed = status === "incomplete";
+  // A routed large-paste chip announces ITSELF: a one-shot shimmer on mount
+  // replaces the former success toast (the chip appearing IS the confirmation).
+  const pasted = file !== null && isPastedFile(file);
   return (
     <AttachmentPrimitive.Root
       className={`oc-attach${failed ? " oc-attach--error" : ""}${
         previewUrl && !failed ? " oc-attach--image" : ""
-      }`}
+      }${pasted ? " oc-attach--flash" : ""}`}
       data-status={status}
     >
       {previewUrl && !failed ? (
@@ -2261,6 +2309,8 @@ function Composer({
   // held so an immediate Enter can never send the message WITHOUT its pasted
   // file (codex P2).
   const [pasteAttachCount, setPasteAttachCount] = useState(0);
+  // SR-only announcement of a routed paste (visually silent — codex P2 a11y).
+  const [pasteAnnouncement, setPasteAnnouncement] = useState("");
   const pasteAttaching = pasteAttachCount > 0;
   const onInputPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // A clipboard carrying FILES (e.g. an image + text from an office app) is
@@ -2291,10 +2341,18 @@ function Composer({
     void composerRuntime
       .addAttachment(file)
       .then(() => {
-        // Announce success only once the attachment actually landed — a
-        // premature toast followed by a reject read as contradictory (codex P3).
-        pasteToast.success(
-          m.chat_paste_as_file({ lines: String(route.lines) }),
+        // No VISIBLE success toast (user feedback 2026-07-05): the chip
+        // appearing + its mount shimmer IS the confirmation. But the paste was
+        // preventDefault-ed out of the textarea, so a NON-VISUAL user needs the
+        // announcement — an sr-only live region replaces the toast (codex P2).
+        // CLEAR-then-set: two same-size pastes produce the SAME string, and an
+        // unchanged live-region node re-announces nothing — the empty frame in
+        // between makes every paste announce (codex P3).
+        setPasteAnnouncement("");
+        requestAnimationFrame(() =>
+          setPasteAnnouncement(
+            m.chat_paste_as_file({ lines: String(route.lines) }),
+          ),
         );
       })
       .catch((err) => {
@@ -2338,6 +2396,12 @@ function Composer({
       <ComposerPrimitive.Attachments
         components={{ Attachment: ComposerAttachmentChip }}
       />
+      {/* SR-only routed-paste confirmation: the paste never lands in the
+          textarea, so without this a non-visual user cannot tell it became an
+          attachment (the visible cue is the chip's mount shimmer). */}
+      <span className="oc-sr-only" role="status" aria-live="polite">
+        {pasteAnnouncement}
+      </span>
       <UploadProgress />
       {/* Content fidelity: disable the browser/OS conventions that MUTATE typed
           text (autocorrect, auto-capitalize, autocomplete) so a word is sent

@@ -247,6 +247,7 @@ function SummarizeThresholdCard({
 export function ChatDefaultsTab() {
   const getDefaults = useAction(api.agentFiles.getChatDefaults);
   const setDefaults = useAction(api.agentFiles.setChatDefaults);
+  const clearDefaults = useAction(api.agentFiles.clearChatDefaults);
   const toast = useToast();
 
   const [state, setState] = useState<LoadState>({ status: "loading" });
@@ -355,6 +356,21 @@ export function ChatDefaultsTab() {
     }
   }
 
+  // RESET: remove both defaults from the gateway config — its own built-in
+  // behavior applies again. Reversible (re-save re-sets), so no blocking confirm.
+  async function reset() {
+    setSaving(true);
+    try {
+      await clearDefaults({ ...claimArg });
+      toast.success(m.cdefaults_reset_done());
+      await load();
+    } catch (err) {
+      toast.error(m.cdefaults_save_error(), err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const thinkingOptions = useMemo(
     () =>
       THINKING_DEFAULT_OPTIONS.map((id) => ({ id, label: capitalize(id) })),
@@ -453,6 +469,15 @@ export function ChatDefaultsTab() {
             <p className="oc-cdefaults__help">{m.cdefaults_speed_help()}</p>
           </div>
           <div className="oc-cdefaults__actions">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={saving}
+              onClick={() => void reset()}
+              title={m.cdefaults_reset_help()}
+            >
+              {m.cdefaults_reset()}
+            </Button>
             <Button
               size="sm"
               disabled={!dirty || saving}

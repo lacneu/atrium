@@ -6,6 +6,8 @@
 export type SearchMatchedIn = "title" | "message";
 
 export type SearchHit = {
+  /** The matched message (message hits only): drives the exact-landing ?m param. */
+  messageId?: string;
   chatId: string;
   title: string | null;
   snippet: string;

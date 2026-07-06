@@ -156,6 +156,13 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "lastChannel",
       "totalTokens",
       "totalTokensFresh",
+      // config-dependent session metadata (emitted only when the gateway's chat
+      // defaults define them — live ataraxis 2026-07-06) + spawn statics on
+      // child frames (bench 2026.6.11): see protocol-drift.ts.
+      "thinkingLevel",
+      "fastMode",
+      "spawnedWorkspaceDir",
+      "spawnDepth",
       "goal",
       "estimatedCostUsd",
       "modelProvider",

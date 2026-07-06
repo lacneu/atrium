@@ -8,6 +8,33 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.37.0] — Search lands on the exact message, quieter paste, resettable chat defaults
+
+UX and operability release. No breaking changes.
+
+- **Global search now lands on the exact matched message.** Selecting a message hit
+  opens the conversation scrolled to that message with a highlight flash, and the exact
+  searched words are marked inside it (CSS Custom Highlight API — degrades gracefully on
+  older browsers). Search terms never enter the URL (they can be sensitive): they ride an
+  ephemeral in-memory hand-off, so history and copied links stay clean.
+
+- **Pasting a large text is confirmed by the attachment itself.** The "converted to
+  attachment" toast is gone: the new chip shimmers briefly when it appears — you SEE the
+  paste become the file. Screen-reader users keep a spoken confirmation (invisible live
+  region), and a genuine attach failure still shows an error.
+
+- **Chat defaults can be reset, and failures explain themselves.** Settings › Chat
+  defaults gains a "Reset" button that removes the reasoning/speed defaults from the
+  gateway config (its original behavior applies again). When a save fails, the error now
+  carries the bridge's actual failure code (e.g. gateway disconnected/timeout) instead of
+  a bare "Server Error" — this also improves every other admin error toast.
+
+- **The protocol panel no longer flags config-dependent fields.** Two same-version
+  gateways could show different "unknown field" counts: a gateway with chat defaults set
+  stamps `thinkingLevel`/`fastMode` onto its frames (and spawn parameters appear on
+  sub-agent frames). These are now recognized as documented wire metadata — the drift
+  detector stays reserved for REAL protocol changes.
+
 ## [0.36.0] — Subscription quota, visible: a usage gauge in the chat and per-instance windows for admins
 
 Transparency release. No breaking changes.

@@ -94,6 +94,14 @@ export const searchConversations = query({
       seen.add(m.chatId);
       results.push({
         chatId: m.chatId,
+        // The matched MESSAGE: selecting the hit lands the thread exactly on it
+        // (?m=<id> scroll+flash + exact-term highlight). A hit OLDER than the
+        // thread's loaded window simply opens the chat (the focus hook already
+        // gives up gracefully after ~6s — the established ?m contract shared
+        // with notification deep-links). Deliberately NO server-side window
+        // probe: it would read up to WINDOW rows per distinct chat hit on every
+        // keystroke of the palette (codex perf P2 beat the honesty P2).
+        messageId: m._id,
         title: chat.title ?? null,
         snippet: buildSnippet(m.text, terms),
         matchedIn: "message",

@@ -26,7 +26,7 @@
 // dispatch actions they THROW on failure (the caller renders the error); error
 // messages carry a stable leading code (e.g. "conflict:", "bridge_error:").
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   action,
   internalAction,
@@ -179,9 +179,25 @@ export async function postBridge(
   }
 }
 
-export function requireOkStatus(status: number, op: string): void {
+export function requireOkStatus(
+  status: number,
+  op: string,
+  data?: unknown,
+): void {
   if (status < 200 || status >= 300) {
-    throw new Error(`bridge_error: ${op} -> HTTP ${status}`);
+    // Surface the bridge's OWN error code (e.g. GATEWAY_DISCONNECTED /
+    // GATEWAY_TIMEOUT / instance_not_served) — a bare "Server Error" left the
+    // admin guessing (live report 2026-07-06). ConvexError reaches the client.
+    const err = (data as { error?: { code?: unknown } } | undefined)?.error;
+    const code =
+      typeof err === "object" && err !== null && typeof err.code === "string"
+        ? err.code
+        : typeof (data as { error?: unknown } | undefined)?.error === "string"
+          ? String((data as { error: string }).error)
+          : null;
+    throw new ConvexError(
+      `bridge_error: ${op} -> HTTP ${status}${code ? ` (${code})` : ""}`,
+    );
   }
 }
 
@@ -696,7 +712,7 @@ export const setChatDefaults = action({
           instanceName: claim,
         })
       : null;
-    const { status } = await postBridge(
+    const { status, data } = await postBridge(
       "/config-defaults",
       {
         op: "set",
@@ -707,9 +723,40 @@ export const setChatDefaults = action({
       CONFIG_DEFAULTS_SET_TIMEOUT_MS,
       bridgeUrl,
     );
-    requireOkStatus(status, "config-defaults set");
+    requireOkStatus(status, "config-defaults set", data);
     await ctx.runMutation(internal.agentFiles.auditFromAction, {
       action: "admin.chat_defaults",
+      resource: "config",
+      resourceId: "chat_defaults",
+    });
+    return null;
+  },
+});
+
+/** RESET the global chat defaults (thinkingDefault + fastModeDefault) — removes
+ *  both keys from the gateway config (null-merge delete, bench-verified), so the
+ *  gateway's own built-in behavior applies again. Admin-gated like the set. */
+export const clearChatDefaults = action({
+  args: { instanceName: v.optional(v.string()) },
+  handler: async (ctx, { instanceName }): Promise<null> => {
+    // Admin gate FIRST (same as setChatDefaults) — this mutates the gateway's
+    // GLOBAL config (codex P1).
+    await ctx.runQuery(internal.agentFiles.checkAdminAccess, {});
+    const claim = await resolveInstanceClaim(ctx, instanceName);
+    const bridgeUrl = claim
+      ? await ctx.runQuery(internal.agentFiles.bridgeUrlForInstance, {
+          instanceName: claim,
+        })
+      : null;
+    const { status, data } = await postBridge(
+      "/config-defaults",
+      { op: "clear", ...(claim !== null ? { instanceName: claim } : {}) },
+      CONFIG_DEFAULTS_SET_TIMEOUT_MS,
+      bridgeUrl,
+    );
+    requireOkStatus(status, "config-defaults clear", data);
+    await ctx.runMutation(internal.agentFiles.auditFromAction, {
+      action: "admin.chat_defaults_reset",
       resource: "config",
       resourceId: "chat_defaults",
     });

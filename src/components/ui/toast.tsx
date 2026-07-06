@@ -43,6 +43,11 @@ const AUTO_DISMISS_MS = 6000;
 
 /** Extract a human-readable message from an unknown thrown value. */
 export function errorMessage(err: unknown): string {
+  // ConvexError carries its payload in `data` — the server's ACTIONABLE code
+  // (e.g. "bridge_error: config-defaults set -> HTTP 502 (GATEWAY_TIMEOUT)").
+  // Prefer it over the generic "Server Error" wrapper message.
+  const data = (err as { data?: unknown } | null)?.data;
+  if (typeof data === "string" && data) return data;
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {

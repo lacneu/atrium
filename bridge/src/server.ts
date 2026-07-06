@@ -1218,7 +1218,7 @@ async function withOperatorConnection<T>(
  */
 async function confirmDefaultsAfterRestart(
   config: BridgeConfig,
-  body: Extract<ConfigDefaultsBody, { op: "set" }>,
+  body: Extract<ConfigDefaultsBody, { op: "set" | "clear" }>,
 ): Promise<{
   thinkingDefault: string | null;
   fastModeDefault: boolean | null;
@@ -2275,7 +2275,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, result.status, result.body);
       } catch (err) {
         const code = classifyGatewayError(err);
-        if (code === "GATEWAY_DISCONNECTED" && body.op === "set") {
+        if (code === "GATEWAY_DISCONNECTED" && (body.op === "set" || body.op === "clear")) {
           // The patch may have APPLIED and only the response was lost to a
           // config-triggered gateway restart — reconnect and confirm before
           // reporting failure (see confirmDefaultsAfterRestart).
@@ -2292,7 +2292,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
         }
-        if (code === "INVALID_REQUEST" && body.op === "set") {
+        if (code === "INVALID_REQUEST" && (body.op === "set" || body.op === "clear")) {
           // The config.patch params shape ({raw, baseHash}) is bench-verified
           // on 2026.6.5 — an INVALID_REQUEST here most likely means the shape
           // drifted on a NEWER gateway version. Precise operator hint, non-PHI.
