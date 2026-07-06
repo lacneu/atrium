@@ -68,6 +68,7 @@ import {
   Code,
   Search,
   CircleAlert,
+  Eye,
   Bot,
   Server,
   LoaderCircle,
@@ -93,6 +94,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ConfirmDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import {
@@ -244,7 +251,15 @@ function BrandAvatar({ className }: { className: string }) {
 }
 
 export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
-  const { runtime, turnGate, queueSend, abortTurn, routing, lastUserTurnQueued } =
+  const {
+    runtime,
+    turnGate,
+    queueSend,
+    abortTurn,
+    routing,
+    lastUserTurnQueued,
+    initialLoading,
+  } =
     useConvexChatRuntime({
     chatId,
   });
@@ -400,6 +415,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                     void setUiPref({ key: "showTools", value: !showTools })
                   }
                   focusMessageId={focusMessageId ?? null}
+                  initialLoading={initialLoading}
                 />
               )
             ) : (
@@ -591,16 +607,46 @@ function useFocusMessage(
   }, [chatId, focusMessageId]);
 }
 
+// Conversation LOADING skeleton: ghost bubbles shown while the first
+// listByChat response for this chat is in flight. Without it a content-heavy
+// chat renders as an EMPTY thread for the seconds the payload takes ("is
+// anything happening?"), then the content pops in. Ghost widths alternate to
+// read as a real exchange; shimmer respects prefers-reduced-motion; the
+// container is a polite live region so SR users hear the state once.
+function ChatLoadingSkeleton() {
+  return (
+    <div
+      className="oc-thread-skeleton"
+      role="status"
+      aria-label={m.chat_loading()}
+    >
+      {[72, 38, 84, 56, 64].map((w, i) => (
+        <div
+          key={i}
+          className={`oc-thread-skeleton__row${i % 2 ? " oc-thread-skeleton__row--user" : ""}`}
+        >
+          <span
+            className="oc-thread-skeleton__bubble"
+            style={{ width: `${w}%` }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChatThread({
   chatId,
   showTools,
   onToggleTools,
   focusMessageId,
+  initialLoading,
 }: {
   chatId: ConvexId<"chats">;
   showTools: boolean;
   onToggleTools: () => void;
   focusMessageId: string | null;
+  initialLoading: boolean;
 }) {
   // Chat availability gate: if the bridge is down/erroring (active health poll),
   // grey out the composer and show a banner BEFORE a turn is persisted — the
@@ -660,7 +706,11 @@ function ChatThread({
     <ThreadPrimitive.Root className="oc-thread">
       <ChatHeader chatId={chatId} />
       <ThreadAnnouncer chatId={chatId} />
-      <ThreadPrimitive.Viewport className="oc-thread__viewport">
+      {initialLoading ? <ChatLoadingSkeleton /> : null}
+      <ThreadPrimitive.Viewport
+        className="oc-thread__viewport"
+        style={initialLoading ? { display: "none" } : undefined}
+      >
         <ThreadPrimitive.Empty>
           <ThreadEmptyState />
         </ThreadPrimitive.Empty>
@@ -1988,6 +2038,50 @@ function ComposerAttachmentChip() {
   // A routed large-paste chip announces ITSELF: a one-shot shimmer on mount
   // replaces the former success toast (the chip appearing IS the confirmation).
   const pasted = file !== null && isPastedFile(file);
+  // Eye = full-size preview of the PENDING attachment (read the File locally,
+  // zero upload): text renders in a scrollable <pre>, an image full-size. Lets
+  // the user VERIFY a routed paste's content before sending (user request).
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewText, setViewText] = useState<string | null>(null);
+  // Latest File this (index-keyed, reusable) chip renders — the staleness guard
+  // for the async preview read.
+  const fileRef = useRef<File | null>(null);
+  fileRef.current = file;
+  const isTextLike =
+    file !== null &&
+    (file.type.startsWith("text/") ||
+      /\.(txt|md|json|csv|log|xml|yaml|yml)$/i.test(file.name));
+  const openView = () => {
+    setViewOpen(true);
+    // RESET before the read: assistant-ui keys attachment chips by index, so a
+    // removal can reuse this chip for ANOTHER file — a stale viewText would
+    // show the previous file's content while the new read is in flight (or
+    // forever, if it fails) (codex P2).
+    setViewText(null);
+    if (isTextLike && file) {
+      // A slow read racing a chip reuse (index-keyed) must not paint the OLD
+      // file's content: apply the result only if the chip still shows the same
+      // File (codex P2).
+      const current = file;
+      // Bounded preview: a multi-MB text in one <pre> freezes the renderer —
+      // the eye is for VERIFYING content, not reading megabytes (codex P2).
+      const PREVIEW_CAP = 200_000;
+      void current
+        .slice(0, PREVIEW_CAP)
+        .text()
+        .then((t) => {
+          if (fileRef.current !== current) return;
+          setViewText(
+            current.size > PREVIEW_CAP
+              ? t + "\n\n" + m.chat_attach_view_truncated()
+              : t,
+          );
+        })
+        .catch(() => {
+          if (fileRef.current === current) setViewText(null);
+        });
+    }
+  };
   return (
     <AttachmentPrimitive.Root
       className={`oc-attach${failed ? " oc-attach--error" : ""}${
@@ -2016,12 +2110,39 @@ function ComposerAttachmentChip() {
       {failed ? (
         <span className="oc-attach__state">{m.chat_attach_failed()}</span>
       ) : null}
+      {!failed && (isTextLike || previewUrl) ? (
+        <button
+          type="button"
+          className="oc-attach__view"
+          aria-label={m.chat_attach_view()}
+          title={m.chat_attach_view()}
+          onClick={openView}
+        >
+          <Eye size={13} aria-hidden />
+        </button>
+      ) : null}
       <AttachmentPrimitive.Remove
         className="oc-attach__remove"
         aria-label={m.chat_attach_remove()}
       >
         <X size={13} aria-hidden />
       </AttachmentPrimitive.Remove>
+      <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+        <DialogContent className="oc-attach__dialog">
+          <DialogHeader>
+            <DialogTitle className="oc-attach__dialog-title">
+              {file?.name ?? m.chat_attach_view()}
+            </DialogTitle>
+          </DialogHeader>
+          {previewUrl ? (
+            <img src={previewUrl} alt="" className="oc-attach__dialog-img" />
+          ) : viewText !== null ? (
+            <pre className="oc-attach__dialog-text">{viewText}</pre>
+          ) : (
+            <p className="oc-attach__dialog-text">…</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </AttachmentPrimitive.Root>
   );
 }

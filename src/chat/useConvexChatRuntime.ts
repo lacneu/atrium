@@ -664,6 +664,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     abortTurn,
     routing,
     lastUserTurnQueued,
+    // TRUE until listByChat first responds for this chat: drives the loading
+    // skeleton (without it a content-heavy chat looks EMPTY for the 2-3s the
+    // payload takes to arrive, reading as "is anything happening?").
+    initialLoading: messagesLoading,
   };
 }
 

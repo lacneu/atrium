@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.37.1] — Corrective: brand-colored paste shimmer, attachment preview, and a conversation loading skeleton
+
+Corrective follow-up to 0.37.0's paste flow. No breaking changes.
+
+- **The paste-confirmation shimmer now uses the active brand theme's color.** 0.37.0
+  shipped it with a hardcoded accent that ignored the deployment's charte graphique; the
+  flash now derives from the theme's primary token, so it matches every brand.
+
+- **Verify an attachment before sending it.** Every pending text or image attachment chip
+  gains an eye button opening the content full-size in a dialog — scrollable text
+  (bounded for very large files, with an explicit "preview truncated" note), full image
+  view. Completes the silent-paste flow: paste, see the chip flash, check its content,
+  send. The preview guards against chip-reuse races (multi-attachment edits never show
+  another file's content) and stays reachable on image thumbnails.
+
+- **Opening a content-heavy conversation shows a loading skeleton.** A chat with a large
+  history takes a few seconds to arrive in the browser and used to render as an EMPTY
+  thread meanwhile ("is anything happening?"). Ghost message bubbles now shimmer in the
+  brand color until the conversation lands (static under reduced-motion; announced to
+  screen readers).
+
 ## [0.37.0] — Search lands on the exact message, quieter paste, resettable chat defaults
 
 UX and operability release. No breaking changes.

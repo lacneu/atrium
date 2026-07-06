@@ -6818,10 +6818,12 @@
 .oc-attach--flash {
   animation: oc-attach-flash 1.4s ease-out 1;
 }
+/* Shimmer color = the ACTIVE charte's primary token (what every branded control
+   uses), so the flash matches the deployment's brand (user request). */
 @keyframes oc-attach-flash {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--oc-accent, #6ea8fe) 65%, transparent);
-    background-color: color-mix(in oklab, var(--oc-accent, #6ea8fe) 22%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 65%, transparent);
+    background-color: color-mix(in oklab, var(--primary) 22%, transparent);
   }
   60% {
     box-shadow: 0 0 0 6px transparent;
@@ -6842,4 +6844,116 @@
 ::highlight(oc-search-terms) {
   background-color: color-mix(in oklab, var(--oc-accent, #6ea8fe) 45%, transparent);
   color: inherit;
+}
+
+
+/* Attachment full-size preview: the eye button beside the remove cross, and the
+   dialog body (scrollable monospace for text, contained image). */
+.oc-attach__view {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.65;
+}
+.oc-attach__view:hover {
+  opacity: 1;
+}
+/* Image chips are a fixed 44px thumbnail with overflow hidden — the eye must
+   overlay the thumbnail (same treatment as the remove cross, bottom corner)
+   or it gets clipped out of reach (codex P2). */
+.oc-attach--image .oc-attach__view {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 1;
+}
+.oc-attach__dialog {
+  max-width: min(56rem, 92vw);
+}
+.oc-attach__dialog-title {
+  word-break: break-all;
+}
+.oc-attach__dialog-text {
+  max-height: 70vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+.oc-attach__dialog-img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+/* Conversation loading skeleton: ghost bubbles while the first message payload
+   is in flight (2-3s on content-heavy chats). Brand-tinted like the rest of the
+   chrome; static under prefers-reduced-motion. */
+.oc-thread-skeleton {
+  /* Takes the viewport's place in the flex flow while loading (the viewport is
+     display:none then — it is EMPTY, so there is nothing for the thread's
+     scroll machinery to measure; it reappears in the same render as the
+     messages, i.e. a first mount). An inset-0 overlay would cover the header. */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 18px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.oc-thread-skeleton__row {
+  display: flex;
+}
+.oc-thread-skeleton__row--user {
+  justify-content: flex-end;
+}
+.oc-thread-skeleton__bubble {
+  display: block;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(
+    100deg,
+    color-mix(in oklab, var(--primary) 7%, transparent) 30%,
+    color-mix(in oklab, var(--primary) 16%, transparent) 50%,
+    color-mix(in oklab, var(--primary) 7%, transparent) 70%
+  );
+  background-size: 220% 100%;
+  animation: oc-skeleton-shimmer 1.6s ease-in-out infinite;
+}
+.oc-thread-skeleton__row--user .oc-thread-skeleton__bubble {
+  height: 34px;
+  border-radius: 12px;
+}
+@keyframes oc-skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-thread-skeleton__bubble {
+    animation: none;
+  }
 }
