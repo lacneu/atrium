@@ -8,6 +8,33 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.35.0] — Delegation-aware turns: no false errors on sub-agent work, live phase detail, self-describing report references
+
+Follow-up to 0.34.0's reliability work, driven by live stress-testing on two
+environments. One corrective, two features; no breaking changes.
+
+- **A turn that delegates to sub-agents is no longer painted as an error.** 0.34.0's
+  empty-response guard misfired on the "announce" pattern — a parent agent that spawns
+  sub-agents, ends its own turn silently, and replies later in a spontaneous turn (seen
+  live on both test environments within hours). The guard now recognizes a parent whose
+  own spawned children were observed working (correlated by exact child session key, with
+  a tolerant fallback for gateways that omit it) and keeps the calm explanatory row
+  instead of a red error card. The real reply still lands as its own turn.
+
+- **New: the "processing" placeholder tells you what the agent is actually doing.** With
+  the Tools view enabled, a silent in-flight turn now shows its live phase — catching up
+  on conversation history, optimizing the context (compaction), waiting on delegated
+  sub-agents, or the bridge actively checking a silent agent's status — instead of a
+  generic "thinking". Phases that prove real agent activity also refresh the stuck-stream
+  watchdog, so a legitimately long-working agent isn't reaped mid-task.
+
+- **New: feedback references identify their deployment.** The reference a reporter
+  copies now encodes the environment (e.g. `dev-…`, `prod-…`, via the ATRIUM_ENV_LABEL
+  deployment variable) — support no longer guesses which deployment a report came from.
+  Reports also carry the instance and agent that produced the reported turn, frozen at
+  submit time so rerouting or deleting the chat never falsifies the evidence. All report
+  APIs accept both the tagged and the bare form.
+
 ## [0.34.0] — A silent agent no longer loses its answer: turns self-heal by asking the gateway
 
 Reliability release, closing the launch-blocking "blank bubble" class observed while

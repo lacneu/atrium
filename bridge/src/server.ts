@@ -779,6 +779,9 @@ async function performSend(
   let preTurnTotalTokens: number | null = null;
   let preTurnContextTokens: number | null = null;
   let preTurnCostUsd: number | null = null;
+  // Whether THIS send prepended rehydration history (function-scope: read by
+  // the post-ack beginTurn in the LATER try block for the processing_history phase).
+  let turnWasRehydrated = false;
   try {
     const desc = await conn.request(
       "sessions.describe",
@@ -886,6 +889,10 @@ async function performSend(
       if (ctx.history) {
         message = `${ctx.history}\n\n${body.text}`;
         prependedTurns = ctx.turnCount;
+        // History was INJECTED (verbatim turns OR a summary-only rehydration
+        // where turnCount is 0): the gateway will chew it silently either way,
+        // so the processing_history phase applies to both (codex P3).
+        turnWasRehydrated = true;
         summaryUsed = ctx.summaryUsed ?? false;
         summaryChars = ctx.summaryChars ?? 0;
         // Decision log (no PHI — counts + chatId only).
@@ -1021,6 +1028,7 @@ async function performSend(
         contextTokens: preTurnContextTokens,
         costUsd: preTurnCostUsd,
       },
+      rehydrated: turnWasRehydrated,
     });
     // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
     // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —

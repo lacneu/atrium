@@ -176,7 +176,8 @@ const DEFAULT_UI: UiEffective = {
   voiceInput: false,
 };
 const UiPrefsContext = createContext<UiEffective>(DEFAULT_UI);
-function useUiPrefs(): UiEffective {
+// Exported: RunStatus gates the live phase detail on the Tools toggle.
+export function useUiPrefs(): UiEffective {
   return useContext(UiPrefsContext);
 }
 
@@ -1733,6 +1734,11 @@ function AssistantMessage() {
   // Suppress the queued synthetic placeholder entirely (its "En attente" lives on the
   // user message badge). Placed AFTER all hooks — Rules of Hooks.
   if (placeholderStatus === undefined && lastUserTurnQueued) return null;
+  // NOTE (deliberate): a COMPLETE-but-empty assistant row (the silent
+  // sessions_spawn parent whose reply arrives as a later spontaneous turn) is
+  // NOT suppressed — AssistantEmptyState already renders it as an explanatory
+  // line, and suppressing the row would also swallow the compaction marker
+  // (codex R2 P2 vs R3 P2: rendering an honest explainer beats hiding a row).
   return (
     <MessagePrimitive.Root
       className="oc-msg oc-msg--assistant"

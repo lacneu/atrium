@@ -389,6 +389,12 @@ export class Normalizer {
   // item). It carries no path/url/bytes — if the turn then delivers no media
   // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
   sawMediaGeneration: boolean;
+  // Child session keys observed THIS turn (spawnedBy admission): the parent may
+  // legitimately end SILENT while children work — its real reply arrives later
+  // as an announce/spontaneous turn. A SET (not a boolean) so the sink can
+  // intersect with the keys the turn's OWN sessions_spawn calls returned —
+  // a stale child from a PREVIOUS turn never exempts the current one.
+  observedChildKeys: Set<string>;
   // --- Gateway COMPACTION detection (pinned on live capture 2026-07-03) ------
   // A PREFLIGHT compaction (before the model call) leaves NO trace in the frame
   // stream: no phase, no notice — the ONLY observable signal is the session id
@@ -443,6 +449,7 @@ export class Normalizer {
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
+    this.observedChildKeys = new Set();
     this.deadlines = new Map();
   }
 
@@ -469,6 +476,7 @@ export class Normalizer {
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
+    this.observedChildKeys = new Set();
     this.recoveryAttempted = false;
     this.suppressNextRotation = false;
     this.compactionSignaled = false;
@@ -646,6 +654,9 @@ export class Normalizer {
       payload.spawnedBy === this.sessionKey &&
       payload.sessionKey !== this.sessionKey
     ) {
+      if (isString(payload.sessionKey)) {
+        this.observedChildKeys.add(payload.sessionKey);
+      }
       return this.handleSubAgent(
         eventType,
         payload,
@@ -1363,6 +1374,7 @@ export class Normalizer {
       // EVENT_MEDIA_UNDELIVERED below is pushed AFTER run.status, too late).
       mediaGeneratedUndelivered:
         this.sawMediaGeneration && this.mediaPaths.size === 0,
+      observedChildKeys: [...this.observedChildKeys],
     };
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,

@@ -9,6 +9,7 @@ import {
   messageHasText,
 } from "./runStatusView";
 import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
+import { useUiPrefs } from "./ConvexChat";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 
 
@@ -28,6 +29,7 @@ interface RunMeta {
   runId?: string | null;
   error?: string | null;
   errorCode?: string | null;
+  phase?: string | null;
 }
 
 export function RunStatus() {
@@ -45,8 +47,13 @@ export function RunStatus() {
     messageHasText(m.content as ReadonlyArray<{ type?: string; text?: unknown }>),
   );
 
+  const phase = useMessage(
+    (m) => (m.metadata?.custom as RunMeta | undefined)?.phase,
+  );
   const gatewayDegraded = useContext(GatewayDegradedContext);
-  const view = runStatusView(status, hasText);
+  // The live phase detail is an ANALYSIS-view affordance: only when Tools is ON.
+  const { showTools } = useUiPrefs();
+  const view = runStatusView(status, hasText, showTools ? phase : null);
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
   // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.
@@ -120,7 +127,7 @@ export function RunStatus() {
             (it will most likely time out). Beats the long-wait reassurance, which
             would otherwise keep claiming the agent is working (#123/#124). */}
         {runStatusOutageLabel(view.kind, gatewayDegraded) ??
-          (view.kind === "thinking" && longWait
+          (view.kind === "thinking" && longWait && !view.phased
             ? runWaitingLabel(identity)
             : view.label)}
       </span>

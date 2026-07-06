@@ -564,6 +564,12 @@ class Session implements BridgeSession {
               console.log(
                 `[session] recv-silence — querying gateway status (self-heal) chat=${this.chatId}`,
               );
+              const liveMsgId = this.runManager.currentMessageId;
+              if (liveMsgId !== null) {
+                // Tools-ON placeholder detail: the bridge is actively asking the
+                // gateway whether the silent run is still working.
+                this.writer.setPhase?.(liveMsgId, "querying_gateway");
+              }
               this.scheduleOrphanRecovery("recv_silence");
             }
           } else {

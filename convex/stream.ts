@@ -182,6 +182,37 @@ async function streamingRow(ctx: MutationCtx, messageId: Id<"messages">) {
 // `messages` doc — so the heavy loadChatView (which reads `messages`) does NOT
 // re-run on every delta; only the cheap getStreamingText query does. `updatedAt`
 // here is the streaming heartbeat. `messages.text` is written once at finalize.
+// Live processing-phase of an in-flight turn (Tools-ON placeholder detail).
+// Values are allowlisted here — the bridge is trusted but the wire is not the
+// schema. Sets ONLY the phase (+updatedAt, which doubles as a watchdog
+// heartbeat while the agent legitimately works in silence).
+const TURN_PHASES = new Set([
+  "processing_history",
+  "compacting",
+  "querying_gateway",
+  "awaiting_subagents",
+]);
+
+export const setPhase = internalMutation({
+  args: { messageId: v.id("messages"), phase: v.string() },
+  handler: async (ctx, { messageId, phase }) => {
+    if (!TURN_PHASES.has(phase)) return; // unknown value: ignore, never throw
+    const row = await streamingRow(ctx, messageId);
+    // No live row (turn not open yet, or already finished): drop — the phase is
+    // a live-only hint, never worth resurrecting a row the finalize GC'd.
+    if (row === null) return;
+    // Heartbeat (updatedAt) ONLY for phases that prove REAL gateway activity.
+    // querying_gateway is the bridge's own doubt about a silent turn — bumping
+    // the watchdog there would let a bridge death during the recovery leave the
+    // stream stuck ~12 extra minutes (codex P2).
+    if (phase === "querying_gateway") {
+      await ctx.db.patch(row._id, { phase });
+    } else {
+      await ctx.db.patch(row._id, { phase, updatedAt: Date.now() });
+    }
+  },
+});
+
 export const appendDelta = internalMutation({
   args: {
     messageId: v.id("messages"),

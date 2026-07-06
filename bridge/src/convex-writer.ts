@@ -206,6 +206,10 @@ export interface ConvexWriter {
       postCostUsd?: number | null;
     },
   ): Promise<void>;
+  /** Live processing-phase hint for the Tools-ON placeholder (fire-and-forget;
+   *  also touches streamingText.updatedAt = a watchdog heartbeat while the agent
+   *  works silently). OPTIONAL: fakes/tests may omit it. */
+  setPhase?(messageId: string, phase: string): void;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
   addProvenancePart(
     messageId: string,
@@ -436,6 +440,7 @@ type IngestOp =
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
   | ({ op: "rehydrateTrace" } & RehydrateTraceArgs)
+  | { op: "setPhase"; messageId: string; phase: string }
   | {
       op: "finalize";
       messageId: string;
@@ -1065,6 +1070,12 @@ export class HttpConvexWriter implements ConvexWriter {
     },
   ): Promise<void> {
     await this.doPost({ op: "gatewayPressure", chatId, messageId, ...data });
+  }
+
+  setPhase(messageId: string, phase: string): void {
+    void this.doPost({ op: "setPhase", messageId, phase }).catch(() => {
+      // Best-effort hint: losing it never affects the turn.
+    });
   }
 
   async addProvenancePart(

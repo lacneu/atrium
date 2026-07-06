@@ -5,6 +5,7 @@
 // REQUIRES A LIVE DEPLOYMENT to serve these routes.
 
 import { httpRouter } from "convex/server";
+import { parseReference } from "./feedback";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -1420,10 +1421,13 @@ http.route({
     if (feedbackId === undefined) {
       return apiJson({ ok: false, error: "feedbackId required" }, 400);
     }
+    // Accept the env-tagged reference (`dev-<id>`) as well as the bare id: the
+    // trailing id-like segment is authoritative (parseReference).
+    const bareId = parseReference(feedbackId);
     let result;
     try {
       result = await ctx.runQuery(internal.feedback.readForApi, {
-        feedbackId: feedbackId as Id<"feedback">,
+        feedbackId: (bareId ?? feedbackId) as Id<"feedback">,
       });
     } catch {
       // A malformed id must read as not-found, not a 500.
@@ -1528,7 +1532,9 @@ http.route({
     let result;
     try {
       result = await ctx.runMutation(internal.feedback.replyForApi, {
-        feedbackId: body.feedbackId as Id<"feedback">,
+        // Accept the env-tagged reference form as well as the bare id.
+        feedbackId: (parseReference(body.feedbackId) ??
+          body.feedbackId) as Id<"feedback">,
         text: body.text,
         // Display label: the role + a short principal id (no display name on
         // ServicePrincipal). The owner sees e.g. "agent (k7f2…)".
@@ -1595,7 +1601,9 @@ http.route({
     let result;
     try {
       result = await ctx.runMutation(internal.feedback.closeForApi, {
-        feedbackId: body.feedbackId as Id<"feedback">,
+        // Accept the env-tagged reference form as well as the bare id.
+        feedbackId: (parseReference(body.feedbackId) ??
+          body.feedbackId) as Id<"feedback">,
         resolvedBy: `${principal.roleKey} (${principal.id.slice(0, 6)}…)`,
         note: body.note,
       });

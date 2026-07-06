@@ -276,6 +276,9 @@ export class RunManager {
       /** Spontaneous (announce) turn: the sink DEFERS creating the assistant
        *  message until the normalizer proves visible content (turn-sink). */
       spontaneous?: boolean;
+      /** THIS send prepended rehydration history: the gateway will chew it
+       *  silently first — surfaced as the `processing_history` phase. */
+      rehydrated?: boolean;
     },
   ): Promise<void> {
     // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
@@ -317,6 +320,7 @@ export class RunManager {
       ackRunId,
       turnContext?.pressure,
       turnContext?.spontaneous === true,
+      turnContext?.rehydrated === true,
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.

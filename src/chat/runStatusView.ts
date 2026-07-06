@@ -23,6 +23,9 @@ export interface RunStatusView {
   kind: RunStatusKind;
   /** French/EN, user-facing. */
   label: string;
+  /** TRUE when the label is a PHASE-specific detail (Tools ON): callers must
+   *  not replace it with the generic long-wait reassurance. */
+  phased?: boolean;
 }
 
 const LABEL: Record<RunStatusKind, () => string> = {
@@ -32,12 +35,28 @@ const LABEL: Record<RunStatusKind, () => string> = {
   aborted: m.runstatus_aborted,
 };
 
+// Live processing-phase labels (Tools-ON placeholder detail): what the turn is
+// ACTUALLY doing while silent, instead of the generic "thinking". Unknown wire
+// values fall back to the generic label (forward-compat with newer bridges).
+const PHASE_LABEL: Record<string, () => string> = {
+  processing_history: m.runstatus_phase_processing_history,
+  compacting: m.runstatus_phase_compacting,
+  querying_gateway: m.runstatus_phase_querying_gateway,
+  awaiting_subagents: m.runstatus_phase_awaiting_subagents,
+};
+
 export function runStatusView(
   status: string | undefined,
   hasText: boolean,
+  /** Live phase of the in-flight turn — only honored on the thinking state
+   *  (callers gate it on the Tools toggle). */
+  phase?: string | null,
 ): RunStatusView | null {
   const kind = runStatusKind(status, hasText);
   if (kind === null) return null;
+  if (kind === "thinking" && phase && PHASE_LABEL[phase]) {
+    return { kind, label: PHASE_LABEL[phase](), phased: true };
+  }
   return { kind, label: LABEL[kind]() };
 }
 

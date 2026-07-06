@@ -320,6 +320,107 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     expect(writer.lastFinalizeKind).toBe("empty_response");
   });
 
+  it("a SILENT parent whose OWN spawned child was observed is NOT an error (announce pattern, ms79rj0e)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_sa", writer);
+    const childKey = "agent:alice:subagent:11111111-2222-3333-4444-555555555555";
+    await sink.beginTurn("run-sa");
+    await sink.apply([
+      {
+        type: "tool.status",
+        name: "sessions_spawn",
+        phase: "completed",
+        output: { status: "accepted", childSessionKey: childKey },
+      },
+      { type: "message.final", text: "", observedChildKeys: [childKey] },
+      { type: "run.status", status: "final" },
+    ]);
+    // The reply arrives later as an announce/spontaneous turn — zero bubble,
+    // never an empty_response error card.
+    expect(writer.lastFinalizeKind).toBeNull();
+  });
+
+  it("a NESTED child key (subagent-of-subagent) still exempts (codex P2 — full-key capture)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_nk", writer);
+    const nested =
+      "agent:alice.prod:subagent:aaaaaaaa-1111-2222-3333-444444444444:subagent:bbbbbbbb-1111-2222-3333-444444444444";
+    await sink.beginTurn("run-nk");
+    await sink.apply([
+      {
+        type: "tool.status",
+        name: "sessions_spawn",
+        phase: "completed",
+        output: { status: "accepted", childSessionKey: nested },
+      },
+      { type: "message.final", text: "", observedChildKeys: [nested] },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull();
+  });
+
+  it("a spawn WITHOUT a key in its result + observed child activity still exempts (gateway-variance fallback)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_fb", writer);
+    await sink.beginTurn("run-fb");
+    await sink.apply([
+      // result WITHOUT childSessionKey (variance) — key intersection impossible
+      { type: "tool.status", name: "sessions_spawn", phase: "completed", output: { status: "accepted" } },
+      {
+        type: "message.final",
+        text: "",
+        observedChildKeys: ["agent:alice:subagent:cccccccc-0000-0000-0000-000000000000"],
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull();
+  });
+
+  it("keys extracted + only a STALE child observed -> empty_response (fallback must not ride)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_st2", writer);
+    await sink.beginTurn("run-st2");
+    await sink.apply([
+      {
+        type: "tool.status",
+        name: "sessions_spawn",
+        phase: "completed",
+        output: {
+          status: "accepted",
+          childSessionKey: "agent:alice:subagent:dddddddd-0000-0000-0000-000000000000",
+        },
+      },
+      {
+        type: "message.final",
+        text: "",
+        observedChildKeys: [
+          "agent:alice:subagent:eeeeeeee-0000-0000-0000-000000000000",
+        ],
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("child activity WITHOUT any spawn this turn does NOT exempt (stale child of a previous turn)", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_lc", writer);
+    await sink.beginTurn("run-lc");
+    await sink.apply([
+      { type: "tool.status", name: "read", phase: "completed" },
+      // an OLD turn's child emits during this spawn-free turn
+      {
+        type: "message.final",
+        text: "",
+        observedChildKeys: [
+          "agent:alice:subagent:aaaaaaaa-0000-0000-0000-000000000000",
+        ],
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
   it("a normal COMPLETE turn WITH text is untouched (no false positive)", async () => {
     const writer = new OrderingWriter();
     const sink = new TurnSink("chat_ok", writer);

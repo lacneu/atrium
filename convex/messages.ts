@@ -551,6 +551,8 @@ export const getStreamingText = query({
       // reload replay. OMITTED when no chunk is written yet (Convex rejects an undefined
       // returned property).
       ...(r.chunkSeq !== undefined ? { chunkSeq: r.chunkSeq } : {}),
+      // Live processing phase (Tools-ON placeholder detail) — absent on plain turns.
+      ...(r.phase !== undefined ? { phase: r.phase } : {}),
       // In-band delivery-recorder fields, present ONLY while a recording is active
       // (appendDelta/setSnapshot stamp them) -> zero added payload otherwise. The
       // frontend reads recTimingId (the timing row's correlator) to stamp t4 and

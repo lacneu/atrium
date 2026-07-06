@@ -390,10 +390,17 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     if (!streamingRows || streamingRows.length === 0) return base;
     // Key by the raw string id: getStreamingText returns the branded Id<"messages">
     // while ConvexMessageView carries our loose ConvexId — same value at runtime.
-    const liveByMsg = new Map<string, { text: string; chunkSeq?: number }>(
+    const liveByMsg = new Map<
+      string,
+      { text: string; chunkSeq?: number; phase?: string }
+    >(
       streamingRows.map((r) => [
         r.messageId as string,
-        { text: r.text, chunkSeq: r.chunkSeq },
+        {
+          text: r.text,
+          chunkSeq: r.chunkSeq,
+          phase: (r as { phase?: string }).phase,
+        },
       ]),
     );
     return base.map((msg) => {
@@ -416,9 +423,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         return {
           ...msg,
           text: caughtUp ? sse.text : (reactive?.text ?? sse.text),
+          ...(reactive?.phase !== undefined ? { phase: reactive.phase } : {}),
         };
       }
-      if (reactive !== undefined) return { ...msg, text: reactive.text };
+      if (reactive !== undefined)
+        return {
+          ...msg,
+          text: reactive.text,
+          ...(reactive.phase !== undefined ? { phase: reactive.phase } : {}),
+        };
       return msg;
     });
   }, [messages, streamingRows, sse, sseMessageId]);

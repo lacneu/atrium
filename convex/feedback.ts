@@ -84,6 +84,33 @@ function safeJson(value: unknown): string | undefined {
  * report. Owner-scoped to the EFFECTIVE identity; audited (the realUserId is
  * always recorded, so a report filed while impersonating is attributable).
  */
+// ── Environment-tagged reference ─────────────────────────────────────────────
+// The reference shown to the reporter encodes WHICH deployment it came from
+// (like a Convex deployment name in its URL): `<label>-<id>`. The label comes
+// from the ATRIUM_ENV_LABEL deployment env var (e.g. "dev", "prod"; unset →
+// bare id, fully backward-compatible). Readers strip any label prefix — the
+// trailing id-like segment is authoritative — so old bare ids AND foreign
+// labels both resolve. Lowercase alphanumerics only (defense against header
+// injection through a copy-pasted reference).
+function envLabel(): string | null {
+  const raw = process.env.ATRIUM_ENV_LABEL ?? "";
+  const label = raw.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_.]{0,15}$/.test(label) ? label : null;
+}
+
+/** Public shape of a reference: label-prefixed when the deployment is labeled. */
+export function displayReference(id: string): string {
+  const label = envLabel();
+  return label ? `${label}-${id}` : id;
+}
+
+/** Accept `label-<id>`, bare `<id>`, or any foreign-labeled form: the trailing
+ *  id-like run is the id. Returns null when nothing id-like is present. */
+export function parseReference(reference: string): string | null {
+  const m = reference.trim().match(/([a-z0-9]{20,40})$/i);
+  return m ? m[1] : null;
+}
+
 export const submitFeedback = mutation({
   args: {
     chatId: v.id("chats"),
@@ -165,8 +192,22 @@ export const submitFeedback = mutation({
         }
       }
     } else {
-      // Message older than the scan window: freeze just the message itself and
-      // record that context was unavailable rather than silently dropping it.
+      // Message older than the scan window: the prompting user turn (needed for
+      // the FROZEN routing identity below) is found by a bounded indexed walk
+      // backwards from the reported message — without it, a rerouted chat would
+      // freeze TODAY's routing onto an OLD turn's report (codex P2).
+      const older = await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) =>
+          // Index RANGE (not a post-scan filter): a report on a very old
+          // message in a long chat must not scan every newer row (codex P2).
+          q.eq("chatId", message.chatId).lt("_creationTime", message._creationTime),
+        )
+        .order("desc")
+        .take(50);
+      promptMessage = older.find((m) => m.role === "user") ?? null;
+      // Freeze just the message itself and record that context was unavailable
+      // rather than silently dropping it.
       contextSlice = [message];
       contextTruncated = true;
     }
@@ -238,6 +279,19 @@ export const submitFeedback = mutation({
       category: args.category,
       comment,
       snapshot: {
+        // Frozen routing identity (survives rerouting/deletion — codex P2):
+        // the reported turn's routed identity when present; an ASSISTANT row
+        // does not carry it, so inherit from its prompting USER turn (which
+        // send.ts stamps on routed sends); else the chat primary (codex P2 ×2).
+        instanceName:
+          (message as { routedInstanceName?: string }).routedInstanceName ??
+          (promptMessage as { routedInstanceName?: string } | null)
+            ?.routedInstanceName ??
+          chat?.instanceName,
+        agentId:
+          (message as { routedAgentId?: string }).routedAgentId ??
+          (promptMessage as { routedAgentId?: string } | null)?.routedAgentId ??
+          chat?.agentId,
         messageRole: message.role,
         messageText,
         messageStatus: message.status,
@@ -303,7 +357,12 @@ export const submitFeedback = mutation({
       resourceId: args.messageId,
     });
 
-    return { feedbackId, displayedMatchesStored };
+    return {
+      feedbackId,
+      displayedMatchesStored,
+      // Environment-tagged shareable reference (what the dialog shows).
+      reference: displayReference(String(feedbackId)),
+    };
   },
 });
 
@@ -786,6 +845,15 @@ export const readForApi = internalQuery({
       ok: true as const,
       report: {
         feedbackId: String(fb._id),
+        // The same env-tagged reference the reporter saw (self-describing id).
+        reference: displayReference(String(fb._id)),
+        // WHERE this happened — no more guessing the environment/instance from
+        // traces (three live occurrences on 2026-07-05 alone).
+        environment: envLabel(),
+        // FROZEN at submit (forensic — survives rerouting/deletion); pre-freeze
+        // reports fall back to the live chat.
+        instanceName: fb.snapshot.instanceName ?? chat?.instanceName ?? null,
+        agentId: fb.snapshot.agentId ?? chat?.agentId ?? null,
         at: fb.at,
         category: fb.category,
         comment: fb.comment ?? null,
@@ -858,6 +926,8 @@ function projectReport(fb: {
   const open = fb.userClosedAt == null && fb.resolvedAt == null;
   return {
     feedbackId: String(fb._id),
+    // Env-tagged shareable form — matches what the reporter's dialog showed.
+    reference: displayReference(String(fb._id)),
     at: fb.at,
     category: fb.category,
     comment: fb.comment ?? null,

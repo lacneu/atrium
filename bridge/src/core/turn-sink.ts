@@ -122,6 +122,25 @@ export class TurnSink {
   // The turn generated media natively but delivered none (no MEDIA:/outbound) —
   // read from the final event so the empty-result guard sees it (codex P2).
   private pendingMediaGeneratedUndelivered = false;
+  // Child keys observed on the wire THIS turn (from the final event) and the
+  // keys THIS turn's own sessions_spawn calls returned: only their INTERSECTION
+  // proves a CURRENT-turn child is working — the announce pattern (reply arrives
+  // as a later spontaneous turn), never an error card (report ms79rj0e…). A
+  // stale child of a previous turn or a spawn that never started both fail the
+  // intersection, keeping the empty_response guard honest (codex P2 ×2).
+  private pendingObservedChildKeys: string[] = [];
+  private spawnedChildKeysThisTurn = new Set<string>();
+  // Fallback signal when the spawn RESULT omits the child key (gateway variance):
+  // spawn called this turn + ANY child activity observed still exempts.
+  private spawnCalledThisTurn = false;
+  // Last child-activity heartbeat (ms wall): while the parent waits silently on
+  // a long-running child, each observed child frame refreshes the streaming
+  // row's updatedAt (via the awaiting_subagents phase) at most once a minute,
+  // so the stuck-stream watchdog never orphans a parent whose child is alive.
+  private lastChildHeartbeatMs = 0;
+  // THIS send prepended rehydration history (threaded from beginTurn): the
+  // gateway chews it silently first — surfaced as the processing_history phase.
+  private pendingRehydrated = false;
 
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
@@ -221,6 +240,7 @@ export class TurnSink {
       costUsd?: number | null;
     },
     deferOpen = false,
+    rehydrated = false,
   ): Promise<void> {
     this.turnEpoch++;
     // A REAL turn preempting a DEFERRED (announce) turn that never opened must
@@ -248,6 +268,11 @@ export class TurnSink {
     this.hasPendingMedia = false;
     this.sawVisibleText = false;
     this.pendingMediaGeneratedUndelivered = false;
+    this.pendingObservedChildKeys = [];
+    this.spawnedChildKeysThisTurn = new Set();
+    this.spawnCalledThisTurn = false;
+    this.lastChildHeartbeatMs = 0;
+    this.pendingRehydrated = false;
     this.pendingOpen = false;
     this.deferredRunId = null;
     this.deferredEvents = [];
@@ -271,12 +296,18 @@ export class TurnSink {
     // RunManager.feed buffering them (the buffer is still armed); the replay loop
     // drains them right after this returns. (No await between the two lines, so
     // there is no active-with-null-messageId window.)
+    this.pendingRehydrated = rehydrated;
     this.messageId = await this.writer.startAssistant(
       this.chatId,
       ackRunId,
       this.sessionKey ?? null,
     );
     this.turnActive = true;
+    if (this.pendingRehydrated && this.messageId !== null) {
+      // Tools-ON placeholder detail: the gateway is silently processing the
+      // prepended history before any visible output.
+      this.writer.setPhase?.(this.messageId, "processing_history");
+    }
   }
 
   /** Apply a batch of normalized events to the writer, strictly in order. */
@@ -455,6 +486,27 @@ export class TurnSink {
             ) {
               this.toolCallCount++;
             }
+            if (
+              asString(event.name) === "sessions_spawn" &&
+              // A FAILED spawn is not a live delegation: the fallback exemption
+              // must never ride an errored spawn call (codex P2).
+              asString(event.phase) === "completed"
+            ) {
+              this.spawnCalledThisTurn = true;
+              // The spawn tool's RESULT carries the child's session key — string-
+              // match it shape-agnostically (output nesting varies by gateway).
+              const m = JSON.stringify(event.output ?? "").match(
+                // Agent ids may carry dots/dashes; a NESTED child appends
+                // further `:subagent:<uuid>` segments — capture the FULL key
+                // or the intersection with the frame's key fails (codex P2).
+                /agent:[A-Za-z0-9_.-]+(?::subagent:[A-Za-z0-9-]+)+/g,
+              );
+              for (const k of m ?? []) this.spawnedChildKeysThisTurn.add(k);
+              if ((m?.length ?? 0) > 0 && messageId !== null) {
+                // The parent is now waiting on its children (announce pattern).
+                this.writer.setPhase?.(messageId, "awaiting_subagents");
+              }
+            }
           }
           const part: ToolPart = {
             kind: "tool",
@@ -561,6 +613,13 @@ export class TurnSink {
           this.pendingMediaGeneratedUndelivered =
             (event as { mediaGeneratedUndelivered?: unknown })
               .mediaGeneratedUndelivered === true;
+          {
+            const keys = (event as { observedChildKeys?: unknown })
+              .observedChildKeys;
+            this.pendingObservedChildKeys = Array.isArray(keys)
+              ? keys.filter((k): k is string => typeof k === "string")
+              : [];
+          }
           this.hasPendingFinal = true;
           break;
         }
@@ -575,6 +634,7 @@ export class TurnSink {
           break;
         }
         case "context.compaction": {
+          this.writer.setPhase?.(messageId, "compacting");
           // The gateway summarized this session's older context during the turn
           // (see core/events.ts). Persist ONE user-facing marker part — it both
           // explains a long "Réflexion…" wait live (parts stream to the UI) and
@@ -588,6 +648,35 @@ export class TurnSink {
               phase,
               at: Date.now(),
             });
+          }
+          break;
+        }
+        case "agent.activity": {
+          // Child observation (persisted by the SubAgentObserver, not here) —
+          // but it PROVES the delegated work is alive: refresh the parent's
+          // awaiting-subagents phase/heartbeat (throttled) so the watchdog
+          // never orphans a silent parent whose child still works (codex P2).
+          const nowMs = Date.now();
+          // Correlate to THIS turn's children (same predicate as the empty-
+          // result exemption): a PREVIOUS turn's chatty child must not keep a
+          // stuck current turn alive forever (codex P2).
+          const childKey =
+            typeof (event as { childSessionKey?: unknown }).childSessionKey ===
+            "string"
+              ? String((event as { childSessionKey?: unknown }).childSessionKey)
+              : null;
+          const belongsToThisTurn =
+            (childKey !== null && this.spawnedChildKeysThisTurn.has(childKey)) ||
+            (this.spawnCalledThisTurn &&
+              this.spawnedChildKeysThisTurn.size === 0);
+          if (
+            this.turnActive &&
+            messageId !== null &&
+            belongsToThisTurn &&
+            nowMs - this.lastChildHeartbeatMs >= 60_000
+          ) {
+            this.lastChildHeartbeatMs = nowMs;
+            this.writer.setPhase?.(messageId, "awaiting_subagents");
           }
           break;
         }
@@ -681,6 +770,23 @@ export class TurnSink {
       effectiveErrorKind === null &&
       replyText.trim().length === 0 &&
       !this.sawVisibleText &&
+      // A child SPAWNED BY THIS TURN was observed working (intersection of the
+      // turn's own spawn results with the observed child keys): the parent
+      // ending silent is the ANNOUNCE pattern (reply arrives as a spontaneous
+      // turn) — keep the pre-0.34 contract, never an error card (ms79rj0e…).
+      !(
+        this.pendingObservedChildKeys.some((k) =>
+          this.spawnedChildKeysThisTurn.has(k),
+        ) ||
+        // Fallback (gateway variance: spawn result without a child key): the
+        // turn CALLED the spawn tool and SOME child activity was observed —
+        // ONLY when no key could be extracted at all. When keys WERE extracted,
+        // the intersection above is the sole judge (a stale old child must not
+        // ride a failed intersection through this fallback — codex).
+        (this.spawnCalledThisTurn &&
+          this.spawnedChildKeysThisTurn.size === 0 &&
+          this.pendingObservedChildKeys.length > 0)
+      ) &&
       this.hostedThisTurn.size === 0 &&
       (this.toolCallCount > 0 ||
         this.hasPendingMedia ||

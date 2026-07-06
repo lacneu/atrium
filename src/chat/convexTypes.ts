@@ -148,6 +148,10 @@ export interface ConvexMessageView {
   /** Stable failure class: gateway errorKind (context_length|rate_limit|timeout|
    *  refusal) or a curated dispatch code — maps to a localized headline. */
   errorCode?: string;
+  /** Live processing phase of an IN-FLIGHT turn (processing_history/compacting/
+   *  querying_gateway/awaiting_subagents) — merged from the streaming row; shown
+   *  by the thinking placeholder when Tools is ON. Absent once text streams. */
+  phase?: string;
   /** MULTI-AGENT per-turn routing: which agent this turn was addressed to (absent on
    *  a single-agent message). The thread attributes each reply from these (an
    *  assistant without its own inherits the preceding user turn's agent); the

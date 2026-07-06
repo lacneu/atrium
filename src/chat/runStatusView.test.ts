@@ -165,3 +165,31 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.detail).toBeNull();
   });
 });
+
+describe("live phase detail (Tools-ON placeholder)", () => {
+  it("thinking + a known phase -> the phase label (not the generic thinking)", () => {
+    const v = runStatusView("streaming", false, "awaiting_subagents");
+    expect(v?.kind).toBe("thinking");
+    expect(v?.label).not.toBe(runStatusView("streaming", false)?.label);
+  });
+  it("an UNKNOWN wire phase falls back to the generic thinking label (forward-compat)", () => {
+    const v = runStatusView("streaming", false, "some_future_phase");
+    expect(v?.label).toBe(runStatusView("streaming", false)?.label);
+  });
+  it("a phase NEVER overrides the generating state (text already streams)", () => {
+    const v = runStatusView("streaming", true, "compacting");
+    expect(v?.kind).toBe("generating");
+    expect(v?.label).toBe(runStatusView("streaming", true)?.label);
+  });
+  it("a phase label is flagged `phased` so the long-wait fallback never replaces it", () => {
+    expect(runStatusView("streaming", false, "compacting")?.phased).toBe(true);
+    expect(runStatusView("streaming", false)?.phased).toBeUndefined();
+    expect(runStatusView("streaming", false, "unknown_phase")?.phased).toBeUndefined();
+  });
+  it("null phase (Tools OFF gating) -> generic label", () => {
+    expect(runStatusView("streaming", false, null)?.label).toBe(
+      runStatusView("streaming", false)?.label,
+    );
+  });
+});
+

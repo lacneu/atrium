@@ -200,6 +200,11 @@ type IngestOp =
       postCostUsd?: number | null;
     }
   | {
+      op: "setPhase";
+      messageId: string;
+      phase: string;
+    }
+  | {
       op: "finalize";
       messageId: string;
       status: "complete" | "error" | "aborted";
@@ -608,6 +613,13 @@ export const ingest = httpAction(async (ctx, request) => {
             ? { postCostUsd: body.postCostUsd }
             : {}),
         },
+      });
+      return json({ ok: true });
+    }
+    case "setPhase": {
+      await ctx.runMutation(internal.stream.setPhase, {
+        messageId: body.messageId as Id<"messages">,
+        phase: body.phase,
       });
       return json({ ok: true });
     }

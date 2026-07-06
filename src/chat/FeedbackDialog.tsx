@@ -180,7 +180,11 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
         },
       });
       setVerdict(res.displayedMatchesStored);
-      setReference(String(res.feedbackId));
+      setReference(
+        String(
+          (res as { reference?: string }).reference ?? res.feedbackId,
+        ),
+      );
     } catch {
       setSubmitting(false);
     }

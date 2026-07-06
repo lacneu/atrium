@@ -1196,6 +1196,11 @@ export default defineSchema({
     chatId: v.id("chats"),
     text: v.string(),
     updatedAt: v.number(),
+    // Live PROCESSING PHASE of the in-flight turn (processing_history /
+    // compacting / querying_gateway / awaiting_subagents) — shown by the
+    // thinking placeholder when the user has Tools ON. Values validated at the
+    // setPhase ingest op (allowlist); absent on plain turns.
+    phase: v.optional(v.string()),
     // Delivery-latency recorder (OFF by default): when a recording session is
     // active, appendDelta/setSnapshot stamp the deliveryTimings row id (the unique
     // correlator) + server commit time of the last write here, so getStreamingText
@@ -1525,6 +1530,12 @@ export default defineSchema({
     category: v.string(), // incoherence|incorrect|altered_words|formatting|latency|api_error|other
     comment: v.optional(v.string()),
     snapshot: v.object({
+      // --- Frozen routing identity (SERVER-READ at submit time): the report is
+      // forensic evidence that survives chat rerouting/deletion, so WHERE the
+      // reported turn ran is captured here, never read live (codex P2). The
+      // routed per-turn identity wins over the chat primary when present.
+      instanceName: v.optional(v.string()),
+      agentId: v.optional(v.string()),
       // --- The reported message (SERVER-READ, authoritative) ---
       messageRole: v.string(),
       messageText: v.string(),
