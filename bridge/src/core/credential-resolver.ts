@@ -181,6 +181,7 @@ export class CredentialResolver {
         version?: string | null;
         httpUrl?: string | null;
         kind?: string;
+        transport?: string | null;
       };
       credentials?: Record<string, string>;
     };
@@ -209,34 +210,49 @@ export class CredentialResolver {
     const nonEmpty = (v: string | undefined): string | undefined =>
       v && v.trim().length > 0 ? v : undefined;
     const creds = body.credentials ?? {};
-    const token = nonEmpty(creds.token);
+    // Provider FIRST: the auth SHAPE differs by provider. OpenClaw stores its
+    // operator token under `token` + an Ed25519 device identity; Hermes stores
+    // ONLY its bearer under `apiKey` (the instanceSecrets field is
+    // "token"|"deviceIdentity"|"apiKey"). Deciding the field/validation per
+    // provider BEFORE the checks is what lets a Hermes instance (apiKey-only, no
+    // device) be served at all (codex P1).
+    const kind = body.gateway?.kind === "hermes" ? "hermes" : "openclaw";
+    // Hermes: the bearer lives in `apiKey` (fall back to `token` defensively).
+    const token =
+      kind === "hermes"
+        ? (nonEmpty(creds.apiKey) ?? nonEmpty(creds.token))
+        : nonEmpty(creds.token);
     if (!token) {
       throw new CredentialFetchError(
         "no_token",
-        `instance "${instanceName}" has no operator token stored in Convex`,
+        `instance "${instanceName}" has no ${
+          kind === "hermes" ? "API key" : "operator token"
+        } stored in Convex`,
         instanceName,
       );
     }
-    const deviceRaw = nonEmpty(creds.deviceIdentity);
-    if (!deviceRaw) {
-      throw new CredentialFetchError(
-        "bad_device",
-        `instance "${instanceName}" has no device identity stored in Convex`,
-        instanceName,
-      );
+    // Device identity is validated ONLY for OpenClaw (Hermes has none).
+    let deviceIdentity: ReturnType<typeof parseDeviceIdentity> | null = null;
+    if (kind === "openclaw") {
+      const deviceRaw = nonEmpty(creds.deviceIdentity);
+      if (!deviceRaw) {
+        throw new CredentialFetchError(
+          "bad_device",
+          `instance "${instanceName}" has no device identity stored in Convex`,
+          instanceName,
+        );
+      }
+      try {
+        // Validate with the SAME guard as the env value — never connect with garbage.
+        deviceIdentity = parseDeviceIdentity(deviceRaw, "Convex deviceIdentity");
+      } catch (err) {
+        throw new CredentialFetchError(
+          "bad_device",
+          `instance "${instanceName}" device identity is invalid: ${(err as Error).message}`,
+          instanceName,
+        );
+      }
     }
-    let deviceIdentity;
-    try {
-      // Validate with the SAME guard as the env value — never connect with garbage.
-      deviceIdentity = parseDeviceIdentity(deviceRaw, "Convex deviceIdentity");
-    } catch (err) {
-      throw new CredentialFetchError(
-        "bad_device",
-        `instance "${instanceName}" device identity is invalid: ${(err as Error).message}`,
-        instanceName,
-      );
-    }
-    const kind = body.gateway?.kind === "hermes" ? "hermes" : "openclaw";
     return {
       instanceName,
       gatewayUrl: url,
@@ -245,6 +261,8 @@ export class CredentialResolver {
       gatewayVersion: nonEmpty(body.gateway?.version ?? undefined) ?? null,
       gatewayHttpUrl: nonEmpty(body.gateway?.httpUrl ?? undefined) ?? null,
       kind,
+      // Explicit validation: only "rest" opts out of the WS default.
+      transport: body.gateway?.transport === "rest" ? "rest" : kind === "hermes" ? "ws" : null,
     };
   }
 }

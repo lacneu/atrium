@@ -37,6 +37,7 @@ async function seedInstance(
     gatewayVersion: string;
     gatewayHttpUrl: string;
     kind: "openclaw" | "hermes";
+    transport: "ws" | "rest";
   }> = {},
 ) {
   return await t.run((ctx) =>
@@ -46,6 +47,7 @@ async function seedInstance(
       ...(gateway.gatewayVersion ? { gatewayVersion: gateway.gatewayVersion } : {}),
       ...(gateway.gatewayHttpUrl ? { gatewayHttpUrl: gateway.gatewayHttpUrl } : {}),
       ...(gateway.kind ? { kind: gateway.kind } : {}),
+      ...(gateway.transport ? { transport: gateway.transport } : {}),
     }),
   );
 }
@@ -128,7 +130,7 @@ describe("/bridge/credentials end-to-end", () => {
       url: "wss://beta.example.org/ws",
       version: "2026.6.5",
       httpUrl: "https://beta.example.org/media",
-      kind: "hermes",
+      kind: "hermes", transport: null,
     });
   });
 
@@ -147,7 +149,7 @@ describe("/bridge/credentials end-to-end", () => {
       url: "ws://beta",
       version: null,
       httpUrl: null,
-      kind: "openclaw",
+      kind: "openclaw", transport: null,
     });
   });
 

@@ -51,6 +51,8 @@ type InstanceForm = {
   bridgeUrl: string;
   displayName: string;
   kind: InstanceKind;
+  // Hermes transport (ws = JSON-RPC WebSocket, default; rest = OpenAI API server).
+  transport: "ws" | "rest";
   gatewayVersion: string;
   gatewayHttpUrl: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
@@ -62,6 +64,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   bridgeUrl: "",
   displayName: "",
   kind: "openclaw",
+  transport: "ws",
   gatewayVersion: "",
   gatewayHttpUrl: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
@@ -86,6 +89,7 @@ function formFromInstance(i: Instance): InstanceForm {
     bridgeUrl: i.bridgeUrl ?? "",
     displayName: i.displayName ?? "",
     kind: (i.kind ?? "openclaw") as InstanceKind,
+    transport: (i.transport ?? "ws") as "ws" | "rest",
     gatewayVersion: i.gatewayVersion ?? "",
     gatewayHttpUrl: i.gatewayHttpUrl ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
@@ -121,6 +125,7 @@ export function InstancesTab() {
         bridgeUrl: form.bridgeUrl || undefined,
         displayName: form.displayName || undefined,
         kind: form.kind,
+        transport: form.kind === "hermes" ? form.transport : undefined,
         gatewayVersion: form.gatewayVersion || undefined,
         gatewayHttpUrl: form.gatewayHttpUrl || undefined,
         streamTransport: form.streamTransport,
@@ -288,6 +293,28 @@ export function InstancesTab() {
               </SelectContent>
             </Select>
           </Field>
+          {form.kind === "hermes" ? (
+            <Field label={m.settings_field_transport()}>
+              <Select
+                value={form.transport}
+                onValueChange={(v) =>
+                  setForm({ ...form, transport: v as "ws" | "rest" })
+                }
+              >
+                <SelectTrigger size="sm" className="w-56">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ws">
+                    {m.settings_transport_ws()}
+                  </SelectItem>
+                  <SelectItem value="rest">
+                    {m.settings_transport_rest()}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          ) : null}
           <Field label={m.settings_field_gateway_url()}>
             <Input
               value={form.gatewayUrl}

@@ -8,6 +8,48 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.38.0] — Hermes Agent support: a second provider, almost entirely in the bridge
+
+Feature release. No breaking changes; OpenClaw instances are untouched.
+
+- **New: Atrium can serve Hermes Agent instances alongside OpenClaw.** A Hermes
+  instance (Nous Research's self-hosted agent) is registered like any instance —
+  provider `hermes`, its gateway URL, and its credential — and its agent appears
+  through the same discovery, chat, streaming, stop, and reset paths. Hermes
+  authenticates by SUBSCRIPTION (device token), like OpenClaw, not a metered
+  API key.
+
+- **Two Hermes transports, selectable per instance — WebSocket by default.**
+  The recommended WebSocket transport (Hermes's JSON-RPC gateway) brings richer
+  streaming (a separate reasoning stream that never pollutes the reply),
+  per-turn usage and context pressure feeding Atrium's gauge natively, clean
+  server-side interrupts, and resumable sessions; its headless auth flow
+  (password login → single-use ticket per connection) works against a hardened
+  public bind. The REST transport (OpenAI-compatible API server) remains
+  available as an option.
+
+- **The UI adapts to Hermes automatically, with no per-provider code.** Because
+  Hermes advertises only the capabilities it truly has (a real Stop, agent
+  discovery), every OpenClaw-specific control gates itself OFF on a Hermes chat:
+  the reasoning/model knobs, the chat-defaults admin tab, sub-agent monitoring,
+  and the attachment button all disappear — driven entirely by the capability
+  manifest the multi-provider design already had.
+
+- **Robust turn lifecycle for Hermes's per-turn streaming transport.** Unlike
+  OpenClaw's persistent socket, each Hermes turn is one streaming HTTP request.
+  The bridge handles it end to end: reply-on-acceptance (so a queued follow-up
+  waits), lazy session creation reused for continuity, a real server-side Stop,
+  reset/regenerate that starts a fresh session, auto-recovery when a stored
+  session has vanished, and actionable errors (auth, unreachable, no-response)
+  instead of silent failures.
+
+- **Almost everything lives in the bridge.** The only changes outside it are a
+  few small hooks a provider genuinely needs from the backend (persisting the
+  Hermes-minted session/run ids for continuity, reset, and stop targeting) and
+  the attachment-button capability gate — proof the multi-provider foundation
+  laid earlier held. A NAS install + OpenClaw-config-migration guide ships in the
+  operator docs.
+
 ## [0.37.1] — Corrective: brand-colored paste shimmer, attachment preview, and a conversation loading skeleton
 
 Corrective follow-up to 0.37.0's paste flow. No breaking changes.

@@ -24,6 +24,14 @@ export interface BridgeConfig {
   /** Bearer token presented in the connect request's auth.token. ENV FALLBACK only
    *  since 3b: null when unset (the credential resolver may fetch it from Convex). */
   openclawToken: string | null;
+  /** Which provider serves this instance. Routes the dispatch path: "openclaw"
+   *  = the persistent multiplexed WebSocket; "hermes" = per-turn REST+SSE.
+   *  ABSENT ⇒ openclaw (backward-compatible default at every consumer). */
+  kind?: "openclaw" | "hermes";
+  /** Hermes transport. "ws" (DEFAULT — the JSON-RPC WebSocket `hermes serve`
+   *  surface: richer events, usage/pressure, explicit ack) or "rest" (the
+   *  OpenAI-compatible API server, per-turn SSE). Ignored for OpenClaw. */
+  transport?: "ws" | "rest";
   /** Ed25519 device identity (id + publicKey + PEM privateKey). ENV FALLBACK only
    *  since 3b: null when unset (the resolver may fetch it from Convex). */
   deviceIdentity: DeviceIdentity | null;
@@ -357,6 +365,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
       : `${MEDIA_ROOT}/inbound`;
     return {
       openclawGatewayUrl: requireEnv("OPENCLAW_GATEWAY_URL"),
+      // Explicit validation (a bare `as` cast would let a typo like "hermess"
+      // through silently and route to the wrong provider): only "hermes" opts
+      // into the Hermes path; anything else (unset, typo) is OpenClaw.
+      kind:
+        optionalEnvOrNull("BRIDGE_PROVIDER_KIND") === "hermes"
+          ? "hermes"
+          : "openclaw",
+      transport:
+        optionalEnvOrNull("BRIDGE_PROVIDER_TRANSPORT") === "rest" ? "rest" : "ws",
       // OPTIONAL since 3b: the credential resolver fetches these from Convex via the
       // per-bridge secret, falling back to these env values per field.
       openclawToken: optionalEnvOrNull("OPENCLAW_TOKEN"),
@@ -450,10 +467,12 @@ export interface InstanceData {
   instanceName: string;
   gatewayUrl: string;
   token: string;
-  deviceIdentity: DeviceIdentity;
+  deviceIdentity: DeviceIdentity | null; // null for Hermes (bearer-only auth)
   gatewayVersion: string | null;
   gatewayHttpUrl: string | null;
   kind: "openclaw" | "hermes";
+  transport?: "ws" | "rest" | null; // Hermes only; absent/null → default ("ws")
+
 }
 
 /** Parse the comma/space-separated per-bridge secrets list (BRIDGE_INSTANCE_SECRETS),
@@ -538,6 +557,8 @@ export function buildInstanceConfig(
   return {
     openclawGatewayUrl: inst.gatewayUrl,
     openclawToken: inst.token,
+    kind: inst.kind,
+    transport: inst.transport ?? undefined,
     deviceIdentity: inst.deviceIdentity,
     bridgeInstanceSecret: null, // the secret is a shared-config anchor, not per-config
     instanceName: inst.instanceName,
@@ -574,10 +595,16 @@ export function findMediaDirCollision(
     instanceName: string;
     mediaOutboundDir: string;
     inboundMediaDir: string;
+    kind?: "openclaw" | "hermes";
   }>,
 ): { dir: string; a: string; b: string } | null {
   const seen = new Map<string, string>(); // dir -> "<instance>/<kind>" that claimed it
   for (const inst of instances) {
+    // A Hermes instance uses NO media dirs (no shared-fs legs, no outbound
+    // scan — its API takes no uploaded files), so it never CLAIMS a dir: a
+    // global env override must not read as a collision with a real OpenClaw
+    // instance's mounts.
+    if (inst.kind === "hermes") continue;
     for (const [kind, dir] of [
       ["outbound", inst.mediaOutboundDir],
       ["inbound", inst.inboundMediaDir],

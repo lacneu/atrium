@@ -126,6 +126,7 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
         version: resolved.gatewayVersion,
         httpUrl: resolved.gatewayHttpUrl,
         kind: resolved.kind,
+        transport: resolved.transport ?? null,
       },
       credentials,
     }),

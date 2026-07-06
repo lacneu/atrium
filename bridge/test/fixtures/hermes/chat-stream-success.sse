@@ -1,0 +1,24 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "Reponds exactement: PONG"}, "session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 1, "ts": 1783371119.5073247}
+
+event: message.started
+data: {"message": {"id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "role": "assistant"}, "session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 2, "ts": 1783371119.5073304}
+
+event: assistant.delta
+data: {"message_id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "delta": "P", "session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 3, "ts": 1783371125.6345637}
+
+event: assistant.delta
+data: {"message_id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "delta": "ONG", "session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 4, "ts": 1783371125.6365392}
+
+event: tool.progress
+data: {"message_id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "tool_name": "_thinking", "delta": "PONG", "session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 5, "ts": 1783371125.811149}
+
+event: assistant.completed
+data: {"session_id": "api_1783371119_f43e8857", "message_id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "content": "PONG", "completed": true, "partial": false, "interrupted": false, "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 6, "ts": 1783371125.8295062}
+
+event: run.completed
+data: {"session_id": "api_1783371119_f43e8857", "message_id": "msg_1d2020a4ac3e4aa5b16ec095accf38a8", "completed": true, "messages": [{"role": "assistant", "content": "PONG", "finish_reason": "stop", "reasoning": null}], "usage": {"input_tokens": 14467, "output_tokens": 32, "total_tokens": 14499}, "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 7, "ts": 1783371125.829515}
+
+event: done
+data: {"session_id": "api_1783371119_f43e8857", "run_id": "run_39f2c18b8f7949c4bafadcf0d918fa09", "seq": 8, "ts": 1783371125.8295157}
+

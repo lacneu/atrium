@@ -90,6 +90,20 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   subagents: "2026.5.19",
 };
 
+// Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
+// server (validated 0.18.0, bench 2026-07-06): a per-turn run with a real
+// server-side stop, and single-agent discovery via /v1/models. It has NONE of
+// the OpenClaw per-chat knobs (thinking/model/fastMode are server-side config,
+// cosmetic in the API), NO admin config write (`admin_config_rw:false` → no
+// chat-defaults), NO general attachments (images-only inline), NO exposed
+// sub-agent/compaction RPCs. Listing ONLY what Hermes has makes every UI
+// feature gate OFF automatically on a Hermes instance — the multi-provider
+// design's payoff (capability-driven UI, zero per-provider UI code).
+const HERMES_CAPABILITIES: Record<string, string> = {
+  abort: "0.18.0", // run_stop: POST /v1/runs/{id}/stop
+  agentsDiscovery: "0.18.0", // GET /v1/models (one agent)
+};
+
 export const COMPAT_MANIFEST: CompatManifest = {
   bridgeVersion: BRIDGE_VERSION,
   protocolVersion: PROTOCOL_VERSION,
@@ -109,9 +123,9 @@ export const COMPAT_MANIFEST: CompatManifest = {
     // pins the manifest shape consumers (Convex/front) must handle: a provider
     // with NO validated range exposes zero capabilities.
     hermes: {
-      supportedRange: null,
-      validatedVersions: [],
-      capabilities: {},
+      supportedRange: { min: "0.18.0", maxValidated: "0.18.0" },
+      validatedVersions: ["0.18.0"],
+      capabilities: HERMES_CAPABILITIES,
     },
   },
 };

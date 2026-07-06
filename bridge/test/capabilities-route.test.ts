@@ -161,9 +161,9 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.6.11",
     ]);
     expect(body.compat.providers.hermes).toEqual({
-      supportedRange: null,
-      validatedVersions: [],
-      capabilities: {},
+      supportedRange: { min: "0.18.0", maxValidated: "0.18.0" },
+      validatedVersions: ["0.18.0"],
+      capabilities: { abort: "0.18.0", agentsDiscovery: "0.18.0" },
     });
     // No live gateway session in this test -> no targets.
     expect(body.targets).toEqual([]);
@@ -265,6 +265,31 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     // Full 6.5 row -> agentFiles/configDefaults resolve TRUE (no longer gated).
     expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBe(true);
+  });
+
+  test("a HERMES served instance: synthetic target exposes hermes caps (codex P2)", () => {
+    const targets = buildCapabilityTargets([], "hermes-inst", "0.18.0", "hermes");
+    expect(targets).toHaveLength(1);
+    const t = targets[0]!;
+    expect(t.provider).toBe("hermes");
+    expect(t.gatewayVersion).toBe("0.18.0");
+    // Hermes surface: abort + discovery TRUE; OpenClaw-only knobs absent/false.
+    expect(t.capabilities.abort).toBe(true);
+    expect(t.capabilities.agentsDiscovery).toBe(true);
+    expect(t.capabilities.configDefaults).toBeUndefined();
+    expect(t.capabilities.subagents).toBeUndefined();
+  });
+
+  test("a HERMES instance with NO version still emits its target (codex P2)", () => {
+    const targets = buildCapabilityTargets([], "hermes-inst", null, "hermes");
+    expect(targets).toHaveLength(1);
+    const t = targets[0]!;
+    expect(t.provider).toBe("hermes");
+    expect(t.gatewayVersion).toBeNull();
+    // Conservative floor: both range-min caps resolve TRUE — never OpenClaw knobs.
+    expect(t.capabilities.abort).toBe(true);
+    expect(t.capabilities.agentsDiscovery).toBe(true);
+    expect(t.capabilities.configDefaults).toBeUndefined();
   });
 
   test("no live session + NO fallback version: stays empty (honest unknown)", () => {

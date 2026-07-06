@@ -42,6 +42,13 @@ import {
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
+import {
+  HermesTurnRegistry,
+  performHermesSend,
+  performHermesAbort,
+  performHermesReset,
+  discoverHermesAgents,
+} from "./providers/hermes/dispatch.js";
 import { validateSharedFs } from "./core/media-validate.js";
 import {
   gatewayHostOf,
@@ -1297,14 +1304,28 @@ export function normalizeOpenClawAgent(
 /** Open a SHORT-LIVED operator connection, call `agents.list`, normalize, close.
  *  Dedicated (not a registry session) so it never starts a normalizer consumer or
  *  pollutes the per-chat session map. Mono-tenant: uses the configured gateway. */
+// The Hermes WS discovery needs the server's per-instance WS clients; set at
+// createBridgeServer time (module-level so the free function can reach it).
+let hermesTurnsRef: HermesTurnRegistry | undefined;
+
 async function discoverAgents(
   config: BridgeConfig,
   onHandshake?: (conn: OpenClawConnection) => void,
+  onHermesVersion?: (version: string) => void,
 ): Promise<{
   agents: NormalizedAgent[];
   rawCount: number;
   usage: ProviderUsage[] | null;
 }> {
+  if (config.kind === "hermes") {
+    // Hermes: REST discovery (GET /v1/models → one agent). No operator socket,
+    // no usage RPC. The gateway version (from /health) is noted so the compat
+    // poll's synthetic target exposes Hermes capabilities even when idle (codex
+    // P2). Same return shape so every caller is provider-agnostic.
+    const d = await discoverHermesAgents(config, hermesTurnsRef);
+    if (d.gatewayVersion) onHermesVersion?.(d.gatewayVersion);
+    return { agents: d.agents, rawCount: d.rawCount, usage: null };
+  }
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
     // Boot-resolved (index.ts) — non-null by construction.
@@ -1418,7 +1439,7 @@ function openclawCapabilities() {
 export interface CapabilityTarget {
   key: string;
   instanceName: string | null;
-  provider: "openclaw";
+  provider: "openclaw" | "hermes";
   agentId: string;
   gatewayVersion: string | null;
   capabilities: Record<string, boolean>;
@@ -1434,6 +1455,7 @@ export function buildCapabilityTargets(
   live: LiveTarget[],
   instanceName: string | null,
   fallbackVersion: string | null = null,
+  provider: "openclaw" | "hermes" = "openclaw",
 ): CapabilityTarget[] {
   const byKey = new Map<string, LiveTarget>();
   for (const t of live) byKey.set(t.canonical, t);
@@ -1468,14 +1490,19 @@ export function buildCapabilityTargets(
   // live target already covers it (a live session is always more specific).
   if (
     instanceName &&
-    fallbackVersion &&
+    // Hermes: emit the target EVEN with a null version — its /health may return
+    // plain "ok" (no version), but its capabilities pin at the range floor
+    // regardless, and dropping the target would make the UI fall back to legacy
+    // OpenClaw controls on a Hermes instance (codex P2). OpenClaw keeps the
+    // honest "no version -> no target -> unknown" behavior.
+    (fallbackVersion || provider === "hermes") &&
     !targets.some((t) => t.instanceName === instanceName)
   ) {
-    const resolved = resolveCapabilities("openclaw", fallbackVersion);
+    const resolved = resolveCapabilities(provider, fallbackVersion);
     const synthetic: CapabilityTarget = {
       key: instanceName,
       instanceName,
-      provider: "openclaw",
+      provider,
       agentId: "",
       gatewayVersion: fallbackVersion,
       capabilities: resolved.capabilities,
@@ -1623,6 +1650,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   // strand instance A's version/cap). Per-server (test isolation).
   const lastGatewayVersion = new Map<string, string>();
   const lastMaxPayload = new Map<string, number>();
+  // In-flight Hermes turns (per chat) for /abort — Hermes has no persistent
+  // session registry, so this tracks the one live SSE turn per chat.
+  const hermesTurns = new HermesTurnRegistry();
+  hermesTurnsRef = hermesTurns;
   const noteGatewayVersion = (instanceName: string, v: string | null): void => {
     if (typeof v === "string" && v.length > 0) lastGatewayVersion.set(instanceName, v);
   };
@@ -1724,7 +1755,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           let inflight = versionDiscoveryInFlight.get(name);
           if (!inflight) {
-            inflight = discoverAgents(bundle.config, noteHandshakeFor(name))
+            inflight = discoverAgents(bundle.config, noteHandshakeFor(name), (v) =>
+              noteGatewayVersion(name, v),
+            )
               .then(() => undefined)
               .catch((err) => {
                 console.error(
@@ -1756,6 +1789,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           live.filter((t) => t.instanceName === name),
           name,
           lastGatewayVersion.get(name) ?? bundle.config.gatewayVersionFallback ?? null,
+          bundle.config.kind ?? "openclaw",
         ),
       );
       const names = [...served.keys()];
@@ -1830,6 +1864,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const { agents, rawCount, usage } = await discoverAgents(
           bundle.config,
           noteHandshakeFor(instanceName!),
+          (v) => noteGatewayVersion(instanceName!, v),
         );
         // `count` (raw gateway agent count) lets the Convex poller distinguish a
         // genuinely empty gateway from normalizer shape-drift (agents cache P2).
@@ -1890,7 +1925,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         bundle &&
         !registry.listLive().some((t) => t.instanceName === instanceName)
       ) {
-        void discoverAgents(bundle.config, noteHandshakeFor(instanceName!)).catch(
+        void discoverAgents(bundle.config, noteHandshakeFor(instanceName!), (v) =>
+          noteGatewayVersion(instanceName!, v),
+        ).catch(
           (err) => {
             console.log(
               `[refresh] discovery connect for ${instanceName} (non-fatal):`,
@@ -1973,8 +2010,31 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const resetInstance = reset.instanceName;
-      if (!resetInstance || !served.has(resetInstance)) {
+      const resetBundle = resetInstance ? served.get(resetInstance) : undefined;
+      if (!resetInstance || !resetBundle) {
         sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (resetBundle.config.kind === "hermes") {
+        // Hermes: cancel any in-flight turn + forget the persisted session so
+        // the next turn mints a fresh Hermes conversation. No operator socket.
+        // A FAILED clear (Convex ingest down) must NOT report success — else
+        // the regenerate would resume the old server context (codex P2).
+        try {
+          await performHermesReset(
+            resetBundle.config,
+            reset.chatId,
+            hermesTurns,
+            resetBundle.writer,
+          );
+          sendJson(res, 200, { ok: true });
+        } catch (err) {
+          console.error(
+            "bridge /reset (hermes) failed:",
+            (err as Error)?.message ?? err,
+          );
+          sendJson(res, 502, { ok: false, error: "upstream reset failed" });
+        }
         return;
       }
       try {
@@ -2006,6 +2066,26 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const abortBundle = abortInstance ? served.get(abortInstance) : undefined;
       if (!abortInstance || !abortBundle) {
         sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (abortBundle.config.kind === "hermes") {
+        // Hermes: cancel the in-flight SSE turn + POST the server-side run stop.
+        // Target THIS turn by the abort's runId (the assistant message carries
+        // the Hermes run id) so a fast Stop→resend does not abort the new turn.
+        let abortRunId: string | null = null;
+        try {
+          const o = JSON.parse(raw) as { runId?: unknown };
+          if (typeof o.runId === "string" && o.runId) abortRunId = o.runId;
+        } catch {
+          /* best-effort: fall back to chat-only abort */
+        }
+        const stopped = await performHermesAbort(
+          abortBundle.config,
+          abort.chatId,
+          hermesTurns,
+          abortRunId,
+        );
+        sendJson(res, 200, { ok: true, aborted: stopped });
         return;
       }
       try {
@@ -2394,8 +2474,29 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         effectiveMediaMode === "off"
           ? null
           : (body.config?.outboundAgentMount ?? cfg.mediaOutboundAgentMount);
-      const session = await registry.acquire(toRouting(body, sendInstance));
-      await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
+      if (cfg.kind === "hermes") {
+        // Hermes: per-turn REST+SSE (no persistent session). Drives the SAME
+        // TurnSink downstream via the Hermes normalizer. No shared-fs media /
+        // rehydration injection here — Hermes keeps the conversation server-side.
+        // Hermes's API server takes NO uploaded files (images-only inline, which
+        // Atrium's upload path does not use) — REFUSE an attachment turn with an
+        // actionable code rather than silently dropping the file (codex P2). The
+        // manifest omits `inboundAttachments`, so the composer SHOULD hide attach
+        // on Hermes; this is the server-side safety net.
+        const hasInline =
+          Array.isArray(body.attachments) && body.attachments.length > 0;
+        if (hasInline || body.referenceAttachments.length > 0) {
+          sendJson(res, 502, {
+            ok: false,
+            error: { code: "ATTACHMENT_REJECTED" },
+          });
+          return;
+        }
+        await performHermesSend(cfg, bundle.writer, body, hermesTurns);
+      } else {
+        const session = await registry.acquire(toRouting(body, sendInstance));
+        await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
+      }
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       sendJson(res, 200, { ok: true });

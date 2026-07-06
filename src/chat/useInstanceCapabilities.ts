@@ -19,6 +19,10 @@ import { capabilityOf, type CapabilityKey } from "./capabilities";
 export function useInstanceCapabilities(chatId: ConvexId<"chats"> | null): {
   can: (key: CapabilityKey) => boolean;
   loading: boolean;
+  /** False when the bridge/snapshot did not resolve capabilities (legacy
+   *  bridge, unknown instance during an upgrade) — gates that would REMOVE a
+   *  long-standing affordance should fail OPEN on unresolved. */
+  resolved: boolean;
   gatewayVersion: string | null;
 } {
   const res = useQuery(
@@ -34,6 +38,7 @@ export function useInstanceCapabilities(chatId: ConvexId<"chats"> | null): {
   );
   return {
     can,
+    resolved: caps !== null,
     loading: res === undefined,
     gatewayVersion: res?.gatewayVersion ?? null,
   };

@@ -623,6 +623,8 @@ export const upsertInstance = mutation({
     bridgeUrl: v.optional(v.string()),
     // Which provider technology backs this instance (the bridge adapts by kind).
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
+    // Hermes transport: "ws" (default, richer) or "rest". Ignored for OpenClaw.
+    transport: v.optional(v.union(v.literal("ws"), v.literal("rest"))),
     // Non-secret gateway config (the SECRETS go through setInstanceSecret). Empty
     // string → undefined (cleared). gatewayVersion = compat fallback;
     // gatewayHttpUrl = media HTTP override.
@@ -645,6 +647,7 @@ export const upsertInstance = mutation({
           ? trimmedBridgeUrl
           : undefined,
       kind: args.kind ?? "openclaw",
+      transport: args.transport,
       gatewayVersion: args.gatewayVersion?.trim() || undefined,
       gatewayHttpUrl: args.gatewayHttpUrl?.trim() || undefined,
       streamTransport: args.streamTransport,

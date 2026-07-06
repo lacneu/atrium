@@ -309,6 +309,10 @@ export default defineSchema({
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
+    // Hermes transport: "ws" (default — the JSON-RPC WebSocket `hermes serve`
+    // surface, richer features) or "rest" (the OpenAI-compatible API server).
+    // Ignored for OpenClaw instances.
+    transport: v.optional(v.union(v.literal("ws"), v.literal("rest"))),
     // Admin-chosen DEFAULT agent for this instance (agentId). Overrides the
     // gateway-discovered `agents.isDefaultOnInstance` in the routing default tier
     // — but ONLY once Phase 2/3 consume it (set-but-INERT in Phase 1). Cleared when

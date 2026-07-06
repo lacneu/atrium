@@ -271,6 +271,15 @@ export interface ConvexWriter {
    * a turn on a meta write.
    */
   reportSessionMeta(chatId: string, meta: SessionMetaReport): Promise<void>;
+  /** Persist a provider-minted conversation id onto the chat (Hermes creates its
+   *  session id lazily on turn 1; later turns must reuse it for continuity).
+   *  OPTIONAL: test fakes / degraded writers may omit it. */
+  bindProviderChat?(chatId: string, providerChatId: string): Promise<void>;
+  /** Clear a persisted Hermes session id on reset (next turn starts fresh). */
+  clearProviderChat?(chatId: string): Promise<void>;
+  /** Stamp the provider run id onto an already-created streaming message (Hermes
+   *  learns it on run.started, after the message opened) so abort can target it. */
+  updateRunId?(messageId: string, runId: string): Promise<void>;
   /**
    * Sub-agent observation upsert (inbound-only): record a spawned child's status /
    * lifecycle phase / final result, keyed by childSessionKey. Best-effort at the
@@ -459,6 +468,9 @@ type IngestOp =
   // Mirror the gateway's `sessions.describe` meta onto the chat so the header
   // strip (model + reasoning chips + context meter) shows LIVE values.
   | { op: "setSessionMeta"; chatId: string; meta: SessionMetaReport }
+  | { op: "bindProviderChat"; chatId: string; providerChatId: string }
+  | { op: "clearProviderChat"; chatId: string }
+  | { op: "updateRunId"; messageId: string; runId: string }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
   // message-scoped (a child outlives the parent turn). resultText is server-path
   // stripped by the observer before it reaches here.
@@ -1328,6 +1340,37 @@ export class HttpConvexWriter implements ConvexWriter {
       chatId,
       excludeMessageId: excludeMessageId ?? null,
     });
+  }
+
+  async bindProviderChat(chatId: string, providerChatId: string): Promise<void> {
+    // Best-effort: losing it only costs a fresh Hermes session next turn (a
+    // benign continuity miss), never the turn itself.
+    await this.doPost({ op: "bindProviderChat", chatId, providerChatId }).catch(
+      (e) =>
+        console.error(
+          "[convex-writer] bindProviderChat failed:",
+          (e as Error)?.message ?? e,
+        ),
+    );
+  }
+
+  async updateRunId(messageId: string, runId: string): Promise<void> {
+    // Best-effort: a missed stamp only weakens abort targeting (falls back to
+    // best-effort), never the turn itself.
+    await this.doPost({ op: "updateRunId", messageId, runId }).catch((e) =>
+      console.error(
+        "[convex-writer] updateRunId failed:",
+        (e as Error)?.message ?? e,
+      ),
+    );
+  }
+
+  async clearProviderChat(chatId: string): Promise<void> {
+    // UNLIKE bindProviderChat (best-effort — a lost bind only costs a fresh
+    // session), a lost CLEAR leaves the OLD Hermes session persisted → the
+    // reset/regenerate would resume stale context. So PROPAGATE: /reset must
+    // 502 rather than report success without clearing (codex P2).
+    await this.doPost({ op: "clearProviderChat", chatId });
   }
 
   async reportSessionMeta(chatId: string, meta: SessionMetaReport): Promise<void> {

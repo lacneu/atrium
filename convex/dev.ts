@@ -1507,6 +1507,118 @@ export const seedInstanceCreds = action({
   },
 });
 
+/** DEV-ONLY: seed a HERMES instance (kind hermes; secret = the gateway's
+ *  API_SERVER_KEY under the `apiKey` field — no device identity) + its
+ *  per-bridge secret. Mirrors seedInstanceCreds for the local Hermes bench. */
+export const seedHermesInstance = action({
+  args: {
+    instanceName: v.string(),
+    // ws (default): the `hermes serve` base (e.g. http://host:9119), apiKey =
+    // "user:password" (dashboard basic auth) or the dashboard session token.
+    // rest: the API server base (e.g. http://host:18642), apiKey = API_SERVER_KEY.
+    gatewayUrl: v.string(),
+    apiKey: v.string(),
+    transport: v.optional(v.union(v.literal("ws"), v.literal("rest"))),
+  },
+  handler: async (
+    ctx,
+    { instanceName, gatewayUrl, apiKey, transport },
+  ): Promise<{ secret: string }> => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const instanceId = await ctx.runMutation(internal.dev._ensureSeedInstance, {
+      instanceName,
+      gatewayUrl,
+    });
+    await ctx.runMutation(internal.dev._markInstanceHermes, {
+      instanceId,
+      bridgeUrl: "http://127.0.0.1:8790",
+      transport: transport ?? "ws",
+    });
+    const { encryptCipher } = loadLocalCrypto();
+    const apiKeySecret = await encryptCipher.encrypt(
+      apiKey,
+      `${instanceId}:apiKey`,
+    );
+    const generated = generateApiKey();
+    const hashedSecret = await hashKey(generated.plaintext);
+    await ctx.runMutation(internal.dev._storeSeedHermesCreds, {
+      instanceId,
+      apiKeySecret,
+      hashedSecret,
+      prefix: generated.prefix,
+      lastFour: generated.lastFour,
+    });
+    return { secret: generated.plaintext };
+  },
+});
+
+export const _markInstanceHermes = internalMutation({
+  args: {
+    instanceId: v.id("instances"),
+    bridgeUrl: v.optional(v.string()),
+    transport: v.optional(v.union(v.literal("ws"), v.literal("rest"))),
+  },
+  handler: async (ctx, { instanceId, bridgeUrl, transport }) => {
+    assertDev();
+    await ctx.db.patch(instanceId, {
+      kind: "hermes",
+      ...(bridgeUrl ? { bridgeUrl } : {}),
+      ...(transport ? { transport } : {}),
+    });
+  },
+});
+
+export const _storeSeedHermesCreds = internalMutation({
+  args: {
+    instanceId: v.id("instances"),
+    apiKeySecret: encryptedSecretValidator,
+    hashedSecret: v.string(),
+    prefix: v.string(),
+    lastFour: v.string(),
+  },
+  handler: async (
+    ctx,
+    { instanceId, apiKeySecret, hashedSecret, prefix, lastFour },
+  ) => {
+    assertDev();
+    const existing = await ctx.db
+      .query("instanceSecrets")
+      .withIndex("by_instance_field", (q) =>
+        q.eq("instanceId", instanceId).eq("field", "apiKey"),
+      )
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        secret: apiKeySecret,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("instanceSecrets", {
+        instanceId,
+        field: "apiKey",
+        secret: apiKeySecret,
+        updatedAt: Date.now(),
+      });
+    }
+    // One active per-bridge secret per instance — replace any prior.
+    for (const row of await ctx.db
+      .query("bridgeAuth")
+      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
+      .collect())
+      await ctx.db.delete(row._id);
+    const anyProfile = await ctx.db.query("profiles").first();
+    await ctx.db.insert("bridgeAuth", {
+      instanceId,
+      hashedSecret,
+      prefix,
+      lastFour,
+      createdAt: Date.now(),
+      createdBy: anyProfile?.userId ?? ("seed" as Id<"users">),
+    });
+  },
+});
+
 // DEV-ONLY concurrency probe (one bridge, N gateways): create K chats bound to the
 // given (instance, agent) pairs for one owner and fire ALL their dispatches at once
 // (scheduler.runAfter(0)), so the bridge handles concurrent turns on the SAME instance

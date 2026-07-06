@@ -121,6 +121,7 @@ import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
+import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import type { ToolActivityPart } from "./toolActivityView";
 import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
 import {
@@ -738,6 +739,7 @@ function ChatThread({
         <GatewayDegradedBanner />
       ) : null}
       <Composer
+        chatId={chatId}
         showTools={showTools}
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
@@ -2379,11 +2381,13 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
 }
 
 function Composer({
+  chatId,
   showTools,
   onToggleTools,
   unavailable = false,
   subAgentBusy = false,
 }: {
+  chatId: ConvexId<"chats">;
   showTools: boolean;
   onToggleTools: () => void;
   /** Bridge down: disable input + send so no un-sendable turn is persisted. */
@@ -2392,6 +2396,23 @@ function Composer({
    *  SHOW the hold, exactly like an in-flight turn. */
   subAgentBusy?: boolean;
 }) {
+  // Attachments affordance is capability-driven: OpenClaw advertises
+  // `inboundAttachments`, Hermes does NOT (its API server takes no uploaded
+  // files) — so the attach button HIDES itself on a Hermes chat with no
+  // per-provider UI code (the multi-provider design's payoff). Defaults to
+  // shown while capabilities load, so an OpenClaw chat never flickers.
+  const {
+    can: chatCan,
+    loading: capsLoading,
+    resolved: capsResolved,
+  } = useInstanceCapabilities(chatId);
+  // Hide the attach affordance ONLY on an EXPLICITLY resolved capability set
+  // that lacks inboundAttachments (Hermes). While loading OR unresolved
+  // (legacy bridge / missing snapshot during an upgrade) fail OPEN — a
+  // long-standing OpenClaw affordance must not vanish on stale compat data
+  // (codex P2); the bridge still rejects unsupported sends server-side.
+  const attachmentsSupported =
+    capsLoading || !capsResolved || chatCan("inboundAttachments");
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
@@ -2442,6 +2463,11 @@ function Composer({
     if (!text) return;
     const route = routePaste(text, pasteSeq.current);
     if (route.kind !== "file") return;
+    // Instance without attachment support (Hermes): let the paste land as
+    // PLAIN TEXT in the input — never mint an attachment the bridge would
+    // reject with ATTACHMENT_REJECTED (codex P2; the attach button is already
+    // hidden on these instances).
+    if (!attachmentsSupported) return;
     e.preventDefault();
     if (queued) {
       // A queued follow-up is TEXT-ONLY (the attach button is already disabled
@@ -2565,13 +2591,15 @@ function Composer({
               so attaching here would be silently dropped. Disable the picker while
               queued (and when unavailable) so the affordance never lies. Including
               attachments in a queued send is a later phase. */}
-          <ComposerPrimitive.AddAttachment
-            className="oc-composer__icon"
-            aria-label={m.chat_attach_file()}
-            disabled={queued || unavailable}
-          >
-            <Plus size={18} aria-hidden />
-          </ComposerPrimitive.AddAttachment>
+          {attachmentsSupported ? (
+            <ComposerPrimitive.AddAttachment
+              className="oc-composer__icon"
+              aria-label={m.chat_attach_file()}
+              disabled={queued || unavailable}
+            >
+              <Plus size={18} aria-hidden />
+            </ComposerPrimitive.AddAttachment>
+          ) : null}
           <button
             type="button"
             className={`oc-composer__tools${showTools ? " is-on" : ""}`}

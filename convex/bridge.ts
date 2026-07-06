@@ -588,6 +588,73 @@ export const openclawThreadForChat = internalQuery({
 // a re-bind after the bound agent was deleted on the gateway). Called by the
 // dispatch action so the NEXT turn resolves straight to the binding (a stable
 // sessionKey). Idempotent; resilient to a chat deleted mid-turn.
+/** Persist a provider-minted conversation id onto the chat (Hermes mints its
+ *  session id lazily on turn 1; the bridge reports it here so later turns reuse
+ *  it). Idempotent: only writes when the value actually changes. */
+/** Stamp the provider run id onto a streaming message once the bridge learns it
+ *  (Hermes reports it on run.started, after the row was opened) — only while the
+ *  message is still streaming and has no run id yet, so it never clobbers a
+ *  finalized turn. Enables abort-by-run-id targeting. */
+export const updateMessageRunId = internalMutation({
+  args: { messageId: v.id("messages"), runId: v.string() },
+  handler: async (ctx, { messageId, runId }) => {
+    const msg = await ctx.db.get(messageId);
+    if (msg === null) return;
+    if (msg.status !== "streaming") return;
+    if (msg.runId) return;
+    await ctx.db.patch(messageId, { runId });
+  },
+});
+
+export const bindProviderChat = internalMutation({
+  args: { chatId: v.id("chats"), providerChatId: v.string() },
+  handler: async (ctx, { chatId, providerChatId }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    if (chat.openclawChatId === providerChatId) return;
+    // A per-turn-routing chat NEVER persists a Hermes id to the SHARED
+    // openclawChatId slot: that slot belongs to the chat's PRIMARY OpenClaw
+    // session (temporarily null between routed turns, which use routingSegment),
+    // and later non-routed sends/reset/patch read it to build the primary
+    // session — a Hermes id there would misdirect them (codex P2). The bridge's
+    // in-memory per-target map carries Hermes continuity for these chats.
+    if (chat.perTurnRouting === true) return;
+    // Single-provider chat: occupy the slot only when it is empty or already
+    // holds a Hermes session id (never clobber an OpenClaw primary/segment).
+    const cur = chat.openclawChatId;
+    const slotFree =
+      cur === undefined ||
+      cur === null ||
+      /^api_[0-9]+_[0-9a-f]+$/i.test(cur) ||
+      /^[0-9]{8}_[0-9]{6}_[0-9a-f]+$/i.test(cur);
+    if (!slotFree) return;
+    await ctx.db.patch(chatId, { openclawChatId: providerChatId });
+  },
+});
+
+/** Clear a Hermes-minted conversation id from the chat on RESET, so the next
+ *  turn starts a fresh Hermes session. Guarded: only clears an `api_...`-shaped
+ *  id (a Hermes session), never an OpenClaw routing segment that happens to sit
+ *  in the same slot (codex P1). */
+export const clearProviderChat = internalMutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    const cur = chat.openclawChatId;
+    // BOTH Hermes session shapes: REST (`api_<ts>_<hex>`) and WS
+    // (`YYYYMMDD_HHMMSS_<hex>`, the stored_session_id) — a reset must clear
+    // whichever transport persisted it (codex P1), never a routing segment.
+    if (
+      typeof cur === "string" &&
+      (/^api_[0-9]+_[0-9a-f]+$/i.test(cur) ||
+        /^[0-9]{8}_[0-9]{6}_[0-9a-f]+$/i.test(cur))
+    ) {
+      await ctx.db.patch(chatId, { openclawChatId: undefined });
+    }
+  },
+});
+
 export const bindChatTarget = internalMutation({
   args: {
     chatId: v.id("chats"),

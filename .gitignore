@@ -54,3 +54,6 @@ openclaw-frame-captures/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/release-notes/
+
+# Volatile local Hermes bench (secrets/DB/runtime state — fixtures live in bridge/test/fixtures/hermes)
+bridge/local-hermes/

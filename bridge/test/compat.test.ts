@@ -136,11 +136,14 @@ describe("COMPAT_MANIFEST shape", () => {
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
   });
 
-  test("hermes is a structural placeholder (no range, no capabilities)", () => {
+  test("hermes is a validated provider (0.18.0) with its small real surface", () => {
     expect(COMPAT_MANIFEST.providers.hermes).toEqual({
-      supportedRange: null,
-      validatedVersions: [],
-      capabilities: {},
+      supportedRange: { min: "0.18.0", maxValidated: "0.18.0" },
+      validatedVersions: ["0.18.0"],
+      // ONLY what the OpenAI-compatible API server actually offers — everything
+      // else (thinking/model knobs, config-defaults, subagents, attachments)
+      // is deliberately absent so the UI gates it OFF automatically.
+      capabilities: { abort: "0.18.0", agentsDiscovery: "0.18.0" },
     });
   });
 });
@@ -246,9 +249,9 @@ describe("resolveCapabilities — edges", () => {
     },
   );
 
-  test("hermes (placeholder, no validated range) resolves to zero capabilities", () => {
-    expect(resolveCapabilities("hermes", "1.0.0")).toEqual({
-      capabilities: {},
+  test("hermes resolves to abort + discovery at a validated version, nothing else", () => {
+    expect(resolveCapabilities("hermes", "0.18.0")).toEqual({
+      capabilities: { abort: true, agentsDiscovery: true },
       versionBeyondValidated: false,
     });
   });

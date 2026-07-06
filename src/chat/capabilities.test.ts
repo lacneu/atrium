@@ -26,7 +26,7 @@ const FULL: Record<string, boolean> = {
   agentFiles: true,
   sessionCompact: true,
   configDefaults: true,
-  subagents: true,
+  subagents: true, inboundAttachments: true,
 };
 
 /** A 2026.5.19 gateway: only the UI-3 WRITEBACK knobs are validated, but the
@@ -39,7 +39,7 @@ const OLD_GATEWAY: Record<string, boolean> = {
   agentFiles: false,
   sessionCompact: false,
   configDefaults: false,
-  subagents: true,
+  subagents: true, inboundAttachments: true,
 };
 
 /** FORWARD SKEW: a future bridge advertising keys this UI does not know. */
@@ -63,6 +63,9 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       "sessionCompact",
       "configDefaults",
       "subagents",
+      // The UI now CONSUMES inboundAttachments (gates the composer attach button)
+      // — already present in the bridge OPENCLAW_CAPABILITIES table.
+      "inboundAttachments",
     ]);
   });
 
@@ -120,7 +123,7 @@ describe("capabilityOf — capability x set matrix", () => {
         configDefaults: false,
         // subagents is NOT in the legacy fallback set (LEGACY_CAPABILITIES) — an
         // old/unknown bridge does not unlock the monitor.
-        subagents: false,
+        subagents: false, inboundAttachments: false,
       },
     ],
     [
@@ -134,7 +137,7 @@ describe("capabilityOf — capability x set matrix", () => {
         agentFiles: true,
         sessionCompact: true,
         configDefaults: true,
-        subagents: true,
+        subagents: true, inboundAttachments: true,
       },
     ],
     [
@@ -149,7 +152,7 @@ describe("capabilityOf — capability x set matrix", () => {
         sessionCompact: false,
         configDefaults: false,
         // subagents is available from the 5.19 floor.
-        subagents: true,
+        subagents: true, inboundAttachments: true,
       },
     ],
     [
@@ -163,7 +166,7 @@ describe("capabilityOf — capability x set matrix", () => {
         agentFiles: false,
         sessionCompact: false,
         configDefaults: false,
-        subagents: false,
+        subagents: false, inboundAttachments: false,
       },
     ],
     [
@@ -177,7 +180,7 @@ describe("capabilityOf — capability x set matrix", () => {
         agentFiles: true,
         sessionCompact: true,
         configDefaults: true,
-        subagents: true,
+        subagents: true, inboundAttachments: true,
       },
     ],
   ];

@@ -217,6 +217,20 @@ type IngestOp =
   // can render the model/reasoning chips + context meter. Non-secret knob labels
   // only. The bridge posts this when it learns a turn's session meta.
   | {
+      op: "bindProviderChat";
+      chatId: string;
+      providerChatId: string;
+    }
+  | {
+      op: "clearProviderChat";
+      chatId: string;
+    }
+  | {
+      op: "updateRunId";
+      messageId: string;
+      runId: string;
+    }
+  | {
       op: "setSessionMeta";
       chatId: string;
       meta: {
@@ -647,6 +661,26 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(body.errorKind ? { errorKind: body.errorKind } : {}),
           ok: true,
         },
+      });
+      return json({ ok: true });
+    }
+    case "bindProviderChat": {
+      await ctx.runMutation(internal.bridge.bindProviderChat, {
+        chatId: body.chatId as Id<"chats">,
+        providerChatId: body.providerChatId,
+      });
+      return json({ ok: true });
+    }
+    case "clearProviderChat": {
+      await ctx.runMutation(internal.bridge.clearProviderChat, {
+        chatId: body.chatId as Id<"chats">,
+      });
+      return json({ ok: true });
+    }
+    case "updateRunId": {
+      await ctx.runMutation(internal.bridge.updateMessageRunId, {
+        messageId: body.messageId as Id<"messages">,
+        runId: body.runId,
       });
       return json({ ok: true });
     }

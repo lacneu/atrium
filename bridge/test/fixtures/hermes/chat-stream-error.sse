@@ -1,0 +1,12 @@
+event: run.started
+data: {"user_message": {"role": "user", "content": "Reponds: PING"}, "session_id": "api_1783351043_b99e6df2", "run_id": "run_3c1016a744ef4156974380ba0c409d91", "seq": 1, "ts": 1783351062.5567222}
+
+event: message.started
+data: {"message": {"id": "msg_40a5f97d69c54c4a8210149cc14458a9", "role": "assistant"}, "session_id": "api_1783351043_b99e6df2", "run_id": "run_3c1016a744ef4156974380ba0c409d91", "seq": 2, "ts": 1783351062.556731}
+
+event: error
+data: {"message": "No inference provider configured. Run 'hermes model' to choose a provider and model, or set an API key (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.) in ~/.hermes/.env.", "session_id": "api_1783351043_b99e6df2", "run_id": "run_3c1016a744ef4156974380ba0c409d91", "seq": 3, "ts": 1783351068.804848}
+
+event: done
+data: {"session_id": "api_1783351043_b99e6df2", "run_id": "run_3c1016a744ef4156974380ba0c409d91", "seq": 4, "ts": 1783351068.804863}
+

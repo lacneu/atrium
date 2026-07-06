@@ -28,6 +28,7 @@ export const CAPABILITY_KEYS = [
   "sessionCompact",
   "configDefaults",
   "subagents",
+  "inboundAttachments",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

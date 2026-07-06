@@ -126,16 +126,24 @@ async function main(): Promise<void> {
       instanceName: data.instanceName,
       mediaOutboundDir: config.mediaOutboundDir,
       inboundMediaDir: config.inboundMediaDir,
+      kind: config.kind,
     };
     const existing = [...served.values()].map((b) => ({
       instanceName: b.config.instanceName ?? "?",
       mediaOutboundDir: b.config.mediaOutboundDir,
       inboundMediaDir: b.config.inboundMediaDir,
+      kind: b.config.kind,
     }));
     if (findMediaDirCollision([...existing, candidate]) !== null) return "collision";
     registry.register(data.instanceName, buildBundle(config));
-    // Reap stale shared-fs inbound files for THIS instance's dir (the bridge owns it).
-    startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
+    // Reap stale shared-fs inbound files for THIS instance's dir (the bridge
+    // owns it). NOT for Hermes: it has no media legs, and its derived dir may
+    // alias an OpenClaw instance's mount via a global env override (it is
+    // exempt from the collision check for the same reason) — a Hermes reaper
+    // there could delete the OpenClaw instance's staged files.
+    if (config.kind !== "hermes") {
+      startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
+    }
     console.log(
       `bridge: instance "${data.instanceName}" now serving (${served.size} total)`,
     );
