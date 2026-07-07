@@ -3,6 +3,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -157,8 +159,13 @@ export function PreferencesPanel() {
         <div className="oc-prefs__empty">{m.prefs_no_match()}</div>
       ) : (
         <div className="oc-prefs">
+          {/* One CARD per category (clear boundaries instead of a flat run-on
+              list), rows inside separated by hairlines. The everyday view stays
+              quiet: a badge only marks the EXCEPTIONS — a personalised value
+              (with its reset affordance) or a locked/system-gated row — never
+              the default state of every row. */}
           {groups.map((group) => (
-            <div key={group.id} className="oc-prefs__group">
+            <section key={group.id} className="oc-prefs__card">
               <h4 className="oc-prefs__cat">{group.label}</h4>
               {group.keys.map((key) => {
                 const meta = PREF_META[key];
@@ -170,21 +177,19 @@ export function PreferencesPanel() {
                 return (
                   <div
                     key={key}
-                    className={`oc-prefs__row${locked ? " is-locked" : ""}${
-                      overridden && !locked ? " is-overridden" : ""
-                    }`}
+                    className={`oc-prefs__row${locked ? " is-locked" : ""}`}
                   >
                     <div className="oc-prefs__info">
                       <span className="oc-prefs__label">
                         {label}
                         {locked ? (
-                          <span className="oc-prefs__lock">
+                          <Badge variant="outline">
                             {m.prefs_badge_locked()}
-                          </span>
-                        ) : !overridden ? (
-                          <span className="oc-prefs__def">
-                            {m.prefs_badge_default()}
-                          </span>
+                          </Badge>
+                        ) : overridden ? (
+                          <Badge variant="secondary">
+                            {m.prefs_badge_custom()}
+                          </Badge>
                         ) : null}
                       </span>
                       {help ? (
@@ -201,12 +206,10 @@ export function PreferencesPanel() {
                           {m.prefs_reset()}
                         </button>
                       ) : null}
-                      <Checkbox
+                      <Switch
                         checked={checked}
                         disabled={locked}
-                        onCheckedChange={(v) =>
-                          void setPref({ key, value: v === true })
-                        }
+                        onCheckedChange={(v) => void setPref({ key, value: v })}
                         aria-label={label}
                       />
                     </div>
@@ -214,7 +217,7 @@ export function PreferencesPanel() {
                   </div>
                 );
               })}
-            </div>
+            </section>
           ))}
         </div>
       )}

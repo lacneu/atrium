@@ -408,4 +408,40 @@ describe("Hermes WS turn (live capture replay)", () => {
     await run.done;
     expect(calls.map(([n]) => n)).toContain("finalize");
   });
+
+  it("flushes a tool left open (lost tool.complete) when the turn settles", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "hermes:hermes-agent:chat:u:c1",
+        providerChatId: null,
+        text: "tool sans complete",
+        onBoundSession: async () => {},
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    onEvent("message.start", {});
+    onEvent("tool.start", { name: "web_search", tool_id: "t1" });
+    // NO tool.complete — the completion event was lost.
+    onEvent("message.complete", { text: "done", usage: {} });
+    await run.done;
+    const phases = calls
+      .filter(([n]) => n === "addToolPart")
+      .map(([, part]) => {
+        const p = part as { name?: string; phase?: string };
+        return `${p.name}:${p.phase}`;
+      });
+    expect(phases).toContain("web_search:start");
+    // The settle path emitted the terminal phase for the still-open tool.
+    expect(phases).toContain("web_search:completed");
+  });
+
 });

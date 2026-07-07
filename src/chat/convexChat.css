@@ -1177,7 +1177,20 @@
    (a fragment used to split filter/list across the 220px|1fr columns).
    Width is capped to a reading measure (~65-75 chars, CONF_RESEARCH). */
 .oc-prefs-panel { min-width: 0; max-width: 42rem; }
-.oc-prefs { display: flex; flex-direction: column; }
+.oc-prefs { display: flex; flex-direction: column; gap: 0.9rem; }
+
+/* Category CARDS: each preference group gets a bounded, scannable container
+   (same chart language as the Voice tab cards) instead of a flat run-on list. */
+.oc-prefs__card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 0.35rem 0.9rem 0.5rem;
+}
+
+.oc-prefs__card .oc-prefs__cat {
+  margin: 0.55rem 0 0.35rem;
+}
 .oc-prefs__empty { padding: 1rem; color: var(--muted-foreground); }
 /* Layer-cake group headers: scannable section anchors (CONF grammar) with
    asymmetric spacing — more air before a group than after its header. */

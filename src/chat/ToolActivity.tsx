@@ -86,6 +86,9 @@ export function ToolActivity() {
               // ToolCard's phaseClass understands the bridge phases directly
               // ("started"/"running"/"completed"/"error") via status.type.
               status={p.phase ? { type: p.phase } : undefined}
+              turnSettled={
+                status !== undefined && status !== "streaming"
+              }
             />
           ))}
         </div>

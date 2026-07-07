@@ -149,6 +149,10 @@ const optionalToken = z.string().optional().catch(undefined);
 
 export const tracesSearchSchema = z.object({
   q,
+  // Which sub-tool is open: latency monitoring vs the activity-trace explorer.
+  // A real search param (not component state) so each sub-tab is a navigable,
+  // shareable URL.
+  section: z.enum(["latency", "events"]).default("events").catch("events"),
   kind: z.string().default("all").catch("all"),
   limit: z
     .coerce
@@ -224,3 +228,22 @@ export const groupsSearchSchema = z.object({
   mode: z.enum(["per-user", "shared"]).optional().catch(undefined),
 });
 export type GroupsSearch = z.infer<typeof groupsSearchSchema>;
+
+/** /settings/voice — the voice tab's sub-tabs (read-aloud / dictation / talk),
+ *  each a navigable URL. */
+export const voiceSearchSchema = z.object({
+  section: z
+    .enum(["readaloud", "dictation", "talk"])
+    .default("readaloud")
+    .catch("readaloud"),
+});
+export type VoiceSearch = z.infer<typeof voiceSearchSchema>;
+
+/** /settings/bridge — one navigable sub-tab per provider card. Free-form
+ *  string (bounded length): the provider set is data-driven (a deployment may
+ *  serve any subset); the tab falls back to its first bucket when the URL
+ *  names an absent provider. */
+export const bridgeSearchSchema = z.object({
+  section: z.string().max(32).default("openclaw").catch("openclaw"),
+});
+

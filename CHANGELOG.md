@@ -8,6 +8,46 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.41.1] — Settings ergonomics: navigable sub-tabs, a clearer Preferences screen
+
+Corrective/UX release on 0.41.0. No breaking changes, no schema change.
+
+- **The Voice tab is organised in sub-tabs — and they are URLs.** Read-aloud,
+  dictation and realtime-talk are now three segmented sub-tabs (instead of
+  stacked cards), each a navigable, shareable address; the Traces sub-tools
+  (latency monitoring / activity traces) became navigable URLs the same way.
+
+- **The mic's system switch is where you look for it.** Enabling the dictation
+  pipeline (the system gate that kept "Saisie vocale" greyed in Preferences)
+  now sits directly in the Voice ▸ Dictation sub-tab, with the gate state shown
+  as a badge — no more hunting through the Preferences admin mode.
+
+- **Quieter saves.** Saving a voice config no longer prints a confirmation
+  line: the Save button greying back out is the feedback.
+
+- **Preferences, restructured.** One card per category, real on/off switches,
+  and a badge only on the exceptions (a customised row shows "Personnalisé" +
+  reset, a constrained row shows its lock) — the "default" label no longer
+  repeats on every line.
+
+- **Settings opens on your own space.** Coming from a chat, Settings now lands
+  on Personal ▸ Files instead of the first tab in order.
+
+- **Tool spinners can no longer spin forever.** A tool whose completion event
+  was lost (or an intermediate phase) used to keep its loading animation hours
+  after the reply landed. Three-level fix: a settled turn renders every one of
+  its tools as settled, a settled sub-agent card stops animating its tool list,
+  and the Hermes bridge now flushes still-open tools to "completed" on every
+  turn ending (success, error, stop). The fix also covers existing history.
+
+- **The Bridge tab splits providers into navigable sub-tabs.** OpenClaw and
+  Hermes each get their own sub-tab (a shareable URL, like the Voice and Traces
+  sub-tabs); the bridge status banner and the usage table stay shared above.
+
+- **The "Agents" settings group is now "Platform".** The group holds instances,
+  bridge, agent files, chat defaults, voice and prompt injections — the new
+  name says what it is.
+
 ## [0.41.0] — Voice in the browser: read replies aloud, dictate your messages
 
 Feature release. No breaking changes.

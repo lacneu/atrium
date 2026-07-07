@@ -2,7 +2,7 @@ import { useState } from "react";
 import { resolveContentLocale } from "../../../convex/lib/locales";
 import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   CheckCircle2,
   AlertTriangle,
@@ -64,6 +64,7 @@ import {
 } from "./bridgeConfigForm";
 import { FieldLabel } from "./FieldLabel";
 import { m } from "@/paraglide/messages.js";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usageBadgeView } from "../usageView";
 import {
   badgeStateFromVersion,
@@ -130,6 +131,8 @@ export function BridgeTab() {
   const targets = health ? health.targets : [];
   const compatTargets = compat ? compat.targets : [];
   const buckets = groupBridgeByProvider(targets, compatTargets, instances ?? []);
+  const { section } = useSearch({ from: "/settings/bridge" });
+  const navigateBridge = useNavigate({ from: "/settings/bridge" });
   const manifest = compat?.compat ?? null;
   // Distinguish the THREE compat states so a provider's compat block never shows
   // "legacy bridge" while compat is merely still loading (independent queries —
@@ -202,22 +205,47 @@ export function BridgeTab() {
           </Table>
         </section>
       ) : null}
-      {buckets.map((b) => (
-        <ProviderCard
-          key={b.key}
-          providerKey={b.key}
-          connections={b.connections}
-          instances={b.instances}
-          manifest={manifest}
-          compatStatus={compatStatus}
-          compatReachable={compat?.reachable ?? true}
-          protocol={
-            b.key === "openclaw"
-              ? ((compat?.protocol ?? null) as BridgeProtocolView | null)
-              : null
+      {/* One navigable SUB-TAB per provider (same URL pattern as Voice/Traces).
+          The provider set is data-driven: triggers render from the buckets, and
+          a URL naming an absent provider falls back to the first bucket. */}
+      {buckets.length > 0 ? (
+        <Tabs
+          value={
+            buckets.some((b) => b.key === section)
+              ? section
+              : (buckets[0]?.key ?? "openclaw")
           }
-        />
-      ))}
+          onValueChange={(v) =>
+            void navigateBridge({ search: { section: v }, replace: true })
+          }
+        >
+          <TabsList className="w-full">
+            {buckets.map((b) => (
+              <TabsTrigger key={b.key} value={b.key} className="flex-1 gap-1.5">
+                <Server size={13} aria-hidden />
+                {providerLabel(b.key)}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {buckets.map((b) => (
+            <TabsContent key={b.key} value={b.key}>
+              <ProviderCard
+                providerKey={b.key}
+                connections={b.connections}
+                instances={b.instances}
+                manifest={manifest}
+                compatStatus={compatStatus}
+                compatReachable={compat?.reachable ?? true}
+                protocol={
+                  b.key === "openclaw"
+                    ? ((compat?.protocol ?? null) as BridgeProtocolView | null)
+                    : null
+                }
+              />
+            </TabsContent>
+          ))}
+        </Tabs>
+      ) : null}
       {hermesAnnounced ? (
         <p className="oc-admin__hint">{m.compat_hermes_coming()}</p>
       ) : null}

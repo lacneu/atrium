@@ -84,6 +84,8 @@ import {
 } from "./chat/AdminSettings";
 import { SettingsNav, SettingsTabBar } from "./chat/admin/SettingsNav";
 import {
+  voiceSearchSchema,
+  bridgeSearchSchema,
   tracesSearchSchema,
   auditSearchSchema,
   anomaliesSearchSchema,
@@ -127,9 +129,6 @@ const RolesTab = lazy(() =>
 const InstancesTab = lazy(() =>
   import("./chat/admin/InstancesTab").then((m) => ({ default: m.InstancesTab })),
 );
-const BridgeTab = lazy(() =>
-  import("./chat/admin/BridgeTab").then((m) => ({ default: m.BridgeTab })),
-);
 const PromptInjectionsTab = lazy(() =>
   import("./chat/admin/PromptInjectionsTab").then((m) => ({
     default: m.PromptInjectionsTab,
@@ -137,11 +136,6 @@ const PromptInjectionsTab = lazy(() =>
 );
 const GroupsTab = lazy(() =>
   import("./chat/admin/GroupsTab").then((m) => ({ default: m.GroupsTab })),
-);
-const VoiceTab = lazy(() =>
-  import("./chat/admin/VoiceTab").then((m) => ({
-    default: m.VoiceTab,
-  })),
 );
 const IntegrationsTab = lazy(() =>
   import("./chat/admin/IntegrationsTab").then((m) => ({
@@ -872,7 +866,14 @@ function SettingsIndexRedirect() {
   useEffect(() => {
     if (me === undefined) return;
     const visible = visibleTabs(me.permissions ?? []);
-    const dest = visible.length > 0 ? pathForTab(visible[0]) : "/";
+    // Default landing = Personnel > Fichiers (the personal, always-visible tab)
+    // rather than whatever tab happens to be first in the user's order — the
+    // Settings entry point from a chat should start on the user's own space.
+    const dest = visible.includes("files")
+      ? pathForTab("files")
+      : visible.length > 0
+        ? pathForTab(visible[0])
+        : "/";
     // pathForTab returns a valid /settings/<tab> path; cast to satisfy the typed
     // navigate `to` (runtime resolves the string against the route tree).
     void navigate({ to: dest as "/settings/users", replace: true });
@@ -888,12 +889,8 @@ function paramlessTab(tab: string) {
       return <GroupsTab />;
     case "integrations":
       return <IntegrationsTab />;
-    case "voice":
-      return <VoiceTab />;
     case "instances":
       return <InstancesTab />;
-    case "bridge":
-      return <BridgeTab />;
     case "injections":
       return <PromptInjectionsTab />;
     case "theme":
@@ -1024,6 +1021,24 @@ const tracesRoute = createRoute({
   component: lazyRouteComponent(
     () => import("./chat/admin/TracesTab"),
     "TracesTab",
+  ),
+});
+const bridgeRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "bridge",
+  validateSearch: bridgeSearchSchema,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/BridgeTab"),
+    "BridgeTab",
+  ),
+});
+const voiceRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: "voice",
+  validateSearch: voiceSearchSchema,
+  component: lazyRouteComponent(
+    () => import("./chat/admin/VoiceTab"),
+    "VoiceTab",
   ),
 });
 const auditRoute = createRoute({
@@ -1181,6 +1196,8 @@ const routeTree = rootRoute.addChildren([
   settingsRoute.addChildren([
     settingsIndexRoute,
     tracesRoute,
+    voiceRoute,
+    bridgeRoute,
     auditRoute,
     anomaliesRoute,
     kpiRoute,

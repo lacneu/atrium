@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Mic, Volume2, AudioLines } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../convexApi";
+import { APP_HOST } from "@/lib/appHost";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { m } from "@/paraglide/messages.js";
 import { Badge } from "@/components/ui/badge";
@@ -100,7 +104,9 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
         instanceId: instance._id as Id<"instances">,
         config: next,
       });
-      setState("done");
+      // No confirmation copy: the Save button re-disabling (dirty=false once
+      // the subscription echoes the stored config) IS the feedback.
+      setState("idle");
     } catch {
       setState("error");
     }
@@ -196,16 +202,54 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
           {m.voice_stop_button()}
         </Button>
       </div>
-      {state === "done" ? (
-        <p className="oc-admin__hint" role="status">
-          {m.cdefaults_saved()}
-        </p>
-      ) : null}
       {state === "error" ? (
         <p className="oc-cdefaults__error" role="alert">
           {m.cdefaults_save_error()}
         </p>
       ) : null}
+    </section>
+  );
+}
+
+/** Dictation card — includes the SYSTEM feature gate switch (the same
+ *  `voiceInput` gate the Preferences admin mode exposes): admins enable the
+ *  mic pipeline right here instead of hunting for it in the Preferences
+ *  admin mode. Users still opt in individually. */
+function DictationCard({ stt }: { stt: boolean }) {
+  const me = useQuery(api.me.getMe, { host: APP_HOST }) as
+    | {
+        role?: string;
+        ui?: { featuresEnabled?: Record<string, boolean | undefined> };
+      }
+    | undefined
+    | null;
+  const setFeature = useMutation(api.admin.setFeatureEnabled);
+  const gateOn = me?.ui?.featuresEnabled?.voiceInput === true;
+  const isAdmin = me?.role === "admin";
+  return (
+    <section className="oc-voice__card">
+      <header className="oc-voice__cardhead">
+        <span className="oc-voice__instance">{m.voice_dictation_title()}</span>
+        <Badge variant={stt ? "secondary" : "outline"}>
+          {stt ? m.voice_status_ready() : m.voice_status_unavailable()}
+        </Badge>
+        <Badge variant={gateOn ? "secondary" : "destructive"}>
+          {gateOn ? m.voice_gate_on() : m.voice_gate_off()}
+        </Badge>
+      </header>
+      {isAdmin ? (
+        <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
+          <Checkbox
+            checked={gateOn}
+            onCheckedChange={(v) =>
+              void setFeature({ key: "voiceInput", enabled: v === true })
+            }
+            aria-label={m.voice_gate_label()}
+          />
+          <span className="oc-cdefaults__label">{m.voice_gate_label()}</span>
+        </label>
+      ) : null}
+      <p className="oc-cdefaults__help">{m.voice_dictation_help()}</p>
     </section>
   );
 }
@@ -216,6 +260,10 @@ export function VoiceTab() {
     | undefined;
   const tts = useMemo(() => ttsSupported(), []);
   const stt = useMemo(() => dictationSupported(), []);
+  // Sub-tab = a SEARCH PARAM (navigable, shareable URL), same pattern as the
+  // Traces tab's latency/events split.
+  const { section } = useSearch({ from: "/settings/voice" });
+  const navigate = useNavigate({ from: "/settings/voice" });
 
   return (
     <div className="oc-admin__tab oc-voice">
@@ -231,33 +279,56 @@ export function VoiceTab() {
         </Badge>
       </div>
 
-      {instances === undefined ? (
-        <p className="oc-admin__hint">{m.common_loading()}</p>
-      ) : instances.length === 0 ? (
-        <p className="oc-admin__hint">{m.voice_no_instances()}</p>
-      ) : (
-        instances.map((inst) => (
-          <VoiceInstanceCard key={inst._id} instance={inst} />
-        ))
-      )}
+      <Tabs
+        value={section}
+        onValueChange={(v) =>
+          void navigate({
+            search: { section: v as "readaloud" | "dictation" | "talk" },
+            replace: true,
+          })
+        }
+      >
+        <TabsList className="w-full">
+          <TabsTrigger value="readaloud" className="flex-1 gap-1.5">
+            <Volume2 size={13} aria-hidden />
+            {m.voice_seg_readaloud()}
+          </TabsTrigger>
+          <TabsTrigger value="dictation" className="flex-1 gap-1.5">
+            <Mic size={13} aria-hidden />
+            {m.voice_dictation_title()}
+          </TabsTrigger>
+          <TabsTrigger value="talk" className="flex-1 gap-1.5">
+            <AudioLines size={13} aria-hidden />
+            {m.voice_talk_title()}
+          </TabsTrigger>
+        </TabsList>
 
-      <section className="oc-voice__card">
-        <header className="oc-voice__cardhead">
-          <span className="oc-voice__instance">{m.voice_dictation_title()}</span>
-          <Badge variant={stt ? "secondary" : "outline"}>
-            {stt ? m.voice_status_ready() : m.voice_status_unavailable()}
-          </Badge>
-        </header>
-        <p className="oc-cdefaults__help">{m.voice_dictation_help()}</p>
-      </section>
+        <TabsContent value="readaloud">
+          {instances === undefined ? (
+            <p className="oc-admin__hint">{m.common_loading()}</p>
+          ) : instances.length === 0 ? (
+            <p className="oc-admin__hint">{m.voice_no_instances()}</p>
+          ) : (
+            instances.map((inst) => (
+              <VoiceInstanceCard key={inst._id} instance={inst} />
+            ))
+          )}
+        </TabsContent>
 
-      <section className="oc-voice__card">
-        <header className="oc-voice__cardhead">
-          <span className="oc-voice__instance">{m.voice_talk_title()}</span>
-          <Badge variant="outline">{m.voice_talk_coming()}</Badge>
-        </header>
-        <p className="oc-cdefaults__help">{m.voice_talk_help()}</p>
-      </section>
+        <TabsContent value="dictation">
+          <DictationCard stt={stt} />
+        </TabsContent>
+
+        <TabsContent value="talk">
+          <section className="oc-voice__card">
+            <header className="oc-voice__cardhead">
+              <span className="oc-voice__instance">{m.voice_talk_title()}</span>
+              <Badge variant="outline">{m.voice_talk_coming()}</Badge>
+            </header>
+            <p className="oc-cdefaults__help">{m.voice_talk_help()}</p>
+          </section>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -233,9 +233,11 @@ export function TracesTab() {
     ? unfiltered?.filter((e) => e.correlationId === followCorr)
     : filtered;
 
-  // Which sub-tool is shown: latency monitoring (recorder) vs the activity-trace explorer.
-  // Defaults to the trace explorer — the namesake of the "Traces" tab.
-  const [view, setView] = useState<"latency" | "events">("events");
+  // Which sub-tool is shown: latency monitoring (recorder) vs the activity-trace
+  // explorer. A SEARCH PARAM (not state) so each sub-tab is a navigable URL.
+  const view = search.section;
+  const setView = (v: "latency" | "events") =>
+    void navigate({ search: (s) => ({ ...s, section: v }), replace: true });
 
   return (
     <Tabs

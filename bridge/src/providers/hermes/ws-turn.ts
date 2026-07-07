@@ -159,6 +159,23 @@ export function runHermesWsTurn(
     const turnStartMs = Date.now();
     let lastThinkingBeatMs = 0;
     let moaAggregatorKey: string | null = null;
+    // Tools whose start was seen but no complete yet — settled turns flush
+    // them to "completed" so a lost completion event can never leave an
+    // eternal spinner in the UI.
+    const openTools = new Set<string>();
+    const closeOpenTools = (): void => {
+      for (const name of openTools) {
+        apply([
+          {
+            type: EVENT_TOOL_STATUS,
+            name,
+            phase: "completed",
+            runId: runtimeSid,
+          },
+        ]);
+      }
+      openTools.clear();
+    };
     // Close the MoA aggregator card on ANY terminal path (success, error,
     // approval, abort/socket) — a card left "running" wedges the composer's
     // hold-the-send until the 20-min reaper (codex P1).
@@ -189,6 +206,7 @@ export function runHermesWsTurn(
     forceSettleRef = (writeAborted?: boolean) => {
       if (finalized) return;
       finalized = true;
+      closeOpenTools();
       closeMoaAggregator("aborted");
       if (writeAborted) {
         apply([
@@ -256,6 +274,7 @@ export function runHermesWsTurn(
           return;
         }
         case "approval.request": {
+          closeOpenTools();
           closeMoaAggregator("error");
           // The gateway is holding the tool run for a HUMAN approval Atrium
           // cannot surface yet — settle actionably instead of hanging until
@@ -389,6 +408,7 @@ export function runHermesWsTurn(
           // args/result stay gateway-side — same content-hygiene rule as the
           // OpenClaw tool feed).
           const name = str(payload.name) || "tool";
+          openTools.add(name);
           apply([
             { type: EVENT_TOOL_STATUS, name, phase: "start", runId: runtimeSid },
           ]);
@@ -396,6 +416,7 @@ export function runHermesWsTurn(
         }
         case "tool.complete": {
           const name = str(payload.name) || "tool";
+          openTools.delete(name);
           apply([
             {
               type: EVENT_TOOL_STATUS,
@@ -441,6 +462,7 @@ export function runHermesWsTurn(
               },
             ]);
           }
+          closeOpenTools();
           closeMoaAggregator("done");
           // Outbound scan (ordered on the apply chain): freshly-written
           // delivery files ride EVENT_MEDIA ahead of the final pair, so the
@@ -525,6 +547,7 @@ export function runHermesWsTurn(
         }
         case "error": {
           finalized = true;
+          closeOpenTools();
           closeMoaAggregator("error");
           const msg = str(payload.message) || str(payload.text) || "Hermes run failed.";
           apply([

@@ -216,7 +216,9 @@ function PanelTools({
   // mid-call. So the summary spins while the SUB-AGENT is running, even BETWEEN tool
   // calls (when every captured tool is momentarily "done"); a stale check there would
   // read as "finished" when the sub-agent is still working.
-  const running = subAgentRunning || summary.some((t) => t.status === "running");
+  // A tool stuck "running" on a SETTLED card (lost completion event) must not
+  // spin forever: once the sub-agent settled, nothing here is running anymore.
+  const running = subAgentRunning;
   const label =
     summary.length === 1
       ? m.tools_activity_count({ count: summary.length })
@@ -261,6 +263,7 @@ function PanelTools({
                 argsText={detail?.argsText}
                 result={detail?.resultText}
                 status={toolCardStatus(detail?.status ?? t.status)}
+                turnSettled={!subAgentRunning}
               />
             );
           })}

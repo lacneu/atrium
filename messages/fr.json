@@ -1255,7 +1255,7 @@
 	"settingsnav_back": "← Retour au chat",
 	"settingsnav_title": "Réglages",
 	"settings_group_personal": "Personnel",
-	"settings_group_agents": "Agents",
+	"settings_group_agents": "Plateforme",
 	"settings_group_access": "Accès & utilisateurs",
 	"settings_group_observability": "Observabilité",
 	"common_close": "Fermer",
@@ -1708,5 +1708,10 @@
 	"voice_lang_de": "Deutsch (de-DE)",
 	"voice_lang_es": "Español (es-ES)",
 	"pref_autoReadAloud_label": "Lecture vocale automatique",
-	"pref_autoReadAloud_help": "Quand une instance active la lecture automatique des réponses, votre navigateur les lit à voix haute. Décochez pour rester silencieux (le bouton « Lire à voix haute » reste disponible)."
+	"pref_autoReadAloud_help": "Quand une instance active la lecture automatique des réponses, votre navigateur les lit à voix haute. Décochez pour rester silencieux (le bouton « Lire à voix haute » reste disponible).",
+	"voice_gate_label": "Fonctionnalité activée (système)",
+	"voice_gate_on": "Micro : activé (système)",
+	"voice_gate_off": "Micro : désactivé (système)",
+	"voice_seg_readaloud": "Lecture à voix haute",
+	"prefs_badge_custom": "Personnalisé"
 }

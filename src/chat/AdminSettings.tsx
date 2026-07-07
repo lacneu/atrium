@@ -43,7 +43,6 @@ export const PARAMLESS_TABS = [
   "roles",
   "integrations",
   "instances",
-  "bridge",
   "injections",
   "theme",
   "feedbacks",
@@ -52,7 +51,6 @@ export const PARAMLESS_TABS = [
   "agentFiles",
   "preferences",
   "chatDefaults",
-  "voice",
 ] as const;
 export type ParamlessTab = (typeof PARAMLESS_TABS)[number];
 

@@ -1255,7 +1255,7 @@
 	"settingsnav_back": "← Back to chat",
 	"settingsnav_title": "Settings",
 	"settings_group_personal": "Personal",
-	"settings_group_agents": "Agents",
+	"settings_group_agents": "Platform",
 	"settings_group_access": "Access & users",
 	"settings_group_observability": "Observability",
 	"common_close": "Close",
@@ -1708,5 +1708,10 @@
 	"voice_lang_de": "Deutsch (de-DE)",
 	"voice_lang_es": "Español (es-ES)",
 	"pref_autoReadAloud_label": "Automatic read-aloud",
-	"pref_autoReadAloud_help": "When an instance enables automatic reply reading, your browser reads them aloud. Uncheck to stay silent (the \"Read aloud\" button remains available)."
+	"pref_autoReadAloud_help": "When an instance enables automatic reply reading, your browser reads them aloud. Uncheck to stay silent (the \"Read aloud\" button remains available).",
+	"voice_gate_label": "Feature enabled (system)",
+	"voice_gate_on": "Mic: enabled (system)",
+	"voice_gate_off": "Mic: disabled (system)",
+	"voice_seg_readaloud": "Read-aloud",
+	"prefs_badge_custom": "Custom"
 }
