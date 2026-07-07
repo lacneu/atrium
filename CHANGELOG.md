@@ -8,6 +8,18 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.39.1] — Long Hermes reasoning turns no longer time out
+
+Reliability fix. No breaking changes.
+
+- **A Hermes turn that thinks for a long time before replying is kept alive.**
+  When a Hermes agent streams only its reasoning for several minutes (no reply
+  text or tool calls yet), the turn now sends a watchdog heartbeat driven by
+  those real gateway frames, so the stuck-stream watchdog no longer wrongly
+  marks a genuinely active turn as orphaned after 12 minutes. The heartbeat
+  only fires on real gateway activity, so a dead bridge is still caught as
+  intended.
+
 ## [0.39.0] — Hermes turns get tools, sub-agents, compaction, attachments, and file delivery
 
 Feature release completing the Hermes WebSocket transport. Bridge-only — no

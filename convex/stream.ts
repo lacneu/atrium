@@ -213,6 +213,21 @@ export const setPhase = internalMutation({
   },
 });
 
+/** Watchdog heartbeat driven by a REAL gateway frame (Hermes reasoning stream):
+ *  refresh streamingText.updatedAt so a turn that is genuinely thinking for a
+ *  long time — emitting reasoning frames but no reply text yet — is not orphaned
+ *  by the 12-min stuck-stream watchdog. Safe by construction: only a LIVE
+ *  gateway emits these frames, so a dead bridge (the case the watchdog guards)
+ *  produces no heartbeat and still times out. No phase change — purely liveness. */
+export const heartbeatStream = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const row = await streamingRow(ctx, messageId);
+    if (row === null) return;
+    await ctx.db.patch(row._id, { updatedAt: Date.now() });
+  },
+});
+
 export const appendDelta = internalMutation({
   args: {
     messageId: v.id("messages"),

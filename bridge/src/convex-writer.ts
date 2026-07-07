@@ -280,6 +280,10 @@ export interface ConvexWriter {
   /** Stamp the provider run id onto an already-created streaming message (Hermes
    *  learns it on run.started, after the message opened) so abort can target it. */
   updateRunId?(messageId: string, runId: string): Promise<void>;
+  /** Watchdog heartbeat from a REAL gateway frame (e.g. a Hermes reasoning
+   *  stream) — refresh the streaming row's updatedAt so a long pure-thinking
+   *  turn is not orphaned by the stuck-stream watchdog. */
+  heartbeat?(messageId: string): Promise<void>;
   /**
    * Sub-agent observation upsert (inbound-only): record a spawned child's status /
    * lifecycle phase / final result, keyed by childSessionKey. Best-effort at the
@@ -471,6 +475,7 @@ type IngestOp =
   | { op: "bindProviderChat"; chatId: string; providerChatId: string }
   | { op: "clearProviderChat"; chatId: string }
   | { op: "updateRunId"; messageId: string; runId: string }
+  | { op: "heartbeat"; messageId: string }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
   // message-scoped (a child outlives the parent turn). resultText is server-path
   // stripped by the observer before it reaches here.
@@ -1352,6 +1357,13 @@ export class HttpConvexWriter implements ConvexWriter {
           (e as Error)?.message ?? e,
         ),
     );
+  }
+
+  async heartbeat(messageId: string): Promise<void> {
+    await this.doPost({ op: "heartbeat", messageId }).catch(() => {
+      // Best-effort liveness: a missed beat only risks the 12-min watchdog,
+      // never the turn.
+    });
   }
 
   async updateRunId(messageId: string, runId: string): Promise<void> {

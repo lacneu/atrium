@@ -231,6 +231,10 @@ type IngestOp =
       runId: string;
     }
   | {
+      op: "heartbeat";
+      messageId: string;
+    }
+  | {
       op: "setSessionMeta";
       chatId: string;
       meta: {
@@ -681,6 +685,12 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.bridge.updateMessageRunId, {
         messageId: body.messageId as Id<"messages">,
         runId: body.runId,
+      });
+      return json({ ok: true });
+    }
+    case "heartbeat": {
+      await ctx.runMutation(internal.stream.heartbeatStream, {
+        messageId: body.messageId as Id<"messages">,
       });
       return json({ ok: true });
     }

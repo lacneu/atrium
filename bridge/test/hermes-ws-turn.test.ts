@@ -64,6 +64,9 @@ function spyWriter() {
     reportSessionMeta: async (_chatId: string, meta: unknown) => {
       calls.push(["reportSessionMeta", meta]);
     },
+    heartbeat: async () => {
+      calls.push(["heartbeat", null]);
+    },
     getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
   } as unknown as ConvexWriter;
   return { writer, calls };
@@ -255,6 +258,36 @@ describe("Hermes WS turn (live capture replay)", () => {
       "delegate_task",
     );
     expect(calls.map(([n]) => n)).toContain("finalize");
+  });
+
+  it("long pure-reasoning stretches heartbeat the row (thinking pill, watchdog-safe)", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "think hard",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    // A burst of thinking deltas → exactly ONE phase beat (throttled 60s).
+    for (let i = 0; i < 5; i++) onEvent("thinking.delta", { text: "…" });
+    onEvent("message.complete", { text: "done", status: "complete" });
+    await run.done;
+    // Exactly ONE watchdog heartbeat (throttled) driven by the real reasoning
+    // frames, plus the working pill.
+    expect(calls.filter(([n]) => n === "heartbeat").length).toBe(1);
+    expect(
+      calls.filter(([n, v]) => n === "setPhase" && v === "querying_gateway").length,
+    ).toBe(1);
   });
 
   it("a refused prompt.submit settles the row as error and RESOLVES (single bubble)", async () => {

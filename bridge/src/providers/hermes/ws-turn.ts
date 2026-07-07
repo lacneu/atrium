@@ -153,6 +153,7 @@ export function runHermesWsTurn(
     // race ahead of beginTurn (the sink serializes via the apply chain).
     const sink = new TurnSink(opts.chatId, opts.writer, undefined, opts.sessionKey);
     const turnStartMs = Date.now();
+    let lastThinkingBeatMs = 0;
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
     let replyText = "";
@@ -187,9 +188,28 @@ export function runHermesWsTurn(
           return;
         }
         case "thinking.delta":
-        case "reasoning.delta":
-          // Reasoning stream — NEVER reply text (would duplicate/pollute).
+        case "reasoning.delta": {
+          // Reasoning stream — NEVER reply text (would duplicate/pollute). It IS
+          // a "working" signal though: during a long pure-reasoning stretch the
+          // row shows an honest activity pill instead of a frozen bubble.
+          // Throttled to once a minute; uses `querying_gateway` (the accepted
+          // phase for "the agent is busy on the gateway"). NOTE: like every
+          // gateway (OpenClaw included), a genuinely SILENT turn is still capped
+          // by the 12-min stuck-stream watchdog — real agentic turns interleave
+          // deltas/tool parts, which DO refresh it.
+          const nowMs = Date.now();
+          if (nowMs - lastThinkingBeatMs >= 60_000) {
+            lastThinkingBeatMs = nowMs;
+            const mid = sink.currentMessageId;
+            if (mid) {
+              // Real gateway-frame liveness: bump the watchdog (heartbeat) AND
+              // show an honest "working" pill.
+              void opts.writer.heartbeat?.(mid);
+              opts.writer.setPhase?.(mid, "querying_gateway");
+            }
+          }
           return;
+        }
         case "status.update": {
           // Hermes re-tags a mid-turn auto-compaction to kind:"compacting"
           // (tui_gateway._status_update) precisely so drivers can show it —
