@@ -111,6 +111,13 @@ const HERMES_CAPABILITIES: Record<string, string> = {
 const HERMES_WS_CAPABILITIES: Record<string, string> = {
   ...HERMES_CAPABILITIES,
   inboundAttachments: "0.18.0",
+  // The WS event stream carries structured delegation + Mixture-of-Agents
+  // activity (subagent.* / moa.*) which the bridge feeds into the sub-agent
+  // monitor — so the monitor UI unlocks on this transport.
+  subagents: "0.18.0",
+  // Identity files (SOUL.md, AGENTS.md, …) at the agent home root, served by
+  // the gateway's managed-files API (list/read/upload; mtime is the CAS base).
+  agentFiles: "0.18.0",
 };
 
 /** Transport-aware resolution for Hermes: the WS surface is a superset. */

@@ -67,6 +67,9 @@ function spyWriter() {
     heartbeat: async () => {
       calls.push(["heartbeat", null]);
     },
+    upsertSubAgent: async (record: unknown) => {
+      calls.push(["upsertSubAgent", record]);
+    },
     getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
   } as unknown as ConvexWriter;
   return { writer, calls };
@@ -257,6 +260,13 @@ describe("Hermes WS turn (live capture replay)", () => {
     expect(JSON.stringify(calls.filter(([n]) => n === "addToolPart"))).toContain(
       "delegate_task",
     );
+    // The child fed the STRUCTURED monitor: start (running, goal+model+depth)
+    // then complete (done + resultText from the live capture).
+    const ups = calls
+      .filter(([n]) => n === "upsertSubAgent")
+      .map(([, r]) => r as { status: string; resultText?: string; taskName?: string });
+    expect(ups.some((r) => r.status === "running" && (r.taskName ?? "").includes("Calculer"))).toBe(true);
+    expect(ups.some((r) => r.status === "done" && r.resultText === "42")).toBe(true);
     expect(calls.map(([n]) => n)).toContain("finalize");
   });
 
@@ -288,6 +298,94 @@ describe("Hermes WS turn (live capture replay)", () => {
     expect(
       calls.filter(([n, v]) => n === "setPhase" && v === "querying_gateway").length,
     ).toBe(1);
+  });
+
+  it("replays the live MoA turn: reference + aggregator cards feed the monitor", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "pourquoi le ciel est bleu ?",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    const lines = readFileSync(
+      join(__dirname, "fixtures/hermes/ws-moa.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { dir: string; frame: Record<string, unknown> });
+    for (const { dir, frame } of lines) {
+      if (dir !== "in" || frame.method !== "event") continue;
+      const p = frame.params as Record<string, unknown>;
+      const type = String(p.type ?? "");
+      if (type === "gateway.ready") continue;
+      onEvent(type, (p.payload ?? {}) as Record<string, unknown>);
+    }
+    await run.done;
+    const ups = calls
+      .filter(([n]) => n === "upsertSubAgent")
+      .map(([, r]) => r as { taskName?: string; status: string; resultText?: string; childSessionKey: string });
+    // Both captured references, DONE with their text, labelled i/n.
+    expect(ups.filter((r) => (r.taskName ?? "").startsWith("MoA 1/2")).length).toBe(1);
+    expect(ups.filter((r) => (r.taskName ?? "").startsWith("MoA 2/2")).length).toBe(1);
+    expect(ups.some((r) => (r.resultText ?? "").includes("diffuse"))).toBe(true);
+    // The aggregator card opens running then closes done at message.complete.
+    const agg = ups.filter((r) => r.childSessionKey.endsWith(":aggregate"));
+    expect(agg.some((r) => r.status === "running")).toBe(true);
+    expect(agg.some((r) => r.status === "done")).toBe(true);
+    expect(calls.map(([n]) => n)).toContain("finalize");
+  });
+
+  it("a sub-agent terminal arriving AFTER the parent's final still reaches the monitor (live order)", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "delegue",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    onEvent("subagent.start", {
+      goal: "calc",
+      child_session_id: "kid1",
+      depth: 0,
+      model: "m",
+    });
+    // The PARENT finishes FIRST (live-observed order)…
+    onEvent("message.complete", { text: "= 100", status: "complete" });
+    await run.done;
+    // …then the child's terminal arrives late: it must still flip the card.
+    onEvent("subagent.complete", {
+      child_session_id: "kid1",
+      status: "completed",
+      text: "100",
+      summary: "100",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    const ups = calls
+      .filter(([n]) => n === "upsertSubAgent")
+      .map(([, r]) => r as { status: string; resultText?: string });
+    expect(ups.some((r) => r.status === "done" && r.resultText === "100")).toBe(true);
   });
 
   it("a refused prompt.submit settles the row as error and RESOLVES (single bubble)", async () => {

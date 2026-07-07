@@ -26,7 +26,11 @@ import {
   EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
-import type { ConvexWriter, SessionMetaReport } from "../../convex-writer.js";
+import type {
+  ConvexWriter,
+  SessionMetaReport,
+  SubAgentRecord,
+} from "../../convex-writer.js";
 import type { HermesWsClient } from "./ws-client.js";
 import type { HermesFilesFetcher } from "./files-fetcher.js";
 
@@ -154,6 +158,23 @@ export function runHermesWsTurn(
     const sink = new TurnSink(opts.chatId, opts.writer, undefined, opts.sessionKey);
     const turnStartMs = Date.now();
     let lastThinkingBeatMs = 0;
+    let moaAggregatorKey: string | null = null;
+    // Close the MoA aggregator card on ANY terminal path (success, error,
+    // approval, abort/socket) — a card left "running" wedges the composer's
+    // hold-the-send until the 20-min reaper (codex P1).
+    const closeMoaAggregator = (status: "done" | "error" | "aborted"): void => {
+      if (!moaAggregatorKey) return;
+      const key = moaAggregatorKey;
+      moaAggregatorKey = null;
+      void opts.writer
+        .upsertSubAgent?.({
+          chatId: opts.chatId,
+          parentMessageId: sink.currentMessageId,
+          childSessionKey: key,
+          status,
+        })
+        ?.catch(() => {});
+    };
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
     let replyText = "";
@@ -168,6 +189,7 @@ export function runHermesWsTurn(
     forceSettleRef = (writeAborted?: boolean) => {
       if (finalized) return;
       finalized = true;
+      closeMoaAggregator("aborted");
       if (writeAborted) {
         apply([
           { type: EVENT_MESSAGE_FINAL, text: replyText },
@@ -178,7 +200,13 @@ export function runHermesWsTurn(
     };
 
     const onEvent = (type: string, payload: Record<string, unknown>): void => {
-      if (finalized) return;
+      // Monitoring events (delegation / MoA) OUTLIVE the parent turn: a child
+      // often completes AFTER the parent's message.complete (live-observed
+      // order), and its terminal MUST still reach the monitor or the card
+      // stays "running" and the composer's hold-the-send never releases.
+      const isMonitoring =
+        type.startsWith("subagent.") || type.startsWith("moa.");
+      if (finalized && !isMonitoring) return;
       switch (type) {
         case "message.delta": {
           const text = str(payload.text);
@@ -228,6 +256,7 @@ export function runHermesWsTurn(
           return;
         }
         case "approval.request": {
+          closeMoaAggregator("error");
           // The gateway is holding the tool run for a HUMAN approval Atrium
           // cannot surface yet — settle actionably instead of hanging until
           // the watchdog (live finding: the turn stalls silently otherwise).
@@ -244,20 +273,114 @@ export function runHermesWsTurn(
         case "subagent.start":
         case "subagent.thinking":
         case "subagent.tool":
-        case "subagent.progress": {
-          // Hermes delegation (live-captured payload: {goal, subagent_id,
-          // child_session_id, depth, model, tool_count}). The delegate_task
-          // TOOL part already surfaces the spawn; here we keep the parent's
-          // phase honest while the child works — the same "awaiting_subagents"
-          // pill OpenClaw delegations show. Content stays gateway-side.
+        case "subagent.progress":
+        case "subagent.complete": {
+          // Hermes delegation → the EXISTING sub-agent monitor (subAgents table
+          // + the "N sous-agents" panel). Live-captured payloads carry
+          // {goal, subagent_id, child_session_id, depth, model, toolsets,
+          //  tool_name?, text/summary/status/duration on complete}. Only names/
+          // config/result cross — tool args/previews stay gateway-side.
+          const child = str(payload.child_session_id) || str(payload.subagent_id);
+          if (!child) return;
           const mid = sink.currentMessageId;
-          if (mid) opts.writer.setPhase?.(mid, "awaiting_subagents");
+          const record: SubAgentRecord = {
+            chatId: opts.chatId,
+            parentMessageId: mid,
+            childSessionKey: `hermes:${child}`,
+            status: "running",
+          };
+          if (type === "subagent.start") {
+            record.taskName = str(payload.goal) || undefined;
+            record.sessionMeta = {
+              model: str(payload.model) || undefined,
+              spawnDepth:
+                typeof payload.depth === "number" ? payload.depth : undefined,
+              gatewayKind: "hermes",
+              runtime: "subagent",
+            };
+          } else if (type === "subagent.tool") {
+            const toolName = str(payload.tool_name);
+            if (toolName) {
+              record.tools = [{ name: toolName, status: "done" }];
+            }
+          } else if (type === "subagent.complete") {
+            record.status =
+              str(payload.status) === "completed" ? "done" : "error";
+            const result = str(payload.summary) || str(payload.text);
+            if (result) record.resultText = result;
+            if (record.status === "error") {
+              record.errorMessage = str(payload.text) || "Sub-agent failed.";
+            }
+          }
+          void opts.writer
+            .upsertSubAgent?.(record)
+            ?.catch(() => {/* monitor is best-effort */});
+          // Parent phase: awaiting while children work, generating on complete.
+          if (mid) {
+            opts.writer.setPhase?.(
+              mid,
+              type === "subagent.complete" ? "generating" : "awaiting_subagents",
+            );
+          }
           return;
         }
-        case "subagent.complete": {
-          // Child done — back to generating (the parent resumes its reply).
+        case "moa.reference": {
+          // Mixture-of-Agents: each reference model's private answer, surfaced
+          // as a STRUCTURED agent card (label + index/count + its text) so the
+          // MoA execution is visible — a Hermes capability OpenClaw lacks.
           const mid = sink.currentMessageId;
-          if (mid) opts.writer.setPhase?.(mid, "generating");
+          const idx = typeof payload.index === "number" ? payload.index : 0;
+          const count = typeof payload.count === "number" ? payload.count : 0;
+          const label = str(payload.label) || `reference ${idx}`;
+          void opts.writer
+            .upsertSubAgent?.({
+              chatId: opts.chatId,
+              parentMessageId: mid,
+              childSessionKey: `hermes-moa:${mid ?? runtimeSid}:ref${idx}`,
+              taskName: count
+                ? `MoA ${idx}/${count} — ${label}`
+                : `MoA — ${label}`,
+              status: "done",
+              resultText: str(payload.text) || undefined,
+              sessionMeta: {
+                model: label,
+                gatewayKind: "hermes",
+                subagentRole: "moa_reference",
+              },
+            })
+            ?.catch(() => {});
+          return;
+        }
+        case "moa.aggregating": {
+          const mid = sink.currentMessageId;
+          const aggregator = str(payload.aggregator) || "aggregator";
+          moaAggregatorKey = `hermes-moa:${mid ?? runtimeSid}:aggregate`;
+          // A visible "mixture_of_agents" tool marker: it (1) shows the MoA
+          // step in the tools list and (2) is the cheap NAME gate that unlocks
+          // the sub-agent panel on this message (same pattern as
+          // sessions_spawn/delegate_task).
+          apply([
+            {
+              type: EVENT_TOOL_STATUS,
+              name: "mixture_of_agents",
+              phase: "start",
+              runId: runtimeSid,
+            },
+          ]);
+          void opts.writer
+            .upsertSubAgent?.({
+              chatId: opts.chatId,
+              parentMessageId: mid,
+              childSessionKey: moaAggregatorKey,
+              taskName: `MoA agrégation — ${aggregator}`,
+              status: "running",
+              sessionMeta: {
+                model: aggregator,
+                gatewayKind: "hermes",
+                subagentRole: "moa_aggregator",
+              },
+            })
+            ?.catch(() => {});
           return;
         }
         case "tool.start":
@@ -307,6 +430,18 @@ export function runHermesWsTurn(
         }
         case "message.complete": {
           finalized = true;
+          // The MoA aggregator (if any) finished with the reply it produced.
+          if (moaAggregatorKey) {
+            apply([
+              {
+                type: EVENT_TOOL_STATUS,
+                name: "mixture_of_agents",
+                phase: "completed",
+                runId: runtimeSid,
+              },
+            ]);
+          }
+          closeMoaAggregator("done");
           // Outbound scan (ordered on the apply chain): freshly-written
           // delivery files ride EVENT_MEDIA ahead of the final pair, so the
           // sink attaches them to THIS message before finalize.
@@ -390,6 +525,7 @@ export function runHermesWsTurn(
         }
         case "error": {
           finalized = true;
+          closeMoaAggregator("error");
           const msg = str(payload.message) || str(payload.text) || "Hermes run failed.";
           apply([
             { type: EVENT_MESSAGE_FINAL, text: replyText, error: msg },
@@ -469,7 +605,12 @@ export function runHermesWsTurn(
       // onClose finalizes via forceError below through the registry).
       await turnDone;
     } finally {
-      unsubscribe();
+      // Late-child grace: keep the session lane subscribed ~2 min after the
+      // turn settles so a delegation that finishes after the parent still
+      // lands its terminal in the monitor (only monitoring events pass the
+      // finalized guard above). The timer never blocks process exit.
+      const t = setTimeout(unsubscribe, 120_000);
+      (t as { unref?: () => void }).unref?.();
       await chain.catch((e) =>
         console.error("[hermes-ws-turn] drain error:", (e as Error)?.message ?? e),
       );

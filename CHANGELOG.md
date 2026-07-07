@@ -8,6 +8,37 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.40.0] — Watch Hermes delegations and Mixture-of-Agents runs, structured
+
+Feature release. No breaking changes.
+
+- **Hermes delegations now light up the sub-agent monitor.** When a Hermes agent
+  delegates work, the same "N sous-agents" panel used for OpenClaw shows a card
+  per child — its goal, model, live tool activity, then its result (or the
+  failure reason) — anchored to the delegating message.
+
+- **Mixture-of-Agents runs are visible, structured.** On a Hermes MoA turn the
+  panel shows one card per reference model ("MoA 1/2 — provider:model", with
+  the answer each reference proposed) plus an aggregation card that closes when
+  the final reply lands — on every outcome, including errors and stops. A
+  `mixture_of_agents` marker also appears in the tools list. This surfaces a
+  Hermes capability OpenClaw does not have.
+
+- **Late-finishing children are never lost.** A child that completes after its
+  parent turn already answered still lands its terminal in the monitor (the
+  event lane stays open a couple of minutes), so cards no longer stay "running"
+  and block the next send.
+
+- **Agent files work on Hermes.** The Agent-files tab (Settings) now lists,
+  reads and edits the identity files at the Hermes agent's home (SOUL.md,
+  AGENTS.md, …) through the gateway's managed-files API, with the same
+  concurrent-edit protection as OpenClaw (a stale editor gets a conflict, never
+  a silent overwrite) and the same budget gauge.
+
+- **Honest wording when a feature is provider-limited.** The Chat-defaults tab
+  on a Hermes instance now says the provider does not offer the feature,
+  instead of blaming an "unknown gateway version".
+
 ## [0.39.1] — Long Hermes reasoning turns no longer time out
 
 Reliability fix. No breaking changes.

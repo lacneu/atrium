@@ -273,11 +273,14 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     const t = targets[0]!;
     expect(t.provider).toBe("hermes");
     expect(t.gatewayVersion).toBe("0.18.0");
-    // Hermes surface: abort + discovery TRUE; OpenClaw-only knobs absent/false.
+    // Hermes WS surface (default transport): abort + discovery + attachments +
+    // the sub-agent/MoA monitor; OpenClaw-only knobs stay absent.
     expect(t.capabilities.abort).toBe(true);
     expect(t.capabilities.agentsDiscovery).toBe(true);
+    expect(t.capabilities.inboundAttachments).toBe(true);
+    expect(t.capabilities.subagents).toBe(true);
+    expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBeUndefined();
-    expect(t.capabilities.subagents).toBeUndefined();
   });
 
   test("a HERMES instance with NO version still emits its target (codex P2)", () => {

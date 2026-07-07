@@ -423,7 +423,7 @@ export function ChatDefaultsTab() {
         // why the global-defaults form is unavailable on this deployment.
         <p className="oc-compat__blocked" role="status">
           <AlertTriangle size={14} aria-hidden />{" "}
-          {unsupportedInstanceLabel(gate.gatewayVersion)}
+          {unsupportedInstanceLabel(gate.gatewayVersion, gate.provider)}
         </p>
       ) : state.status === "loading" ? (
         <p className="oc-admin__hint">{m.common_loading()}</p>

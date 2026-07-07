@@ -248,6 +248,7 @@ describe("instanceTabGate (AgentFilesTab)", () => {
     expect(instanceTabGate(null, "agentFiles")).toEqual({
       blocked: true,
       gatewayVersion: null,
+      provider: null,
     });
   });
 
@@ -256,6 +257,7 @@ describe("instanceTabGate (AgentFilesTab)", () => {
     expect(instanceTabGate(null, "knobModel")).toEqual({
       blocked: false,
       gatewayVersion: null,
+      provider: null,
     });
   });
 
@@ -270,7 +272,7 @@ describe("instanceTabGate (AgentFilesTab)", () => {
         },
         "agentFiles",
       ),
-    ).toEqual({ blocked: false, gatewayVersion: "2026.6.5" });
+    ).toEqual({ blocked: false, gatewayVersion: "2026.6.5", provider: "openclaw" });
   });
 
   test("a non-supporting instance is blocked WITH its gateway version (banner)", () => {
@@ -284,7 +286,7 @@ describe("instanceTabGate (AgentFilesTab)", () => {
         },
         "agentFiles",
       ),
-    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19" });
+    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19", provider: "openclaw" });
   });
 
   test("an instance with capabilities:null falls back to the legacy policy", () => {
@@ -298,7 +300,7 @@ describe("instanceTabGate (AgentFilesTab)", () => {
         },
         "sessionCompact",
       ),
-    ).toEqual({ blocked: true, gatewayVersion: "2026.4.1" });
+    ).toEqual({ blocked: true, gatewayVersion: "2026.4.1", provider: "openclaw" });
   });
 });
 
@@ -317,6 +319,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
     expect(snapshotTabGate(null, "configDefaults")).toEqual({
       blocked: true,
       gatewayVersion: null,
+      provider: null,
     });
   });
 
@@ -329,6 +332,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
     ).toEqual({
       blocked: true,
       gatewayVersion: null,
+      provider: null,
     });
   });
 
@@ -341,7 +345,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: false, gatewayVersion: null });
+    ).toEqual({ blocked: false, gatewayVersion: null, provider: null });
   });
 
   test("single non-supporting instance -> blocked with ITS version", () => {
@@ -353,7 +357,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19" });
+    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19", provider: null });
   });
 
   test("several instances all supporting -> open (the write is safe anywhere)", () => {
@@ -368,7 +372,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: false, gatewayVersion: null });
+    ).toEqual({ blocked: false, gatewayVersion: null, provider: null });
   });
 
   test("several instances, one lagging -> blocked, names the offender's version", () => {
@@ -383,7 +387,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19" });
+    ).toEqual({ blocked: true, gatewayVersion: "2026.5.19", provider: null });
   });
 
   test("a CONFIGURED instance absent from the live targets -> fail CLOSED (Codex P2)", () => {
@@ -398,7 +402,7 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: true, gatewayVersion: null });
+    ).toEqual({ blocked: true, gatewayVersion: null, provider: null });
   });
 
   test("no configured instances on record -> live targets are the best knowledge", () => {
@@ -410,6 +414,6 @@ describe("snapshotTabGate (ChatDefaultsTab — default-instance resolution)", ()
         },
         "configDefaults",
       ),
-    ).toEqual({ blocked: false, gatewayVersion: null });
+    ).toEqual({ blocked: false, gatewayVersion: null, provider: null });
   });
 });

@@ -71,30 +71,106 @@ export class HermesFilesFetcher implements MediaFetcher {
       .join("; ");
   }
 
+  /** STRICT list for ADMIN operations (/agent-files): a gateway failure THROWS
+   *  so the caller returns a retryable 502 — an empty result must always mean
+   *  "the directory really is empty", never a swallowed 500/timeout. */
+  async listFilesStrict(
+    dirPath: string,
+  ): Promise<Array<{ name: string; path: string; mtime: number; size: number | null }>> {
+    const res = await this.authedGet(
+      `/api/files?path=${encodeURIComponent(dirPath)}`,
+    );
+    if (!res.ok) throw new Error(`files list -> HTTP ${res.status}`);
+    const d = (await res.json()) as { entries?: Array<Record<string, unknown>> };
+    return (d.entries ?? [])
+      .filter((e) => e.is_directory !== true && typeof e.path === "string")
+      .map((e) => ({
+        name: String(e.name ?? ""),
+        path: String(e.path),
+        mtime: typeof e.mtime === "number" ? e.mtime * 1000 : 0,
+        size: typeof e.size === "number" ? e.size : null,
+      }));
+  }
+
   /** List a workspace directory (managed-files API). Returns [] on any error
    *  — the outbound scan treats that as "nothing to deliver". */
   async listFiles(
     dirPath: string,
   ): Promise<Array<{ name: string; path: string; mtime: number; size: number | null }>> {
     try {
-      const res = await this.authedGet(
-        `/api/files?path=${encodeURIComponent(dirPath)}`,
-      );
-      if (!res.ok) return [];
-      const d = (await res.json()) as {
-        entries?: Array<Record<string, unknown>>;
-      };
-      return (d.entries ?? [])
-        .filter((e) => e.is_directory !== true && typeof e.path === "string")
-        .map((e) => ({
-          name: String(e.name ?? ""),
-          path: String(e.path),
-          mtime: typeof e.mtime === "number" ? e.mtime * 1000 : 0,
-          size: typeof e.size === "number" ? e.size : null,
-        }));
+      return await this.listFilesStrict(dirPath);
     } catch {
       return [];
     }
+  }
+
+  /** The managed-files ROOT (the agent home, e.g. /opt/data). Learned from the
+   *  first list call; agent files (SOUL.md…) live at this root. */
+  private rootPath: string | null = null;
+
+  async agentFilesRoot(): Promise<string> {
+    if (this.rootPath) return this.rootPath;
+    const res = await this.authedGet("/api/files");
+    if (!res.ok) throw new Error(`files root -> HTTP ${res.status}`);
+    const d = (await res.json()) as { path?: string };
+    this.rootPath = typeof d.path === "string" && d.path ? d.path : "/";
+    return this.rootPath;
+  }
+
+  /** Read a root-level agent file: content (decoded) or missing. */
+  async readAgentFile(
+    name: string,
+  ): Promise<{ content: string; missing: boolean }> {
+    const root = await this.agentFilesRoot();
+    const res = await this.authedGet(
+      `/api/files/read?path=${encodeURIComponent(`${root}/${name}`)}`,
+    );
+    if (res.status === 404) return { content: "", missing: true };
+    if (!res.ok) throw new Error(`files read -> HTTP ${res.status}`);
+    const d = (await res.json()) as { data_url?: string };
+    const m = /^data:[^;]*;base64,(.*)$/s.exec(d.data_url ?? "");
+    const content = m?.[1] ? Buffer.from(m[1], "base64").toString("utf8") : "";
+    return { content, missing: false };
+  }
+
+  /** Write (create/overwrite) a root-level agent file. `retry` bounds the
+   *  401→relogin loop to ONE attempt (a persistent 401 must surface, not
+   *  recurse — codex P2). */
+  async writeAgentFile(name: string, content: string, retry = true): Promise<void> {
+    const root = await this.agentFilesRoot();
+    // POST needs the same auth as GET: reuse the cookie/token seam.
+    const colon = this.credential.indexOf(":");
+    let url = `${this.base}/api/files/upload`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (colon === -1) {
+      url += `?token=${encodeURIComponent(this.credential)}`;
+    } else {
+      if (!this.cookies) await this.loginForWrite();
+      if (this.cookies) headers.Cookie = this.cookies;
+    }
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        path: `${root}/${name}`,
+        data_url: `data:text/markdown;base64,${Buffer.from(content, "utf8").toString("base64")}`,
+        overwrite: true,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (res.status === 401 && colon !== -1 && retry) {
+      this.cookies = null;
+      await this.loginForWrite();
+      return this.writeAgentFile(name, content, false);
+    }
+    if (!res.ok) throw new Error(`files upload -> HTTP ${res.status}`);
+  }
+
+  private async loginForWrite(): Promise<void> {
+    // Same login as authedGet's password path.
+    await this.authedGet("/api/files").catch(() => {});
   }
 
   async open(

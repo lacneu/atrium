@@ -305,7 +305,7 @@ export function AgentFilesTab() {
         // knobs) — the user must understand why the surface is unavailable.
         <p className="oc-compat__blocked" role="status">
           <AlertTriangle size={14} aria-hidden />{" "}
-          {unsupportedInstanceLabel(gate.gatewayVersion)}
+          {unsupportedInstanceLabel(gate.gatewayVersion, gate.provider)}
         </p>
       ) : listing.status === "loading" || listing.status === "idle" ? (
         <p className="oc-admin__hint">{m.common_loading()}</p>

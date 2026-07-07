@@ -92,13 +92,21 @@ export function extractSpawnedChildKeys(
   return keys;
 }
 
-/** Whether this turn CALLED sessions_spawn at all — detectable from the tool part's
- *  NAME even when the gateway omits the result/childSessionKey (it does), so the
- *  sub-agent UI gates on "did it delegate?" not on a parseable spawn output. */
+/** The tool names that mean "this turn delegated to other agents", per provider:
+ *  OpenClaw `sessions_spawn`, Hermes `delegate_task`, and the bridge-synthesized
+ *  `mixture_of_agents` marker on Hermes MoA turns. The sub-agent UI gates on
+ *  these NAMES (always present) rather than a parseable spawn output. */
+const SPAWN_TOOL_NAMES = new Set([
+  "sessions_spawn",
+  "delegate_task",
+  "mixture_of_agents",
+]);
+
+/** Whether this turn delegated at all — see SPAWN_TOOL_NAMES. */
 export function toolPartsHaveSpawn(
   toolParts: readonly EmptyStateToolPart[],
 ): boolean {
-  return toolParts.some((p) => p.toolName === "sessions_spawn");
+  return toolParts.some((p) => SPAWN_TOOL_NAMES.has(p.toolName));
 }
 
 /** Trim a task name to a clean label, or undefined when blank. */

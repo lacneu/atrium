@@ -112,7 +112,7 @@ export type InstanceCompat = {
  */
 export type TabGate =
   | "loading"
-  | { blocked: boolean; gatewayVersion: string | null };
+  | { blocked: boolean; gatewayVersion: string | null; provider: string | null };
 
 /**
  * Gate a Settings tab on ONE instance's capability (AgentFilesTab — the
@@ -125,10 +125,20 @@ export function instanceTabGate(
   key: CapabilityKey,
 ): TabGate {
   if (res === undefined) return "loading";
-  if (res === null) return { blocked: !capabilityOf(null, key), gatewayVersion: null };
+  if (res === null) {
+    return {
+      blocked: !capabilityOf(null, key),
+      gatewayVersion: null,
+      provider: null,
+    };
+  }
   return {
     blocked: !capabilityOf(res.capabilities, key),
     gatewayVersion: res.gatewayVersion,
+    // The provider drives the blocked-banner wording: a capability a PROVIDER
+    // simply does not have ("Hermes n'a pas cette fonction") reads differently
+    // from an OpenClaw gateway whose VERSION is unknown/too old.
+    provider: res.provider,
   };
 }
 
@@ -164,14 +174,20 @@ export function snapshotTabGate(
 ): TabGate {
   if (snapshot === undefined) return "loading";
   if (snapshot === null || snapshot.targets.length === 0) {
-    return { blocked: !capabilityOf(null, key), gatewayVersion: null };
+    return { blocked: !capabilityOf(null, key), gatewayVersion: null, provider: null };
   }
   const live = new Set(snapshot.targets.map((t) => t.instanceName));
   const missing = snapshot.configuredInstances.find((name) => !live.has(name));
   if (missing !== undefined) {
-    return { blocked: true, gatewayVersion: null };
+    return { blocked: true, gatewayVersion: null, provider: null };
   }
   const failing = snapshot.targets.find((t) => !capabilityOf(t.capabilities, key));
-  if (failing === undefined) return { blocked: false, gatewayVersion: null };
-  return { blocked: true, gatewayVersion: failing.gatewayVersion };
+  if (failing === undefined) {
+    return { blocked: false, gatewayVersion: null, provider: null };
+  }
+  return {
+    blocked: true,
+    gatewayVersion: failing.gatewayVersion,
+    provider: (failing as { provider?: string }).provider ?? null,
+  };
 }

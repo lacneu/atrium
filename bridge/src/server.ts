@@ -47,6 +47,7 @@ import {
   performHermesSend,
   performHermesAbort,
   performHermesReset,
+  performHermesAgentFilesOp,
   discoverHermesAgents,
 } from "./providers/hermes/dispatch.js";
 import { validateSharedFs } from "./core/media-validate.js";
@@ -79,6 +80,7 @@ import type {
   InstanceBundle,
 } from "./session.js";
 import {
+  AGENT_FILE_NAMES,
   defaultsApplied,
   extractAgentDefaults,
   parseAgentFilesBody,
@@ -1502,12 +1504,19 @@ export function buildCapabilityTargets(
   ) {
     const resolved = resolveCapabilities(provider, fallbackVersion);
     if (provider === "hermes") {
-      // Transport-aware overlay: the WS surface adds inline attachments
-      // (file.attach) that the REST API server does not have. Resolved at the
-      // FLOOR like the base set (validated 0.18.0 only).
-      const caps = hermesCapabilitiesFor(transport);
-      for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
-      if (transport === "rest") delete resolved.capabilities.inboundAttachments;
+      // Transport-aware overlay: the WS surface adds capabilities the REST API
+      // server does not have. Applied ONLY when the base resolution passed the
+      // version gate (or no version is known → range floor) — a gateway BELOW
+      // the validated range must keep its capabilities off (codex P2).
+      const versionGatePassed =
+        fallbackVersion === null || resolved.capabilities.abort === true;
+      if (versionGatePassed) {
+        const caps = hermesCapabilitiesFor(transport);
+        for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
+        if (transport === "rest") {
+          delete resolved.capabilities.inboundAttachments;
+        }
+      }
     }
     const synthetic: CapabilityTarget = {
       key: instanceName,
@@ -2327,11 +2336,21 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       try {
-        const result = await withOperatorConnection(
-          afBundle.config,
-          (conn) => performAgentFilesOp(conn, body),
-          noteHandshakeFor(afInstance),
-        );
+        // Hermes: the identity files live at the agent home root, served by the
+        // gateway's managed-files API (no operator socket).
+        const result =
+          afBundle.config.kind === "hermes"
+            ? await performHermesAgentFilesOp(
+                afBundle.config,
+                hermesTurns,
+                body,
+                AGENT_FILE_NAMES,
+              )
+            : await withOperatorConnection(
+                afBundle.config,
+                (conn) => performAgentFilesOp(conn, body),
+                noteHandshakeFor(afInstance),
+              );
         sendJson(res, result.status, result.body);
       } catch (err) {
         const code = classifyGatewayError(err);

@@ -420,6 +420,101 @@ export async function performHermesReset(
   await (writer.clearProviderChat?.(chatId) ?? Promise.resolve());
 }
 
+/** Agent-files ops on the Hermes managed-files API. The allowlisted identity
+ *  files (SOUL.md, AGENTS.md, …) live at the agent home root — list surfaces
+ *  the ones present (with mtime as updatedAtMs, the CAS base), get reads the
+ *  decoded content, set enforces compare-and-set against the current mtime
+ *  then uploads. Same response contract as the OpenClaw op so Convex/UI are
+ *  untouched. */
+export async function performHermesAgentFilesOp(
+  cfg: BridgeConfig,
+  registry: HermesTurnRegistry,
+  body:
+    | { op: "list"; agentId: string }
+    | { op: "get"; agentId: string; name: string }
+    | {
+        op: "set";
+        agentId: string;
+        name: string;
+        content: string;
+        baseUpdatedAtMs: number | null;
+      },
+  allowedNames: readonly string[],
+): Promise<{ status: number; body: unknown }> {
+  const fetcher = registry.filesFetcherFor(cfg);
+  const root = await fetcher.agentFilesRoot();
+  // STRICT list: an admin op must surface a gateway failure as a retryable
+  // error (502), never as an empty tab or a phantom CAS conflict (codex P2).
+  const entries = await fetcher.listFilesStrict(root);
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  // Response shapes REPLICATE the OpenClaw op exactly (conf.ts fileMeta /
+  // CONFLICT / before.content) — Convex parses `data.file` and the editor's
+  // CAS reads `currentUpdatedAtMs`; any drift here breaks the tab silently.
+  const meta = (name: string, missing: boolean) => ({
+    name,
+    missing,
+    size: byName.get(name)?.size ?? null,
+    updatedAtMs: byName.get(name)?.mtime ?? null,
+  });
+  if (body.op === "list") {
+    // EVERY allowlisted name, present or not — a `missing` row is how the UI
+    // offers to CREATE a file that does not exist yet (same as OpenClaw).
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        files: allowedNames.map((n) => meta(n, !byName.has(n))),
+      },
+    };
+  }
+  if (body.op === "get") {
+    const f = await fetcher.readAgentFile(body.name);
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        file: { ...meta(body.name, f.missing), content: f.content },
+      },
+    };
+  }
+  // set — compare-and-set on the file's mtime (null base = create-only).
+  const beforeRead = await fetcher.readAgentFile(body.name);
+  const currentMs = byName.get(body.name)?.mtime ?? null;
+  const conflict = (): { status: number; body: unknown } => ({
+    status: 409,
+    body: {
+      ok: false,
+      error: { code: "CONFLICT", currentUpdatedAtMs: currentMs },
+    },
+  });
+  if (body.baseUpdatedAtMs !== null && currentMs !== null) {
+    // Allow small fs-timestamp jitter (<1s) between list and the stored base.
+    if (Math.abs(currentMs - body.baseUpdatedAtMs) > 1_000) return conflict();
+  } else if (body.baseUpdatedAtMs === null && currentMs !== null) {
+    return conflict();
+  } else if (body.baseUpdatedAtMs !== null && currentMs === null) {
+    // EDIT of a file that no longer exists — surface the conflict, never a
+    // silent create-over-delete.
+    return conflict();
+  }
+  await fetcher.writeAgentFile(body.name, body.content);
+  const after = await fetcher.listFilesStrict(root);
+  const afterEntry = after.find((e) => e.name === body.name);
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      file: {
+        name: body.name,
+        missing: false,
+        size: afterEntry?.size ?? null,
+        updatedAtMs: afterEntry?.mtime ?? null,
+      },
+      before: { content: beforeRead.missing ? null : beforeRead.content },
+    },
+  };
+}
+
 /** Provider-agnostic agent descriptor (mirrors the bridge's NormalizedAgent). */
 export interface HermesDiscovered {
   agents: {

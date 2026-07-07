@@ -1664,5 +1664,6 @@
 	"injections_content_locale_default": "Default ({locale})",
 	"settings_field_transport": "Transport",
 	"settings_transport_ws": "WebSocket (recommended — richer features)",
-	"settings_transport_rest": "REST (API server)"
+	"settings_transport_rest": "REST (API server)",
+	"compat_unsupported_provider": "Not available on this gateway: the {provider} provider does not offer this feature."
 }

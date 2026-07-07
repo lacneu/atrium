@@ -1664,5 +1664,6 @@
 	"injections_content_locale_default": "Défaut ({locale})",
 	"settings_field_transport": "Transport",
 	"settings_transport_ws": "WebSocket (recommandé — plus de fonctions)",
-	"settings_transport_rest": "REST (API server)"
+	"settings_transport_rest": "REST (API server)",
+	"compat_unsupported_provider": "Non disponible sur cette passerelle : le provider {provider} ne propose pas cette fonction."
 }

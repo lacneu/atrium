@@ -77,9 +77,17 @@ export function versionLabel(version: string | null): string {
   return version ?? m.compat_unknown();
 }
 
-/** Tab-blocked banner: the gateway version is named when known (parameterized
- *  message), with a distinct branch when it is not. */
-export function unsupportedInstanceLabel(gatewayVersion: string | null): string {
+/** Tab-blocked banner. A capability the PROVIDER simply does not offer (e.g.
+ *  Hermes has no agent-files RPC) is stated as such — blaming an "unknown
+ *  gateway version" there is wrong and confusing. The version wording is kept
+ *  for OpenClaw, where the block really is version-driven. */
+export function unsupportedInstanceLabel(
+  gatewayVersion: string | null,
+  provider?: string | null,
+): string {
+  if (provider && provider !== "openclaw") {
+    return m.compat_unsupported_provider({ provider });
+  }
   return gatewayVersion !== null
     ? m.compat_unsupported_instance({ version: gatewayVersion })
     : m.compat_unsupported_instance_unknown();
