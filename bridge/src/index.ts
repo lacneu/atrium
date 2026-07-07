@@ -18,6 +18,7 @@ import {
   type InstanceData,
 } from "./config.js";
 import { HttpConvexWriter } from "./convex-writer.js";
+import { HermesFilesFetcher } from "./providers/hermes/files-fetcher.js";
 import { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import {
   CredentialResolver,
@@ -47,11 +48,23 @@ import {
  */
 function buildBundle(config: BridgeConfig): InstanceBundle {
   const mediaProvider = new MediaFetcherProvider(config);
+  // Hermes: outbound media resolves through the gateway's managed-files API
+  // (GET /api/files/download) with the instance credential — not the OpenClaw
+  // shared-fs/gateway-http fetchers.
+  const hermesFetcher =
+    config.kind === "hermes"
+      ? new HermesFilesFetcher({
+          baseUrl: config.gatewayHttpBase || config.openclawGatewayUrl,
+          credential: config.openclawToken ?? "",
+          maxBytes: config.mediaMaxBytes,
+        })
+      : null;
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     ingestSecret: config.convexIngestSecret,
     deltaFlushMs: config.deltaFlushMs,
-    getFetcher: () => mediaProvider.current(),
+    getFetcher: () =>
+      hermesFetcher !== null ? hermesFetcher : mediaProvider.current(),
   });
   const outboundScan: OutboundScan = (messageId, chatId, sinceMs, hosted) =>
     scanAndHostOutbound(

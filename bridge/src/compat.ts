@@ -104,6 +104,22 @@ const HERMES_CAPABILITIES: Record<string, string> = {
   agentsDiscovery: "0.18.0", // GET /v1/models (one agent)
 };
 
+// The WS transport (`hermes serve` JSON-RPC) additionally stages inline
+// attachments via file.attach / image.attach_bytes — live-validated 0.18.0.
+// Everything else stays deliberately absent (honest manifest: only what the
+// bridge actually implements).
+const HERMES_WS_CAPABILITIES: Record<string, string> = {
+  ...HERMES_CAPABILITIES,
+  inboundAttachments: "0.18.0",
+};
+
+/** Transport-aware resolution for Hermes: the WS surface is a superset. */
+export function hermesCapabilitiesFor(
+  transport: "ws" | "rest",
+): Record<string, string> {
+  return transport === "ws" ? HERMES_WS_CAPABILITIES : HERMES_CAPABILITIES;
+}
+
 export const COMPAT_MANIFEST: CompatManifest = {
   bridgeVersion: BRIDGE_VERSION,
   protocolVersion: PROTOCOL_VERSION,

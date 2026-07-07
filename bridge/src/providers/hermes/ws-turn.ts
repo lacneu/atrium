@@ -19,13 +19,24 @@
 
 import { TurnSink } from "../../core/turn-sink.js";
 import {
+  EVENT_CONTEXT_COMPACTION,
   EVENT_MESSAGE_DELTA,
   EVENT_MESSAGE_FINAL,
   EVENT_RUN_STATUS,
+  EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
 import type { ConvexWriter, SessionMetaReport } from "../../convex-writer.js";
 import type { HermesWsClient } from "./ws-client.js";
+import type { HermesFilesFetcher } from "./files-fetcher.js";
+
+/** The delivery folder (workspace-relative) the prompt directive names. */
+export const HERMES_DELIVERY_DIR = "atrium-out";
+
+/** The standing delivery instruction spliced after the user text (mirrors the
+ *  OpenClaw MEDIA:/outbound directive — tells the agent HOW to hand a file to
+ *  the user; the post-turn scan picks it up). */
+const DELIVERY_DIRECTIVE = `[Consigne de livraison : pour remettre un fichier genere a l'utilisateur, ecris-le dans le dossier ${HERMES_DELIVERY_DIR}/ (relatif a ton repertoire de travail). Ne colle pas le contenu du fichier dans ta reponse.]`;
 
 export interface HermesWsTurnOptions {
   client: HermesWsClient;
@@ -35,6 +46,15 @@ export interface HermesWsTurnOptions {
   /** The chat's stored Hermes WS session id (stored_session_id), or null. */
   providerChatId: string | null;
   text: string;
+  /** Inline base64 attachments to stage BEFORE the prompt (Atrium send shape).
+   *  Images go through image.attach_bytes (vision tiles); everything else
+   *  through file.attach (workspace artifact + @file: ref). */
+  attachments?: Array<{ mimeType: string; fileName: string; content: string }>;
+  /** Outbound files seam: when set, the turn (1) splices the delivery
+   *  directive into the prompt and (2) scans <cwd>/atrium-out after the
+   *  terminal for files newer than the turn start → EVENT_MEDIA (the sink
+   *  hosts them via this same fetcher). */
+  filesFetcher?: HermesFilesFetcher | null;
   /** Persist a NEWLY minted stored_session_id (turn 1 / after reset). */
   onBoundSession?: (storedSessionId: string) => Promise<void>;
 }
@@ -84,16 +104,23 @@ export function runHermesWsTurn(
   const done = (async () => {
     // 1) Session: resume the stored one, else create (and persist) a new one.
     let storedSid: string | null = null;
+    let sessionCwd: string | null = null;
+    const noteCwd = (r: Record<string, unknown>) => {
+      const info = r.info as { cwd?: unknown } | undefined;
+      if (info && typeof info.cwd === "string" && info.cwd) sessionCwd = info.cwd;
+    };
     try {
       if (opts.providerChatId && isHermesWsStoredSessionId(opts.providerChatId)) {
         const r = await opts.client.call("session.resume", {
           session_id: opts.providerChatId,
         });
+        noteCwd(r);
         runtimeSid = str(r.session_id) || null;
         storedSid = str(r.stored_session_id) || opts.providerChatId;
       }
       if (!runtimeSid) {
         const r = await opts.client.call("session.create", {});
+        noteCwd(r);
         runtimeSid = str(r.session_id) || null;
         storedSid = str(r.stored_session_id) || null;
         if (!runtimeSid) {
@@ -125,6 +152,7 @@ export function runHermesWsTurn(
     // 2) Subscribe THIS turn to the session's event lane, buffering events that
     // race ahead of beginTurn (the sink serializes via the apply chain).
     const sink = new TurnSink(opts.chatId, opts.writer, undefined, opts.sessionKey);
+    const turnStartMs = Date.now();
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
     let replyText = "";
@@ -162,6 +190,79 @@ export function runHermesWsTurn(
         case "reasoning.delta":
           // Reasoning stream — NEVER reply text (would duplicate/pollute).
           return;
+        case "status.update": {
+          // Hermes re-tags a mid-turn auto-compaction to kind:"compacting"
+          // (tui_gateway._status_update) precisely so drivers can show it —
+          // map it to Atrium's context.compaction (phase pill + in-thread
+          // marker, the same surface OpenClaw compactions use). Other kinds
+          // (lifecycle notes) carry no user-facing signal here.
+          if (str(payload.kind) === "compacting") {
+            apply([
+              {
+                type: EVENT_CONTEXT_COMPACTION,
+                phase: "inflight",
+                runId: runtimeSid,
+              },
+            ]);
+          }
+          return;
+        }
+        case "approval.request": {
+          // The gateway is holding the tool run for a HUMAN approval Atrium
+          // cannot surface yet — settle actionably instead of hanging until
+          // the watchdog (live finding: the turn stalls silently otherwise).
+          finalized = true;
+          const msg =
+            "L'agent Hermes attend une approbation d'outil que ce chat ne peut pas donner. Configurez l'auto-approbation sur la passerelle (tools.<outil>.approval_policy: auto) ou approuvez depuis le dashboard Hermes.";
+          apply([
+            { type: EVENT_MESSAGE_FINAL, text: replyText, error: msg },
+            { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
+          ]);
+          settle();
+          return;
+        }
+        case "subagent.start":
+        case "subagent.thinking":
+        case "subagent.tool":
+        case "subagent.progress": {
+          // Hermes delegation (live-captured payload: {goal, subagent_id,
+          // child_session_id, depth, model, tool_count}). The delegate_task
+          // TOOL part already surfaces the spawn; here we keep the parent's
+          // phase honest while the child works — the same "awaiting_subagents"
+          // pill OpenClaw delegations show. Content stays gateway-side.
+          const mid = sink.currentMessageId;
+          if (mid) opts.writer.setPhase?.(mid, "awaiting_subagents");
+          return;
+        }
+        case "subagent.complete": {
+          // Child done — back to generating (the parent resumes its reply).
+          const mid = sink.currentMessageId;
+          if (mid) opts.writer.setPhase?.(mid, "generating");
+          return;
+        }
+        case "tool.start":
+        case "tool.generating": {
+          // Live-captured: {tool_id, name, context}. NAME ONLY crosses (the
+          // args/result stay gateway-side — same content-hygiene rule as the
+          // OpenClaw tool feed).
+          const name = str(payload.name) || "tool";
+          apply([
+            { type: EVENT_TOOL_STATUS, name, phase: "start", runId: runtimeSid },
+          ]);
+          return;
+        }
+        case "tool.complete": {
+          const name = str(payload.name) || "tool";
+          apply([
+            {
+              type: EVENT_TOOL_STATUS,
+              name,
+              phase: "completed",
+              runId: runtimeSid,
+            },
+          ]);
+          return;
+        }
         case "session.info": {
           // Model/provider/knobs — the same meta channel OpenClaw feeds.
           const meta: SessionMetaReport = {};
@@ -186,6 +287,47 @@ export function runHermesWsTurn(
         }
         case "message.complete": {
           finalized = true;
+          // Outbound scan (ordered on the apply chain): freshly-written
+          // delivery files ride EVENT_MEDIA ahead of the final pair, so the
+          // sink attaches them to THIS message before finalize.
+          if (opts.filesFetcher) {
+            const fetcher = opts.filesFetcher;
+            chain = chain.then(async () => {
+              // cwd can be missing after a resume/recovery whose reply carried
+              // no info block — recover it from session.status so delivered
+              // files are not silently lost (codex P2).
+              if (!sessionCwd && runtimeSid) {
+                try {
+                  const st = await opts.client.call("session.status", {
+                    session_id: runtimeSid,
+                  });
+                  noteCwd(st);
+                  const info = st as { cwd?: unknown };
+                  if (!sessionCwd && typeof info.cwd === "string" && info.cwd) {
+                    sessionCwd = info.cwd;
+                  }
+                } catch {
+                  /* no cwd → no scan (nothing to deliver from) */
+                }
+              }
+              if (!sessionCwd) return;
+              const dir = `${sessionCwd}/${HERMES_DELIVERY_DIR}`;
+              const entries = await fetcher.listFiles(dir);
+              const fresh = entries.filter((e) => e.mtime >= turnStartMs - 2_000);
+              if (fresh.length === 0) return;
+              await sink.apply([
+                {
+                  type: "media",
+                  items: fresh.map((e) => ({
+                    filename: e.name,
+                    path: e.path,
+                    explicit: true,
+                  })),
+                  runId: runtimeSid,
+                } as BridgeEvent,
+              ]);
+            });
+          }
           const text = str(payload.text) || replyText;
           const usage = (payload.usage ?? {}) as Record<string, unknown>;
           // Channel semantics (same as OpenClaw): totalTokens = tokens USED in
@@ -254,11 +396,37 @@ export function runHermesWsTurn(
         return;
       }
 
-      // 4) Submit. The ACK ({status:"streaming"}) is the acceptance point.
+      // 4) Stage the attachments, then submit. The ACK ({status:"streaming"})
+      // is the acceptance point. An attach/submit failure settles the already-
+      // created row as an actionable error (bridge-owned, single bubble).
       try {
+        // Stage files, collecting the returned @file: refs — the desktop puts
+        // those refs IN the prompt text (they are how the agent finds the
+        // file); images render to vision tiles and need no ref.
+        const fileRefs: string[] = [];
+        for (const att of opts.attachments ?? []) {
+          if (att.mimeType.startsWith("image/")) {
+            await opts.client.call("image.attach_bytes", {
+              session_id: runtimeSid,
+              content_base64: att.content,
+              filename: att.fileName,
+            });
+          } else {
+            const r = await opts.client.call("file.attach", {
+              session_id: runtimeSid,
+              name: att.fileName,
+              data_url: `data:${att.mimeType};base64,${att.content}`,
+            });
+            const ref = str(r.ref_text);
+            if (ref) fileRefs.push(ref);
+          }
+        }
+        const promptParts = [opts.text];
+        if (fileRefs.length) promptParts.push(fileRefs.join("\n"));
+        if (opts.filesFetcher) promptParts.push(DELIVERY_DIRECTIVE);
         await opts.client.call("prompt.submit", {
           session_id: runtimeSid,
-          text: opts.text,
+          text: promptParts.join("\n\n"),
         });
       } catch (err) {
         // The streaming row ALREADY exists (chat-busy contract), so the bridge

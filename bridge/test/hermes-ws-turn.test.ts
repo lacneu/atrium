@@ -49,7 +49,15 @@ function spyWriter() {
     setSnapshot: async (_id: string, text: string) => {
       calls.push(["setSnapshot", text]);
     },
-    addPart: async () => {},
+    addPart: async (_id: string, part: unknown) => {
+      calls.push(["addPart", part]);
+    },
+    addToolPart: async (_id: string, part: unknown) => {
+      calls.push(["addToolPart", part]);
+    },
+    setPhase: (_id: string, phase: string) => {
+      calls.push(["setPhase", phase]);
+    },
     finalize: async (_id: string, status: string) => {
       calls.push(["finalize", status]);
     },
@@ -135,6 +143,118 @@ describe("Hermes WS turn (live capture replay)", () => {
     expect(
       metas.some((m) => (m as { model?: string }).model === "gpt-5.5"),
     ).toBe(true);
+  });
+
+  it("replays the live TOOLS turn: tool.start/complete surface as tool parts (name only)", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "ls",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    const lines = readFileSync(
+      join(__dirname, "fixtures/hermes/ws-tools.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { dir: string; frame: Record<string, unknown> });
+    for (const { dir, frame } of lines) {
+      if (dir !== "in" || frame.method !== "event") continue;
+      const p = frame.params as Record<string, unknown>;
+      const type = String(p.type ?? "");
+      if (type === "gateway.ready") continue;
+      onEvent(type, (p.payload ?? {}) as Record<string, unknown>);
+    }
+    await run.done;
+    const parts = calls.filter(([n]) => n === "addToolPart");
+    // The captured terminal tool surfaced, NAME only (no args/output).
+    expect(parts.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(parts)).toContain("terminal");
+    expect(JSON.stringify(parts)).not.toContain("exit_code");
+    expect(calls.map(([n]) => n)).toContain("finalize");
+  });
+
+  it("status.update kind=compacting surfaces Atrium's compaction marker", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "long",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    onEvent("status.update", { kind: "compacting", text: "Summarizing…" });
+    onEvent("message.complete", { text: "done", status: "complete" });
+    await run.done;
+    // The sink translated it (setPhase compacting and/or a marker part).
+    const names = calls.map(([n]) => n);
+    expect(
+      names.includes("setPhase") || names.includes("addPart"),
+    ).toBe(true);
+  });
+
+  it("replays the live DELEGATION turn: subagent events drive the awaiting pill + delegate_task tool part", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "delegue",
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    const lines = readFileSync(
+      join(__dirname, "fixtures/hermes/ws-subagent.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { dir: string; frame: Record<string, unknown> });
+    for (const { dir, frame } of lines) {
+      if (dir !== "in" || frame.method !== "event") continue;
+      const p = frame.params as Record<string, unknown>;
+      const type = String(p.type ?? "");
+      if (type === "gateway.ready") continue;
+      onEvent(type, (p.payload ?? {}) as Record<string, unknown>);
+    }
+    await run.done;
+    const phases = calls.filter(([n]) => n === "setPhase").map(([, v]) => v);
+    expect(phases).toContain("awaiting_subagents");
+    expect(phases).toContain("generating");
+    // The delegate_task spawn surfaced as a tool part.
+    expect(JSON.stringify(calls.filter(([n]) => n === "addToolPart"))).toContain(
+      "delegate_task",
+    );
+    expect(calls.map(([n]) => n)).toContain("finalize");
   });
 
   it("a refused prompt.submit settles the row as error and RESOLVES (single bubble)", async () => {

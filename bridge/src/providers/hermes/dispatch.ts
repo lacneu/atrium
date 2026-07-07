@@ -9,6 +9,7 @@ import type { BridgeConfig } from "../../config.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import { HermesClient } from "./client.js";
 import { HermesWsClient } from "./ws-client.js";
+import { HermesFilesFetcher } from "./files-fetcher.js";
 import { safeSessionPart } from "../openclaw/session-keys.js";
 import { runHermesTurn, HERMES_RESET_ABORT, type HermesTurnRun } from "./turn.js";
 import {
@@ -24,6 +25,9 @@ export interface HermesSendBody {
   canonical: string;
   openclawChatId: string | null; // reused as the Hermes session id (providerChatId)
   text: string;
+  /** Inline base64 attachments (WS transport stages them via file.attach /
+   *  image.attach_bytes before the prompt; REST has no upload channel). */
+  attachments?: Array<{ mimeType: string; fileName: string; content: string }>;
 }
 
 interface LiveHermesTurn {
@@ -48,6 +52,7 @@ export class HermesTurnRegistry {
   // session event subscribers (a turn registers its runtime session id and
   // receives ONLY its session's events — multiplex-safe).
   private wsClients = new Map<string, HermesWsClient>();
+  private filesFetchers = new Map<string, HermesFilesFetcher>();
   // Keyed by `<instance>\u0000<runtimeSessionId>` — one instance's events (or
   // its socket dying) must NEVER reach another instance's turns.
   private wsSubscribers = new Map<string, (type: string, payload: Record<string, unknown>) => void>();
@@ -78,6 +83,19 @@ export class HermesTurnRegistry {
     });
     this.wsClients.set(key, client);
     return client;
+  }
+
+  filesFetcherFor(cfg: BridgeConfig): HermesFilesFetcher {
+    const key = cfg.instanceName ?? "";
+    const existing = this.filesFetchers.get(key);
+    if (existing) return existing;
+    const f = new HermesFilesFetcher({
+      baseUrl: cfg.gatewayHttpBase || cfg.openclawGatewayUrl,
+      credential: cfg.openclawToken ?? "",
+      maxBytes: cfg.mediaMaxBytes,
+    });
+    this.filesFetchers.set(key, f);
+    return f;
   }
 
   subscribeWsSession(
@@ -284,6 +302,11 @@ async function performHermesWsSend(
       sessionKey: hermesSessionKey(body),
       providerChatId: prior,
       text: body.text,
+      attachments: body.attachments,
+      // Outbound files honor the admin media setting: OFF ⇒ no delivery
+      // directive, no scan, no hosting (codex P2).
+      filesFetcher:
+        cfg.mediaMode === "off" ? null : registry.filesFetcherFor(cfg),
       onBoundSession: async (storedSid) => {
         registry.rememberSession(targetKey, storedSid);
         await (writer.bindProviderChat?.(body.chatId, storedSid) ??

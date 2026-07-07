@@ -58,6 +58,7 @@ import {
   type TargetRef,
 } from "./core/health.js";
 import {
+  hermesCapabilitiesFor,
   BRIDGE_VERSION,
   COMPAT_MANIFEST,
   PROTOCOL_VERSION,
@@ -1456,6 +1457,7 @@ export function buildCapabilityTargets(
   instanceName: string | null,
   fallbackVersion: string | null = null,
   provider: "openclaw" | "hermes" = "openclaw",
+  transport: "ws" | "rest" = "ws",
 ): CapabilityTarget[] {
   const byKey = new Map<string, LiveTarget>();
   for (const t of live) byKey.set(t.canonical, t);
@@ -1499,6 +1501,14 @@ export function buildCapabilityTargets(
     !targets.some((t) => t.instanceName === instanceName)
   ) {
     const resolved = resolveCapabilities(provider, fallbackVersion);
+    if (provider === "hermes") {
+      // Transport-aware overlay: the WS surface adds inline attachments
+      // (file.attach) that the REST API server does not have. Resolved at the
+      // FLOOR like the base set (validated 0.18.0 only).
+      const caps = hermesCapabilitiesFor(transport);
+      for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
+      if (transport === "rest") delete resolved.capabilities.inboundAttachments;
+    }
     const synthetic: CapabilityTarget = {
       key: instanceName,
       instanceName,
@@ -1790,6 +1800,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           name,
           lastGatewayVersion.get(name) ?? bundle.config.gatewayVersionFallback ?? null,
           bundle.config.kind ?? "openclaw",
+          bundle.config.transport ?? "ws",
         ),
       );
       const names = [...served.keys()];
@@ -2475,24 +2486,40 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           ? null
           : (body.config?.outboundAgentMount ?? cfg.mediaOutboundAgentMount);
       if (cfg.kind === "hermes") {
-        // Hermes: per-turn REST+SSE (no persistent session). Drives the SAME
-        // TurnSink downstream via the Hermes normalizer. No shared-fs media /
-        // rehydration injection here — Hermes keeps the conversation server-side.
-        // Hermes's API server takes NO uploaded files (images-only inline, which
-        // Atrium's upload path does not use) — REFUSE an attachment turn with an
-        // actionable code rather than silently dropping the file (codex P2). The
-        // manifest omits `inboundAttachments`, so the composer SHOULD hide attach
-        // on Hermes; this is the server-side safety net.
-        const hasInline =
-          Array.isArray(body.attachments) && body.attachments.length > 0;
-        if (hasInline || body.referenceAttachments.length > 0) {
+        // Hermes: the WS transport STAGES inline attachments via the gateway's
+        // file.attach / image.attach_bytes RPCs before the prompt; the REST
+        // transport has no upload channel — refuse there with an actionable
+        // code rather than silently dropping the file (codex P2). Shared-fs
+        // reference attachments have no Hermes leg on either transport.
+        const isWs = (cfg.transport ?? "ws") === "ws";
+        const inline = Array.isArray(body.attachments)
+          ? (body.attachments as Array<Record<string, unknown>>)
+              .map((a) => ({
+                mimeType: typeof a.mimeType === "string" ? a.mimeType : "",
+                fileName:
+                  typeof a.fileName === "string" && a.fileName
+                    ? a.fileName
+                    : "fichier",
+                content: typeof a.content === "string" ? a.content : "",
+              }))
+              .filter((a) => a.content !== "")
+          : [];
+        if (
+          (!isWs && inline.length > 0) ||
+          body.referenceAttachments.length > 0
+        ) {
           sendJson(res, 502, {
             ok: false,
             error: { code: "ATTACHMENT_REJECTED" },
           });
           return;
         }
-        await performHermesSend(cfg, bundle.writer, body, hermesTurns);
+        await performHermesSend(
+          cfg,
+          bundle.writer,
+          { ...body, attachments: inline },
+          hermesTurns,
+        );
       } else {
         const session = await registry.acquire(toRouting(body, sendInstance));
         await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);

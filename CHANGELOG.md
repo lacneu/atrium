@@ -8,6 +8,45 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.39.0] — Hermes turns get tools, sub-agents, compaction, attachments, and file delivery
+
+Feature release completing the Hermes WebSocket transport. Bridge-only — no
+Convex or frontend changes to deploy. No breaking changes.
+
+- **Tool activity is now visible on Hermes turns.** The agent's tool calls
+  (terminal, file writes, delegations…) surface as the same expandable
+  tool-activity cards OpenClaw turns show — name and status only; arguments and
+  outputs stay on the gateway.
+
+- **Sub-agent delegations show their lifecycle.** While a Hermes agent delegates
+  work, the turn shows the same "awaiting sub-agents" indicator used for
+  OpenClaw, the delegation itself appears as a tool call, and the status returns
+  to normal generation when the child completes.
+
+- **Mid-turn compactions are surfaced honestly.** When the gateway summarizes
+  older context during a turn, the chat shows Atrium's standard "context was
+  optimized" marker and phase pill instead of an unexplained pause.
+
+- **Attachments work on Hermes (WebSocket transport).** Files and images
+  attached in the composer are staged into the agent's session workspace before
+  the prompt (images as vision input), so the agent can actually read what you
+  sent. The attach button appears only where uploads truly work — it stays
+  hidden on the REST transport, which has no upload channel.
+
+- **Agents can deliver generated files back to you.** A delivery instruction
+  tells the agent where to write files for the user; after the turn the bridge
+  picks them up through the gateway's files API (streamed, size-capped even for
+  chunked downloads, honoring the admin's outbound-media setting) and attaches
+  them to the reply as downloadable chips — validated live with small files, a
+  5 MB binary, and a generated PNG.
+
+- **A tool-approval prompt no longer hangs the turn.** When the gateway holds a
+  command for human approval, the turn now fails immediately with a clear,
+  actionable message (configure `approvals.mode: off` on the gateway, or approve
+  from the Hermes dashboard) instead of streaming forever. Operator note: run
+  `hermes serve` from a writable working directory (e.g. the data volume), or
+  attachment staging fails with a permission error.
+
 ## [0.38.0] — Hermes Agent support: a second provider, almost entirely in the bridge
 
 Feature release. No breaking changes; OpenClaw instances are untouched.
