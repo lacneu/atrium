@@ -92,6 +92,10 @@ export type SubAgentCardView = {
   id: string;
   /** The child's session key — the panel open/correlation key. */
   childSessionKey: string;
+  /** Mixture-of-Agents role when this card is a MoA component (from the
+   *  spawn meta): drives the card's KIND label + the aggregator-first order +
+   *  the nested rendering of references under their aggregator. */
+  moaRole?: "moa_reference" | "moa_aggregator";
   /** The spawn task name (clean) when known — the card's subtitle. */
   taskName?: string;
   label: string;
@@ -173,6 +177,15 @@ export function formatCostUsd(costUsd: number): string {
   return `${costUsd.toFixed(decimals).replace(".", ",")} $`;
 }
 
+/** The card's KIND label: MoA components are named for what they are —
+ *  "Sous-agent" was wrong for them (they are reference/aggregator models of a
+ *  Mixture-of-Agents pass, not spawned agents). */
+export function subAgentKindLabel(card: Pick<SubAgentCardView, "moaRole">): string {
+  if (card.moaRole === "moa_aggregator") return m.subagent_kind_moa_aggregator();
+  if (card.moaRole === "moa_reference") return m.subagent_kind_moa_reference();
+  return m.subagent_panel_kind();
+}
+
 /** A card's label: the task name when the spawn meta carried one, else a short
  *  tail of the child session key. A blank/whitespace taskName falls back too. */
 export function subAgentLabel(row: SubAgentRow): string {
@@ -228,9 +241,13 @@ export function isSubAgentSessionArchived(
 /** Build one card from a row. */
 function toCard(row: SubAgentRow): SubAgentCardView {
   const tone = statusTone(row.status);
+  const role = row.sessionMeta?.subagentRole;
   return {
     id: row._id,
     childSessionKey: row.childSessionKey,
+    ...(role === "moa_reference" || role === "moa_aggregator"
+      ? { moaRole: role }
+      : {}),
     taskName: row.taskName?.trim() || undefined,
     label: subAgentLabel(row),
     status: row.status,
@@ -274,7 +291,31 @@ export function buildSubAgentActivityView(
   rows: readonly SubAgentRow[],
 ): SubAgentActivityView {
   const sorted = [...rows].sort((a, b) => b.createdAt - a.createdAt);
-  const cards = sorted.map(toCard);
+  const cards = sorted.map(toCard).sort((a, b) => {
+    // MoA hierarchy: the aggregator leads, its references follow (in their
+    // 1..n order — the childSessionKey ends with `ref<i>`), everything else
+    // keeps the newest-first order from above (stable sort).
+    const rank = (c: SubAgentCardView): number =>
+      c.moaRole === "moa_aggregator" ? 0 : c.moaRole === "moa_reference" ? 1 : 2;
+    // Group by MoA RUN first (the `hermes-moa:<mid>:` segment) so that even if
+    // several runs ever shared one panel, each aggregator keeps ITS references
+    // right under it — never interleaved with another run's.
+    const runOf = (c: SubAgentCardView): string =>
+      c.moaRole ? c.childSessionKey.replace(/:(ref\d+|aggregate)$/, "") : "";
+    const runCmp = runOf(a).localeCompare(runOf(b));
+    if (a.moaRole && b.moaRole && runCmp !== 0) return runCmp;
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (ra === 1) {
+      const idx = (c: SubAgentCardView): number => {
+        const mref = /ref(\d+)$/.exec(c.childSessionKey);
+        return mref?.[1] ? Number.parseInt(mref[1], 10) : 0;
+      };
+      return idx(a) - idx(b);
+    }
+    return 0;
+  });
   return {
     cards,
     total: cards.length,

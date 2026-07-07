@@ -2008,6 +2008,12 @@
    "how many done / running / failed" is unambiguous at a glance — each status is a
    distinct tinted chunk (green = done, primary = running, red = failed), never a
    bare icon+number the eye has to pair up. */
+/* MoA hierarchy: reference cards nest under their aggregator (2 fixed levels —
+   references fan out in parallel, the aggregator synthesizes above them). */
+.oc-subagent--nested {
+  margin-left: 1.25rem;
+}
+
 .oc-subagent-badge {
   display: inline-flex;
   align-items: center;
@@ -6957,3 +6963,21 @@
     animation: none;
   }
 }
+
+/* Dictation in progress: the composer mic pulses red so the "hot mic" state is
+   unmistakable. */
+.oc-composer__icon--rec {
+  color: var(--destructive);
+  animation: oc-mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes oc-mic-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+

@@ -19,6 +19,7 @@ export const UI_PREF_KEYS = [
   "showChatAge",
   "showChatProvider",
   "showUsage",
+  "autoReadAloud",
 ] as const;
 
 export type UiPrefKey = (typeof UI_PREF_KEYS)[number];
@@ -38,13 +39,17 @@ export const UI_PREF_CODE_DEFAULTS: Record<UiPrefKey, boolean> = {
   // the clean view by the RunStatus line ("… traite votre message"), so disabling
   // tools never hides that a turn is being processed.
   showTools: false,
-  voiceInput: false, // the voice pipeline is not wired yet
+  voiceInput: false, // opt-in mic; needs the admin feature gate + user consent
   showChatAge: true, // compact relative age in the sidebar (OpenWebUI-style)
   showChatProvider: true, // bridge badge in the sidebar — self-hides unless chats span >1 provider
   // Subscription-usage gauge in the chat composer strip (the routed instance's
   // most-constrained rate window). ON by default: quota transparency is what
   // explains slowdowns/429s to the user; an admin can turn it off fleet-wide.
   showUsage: true,
+  // Auto read-aloud OPT-OUT: when an instance enables voiceAutoRead, each user
+  // may still silence it here (default ON = the admin's instance-level choice
+  // applies, the user keeps the veto — matches the Voice tab's help text).
+  autoReadAloud: true,
 };
 
 // Pref key -> the `featuresEnabled` key that must be true before a user may turn

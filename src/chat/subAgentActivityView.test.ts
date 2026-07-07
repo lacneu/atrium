@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  subAgentKindLabel,
   buildSubAgentActivityView,
   childAgentIdFromKey,
   formatCostUsd,
@@ -501,5 +502,51 @@ describe("card mapping — telemetry + childAgentId", () => {
       estimatedCostUsd: 0.01,
     });
     expect(card.childAgentId).toBe("bob");
+  });
+});
+
+describe("MoA cards: kind labels + aggregator-first hierarchy", () => {
+  const row = (over: Partial<Parameters<typeof buildSubAgentActivityView>[0][number]>) => ({
+    _id: over.childSessionKey ?? "id",
+    chatId: "c",
+    childSessionKey: "k",
+    status: "done" as const,
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  });
+
+  it("orders aggregator first, then references by index, then real delegations", () => {
+    const view = buildSubAgentActivityView([
+      row({ childSessionKey: "hermes:child1", createdAt: 50 }),
+      row({
+        childSessionKey: "hermes-moa:m1:ref2",
+        sessionMeta: { subagentRole: "moa_reference" },
+        createdAt: 30,
+      }),
+      row({
+        childSessionKey: "hermes-moa:m1:aggregate",
+        sessionMeta: { subagentRole: "moa_aggregator" },
+        createdAt: 40,
+      }),
+      row({
+        childSessionKey: "hermes-moa:m1:ref1",
+        sessionMeta: { subagentRole: "moa_reference" },
+        createdAt: 20,
+      }),
+    ] as never);
+    expect(view.cards.map((c) => c.childSessionKey)).toEqual([
+      "hermes-moa:m1:aggregate",
+      "hermes-moa:m1:ref1",
+      "hermes-moa:m1:ref2",
+      "hermes:child1",
+    ]);
+  });
+
+  it("labels MoA components by their role, real delegations stay 'Sous-agent'", () => {
+    expect(subAgentKindLabel({ moaRole: "moa_aggregator" })).not.toBe(
+      subAgentKindLabel({ moaRole: "moa_reference" }),
+    );
+    expect(subAgentKindLabel({})).toBeTruthy();
   });
 });

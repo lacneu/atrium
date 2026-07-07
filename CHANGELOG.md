@@ -8,6 +8,39 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.41.0] — Voice in the browser: read replies aloud, dictate your messages
+
+Feature release. No breaking changes.
+
+- **Voice, per instance — read-aloud and dictation.** A new Settings ▸ Agents ▸
+  Voice tab configures browser text-to-speech per instance (OpenClaw and Hermes
+  alike): offer read-aloud, pick the voice language and speaking rate, and
+  optionally auto-read completed replies — each user keeps a personal opt-out
+  preference. Every assistant reply gains a "Read aloud" button, and the
+  composer's mic is now real dictation (browser speech recognition — final
+  transcripts land in the composer, a pulsing icon shows the hot mic). No API
+  key and no gateway dependency: the engines run in the user's browser. The
+  never-wired TTS/Talk placeholders left the Integrations tab, which is
+  observability-only again; realtime two-way Talk is labelled "coming".
+
+- **Chat defaults are now read-only.** The tab displays the gateway's session
+  defaults but no longer writes the gateway's global config (that write
+  contradicted Atrium's observe-don't-own stance and failed on some gateways).
+  The Atrium-side settings on that page (summary threshold, curation) stay
+  editable.
+
+- **A leaner chat toolbar.** The subscription-quota gauge moved into the
+  Advanced popover (with a transient inline fallback on a brand-new chat), and
+  Settings ▸ Bridge now presents per-instance usage as a proper table
+  (instance / provider / window / remaining / reset).
+
+- **MoA cards read as a hierarchy.** The aggregator leads, its references nest
+  beneath it in order, and each card is labelled by its role (MoA aggregator /
+  MoA reference) instead of "Sous-agent".
+
+- **The Bridge tab names each provider's support line.** The Hermes card now
+  reads "Hermes supporté" instead of borrowing the OpenClaw label.
+
 ## [0.40.0] — Watch Hermes delegations and Mixture-of-Agents runs, structured
 
 Feature release. No breaking changes.

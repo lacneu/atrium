@@ -15,6 +15,7 @@ import {
   type EmptyStateToolPart,
 } from "./assistantEmptyState";
 import {
+  subAgentKindLabel,
   buildSubAgentActivityView,
   subAgentCountLabel,
   subAgentProgressBadges,
@@ -93,11 +94,15 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
     </>
   );
   return (
-    <div className={`oc-subagent oc-subagent--${card.tone}`}>
+    <div
+      className={`oc-subagent oc-subagent--${card.tone}${
+        card.moaRole === "moa_reference" ? " oc-subagent--nested" : ""
+      }`}
+    >
       <ActivityRow
         tone={card.tone}
         icon={<Bot size={15} />}
-        label={m.subagent_panel_kind()}
+        label={subAgentKindLabel(card)}
         sublabel={card.taskName}
         trailing={trailing}
         active={isActive}

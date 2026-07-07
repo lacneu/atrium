@@ -8,17 +8,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { useToast } from "@/components/ui/toast";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -36,12 +25,13 @@ import { instanceTabGate, type InstanceCompat } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import "./confTabs.css";
 
-// Settings > chat defaults tab (CONF-4d, deflated per amendment A7): a HARD-CODED
-// two-field form — default thinking level (segmented 6, the bench-verified
-// enum) + default speed (fastMode on/off) — over api.agentFiles.get/
-// setChatDefaults (admin-only server-side). Writing changes the gateway's
-// GLOBAL openclaw.json, hence the explicit confirm before every save. Per-chat
-// and per-agent overrides keep precedence over these defaults.
+// Settings > chat defaults tab — READ-ONLY view of the gateway's session
+// defaults (thinking level + speed) via api.agentFiles.getChatDefaults.
+// Atrium deliberately does NOT write the gateway's global config (that write
+// contradicted the observe-don't-own stance and Hermes has no such write);
+// changing these values is the gateway operator's job. The Atrium-side cards
+// below (summarize threshold, curation) stay editable — they live in the
+// INSTANCE config, not on the gateway.
 
 type LoadState =
   | { status: "loading" }
@@ -245,19 +235,13 @@ function SummarizeThresholdCard({
 }
 
 export function ChatDefaultsTab() {
+  // READ-ONLY by design: Atrium never mutates the gateway's global config
+  // (that write went against the product's observe-don't-own stance, and
+  // Hermes has no such write at all). The tab DISPLAYS the gateway's session
+  // defaults; changing them is the gateway operator's job.
   const getDefaults = useAction(api.agentFiles.getChatDefaults);
-  const setDefaults = useAction(api.agentFiles.setChatDefaults);
-  const clearDefaults = useAction(api.agentFiles.clearChatDefaults);
-  const toast = useToast();
 
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  // The admin's pending selection (null = untouched / unknown from the gateway).
-  const [draft, setDraft] = useState<ChatDefaultsView>({
-    thinkingDefault: null,
-    fastModeDefault: null,
-  });
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   // Chat defaults are PER-GATEWAY (one bridge, N instances): pick which instance to
   // read/write. With several configured, the server fails closed without an explicit
@@ -308,7 +292,6 @@ export function ChatDefaultsTab() {
       const current = parseChatDefaults(await getDefaults(claimArg));
       if (loadSeq.current !== seq) return; // superseded by a newer instance selection
       setState({ status: "done", current });
-      setDraft(current);
     } catch {
       if (loadSeq.current !== seq) return;
       setState({ status: "error" });
@@ -323,53 +306,6 @@ export function ChatDefaultsTab() {
   }, [load, gateBlocked, multiInstance, instanceName]);
 
   const current = state.status === "done" ? state.current : null;
-  const thinkingChanged =
-    current !== null &&
-    draft.thinkingDefault !== null &&
-    draft.thinkingDefault !== current.thinkingDefault;
-  const speedChanged =
-    current !== null &&
-    draft.fastModeDefault !== null &&
-    draft.fastModeDefault !== current.fastModeDefault;
-  const dirty = thinkingChanged || speedChanged;
-
-  async function save() {
-    setSaving(true);
-    try {
-      // Send ONLY the changed fields — an untouched knob must not be rewritten. The
-      // explicit instance claim targets THIS gateway (never a silent first).
-      await setDefaults({
-        ...claimArg,
-        ...(thinkingChanged
-          ? { thinkingDefault: draft.thinkingDefault as string }
-          : {}),
-        ...(speedChanged
-          ? { fastModeDefault: draft.fastModeDefault as boolean }
-          : {}),
-      });
-      toast.success(m.cdefaults_saved());
-      await load(); // re-read the gateway truth
-    } catch (err) {
-      toast.error(m.cdefaults_save_error(), err);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  // RESET: remove both defaults from the gateway config — its own built-in
-  // behavior applies again. Reversible (re-save re-sets), so no blocking confirm.
-  async function reset() {
-    setSaving(true);
-    try {
-      await clearDefaults({ ...claimArg });
-      toast.success(m.cdefaults_reset_done());
-      await load();
-    } catch (err) {
-      toast.error(m.cdefaults_save_error(), err);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   const thinkingOptions = useMemo(
     () =>
@@ -396,7 +332,6 @@ export function ChatDefaultsTab() {
           <Select
             value={instanceName}
             onValueChange={(v) => setInstanceName(v)}
-            disabled={saving}
           >
             <SelectTrigger size="sm" aria-label={m.afiles_instance_label()}>
               <SelectValue />
@@ -442,9 +377,9 @@ export function ChatDefaultsTab() {
             </span>
             <KnobSegmented
               options={thinkingOptions}
-              value={draft.thinkingDefault}
-              onChange={(id) => setDraft({ ...draft, thinkingDefault: id })}
-              disabled={saving}
+              value={current?.thinkingDefault ?? null}
+              onChange={() => {}}
+              disabled
             />
             <p className="oc-cdefaults__help">{m.cdefaults_thinking_help()}</p>
           </div>
@@ -455,38 +390,18 @@ export function ChatDefaultsTab() {
             <KnobSegmented
               options={speedOptions}
               value={
-                draft.fastModeDefault === null
+                current === null || current.fastModeDefault === null
                   ? null
-                  : draft.fastModeDefault
+                  : current.fastModeDefault
                     ? "fast"
                     : "standard"
               }
-              onChange={(id) =>
-                setDraft({ ...draft, fastModeDefault: id === "fast" })
-              }
-              disabled={saving}
+              onChange={() => {}}
+              disabled
             />
             <p className="oc-cdefaults__help">{m.cdefaults_speed_help()}</p>
           </div>
-          <div className="oc-cdefaults__actions">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={saving}
-              onClick={() => void reset()}
-              title={m.cdefaults_reset_help()}
-            >
-              {m.cdefaults_reset()}
-            </Button>
-            <Button
-              size="sm"
-              disabled={!dirty || saving}
-              onClick={() => setConfirmOpen(true)}
-            >
-              {saving ? m.conf_applying() : m.cdefaults_save()}
-            </Button>
-          </div>
-          <p className="oc-cdefaults__note">{m.cdefaults_note()}</p>
+          <p className="oc-cdefaults__note">{m.cdefaults_readonly_note()}</p>
         </>
       )}
 
@@ -511,23 +426,6 @@ export function ChatDefaultsTab() {
           </>
         ) : null;
       })()}
-
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{m.cdefaults_confirm_title()}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {m.cdefaults_confirm_desc()}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{m.chat_cancel()}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void save()}>
-              {m.cdefaults_confirm_cta()}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

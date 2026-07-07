@@ -18,6 +18,14 @@ import type { Id } from "../convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import { formatDateTime } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -149,28 +157,49 @@ export function BridgeTab() {
       {usageRows && usageRows.length > 0 ? (
         <section className="oc-bridge__usage">
           <h3 className="oc-bridge__usage-title">{m.bridge_usage_title()}</h3>
-          {usageRows.map((r) => {
-            const v = usageBadgeView(r.usage, Date.now());
-            if (!v) return null;
-            return (
-              <div key={r.instanceName} className="oc-bridge__usage-row">
-                <span className="oc-bridge__usage-instance">{r.instanceName}</span>
-                <span className="oc-bridge__usage-windows">
-                  {v.windows.map((w) => (
-                    <span
-                      key={`${w.provider}:${w.label}`}
-                      className={`oc-meter ${w.percentLeft <= 10 ? "is-critical" : w.percentLeft <= 25 ? "is-warn" : "is-ok"}`}
-                    >
-                      <span className="oc-meter__label">
-                        {w.provider} {w.label}: {w.percentLeft}%
-                        {w.resetText ? ` ⏱${w.resetText}` : ""}
-                      </span>
-                    </span>
-                  ))}
-                </span>
-              </div>
-            );
-          })}
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{m.bridge_usage_col_instance()}</TableHead>
+                <TableHead>{m.bridge_usage_col_provider()}</TableHead>
+                <TableHead>{m.bridge_usage_col_window()}</TableHead>
+                <TableHead>{m.bridge_usage_col_left()}</TableHead>
+                <TableHead>{m.bridge_usage_col_reset()}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {usageRows.flatMap((r) => {
+                const v = usageBadgeView(r.usage, Date.now());
+                if (!v) return [];
+                return v.windows.map((w, i) => (
+                  <TableRow key={`${r.instanceName}:${w.provider}:${w.label}`}>
+                    {/* Instance named once per group (first window row). */}
+                    <TableCell className="font-medium">
+                      {i === 0 ? r.instanceName : ""}
+                    </TableCell>
+                    <TableCell>{w.provider}</TableCell>
+                    <TableCell>{w.label}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          w.percentLeft <= 10
+                            ? "destructive"
+                            : w.percentLeft <= 25
+                              ? "outline"
+                              : "secondary"
+                        }
+                      >
+                        {w.percentLeft}%
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {w.resetText ?? "—"}
+                    </TableCell>
+                  </TableRow>
+                ));
+              })}
+            </TableBody>
+          </Table>
         </section>
       ) : null}
       {buckets.map((b) => (
@@ -386,6 +415,7 @@ function ProviderCard({
           (admin-only) opening that instance's config in a modal. */}
       <h4 className="oc-bridge-provider__sub">{m.compat_section()}</h4>
       <ProviderCompat
+        providerName={providerLabel(providerKey)}
         support={support}
         compatStatus={compatStatus}
         compatReachable={compatReachable}
@@ -504,7 +534,11 @@ function ProviderCompat({
   compatReachable,
   manifest,
   instanceRows,
+  providerName,
 }: {
+  /** The card's provider display name — the support line names THIS provider
+   *  (the Hermes card must never be labelled with the OpenClaw name). */
+  providerName: string;
   support: ReturnType<typeof providerSupport> | null;
   compatStatus: "loading" | "nodata" | "ready";
   compatReachable: boolean;
@@ -531,7 +565,9 @@ function ProviderCompat({
         <p className="oc-admin__hint">{m.compat_legacy_manifest()}</p>
       ) : (
         <div className="oc-compat__support">
-          <span className="oc-compat__label">{m.compat_openclaw_support()}</span>
+          <span className="oc-compat__label">
+            {m.compat_provider_support({ provider: providerName })}
+          </span>
           {support && support.range !== null ? (
             <span>
               {m.compat_supported_range({

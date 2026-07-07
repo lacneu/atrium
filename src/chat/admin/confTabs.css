@@ -224,3 +224,43 @@
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── Voice tab (Settings ▸ Agents ▸ Voix) ─────────────────────────────── */
+.oc-voice__support {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.oc-voice__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.9rem;
+  background: var(--card);
+}
+
+.oc-voice__cardhead {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.oc-voice__instance {
+  font-weight: 600;
+}
+
+.oc-voice__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.oc-voice__row .oc-cdefaults__label {
+  min-width: 10rem;
+}
+

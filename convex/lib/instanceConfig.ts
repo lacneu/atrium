@@ -63,6 +63,14 @@ export const instanceConfigValidator = v.object({
   // auto-write.
   curationEnabled: v.optional(v.boolean()),
   curationBudgetChars: v.optional(v.number()),
+  // Voice (browser Web Speech): per-instance read-aloud settings. `voiceLang`
+  // is a BCP-47 tag ("fr-FR") or "auto" (follow the UI locale); `voiceRate`
+  // 0.5..2 (1 = normal). `voiceAutoRead` reads each completed reply aloud
+  // (the per-user preference still gates it client-side).
+  voiceEnabled: v.optional(v.boolean()),
+  voiceLang: v.optional(v.string()),
+  voiceRate: v.optional(v.number()),
+  voiceAutoRead: v.optional(v.boolean()),
   // CONTENT language override for this instance's server-generated, agent-facing
   // material (prompt injections, rehydration framing, briefs). Unset -> the
   // app's admin default language -> base locale. Validated against
@@ -119,6 +127,10 @@ export type InstanceConfig = {
   summarizeThresholdChars?: number;
   curationEnabled?: boolean;
   curationBudgetChars?: number;
+  voiceEnabled?: boolean;
+  voiceLang?: string;
+  voiceRate?: number;
+  voiceAutoRead?: boolean;
   contentLocale?: string;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
@@ -169,6 +181,10 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "summarizeThresholdChars",
     "curationEnabled",
     "curationBudgetChars",
+    "voiceEnabled",
+    "voiceLang",
+    "voiceRate",
+    "voiceAutoRead",
     "contentLocale",
     "inboundAgentMount",
     "outboundAgentMount",
@@ -231,6 +247,32 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
       return "invalid";
     }
     out.curationBudgetChars = n;
+  }
+  if (o.voiceEnabled !== undefined) {
+    if (typeof o.voiceEnabled !== "boolean") return "invalid";
+    out.voiceEnabled = o.voiceEnabled;
+  }
+  if (o.voiceLang !== undefined) {
+    // "auto" or a plausible BCP-47 tag ("fr", "fr-FR") — a display hint for the
+    // browser speech engines, not a security boundary; bound the shape anyway.
+    if (
+      typeof o.voiceLang !== "string" ||
+      !/^(auto|[a-z]{2,3}(-[A-Za-z0-9]{2,8})*)$/.test(o.voiceLang)
+    ) {
+      return "invalid";
+    }
+    out.voiceLang = o.voiceLang;
+  }
+  if (o.voiceRate !== undefined) {
+    const r = o.voiceRate;
+    if (typeof r !== "number" || !Number.isFinite(r) || r < 0.5 || r > 2) {
+      return "invalid";
+    }
+    out.voiceRate = r;
+  }
+  if (o.voiceAutoRead !== undefined) {
+    if (typeof o.voiceAutoRead !== "boolean") return "invalid";
+    out.voiceAutoRead = o.voiceAutoRead;
   }
   if (o.mediaMaxMb !== undefined) {
     const n = o.mediaMaxMb;

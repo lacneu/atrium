@@ -138,6 +138,11 @@ const PromptInjectionsTab = lazy(() =>
 const GroupsTab = lazy(() =>
   import("./chat/admin/GroupsTab").then((m) => ({ default: m.GroupsTab })),
 );
+const VoiceTab = lazy(() =>
+  import("./chat/admin/VoiceTab").then((m) => ({
+    default: m.VoiceTab,
+  })),
+);
 const IntegrationsTab = lazy(() =>
   import("./chat/admin/IntegrationsTab").then((m) => ({
     default: m.IntegrationsTab,
@@ -883,6 +888,8 @@ function paramlessTab(tab: string) {
       return <GroupsTab />;
     case "integrations":
       return <IntegrationsTab />;
+    case "voice":
+      return <VoiceTab />;
     case "instances":
       return <InstancesTab />;
     case "bridge":

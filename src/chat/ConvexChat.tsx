@@ -102,6 +102,18 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
+import { getLocale } from "@/paraglide/runtime.js";
+import {
+  resolveSpeechLang,
+  speakText,
+  stopSpeaking,
+  startDictation,
+  stripMarkdownForSpeech,
+  ttsSupported,
+  dictationSupported,
+  type ChatVoiceConfig,
+  type DictationHandle,
+} from "./speech";
 import {
   useConvexChatRuntime,
   type TurnGate,
@@ -176,6 +188,7 @@ export type UiEffective = {
   showTools: boolean;
   voiceInput: boolean;
   showUsage: boolean;
+  autoReadAloud: boolean;
 };
 const DEFAULT_UI: UiEffective = {
   showSource: true,
@@ -186,7 +199,18 @@ const DEFAULT_UI: UiEffective = {
   showTools: false, // clean/content-focused view by default (see UI_PREF_CODE_DEFAULTS)
   voiceInput: false,
   showUsage: true, // subscription-quota transparency (admin can disable fleet-wide)
+  autoReadAloud: true, // instance-level auto-read applies unless the user vetoes
 };
+// Per-instance voice settings (read-aloud) resolved for the OPEN chat — see
+// convex/voice.voiceConfigForChat. Disabled defaults until the query lands.
+const VoiceConfigContext = createContext<ChatVoiceConfig & { loaded: boolean }>({
+  enabled: false,
+  lang: "auto",
+  rate: 1,
+  autoRead: false,
+  loaded: false,
+});
+
 const UiPrefsContext = createContext<UiEffective>(DEFAULT_UI);
 // Exported: RunStatus gates the live phase detail on the Tools toggle.
 export function useUiPrefs(): UiEffective {
@@ -391,8 +415,24 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const sourcesOpen = activeSourcesMessageId !== null;
   const subAgentOpen = activeSubAgentKey !== null;
 
+  // Per-instance voice settings for THIS chat (read-aloud language/rate/auto).
+  // One query at the root; the read-aloud button, the mic and the auto-reader
+  // consume it via context.
+  const voiceCfgRaw = useQuery(
+    api.voice.voiceConfigForChat,
+    chatId ? { chatId } : "skip",
+  ) as ChatVoiceConfig | undefined;
+  const voiceCfg = useMemo<ChatVoiceConfig & { loaded: boolean }>(
+    () =>
+      voiceCfgRaw
+        ? { ...voiceCfgRaw, loaded: true }
+        : { enabled: false, lang: "auto", rate: 1, autoRead: false, loaded: false },
+    [voiceCfgRaw],
+  );
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <VoiceConfigContext.Provider value={voiceCfg}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
       <AbortTurnContext.Provider value={abortTurn}>
@@ -492,6 +532,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </AbortTurnContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
+      </VoiceConfigContext.Provider>
     </AssistantRuntimeProvider>
   );
 }
@@ -1035,7 +1076,11 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
         </span>
       ) : null}
       {ui.showTools && sm ? <ContextMeter sm={sm} detail={!isCompact} /> : null}
-      {ui.showUsage ? <UsageBadge chatId={chatId} /> : null}
+      {/* Usage gauge FALLBACK: it lives in the Advanced popover, but that menu
+          only renders once the session meta exists — a fresh chat (before the
+          first sessions.describe) must not lose its quota alert, so render it
+          inline for that transient window only (codex P2). */}
+      {ui.showUsage && !sm ? <UsageBadge chatId={chatId} /> : null}
       <ExportMenu
         chatId={chatId}
         title={meta?.title ?? null}
@@ -1050,6 +1095,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
           onOpenPanel={() => setPanelOpen(true)}
           compact={isCompact}
           ghost={ghost}
+          showUsage={ui.showUsage}
         />
       ) : null}
     </>
@@ -1236,11 +1282,15 @@ function SessionKnobsMenu({
   onOpenPanel,
   compact = false,
   ghost = false,
+  showUsage = false,
 }: {
   chatId: ConvexId<"chats">;
   sm: SessionMetaView;
   settings: SessionSettingsView;
   onOpenPanel: () => void;
+  /** User pref: surface the provider-subscription gauge (in this popover —
+   *  deliberately NOT in the toolbar, where it read as chat-level info). */
+  showUsage?: boolean;
   // compact: icon-only trigger; ghost: width-accurate non-interactive stand-in.
   compact?: boolean;
   ghost?: boolean;
@@ -1278,6 +1328,14 @@ function SessionKnobsMenu({
               {m.chat_context_label()}
             </span>
             <ContextMeter sm={sm} />
+          </div>
+        ) : null}
+        {showUsage ? (
+          <div className="oc-spanel-pop__usage">
+            <span className="oc-spanel-pop__usage-label">
+              {m.chat_usage_section_label()}
+            </span>
+            <UsageBadge chatId={chatId} />
           </div>
         ) : null}
         <SessionKnobsGroup chatId={chatId} sm={sm} settings={settings} />
@@ -1408,6 +1466,101 @@ function CopyAssistantButton() {
     >
       {copied ? <IconCheck /> : <IconCopy />}
     </button>
+  );
+}
+
+/** Read the assistant reply aloud (browser TTS). Rendered only when the
+ *  instance offers voice AND this browser has an engine. Toggle: reading →
+ *  stop; a new read cancels the previous one (speech.ts guarantees single
+ *  utterance). */
+/** Auto-read: when the instance enables it, a reply that COMPLETES while this
+ *  chat is open is read aloud. The ref-gated transition (non-complete →
+ *  complete observed live) means history NEVER reads on load, and only the
+ *  turn you just received speaks. */
+function useAutoRead(text: string): void {
+  const voice = useContext(VoiceConfigContext);
+  // Per-user veto: the instance opt-in only speaks for users who kept the
+  // "auto read-aloud" preference on (codex P2 — the config help promises it).
+  const userAllows = useUiPrefs().autoReadAloud;
+  const status = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { status?: string } | undefined)?.status ?? "",
+  );
+  const prev = useRef<string | null>(null);
+  useEffect(() => {
+    // While the voice config is still loading, do NOT record the status — a
+    // fast reply completing before the config lands would otherwise consume
+    // the transition and never speak (codex P2).
+    if (!voice.loaded) return;
+    const was = prev.current;
+    prev.current = status;
+    if (!voice.enabled || !voice.autoRead || !userAllows || !ttsSupported()) {
+      return;
+    }
+    // Only a LIVE transition into `complete` triggers speech; the first
+    // observation (was === null) is the mount of an already-settled message.
+    if (status !== "complete" || was === null || was === "complete") return;
+    if (!text.trim()) return;
+    speakText(stripMarkdownForSpeech(text), {
+      lang: resolveSpeechLang(voice.lang, getLocale()),
+      rate: voice.rate,
+    });
+  }, [status, text, voice, userAllows]);
+}
+
+function ReadAloudButton() {
+  const voice = useContext(VoiceConfigContext);
+  const [speaking, setSpeaking] = useState(false);
+  const text = useMessage((msg) =>
+    msg.content
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join("\n"),
+  );
+  if (!voice.enabled || !ttsSupported() || !text.trim()) return null;
+  const lang = resolveSpeechLang(voice.lang, getLocale());
+  return (
+    <button
+      type="button"
+      className="oc-iconbtn"
+      title={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
+      aria-label={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
+      aria-pressed={speaking}
+      onClick={() => {
+        if (speaking) {
+          stopSpeaking();
+          setSpeaking(false);
+          return;
+        }
+        const ok = speakText(stripMarkdownForSpeech(text), {
+          lang,
+          rate: voice.rate,
+          onEnd: () => setSpeaking(false),
+        });
+        if (ok) setSpeaking(true);
+      }}
+    >
+      {speaking ? <IconVolumeStop /> : <IconVolume />}
+    </button>
+  );
+}
+
+function IconVolume() {
+  return (
+    <Icon>
+      <path d="M11 5 6 9H2v6h4l5 4V5z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+    </Icon>
+  );
+}
+
+function IconVolumeStop() {
+  return (
+    <Icon>
+      <path d="M11 5 6 9H2v6h4l5 4V5z" />
+      <line x1="22" y1="9" x2="16" y2="15" />
+      <line x1="16" y1="9" x2="22" y2="15" />
+    </Icon>
   );
 }
 
@@ -1856,6 +2009,14 @@ function AssistantMessage() {
     (m) => (m.metadata?.custom as { status?: string } | undefined)?.status,
   );
   const lastUserTurnQueued = useContext(QueuedTurnContext);
+  // Auto read-aloud (per-instance opt-in): speaks a reply that completes live.
+  const autoReadText = useMessage((msg) =>
+    msg.content
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join("\n"),
+  );
+  useAutoRead(autoReadText);
   // MULTI-AGENT: in a perTurnRouting chat each reply names the agent that answered
   // it (per-message, inheriting the user turn's agent — see perTurnAgent.ts). A
   // single-agent chat keeps the identity name EXACTLY as before.
@@ -1968,6 +2129,7 @@ function AssistantMessage() {
           autohide="not-last"
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
+          <ReadAloudButton />
           {ui.showSource ? (
             <SourceToggleButton
               active={showSource}
@@ -2380,6 +2542,72 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
   );
 }
 
+
+/** The composer mic — REAL dictation (browser SpeechRecognition). Toggle:
+ *  start → live transcription (final pieces appended to the composer text) →
+ *  stop (button, or the engine's own end). Language follows the instance's
+ *  voice config. Errors surface as a toast, and an unsupported browser gets a
+ *  clear message instead of a dead button. */
+function DictationButton() {
+  const voice = useContext(VoiceConfigContext);
+  const composer = useComposerRuntime();
+  const toast = useToast();
+  const [recording, setRecording] = useState(false);
+  const handleRef = useRef<DictationHandle | null>(null);
+  // Stop the engine when the composer unmounts mid-dictation (chat switch).
+  useEffect(() => () => handleRef.current?.stop(), []);
+  const lang = resolveSpeechLang(voice.lang, getLocale());
+  return (
+    <button
+      type="button"
+      className={`oc-composer__icon${recording ? " oc-composer__icon--rec" : ""}`}
+      title={recording ? m.chat_mic_stop() : m.chat_mic_start()}
+      aria-label={recording ? m.chat_mic_stop() : m.chat_mic_start()}
+      aria-pressed={recording}
+      onClick={() => {
+        if (recording) {
+          handleRef.current?.stop();
+          handleRef.current = null;
+          setRecording(false);
+          return;
+        }
+        if (!dictationSupported()) {
+          toast.error(m.chat_mic_error_unsupported());
+          return;
+        }
+        const h = startDictation({
+          lang,
+          onText: (t) => {
+            const cur = composer.getState().text;
+            composer.setText(cur ? `${cur.replace(/\s+$/, "")} ${t.trim()}` : t.trim());
+          },
+          onEnd: () => {
+            handleRef.current = null;
+            setRecording(false);
+          },
+          onError: (code) => {
+            handleRef.current = null;
+            setRecording(false);
+            if (code === "not-allowed" || code === "service-not-allowed") {
+              toast.error(m.chat_mic_error_denied());
+            } else if (code !== "no-speech" && code !== "aborted") {
+              toast.error(m.chat_mic_error_generic({ code }));
+            }
+          },
+        });
+        if (h === null) {
+          toast.error(m.chat_mic_error_unsupported());
+          return;
+        }
+        handleRef.current = h;
+        setRecording(true);
+      }}
+    >
+      <Mic size={18} aria-hidden />
+    </button>
+  );
+}
+
 function Composer({
   chatId,
   showTools,
@@ -2617,16 +2845,7 @@ function Composer({
           <ComposerAgentSelect unavailable={unavailable} />
         </div>
         <div className="oc-composer__group">
-          {voiceInput ? (
-            <button
-              type="button"
-              className="oc-composer__icon"
-              title={m.chat_voice_soon_title()}
-              aria-label={m.chat_voice_soon_aria()}
-            >
-              <Mic size={18} aria-hidden />
-            </button>
-          ) : null}
+          {voiceInput ? <DictationButton /> : null}
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a
             // turn would only produce an unanswerable message.

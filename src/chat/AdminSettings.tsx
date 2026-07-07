@@ -32,6 +32,7 @@ export const TABS = [
   "audit",
   "feedbacks",
   "subagentReports",
+  "voice",
 ] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -51,6 +52,7 @@ export const PARAMLESS_TABS = [
   "agentFiles",
   "preferences",
   "chatDefaults",
+  "voice",
 ] as const;
 export type ParamlessTab = (typeof PARAMLESS_TABS)[number];
 
@@ -80,6 +82,7 @@ export const TAB_I18N: Record<Tab, () => string> = {
   audit: () => m.settings_tab_audit(),
   feedbacks: () => m.settings_tab_feedbacks(),
   subagentReports: () => m.settings_tab_subagentreports(),
+  voice: () => m.voice_tab_label(),
 };
 
 // --- Per-tab RBAC ----------------------------------------------------------
@@ -128,6 +131,9 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   audit: "admin.manage",
   feedbacks: "admin.manage",
   subagentReports: "admin.manage",
+  // Voice settings write the instance config (browser read-aloud knobs) —
+  // admin-only, like Instances/ChatDefaults.
+  voice: "admin.manage",
 };
 
 // The Settings tabs an admin may grant to a NON-admin. Mirrors the server-side

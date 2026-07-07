@@ -53,6 +53,7 @@ import {
   subAgentExportFilename,
 } from "./subAgentExport";
 import {
+  subAgentKindLabel,
   buildSubAgentActivityView,
   formatCostUsd,
   formatRuntime,
@@ -743,7 +744,9 @@ export function SubAgentPanelContent({
           {/* Title ROW: kind + the controls (report / status / close), all vertically
               centered on ONE line so they align coherently. The prompt sits BELOW. */}
           <div className="oc-subpanel__head-top">
-            <span className="oc-subpanel__kind">{m.subagent_panel_kind()}</span>
+            <span className="oc-subpanel__kind">
+              {card ? subAgentKindLabel(card) : m.subagent_panel_kind()}
+            </span>
             <div className="oc-subpanel__head-ctrls">
               {/* Status BEFORE the report flag (order per design). */}
               {card ? <HeaderStatus card={card} /> : null}

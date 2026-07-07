@@ -104,6 +104,7 @@ import type * as subAgentReports from "../subAgentReports.js";
 import type * as subAgents from "../subAgents.js";
 import type * as uploads from "../uploads.js";
 import type * as version from "../version.js";
+import type * as voice from "../voice.js";
 
 import type {
   ApiFromModules,
@@ -208,6 +209,7 @@ declare const fullApi: ApiFromModules<{
   subAgents: typeof subAgents;
   uploads: typeof uploads;
   version: typeof version;
+  voice: typeof voice;
 }>;
 
 /**
