@@ -1718,5 +1718,7 @@
 	"voice_engine_browser": "Browser (system voices)",
 	"voice_engine_gateway": "Gateway voice",
 	"voice_engine_gateway_help": "Synthesis is produced by the instance's gateway (TTS provider configured gateway-side: free Edge, OpenAI, ElevenLabs…). Audio is generated on demand and played in the browser.",
-	"chat_read_gateway_error": "Gateway text-to-speech failed — try again."
+	"chat_read_gateway_error": "Gateway text-to-speech failed — try again.",
+	"chat_reading_loading": "Synthesizing voice…",
+	"chat_reading_playing": "Now reading"
 }

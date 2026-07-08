@@ -6994,3 +6994,50 @@
   }
 }
 
+/* ── Read-aloud: chat-wide "now reading" affordances ─────────────────────── */
+/* Floating banner above the composer: names the reading state and offers a
+   stop that never hides (the per-message action row auto-hides on non-last
+   messages). */
+.oc-reading-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  align-self: center;
+  margin: 0 auto 0.4rem;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+
+.oc-reading-banner__stop {
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+
+.oc-reading-banner__pulse {
+  animation: oc-mic-pulse 1.4s ease-in-out infinite;
+  color: var(--primary);
+}
+
+/* The active message's read button stays visible and pulses — even when the
+   hover-autohide would hide its action row. */
+.oc-iconbtn--reading {
+  color: var(--primary);
+  opacity: 1 !important;
+  animation: oc-mic-pulse 1.4s ease-in-out infinite;
+}
+
+.oc-msg__actions:has(.oc-iconbtn--reading) {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+

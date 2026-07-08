@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.42.1] — Read-aloud you can see and stop
+
+Corrective release on 0.42.0's voice features. Frontend only; no breaking
+changes.
+
+- **You always see which message is being read.** Reading is now a chat-wide
+  state: the active message's speaker button pulses and its action row stays
+  visible (it no longer hides when the pointer leaves), and a floating pill
+  above the composer names the state — "Synthesizing voice…" during the
+  gateway round-trip, then "Now reading".
+
+- **Stopping is always one click away.** The pill carries an ever-present Stop
+  button — no more hunting for a hover-hidden action row to silence an older
+  message.
+
+- **One reading at a time, reliably.** Starting a reading on another message
+  stops the current one everywhere (sound and button state); a stopped or
+  superseded gateway synthesis that resolves late can no longer start playing
+  on its own, and the end of an old clip can no longer erase the indicator of
+  the reading you just started. Auto-read reports through the same state.
+
 ## [0.42.0] — The gateway's own voice, per instance
 
 Feature release. No breaking changes.

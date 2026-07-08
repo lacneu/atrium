@@ -57,6 +57,7 @@ import {
   type ExportMessage,
 } from "./transcriptExport";
 import {
+  Volume2,
   SlidersHorizontal,
   ChevronDown,
   ChevronRight,
@@ -214,6 +215,38 @@ const VoiceConfigContext = createContext<ChatVoiceConfig & { loaded: boolean }>(
   engine: "browser",
   loaded: false,
 });
+
+// Chat-wide read-aloud state: WHICH message is being read (and whether the
+// gateway synthesis is still loading). One reading at a time — starting a new
+// one stops the previous EVERYWHERE (audio + every button's visual state, the
+// per-button local state left stale "speaking" buttons behind). The floating
+// stop banner reads the same state, so stopping never depends on a hover-
+// hidden action row.
+type ReadAloudState = {
+  active: { messageId: string; phase: "loading" | "playing" } | null;
+  setActive: (v: { messageId: string; phase: "loading" | "playing" } | null) => void;
+  /** Clear ONLY if `messageId` is still the active reading — the natural end
+   *  (or cancel-fired onend) of an OLD clip must never erase the reading the
+   *  user just started on another message. */
+  clearIf: (messageId: string) => void;
+};
+const ReadAloudContext = createContext<ReadAloudState>({
+  active: null,
+  setActive: () => {},
+  clearIf: () => {},
+});
+
+/** Generation token: every stop/start bumps it, and an in-flight gateway
+ *  synthesis only plays if ITS generation is still current — a reply resolving
+ *  after a stop, a chat switch or another read must stay silent (codex P2). */
+let readGeneration = 0;
+
+/** Stop every voice output (browser synthesis + gateway clip). */
+function stopAllReading(): void {
+  readGeneration++;
+  stopSpeaking();
+  stopGatewayAudio();
+}
 
 const UiPrefsContext = createContext<UiEffective>(DEFAULT_UI);
 // Exported: RunStatus gates the live phase detail on the Tools toggle.
@@ -426,6 +459,25 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     api.voice.voiceConfigForChat,
     chatId ? { chatId } : "skip",
   ) as ChatVoiceConfig | undefined;
+  const [readingActive, setReadingActive] = useState<
+    { messageId: string; phase: "loading" | "playing" } | null
+  >(null);
+  const readAloudState = useMemo<ReadAloudState>(
+    () => ({
+      active: readingActive,
+      setActive: setReadingActive,
+      clearIf: (messageId) =>
+        setReadingActive((cur) =>
+          cur?.messageId === messageId ? null : cur,
+        ),
+    }),
+    [readingActive],
+  );
+  // Chat switch: never carry a reading (or its audio) into another chat.
+  useEffect(() => {
+    stopAllReading();
+    setReadingActive(null);
+  }, [chatId]);
   const voiceCfg = useMemo<ChatVoiceConfig & { loaded: boolean }>(
     () =>
       voiceCfgRaw
@@ -444,6 +496,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <VoiceConfigContext.Provider value={voiceCfg}>
+      <ReadAloudContext.Provider value={readAloudState}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
       <AbortTurnContext.Provider value={abortTurn}>
@@ -543,6 +596,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </AbortTurnContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
+      </ReadAloudContext.Provider>
       </VoiceConfigContext.Provider>
     </AssistantRuntimeProvider>
   );
@@ -1490,6 +1544,12 @@ function CopyAssistantButton() {
  *  turn you just received speaks. */
 function useAutoRead(text: string): void {
   const voice = useContext(VoiceConfigContext);
+  const reading = useContext(ReadAloudContext);
+  const autoReadId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId ??
+      msg.id,
+  );
   // Per-user veto: the instance opt-in only speaks for users who kept the
   // "auto read-aloud" preference on (codex P2 — the config help promises it).
   const userAllows = useUiPrefs().autoReadAloud;
@@ -1520,19 +1580,25 @@ function useAutoRead(text: string): void {
     // observation (was === null) is the mount of an already-settled message.
     if (status !== "complete" || was === null || was === "complete") return;
     if (!text.trim()) return;
-    speakText(stripMarkdownForSpeech(text), {
+    const ok = speakText(stripMarkdownForSpeech(text), {
       lang: resolveSpeechLang(voice.lang, getLocale()),
       rate: voice.rate,
+      onEnd: () => reading.clearIf(autoReadId),
     });
-  }, [status, text, voice, userAllows]);
+    if (ok) reading.setActive({ messageId: autoReadId, phase: "playing" });
+  }, [status, text, voice, reading, autoReadId, userAllows]);
 }
 
 function ReadAloudButton() {
   const voice = useContext(VoiceConfigContext);
-  const [speaking, setSpeaking] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const reading = useContext(ReadAloudContext);
   const gatewayTts = useAction(api.voice.gatewayTts);
   const toast = useToast();
+  const messageId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId ??
+      msg.id,
+  );
   const chatId = useMessage(
     (msg) =>
       (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId ?? null,
@@ -1547,51 +1613,57 @@ function ReadAloudButton() {
   if (!voice.enabled || !text.trim()) return null;
   if (browserEngine && !ttsSupported()) return null;
   const lang = resolveSpeechLang(voice.lang, getLocale());
-  const stopAll = () => {
-    stopSpeaking();
-    stopGatewayAudio();
-    setSpeaking(false);
+  // GLOBAL state: this button is "mine" only when the chat-wide reading points
+  // at THIS message — starting another message's reading releases this one.
+  const mine = reading.active?.messageId === messageId;
+  const loading = mine && reading.active?.phase === "loading";
+  const speaking = mine && reading.active?.phase === "playing";
+  const start = () => {
+    // Exclusive: silence whatever was reading (any engine, any message).
+    stopAllReading();
+    const clean = stripMarkdownForSpeech(text);
+    if (browserEngine) {
+      const ok = speakText(clean, {
+        lang,
+        rate: voice.rate,
+        onEnd: () => reading.clearIf(messageId),
+      });
+      reading.setActive(ok ? { messageId, phase: "playing" } : null);
+      return;
+    }
+    if (!chatId) return;
+    const generation = readGeneration;
+    reading.setActive({ messageId, phase: "loading" });
+    gatewayTts({ chatId, text: clean.slice(0, 1_500) })
+      .then(({ mime, audioBase64 }: { mime: string; audioBase64: string }) => {
+        // Superseded (stopped / another read / chat switch)? Stay silent.
+        if (generation !== readGeneration) return;
+        const ok = playGatewayAudio(audioBase64, mime, () =>
+          reading.clearIf(messageId),
+        );
+        reading.setActive(ok ? { messageId, phase: "playing" } : null);
+      })
+      .catch((err) => {
+        if (generation !== readGeneration) return;
+        toast.error(m.chat_read_gateway_error(), err);
+        reading.setActive(null);
+      });
   };
   return (
     <button
       type="button"
-      className="oc-iconbtn"
-      title={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
-      aria-label={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
-      aria-pressed={speaking}
+      className={`oc-iconbtn${mine ? " oc-iconbtn--reading" : ""}`}
+      title={mine ? m.chat_read_stop() : m.chat_read_aloud()}
+      aria-label={mine ? m.chat_read_stop() : m.chat_read_aloud()}
+      aria-pressed={mine}
       aria-busy={loading}
-      disabled={loading}
       onClick={() => {
-        if (speaking) {
-          stopAll();
+        if (mine) {
+          stopAllReading();
+          reading.setActive(null);
           return;
         }
-        const clean = stripMarkdownForSpeech(text);
-        if (browserEngine) {
-          const ok = speakText(clean, {
-            lang,
-            rate: voice.rate,
-            onEnd: () => setSpeaking(false),
-          });
-          if (ok) setSpeaking(true);
-          return;
-        }
-        // Gateway engine: synthesize via the instance's own TTS then play.
-        // Long replies read their first ~1500 chars (the action's cap — the
-        // base64 answer must fit a Convex value).
-        if (!chatId) return;
-        setLoading(true);
-        gatewayTts({ chatId, text: clean.slice(0, 1_500) })
-          .then(({ mime, audioBase64 }: { mime: string; audioBase64: string }) => {
-            const ok = playGatewayAudio(audioBase64, mime, () =>
-              setSpeaking(false),
-            );
-            if (ok) setSpeaking(true);
-          })
-          .catch((err) => {
-            toast.error(m.chat_read_gateway_error(), err);
-          })
-          .finally(() => setLoading(false));
+        start();
       }}
     >
       {loading ? (
@@ -1602,6 +1674,38 @@ function ReadAloudButton() {
         <IconVolume />
       )}
     </button>
+  );
+}
+
+/** Floating "now reading" banner above the composer: names the state (loading
+ *  vs playing) and offers a STOP that never hides — the per-message action row
+ *  auto-hides on non-last messages, which made stopping an older message's
+ *  reading a hover hunt. */
+function ReadingBanner() {
+  const reading = useContext(ReadAloudContext);
+  if (!reading.active) return null;
+  const loading = reading.active.phase === "loading";
+  return (
+    <div className="oc-reading-banner" role="status">
+      {loading ? (
+        <LoaderCircle size={14} className="oc-actrow__spin" aria-hidden />
+      ) : (
+        <Volume2 size={14} className="oc-reading-banner__pulse" aria-hidden />
+      )}
+      <span>
+        {loading ? m.chat_reading_loading() : m.chat_reading_playing()}
+      </span>
+      <button
+        type="button"
+        className="oc-reading-banner__stop"
+        onClick={() => {
+          stopAllReading();
+          reading.setActive(null);
+        }}
+      >
+        {m.chat_read_stop()}
+      </button>
+    </div>
   );
 }
 
@@ -2825,6 +2929,8 @@ function Composer({
   // a non-functional control would mislead.)
   return (
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    <>
+    <ReadingBanner />
     <ComposerPrimitive.Root
       className={`oc-composer${unavailable ? " oc-composer--disabled" : ""}`}
     >
@@ -2942,5 +3048,6 @@ function Composer({
         </div>
       </div>
     </ComposerPrimitive.Root>
+    </>
   );
 }
