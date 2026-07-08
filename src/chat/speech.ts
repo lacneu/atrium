@@ -17,6 +17,8 @@ export type ChatVoiceConfig = {
   /** 0.5..2 (1 = normal). */
   rate: number;
   autoRead: boolean;
+  /** Read-aloud engine: "browser" (Web Speech) or "gateway" (instance TTS). */
+  engine: string;
 };
 
 /** Resolve "auto" to a concrete BCP-47 tag using the UI locale. */
@@ -172,3 +174,43 @@ export function startDictation(opts: {
   }
   return { stop: () => rec.stop() };
 }
+
+// ---------------------------------------------------------------------------
+// Gateway-audio playback (the "gateway voice" engine): plays a base64 clip the
+// instance's gateway synthesized. Single active clip — starting a new one (or
+// stopGatewayAudio / stopSpeaking-style toggles) stops the previous.
+// ---------------------------------------------------------------------------
+
+let activeClip: HTMLAudioElement | null = null;
+
+export function playGatewayAudio(
+  base64: string,
+  mime: string,
+  onEnd?: () => void,
+): boolean {
+  try {
+    stopGatewayAudio();
+    const audio = new Audio(`data:${mime};base64,${base64}`);
+    activeClip = audio;
+    if (onEnd) {
+      audio.onended = onEnd;
+      audio.onerror = onEnd;
+    }
+    // play() is a promise — autoplay policies can reject it asynchronously;
+    // surface that as "ended" so the button never sticks in speaking state.
+    audio.play().catch(() => onEnd?.());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function stopGatewayAudio(): void {
+  if (activeClip) {
+    activeClip.pause();
+    activeClip.onended = null;
+    activeClip.onerror = null;
+    activeClip = null;
+  }
+}
+

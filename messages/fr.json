@@ -1713,5 +1713,10 @@
 	"voice_gate_on": "Micro : activé (système)",
 	"voice_gate_off": "Micro : désactivé (système)",
 	"voice_seg_readaloud": "Lecture à voix haute",
-	"prefs_badge_custom": "Personnalisé"
+	"prefs_badge_custom": "Personnalisé",
+	"voice_engine_label": "Moteur de lecture",
+	"voice_engine_browser": "Navigateur (voix système)",
+	"voice_engine_gateway": "Voix de la passerelle",
+	"voice_engine_gateway_help": "La synthèse est produite par la passerelle de l'instance (provider TTS configuré côté gateway : Edge gratuit, OpenAI, ElevenLabs…). L'audio est généré à la demande puis joué dans le navigateur.",
+	"chat_read_gateway_error": "La synthèse vocale de la passerelle a échoué — réessayez."
 }

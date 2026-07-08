@@ -8,6 +8,19 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.42.0] — The gateway's own voice, per instance
+
+Feature release. No breaking changes.
+
+- **Read-aloud can now use the GATEWAY's voice.** Each instance picks its
+  read-aloud engine in Settings ▸ Platform ▸ Voice: the browser's system
+  voices (default) or the gateway's own TTS (OpenClaw `tts.convert` — Edge
+  free-tier, OpenAI, ElevenLabs… whatever the gateway configures). The same
+  "Read aloud" button drives both: with the gateway engine, Atrium synthesizes
+  on demand through the bridge (a spinner shows the round-trip) and plays the
+  real provider voice. Long replies read their opening (~2,500 chars). Hermes
+  instances keep the browser engine (no synthesize-and-return RPC there yet).
+
 ## [0.41.1] — Settings ergonomics: navigable sub-tabs, a clearer Preferences screen
 
 Corrective/UX release on 0.41.0. No breaking changes, no schema change.

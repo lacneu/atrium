@@ -23,7 +23,8 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { useQuery, useMutation, useConvex } from "convex/react";
+import {
+  useAction, useQuery, useMutation, useConvex } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -107,6 +108,8 @@ import {
   resolveSpeechLang,
   speakText,
   stopSpeaking,
+  playGatewayAudio,
+  stopGatewayAudio,
   startDictation,
   stripMarkdownForSpeech,
   ttsSupported,
@@ -208,6 +211,7 @@ const VoiceConfigContext = createContext<ChatVoiceConfig & { loaded: boolean }>(
   lang: "auto",
   rate: 1,
   autoRead: false,
+  engine: "browser",
   loaded: false,
 });
 
@@ -426,7 +430,14 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     () =>
       voiceCfgRaw
         ? { ...voiceCfgRaw, loaded: true }
-        : { enabled: false, lang: "auto", rate: 1, autoRead: false, loaded: false },
+        : {
+            enabled: false,
+            lang: "auto",
+            rate: 1,
+            autoRead: false,
+            engine: "browser",
+            loaded: false,
+          },
     [voiceCfgRaw],
   );
 
@@ -1494,7 +1505,15 @@ function useAutoRead(text: string): void {
     if (!voice.loaded) return;
     const was = prev.current;
     prev.current = status;
-    if (!voice.enabled || !voice.autoRead || !userAllows || !ttsSupported()) {
+    // Auto-read speaks with the BROWSER engine only for now — a gateway
+    // synthesis round-trip per reply is a separate opt-in (follow-up).
+    if (
+      !voice.enabled ||
+      !voice.autoRead ||
+      voice.engine === "gateway" ||
+      !userAllows ||
+      !ttsSupported()
+    ) {
       return;
     }
     // Only a LIVE transition into `complete` triggers speech; the first
@@ -1511,14 +1530,28 @@ function useAutoRead(text: string): void {
 function ReadAloudButton() {
   const voice = useContext(VoiceConfigContext);
   const [speaking, setSpeaking] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const gatewayTts = useAction(api.voice.gatewayTts);
+  const toast = useToast();
+  const chatId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId ?? null,
+  );
   const text = useMessage((msg) =>
     msg.content
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
       .join("\n"),
   );
-  if (!voice.enabled || !ttsSupported() || !text.trim()) return null;
+  const browserEngine = voice.engine !== "gateway";
+  if (!voice.enabled || !text.trim()) return null;
+  if (browserEngine && !ttsSupported()) return null;
   const lang = resolveSpeechLang(voice.lang, getLocale());
+  const stopAll = () => {
+    stopSpeaking();
+    stopGatewayAudio();
+    setSpeaking(false);
+  };
   return (
     <button
       type="button"
@@ -1526,21 +1559,48 @@ function ReadAloudButton() {
       title={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
       aria-label={speaking ? m.chat_read_stop() : m.chat_read_aloud()}
       aria-pressed={speaking}
+      aria-busy={loading}
+      disabled={loading}
       onClick={() => {
         if (speaking) {
-          stopSpeaking();
-          setSpeaking(false);
+          stopAll();
           return;
         }
-        const ok = speakText(stripMarkdownForSpeech(text), {
-          lang,
-          rate: voice.rate,
-          onEnd: () => setSpeaking(false),
-        });
-        if (ok) setSpeaking(true);
+        const clean = stripMarkdownForSpeech(text);
+        if (browserEngine) {
+          const ok = speakText(clean, {
+            lang,
+            rate: voice.rate,
+            onEnd: () => setSpeaking(false),
+          });
+          if (ok) setSpeaking(true);
+          return;
+        }
+        // Gateway engine: synthesize via the instance's own TTS then play.
+        // Long replies read their first ~1500 chars (the action's cap — the
+        // base64 answer must fit a Convex value).
+        if (!chatId) return;
+        setLoading(true);
+        gatewayTts({ chatId, text: clean.slice(0, 1_500) })
+          .then(({ mime, audioBase64 }: { mime: string; audioBase64: string }) => {
+            const ok = playGatewayAudio(audioBase64, mime, () =>
+              setSpeaking(false),
+            );
+            if (ok) setSpeaking(true);
+          })
+          .catch((err) => {
+            toast.error(m.chat_read_gateway_error(), err);
+          })
+          .finally(() => setLoading(false));
       }}
     >
-      {speaking ? <IconVolumeStop /> : <IconVolume />}
+      {loading ? (
+        <LoaderCircle size={16} className="oc-actrow__spin" aria-hidden />
+      ) : speaking ? (
+        <IconVolumeStop />
+      ) : (
+        <IconVolume />
+      )}
     </button>
   );
 }

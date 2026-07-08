@@ -1713,5 +1713,10 @@
 	"voice_gate_on": "Mic: enabled (system)",
 	"voice_gate_off": "Mic: disabled (system)",
 	"voice_seg_readaloud": "Read-aloud",
-	"prefs_badge_custom": "Custom"
+	"prefs_badge_custom": "Custom",
+	"voice_engine_label": "Read-aloud engine",
+	"voice_engine_browser": "Browser (system voices)",
+	"voice_engine_gateway": "Gateway voice",
+	"voice_engine_gateway_help": "Synthesis is produced by the instance's gateway (TTS provider configured gateway-side: free Edge, OpenAI, ElevenLabs…). Audio is generated on demand and played in the browser.",
+	"chat_read_gateway_error": "Gateway text-to-speech failed — try again."
 }

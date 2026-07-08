@@ -68,6 +68,11 @@ export const instanceConfigValidator = v.object({
   // 0.5..2 (1 = normal). `voiceAutoRead` reads each completed reply aloud
   // (the per-user preference still gates it client-side).
   voiceEnabled: v.optional(v.boolean()),
+  // Read-aloud ENGINE: "browser" (Web Speech, default) or "gateway" (the
+  // instance gateway's own TTS — OpenClaw tts.convert; real provider voices).
+  voiceEngine: v.optional(
+    v.union(v.literal("browser"), v.literal("gateway")),
+  ),
   voiceLang: v.optional(v.string()),
   voiceRate: v.optional(v.number()),
   voiceAutoRead: v.optional(v.boolean()),
@@ -128,6 +133,7 @@ export type InstanceConfig = {
   curationEnabled?: boolean;
   curationBudgetChars?: number;
   voiceEnabled?: boolean;
+  voiceEngine?: "browser" | "gateway";
   voiceLang?: string;
   voiceRate?: number;
   voiceAutoRead?: boolean;
@@ -182,6 +188,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "curationEnabled",
     "curationBudgetChars",
     "voiceEnabled",
+    "voiceEngine",
     "voiceLang",
     "voiceRate",
     "voiceAutoRead",
@@ -251,6 +258,12 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.voiceEnabled !== undefined) {
     if (typeof o.voiceEnabled !== "boolean") return "invalid";
     out.voiceEnabled = o.voiceEnabled;
+  }
+  if (o.voiceEngine !== undefined) {
+    if (o.voiceEngine !== "browser" && o.voiceEngine !== "gateway") {
+      return "invalid";
+    }
+    out.voiceEngine = o.voiceEngine;
   }
   if (o.voiceLang !== undefined) {
     // "auto" or a plausible BCP-47 tag ("fr", "fr-FR") — a display hint for the

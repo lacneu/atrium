@@ -28,6 +28,7 @@ import {
   idempotencyKey,
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
+import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
 import { base64FitsFrame } from "./core/attachment-limits.js";
 import {
@@ -1969,6 +1970,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/compaction-history",
       "/agent-files",
       "/config-defaults",
+      "/tts",
       "/validate-media",
       // Phase 2c: dispatch a user's message to a SUB-AGENT session (chat.send to the
       // child key), arming the observer to capture the reply. Convex verifies IDOR.
@@ -2322,6 +2324,103 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       return;
     }
 
+    if (req.url === "/tts") {
+      // Gateway TTS passthrough (OpenClaw tts.* RPC surface). Guarded like
+      // /agent-files: only an instance THIS bridge serves, operator connection
+      // per call. Body: {instanceName, method: "status"|"providers"|"convert",
+      // text?} — convert returns whatever the gateway returns (shape probed
+      // live; the Convex action normalizes).
+      let parsedTts: {
+        instanceName?: unknown;
+        method?: unknown;
+        text?: unknown;
+      } = {};
+      try {
+        parsedTts = JSON.parse(raw) as typeof parsedTts;
+      } catch {
+        parsedTts = {};
+      }
+      const ttsInstance =
+        typeof parsedTts.instanceName === "string" ? parsedTts.instanceName : "";
+      const method =
+        typeof parsedTts.method === "string" ? parsedTts.method : "";
+      const ttsText = typeof parsedTts.text === "string" ? parsedTts.text : "";
+      if (
+        !ttsInstance ||
+        !["status", "providers", "convert"].includes(method) ||
+        (method === "convert" && (ttsText.length === 0 || ttsText.length > 20_000))
+      ) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const ttsBundle = served.get(ttsInstance);
+      if (!ttsBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (ttsBundle.config.kind !== "openclaw") {
+        // Hermes has no direct synthesize-and-return RPC (its voice.tts plays
+        // on the gateway host) — state it instead of failing opaquely.
+        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        return;
+      }
+      try {
+        const result = await withOperatorConnection(
+          ttsBundle.config,
+          (conn) =>
+            conn.request(
+              `tts.${method}`,
+              method === "convert" ? { text: ttsText } : {},
+              method === "convert" ? 60_000 : 10_000,
+            ),
+          noteHandshakeFor(ttsInstance),
+        );
+        if (method !== "convert") {
+          sendJson(res, 200, { ok: true, payload: result.payload ?? null });
+          return;
+        }
+        // convert returns {audioPath} ON THE GATEWAY HOST (probed live) — pull
+        // the bytes through the same gateway-http media channel the outbound
+        // pipeline uses (probe → path-scoped ticket → stream), then answer
+        // with base64 audio (TTS clips are small; no storage round-trip).
+        const audioPath = (result.payload as { audioPath?: string } | undefined)
+          ?.audioPath;
+        if (!audioPath) {
+          sendJson(res, 502, { ok: false, error: { code: "NO_AUDIO_PATH" } });
+          return;
+        }
+        const fetcher = buildMediaFetcher(
+          ttsBundle.config,
+          "gateway-http",
+          16 * 1024 * 1024,
+        );
+        const opened = fetcher ? await fetcher.open(audioPath) : null;
+        if (!opened || !opened.ok) {
+          sendJson(res, 502, {
+            ok: false,
+            error: { code: "AUDIO_FETCH_FAILED" },
+          });
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of opened.stream) {
+          chunks.push(chunk as Buffer);
+        }
+        sendJson(res, 200, {
+          ok: true,
+          payload: {
+            mime: opened.mimeType || "audio/mpeg",
+            provider: (result.payload as { provider?: string }).provider ?? null,
+            audioBase64: Buffer.concat(chunks).toString("base64"),
+          },
+        });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(`bridge /tts ${method} failed [${code}]:`, (err as Error)?.message ?? err);
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
     if (req.url === "/agent-files") {
       const body = parseAgentFilesBody(raw);
       if (body === null) {

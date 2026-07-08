@@ -63,6 +63,7 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
   const cfg = instance.config ?? {};
   const stored = {
     enabled: cfg.voiceEnabled === true,
+    engine: cfg.voiceEngine === "gateway" ? "gateway" : "browser",
     lang: typeof cfg.voiceLang === "string" ? cfg.voiceLang : "auto",
     rate: typeof cfg.voiceRate === "number" ? String(cfg.voiceRate) : "1",
     autoRead: cfg.voiceAutoRead === true,
@@ -74,6 +75,7 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
   useEffect(() => {
     setDraft({
       enabled: cfg.voiceEnabled === true,
+      engine: cfg.voiceEngine === "gateway" ? "gateway" : "browser",
       lang: typeof cfg.voiceLang === "string" ? cfg.voiceLang : "auto",
       rate: typeof cfg.voiceRate === "number" ? String(cfg.voiceRate) : "1",
       autoRead: cfg.voiceAutoRead === true,
@@ -84,6 +86,7 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
 
   const dirty =
     draft.enabled !== stored.enabled ||
+    draft.engine !== stored.engine ||
     draft.lang !== stored.lang ||
     draft.rate !== stored.rate ||
     draft.autoRead !== stored.autoRead;
@@ -93,6 +96,8 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
     try {
       const next: Record<string, unknown> = { ...(instance.config ?? {}) };
       next.voiceEnabled = draft.enabled;
+      if (draft.engine === "gateway") next.voiceEngine = "gateway";
+      else delete next.voiceEngine;
       if (draft.lang === "auto") delete next.voiceLang;
       else next.voiceLang = draft.lang;
       const rate = Number.parseFloat(draft.rate);
@@ -128,6 +133,27 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
         />
         <span className="oc-cdefaults__label">{m.voice_enable_label()}</span>
       </label>
+      <div className="oc-voice__row">
+        <span className="oc-cdefaults__label">{m.voice_engine_label()}</span>
+        <Select
+          value={draft.engine}
+          onValueChange={(v) => setDraft({ ...draft, engine: v })}
+          disabled={!draft.enabled}
+        >
+          <SelectTrigger size="sm" aria-label={m.voice_engine_label()}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="browser">{m.voice_engine_browser()}</SelectItem>
+            {instance.kind !== "hermes" ? (
+              <SelectItem value="gateway">{m.voice_engine_gateway()}</SelectItem>
+            ) : null}
+          </SelectContent>
+        </Select>
+      </div>
+      {draft.engine === "gateway" ? (
+        <p className="oc-cdefaults__help">{m.voice_engine_gateway_help()}</p>
+      ) : null}
       <div className="oc-voice__row">
         <span className="oc-cdefaults__label">{m.voice_lang_label()}</span>
         <Select
