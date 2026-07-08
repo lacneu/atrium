@@ -1728,5 +1728,6 @@
 	"prefs_dictation_shortcut_record": "Enregistrer un raccourci",
 	"prefs_dictation_shortcut_change": "Modifier",
 	"prefs_dictation_shortcut_cancel": "Annuler",
-	"prefs_dictation_shortcut_clear": "Effacer"
+	"prefs_dictation_shortcut_clear": "Effacer",
+	"voice_test_gateway_error": "Le test de la voix de la passerelle a échoué."
 }

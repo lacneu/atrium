@@ -1728,5 +1728,6 @@
 	"prefs_dictation_shortcut_record": "Record a shortcut",
 	"prefs_dictation_shortcut_change": "Change",
 	"prefs_dictation_shortcut_cancel": "Cancel",
-	"prefs_dictation_shortcut_clear": "Clear"
+	"prefs_dictation_shortcut_clear": "Clear",
+	"voice_test_gateway_error": "The gateway voice test failed."
 }

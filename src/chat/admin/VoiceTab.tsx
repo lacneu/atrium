@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Mic, Volume2, AudioLines } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../convexApi";
 import { APP_HOST } from "@/lib/appHost";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -23,6 +23,8 @@ import {
   speakText,
   stopSpeaking,
   resolveSpeechLang,
+  playGatewayAudio,
+  stopGatewayAudio,
 } from "../speech";
 import { getLocale } from "@/paraglide/runtime.js";
 import "./confTabs.css";
@@ -58,6 +60,11 @@ type InstanceRow = {
   config?: Record<string, unknown>;
 };
 
+// Gateway-preview generation, MODULE-level so it is shared across every
+// instance card: audio output is global (one clip at a time), so a test on
+// ANY card must supersede an in-flight preview from ANY other card.
+let previewGeneration = 0;
+
 function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
   const upsert = useMutation(api.admin.upsertInstanceConfig);
   const cfg = instance.config ?? {};
@@ -72,6 +79,9 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
   const [state, setState] = useState<"idle" | "saving" | "done" | "error">(
     "idle",
   );
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState(false);
+  const preview = useAction(api.voice.gatewayTtsPreview);
   useEffect(() => {
     setDraft({
       enabled: cfg.voiceEnabled === true,
@@ -154,25 +164,32 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
       {draft.engine === "gateway" ? (
         <p className="oc-cdefaults__help">{m.voice_engine_gateway_help()}</p>
       ) : null}
-      <div className="oc-voice__row">
-        <span className="oc-cdefaults__label">{m.voice_lang_label()}</span>
-        <Select
-          value={draft.lang}
-          onValueChange={(v) => setDraft({ ...draft, lang: v })}
-          disabled={!draft.enabled}
-        >
-          <SelectTrigger size="sm" aria-label={m.voice_lang_label()}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {LANG_OPTIONS.map(([id, label]) => (
-              <SelectItem key={id} value={id}>
-                {label()}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {/* Language + auto-read only apply to the BROWSER engine. The gateway
+          synthesizes with its own configured voice (language and voice are
+          gateway-side, not controllable per request), and auto-read is
+          browser-only — so both are hidden on a gateway-engine instance rather
+          than shown as dead controls. */}
+      {draft.engine !== "gateway" ? (
+        <div className="oc-voice__row">
+          <span className="oc-cdefaults__label">{m.voice_lang_label()}</span>
+          <Select
+            value={draft.lang}
+            onValueChange={(v) => setDraft({ ...draft, lang: v })}
+            disabled={!draft.enabled}
+          >
+            <SelectTrigger size="sm" aria-label={m.voice_lang_label()}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LANG_OPTIONS.map(([id, label]) => (
+                <SelectItem key={id} value={id}>
+                  {label()}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
       <div className="oc-voice__row">
         <span className="oc-cdefaults__label">{m.voice_rate_label()}</span>
         <Select
@@ -192,16 +209,24 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
           </SelectContent>
         </Select>
       </div>
-      <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
-        <Checkbox
-          checked={draft.autoRead}
-          onCheckedChange={(v) => setDraft({ ...draft, autoRead: v === true })}
-          disabled={!draft.enabled}
-          aria-label={m.voice_autoread_label()}
-        />
-        <span className="oc-cdefaults__label">{m.voice_autoread_label()}</span>
-      </label>
-      <p className="oc-cdefaults__help">{m.voice_autoread_help()}</p>
+      {draft.engine !== "gateway" ? (
+        <>
+          <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
+            <Checkbox
+              checked={draft.autoRead}
+              onCheckedChange={(v) =>
+                setDraft({ ...draft, autoRead: v === true })
+              }
+              disabled={!draft.enabled}
+              aria-label={m.voice_autoread_label()}
+            />
+            <span className="oc-cdefaults__label">
+              {m.voice_autoread_label()}
+            </span>
+          </label>
+          <p className="oc-cdefaults__help">{m.voice_autoread_help()}</p>
+        </>
+      ) : null}
       <div className="oc-cdefaults__inline">
         <Button
           size="sm"
@@ -213,24 +238,60 @@ function VoiceInstanceCard({ instance }: { instance: InstanceRow }) {
         <Button
           variant="outline"
           size="sm"
-          disabled={!draft.enabled}
+          disabled={!draft.enabled || testing}
           onClick={() => {
             const rate = Number.parseFloat(draft.rate) || 1;
-            speakText(m.voice_test_sentence(), {
-              lang: resolveSpeechLang(draft.lang, getLocale()),
-              rate,
-            });
+            // Every test — either engine — supersedes any in-flight preview and
+            // silences whatever is playing, so a slow gateway synthesis can
+            // never land on top of a newer test (codex P2).
+            const gen = ++previewGeneration;
+            setTestError(false);
+            stopSpeaking();
+            stopGatewayAudio();
+            if (draft.engine !== "gateway") {
+              speakText(m.voice_test_sentence(), {
+                lang: resolveSpeechLang(draft.lang, getLocale()),
+                rate,
+              });
+              return;
+            }
+            // Gateway engine: synthesize the sample through the instance's own
+            // gateway TTS, then play it at the configured rate.
+            setTesting(true);
+            preview({ instanceName: instance.name, text: m.voice_test_sentence() })
+              .then(({ mime, audioBase64 }: { mime: string; audioBase64: string }) => {
+                if (gen !== previewGeneration) return; // stopped / superseded
+                playGatewayAudio(audioBase64, mime, { rate });
+              })
+              .catch(() => {
+                if (gen === previewGeneration) setTestError(true);
+              })
+              // Always clear THIS card's loading state — the card only ever has
+              // one preview in flight (its Test button is disabled while
+              // testing), so being superseded by another card must not leave it
+              // stuck (codex P2). The generation guard gates playback/error, not
+              // this card's own spinner.
+              .finally(() => setTesting(false));
           }}
         >
-          {m.voice_test_button()}
+          {testing ? m.conf_applying() : m.voice_test_button()}
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => stopSpeaking()}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            previewGeneration++;
+            setTesting(false);
+            stopSpeaking();
+            stopGatewayAudio();
+          }}
+        >
           {m.voice_stop_button()}
         </Button>
       </div>
-      {state === "error" ? (
+      {state === "error" || testError ? (
         <p className="oc-cdefaults__error" role="alert">
-          {m.cdefaults_save_error()}
+          {testError ? m.voice_test_gateway_error() : m.cdefaults_save_error()}
         </p>
       ) : null}
     </section>

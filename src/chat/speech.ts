@@ -186,19 +186,23 @@ let activeClip: HTMLAudioElement | null = null;
 export function playGatewayAudio(
   base64: string,
   mime: string,
-  onEnd?: () => void,
+  opts?: { rate?: number; onEnd?: () => void },
 ): boolean {
   try {
     stopGatewayAudio();
     const audio = new Audio(`data:${mime};base64,${base64}`);
+    // The gateway synthesizes at 1×; speed is applied on PLAYBACK (the only
+    // rate lever for gateway audio — tts.convert takes no speed param). This
+    // shifts pitch slightly, acceptable in the 0.75–1.5 range the UI offers.
+    audio.playbackRate = Math.min(2, Math.max(0.5, opts?.rate ?? 1));
     activeClip = audio;
-    if (onEnd) {
-      audio.onended = onEnd;
-      audio.onerror = onEnd;
+    if (opts?.onEnd) {
+      audio.onended = opts.onEnd;
+      audio.onerror = opts.onEnd;
     }
     // play() is a promise — autoplay policies can reject it asynchronously;
     // surface that as "ended" so the button never sticks in speaking state.
-    audio.play().catch(() => onEnd?.());
+    audio.play().catch(() => opts?.onEnd?.());
     return true;
   } catch {
     return false;

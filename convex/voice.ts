@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive } from "./lib/access";
+import { requireActive, requireAdmin } from "./lib/access";
 import { parseInstanceConfig } from "./lib/instanceConfig";
 import { postBridge } from "./agentFiles";
 
@@ -102,6 +102,50 @@ export const gatewayTtsRoute = internalQuery({
         cfg.voiceEngine === "gateway" &&
         (inst as { kind?: string }).kind !== "hermes",
     };
+  },
+});
+
+/** INTERNAL: admin gate + the instance's bridge URL for the admin voice
+ *  preview (Settings ▸ Voice "Test the voice" on a gateway-engine instance). */
+export const gatewayTtsPreviewRoute = internalQuery({
+  args: { instanceName: v.string() },
+  handler: async (ctx, { instanceName }) => {
+    await requireAdmin(ctx);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    return { bridgeUrl: inst?.bridgeUrl?.trim() || null };
+  },
+});
+
+/** Admin voice PREVIEW for a gateway-engine instance: synthesize a short fixed
+ *  phrase through the instance's gateway TTS. Admin-only, instance-scoped (the
+ *  Voice settings tab has no chat context). */
+export const gatewayTtsPreview = action({
+  args: { instanceName: v.string(), text: v.string() },
+  handler: async (
+    ctx,
+    { instanceName, text },
+  ): Promise<{ mime: string; audioBase64: string }> => {
+    if (text.length === 0 || text.length > 1_500) {
+      throw new Error("invalid text length");
+    }
+    const route: { bridgeUrl: string | null } = await ctx.runQuery(
+      internal.voice.gatewayTtsPreviewRoute,
+      { instanceName },
+    );
+    const { status, data } = await postBridge(
+      "/tts",
+      { instanceName, method: "convert", text },
+      90_000,
+      route.bridgeUrl,
+    );
+    if (status !== 200) throw new Error(`bridge tts -> HTTP ${status}`);
+    const payload = (data as { payload?: { mime?: string; audioBase64?: string } })
+      ?.payload;
+    if (!payload?.audioBase64) throw new Error("no audio returned");
+    return { mime: payload.mime || "audio/mpeg", audioBase64: payload.audioBase64 };
   },
 });
 

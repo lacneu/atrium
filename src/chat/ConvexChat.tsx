@@ -1644,9 +1644,10 @@ function ReadAloudButton() {
       .then(({ mime, audioBase64 }: { mime: string; audioBase64: string }) => {
         // Superseded (stopped / another read / chat switch)? Stay silent.
         if (generation !== readGeneration) return;
-        const ok = playGatewayAudio(audioBase64, mime, () =>
-          reading.clearIf(messageId),
-        );
+        const ok = playGatewayAudio(audioBase64, mime, {
+          rate: voice.rate,
+          onEnd: () => reading.clearIf(messageId),
+        });
         reading.setActive(ok ? { messageId, phase: "playing" } : null);
       })
       .catch((err) => {

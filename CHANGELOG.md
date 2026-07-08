@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.43.1] — Read-aloud speed, language, and the voice test
+
+Corrective release on the voice features. Frontend + one new Convex action;
+no breaking changes.
+
+- **Reading speed now applies to the gateway voice.** The per-instance speaking
+  rate was only affecting the browser voices; it now also controls playback of
+  gateway-synthesized audio.
+
+- **"Test the voice" previews what you configured.** On a gateway-engine
+  instance the test button now synthesizes the sample through that instance's
+  own gateway voice (at the chosen speed) instead of always using a browser
+  voice — so the preview matches what listeners will hear.
+
+- **No more dead controls on the gateway engine.** A gateway instance
+  synthesizes with its own gateway-side voice, which Atrium cannot override per
+  request, so the language and auto-read controls (both browser-only) are now
+  hidden on a gateway-engine instance instead of shown as settings that do
+  nothing. To change a gateway voice or language, configure it on the gateway.
+
 ## [0.43.0] — Toggle dictation from the keyboard
 
 Feature release. No breaking changes.
