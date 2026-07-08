@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.43.0] — Toggle dictation from the keyboard
+
+Feature release. No breaking changes.
+
+- **A user-definable dictation shortcut.** Each user can record a keyboard
+  shortcut (Settings ▸ Personal ▸ Preferences, under the voice-input toggle)
+  that starts and stops composer dictation — press it while typing, dictate,
+  press again. Recording is capture-based (press the combination, Escape
+  cancels): it requires a real modifier (⌘/Ctrl or ⌥/Alt) so a bare letter can
+  never fire mid-typing, rejects the app's built-in shortcuts (search, new
+  chat), and handles macOS composed keys (⌥D, ⇧5) correctly. The shortcut is
+  stored on the user's profile, follows them across devices, and shows in the
+  mic button's tooltip.
+
+- **Documentation refresh: Hermes is a supported provider.** The README,
+  architecture, bridge-protocol, and configuration docs now describe the
+  two-provider, capability-driven model — what each provider (and each Hermes
+  transport) supports, how the UI adapts, the per-instance credential model
+  (encrypted at rest, attached via per-bridge secrets), and the voice and
+  sub-agent monitoring features.
+
 ## [0.42.1] — Read-aloud you can see and stop
 
 Corrective release on 0.42.0's voice features. Frontend only; no breaking
