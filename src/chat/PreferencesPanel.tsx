@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
@@ -14,6 +14,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { m } from "@/paraglide/messages.js";
+import {
+  isMac,
+  shortcutFromEvent,
+  shortcutLabel,
+  type Shortcut,
+} from "@/lib/shortcuts";
 import { PREF_META, groupAndFilterPrefs } from "./prefsMeta";
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import {
@@ -95,6 +101,90 @@ function PrefGovernance({ prefKey, ui }: { prefKey: string; ui: UiState }) {
         ) : null}
       </div>
       {gateHelp ? <span className="oc-prefs__gov-help">{gateHelp}</span> : null}
+    </div>
+  );
+}
+
+
+/** Dictation-shortcut recorder: the user RECORDS a combination (press it while
+ *  armed) rather than typing syntax. Requires a real modifier (mod/alt) so a
+ *  bare letter can never fire while typing; Escape cancels, × clears. Stored
+ *  on the profile — it follows the user across devices. */
+function DictationShortcutCard({
+  current,
+  enabled,
+}: {
+  current: Shortcut | null;
+  enabled: boolean;
+}) {
+  const setShortcut = useMutation(api.me.setDictationShortcut);
+  const [recording, setRecording] = useState(false);
+  const [rejected, setRejected] = useState(false);
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRecording(false);
+        return;
+      }
+      const sc = shortcutFromEvent(e);
+      if (sc === null) {
+        // Pure modifier press: keep waiting. Anything else invalid: flash why.
+        if (!["Shift", "Control", "Meta", "Alt"].includes(e.key)) {
+          setRejected(true);
+          window.setTimeout(() => setRejected(false), 1800);
+        }
+        return;
+      }
+      setRecording(false);
+      void setShortcut({ shortcut: sc });
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, setShortcut]);
+  return (
+    <div className={`oc-prefs__row${enabled ? "" : " is-locked"}`}>
+      <div className="oc-prefs__info">
+        <span className="oc-prefs__label">
+          {m.prefs_dictation_shortcut_label()}
+          {current ? (
+            <Badge variant="secondary">{shortcutLabel(current, isMac())}</Badge>
+          ) : null}
+        </span>
+        <span className="oc-prefs__help">
+          {rejected
+            ? m.prefs_dictation_shortcut_invalid()
+            : recording
+              ? m.prefs_dictation_shortcut_recording()
+              : m.prefs_dictation_shortcut_help()}
+        </span>
+      </div>
+      <div className="oc-prefs__ctl">
+        {current && !recording ? (
+          <button
+            type="button"
+            className="oc-prefs__reset"
+            onClick={() => void setShortcut({ shortcut: null })}
+          >
+            {m.prefs_dictation_shortcut_clear()}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="oc-prefs__reset"
+          disabled={!enabled}
+          aria-pressed={recording}
+          onClick={() => setRecording((r) => !r)}
+        >
+          {recording
+            ? m.prefs_dictation_shortcut_cancel()
+            : current
+              ? m.prefs_dictation_shortcut_change()
+              : m.prefs_dictation_shortcut_record()}
+        </button>
+      </div>
     </div>
   );
 }
@@ -221,6 +311,10 @@ export function PreferencesPanel() {
           ))}
         </div>
       )}
+      <DictationShortcutCard
+        current={(me as { dictationShortcut?: Shortcut | null } | undefined | null)?.dictationShortcut ?? null}
+        enabled={ui.effective.voiceInput === true}
+      />
     </div>
   );
 }

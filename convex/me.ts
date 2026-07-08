@@ -196,6 +196,7 @@ export const getMe = query({
       // Per-user Settings tab order (drag-and-drop). null = default code order;
       // the client merges saved keys first, then any new/unknown tabs after.
       settingsTabOrder: profile?.settingsTabOrder ?? null,
+      dictationShortcut: profile?.dictationShortcut ?? null,
       // EFFECTIVE permissions (role ∪ extraPermissions; admins = full superset).
       // The client uses this to gate which Settings tabs are visible/landable.
       // This is convenience for the UI — the SERVER guard on each query is the
@@ -251,6 +252,47 @@ export const setSettingsTabOrder = mutation({
     const profile = await getProfile(ctx, userId);
     if (profile === null) return; // pre-bootstrap
     await ctx.db.patch(profile._id, { settingsTabOrder: order });
+  },
+});
+
+/** Set (or clear with null) the user's dictation-toggle shortcut. Validation:
+ *  the key is ONE printable char and at least one of mod/alt is set — a bare
+ *  letter (or shift+letter) would fire while typing normally in the composer. */
+export const setDictationShortcut = mutation({
+  args: {
+    shortcut: v.union(
+      v.null(),
+      v.object({
+        mod: v.optional(v.boolean()),
+        shift: v.optional(v.boolean()),
+        alt: v.optional(v.boolean()),
+        key: v.string(),
+      }),
+    ),
+  },
+  handler: async (ctx, { shortcut }) => {
+    const userId = await requireUserId(ctx);
+    const profile = await getProfile(ctx, userId);
+    if (profile === null) return; // pre-bootstrap
+    if (shortcut === null) {
+      await ctx.db.patch(profile._id, { dictationShortcut: undefined });
+      return;
+    }
+    const key = shortcut.key.toLowerCase();
+    if (key.length !== 1 || !/^[a-z0-9]$/.test(key)) {
+      throw new Error("invalid shortcut key");
+    }
+    if (!shortcut.mod && !shortcut.alt) {
+      throw new Error("shortcut requires a modifier");
+    }
+    await ctx.db.patch(profile._id, {
+      dictationShortcut: {
+        ...(shortcut.mod ? { mod: true } : {}),
+        ...(shortcut.shift ? { shift: true } : {}),
+        ...(shortcut.alt ? { alt: true } : {}),
+        key,
+      },
+    });
   },
 });
 

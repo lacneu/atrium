@@ -1720,5 +1720,13 @@
 	"voice_engine_gateway_help": "Synthesis is produced by the instance's gateway (TTS provider configured gateway-side: free Edge, OpenAI, ElevenLabs…). Audio is generated on demand and played in the browser.",
 	"chat_read_gateway_error": "Gateway text-to-speech failed — try again.",
 	"chat_reading_loading": "Synthesizing voice…",
-	"chat_reading_playing": "Now reading"
+	"chat_reading_playing": "Now reading",
+	"prefs_dictation_shortcut_label": "Dictation shortcut",
+	"prefs_dictation_shortcut_help": "A keyboard shortcut that starts/stops dictation in the composer. Requires ⌘/Ctrl or ⌥/Alt.",
+	"prefs_dictation_shortcut_recording": "Press the desired combination… (Escape to cancel)",
+	"prefs_dictation_shortcut_invalid": "Invalid combination — use ⌘/Ctrl or ⌥/Alt plus a letter or digit.",
+	"prefs_dictation_shortcut_record": "Record a shortcut",
+	"prefs_dictation_shortcut_change": "Change",
+	"prefs_dictation_shortcut_cancel": "Cancel",
+	"prefs_dictation_shortcut_clear": "Clear"
 }

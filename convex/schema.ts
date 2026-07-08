@@ -252,6 +252,17 @@ export default defineSchema({
     // their code order AFTER the saved ones. Unknown/stale keys are ignored on
     // read. OPTIONAL → unset means the default code order.
     settingsTabOrder: v.optional(v.array(v.string())),
+    // User-defined keyboard shortcut that toggles composer dictation. Requires
+    // at least one of mod/alt (a bare letter would swallow normal typing);
+    // absent = no shortcut. Shape mirrors src/lib/shortcuts.Shortcut.
+    dictationShortcut: v.optional(
+      v.object({
+        mod: v.optional(v.boolean()),
+        shift: v.optional(v.boolean()),
+        alt: v.optional(v.boolean()),
+        key: v.string(),
+      }),
+    ),
 
     // Per-user GRANTED permissions on top of the role (per-tab RBAC). An admin
     // grants read-only observability perms here to open specific Settings tabs to

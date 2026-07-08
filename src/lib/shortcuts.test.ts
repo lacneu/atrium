@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  isValidCustomShortcut,
+  shortcutFromEvent,
   detectIsMac,
   shortcutLabel,
   matchesShortcut,
@@ -92,5 +94,48 @@ describe("matchesShortcut", () => {
     expect(
       matchesShortcut(ev({ key: "k", metaKey: true, altKey: true }), SHORTCUT_SEARCH),
     ).toBe(false);
+  });
+});
+
+describe("custom shortcuts (dictation toggle)", () => {
+  it("requires a real modifier and one alphanumeric key", () => {
+    expect(isValidCustomShortcut({ alt: true, key: "d" })).toBe(true);
+    expect(isValidCustomShortcut({ mod: true, shift: true, key: "5" })).toBe(true);
+    expect(isValidCustomShortcut({ key: "d" })).toBe(false);
+    expect(isValidCustomShortcut({ shift: true, key: "d" })).toBe(false);
+    expect(isValidCustomShortcut({ alt: true, key: "Enter" })).toBe(false);
+    // the app's built-ins are reserved
+    expect(isValidCustomShortcut({ mod: true, key: "k" })).toBe(false);
+    expect(isValidCustomShortcut({ mod: true, shift: true, key: "o" })).toBe(false);
+  });
+
+  it("captures a combo from a keydown, ignoring pure modifier presses", () => {
+    expect(
+      shortcutFromEvent({ key: "Alt", metaKey: false, ctrlKey: false, shiftKey: false, altKey: true }),
+    ).toBeNull();
+    expect(
+      shortcutFromEvent({ key: "d", metaKey: false, ctrlKey: true, shiftKey: false, altKey: false }),
+    ).toEqual({ mod: true, key: "d" });
+  });
+
+  it("falls back to the physical key when macOS composes Alt+letter", () => {
+    // Alt+D on macOS: key="∂", code="KeyD"
+    expect(
+      shortcutFromEvent({ key: "∂", code: "KeyD", metaKey: false, ctrlKey: false, shiftKey: false, altKey: true }),
+    ).toEqual({ alt: true, key: "d" });
+    // Shift composes digits too (Shift+5 -> "%"): physical fallback matches.
+    expect(
+      matchesShortcut(
+        { key: "%", code: "Digit5", metaKey: true, ctrlKey: false, shiftKey: true, altKey: false },
+        { mod: true, shift: true, key: "5" },
+      ),
+    ).toBe(true);
+    // and the MATCHER accepts the composed event against the stored shortcut
+    expect(
+      matchesShortcut(
+        { key: "∂", code: "KeyD", metaKey: false, ctrlKey: false, shiftKey: false, altKey: true },
+        { alt: true, key: "d" },
+      ),
+    ).toBe(true);
   });
 });

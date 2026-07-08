@@ -2,10 +2,11 @@
 
 Atrium is a self-hostable, multi-user **web chat front end for AI agent
 gateways** — a community project, not affiliated with any gateway vendor.
-[OpenClaw](https://github.com/openclaw/openclaw) is the first supported provider;
-Hermes is next. The goal: give a team a clean, reliable chat UI on top of one or
-more agent gateways, without ever exposing gateway credentials to the browser or
-chat content to the diagnostic surface.
+[OpenClaw](https://github.com/openclaw/openclaw) and Hermes are both supported
+providers, each behind a bridge adapter, with a capability-driven UI that adapts
+to what a given gateway can do. The goal: give a team a clean, reliable chat UI on
+top of one or more agent gateways, without ever exposing gateway credentials to
+the browser or chat content to the diagnostic surface.
 
 It is `0.x`: functional and documented, but breaking changes can still happen
 before `1.0`. This document is a direction guardrail — priorities and boundaries,
@@ -33,8 +34,8 @@ not a contract.
 
 Reliability and continuity first: deterministic test coverage of the streaming /
 recovery / compatibility paths, and a high-confidence process for supporting a new
-gateway version (OpenClaw today, Hermes next). Then: deployment ergonomics,
-observability, and UX polish.
+gateway version across both providers. Then: deployment ergonomics, observability,
+and UX polish.
 
 ## Non-goals (for now)
 

@@ -1,8 +1,8 @@
 # Deploying Atrium
 
 Everything is **env-driven**: fill environment variables, bring your own agent
-gateway (OpenClaw today; Hermes planned), and run. No code changes, no hard-coded
-hosts. Three modes:
+gateway (OpenClaw or Hermes), and run. No code changes, no hard-coded hosts. Three
+modes:
 
 | Mode | Path | Status |
 |------|------|--------|
@@ -12,8 +12,7 @@ hosts. Three modes:
 
 The stack has four parts: **Convex** (self-hosted backend + SQLite, *stateful*),
 **Convex dashboard**, the **frontend** (static), and the **bridge** (connects to
-your agent gateway). You supply the gateway yourself (OpenClaw today; Hermes
-planned).
+your agent gateway). You supply the gateway yourself (OpenClaw or Hermes).
 
 > **Hitting a snag?** The problems first-time deployers actually hit — private
 > GHCR images, the `pkcs8`/JWKS sign-in error, "Loading…" forever, "no agents

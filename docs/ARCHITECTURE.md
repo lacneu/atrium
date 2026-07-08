@@ -1,11 +1,12 @@
 # Architecture
 
-Atrium is a web chat UI for **AI agent gateways** (OpenClaw today, Hermes
-planned). It is built so that a single user turn — which an agent gateway can fan
-out into multiple runs, intermediate replies, tool output, generated media,
+Atrium is a web chat UI for **AI agent gateways** (OpenClaw and Hermes). It is
+built so that a single user turn — which an agent gateway can fan out into
+multiple runs, intermediate replies, tool output, generated media,
 auto-compaction restarts, and messages that arrive after a browser reconnect — is
 handled naturally, and so that the UI stays stable even as a provider's event
-shapes change between versions.
+shapes change between versions, and even across two providers with very different
+surfaces.
 
 ![A calm, light-filled hall where users chat with their agents. The gateway's raw event churn — tangled cables, shifting version numbers — stays behind the threshold in the machine room, smoothed into one clean stream by the bridge before it ever reaches the hall.](assets/atrium-overview.png)
 
@@ -21,10 +22,10 @@ shapes change between versions.
                                                 │ schedules an
                                                 │ outbound turn
                                                 ▼
-                                       ┌──────────────────┐   WebSocket   ┌──────────────┐
-                                       │ Bridge (Node/TS) │ ◀───────────▶ │ OpenClaw     │
-                                       │ operator socket, │               │ gateway      │
-                                       │ normalizer       │               │ (runs agents)│
+                                       ┌──────────────────┐  WS or REST   ┌──────────────┐
+                                       │ Bridge (Node/TS) │ ◀───────────▶ │ Agent gateway│
+                                       │ provider adapter,│               │ (OpenClaw or │
+                                       │ normalizer       │               │  Hermes)     │
                                        └────────┬─────────┘               └──────────────┘
                                                 │ ingests normalized
                                                 │ events back into Convex
@@ -46,16 +47,16 @@ shapes change between versions.
   the front end type-checks and builds without a live backend.
 
 - **Bridge (`bridge/`)** — a Node/TypeScript worker that holds a persistent
-  operator WebSocket to an agent gateway (OpenClaw today; a Hermes adapter is
-  planned). A per-provider adapter normalizes the gateway's version-specific
-  frames into a small stable vocabulary and relays turns to and from Convex over
-  HTTP. It imports nothing from the Convex app — it is coupled only through the
-  documented ingest and dispatch endpoints, so it versions and deploys
-  independently.
+  connection to an agent gateway. A **per-provider adapter**
+  (`bridge/src/providers/`) normalizes the gateway's version-specific frames into
+  a small stable vocabulary and relays turns to and from Convex over HTTP. It
+  imports nothing from the Convex app — it is coupled only through the documented
+  ingest and dispatch endpoints, so it versions and deploys independently. Which
+  provider and (for Hermes) which transport a bridge serves is resolved per
+  instance from Convex config, not baked into the image.
 
-- **Agent gateway** — external to this project (OpenClaw today, Hermes planned).
-  It runs the agents. Atrium never runs a model itself; you bring your own
-  gateway.
+- **Agent gateway** — external to this project (OpenClaw or Hermes). It runs the
+  agents. Atrium never runs a model itself; you bring your own gateway.
 
 - **MCP server (`mcp/`)** — exposes the read-only observability surface over the
   Model Context Protocol so an agent or operator can query traces, KPIs, and
@@ -97,6 +98,36 @@ bridge↔Convex contract is documented in [BRIDGE_PROTOCOL.md](BRIDGE_PROTOCOL.m
 
 ![The bridge as a membrane: erratic, version-specific raw frames from the gateway enter on the left; one clean, steady signal — the stable shape the UI and observability consume — comes out on the right.](assets/atrium-normalization.png)
 
+## Providers and capabilities
+
+Atrium supports two gateway providers — **OpenClaw** and **Hermes** — behind the
+same bridge/normalizer seam. They do not have the same feature surface, and the
+design does not pretend they do. Instead, each provider (and, for Hermes, each
+transport) publishes a **capability manifest**: the exact set of features the
+bridge actually implements against it, each with the minimum gateway version that
+supports it. The bridge reports this through `GET /capabilities`; the front end is
+**capability-driven** and renders only what a chat's instance advertises. A
+control a gateway cannot back is simply *absent* — never a button that fails.
+
+- **OpenClaw** exposes the full surface: per-chat knobs (reasoning level, model,
+  fast mode), session reset and compaction, agent workspace files, chat defaults,
+  general inbound attachments, sub-agent monitoring, and gateway-side
+  text-to-speech.
+- **Hermes** exposes a deliberately smaller surface and offers two transports.
+  The **WebSocket** transport (the default) carries structured delegation and
+  **Mixture-of-Agents** activity — surfaced in the sub-agent monitor — plus inline
+  attachments and agent workspace files. The **REST** (OpenAI-compatible)
+  transport carries only a per-turn run with a real server-side stop and
+  single-agent discovery. Hermes has no per-chat knobs (they are gateway-side
+  config) and no chat-defaults write, so those controls stay hidden on a Hermes
+  instance.
+
+Because the UI is driven by the manifest rather than by per-provider branches,
+adding or evolving a provider is a bridge-and-manifest change; the front end
+adapts on its own. The manifest is mirrored and re-validated in Convex
+(`convex/lib/compat.ts`) so an older or divergent bridge cannot unlock a feature
+the deployment should not show.
+
 ## Authentication
 
 Sign-in uses `@convex-dev/auth` with Google and Microsoft Entra OAuth providers.
@@ -108,13 +139,23 @@ registered on the Convex HTTP router (`convex/http.ts`).
 
 ## Routing (multi-user / multi-agent / multi-instance)
 
-A deployment can serve many users, each routed to the OpenClaw agent assigned to
-them, on a named OpenClaw instance. A chat is bound to a target (instance +
-agent); the dispatch path resolves and persists that binding, and re-binds
-cleanly if the bound agent was removed on the gateway. A bridge serves one named
-instance, declared three ways consistently (the bridge's `OPENCLAW_INSTANCE_NAME`,
-the Convex `instances` row, and the Convex `BRIDGE_INSTANCE_NAME`) so a routing
+A deployment can serve many users, each routed to the agent assigned to them, on a
+named gateway instance (which may be OpenClaw or Hermes). A chat is bound to a
+target (instance + agent); the dispatch path resolves and persists that binding,
+and re-binds cleanly if the bound agent was removed on the gateway. A bridge serves
+one named instance, declared consistently on both sides (the bridge's instance name
+and the Convex `instances` row / `BRIDGE_INSTANCE_NAME`) so a routing
 misconfiguration fails loudly instead of answering from the wrong gateway.
+
+## Voice
+
+Read-aloud and dictation run in the browser through the Web Speech API — no API
+key and no gateway dependency — so they work identically for either provider. Each
+instance chooses its read-aloud engine: the browser's built-in system voices, or,
+on providers that expose a text-to-speech RPC (OpenClaw), the gateway's own
+configured voices — synthesized on demand through the bridge and played in the
+browser. Dictation transcribes the microphone into the composer; both are opt-in
+per user.
 
 ## Observability
 

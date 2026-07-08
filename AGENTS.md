@@ -23,7 +23,7 @@ before making changes; read the per-area notes below before touching an area.
 |------|------------|
 | `src/` | React + Vite front end (TypeScript, built on assistant-ui). Never parses raw gateway frames — it subscribes to Convex. |
 | `convex/` | Self-hosted Convex backend: schema, queries, mutations, actions, HTTP routes (`/api/v1`, `/bridge/ingest`), auth, crons. `convex/_generated/` is committed on purpose. |
-| `bridge/` | Standalone Node/TypeScript package: holds the operator WebSocket to an agent gateway (OpenClaw today; Hermes planned), normalizes the version-specific event stream, relays turns to/from Convex. Its own `package.json` + tests. |
+| `bridge/` | Standalone Node/TypeScript package: holds the connection to an agent gateway (OpenClaw, or Hermes over its WebSocket or REST transport), normalizes the version-specific event stream, relays turns to/from Convex. One adapter per provider under `bridge/src/providers/`. Its own `package.json` + tests. |
 | `mcp/` | MCP server exposing the metadata-only observability API to agents/CLIs. |
 | `deploy/` | The deployment surface: `compose/` (Docker Compose + `bootstrap-env.sh`) and `helm/`. **The canonical deploy guide is `deploy/README.md`.** |
 | `docs/` | User/contributor documentation. |
@@ -45,19 +45,27 @@ The full gate before declaring done: app `typecheck` + `test`, bridge `tsc` + `t
 ## Architecture invariants
 
 - **Three tiers, one data spine.** Browser → Convex (reactive, owns chats/auth/
-  routing/observability) → Bridge (operator WS) → external agent gateway (OpenClaw
-  today, Hermes planned). The front end is fed by Convex only; it never sees
-  vendor frames.
+  routing/observability) → Bridge (per-provider adapter) → external agent gateway
+  (OpenClaw or Hermes). The front end is fed by Convex only; it never sees vendor
+  frames.
+- **Capability-driven UI, honest manifests.** Each provider (and Hermes transport)
+  declares ONLY the capabilities the bridge actually implements
+  (`bridge/src/compat.ts`), so a control a gateway lacks is auto-hidden rather than
+  broken. Do not add a capability to a manifest the bridge does not back — the
+  manifest is a promise the UI trusts. Hermes deliberately exposes a small surface;
+  its REST transport carries even less than its WS transport (see below).
 - **Compat is a trust boundary, not just data.** `convex/lib/compat.ts` is a
   network-input normalizer (fail-closed) that deliberately MIRRORS the bridge's
   capability table. Do not collapse the two — the Convex side must defend against
   an older/divergent bridge body. Share the pure capability→minVersion *table*, not
   the normalizer.
-- **Gateway credentials live only in the bridge** (process env) — never in a Convex
-  table, never in the browser. The diagnostic `/api/v1` + MCP surfaces are
-  **metadata-only** (structure/lifecycle/counts), gated by service-account
-  permissions; chat content is a separate admin-only permission never on the
-  routine path.
+- **Gateway credentials are secret and encrypted at rest** — entered per instance
+  in the admin UI, stored AES-256-GCM-encrypted in Convex (`instanceSecrets`,
+  keyed by a master key that lives only in env), fetched by the bridge over its
+  per-bridge secret. They are never in a plaintext table and never in the browser.
+  The diagnostic `/api/v1` + MCP surfaces are **metadata-only**
+  (structure/lifecycle/counts), gated by service-account permissions; chat content
+  is a separate admin-only permission never on the routine path.
 - **Streaming has a stable contract** (deltas, snapshot, finalize, run.status, tool
   status, media) the bridge normalizer produces from version-specific frames. Keep
   the normalizer the only vendor-coupled layer.

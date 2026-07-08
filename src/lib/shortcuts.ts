@@ -77,12 +77,78 @@ export function shortcutLabel(sc: Shortcut, mac: boolean): string {
  * exactly so `⌘K` and `⇧⌘O` never collide (a Shift press fails the search match).
  */
 export function matchesShortcut(
-  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> & {
+    code?: string;
+  },
   sc: Shortcut,
 ): boolean {
   const mod = e.metaKey || e.ctrlKey;
   if (Boolean(sc.mod) !== mod) return false;
   if (Boolean(sc.shift) !== e.shiftKey) return false;
   if (Boolean(sc.alt) !== e.altKey) return false;
-  return e.key.toLowerCase() === sc.key.toLowerCase();
+  if (e.key.toLowerCase() === sc.key.toLowerCase()) return true;
+  // Modifiers compose characters (macOS Alt+D -> "∂", Shift+5 -> "%"), so a
+  // custom shortcut also matches on the PHYSICAL key (KeyD/Digit5). Safe: the
+  // modifier equality checks above already passed.
+  return physicalKey(e.code) === sc.key.toLowerCase();
 }
+
+/** "KeyD" -> "d", "Digit5" -> "5"; null for anything else. */
+function physicalKey(code: string | undefined): string | null {
+  if (!code) return null;
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter?.[1]) return letter[1].toLowerCase();
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit?.[1]) return digit[1];
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// User-defined shortcuts (e.g. the dictation toggle): capture + validation.
+// ---------------------------------------------------------------------------
+
+/**
+ * A user-recordable shortcut is valid when its key is ONE alphanumeric char and
+ * at least one of mod/alt is held — a bare letter (or shift+letter) would fire
+ * while typing normally in the composer. Mirrors the server-side validation.
+ */
+export function isValidCustomShortcut(sc: Shortcut): boolean {
+  if (!/^[a-z0-9]$/i.test(sc.key)) return false;
+  if (!sc.mod && !sc.alt) return false;
+  // Never allow recording the app's built-in shortcuts — one combination must
+  // never fire two actions.
+  const sameAs = (b: Shortcut) =>
+    Boolean(sc.mod) === Boolean(b.mod) &&
+    Boolean(sc.shift) === Boolean(b.shift) &&
+    Boolean(sc.alt) === Boolean(b.alt) &&
+    sc.key.toLowerCase() === b.key.toLowerCase();
+  return !sameAs(SHORTCUT_SEARCH) && !sameAs(SHORTCUT_NEW_CHAT);
+}
+
+/**
+ * Build a Shortcut from a capture-mode keydown, or null when the event is not
+ * a recordable combination (pure modifier press, non-alphanumeric key, or a
+ * combination isValidCustomShortcut rejects). The caller preventDefaults.
+ */
+export function shortcutFromEvent(
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> & {
+    code?: string;
+  },
+): Shortcut | null {
+  // Ignore pure modifier presses while the user is still building the combo.
+  if (["Shift", "Control", "Meta", "Alt"].includes(e.key)) return null;
+  // With Alt held, macOS reports the composed character ("∂" for Alt+D) — fall
+  // back to the physical key (e.code "KeyD") so the recorded shortcut stores
+  // the letter the user actually pressed.
+  const key = /^[a-z0-9]$/i.test(e.key)
+    ? e.key.toLowerCase()
+    : (physicalKey(e.code) ?? e.key.toLowerCase());
+  const sc: Shortcut = {
+    ...(e.metaKey || e.ctrlKey ? { mod: true } : {}),
+    ...(e.shiftKey ? { shift: true } : {}),
+    ...(e.altKey ? { alt: true } : {}),
+    key,
+  };
+  return isValidCustomShortcut(sc) ? sc : null;
+}
+

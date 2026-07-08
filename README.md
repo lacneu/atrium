@@ -25,14 +25,15 @@
 
 An open-source, self-hostable web chat UI for **AI agent gateways**. It gives a
 team a clean multi-user chat front end across one or more gateways, with streaming
-replies, file exchange, per-user agent routing, and a built-in observability
-surface. **OpenClaw is the first supported provider; Hermes is next** — each
-provider lives behind a bridge adapter, so the UI stays the same as gateways are
-added.
+replies, file exchange, per-user agent routing, voice read-aloud and dictation,
+and a built-in observability surface. **OpenClaw and Hermes are both supported**
+— each provider lives behind a bridge adapter, and the UI is **capability-driven**:
+it discovers what a given gateway can do and shows only that, so the same front
+end serves either provider without per-provider UI code.
 
 > Atrium is **provider-agnostic by design** and a community project — not
 > affiliated with or endorsed by any gateway vendor. You bring your own gateway
-> (OpenClaw today, Hermes next); Atrium is the chat surface in front of it.
+> (OpenClaw or Hermes); Atrium is the chat surface in front of it.
 
 ## Status
 
@@ -50,19 +51,21 @@ reconnect. Atrium embraces that model instead of fighting it:
 - A **React + Vite** front end (TypeScript, built on assistant-ui).
 - A **Convex** self-hosted backend (TypeScript functions + reactive database)
   that owns chats, messages, routing, auth, and the observability data.
-- A **Node/TypeScript bridge** with a **per-provider adapter** (OpenClaw today,
-  Hermes planned) that holds a persistent operator WebSocket to the gateway,
-  normalizes the version-specific event stream into a small stable shape, and
-  relays turns to and from Convex. The provider is the only vendor-coupled layer.
-- An external **agent gateway** (OpenClaw, or Hermes when available) that actually
-  runs the agents. Atrium never runs the model itself — you bring your own gateway.
+- A **Node/TypeScript bridge** with a **per-provider adapter** (OpenClaw and
+  Hermes) that holds a persistent connection to the gateway, normalizes the
+  version-specific event stream into a small stable shape, and relays turns to
+  and from Convex. The provider is the only vendor-coupled layer. Hermes offers
+  two transports — a JSON-RPC WebSocket (the default, richer surface) or an
+  OpenAI-compatible REST/SSE API — selectable per instance.
+- An external **agent gateway** (OpenClaw or Hermes) that actually runs the
+  agents. Atrium never runs the model itself — you bring your own gateway.
 
 The front end never parses raw gateway frames; it subscribes to Convex, which is
 fed by the bridge. The result is a stable UI even as providers and versions evolve.
 
 <p align="center">
   <img
-    alt="Atrium is the layer between the browser and any agent gateway; Convex and the Bridge are its internals. The Browser has a single bidirectional 'live (reactive)' link to Convex — and to nothing else. Inside Atrium, Convex schedules an outbound turn to the Bridge, which ingests normalized events back into Convex. The Bridge holds the WebSocket to the external agent gateway you bring yourself (OpenClaw today, Hermes next)."
+    alt="Atrium is the layer between the browser and any agent gateway; Convex and the Bridge are its internals. The Browser has a single bidirectional 'live (reactive)' link to Convex — and to nothing else. Inside Atrium, Convex schedules an outbound turn to the Bridge, which ingests normalized events back into Convex. The Bridge holds the connection to the external agent gateway you bring yourself (OpenClaw or Hermes)."
     src="docs/assets/atrium-dataflow.png"
     width="760">
 </p>
@@ -75,14 +78,27 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 
 - Google and Microsoft Entra sign-in (via `@convex-dev/auth`), restricted to
   allowed email domains; the first sign-in from an allowed domain becomes admin.
+- **Two gateway providers, one UI**: OpenClaw and Hermes, each behind a bridge
+  adapter. The UI is capability-driven — it discovers what a gateway supports and
+  shows only that, so a control a provider lacks is simply absent rather than
+  broken.
 - Multi-user, multi-agent, multi-instance routing: each user is routed to the
   gateway instance and agent assigned to them.
 - Streaming assistant replies with a stable contract (deltas, snapshots,
   finalize, run status, tool status, media), resilient to provider and version
   differences, empty/duplicate finals, follow-on runs, and auto-compaction.
+- **Structured agent activity**: tool calls, delegated sub-agents, and Hermes
+  Mixture-of-Agents runs surface as an inline, drill-down monitor — the
+  aggregator and its reference models rendered as a hierarchy.
+- **Voice**: per-instance read-aloud of replies and microphone dictation. The
+  read-aloud engine is chosen per instance — the browser's built-in voices (no
+  key, works on any provider) or, on providers that expose a text-to-speech RPC,
+  the gateway's own configured TTS voices.
 - File exchange in both directions (inbound attachments, outbound generated
   media served from Convex storage — server filesystem paths never reach the
   browser).
+- **Agent workspace files** (identity / rules / tools) viewable and editable
+  per instance, with concurrent-edit protection.
 - A key-authed observability API (`/api/v1`) and an MCP server (`mcp/`) for
   traces, KPIs, anomalies, and diagnostics — metadata only, no chat content.
 - Full internationalization (French default, English) via Paraglide JS.

@@ -43,14 +43,45 @@ stack up → run the bootstrap step.
 
 ### Bridge
 
+**Two ways to tell a bridge which gateway to serve.** The provider (OpenClaw or
+Hermes), the Hermes transport, the gateway URL, and the gateway credentials can be
+supplied two ways:
+
+- **Per instance in the admin UI (recommended, and the only way to serve several
+  instances or providers from one deployment).** An admin enters each instance's
+  gateway URL, provider, transport, and credentials under **Settings → Agents →
+  Instances → Credentials**. Credentials are stored **AES-256-GCM-encrypted** in
+  Convex (`instanceSecrets`, keyed by the `ATRIUM_SECRET_KEY` master key), never as
+  plaintext. To attach a bridge to these instances you give it a **per-bridge
+  secret** per instance it serves, in the comma-separated `BRIDGE_INSTANCE_SECRETS`
+  env var (documented in `deploy/compose/.env.example`); the bridge then fetches
+  each instance's non-secret config and decrypted credentials from Convex at
+  runtime. In this model the bridge needs only the wiring secrets
+  (`CONVEX_HTTP_ACTIONS_URL`, `BRIDGE_INGEST_SECRET`, `BRIDGE_SHARED_SECRET`) plus
+  `BRIDGE_INSTANCE_SECRETS` — the `OPENCLAW_*` gateway/credential vars below are
+  not needed.
+
+- **From the bridge's own env (single-instance).** One bridge serves one instance
+  entirely from the variables below. This is the simplest single-gateway setup.
+
+The table below documents the single-instance env-driven path. Names are
+historically `OPENCLAW_`-prefixed but apply to either provider. Provider and
+transport selection over env (`BRIDGE_PROVIDER_KIND` / `BRIDGE_PROVIDER_TRANSPORT`)
+is an **advanced, single-instance** option and is not in `.env.example`; the
+recommended way to serve Hermes is the per-instance UI model above, where provider
+and transport come from the Convex instance config.
+
 | Variable | Required | Description |
 | --- | --- | --- |
-| `OPENCLAW_GATEWAY_URL` | yes | Your OpenClaw gateway URL (`ws[s]://`; `http[s]://` is rewritten). |
-| `OPENCLAW_TOKEN` | yes | Operator bearer token for the gateway. |
-| `OPENCLAW_DEVICE_IDENTITY` | yes | Ed25519 device identity as inline JSON (`{"id","publicKey","privateKey":"<PEM PKCS#8>"}`). |
+| `OPENCLAW_GATEWAY_URL` | yes | Your gateway URL (`ws[s]://`; `http[s]://` is rewritten). OpenClaw and Hermes' default transport are WebSocket; Hermes' REST transport is HTTP. |
+| `BRIDGE_PROVIDER_KIND` | for Hermes | `hermes` to serve a Hermes gateway; unset (or anything else) means OpenClaw. |
+| `BRIDGE_PROVIDER_TRANSPORT` | optional | Hermes transport: `ws` (default, richer surface) or `rest` (OpenAI-compatible). Ignored for OpenClaw. |
+| `OPENCLAW_TOKEN` | env path | Operator bearer token (OpenClaw) or API key (Hermes). Optional when the credential comes from the per-instance UI config instead. |
+| `OPENCLAW_DEVICE_IDENTITY` | OpenClaw env path | Ed25519 device identity as inline JSON (`{"id","publicKey","privateKey":"<PEM PKCS#8>"}`). Optional when supplied via the per-instance UI config. |
 | `OPENCLAW_INSTANCE_NAME` | yes | The instance name this bridge serves. Must equal the Convex `instances.name` row and the Convex `BRIDGE_INSTANCE_NAME`. |
-| `OPENCLAW_GATEWAY_VERSION` | recommended | Configured gateway version (`YYYY.M.P`); a fallback the bridge uses for capabilities before a live session has reported the real version. |
-| `OPENCLAW_MEDIA_OUTBOUND_DIR` | yes for media | In-container path to the gateway's outbound media dir (mounted read-only). |
+| `OPENCLAW_GATEWAY_VERSION` | recommended | Configured gateway version; a fallback the bridge uses for capabilities before a live session has reported the real version. |
+| `OPENCLAW_MEDIA_OUTBOUND_DIR` | for shared-fs media | In-container path to the gateway's outbound media dir (mounted read-only). Not needed for the default gateway-HTTP media transport. |
+| `BRIDGE_INSTANCE_SECRETS` | multi-instance path | Comma-separated per-bridge secrets, one per Convex instance this bridge serves. Attaches the bridge to instances configured in the admin UI (it then pulls their provider, transport, URL, and decrypted credentials from Convex). |
 | `CONVEX_HTTP_ACTIONS_URL` | yes | Convex `.site` (HTTP actions) origin the bridge ingests into. Inside one Docker network this is a service-name URL. |
 | `BRIDGE_INGEST_SECRET` | yes | Bearer secret the bridge presents to Convex's ingest endpoint. **Must equal** the Convex-scoped value. |
 | `BRIDGE_SHARED_SECRET` | yes | Secret Convex presents to the bridge's `POST /send` (and `/patch`, `/reset`, …). **Must equal** the Convex-scoped value. |
@@ -80,6 +111,12 @@ Pushed by `bootstrap-env.sh` (or the Helm Job) via `convex env set`.
 | `BRIDGE_INSTANCE_NAME` | yes | The instance the poller targets; must match the bridge's `OPENCLAW_INSTANCE_NAME` and the `instances.name` row. |
 | `BRIDGE_INGEST_SECRET` | yes | Same value as the bridge's container env. |
 | `BRIDGE_SHARED_SECRET` | yes | Same value as the bridge's container env. |
+
+### Credential encryption
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `ATRIUM_SECRET_KEY` | for UI-entered credentials | Base64 of 32 random bytes. Master key that AES-256-GCM-encrypts gateway credentials (operator token, Ed25519 device identity, Hermes API key) entered per instance in the admin UI before they are stored in Convex. Treat it as a **root secret and back it up** — losing or changing it makes existing encrypted credentials unrecoverable (you would re-enter them in the UI). Keep it in env/a secret store, never in the database. |
 
 ### Optional trace shipping
 

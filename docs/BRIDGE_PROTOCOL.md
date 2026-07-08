@@ -1,6 +1,7 @@
 # Bridge Protocol
 
-The bridge sits between Convex and an OpenClaw gateway. It has two seams:
+The bridge sits between Convex and an agent gateway (OpenClaw or Hermes). It has
+two seams:
 
 - **Convex → bridge** — Convex `POST`s outbound operations (send a turn, patch
   session settings, reset, query) to the bridge's authenticated HTTP server.
@@ -8,16 +9,30 @@ The bridge sits between Convex and an OpenClaw gateway. It has two seams:
   deltas, snapshots, parts, media, finalize, session metadata) to Convex's
   ingest HTTP action.
 
-The bridge ↔ gateway seam itself is a persistent WebSocket; the bridge owns the
-version-specific frame handling there and exposes only the stable shapes below.
-This document is the contract a maintainer or a third-party integrator depends
-on, not the raw gateway frames.
+The bridge ↔ gateway seam itself is provider-specific: a persistent WebSocket for
+OpenClaw and for Hermes' default transport, or an OpenAI-compatible REST/SSE
+exchange for Hermes' alternate transport. A per-provider adapter owns the
+version- and transport-specific frame handling there and exposes only the stable
+shapes below. This document is the Convex ↔ bridge contract a maintainer or a
+third-party integrator depends on, not the raw gateway frames.
+
+## Providers, transports, and capabilities
+
+The two seams above are identical regardless of provider — that is the point. What
+differs is the *set of operations a given gateway can serve*, which each provider
+(and, for Hermes, each transport) declares as a capability manifest reported
+through `GET /capabilities`. Convex and the front end read this manifest and gate
+their behavior on it: an endpoint or feature a gateway does not advertise is never
+invoked. OpenClaw advertises the full surface; Hermes advertises a smaller one, and
+its REST transport a smaller one still (a per-turn run with a server-side stop and
+single-agent discovery). See [ARCHITECTURE.md](ARCHITECTURE.md#providers-and-capabilities).
 
 ## Versioning
 
 The protocol is `0.x`. Shapes can still evolve before `1.0`; breaking changes
 are recorded here and covered by regression tests. The bridge reports the served
-gateway version and its capabilities through `GET /capabilities`.
+gateway version, provider, transport, and capability flags through
+`GET /capabilities`.
 
 ## Authentication
 
@@ -37,18 +52,24 @@ Convex deployment env). See [CONFIGURATION.md](CONFIGURATION.md).
 
 The bridge runs a small HTTP server (default port `8787`).
 
+Every capability-specific route is only invoked when the served gateway advertises
+the matching capability; against a provider that lacks it, the route is never
+called (and answers with a non-secret refusal if it is).
+
 | Route | Method | Purpose |
 | --- | --- | --- |
 | `/health` | GET | Unauthenticated liveness probe. |
-| `/capabilities` | GET | Served gateway version + capability flags (e.g. Agent Files, Chat Defaults). |
+| `/capabilities` | GET | Served gateway version, provider, transport + capability flags (e.g. Agent Files, Chat Defaults, sub-agent monitoring, gateway TTS). |
 | `/agents` | GET | Discovered agents for an instance (`?instanceName=`). |
 | `/send` | POST | Dispatch a user turn to the gateway. |
-| `/patch` | POST | Apply per-chat session settings (reasoning level / model) via `sessions.patch`. |
+| `/patch` | POST | Apply per-chat session settings (reasoning level / model). OpenClaw only. |
 | `/reset` | POST | Reset the gateway session for a chat (after a message delete) so the next turn re-hydrates. |
-| `/compact` | POST | Trigger compaction for a chat's session. |
-| `/agent-files` | POST | Agent Files operations for the served instance. |
-| `/config-defaults` | POST | Chat Defaults operations for the served instance. |
-| `/query` | POST | Forward an operator query to the gateway (backs `/api/v1/openclaw/query`). |
+| `/compact` | POST | Trigger compaction for a chat's session. OpenClaw only. |
+| `/agent-files` | POST | Agent workspace-file operations (list / get / set) for the served instance. |
+| `/config-defaults` | POST | Chat Defaults operations for the served instance. OpenClaw only. |
+| `/subagent-send` | POST | Dispatch a user message to a running sub-agent session. |
+| `/tts` | POST | Gateway text-to-speech: synthesize text and return the audio (backs the gateway read-aloud engine). OpenClaw only. |
+| `/query` | POST | Forward an operator query to the gateway (backs `/api/v1/openclaw/query`). OpenClaw only. |
 
 ### `POST /send`
 
@@ -124,14 +145,16 @@ that turn are ignored. Auto-compaction, empty/duplicate finals, follow-on runs,
 and private acknowledgements are absorbed by the bridge normalizer so the Convex
 state — and therefore the UI — stays consistent.
 
-## OpenClaw version compatibility
+## Provider and version compatibility
 
-OpenClaw evolves quickly and each release can change event shapes. The rule is:
-**all version-specific frame parsing lives in the bridge normalizer; everything
-downstream (Convex, the front end) sees only the stable operations above.** When
-a new gateway version changes a shape, add a fixture, extend the normalizer, and
-nothing downstream changes. The per-version replay process is documented in
-[OPENCLAW_VERSION_COMPAT.md](OPENCLAW_VERSION_COMPAT.md).
+Gateways evolve quickly and each release can change event shapes; two providers
+diverge further still. The rule is the same in every case: **all version- and
+provider-specific frame parsing lives in the bridge's per-provider normalizer;
+everything downstream (Convex, the front end) sees only the stable operations
+above.** When a new gateway version changes a shape, add a fixture, extend the
+normalizer, and nothing downstream changes. The per-version replay process is
+documented in [OPENCLAW_VERSION_COMPAT.md](OPENCLAW_VERSION_COMPAT.md); the same
+capture-to-fixture discipline applies to Hermes.
 
 ## Observability and privacy
 

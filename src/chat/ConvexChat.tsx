@@ -29,6 +29,12 @@ import { useNavigate } from "@tanstack/react-router";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
+import {
+  isMac,
+  matchesShortcut,
+  shortcutLabel,
+  type Shortcut,
+} from "@/lib/shortcuts";
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
@@ -2721,13 +2727,39 @@ function DictationButton() {
   // Stop the engine when the composer unmounts mid-dictation (chat switch).
   useEffect(() => () => handleRef.current?.stop(), []);
   const lang = resolveSpeechLang(voice.lang, getLocale());
+  // User-defined toggle shortcut (profile-stored; null = none). It must work
+  // even while the composer textarea has focus — dictation targets it.
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
+  const dictationShortcut =
+    ((me as { dictationShortcut?: Shortcut | null } | undefined | null)
+      ?.dictationShortcut ?? null);
+  const toggleRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!dictationShortcut) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      if (!matchesShortcut(e, dictationShortcut)) return;
+      e.preventDefault();
+      toggleRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dictationShortcut]);
+  const shortcutHint = dictationShortcut
+    ? ` (${shortcutLabel(dictationShortcut, isMac())})`
+    : "";
   return (
     <button
       type="button"
       className={`oc-composer__icon${recording ? " oc-composer__icon--rec" : ""}`}
-      title={recording ? m.chat_mic_stop() : m.chat_mic_start()}
+      title={(recording ? m.chat_mic_stop() : m.chat_mic_start()) + shortcutHint}
       aria-label={recording ? m.chat_mic_stop() : m.chat_mic_start()}
       aria-pressed={recording}
+      ref={(el) => {
+        // The shortcut fires the SAME code path as a click — one behavior,
+        // two triggers (no drift between them).
+        toggleRef.current = () => el?.click();
+      }}
       onClick={() => {
         if (recording) {
           handleRef.current?.stop();
