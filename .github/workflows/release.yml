@@ -40,8 +40,11 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       # OIDC trusted publishing requires npm CLI >= 11.5.1 (npm docs); upgrade so the
       # handshake is supported regardless of the npm bundled with Node 24.
-      - name: Upgrade npm CLI to >=11.5.1 (required for Trusted Publishing)
-        run: npm install -g npm@latest
+      # PINNED (not @latest): npm 12.0.0 broke `publish --provenance` with
+      # "Cannot find module 'sigstore'" (the v0.43.1 release run failed on it);
+      # pin to the latest stable 11.x, which supports OIDC TP and bundles sigstore.
+      - name: Upgrade npm CLI to a provenance-capable version (Trusted Publishing)
+        run: npm install -g npm@11.18.0
       - name: Stamp version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -93,8 +96,10 @@ jobs:
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-      - name: Upgrade npm CLI to >=11.5.1 (required for Trusted Publishing)
-        run: npm install -g npm@latest
+      # Pinned to 11.18.0 — see the publish-npm job comment (npm 12.0.0 provenance
+      # "Cannot find module 'sigstore'" regression).
+      - name: Upgrade npm CLI to a provenance-capable version (Trusted Publishing)
+        run: npm install -g npm@11.18.0
       - name: Stamp version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"

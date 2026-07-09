@@ -8,7 +8,7 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
-## [0.43.1] — Read-aloud speed, language, and the voice test
+## [0.43.2] — Read-aloud speed, language, and the voice test
 
 Corrective release on the voice features. Frontend + one new Convex action;
 no breaking changes.
