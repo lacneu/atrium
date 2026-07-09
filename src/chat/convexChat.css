@@ -6451,6 +6451,20 @@
     animation: none;
   }
 }
+/* WebKit freeze — SAME fallback as reduced-motion, but gated by `data-motion`
+   (set by the inline ambiance script for macOS Safari + all iOS browsers). WebKit
+   re-lays-out the whole document each frame when an inherited @property animates on
+   <body>, jittering the fixed sidebar/top bar on the heartbeat. Freezing the beat
+   (animation:none → --oc-beat rests at 0) kills both the relayout AND the
+   background pulse, leaving every glow at its static base. Mirrors ALL THREE
+   reduced-motion rules so the login/composer torch orbits stop too. */
+:root[data-motion="static"][data-ambiance="on"] body {
+  animation: none;
+}
+:root[data-motion="static"][data-ambiance="on"] .oc-signin__card::before,
+:root[data-motion="static"][data-ambiance="on"] .oc-composer::before {
+  animation: none;
+}
 /* END — Ambient visual effects */
 
 /* Session-settings AGENT config table: the SAME key/value presentation as the

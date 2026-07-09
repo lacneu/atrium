@@ -8,6 +8,21 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.44.1] — No more heartbeat jitter on Safari and iOS
+
+Corrective release. Frontend only; no breaking changes.
+
+- **The whole page no longer trembles on Safari and iOS.** With the ambient
+  effects on (the default), the brand "heartbeat" pulse drove a page-wide rhythm
+  that WebKit — macOS Safari and *every* iOS browser (Chrome, Firefox and Edge on
+  iOS are all WebKit) — mis-handled: it re-laid-out the whole document on each
+  beat, so the left sidebar, the top bar and nearly everything jittered by a few
+  pixels in time with the pulse. On those browsers the ambient beat is now frozen
+  — the same fallback already used for the "reduce motion" accessibility setting —
+  so the glows stay, just static, and the layout is rock-steady. Other browsers
+  are unaffected and keep the animated ambience. (If you ever want the ambience
+  off entirely, `localStorage.setItem("oc.ambiance","off")` then reload.)
+
 ## [0.44.0] — Disabled agents stay disabled, and a down instance says so
 
 Reliability and access-control release. A one-time, self-healing data backfill

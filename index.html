@@ -40,6 +40,17 @@
       (function () {
         var a = localStorage.getItem("oc.ambiance");
         document.documentElement.dataset.ambiance = a === "off" ? "off" : "on";
+        // WebKit (macOS Safari AND every iOS browser — they are all WebKit) mis-
+        // handles an animated INHERITED @property (`--oc-beat`) on <body>: it
+        // recomputes style for the WHOLE document each frame and re-lays-out with
+        // frame-to-frame subpixel rounding, so the fixed sidebar/top bar (and
+        // everything) jitter on the heartbeat. Freeze the ambient beat there — the
+        // static glows remain (same fallback as prefers-reduced-motion). Set before
+        // first paint so there is no flash. navigator.vendor starts with "Apple"
+        // ONLY on WebKit (Blink = "Google Inc.", Gecko = ""); this catches iOS
+        // Chrome/Firefox/Edge too, which a "Safari" UA string would miss.
+        if (navigator.vendor && navigator.vendor.indexOf("Apple") === 0)
+          document.documentElement.dataset.motion = "static";
       })();
     </script>
   </head>
