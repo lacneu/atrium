@@ -166,11 +166,11 @@ describe("listChats providerKind (sidebar bridge badge)", () => {
       await ctx.db.insert("instanceDiscovery", { instanceName: "herm", lastPollAt: 1, lastPollOk: true, lastOkAt: 1 });
       await ctx.db.insert("agents", {
         instanceName: "prod", agentId: "main", source: "discovered",
-        presentInLastOk: true, firstSeenAt: 1, lastSeenAt: 1, // default, present
+        presentInLastOk: true, enabled: true, firstSeenAt: 1, lastSeenAt: 1, // default, present
       });
       await ctx.db.insert("agents", {
         instanceName: "herm", agentId: "h1", source: "discovered",
-        presentInLastOk: false, firstSeenAt: 1, lastSeenAt: 1, // DELETED on the gateway
+        presentInLastOk: false, enabled: true, firstSeenAt: 1, lastSeenAt: 1, // DELETED on the gateway
       });
       await ctx.db.insert("userAgents", {
         userId: uid, instanceName: "prod", agentId: "main",

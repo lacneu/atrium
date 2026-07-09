@@ -78,6 +78,8 @@ async function seedLiveAgent(
       agentId,
       source: "discovered" as const,
       presentInLastOk: true,
+      // seedLiveAgent = a LIVE, usable agent → enabled (opt-in enforcement).
+      enabled: true,
       displayName: opts.displayName ?? agentId.toUpperCase(),
       isDefaultOnInstance: opts.isDefaultOnInstance ?? false,
       firstSeenAt: 1,
@@ -218,7 +220,7 @@ describe("members + group agents", () => {
         instanceName: "prod",
         agentId: "gone",
         source: "discovered" as const,
-        presentInLastOk: false,
+        presentInLastOk: false, enabled: true,
         firstSeenAt: 1,
         lastSeenAt: 1,
       }),
@@ -242,6 +244,35 @@ describe("members + group agents", () => {
       groupId,
       instanceName: "prod",
       agentId: "alice",
+    });
+    expect((await rowsOf(t, "groupAgents")).length).toBe(1);
+
+    // (d) a discovered + present but admin-DISABLED agent (enabled:false) →
+    // rejected: a disabled agent must not be shareable to a group.
+    await t.run((ctx) =>
+      ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "metis",
+        source: "discovered" as const,
+        presentInLastOk: true,
+        enabled: false,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      }),
+    );
+    await expect(
+      as.mutation(api.groups.assignAgentToGroup, {
+        groupId,
+        instanceName: "prod",
+        agentId: "metis",
+      }),
+    ).rejects.toThrow(/not assignable/);
+    // bulk assign skips it too (no throw, no row).
+    await as.mutation(api.groups.bulkSetGroupAgents, {
+      groupId,
+      instanceName: "prod",
+      agentIds: ["metis"],
+      assigned: true,
     });
     expect((await rowsOf(t, "groupAgents")).length).toBe(1);
   });
@@ -560,7 +591,7 @@ describe("agents union via groups", () => {
         instanceName: "prod",
         agentId: "a1",
         source: "discovered" as const,
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "A1",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -570,7 +601,7 @@ describe("agents union via groups", () => {
         instanceName: "lab",
         agentId: "a2",
         source: "discovered" as const,
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "A2",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -580,7 +611,7 @@ describe("agents union via groups", () => {
         instanceName: "prod",
         agentId: "a3",
         source: "discovered" as const,
-        presentInLastOk: false,
+        presentInLastOk: false, enabled: true,
         displayName: "A3",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -630,6 +661,7 @@ describe("agents union via groups", () => {
         emoji: null,
         model: null,
         kind: "openclaw",
+        enabled: true,
         state: "ok",
         via: "user",
       },
@@ -642,6 +674,7 @@ describe("agents union via groups", () => {
         emoji: null,
         model: null,
         kind: "openclaw",
+        enabled: true,
         state: "stale",
         via: "user",
       },
@@ -654,6 +687,7 @@ describe("agents union via groups", () => {
         emoji: null,
         model: null,
         kind: "openclaw",
+        enabled: true,
         state: "deleted",
         via: "user",
       },
@@ -848,6 +882,7 @@ describe("effectiveAgentsForUsers vs getEffectiveGrants (no drift)", () => {
           agentId,
           source: "discovered" as const,
           presentInLastOk,
+          enabled: true,
           isDefaultOnInstance,
           firstSeenAt: 1,
           lastSeenAt: 1,
@@ -947,6 +982,45 @@ describe("effectiveAgentsForUsers vs getEffectiveGrants (no drift)", () => {
     expect(setOf(perGrant[u5])).toEqual(["a1", "a2"]); // direct out-of-pool -> pool
     expect(setOf(perGrant[u6])).toEqual(["a3"]); // dangling -> no-group direct
   });
+
+  test("no drift on MANUAL agents under strict: disabled dropped by BOTH, unset kept by BOTH (opt-out)", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      // Strict mode ON (backfill done).
+      await ctx.db.insert("appMeta", {
+        key: "singleton", adminAssigned: false, agentEnabledBackfillDone: true,
+      });
+      // Two PRESENT manual agents (admin fallback, never in the discovered pool):
+      // one explicitly disabled, one enabled UNSET.
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "m_off", source: "manual" as const,
+        presentInLastOk: true, enabled: false, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "m_unset", source: "manual" as const,
+        presentInLastOk: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+    });
+    const u = await seedUser(t, "u-manual-grants");
+    await t.run(async (ctx) => {
+      for (const [agentId, isDefault] of [["m_off", true], ["m_unset", false]] as const) {
+        await ctx.db.insert("userAgents", {
+          userId: u, instanceName: "prod", agentId,
+          isDefault, source: "manual" as const, createdAt: 1,
+        });
+      }
+    });
+    const { perGrant, batched } = await t.run(async (ctx) => {
+      const grants = await getEffectiveGrants(ctx, u);
+      const map = await effectiveAgentsForUsers(ctx, [u]);
+      return { perGrant: grants.map((g) => g.agentId).sort(), batched: map.get(u)! };
+    });
+    // Point-read: disabled manual dropped, unset manual kept (opt-out floor).
+    expect(perGrant).toEqual(["m_unset"]);
+    // Batched must AGREE — set AND count (this is the drift guard for codex P3).
+    expect([...new Set(batched.preview)].sort()).toEqual(["m_unset"]);
+    expect(batched.count).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1016,7 +1090,7 @@ describe("enrichUserAgents batched agent resolution (map path + point-read fallb
         instanceName: "prod",
         agentId: "alive",
         source: "discovered" as const,
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "Alive",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -1026,7 +1100,7 @@ describe("enrichUserAgents batched agent resolution (map path + point-read fallb
         instanceName: "prod",
         agentId: "gone",
         source: "discovered" as const,
-        presentInLastOk: false,
+        presentInLastOk: false, enabled: true,
         displayName: "Gone",
         firstSeenAt: 1,
         lastSeenAt: 1,

@@ -76,7 +76,7 @@ async function seedLiveAgent(
       instanceName,
       agentId,
       source: "discovered" as const,
-      presentInLastOk: true,
+      presentInLastOk: true, enabled: true,
       displayName: opts.displayName ?? agentId.toUpperCase(),
       isDefaultOnInstance: false,
       firstSeenAt: 1,

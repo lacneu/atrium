@@ -9,7 +9,11 @@ import { describe, expect, test } from "vitest";
 import { internal, api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
-import { normalizeTarget, computeAvailability } from "./bridgeHealth";
+import {
+  normalizeTarget,
+  computeAvailability,
+  isInstanceDownError,
+} from "./bridgeHealth";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -440,5 +444,72 @@ describe("getBridgeAvailability (ownership-scoped, one bridge / N gateways)", ()
       (await asB.query(api.bridgeHealth.getBridgeAvailability, { chatId: chatA }))
         .degraded,
     ).toBe(true);
+  });
+});
+
+describe("computeAvailability — per-instance liveness gate", () => {
+  const doc = (over = {}) =>
+    ({
+      key: "singleton", reachable: true, checkedAt: 1_000, startedAt: 0,
+      status: "ok", maxPayload: null, targets: [], ...over,
+    }) as unknown as Parameters<typeof computeAvailability>[0];
+
+  test("blocks the composer when the chat's instance is unreachable (fresh poll)", () => {
+    const a = computeAvailability(doc(), 1_000, "olivier", null, null, false);
+    expect(a.available).toBe(false);
+    expect(a.reason).toBe("instance_unreachable");
+  });
+
+  test("stays available when the instance is reachable", () => {
+    const a = computeAvailability(doc(), 1_000, "olivier", null, null, true);
+    expect(a.available).toBe(true);
+  });
+
+  test("fails OPEN when instance liveness is unknown (no discovery row)", () => {
+    const a = computeAvailability(doc(), 1_000, "olivier", null, null, null);
+    expect(a.available).toBe(true);
+  });
+
+  test("one instance down does NOT block a DIFFERENT instance's chat", () => {
+    // The query only ever passes THIS chat's instance reachability; a `true`
+    // here means the scoped instance is up regardless of others.
+    const a = computeAvailability(doc(), 1_000, "hermes", null, null, true);
+    expect(a.available).toBe(true);
+  });
+
+  test("the global bridge-down gate still wins over a reachable instance", () => {
+    const a = computeAvailability(
+      doc({ reachable: false, lastError: "down" }), 1_000, "olivier", null, null, true,
+    );
+    expect(a.available).toBe(false);
+  });
+});
+
+describe("isInstanceDownError (transport failure vs non-blocking sync failure)", () => {
+  test("real transport failures block: unreachable + bad-gateway family", () => {
+    // A stopped gateway surfaces as EITHER a thrown fetch (unreachable) OR a
+    // proxy bad-gateway (verified live: a stopped local gateway records http_502).
+    expect(isInstanceDownError("unreachable")).toBe(true);
+    expect(isInstanceDownError("http_502")).toBe(true);
+    expect(isInstanceDownError("http_503")).toBe(true);
+    expect(isInstanceDownError("http_504")).toBe(true);
+  });
+
+  test("sync/soft failures do NOT block — the gateway responded", () => {
+    // The gateway answered but the discovery body was unusable, or it rejected
+    // THIS endpoint; last-good agents are still dispatchable, so the composer
+    // must stay open (Codex P2: over-broad lastPollOk signal).
+    expect(isInstanceDownError("shape_drift")).toBe(false);
+    expect(isInstanceDownError("empty_discovery")).toBe(false);
+    expect(isInstanceDownError("http_401")).toBe(false);
+    expect(isInstanceDownError("http_400")).toBe(false);
+    expect(isInstanceDownError("http_500")).toBe(false);
+    expect(isInstanceDownError("http_501")).toBe(false);
+  });
+
+  test("absent error code never blocks (fail open)", () => {
+    expect(isInstanceDownError(null)).toBe(false);
+    expect(isInstanceDownError(undefined)).toBe(false);
+    expect(isInstanceDownError("")).toBe(false);
   });
 });

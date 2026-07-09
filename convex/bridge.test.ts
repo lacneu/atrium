@@ -599,7 +599,7 @@ describe("bridge.openclawThreadForChat — reconstruct the OpenClaw thread_id", 
           instanceName: "prod",
           agentId: "bob",
           source: "discovered",
-          presentInLastOk: true,
+          presentInLastOk: true, enabled: true,
           firstSeenAt: 1,
           lastSeenAt: 1,
         });

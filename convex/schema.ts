@@ -654,6 +654,15 @@ export default defineSchema({
   // loser retries, sees the flag set, and becomes "pending".
   appMeta: defineTable({
     key: v.string(),
+    // One-time rollout flag: has the opt-in agent-enablement backfill run? Set
+    // by internal.agents.backfillEnabledOnce so it grandfathers existing present
+    // agents to `enabled:true` EXACTLY once (a later new agent stays opt-in).
+    agentEnabledBackfillDone: v.optional(v.boolean()),
+    // Pagination cursor for the batched enablement backfill (unbounded-safe).
+    agentEnabledBackfillCursor: v.optional(v.union(v.string(), v.null())),
+    // Rollout start time: the backfill grandfathers ONLY agents that existed
+    // before this (a new agent discovered mid-rollout stays opt-in).
+    agentEnabledBackfillStartedAt: v.optional(v.number()),
     adminAssigned: v.boolean(),
     // Global toggle reserved for future "require admin approval" policy; the
     // pending->user approval flow is always on for now.

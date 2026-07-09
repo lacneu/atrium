@@ -1729,5 +1729,6 @@
 	"prefs_dictation_shortcut_change": "Change",
 	"prefs_dictation_shortcut_cancel": "Cancel",
 	"prefs_dictation_shortcut_clear": "Clear",
-	"voice_test_gateway_error": "The gateway voice test failed."
+	"voice_test_gateway_error": "The gateway voice test failed.",
+	"chat_instance_unreachable_banner": "This agent's gateway is temporarily unreachable (it may be under maintenance). Messages can't be sent right now — try again in a few minutes."
 }

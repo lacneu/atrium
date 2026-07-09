@@ -125,6 +125,35 @@ export interface Availability {
 /** Pure availability decision from a health doc (testable without auth). Fail
  *  OPEN: no data -> available (the failDispatch bubble is still the backstop, so
  *  we never block a working chat on missing/initial telemetry). */
+// The discovery-poll reason codes (instanceDiscovery.error) that mean the chat's
+// gateway is genuinely UNREACHABLE — a transport failure — and so the composer
+// must be blocked for this instance's chats. Everything else the poll can record
+// means the gateway RESPONDED (the payload was just unusable) and last-good agents
+// stay dispatchable, so it must NOT block:
+//   - "unreachable"  — the fetch itself threw (connection refused / DNS / timeout).
+//   - "http_502/503/504" — bad-gateway family: a proxy in front (or the gateway
+//     restarting) could not serve the upstream. VERIFIED live: stopping a local
+//     gateway surfaces as http_502, not "unreachable", so these MUST count as down.
+// Deliberately EXCLUDED (gateway is up → do not false-block the composer):
+//   - "shape_drift" / "empty_discovery" — the gateway answered, the discovery body
+//     was malformed or empty (e.g. an older bridge with no `count`).
+//   - "http_4xx" (auth/bad-request) and "http_500/501" — the gateway is serving and
+//     erroring on THIS endpoint; a send may still succeed.
+const INSTANCE_DOWN_ERRORS = new Set([
+  "unreachable",
+  "http_502",
+  "http_503",
+  "http_504",
+]);
+
+/** True when a discovery-poll `error` code denotes a real transport outage (block
+ *  the composer), as opposed to a non-blocking sync failure (gateway responded). */
+export function isInstanceDownError(
+  error: string | null | undefined,
+): boolean {
+  return error != null && INSTANCE_DOWN_ERRORS.has(error);
+}
+
 export function computeAvailability(
   doc: Doc<"bridgeHealth"> | null,
   now: number,
@@ -141,6 +170,13 @@ export function computeAvailability(
   // And to the resolved CANONICAL: health targets are per instance:canonical, so on
   // a shared agent another user's erroring target must not flag this chat either.
   canonical?: string | null,
+  // Per-INSTANCE liveness from the discovery poll (instanceDiscovery.lastPollOk,
+  // fresh): false = the chat's gateway is UNREACHABLE (e.g. a backup) → block the
+  // composer FOR THIS INSTANCE'S CHATS. This is a SELF-HEALING signal (the next
+  // successful poll clears it, no user send needed), so unlike a target `error`
+  // it cannot deadlock — a legit per-instance lockout. null/undefined = unknown
+  // (no discovery row yet) → fail OPEN.
+  instanceReachable?: boolean | null,
 ): Availability {
   if (doc === null)
     return {
@@ -169,12 +205,15 @@ export function computeAvailability(
   // and the target stays `error` until a SUCCESSFUL send, which the lockout itself
   // prevents, so it never cleared without a manual bridge restart. A per-agent error
   // is surfaced per-chat by the failDispatch bubble; here it is only `degraded`.
-  const available = doc.reachable && !stale;
+  const instanceDown = instanceName != null && instanceReachable === false;
+  const available = doc.reachable && !stale && !instanceDown;
   const reason = !doc.reachable
     ? (doc.lastError ?? "unreachable")
     : stale
       ? "stale"
-      : null;
+      : instanceDown
+        ? "instance_unreachable"
+        : null;
   // Per-instance cap = that instance's OWN gateway frame (a scoped target's
   // maxPayload). When the instance has no target yet (idle bridge / just restarted,
   // before a send creates one) fall back to the doc-level value (the conservative MIN
@@ -427,12 +466,37 @@ export const getBridgeAvailability = query({
         canonical = await canonicalForUser(ctx, userId);
       }
     }
+    // Per-instance liveness: the discovery poll (cron, activity-independent)
+    // marks lastPollOk=false when an instance's gateway is unreachable — even
+    // idle. A TRANSPORT-down poll blocks THIS instance's composer; unknown → fail
+    // open.
+    const now = Date.now();
+    let instanceReachable: boolean | null = null;
+    if (instanceName != null) {
+      const disc = await ctx.db
+        .query("instanceDiscovery")
+        .withIndex("by_instance", (q) => q.eq("instanceName", instanceName!))
+        .first();
+      if (disc != null) {
+        // Gate on the EXPLICIT poll verdict, NOT staleness: a real outage flips
+        // lastPollOk=false within one poll interval (~2 min), while a stale
+        // lastPollAt on a HEALTHY instance (uneven poll cadence) must not
+        // false-block it. A stopped poller (bridge down) is caught by the GLOBAL
+        // reachable gate instead. AND only a TRANSPORT failure blocks: a poll that
+        // failed on shape_drift / empty_discovery / http_4xx (the gateway answered,
+        // last-good agents still dispatchable) must NOT grey the composer — see
+        // isInstanceDownError. A failed non-transport poll counts as reachable.
+        instanceReachable =
+          disc.lastPollOk === true || !isInstanceDownError(disc.error);
+      }
+    }
     return computeAvailability(
       await readDoc(ctx),
-      Date.now(),
+      now,
       instanceName,
       agentId,
       canonical,
+      instanceReachable,
     );
   },
 });

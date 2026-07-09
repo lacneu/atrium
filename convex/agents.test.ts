@@ -22,6 +22,28 @@ const A = (
   displayName: string | null = null,
 ) => ({ agentId, displayName, emoji: null, model: "m", isDefaultOnInstance });
 
+// Opt-in enablement: a freshly-discovered agent arrives DISABLED (applyDiscovery
+// stamps enabled:false at insert; an admin curates it on). The tests represent the
+// normal POST-backfill world where present agents are enabled — enable them here
+// (same effect as an admin turning them on).
+async function enableAll(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    const rows = await ctx.db.query("agents").collect();
+    for (const a of rows) {
+      // Enable every discovered+present agent that isn't already enabled — mirrors
+      // an admin turning them on. Discovered agents now arrive `enabled: false`
+      // (opt-in), so match `!== true`, not only the legacy `=== undefined`.
+      if (
+        a.source === "discovered" &&
+        a.presentInLastOk === true &&
+        a.enabled !== true
+      ) {
+        await ctx.db.patch(a._id, { enabled: true });
+      }
+    }
+  });
+}
+
 async function seedAdminAndTarget(t: ReturnType<typeof convexTest>) {
   const adminId = await t.run(async (ctx) => {
     const uid = await ctx.db.insert("users", {});
@@ -53,6 +75,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true), A("bob")],
     });
+    await enableAll(t);
     let rows = await t.run((ctx) =>
       ctx.db
         .query("agents")
@@ -67,6 +90,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     rows = await t.run((ctx) =>
       ctx.db
         .query("agents")
@@ -84,6 +108,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     await t.mutation(internal.agents.recordDiscoveryFailure, {
       instanceName: "prod",
       error: "unreachable",
@@ -113,6 +138,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true), A("bob")],
     });
+    await enableAll(t);
     const rowsOf = () =>
       t.run((ctx) =>
         ctx.db
@@ -123,6 +149,7 @@ describe("discovery cache resilience (B2)", () => {
 
     // Shape-drift / old-bridge empty (no allowEmpty) → presence PRESERVED (MAJOR 1).
     await t.mutation(internal.agents.applyDiscovery, { instanceName: "prod", agents: [] });
+    await enableAll(t);
     let rows = await rowsOf();
     expect(rows.every((r) => r.presentInLastOk)).toBe(true);
 
@@ -133,6 +160,7 @@ describe("discovery cache resilience (B2)", () => {
       agents: [],
       allowEmpty: true,
     });
+    await enableAll(t);
     rows = await rowsOf();
     expect(rows.length).toBe(2);
     expect(rows.every((r) => r.presentInLastOk === false)).toBe(true);
@@ -148,6 +176,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true, "Alice")],
     });
+    await enableAll(t);
     // Stamp a sentinel so a later write is detectable (lastSeenAt is unread).
     await t.run(async (ctx) => {
       const row = (await ctx.db.query("agents").collect())[0];
@@ -158,6 +187,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true, "Alice")],
     });
+    await enableAll(t);
     let row = (await t.run((ctx) => ctx.db.query("agents").collect()))[0];
     expect(row.lastSeenAt).toBe(1);
     expect(row.displayName).toBe("Alice");
@@ -166,6 +196,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true, "Renamed")],
     });
+    await enableAll(t);
     row = (await t.run((ctx) => ctx.db.query("agents").collect()))[0];
     expect(row.lastSeenAt).not.toBe(1);
     expect(row.displayName).toBe("Renamed");
@@ -177,12 +208,14 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     // Genuine empty gateway → alice flips deleted.
     await t.mutation(internal.agents.applyDiscovery, {
       instanceName: "prod",
       agents: [],
       allowEmpty: true,
     });
+    await enableAll(t);
     let row = (await t.run((ctx) => ctx.db.query("agents").collect()))[0];
     expect(row.presentInLastOk).toBe(false);
     // It REAPPEARS on a later poll → must flip back to present (a write happens).
@@ -190,6 +223,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     row = (await t.run((ctx) => ctx.db.query("agents").collect()))[0];
     expect(row.presentInLastOk).toBe(true);
   });
@@ -200,6 +234,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     const discOf = () =>
       t.run((ctx) =>
         ctx.db
@@ -217,6 +252,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     expect((await discOf())!.lastPollAt).toBe(1); // no-op: not rewritten
 
     // A FAILURE is a state change → writes lastPollOk=false.
@@ -231,6 +267,7 @@ describe("discovery cache resilience (B2)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     const d = await discOf();
     expect(d!.lastPollOk).toBe(true);
     expect(d!.lastPollAt).not.toBe(1);
@@ -245,6 +282,7 @@ describe("assignAgent — discovered-only whitelist + first-is-default", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     await expect(
       as.mutation(api.agents.assignAgent, {
         profileId,
@@ -261,6 +299,7 @@ describe("assignAgent — discovered-only whitelist + first-is-default", () => {
       instanceName: "prod",
       agents: [A("alice", true), A("bob")],
     });
+    await enableAll(t);
     await as.mutation(api.agents.assignAgent, {
       profileId,
       instanceName: "prod",
@@ -298,6 +337,7 @@ describe("setDefaultAgent / removeAgent — exactly-one-default (H2/H3)", () => 
       instanceName: "prod",
       agents: [A("alice", true), A("bob")],
     });
+    await enableAll(t);
     for (const agentId of ["alice", "bob"]) {
       await as.mutation(api.agents.assignAgent, {
         profileId,
@@ -347,6 +387,34 @@ describe("setDefaultAgent / removeAgent — exactly-one-default (H2/H3)", () => 
     expect(ua[0].agentId).toBe("alice");
     expect(ua[0].isDefault).toBe(true);
   });
+
+  test("setDefault REJECTS a now-disabled agent server-side (not client-only)", async () => {
+    const { t, as, profileId } = await setup();
+    // Disable bob AFTER it was assigned (admin flips the instance toggle off).
+    await t.run(async (ctx) => {
+      const bob = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", "prod").eq("agentId", "bob"),
+        )
+        .first();
+      await ctx.db.patch(bob!._id, { enabled: false });
+    });
+    // A stale client / direct API call must not promote it to default.
+    await expect(
+      as.mutation(api.agents.setDefaultAgent, {
+        profileId,
+        instanceName: "prod",
+        agentId: "bob",
+      }),
+    ).rejects.toThrow(/disabled/);
+    // alice (still enabled) can still be set as default.
+    await as.mutation(api.agents.setDefaultAgent, {
+      profileId,
+      instanceName: "prod",
+      agentId: "alice",
+    });
+  });
 });
 
 describe("enrichUserAgents state priority (Codex P2 — deleted wins over stale)", () => {
@@ -370,6 +438,8 @@ describe("enrichUserAgents state priority (Codex P2 — deleted wins over stale)
         agentId: "bob",
         source: "discovered",
         presentInLastOk: opts.present,
+        // A present agent is enabled (usable); presence is the axis under test.
+        enabled: true,
         firstSeenAt: 1,
         lastSeenAt: 1,
       });
@@ -427,6 +497,8 @@ describe("all-pool single-collect dedupe — cascade semantics preserved", () =>
     agentId,
     source: "discovered" as const,
     presentInLastOk: true,
+    // present + ENABLED = the normal usable state (opt-in enforcement).
+    enabled: true,
     firstSeenAt: 1,
     lastSeenAt: 1,
     ...extra,
@@ -568,10 +640,12 @@ describe("deleteInstance cascade (Codex P2 — no orphan grants)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     await t.mutation(internal.agents.applyDiscovery, {
       instanceName: "other",
       agents: [A("bob", true)],
     });
+    await enableAll(t);
     const prodId = await t.run((ctx) =>
       ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://p", kind: "openclaw" }),
     );
@@ -613,6 +687,7 @@ describe("deleteInstance cascade (Codex P2 — no orphan grants)", () => {
       instanceName: "prod",
       agents: [A("alice", true)],
     });
+    await enableAll(t);
     const dupId = await t.run((ctx) =>
       ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://a", kind: "openclaw" }),
     );
@@ -656,7 +731,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
           instanceName: "prod",
           agentId: agentIds[i],
           source: "discovered",
-          presentInLastOk: true,
+          presentInLastOk: true, enabled: true,
           displayName: agentIds[i].toUpperCase(),
           firstSeenAt: 1,
           lastSeenAt: 1,
@@ -719,7 +794,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
         instanceName: "prod",
         agentId: "ghost",
         source: "discovered",
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "GHOST",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -745,7 +820,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
         instanceName: "prod",
         agentId: "ghost",
         source: "discovered",
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "GHOST",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -824,7 +899,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
           instanceName: inst,
           agentId: "main",
           source: "discovered",
-          presentInLastOk: true,
+          presentInLastOk: true, enabled: true,
           displayName: "Main",
           firstSeenAt: 1,
           lastSeenAt: 1,
@@ -874,7 +949,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
         instanceName: "prod",
         agentId: "main",
         source: "discovered",
-        presentInLastOk: true,
+        presentInLastOk: true, enabled: true,
         displayName: "MAIN",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -883,7 +958,7 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
         instanceName: "prod",
         agentId: "bob",
         source: "discovered",
-        presentInLastOk: false, // deleted on the gateway
+        presentInLastOk: false, enabled: true, // deleted on the gateway
         displayName: "BOB",
         firstSeenAt: 1,
         lastSeenAt: 1,
@@ -936,11 +1011,11 @@ describe("getChatAgent — the multi-agent header chip (UX-A)", () => {
       });
       await ctx.db.insert("agents", {
         instanceName: "prod", agentId: "main", source: "discovered",
-        presentInLastOk: false, displayName: "MAIN", firstSeenAt: 1, lastSeenAt: 1, // default, DELETED
+        presentInLastOk: false, enabled: true, displayName: "MAIN", firstSeenAt: 1, lastSeenAt: 1, // default, DELETED
       });
       await ctx.db.insert("agents", {
         instanceName: "prod", agentId: "bob", source: "discovered",
-        presentInLastOk: true, displayName: "BOB", firstSeenAt: 1, lastSeenAt: 1, // present
+        presentInLastOk: true, enabled: true, displayName: "BOB", firstSeenAt: 1, lastSeenAt: 1, // present
       });
       await ctx.db.insert("userAgents", {
         userId: uid, instanceName: "prod", agentId: "main",
@@ -980,7 +1055,7 @@ describe("resolveDocumentaryTarget (default-first)", () => {
           instanceName: "primary",
           agentId: a,
           source: "discovered" as const,
-          presentInLastOk: true,
+          presentInLastOk: true, enabled: true,
           firstSeenAt: 1,
           lastSeenAt: 1,
           types: ["documentary"],
@@ -1009,5 +1084,179 @@ describe("resolveDocumentaryTarget (default-first)", () => {
     const target = await t.run((ctx) => resolveDocumentaryTarget(ctx, userId));
     // Regression guard: drop the default-first sort and this returns "docA".
     expect(target?.agentId).toBe("docB");
+  });
+});
+
+describe("opt-in enablement gate (a disabled agent is unusable everywhere)", () => {
+  test("rollout window: an UNSET agent stays usable UNTIL the backfill flag is set, then opt-in blocks it", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user", canonical: "alice" });
+      // A legacy present agent with enabled UNSET (never curated).
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "legacy", source: "discovered" as const,
+        presentInLastOk: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      return u;
+    });
+    const as = t.withIdentity({ subject: `${uid}|session` });
+    // Rollout (no backfill flag): opt-out — the legacy agent is still usable.
+    const before = await as.query(api.agents.listMyAgents, {});
+    expect(before.map((a: { agentId: string }) => a.agentId)).toEqual(["legacy"]);
+    // Mark the backfill done WITHOUT grandfathering this row (simulates a NEW
+    // agent discovered after rollout): opt-in now blocks the unset agent.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("appMeta", {
+        key: "singleton", adminAssigned: false, agentEnabledBackfillDone: true,
+      });
+    });
+    const after = await as.query(api.agents.listMyAgents, {});
+    expect(after.map((a: { agentId: string }) => a.agentId)).toEqual([]);
+  });
+
+  test("a no-group user with ONE direct grant, now disabled, sees NOTHING (never widens to the pool)", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user", canonical: "alice" });
+      // Another ENABLED present agent exists in the all-pool.
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "other", source: "discovered" as const,
+        presentInLastOk: true, enabled: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "metis", source: "discovered" as const,
+        presentInLastOk: true, enabled: false, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: u, instanceName: "prod", agentId: "metis",
+        isDefault: true, source: "manual", createdAt: 1,
+      });
+      return u;
+    });
+    const as = t.withIdentity({ subject: `${uid}|session` });
+    const mine = await as.query(api.agents.listMyAgents, {});
+    // Restricted to {metis}, now disabled → empty. NEVER widened to {other}.
+    expect(mine.map((a: { agentId: string }) => a.agentId)).toEqual([]);
+  });
+
+  test("a present-but-disabled agent is excluded from the all-pool resolution", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user", canonical: "alice" });
+      // Two present agents on one instance, no groups/direct grants → all-pool.
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "alice", source: "discovered" as const,
+        presentInLastOk: true, enabled: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "metis", source: "discovered" as const,
+        presentInLastOk: true, enabled: false, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      return u;
+    });
+    const as = t.withIdentity({ subject: `${uid}|session` });
+    const mine = await as.query(api.agents.listMyAgents, {});
+    const ids = mine.map((a: { agentId: string }) => a.agentId).sort();
+    expect(ids).toEqual(["alice"]); // metis (disabled) never resolves
+  });
+
+  test("a DIRECT grant to a present-but-disabled agent does not resolve", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user", canonical: "alice" });
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "metis", source: "discovered" as const,
+        presentInLastOk: true, enabled: false, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: u, instanceName: "prod", agentId: "metis",
+        isDefault: true, source: "manual", createdAt: 1,
+      });
+      return u;
+    });
+    const as = t.withIdentity({ subject: `${uid}|session` });
+    const mine = await as.query(api.agents.listMyAgents, {});
+    expect(mine.map((a: { agentId: string }) => a.agentId)).not.toContain("metis");
+  });
+
+  test("a legacy MANUAL agent stays usable after backfill (opt-out, never dropped by strict)", async () => {
+    // A source:"manual" agent (admin fallback) is never enumerated by discovery,
+    // so backfillEnabledOnce never grandfathers it. Strict opt-in must NOT silently
+    // drop a valid legacy direct grant to it (Codex P2) — manual = opt-out.
+    const t = convexTest(schema, modules);
+    const uid = await t.run(async (ctx) => {
+      const u = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: u, role: "user", canonical: "alice" });
+      // Manual agent, enabled UNSET, present. Strict mode is ON.
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "fallback", source: "manual" as const,
+        presentInLastOk: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: u, instanceName: "prod", agentId: "fallback",
+        isDefault: true, source: "manual", createdAt: 1,
+      });
+      await ctx.db.insert("appMeta", {
+        key: "singleton", adminAssigned: false, agentEnabledBackfillDone: true,
+      });
+      return u;
+    });
+    const as = t.withIdentity({ subject: `${uid}|session` });
+    const mine = await as.query(api.agents.listMyAgents, {});
+    // The manual grant resolves despite strict + unset enabled.
+    expect(mine.map((a: { agentId: string }) => a.agentId)).toContain("fallback");
+    // But an EXPLICITLY disabled manual agent is still blocked (opt-out floor).
+    await t.run(async (ctx) => {
+      const a = await ctx.db.query("agents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "prod").eq("agentId", "fallback"))
+        .first();
+      await ctx.db.patch(a!._id, { enabled: false });
+    });
+    const after = await as.query(api.agents.listMyAgents, {});
+    expect(after.map((a: { agentId: string }) => a.agentId)).not.toContain("fallback");
+  });
+
+  test("a NEWLY discovered agent arrives DISABLED (opt-in), and the backfill never grandfathers it", async () => {
+    const t = convexTest(schema, modules);
+    // Legacy pre-feature agent (enabled UNSET) — must be grandfathered by backfill.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("agents", {
+        instanceName: "prod", agentId: "legacy", source: "discovered" as const,
+        presentInLastOk: true, firstSeenAt: 1, lastSeenAt: 1,
+      });
+      // The backfill needs the appMeta singleton (else it skips, waiting for bootstrap).
+      await ctx.db.insert("appMeta", { key: "singleton", adminAssigned: false });
+    });
+    // A discovery poll AFTER this deploy inserts a genuinely new agent.
+    await t.mutation(internal.agents.applyDiscovery, {
+      instanceName: "prod",
+      agents: [
+        { agentId: "legacy", displayName: null, emoji: null, model: null, isDefaultOnInstance: false },
+        { agentId: "fresh", displayName: null, emoji: null, model: null, isDefaultOnInstance: false },
+      ],
+    });
+    // The NEW agent is opt-in: explicit enabled:false at insert.
+    const freshBefore = await t.run((ctx) =>
+      ctx.db.query("agents").withIndex("by_instance", (q) => q.eq("instanceName", "prod"))
+        .collect(),
+    );
+    expect(freshBefore.find((a) => a.agentId === "fresh")?.enabled).toBe(false);
+    // Run the one-time backfill to completion.
+    let done = false;
+    for (let i = 0; i < 5 && !done; i++) {
+      const r = await t.mutation(internal.agents.backfillEnabledOnce, {});
+      done = r.done === true;
+    }
+    const after = await t.run((ctx) =>
+      ctx.db.query("agents").withIndex("by_instance", (q) => q.eq("instanceName", "prod"))
+        .collect(),
+    );
+    // Legacy (undefined) grandfathered to enabled; fresh (false) stays opt-in.
+    expect(after.find((a) => a.agentId === "legacy")?.enabled).toBe(true);
+    expect(after.find((a) => a.agentId === "fresh")?.enabled).toBe(false);
   });
 });

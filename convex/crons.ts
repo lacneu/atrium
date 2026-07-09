@@ -27,6 +27,17 @@ crons.cron(
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 
+// One-shot rollout: grandfather existing present agents to enabled (opt-in
+// enablement). Guarded by an appMeta flag → a cheap no-op after the first run
+// (never re-enables a later newly-discovered agent). Runs soon after deploy so
+// the enable gate never dark-holes existing agents.
+crons.interval(
+  "backfill agent enablement (one-shot)",
+  { minutes: 2 },
+  internal.agents.backfillEnabledOnce,
+  {},
+);
+
 // Backend-latency probe: every 5 minutes, time a fixed, identity-free, content-free
 // READ and record its server-side execution latency (-> convex.probe.latency.avg_ms
 // rollup). Fixed cadence makes it traffic-independent, so the latency trend is

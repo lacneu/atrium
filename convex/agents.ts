@@ -250,11 +250,21 @@ export const applyDiscovery = internalMutation({
           cur.presentInLastOk !== next.presentInLastOk;
         if (changed) await ctx.db.patch(cur._id, { ...next, lastSeenAt: now });
       } else {
+        // Opt-in strict: a NEWLY discovered agent arrives DISABLED — an admin must
+        // enable it before it is routable/grantable. Stamping `enabled: false` at
+        // INSERT (never on the patch path above, which must not clobber an admin's
+        // choice) makes the state EXPLICIT and, crucially, closes the rollout-window
+        // hole: a legacy pre-feature agent is `enabled: undefined` (grandfathered by
+        // backfillEnabledOnce), while an agent discovered AFTER this deploy — even in
+        // the ≤1-tick window before the first backfill run — is `false` and so is
+        // skipped by the backfill (which only grandfathers `undefined`), never
+        // auto-enabled. See backfillEnabledOnce.
         await ctx.db.insert("agents", {
           instanceName,
           agentId: a.agentId,
           firstSeenAt: now,
           lastSeenAt: now,
+          enabled: false,
           ...next,
         });
       }
@@ -732,6 +742,8 @@ type EnrichedUserAgent = {
   emoji: string | null;
   model: string | null;
   kind: "openclaw" | "hermes";
+  // Admin enablement state — greys a non-enabled agent in the access editors.
+  enabled: boolean;
   // Resolution health for the UI (red-team B2): deleted vs stale vs ok.
   state: "ok" | "deleted" | "stale" | "unknown";
   // Provenance for introspection (P2 §6): direct grant vs which group shares it.
@@ -874,6 +886,78 @@ function poolFromPresentAgents(all: Doc<"agents">[]): PoolEntry[] {
   }));
 }
 
+/** ONE-TIME BACKFILL (opt-in enablement rollout): grandfather every currently
+ *  PRESENT discovered agent whose `enabled` was never set (undefined) to
+ *  `enabled: true`, so enforcing the opt-in gate does not make agents that are
+ *  in use today disappear. An EXPLICITLY disabled agent (enabled:false) is left
+ *  untouched. Idempotent — re-running only touches still-unset rows. Admin-only.
+ */
+// The appMeta singleton row key (mirrors admin.ts / charts.ts).
+const APP_META_KEY = "singleton";
+
+/** ONE-SHOT auto-backfill (deploy rollout), cron-driven and guarded by an
+ *  appMeta flag: grandfather existing PRESENT agents to `enabled:true` so the
+ *  opt-in gate never hides an agent that was in use before this change. It runs
+ *  ONCE (a later newly-discovered agent stays opt-in). Both the READ and the
+ *  WRITE are paginated so a large catalog cannot exceed a single mutation's
+ *  limits (which would abort before the flag is set → agents hidden forever).
+ *  Cheap no-op after completion. */
+export const backfillEnabledOnce = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const meta = await ctx.db
+      .query("appMeta")
+      .withIndex("by_key", (q) => q.eq("key", APP_META_KEY))
+      .unique();
+    // No singleton yet = not bootstrapped; retry once bootstrap creates it.
+    if (meta === null || meta.agentEnabledBackfillDone === true) {
+      return { skipped: true };
+    }
+    // Stamp the rollout start on the FIRST tick so the grandfather set is
+    // exactly the agents that existed at deploy — a new agent discovered
+    // during a multi-page backfill (or before the first tick) stays opt-in.
+    const startedAt =
+      meta.agentEnabledBackfillStartedAt ?? Date.now();
+    const page = await ctx.db
+      .query("agents")
+      .withIndex("by_source_present", (q) =>
+        q.eq("source", "discovered").eq("presentInLastOk", true),
+      )
+      .paginate({
+        cursor: meta.agentEnabledBackfillCursor ?? null,
+        numItems: 500,
+      });
+    // Empty catalog on the FIRST page = a fresh/purged install (an UPGRADE keeps
+    // its discovered rows). Nothing to grandfather → mark done so every agent is
+    // opt-in from the start (never auto-enable a later new agent).
+    if (page.page.length === 0 && page.isDone) {
+      await ctx.db.patch(meta._id, { agentEnabledBackfillDone: true });
+      return { skipped: false, done: true, updated: 0 };
+    }
+    let updated = 0;
+    for (const a of page.page) {
+      // Only pre-rollout agents are grandfathered; a newer one stays opt-in.
+      if (a.enabled === undefined && a._creationTime <= startedAt) {
+        await ctx.db.patch(a._id, { enabled: true });
+        updated++;
+      }
+    }
+    if (page.isDone) {
+      await ctx.db.patch(meta._id, {
+        agentEnabledBackfillDone: true,
+        agentEnabledBackfillCursor: null,
+        agentEnabledBackfillStartedAt: undefined,
+      });
+      return { skipped: false, done: true, updated };
+    }
+    await ctx.db.patch(meta._id, {
+      agentEnabledBackfillCursor: page.continueCursor,
+      agentEnabledBackfillStartedAt: startedAt,
+    });
+    return { skipped: false, done: false, updated };
+  },
+});
+
 async function loadAllAgentsPool(
   ctx: QueryCtx | MutationCtx,
 ): Promise<PoolEntry[]> {
@@ -911,10 +995,76 @@ export async function getAgentPool(
  *  set > the pool's marked default (group.isDefault by lowest groupId/agentId, or
  *  the all-pool native default) > the instance native default > first
  *  deterministic. Deletion is IGNORED here (resolve-time skips deleted). */
+/** Enablement enforcement mode. Until the one-shot backfill has grandfathered
+ *  existing agents (agentEnabledBackfillDone), a legacy `enabled:undefined`
+ *  row must stay usable — so the gate is OPT-OUT (only an explicitly disabled
+ *  agent is blocked). Once the backfill is done, it flips to OPT-IN (an agent
+ *  must be explicitly enabled). This removes the deploy-time rollout window
+ *  where legacy agents would otherwise be hidden. */
+export async function agentEnablementStrict(
+  ctx: QueryCtx | MutationCtx,
+): Promise<boolean> {
+  const meta = await ctx.db
+    .query("appMeta")
+    .withIndex("by_key", (q) => q.eq("key", APP_META_KEY))
+    .unique();
+  return meta?.agentEnabledBackfillDone === true;
+}
+
+/** Is an agent doc USABLE under the current enforcement mode? `strict`
+ *  (opt-in) requires enabled===true for a PRESENT agent; non-strict (rollout)
+ *  only blocks an explicitly disabled one. An absent/deleted or missing agent
+ *  is never blocked here (presence is a separate axis). A `source:"manual"` agent
+ *  (admin fallback — never enumerated by discovery, so the backfill never
+ *  grandfathers it) is ALWAYS opt-OUT: it stays usable unless EXPLICITLY disabled,
+ *  so strict mode can never silently drop a valid legacy grant to one. */
+function agentUsable(
+  agent: Doc<"agents"> | null,
+  strict: boolean,
+): boolean {
+  if (agent === null || agent.presentInLastOk === false) return true;
+  const optIn = strict && agent.source === "discovered";
+  return optIn ? agent.enabled === true : agent.enabled !== false;
+}
+
+/** THE single enablement gate for the effective-grants OUTPUT (opt-in): keep a
+ *  grant unless its agent is PRESENT-but-not-enabled. An absent/deleted or
+ *  missing agent stays (resilient display; enablement is a separate axis from
+ *  presence). Applied at every return of getEffectiveGrantsWithPool so no
+ *  sub-path (direct / all-pool / group) can leak a disabled agent, and the
+ *  restricted-MODE decision above stays on the RAW sets (never widened).
+ *  `presentDocsCache` (the all-pool docs, when available) avoids per-grant reads
+ *  on the hot path. */
+async function filterEnabledGrants(
+  ctx: QueryCtx | MutationCtx,
+  grants: EffectiveGrant[],
+  strict: boolean,
+  presentDocsCache?: Doc<"agents">[] | null,
+): Promise<EffectiveGrant[]> {
+  const byKey = new Map<string, Doc<"agents">>();
+  for (const d of presentDocsCache ?? [])
+    byKey.set(grantKey(d.instanceName, d.agentId), d);
+  const out: EffectiveGrant[] = [];
+  for (const g of grants) {
+    let agent = byKey.get(grantKey(g.instanceName, g.agentId)) ?? null;
+    if (agent === null) {
+      agent = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", g.instanceName).eq("agentId", g.agentId),
+        )
+        .first();
+    }
+    if (agentUsable(agent, strict)) out.push(g);
+  }
+  return out;
+}
+
 async function getEffectiveGrantsWithPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
 ): Promise<{ grants: EffectiveGrant[]; presentDocs: Doc<"agents">[] | null }> {
+  const strict = await agentEnablementStrict(ctx);
   const direct = await ctx.db
     .query("userAgents")
     .withIndex("by_user", (q) => q.eq("userId", userId))
@@ -949,15 +1099,17 @@ async function getEffectiveGrantsWithPool(
       source: r.source,
       via: "user" as const,
     }));
-    // If the group pool FILTERED OUT the direct grant that was the default, the
-    // restricted set would have no default at all -- re-elect the first (by_user
-    // order) so the "exactly one effective default" invariant holds. (A NO-GROUP
-    // set is never filtered, so a default-less direct set there stays default-less,
-    // byte-identical to pre-P2.)
     if (inGroup && !out.some((g) => g.isDefault)) {
       out[0]!.isDefault = true;
     }
-    return { grants: out, presentDocs: null };
+    // Enablement gate applied at the OUTPUT, never on the restricted-MODE
+    // decision — a user with direct grants stays narrowed, never widened.
+    const gatedDirect = await filterEnabledGrants(ctx, out, strict);
+    // Re-elect a default if the gate dropped the chosen one (exactly-one).
+    if (gatedDirect.length > 0 && !gatedDirect.some((g) => g.isDefault)) {
+      gatedDirect[0]!.isDefault = true;
+    }
+    return { grants: gatedDirect, presentDocs: null };
   }
 
   // No direct restriction (or in-group with EVERY direct grant out-of-pool): the
@@ -1025,7 +1177,16 @@ async function getEffectiveGrantsWithPool(
     if (chosen) chosen.isDefault = true;
   }
 
-  return { grants: out, presentDocs };
+  // OUTPUT enablement gate (all-pool reuses presentDocs as the cache → no extra
+  // reads; the group pool point-reads its bounded set). A disabled agent's grant
+  // is dropped here even though the pool built it (so the restricted-mode
+  // decision could stay on raw sets).
+  const gated = await filterEnabledGrants(ctx, out, strict, presentDocs);
+  // Re-elect a default if the gate removed the chosen one (keep exactly-one).
+  if (gated.length > 0 && !gated.some((g) => g.isDefault)) {
+    gated[0]!.isDefault = true;
+  }
+  return { grants: gated, presentDocs };
 }
 
 /** The effective grant SET -- the wrapper used everywhere the pool DOCS aren't
@@ -1084,12 +1245,51 @@ export async function effectiveAgentsForUsers(
   const displayByKey = new Map<string, string>();
   const agentIdByKey = new Map<string, string>(); // label fallback for absent rows
   const allPoolKeys: string[] = [];
+  // Opt-in enablement gate (must MIRROR getEffectiveGrantsWithPool — this batched
+  // path is a duplicate; a divergence is the "no drift" test's failure). A grant
+  // is included iff the agent is NOT a present-but-not-enabled one: the all-pool
+  // carries only ENABLED present agents; a direct/group grant to a present agent
+  // that is not enabled is dropped; an absent/deleted agent stays (resilient).
+  const presentKeys = new Set<string>();
+  const enabledKeys = new Set<string>();
+  const disabledKeys = new Set<string>(); // present + explicitly enabled:false
   for (const a of allPoolRows) {
     const key = grantKey(a.instanceName, a.agentId);
-    allPoolKeys.push(key);
+    presentKeys.add(key);
     agentIdByKey.set(key, a.agentId);
     if (a.displayName) displayByKey.set(key, a.displayName);
+    if (a.enabled === true) enabledKeys.add(key);
+    if (a.enabled === false) disabledKeys.add(key);
+    allPoolKeys.push(key); // RAW (all present) — the output gate narrows below.
   }
+  // Present MANUAL agents (admin fallback) are NOT in the discovered pool above, so
+  // the point-read path (agentUsable) treats them as OPT-OUT: usable unless
+  // EXPLICITLY disabled. Mirror that here or the batched admin summary drifts from
+  // routing — an explicitly-disabled manual grant would look effective (codex P3).
+  const manualPresent = await ctx.db
+    .query("agents")
+    .withIndex("by_source_present", (q) =>
+      q.eq("source", "manual").eq("presentInLastOk", true),
+    )
+    .collect();
+  const manualDisabledKeys = new Set<string>();
+  for (const a of manualPresent) {
+    const key = grantKey(a.instanceName, a.agentId);
+    if (a.displayName) displayByKey.set(key, a.displayName);
+    agentIdByKey.set(key, a.agentId);
+    if (a.enabled === false) manualDisabledKeys.add(key);
+  }
+  // Mirror filterEnabledGrants (opt-out during rollout, opt-in once the
+  // backfill is done). A key not in presentKeys (absent/deleted) is kept.
+  const strict = await agentEnablementStrict(ctx);
+  const grantIncluded = (key: string): boolean => {
+    if (manualDisabledKeys.has(key)) return false; // present manual, disabled
+    if (!presentKeys.has(key)) return true; // absent/deleted/manual-not-disabled
+    if (enabledKeys.has(key)) return true; // explicitly enabled
+    // present + not explicitly enabled: unset is kept during rollout,
+    // blocked under opt-in; explicit false is always blocked.
+    return !strict && !disabledKeys.has(key);
+  };
 
   // 2. Direct grants + memberships, BOUNDED to the visible users (by_user). Reads
   //    are independent, so run them in parallel; the Maps are only consumed after
@@ -1162,6 +1362,9 @@ export async function effectiveAgentsForUsers(
 
     let effective: string[];
     if (memberGroups.length > 0) {
+      // RAW group pool for the restriction decision (never gated here) —
+      // mirrors getEffectiveGrantsWithPool, so a direct grant to a now-disabled
+      // group agent does NOT widen the user to the whole pool.
       const poolSet = new Set<string>();
       for (const g of memberGroups)
         for (const k of agentsByGroup.get(g as string) ?? []) poolSet.add(k);
@@ -1170,8 +1373,8 @@ export async function effectiveAgentsForUsers(
     } else {
       effective = direct.length > 0 ? direct : allPoolKeys;
     }
-
-    const uniq = [...new Set(effective)];
+    // OUTPUT enablement gate (opt-in) — applied AFTER the mode decision.
+    const uniq = [...new Set(effective)].filter(grantIncluded);
     const labels = uniq.map(labelOf).sort((a, b) => a.localeCompare(b));
     out.set(uid, { count: uniq.length, preview: labels.slice(0, PREVIEW_CAP) });
   }
@@ -1431,6 +1634,7 @@ async function agentDisplay(
   emoji: string | null;
   model: string | null;
   kind: "openclaw" | "hermes";
+  enabled: boolean;
   state: EnrichedUserAgent["state"];
 }> {
   // Present discovered agents are pre-loaded in cx.agentByKey (ONE collect for the
@@ -1457,6 +1661,9 @@ async function agentDisplay(
     emoji: agent?.emoji ?? null,
     model: agent?.model ?? null,
     kind: instance?.kind ?? "openclaw",
+    // Admin enablement state — the user-access editor greys a non-enabled
+    // agent (the assign mutation rejects it; opt-in gate).
+    enabled: agent?.enabled === true,
     state,
   };
 }
@@ -1739,9 +1946,15 @@ export const assignAgent = mutation({
     // makes "Agent X no longer exists" structurally impossible for the admin
     // (red-team M1: manual/unverified is a separate, later path).
     const agent = await agentRow(ctx, instanceName, agentId);
-    if (agent === null || agent.source !== "discovered" || !agent.presentInLastOk) {
+    const strict = await agentEnablementStrict(ctx);
+    if (
+      agent === null ||
+      agent.source !== "discovered" ||
+      !agent.presentInLastOk ||
+      (strict ? agent.enabled !== true : agent.enabled === false)
+    ) {
       throw new Error(
-        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present agent`,
+        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
       );
     }
     const userId = await userIdOfProfile(ctx, profileId);
@@ -1813,6 +2026,17 @@ export const setDefaultAgent = mutation({
       (r) => r.instanceName === instanceName && r.agentId === agentId,
     );
     if (!target) throw new Error("Not found: userAgent (assign it first)");
+    // Defense in depth (the UI already greys the star): a present-but-disabled
+    // agent must never be promoted to default — it is not routable, so a filled
+    // star on it is a dead end. A stale client or a direct admin API call is
+    // rejected here, mirroring assignAgent's own gate. An absent/deleted agent is
+    // left alone (agentUsable is opt-out for those — resilient display).
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (!agentUsable(agent, await agentEnablementStrict(ctx))) {
+      throw new Error(
+        `Agent not default-able: ${instanceName}/${agentId} is disabled`,
+      );
+    }
     for (const r of rows) {
       const shouldBeDefault = r._id === target._id;
       if (r.isDefault !== shouldBeDefault) {

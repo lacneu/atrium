@@ -1729,5 +1729,6 @@
 	"prefs_dictation_shortcut_change": "Modifier",
 	"prefs_dictation_shortcut_cancel": "Annuler",
 	"prefs_dictation_shortcut_clear": "Effacer",
-	"voice_test_gateway_error": "Le test de la voix de la passerelle a échoué."
+	"voice_test_gateway_error": "Le test de la voix de la passerelle a échoué.",
+	"chat_instance_unreachable_banner": "La passerelle de cet agent est momentanément injoignable (peut-être en maintenance). Les messages ne peuvent pas être envoyés pour l'instant — réessayez dans quelques minutes."
 }

@@ -176,7 +176,7 @@ describe("removeInstanceAgent (absent agent cleanup + cascade)", () => {
         instanceName: "primary",
         agentId: "ghost",
         source: "discovered",
-        presentInLastOk: false, // gateway no longer reports it
+        presentInLastOk: false, enabled: true, // gateway no longer reports it
         firstSeenAt: 1,
         lastSeenAt: 1,
       });
@@ -243,7 +243,7 @@ describe("removeInstanceAgent (absent agent cleanup + cascade)", () => {
         instanceName: "primary",
         agentId: "ghost",
         source: "discovered",
-        presentInLastOk: false, // absent → removable
+        presentInLastOk: false, enabled: true, // absent → removable
         firstSeenAt: 1,
         lastSeenAt: 1,
       });
@@ -304,7 +304,7 @@ describe("removeInstanceAgent (absent agent cleanup + cascade)", () => {
         instanceName: "primary",
         agentId: "ghost",
         source: "discovered",
-        presentInLastOk: false,
+        presentInLastOk: false, enabled: true,
         firstSeenAt: 1,
         lastSeenAt: 1,
       });

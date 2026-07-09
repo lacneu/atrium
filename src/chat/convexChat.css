@@ -7041,3 +7041,11 @@
   visibility: visible !important;
 }
 
+/* A shared-agent row for an admin-disabled agent: greyed (the label/model), the
+   ADD affordance blocked server-side + in the checkbox; an already-shared one
+   stays removable. */
+.oc-access__row.is-disabled .oc-access__label,
+.oc-access__row.is-disabled .oc-access__model {
+  opacity: 0.5;
+}
+

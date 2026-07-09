@@ -8,6 +8,40 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.44.0] — Disabled agents stay disabled, and a down instance says so
+
+Reliability and access-control release. A one-time, self-healing data backfill
+runs on first deploy (see below); no breaking changes.
+
+- **A disabled agent is now unusable everywhere.** Disabling an agent for an
+  instance (Platform ▸ Agents) previously only hid it from the picker — it could
+  still be added to a group or granted to a user, and a group that carried it
+  kept routing to it. A disabled agent is now blocked across the whole app: it
+  can't be routed to, can't be added to a group, can't be granted to a user, and
+  is shown greyed (not selectable) in the group and per-user access editors. An
+  agent that was already the group/user default and then gets disabled stops
+  being offered as a target. Enforcement is opt-in strict: an agent counts as
+  usable only once explicitly enabled, so a newly discovered agent arrives
+  disabled and an admin turns it on (Platform ▸ Agents) before anyone can use it.
+
+- **Safe rollout for existing installs.** So the new rule never hides agents that
+  predate it, a one-time background backfill stamps every already-discovered
+  agent as enabled on first deploy; strict enforcement switches on only once that
+  backfill has completed. The rollout is windowless and self-healing — agents
+  stay visible throughout — and agents discovered during the rollout are handled
+  correctly. Nothing for an operator to run.
+
+- **A chat tells you when its instance is unreachable.** When one instance's
+  gateway goes down — a backup, a restart, a network cut — chats on that instance
+  now show an "instance unreachable" banner and disable the composer, instead of
+  silently accepting a message that can't be delivered. This is scoped per
+  instance and per provider: some OpenClaw or Hermes instances can be down while
+  others stay fully usable, and a healthy instance is never affected by a down
+  one. The signal is self-healing: it clears on its own within roughly two
+  minutes of the gateway coming back (the activity-independent discovery poll),
+  with no user send required. A total bridge outage still blocks globally as
+  before.
+
 ## [0.43.2] — Read-aloud speed, language, and the voice test
 
 Corrective release on the voice features. Frontend + one new Convex action;

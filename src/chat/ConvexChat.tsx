@@ -769,16 +769,16 @@ function ChatThread({
   const avail = useQuery(api.bridgeHealth.getBridgeAvailability, {
     chatId: chatId as Id<"chats">,
   });
-  const unavailable = avail && !avail.available ? avail : null;
   // GATEWAY OUTAGE (target-scoped): the bridge is up but a gateway target errors —
   // informational + NON-blocking (the anti-deadlock rule: one gateway must never
   // lock the composer). TWO scopes, two consumers (codex P2):
   //   - ACTIVE turn (RunStatus label): the chatId-only query — server-side it
   //     follows the LAST SEND's routing (the turn the spinner belongs to).
-  //   - NEXT send (the warning banner: "a new send will likely fail"):
-  //     scoped to the agent the COMPOSER currently targets, so switching agents
-  //     mid-outage updates the guidance. Convex dedupes the two subscriptions when
-  //     no per-turn selection exists (identical args — the common case).
+  //   - NEXT send (the warning banner + the availability BLOCK): scoped to the
+  //     agent the COMPOSER currently targets, so switching to an agent on a DOWN
+  //     instance greys the composer even when the chat's current instance is
+  //     healthy. Convex dedupes the two subscriptions when no per-turn selection
+  //     exists (identical args — the common case).
   const routing = useChatRouting();
   const selected = routing?.selected ?? null;
   const availNext = useQuery(api.bridgeHealth.getBridgeAvailability, {
@@ -792,6 +792,11 @@ function ChatThread({
         }
       : {}),
   });
+  // BLOCK on the NEXT send's target (availNext), not the chat's current instance:
+  // a per-turn selection to a down instance must grey the composer BEFORE the send,
+  // and with no selection availNext === the chatId-only query, so the common case is
+  // unchanged. Fail-open while unknown (undefined).
+  const unavailable = availNext && !availNext.available ? availNext : null;
   const gatewayDegraded = avail?.available === true && avail.degraded === true;
   const gatewayDegradedNext =
     availNext?.available === true && availNext.degraded === true;
@@ -846,7 +851,7 @@ function ChatThread({
       {readOnly ? (
         <ChatReadOnlyBanner />
       ) : unavailable ? (
-        <BridgeUnavailableBanner />
+        <BridgeUnavailableBanner reason={unavailable.reason} />
       ) : gatewayDegradedNext ? (
         <GatewayDegradedBanner />
       ) : null}
@@ -878,11 +883,18 @@ function GatewayDegradedBanner() {
 // Standardized, user-facing "chat unavailable" notice shown above a greyed-out
 // composer. Generic on purpose (the technical reason is admin-only, in Settings →
 // Health / Traces); the user just needs to know not to type and to retry.
-function BridgeUnavailableBanner() {
+function BridgeUnavailableBanner({ reason }: { reason: string | null }) {
+  // A per-INSTANCE outage (the chat's gateway is unreachable while the bridge
+  // and other instances are up) gets its own copy — the user should know it is
+  // THIS agent's gateway, not the whole app.
+  const label =
+    reason === "instance_unreachable"
+      ? m.chat_instance_unreachable_banner()
+      : m.chat_unavailable_banner();
   return (
     <div className="oc-chat-banner oc-chat-banner--error" role="status">
       <CircleAlert size={16} aria-hidden />
-      <span>{m.chat_unavailable_banner()}</span>
+      <span>{label}</span>
     </div>
   );
 }

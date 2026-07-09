@@ -1,3 +1,4 @@
+import { agentEnablementStrict } from "./agents";
 // Groups (P2). Regroup users + share agents by group. Admin-managed only — see
 // docs/GROUPS_CHARTS_P2_SPEC.md. NO secrets (non-secret instance/agent NAMES
 // only). The user↔agent union driven by group membership is computed at READ
@@ -310,13 +311,15 @@ export const assignAgentToGroup = mutation({
         q.eq("instanceName", instanceName).eq("agentId", agentId),
       )
       .first();
+    const strict = await agentEnablementStrict(ctx);
     if (
       agent === null ||
       agent.source !== "discovered" ||
-      !agent.presentInLastOk
+      !agent.presentInLastOk ||
+      (strict ? agent.enabled !== true : agent.enabled === false)
     ) {
       throw new Error(
-        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present agent`,
+        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
       );
     }
     // Dedup via by_group_instance_agent.
@@ -447,6 +450,7 @@ export const bulkSetGroupAgents = mutation({
         `Refused: bulk agent change exceeds ${BULK_CAP} agents`,
       );
     }
+    const strict = await agentEnablementStrict(ctx);
     let changed = 0;
     for (const agentId of agentIds) {
       const existing = await ctx.db
@@ -469,9 +473,10 @@ export const bulkSetGroupAgents = mutation({
         if (
           agent === null ||
           agent.source !== "discovered" ||
-          !agent.presentInLastOk
+          !agent.presentInLastOk ||
+          (strict ? agent.enabled !== true : agent.enabled === false)
         ) {
-          continue; // not assignable — skip, do not abort the batch
+          continue; // not assignable under the current mode — skip, keep batch
         }
         await ctx.db.insert("groupAgents", {
           groupId,
@@ -741,6 +746,9 @@ export const listAssignableAgents = query({
         types: resolveAgentTypes(a.types),
         source: a.source,
         presentInLastOk: a.presentInLastOk,
+        // Opt-IN: an agent must be explicitly enabled to be assignable. An
+        // un-curated (unset) or disabled agent reads as not-enabled → greyed.
+        enabled: a.enabled === true,
       })),
       discovery: discovery
         ? {

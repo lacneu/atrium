@@ -59,7 +59,7 @@ async function seed(t: TestConvex<typeof schema>) {
       instanceName: "primary",
       agentId: "alice",
       source: "discovered",
-      presentInLastOk: true,
+      presentInLastOk: true, enabled: true,
       firstSeenAt: 1,
       lastSeenAt: 1,
     });

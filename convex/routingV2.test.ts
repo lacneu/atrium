@@ -50,7 +50,7 @@ const seedAgent = (
       instanceName,
       agentId,
       source: "discovered",
-      presentInLastOk: present,
+      presentInLastOk: present, enabled: true,
       firstSeenAt: 1,
       lastSeenAt: 1,
     }),

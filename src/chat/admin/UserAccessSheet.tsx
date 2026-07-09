@@ -23,6 +23,7 @@ type PoolAgent = {
   emoji: string | null;
   model: string | null;
   kind: "openclaw" | "hermes";
+  enabled: boolean;
   state: "ok" | "deleted" | "stale" | "unknown";
 };
 
@@ -81,6 +82,9 @@ export function UserAccessSheet({
         emoji: u.emoji,
         model: u.model,
         kind: u.kind,
+        // Real enablement state (listUserAgents carries it): an out-of-pool
+        // grant to a disabled agent must grey + not offer "make default".
+        enabled: u.enabled,
         state: u.state,
         outOfPool: true,
       })),
@@ -187,11 +191,17 @@ function InstanceAgents({
         const isAssigned = assigned.has(key);
         const isDefault = defaultKey === key;
         const gone = a.state === "deleted";
+        // Opt-in: a non-enabled agent can't be granted (the server rejects
+        // it). Grey + block add, but keep an already-granted one removable.
+        const disabledAgent = !a.enabled;
         return (
-          <div key={a.agentId} className="oc-access__row">
+          <div
+            key={a.agentId}
+            className={`oc-access__row${disabledAgent ? " is-disabled" : ""}`}
+          >
             <Checkbox
               checked={isAssigned}
-              disabled={gone && !isAssigned}
+              disabled={(gone || disabledAgent) && !isAssigned}
               onCheckedChange={() => void toggle(a.agentId, isAssigned)}
               aria-label={m.useraccess_assign_aria({
                 name: a.displayName ?? a.agentId,
@@ -234,6 +244,8 @@ function InstanceAgents({
                   className="oc-access__setdefault"
                   aria-label={m.useraccess_set_default()}
                   title={m.useraccess_set_default()}
+                  // A disabled agent can't be the default (the server rejects it).
+                  disabled={disabledAgent}
                   onClick={() => void makeDefault(a.agentId)}
                 >
                   <Star size={14} />

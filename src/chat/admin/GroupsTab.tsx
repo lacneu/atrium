@@ -766,9 +766,11 @@ function GroupInstanceAgents({
   // so the agents list collapses to just the instances that have a hit.
   if (query.trim() && agents.length === 0) return null;
 
-  // "Select all" only ever targets ASSIGNABLE (present) agents — a gone agent
-  // can't be shared, so it must not be force-assigned by the bulk toggle.
-  const selectable = agents.filter((a) => a.presentInLastOk !== false);
+  // "Select all" only ever targets ASSIGNABLE agents — a gone OR admin-disabled
+  // agent can't be shared, so it must not be force-assigned by the bulk toggle.
+  const selectable = agents.filter(
+    (a) => a.presentInLastOk !== false && a.enabled !== false,
+  );
   const agentSel = selectionState(selectable, (a) =>
     assigned.has(`${instanceName}/${a.agentId}`),
   );
@@ -841,11 +843,18 @@ function GroupInstanceAgents({
           const key = `${instanceName}/${a.agentId}`;
           const isAssigned = assigned.has(key);
           const gone = a.presentInLastOk === false;
+          // Only ENABLED agents can be shared (opt-in; server rejects the rest).
+          // A not-enabled agent (disabled OR un-curated) is greyed and
+          // non-addable, but an already-shared one stays removable.
+          const disabledAgent = !a.enabled;
           return (
-            <div key={a.agentId} className="oc-access__row">
+            <div
+              key={a.agentId}
+              className={`oc-access__row${disabledAgent ? " is-disabled" : ""}`}
+            >
               <Checkbox
                 checked={isAssigned}
-                disabled={gone && !isAssigned}
+                disabled={(gone || disabledAgent) && !isAssigned}
                 onCheckedChange={() => void toggle(a.agentId, isAssigned)}
                 aria-label={m.groups_agent_toggle_aria({
                   name: a.displayName ?? a.agentId,
