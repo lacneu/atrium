@@ -31,17 +31,21 @@ function spyWriter() {
   return { writer, calls };
 }
 
-/** A fake client whose openStream either resolves (then emits `frames`) or throws. */
+/** A fake client whose openStream either resolves (then emits `frames`) or
+ *  throws. `sentTexts` records the prompt of every openStream attempt (the
+ *  404-recovery rehydration contract asserts on it). */
 function fakeClient(opts: {
   openError?: HermesError;
   frames?: { event: string; data: string }[];
   open404Once?: boolean;
+  sentTexts?: string[];
 }): HermesClient {
   let opens = 0;
   return {
     ensureSession: async () => "api_1_abcd",
-    openStream: async () => {
+    openStream: async (_sid: string, text: string) => {
       opens++;
+      opts.sentTexts?.push(text);
       if (opts.open404Once && opens === 1) {
         throw new HermesError("gone", "HTTP_ERROR", 404);
       }
@@ -79,6 +83,56 @@ describe("Hermes turn lifecycle", () => {
     await run.done;
     expect(calls).toContain("startAssistant");
     expect(bound.length).toBe(1); // the fresh session was persisted
+  });
+
+  it("the 404-recovery re-sends the prompt WITH the rehydration history (the real session is brand new)", async () => {
+    const { writer } = spyWriter();
+    const sentTexts: string[] = [];
+    const run = runHermesTurn({
+      client: fakeClient({
+        open404Once: true,
+        frames: [{ event: "run.completed", data: "{}" }],
+        sentTexts,
+      }),
+      writer,
+      chatId: "c1",
+      sessionKey: "hermes:a:chat:u:c1",
+      providerChatId: "api_1_abcd", // expected warm → bare prompt first
+      text: "Et maintenant ?",
+      freshText: async () => "[HISTORIQUE]\n\nEt maintenant ?",
+    });
+    await run.accepted;
+    await run.done;
+    // Attempt 1 (warm assumption) shipped bare; the recovery attempt carried
+    // the history — the minted session must not start cold.
+    expect(sentTexts).toEqual([
+      "Et maintenant ?",
+      "[HISTORIQUE]\n\nEt maintenant ?",
+    ]);
+  });
+
+  it("a minted session is persisted only AFTER acceptance — a failed first send stays fresh for the retry", async () => {
+    const { writer } = spyWriter();
+    const bound: string[] = [];
+    const run = runHermesTurn({
+      client: fakeClient({
+        openError: new HermesError("boom", "HTTP_ERROR", 500),
+      }),
+      writer,
+      chatId: "c1",
+      sessionKey: "hermes:a:chat:u:c1",
+      providerChatId: null, // turn 1: the session is minted by this turn
+      text: "hi",
+      onBoundSession: async (sid) => {
+        bound.push(sid);
+      },
+    });
+    await expect(run.accepted).rejects.toThrow(/boom/);
+    await run.done;
+    // NOT persisted: the prompt never reached the session, so the retry must
+    // mint fresh (and re-carry the history) instead of resuming a virgin
+    // session as warm.
+    expect(bound.length).toBe(0);
   });
 
   it("a pre-stream dispatch failure REJECTS accepted and creates NO message (codex P2)", async () => {

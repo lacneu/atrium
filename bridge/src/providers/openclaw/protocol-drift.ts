@@ -92,6 +92,18 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "inputTokens",
   "outputTokens",
   "contextTokens",
+  // SUB-AGENT metadata the 2026.6.11 gateway flattens onto agent events on live
+  // prod (Ataraxis 2026-07-10, x43 per field — names only, per the SOC2 contract):
+  // the child's role/scope, its parent's session key, its runtime, and the parent's
+  // child-session list. Same family as the spawn statics above — session/sub-agent
+  // METADATA, not conversation content; consumed nowhere (the sub-agent observer
+  // derives the parent↔child link from `spawnedBy`, not from these). Listed so a
+  // 2026.6.11 install reports zero drift.
+  "subagentRole",
+  "subagentControlScope",
+  "parentSessionKey",
+  "runtimeMs",
+  "childSessions",
 ]);
 
 /**

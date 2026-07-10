@@ -28,6 +28,62 @@ export interface HermesSendBody {
   /** Inline base64 attachments (WS transport stages them via file.attach /
    *  image.attach_bytes before the prompt; REST has no upload channel). */
   attachments?: Array<{ mimeType: string; fileName: string; content: string }>;
+  /** The user message id of this turn — excluded from the fresh-session
+   *  rehydration history (present on the wire; optional for old callers). */
+  messageId?: string | null;
+  /** Provider-session reset epoch (chats.providerResetCount at dispatch) —
+   *  echoed by the post-ACK session bind so Convex refuses a bind that raced
+   *  a /reset (bindProviderChat). Absent/null on an old Convex. */
+  providerResetCount?: number | null;
+  /** Per-instance hot config (the `rehydration` knob rides here, same source
+   *  the OpenClaw path reads). */
+  config?: { rehydration?: boolean } | null;
+}
+
+/**
+ * FRESH-session history prepend (parity with the OpenClaw path, server.ts
+ * performSend): when this chat has NO prior Hermes session — a brand-new chat or
+ * a BRANCHED one (chatFork) — prepend the chat's rehydration history to the
+ * first prompt, so the agent knows the carried conversation. Mirrors the
+ * OpenClaw guards: per-instance `rehydration` knob (env kill-switch fallback),
+ * and SKIPPED when attachments ride the turn (keep the first staged turn lean —
+ * same posture as the OpenClaw gateway-crash guard). Best-effort: a context
+ * fetch failure sends the bare prompt (a cold agent beats a failed send).
+ */
+export async function promptWithFreshSessionHistory(
+  writer: ConvexWriter,
+  body: HermesSendBody,
+  freshSession: boolean,
+): Promise<string> {
+  if (!freshSession) return body.text;
+  const enabled =
+    body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
+  if (!enabled) return body.text;
+  if (body.attachments && body.attachments.length > 0) return body.text;
+  // No messageId = no reliable exclusion of the CURRENT user message (already
+  // persisted in Convex): the history would contain it AND we would append
+  // body.text again — a duplicated prompt. Legacy callers without the field
+  // ship bare instead (a cold agent beats a doubled message).
+  if (!body.messageId) return body.text;
+  try {
+    const ctx = await writer.getRehydrationContext(
+      body.chatId,
+      body.messageId ?? null,
+    );
+    if (ctx.history) {
+      // Content-free decision log (counts + chatId only), like OpenClaw's.
+      console.error(
+        `[rehydrate] hermes chat=${body.chatId} fresh session -> prepended ${ctx.turnCount} prior turn(s)`,
+      );
+      return `${ctx.history}\n\n${body.text}`;
+    }
+  } catch (e) {
+    console.error(
+      "[rehydrate] hermes context fetch failed (bare send):",
+      (e as Error)?.message ?? e,
+    );
+  }
+  return body.text;
 }
 
 interface LiveHermesTurn {
@@ -151,6 +207,15 @@ export class HermesTurnRegistry {
   deleteIf(chatId: string, turn: LiveHermesTurn): void {
     if (this.turns.get(chatId) === turn) this.turns.delete(chatId);
   }
+  /** Per-chat RESET generation, bumped by forgetChat: a turn captures it at
+   *  start and its post-ACK session persistence applies ONLY if unchanged —
+   *  else a bind landing AFTER a user reset would rewrite the stale session id
+   *  into the freshly-cleared slot and the next turn would resume the very
+   *  session the reset discarded (codex P1). */
+  private resetGens = new Map<string, number>();
+  generationOf(chatId: string): number {
+    return this.resetGens.get(chatId) ?? 0;
+  }
   /** Drop every remembered Hermes session for a chat (all targets) — a /reset
    *  must make the NEXT turn mint a FRESH session, not reuse the old one. */
   forgetChat(chatId: string): void {
@@ -158,6 +223,7 @@ export class HermesTurnRegistry {
     for (const key of this.sessions.keys()) {
       if (key.endsWith(suffix)) this.sessions.delete(key);
     }
+    this.resetGens.set(chatId, this.generationOf(chatId) + 1);
   }
   rememberSession(targetKey: string, sessionId: string): void {
     this.sessions.set(targetKey, sessionId);
@@ -248,19 +314,51 @@ export async function performHermesSend(
     : body.openclawChatId && FRESH_SESSION_NONCE_RE.test(body.openclawChatId)
       ? null
       : registry.knownSession(targetKey);
+  // Reset-generation snapshot: gates the post-ACK session persistence below
+  // AND the send itself across the history-fetch await.
+  const resetGen = registry.generationOf(body.chatId);
+  // Branched/new chat on a FRESH Hermes session: carry the visible history to
+  // the agent (parity with OpenClaw's rehydration — chatFork depends on it).
+  const text = await promptWithFreshSessionHistory(
+    writer,
+    body,
+    priorSession === null,
+  );
+  // A /reset landed DURING the context fetch: the turn was not registered yet
+  // (nothing for the reset to abort), so without this check the send would
+  // proceed and reply into a conversation the user just discarded (codex P1).
+  // Throwing here is pre-acceptance → the caller 502s → a visible failed
+  // dispatch on the message the user was resetting over — honest and safe.
+  if (registry.generationOf(body.chatId) !== resetGen) {
+    throw new Error("chat reset during dispatch");
+  }
   const run = runHermesTurn({
     client,
     writer,
     chatId: body.chatId,
     sessionKey: hermesSessionKey(body),
     providerChatId: priorSession,
-    text: body.text,
+    text,
+    // Session-recovery seam: the turn minted a FRESH session despite the
+    // stored id (404) → re-request the prompt WITH the history (same guards:
+    // knob, attachments, best-effort — all inside the helper).
+    freshText: () => promptWithFreshSessionHistory(writer, body, true),
     signal: abort.signal,
     onTurnError,
     onBoundSession: async (sessionId) => {
+      // A /reset that ran AFTER this turn started owns the slot now: a late
+      // (post-ACK, fire-and-forget) bind must not resurrect the discarded
+      // session into the freshly-cleared chat (codex P1). Two layers: the
+      // in-process generation gates the in-memory map; the reset EPOCH rides
+      // to Convex where bindProviderChat compares it ATOMICALLY (the network
+      // flight itself can still race a reset — only the mutation can close it).
+      if (registry.generationOf(body.chatId) !== resetGen) return;
       registry.rememberSession(targetKey, sessionId);
-      await (writer.bindProviderChat?.(body.chatId, sessionId) ??
-        Promise.resolve());
+      await (writer.bindProviderChat?.(
+        body.chatId,
+        sessionId,
+        body.providerResetCount ?? undefined,
+      ) ?? Promise.resolve());
     },
   });
   const entry = { abort, run };
@@ -300,6 +398,20 @@ async function performHermesWsSend(
           const known = registry.knownSession(targetKey);
           return isHermesWsStoredSessionId(known) ? known : null;
         })();
+  // Reset-generation snapshot: gates the post-ACK session persistence below
+  // AND the send itself across the history-fetch await.
+  const wsResetGen = registry.generationOf(body.chatId);
+  // Same fresh-session history carry as the REST path (chatFork parity).
+  const wsText = await promptWithFreshSessionHistory(
+    writer,
+    body,
+    prior === null,
+  );
+  // Same mid-fetch /reset guard as the REST path (codex P1): the turn is not
+  // registered yet, so the reset had nothing to abort — refuse the send.
+  if (registry.generationOf(body.chatId) !== wsResetGen) {
+    throw new Error("chat reset during dispatch");
+  }
   const run = runHermesWsTurn(
     {
       client,
@@ -307,7 +419,10 @@ async function performHermesWsSend(
       chatId: body.chatId,
       sessionKey: hermesSessionKey(body),
       providerChatId: prior,
-      text: body.text,
+      text: wsText,
+      // Session-recovery seam (same as the REST path): a degraded/failed
+      // resume minted a fresh session → the prompt must carry the history.
+      freshText: () => promptWithFreshSessionHistory(writer, body, true),
       attachments: body.attachments,
       // Outbound files honor the admin media setting: OFF ⇒ no delivery
       // directive, no scan, no hosting (codex P2).
@@ -315,9 +430,15 @@ async function performHermesWsSend(
         cfg.mediaMode === "off" ? null : registry.filesFetcherFor(cfg),
       onTurnError,
       onBoundSession: async (storedSid) => {
+        // Same two-layer reset guard as the REST path: in-process generation
+        // for the memory map + the Convex-side epoch for the atomic close.
+        if (registry.generationOf(body.chatId) !== wsResetGen) return;
         registry.rememberSession(targetKey, storedSid);
-        await (writer.bindProviderChat?.(body.chatId, storedSid) ??
-          Promise.resolve());
+        await (writer.bindProviderChat?.(
+          body.chatId,
+          storedSid,
+          body.providerResetCount ?? undefined,
+        ) ?? Promise.resolve());
       },
     },
     (sid, onEvent) =>

@@ -133,6 +133,13 @@ export class TurnSink {
   // Fallback signal when the spawn RESULT omits the child key (gateway variance):
   // spawn called this turn + ANY child activity observed still exempts.
   private spawnCalledThisTurn = false;
+  // The turn EXPLICITLY handed off to a child via `sessions_yield`: an
+  // unambiguous "the child answers, not me" — so an empty parent reply is
+  // INTENTIONAL (the async announce pattern), never an error, even when the
+  // child ran entirely AFTER the yield so no child key was observed on THIS
+  // turn's wire (the intersection can't catch that case). Live prod: denis'
+  // delegate-then-yield turn was falsely marked empty_response (2026-07-10).
+  private yieldCalledThisTurn = false;
   // Last child-activity heartbeat (ms wall): while the parent waits silently on
   // a long-running child, each observed child frame refreshes the streaming
   // row's updatedAt (via the awaiting_subagents phase) at most once a minute,
@@ -279,6 +286,7 @@ export class TurnSink {
     this.pendingObservedChildKeys = [];
     this.spawnedChildKeysThisTurn = new Set();
     this.spawnCalledThisTurn = false;
+    this.yieldCalledThisTurn = false;
     this.lastChildHeartbeatMs = 0;
     this.pendingRehydrated = false;
     this.pendingOpen = false;
@@ -514,6 +522,15 @@ export class TurnSink {
                 // The parent is now waiting on its children (announce pattern).
                 this.writer.setPhase?.(messageId, "awaiting_subagents");
               }
+            }
+            // An explicit hand-off to a child: the parent deliberately produces
+            // no reply of its own (the child announces later). Exempts the
+            // empty-response guard even when the child ran async after the yield.
+            if (
+              asString(event.name) === "sessions_yield" &&
+              asString(event.phase) === "completed"
+            ) {
+              this.yieldCalledThisTurn = true;
             }
           }
           const part: ToolPart = {
@@ -778,6 +795,12 @@ export class TurnSink {
       effectiveErrorKind === null &&
       replyText.trim().length === 0 &&
       !this.sawVisibleText &&
+      // An EXPLICIT hand-off (sessions_yield): the parent deliberately answers
+      // nothing — the child announces later. Unambiguous, and it catches the
+      // ASYNC case the child-key intersection below cannot (the child ran after
+      // the yield, so no child key was on THIS turn's wire — live prod denis
+      // 2026-07-10, falsely flagged empty_response).
+      !this.yieldCalledThisTurn &&
       // A child SPAWNED BY THIS TURN was observed working (intersection of the
       // turn's own spawn results with the observed child keys): the parent
       // ending silent is the ANNOUNCE pattern (reply arrives as a spontaneous

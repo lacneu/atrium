@@ -395,6 +395,80 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     expect(rDoc?.configOverrides?.rehydration).toBe(false);
   });
 
+  test("getChatRouting signals the re-key (routedSwitch) while a FORK's first turn is pending, then stops", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedAgent(t, "prod", "alice", true);
+    await seedDiscovery(t, "prod", true);
+
+    // A branched chat (chatFork) with the one-shot flag armed: the gateway
+    // auto-creates the fork's brand-new session row (systemSent truthy) during
+    // the pre-describe sessions.patch, so WITHOUT the explicit re-key signal
+    // the first turn is misread as warm and the agent starts COLD.
+    const fork = await makeChat(t, uid, {
+      instanceName: "prod",
+      agentId: "alice",
+      forkPendingRehydration: true,
+    });
+    const armed = await t.query(internal.bridge.getChatRouting, {
+      chatId: fork._id,
+      userId: uid as never,
+    });
+    expect(armed?.configOverrides?.routedSwitch).toBe(true);
+    // The rehydration ENABLE knob is NOT forced: operator kill-switches
+    // (admin rehydration:false / env off) must still win over a fork's
+    // grounding — the fork only re-keys, the knob decides.
+    expect(armed?.configOverrides?.rehydration).toBeUndefined();
+    // …and tells the dispatch to consume at the OpenClaw ACK (no instances row
+    // in this seed → the openclaw default).
+    expect(armed?.forkFresh).toBe(true);
+
+    // Flag consumed (the dispatch, at the gateway ACK) → back to the plain
+    // path: no re-key signal, or a later bridge restart would re-prepend the
+    // whole history onto the now-warm session (duplicate).
+    await t.run(async (ctx) => {
+      await ctx.db.patch(fork._id, { forkPendingRehydration: undefined });
+    });
+    const consumed = await t.query(internal.bridge.getChatRouting, {
+      chatId: fork._id,
+      userId: uid as never,
+    });
+    expect(consumed?.configOverrides?.rehydration).toBeUndefined();
+    expect(consumed?.configOverrides?.routedSwitch).toBeUndefined();
+    expect(consumed?.forkFresh).toBe(false);
+  });
+
+  test("a HERMES fork never asks the dispatch to consume (a /send 200 is not delivery there)", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "herm", "hermes-agent", true);
+    await seedAgent(t, "herm", "hermes-agent", true);
+    await seedDiscovery(t, "herm", true);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "herm",
+        gatewayUrl: "ws://gw",
+        kind: "hermes" as const,
+      });
+    });
+    const fork = await makeChat(t, uid, {
+      instanceName: "herm",
+      agentId: "hermes-agent",
+      forkPendingRehydration: true,
+    });
+    const r = await t.query(internal.bridge.getChatRouting, {
+      chatId: fork._id,
+      userId: uid as never,
+    });
+    // The knob is untouched (operator config wins; Hermes freshness is
+    // bridge-side prior===null, so the fork grounds through the env default)…
+    expect(r?.configOverrides?.rehydration).toBeUndefined();
+    // …and the flag is NEVER consumed on Hermes: a WS submit-failure ACKs 200
+    // without delivering — a lingering flag is inert there.
+    expect(r?.forkFresh).toBe(false);
+  });
+
   test("bindChatTarget clears the stale provider id when it rebinds to a new agent", async () => {
     const t = convexTest(schema, modules);
     const uid = await seedUser(t);

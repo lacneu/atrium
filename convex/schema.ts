@@ -904,6 +904,33 @@ export default defineSchema({
     updatedAt: v.number(),
     // Sidebar organization (all optional — additive on existing rows):
     projectId: v.optional(v.id("projects")), // 0-or-1 project membership
+    // BRANCHED chat (chatFork.forkChat): the conversation this one was forked
+    // from — provenance only (a badge/affordance later); the fork is otherwise a
+    // fully independent chat. Optional/additive; survives the source's deletion
+    // as a dangling reference (readers must ctx.db.get and tolerate null).
+    forkedFromChatId: v.optional(v.id("chats")),
+    // One-shot: set at fork creation, consumed by the dispatch at the OPENCLAW
+    // gateway ACK (bridge.consumeForkRehydration — the true acceptance point;
+    // never consumed on Hermes, whose bridge-side freshness makes a lingering
+    // flag harmlessly inert). While set, getChatRouting marks dispatches with
+    // the explicit re-key signal (`routedSwitch`) so the bridge treats the
+    // fork's brand-new gateway session as FRESH — the gateway auto-creates the
+    // session row (systemSent truthy) during the pre-describe sessions.patch,
+    // so without this signal the fork's first OpenClaw turn would be misread
+    // as warm and start COLD. The rehydration ENABLE knob is deliberately NOT
+    // forced: operator kill-switches still win (a fork on a rehydration-
+    // disabled instance starts cold by configuration). KNOWN GAP (same as the
+    // post-reset one): an inline-ATTACHMENT first send ships bare (gateway-
+    // crash guard) and still consumes — that fork carries no history until its
+    // session next rolls.
+    forkPendingRehydration: v.optional(v.boolean()),
+    // Provider-session RESET epoch: bumped by clearProviderChat (the Hermes
+    // reset path) even when the slot was already empty. A turn's post-ACK
+    // session bind carries the epoch it started under; bindProviderChat
+    // refuses a mismatch — the ATOMIC close of the "bind lands after a
+    // concurrent /reset and resurrects the discarded session" race (Convex
+    // mutations serialize; in-bridge clock comparisons cannot).
+    providerResetCount: v.optional(v.number()),
     sortKey: v.optional(v.number()), // fractional manual order (lower = higher)
     pinned: v.optional(v.boolean()), // pinned chats sort above unpinned
     color: v.optional(v.string()), // preset token name, list display only

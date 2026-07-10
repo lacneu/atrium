@@ -65,6 +65,14 @@ export const prepareInteraction = internalMutation({
     for (const a of atts) {
       await assertOwnsUpload(ctx, userId, a.storageId);
     }
+    // A COPIED card in a branched chat (chatFork re-keys with the `fork:`
+    // prefix) is display-only: its gateway session belongs to the SOURCE
+    // conversation — resuming it from the branch would steer the original.
+    if (childSessionKey.startsWith("fork:")) {
+      throw new Error(
+        "sub-agent card copied from the source chat: cannot interact",
+      );
+    }
     const child = await ctx.db
       .query("subAgents")
       .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))

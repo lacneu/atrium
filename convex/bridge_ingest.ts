@@ -220,6 +220,8 @@ type IngestOp =
       op: "bindProviderChat";
       chatId: string;
       providerChatId: string;
+      // The reset epoch the turn started under (see bindProviderChat).
+      resetCount?: number;
     }
   | {
       op: "clearProviderChat";
@@ -672,6 +674,9 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.bridge.bindProviderChat, {
         chatId: body.chatId as Id<"chats">,
         providerChatId: body.providerChatId,
+        ...(typeof body.resetCount === "number"
+          ? { resetCount: body.resetCount }
+          : {}),
       });
       return json({ ok: true });
     }

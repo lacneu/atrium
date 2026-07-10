@@ -628,6 +628,11 @@ export const finalize = internalMutation({
     // was created when it streamed (before the new fetch's dispatch), so its
     // _creationTime is strictly BEFORE the current pendingFetch.createdAt.
     const chat = await ctx.db.get(message.chatId);
+    // (chatFork's one-shot rehydration flag is NOT consumed here: finalize
+    // over/under-approximates delivery — a Hermes WS submit-failure finalizes
+    // an error row though nothing was delivered, and the stuck-stream watchdog
+    // terminates rows without this mutation. The dispatch consumes it at the
+    // gateway-ACK point instead: bridge.consumeForkRehydration.)
     if (
       chat?.kind === "documentary" &&
       chat.pendingFetch &&

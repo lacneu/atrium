@@ -138,6 +138,10 @@ interface SendBody extends BodyRouting {
   clientMessageId: string;
   /** The user message id for this turn (excluded from re-hydration history). */
   messageId: string | null;
+  /** Provider-session reset epoch (chats.providerResetCount at dispatch) —
+   *  echoed by the Hermes post-ACK session bind so Convex refuses a bind that
+   *  raced a /reset. Null on an old Convex (bind stays unguarded). */
+  providerResetCount: number | null;
   /** The OUTBOX id of this dispatch — echoed as the `openclaw.rehydrate` trace's
    *  correlationId (`chatId:outboxId`), the obs-MCP join key. Null on an old Convex. */
   outboxId: string | null;
@@ -317,6 +321,8 @@ export function parseSendBody(raw: string): SendBody | null {
     text: obj.text,
     clientMessageId: obj.clientMessageId,
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
+    providerResetCount:
+      typeof obj.providerResetCount === "number" ? obj.providerResetCount : null,
     outboxId: typeof obj.outboxId === "string" ? obj.outboxId : null,
     switchedFromAgentId:
       typeof obj.switchedFromAgentId === "string" ? obj.switchedFromAgentId : null,

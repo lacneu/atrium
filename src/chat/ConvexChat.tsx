@@ -86,6 +86,7 @@ import {
   Image as ImageIcon,
   Check,
   X,
+  GitBranch,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -1580,6 +1581,58 @@ function IconArrowDown() {
 // displayed error itself (actionable headline + technical detail). assistant-ui's
 // ActionBarPrimitive.Copy silently DISABLES on empty content, which read as a
 // dead button on error messages (live report 2026-07-04).
+/** BRANCH the conversation from this reply into a NEW chat (ChatGPT's "branch
+ *  in a new chat"): the fork carries the same visible history up to here, opens
+ *  immediately, and its first send re-grounds the agent via the existing
+ *  rehydration — the original conversation continues untouched. */
+function BranchChatButton() {
+  const messageId = useMessage(
+    (msg) => (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
+  // A STREAMING reply is not a valid branch point yet (the server refuses it —
+  // no stable content); grey the affordance instead of toasting an error.
+  const streaming = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { status?: string } | undefined)?.status ===
+      "streaming",
+  );
+  const fork = useMutation(api.chatFork.forkChat);
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  if (!messageId) return null;
+  return (
+    <button
+      type="button"
+      className="oc-iconbtn"
+      title={m.chat_branch_action()}
+      aria-label={m.chat_branch_action()}
+      disabled={busy || streaming}
+      onClick={() => {
+        setBusy(true);
+        void (async () => {
+          try {
+            const { chatId } = await fork({
+              branchMessageId: messageId as Id<"messages">,
+            });
+            // NO state reset after a successful navigate: this component sits
+            // INSIDE the message tree being torn down — a local setState would
+            // re-render it against the swapped (momentarily empty) thread and
+            // its useMessage lookup throws (index out of bounds). Busy stays
+            // latched until unmount; errors reset it below.
+            await navigate({ to: "/chat/$chatId", params: { chatId } });
+          } catch (err) {
+            toast.error(m.chat_branch_failed(), err);
+            setBusy(false);
+          }
+        })();
+      }}
+    >
+      <GitBranch size={15} />
+    </button>
+  );
+}
+
 function CopyAssistantButton() {
   const [copied, setCopied] = useState(false);
   const text = useMessage((msg) =>
@@ -2380,6 +2433,7 @@ function AssistantMessage() {
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
           <ReadAloudButton />
+          <BranchChatButton />
           {ui.showSource ? (
             <SourceToggleButton
               active={showSource}

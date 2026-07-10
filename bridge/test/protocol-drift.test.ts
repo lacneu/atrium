@@ -66,6 +66,28 @@ describe("protocol drift detector", () => {
     ]);
   });
 
+  it("the 2026.6.11 sub-agent metadata fields report ZERO drift (live ataraxis 2026-07-10)", () => {
+    // The exact prod symptom: an agent frame carrying the child's role/scope, its
+    // parent session key, runtime, and child-session list must be fully known now.
+    protocolDrift.observe({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: "r",
+        seq: 1,
+        stream: "assistant",
+        ts: 1,
+        data: {},
+        subagentRole: "worker",
+        subagentControlScope: "session",
+        parentSessionKey: "agent:x:webchat:chat:c:1",
+        runtimeMs: 1234,
+        childSessions: ["agent:x:subagent:uuid"],
+      },
+    });
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
   it("non-chat/agent events and malformed frames are ignored, never thrown on", () => {
     protocolDrift.observe({ type: "event", event: "health", payload: { weird: 1 } });
     protocolDrift.observe(null);
@@ -173,6 +195,12 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "inputTokens",
       "outputTokens",
       "contextTokens",
+      // sub-agent metadata flattened onto agent events (live ataraxis 2026-07-10)
+      "subagentRole",
+      "subagentControlScope",
+      "parentSessionKey",
+      "runtimeMs",
+      "childSessions",
     ])
       manifest.add(f);
     expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());

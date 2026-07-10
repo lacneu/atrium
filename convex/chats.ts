@@ -30,7 +30,7 @@ async function requireOwnedProject(
 
 // Smallest sortKey among the user's chats in a given project (null = no project),
 // so a new/moved chat can be placed above all of them (minKey - 1).
-async function minChatSortKey(
+export async function minChatSortKey(
   ctx: MutationCtx,
   userId: Id<"users">,
   projectId: Id<"projects"> | null,

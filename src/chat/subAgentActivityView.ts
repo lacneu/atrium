@@ -238,6 +238,16 @@ export function isSubAgentSessionArchived(
   );
 }
 
+/**
+ * True for a card COPIED into a branched chat (chatFork re-keys the copy with
+ * the `fork:` prefix): display-only — the child's gateway session belongs to
+ * the SOURCE conversation, so an interaction send is refused server-side; the
+ * composer disables with an explicit reason instead of a raw error.
+ */
+export function isForkedSubAgentCopy(childSessionKey: string): boolean {
+  return childSessionKey.startsWith("fork:");
+}
+
 /** Build one card from a row. */
 function toCard(row: SubAgentRow): SubAgentCardView {
   const tone = statusTone(row.status);

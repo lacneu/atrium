@@ -75,13 +75,28 @@ function spyWriter() {
   return { writer, calls };
 }
 
-function fakeWsClient(opts: { submitError?: Error }): HermesWsClient {
+function fakeWsClient(opts: {
+  submitError?: Error;
+  resumeError?: Error;
+  /** Records every prompt.submit text (the recovery-rehydration contract). */
+  submittedTexts?: string[];
+}): HermesWsClient {
   return {
-    call: async (method: string) => {
+    call: async (method: string, params?: Record<string, unknown>) => {
+      if (method === "session.resume") {
+        if (opts.resumeError) throw opts.resumeError;
+        return {
+          session_id: "resumed01",
+          stored_session_id: (params as { session_id?: string })?.session_id,
+        };
+      }
       if (method === "session.create") {
         return { session_id: "cc4ebdee", stored_session_id: "20260706_212939_aee24e" };
       }
       if (method === "prompt.submit") {
+        opts.submittedTexts?.push(
+          String((params as { text?: string })?.text ?? ""),
+        );
         if (opts.submitError) throw opts.submitError;
         return { status: "streaming" };
       }
@@ -218,6 +233,67 @@ describe("Hermes WS turn (live capture replay)", () => {
     expect(
       names.includes("setPhase") || names.includes("addPart"),
     ).toBe(true);
+  });
+
+  it("a FAILED resume recovers with a fresh session that carries the rehydration history", async () => {
+    const { writer } = spyWriter();
+    const bound: string[] = [];
+    const submittedTexts: string[] = [];
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({
+          resumeError: new Error("session not found"),
+          submittedTexts,
+        }),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: "20260101_000000_dead", // stored id that no longer resumes
+        text: "Et maintenant ?",
+        freshText: async () => "[HISTORIQUE]\n\nEt maintenant ?",
+        onBoundSession: async (sid) => {
+          bound.push(sid);
+        },
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    // The minted session received the HISTORY-carrying prompt, not the bare
+    // warm-assumption one — the recovered agent must not start cold.
+    expect(submittedTexts).toEqual(["[HISTORIQUE]\n\nEt maintenant ?"]);
+    // …and the fresh stored id was persisted (post-ACK).
+    expect(bound).toEqual(["20260706_212939_aee24e"]);
+    onEvent("message.complete", { text: "ok", status: "complete" });
+    await run.done;
+  });
+
+  it("a minted session is NOT persisted when prompt.submit fails — the retry must stay fresh", async () => {
+    const { writer, calls } = spyWriter();
+    const bound: string[] = [];
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({ submitError: new Error("socket died") }),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "hi",
+        onBoundSession: async (sid) => {
+          bound.push(sid);
+        },
+      },
+      () => () => {},
+    );
+    await run.accepted; // bridge-owned error settle still ACKs (single bubble)
+    await run.done;
+    // The prompt never reached the session: persisting the id would make the
+    // NEXT send resume a virgin session as warm (bare prompt → cold agent).
+    expect(bound.length).toBe(0);
+    expect(calls.map(([n]) => n)).toContain("finalize");
   });
 
   it("replays the live DELEGATION turn: subagent events drive the awaiting pill + delegate_task tool part", async () => {

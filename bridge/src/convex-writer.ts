@@ -274,7 +274,11 @@ export interface ConvexWriter {
   /** Persist a provider-minted conversation id onto the chat (Hermes creates its
    *  session id lazily on turn 1; later turns must reuse it for continuity).
    *  OPTIONAL: test fakes / degraded writers may omit it. */
-  bindProviderChat?(chatId: string, providerChatId: string): Promise<void>;
+  bindProviderChat?(
+    chatId: string,
+    providerChatId: string,
+    resetCount?: number,
+  ): Promise<void>;
   /** Clear a persisted Hermes session id on reset (next turn starts fresh). */
   clearProviderChat?(chatId: string): Promise<void>;
   /** Stamp the provider run id onto an already-created streaming message (Hermes
@@ -472,7 +476,12 @@ type IngestOp =
   // Mirror the gateway's `sessions.describe` meta onto the chat so the header
   // strip (model + reasoning chips + context meter) shows LIVE values.
   | { op: "setSessionMeta"; chatId: string; meta: SessionMetaReport }
-  | { op: "bindProviderChat"; chatId: string; providerChatId: string }
+  | {
+      op: "bindProviderChat";
+      chatId: string;
+      providerChatId: string;
+      resetCount?: number;
+    }
   | { op: "clearProviderChat"; chatId: string }
   | { op: "updateRunId"; messageId: string; runId: string }
   | { op: "heartbeat"; messageId: string }
@@ -1347,10 +1356,21 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
-  async bindProviderChat(chatId: string, providerChatId: string): Promise<void> {
+  async bindProviderChat(
+    chatId: string,
+    providerChatId: string,
+    resetCount?: number,
+  ): Promise<void> {
     // Best-effort: losing it only costs a fresh Hermes session next turn (a
-    // benign continuity miss), never the turn itself.
-    await this.doPost({ op: "bindProviderChat", chatId, providerChatId }).catch(
+    // benign continuity miss), never the turn itself. `resetCount` = the
+    // reset epoch the turn started under — Convex refuses a bind that raced
+    // a /reset (bindProviderChat mutation).
+    await this.doPost({
+      op: "bindProviderChat",
+      chatId,
+      providerChatId,
+      ...(resetCount !== undefined ? { resetCount } : {}),
+    }).catch(
       (e) =>
         console.error(
           "[convex-writer] bindProviderChat failed:",

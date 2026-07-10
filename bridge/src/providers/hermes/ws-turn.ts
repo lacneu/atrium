@@ -50,6 +50,11 @@ export interface HermesWsTurnOptions {
   /** The chat's stored Hermes WS session id (stored_session_id), or null. */
   providerChatId: string | null;
   text: string;
+  /** Re-request the prompt WITH the rehydration history: called when the turn
+   *  expected a warm session (providerChatId set) but had to MINT a fresh one
+   *  (resume degraded/failed) — the brand-new session must receive the history
+   *  the warm prompt deliberately omitted, or the agent starts cold. */
+  freshText?: () => Promise<string>;
   /** Inline base64 attachments to stage BEFORE the prompt (Atrium send shape).
    *  Images go through image.attach_bytes (vision tiles); everything else
    *  through file.attach (workspace artifact + @file: ref). */
@@ -109,12 +114,26 @@ export function runHermesWsTurn(
   });
 
   const done = (async () => {
-    // 1) Session: resume the stored one, else create (and persist) a new one.
+    // 1) Session: resume the stored one, else create a new one. A minted
+    // session id is persisted only AFTER prompt.submit is ACKed (pendingBind):
+    // binding earlier would make a failed first send look WARM on retry (a
+    // resume of a session that never received the history-carrying prompt).
     let storedSid: string | null = null;
     let sessionCwd: string | null = null;
+    let pendingBind: string | null = null;
+    let effectiveText = opts.text;
     const noteCwd = (r: Record<string, unknown>) => {
       const info = r.info as { cwd?: unknown } | undefined;
       if (info && typeof info.cwd === "string" && info.cwd) sessionCwd = info.cwd;
+    };
+    // The REAL session is brand new despite a stored id (resume degraded or
+    // threw) — the prompt must carry the rehydration history the warm prompt
+    // deliberately omitted (freshText is best-effort inside: a context-fetch
+    // failure returns the bare text).
+    const recoverText = async (): Promise<void> => {
+      if (opts.providerChatId && opts.freshText) {
+        effectiveText = await opts.freshText();
+      }
     };
     try {
       if (opts.providerChatId && isHermesWsStoredSessionId(opts.providerChatId)) {
@@ -133,7 +152,8 @@ export function runHermesWsTurn(
         if (!runtimeSid) {
           throw new Error("Hermes WS session.create returned no session_id");
         }
-        if (storedSid && opts.onBoundSession) await opts.onBoundSession(storedSid);
+        if (storedSid) pendingBind = storedSid;
+        await recoverText();
       }
     } catch (err) {
       // A stale stored session that fails to resume → recover with a fresh one
@@ -141,11 +161,11 @@ export function runHermesWsTurn(
       if (opts.providerChatId && !runtimeSid) {
         try {
           const r = await opts.client.call("session.create", {});
+          noteCwd(r);
           runtimeSid = str(r.session_id) || null;
           storedSid = str(r.stored_session_id) || null;
-          if (runtimeSid && storedSid && opts.onBoundSession) {
-            await opts.onBoundSession(storedSid);
-          }
+          if (runtimeSid && storedSid) pendingBind = storedSid;
+          if (runtimeSid) await recoverText();
         } catch {
           /* fall through to the reject below */
         }
@@ -609,7 +629,7 @@ export function runHermesWsTurn(
             if (ref) fileRefs.push(ref);
           }
         }
-        const promptParts = [opts.text];
+        const promptParts = [effectiveText];
         if (fileRefs.length) promptParts.push(fileRefs.join("\n"));
         if (opts.filesFetcher) promptParts.push(DELIVERY_DIRECTIVE);
         await opts.client.call("prompt.submit", {
@@ -628,8 +648,25 @@ export function runHermesWsTurn(
           { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
         ]);
         await chain.catch(() => {});
+        // NOTE: no pendingBind flush on this path — the prompt was never
+        // delivered, so the next send must stay FRESH (create + re-carry the
+        // history), not resume this virgin session as warm.
         resolveAccepted();
         return;
+      }
+      // Prompt ACCEPTED on the minted session → persist it now. FIRE-AND-FORGET
+      // (off the critical path): awaiting a slow Convex write here would hold
+      // /send open past the ACK. Best-effort: a bind failure is a continuity
+      // miss (the next turn mints a fresh session and re-carries the history),
+      // never a turn failure; outbox serialization keeps the next send well
+      // behind this write.
+      if (pendingBind && opts.onBoundSession) {
+        void opts.onBoundSession(pendingBind).catch((e) =>
+          console.error(
+            "[hermes-ws-turn] session bind failed (continuity miss):",
+            (e as Error)?.message ?? e,
+          ),
+        );
       }
       resolveAccepted();
 

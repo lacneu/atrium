@@ -383,6 +383,22 @@ export const getChatRouting = internalQuery({
           : res.rebind
             ? null
             : (chat.openclawChatId ?? null),
+      // BRANCHED chat with its first-turn rehydration still pending: the
+      // dispatch consumes the one-shot flag at the TRUE acceptance point (the
+      // gateway ACK) — see consumeForkRehydration. OPENCLAW ONLY: an OpenClaw
+      // ACK means chat.send accepted the prompt. A Hermes /send 200 is NOT a
+      // delivery signal (the WS transport settles a prompt.submit failure as a
+      // bridge-owned error and still ACKs), and Hermes freshness is decided
+      // bridge-side (no stored session -> history carried) — so on Hermes the
+      // flag is inert (routedSwitch is ignored there) and never needs
+      // consuming.
+      forkFresh:
+        chat.forkPendingRehydration === true &&
+        (instance?.kind ?? "openclaw") === "openclaw",
+      // Provider-session reset epoch (see bindProviderChat): rides the /send
+      // body so the turn's post-ACK session bind can prove no /reset ran
+      // while it was in flight.
+      providerResetCount: chat.providerResetCount ?? 0,
       target: res.target, // null => no agent assigned (failReason no_agent)
       rebind: res.rebind,
       failReason: res.failReason,
@@ -423,18 +439,41 @@ export const getChatRouting = internalQuery({
       // bridge restart rebuilds its Session (firstSendPending true), the bridge would
       // treat the still-warm gateway session as fresh and re-inject the whole history
       // (duplicate). `rehydration` stays the admin/env enable knob.
+      // BRANCHED chat, first turn (chatFork): the fork's session key is brand
+      // new, but the gateway auto-creates its row (systemSent truthy) during the
+      // pre-describe sessions.patch — without an explicit re-key signal the
+      // bridge misreads it as WARM and the fork's agent starts COLD (the same
+      // trap the per-turn router hit). `routedSwitch` IS that re-key signal:
+      // emit it while the one-shot forkPendingRehydration flag is set (the
+      // dispatch consumes the flag at the gateway ACK). Deliberately NO
+      // `rehydration: true` force on THIS single-agent path: the freshness
+      // signal and the ENABLE knob stay separate, so the operator kill-switches
+      // (admin rehydration:false, OPENCLAW_REHYDRATION=off) still win over a
+      // fork's grounding — a fork on a rehydration-disabled instance starts
+      // cold BY CONFIGURATION. (A multi-agent fork goes through the per-turn
+      // branch above, which forces the knob for EVERY routed dispatch — the
+      // router's own pre-existing contract, fork or not: context carry across
+      // agent switches is unusable without it.)
       configOverrides:
         chat.kind === "documentary" ||
         chat.kind === "summarizer" ||
-        chat.kind === "curator"
+        chat.kind === "curator" ||
+        chat.kind === "converter"
           ? { ...bridgeDispatchConfig(instance?.config, contentLocale), rehydration: false }
           : chat.perTurnRouting && routedAgent
             ? {
                 ...bridgeDispatchConfig(instance?.config, contentLocale),
                 rehydration: true,
-                ...(routedSwitch ? { routedSwitch: true } : {}),
+                ...(routedSwitch || chat.forkPendingRehydration === true
+                  ? { routedSwitch: true }
+                  : {}),
               }
-            : bridgeDispatchConfig(instance?.config, contentLocale),
+            : chat.forkPendingRehydration === true
+              ? {
+                  ...bridgeDispatchConfig(instance?.config, contentLocale),
+                  routedSwitch: true,
+                }
+              : bridgeDispatchConfig(instance?.config, contentLocale),
     };
   },
 });
@@ -622,10 +661,23 @@ export const updateMessageRunId = internalMutation({
 });
 
 export const bindProviderChat = internalMutation({
-  args: { chatId: v.id("chats"), providerChatId: v.string() },
-  handler: async (ctx, { chatId, providerChatId }) => {
+  args: {
+    chatId: v.id("chats"),
+    providerChatId: v.string(),
+    // The chat's providerResetCount the TURN started under (rode the /send
+    // body). A mismatch means a /reset ran while this bind was in flight —
+    // refuse, or the bind would resurrect the session the reset discarded
+    // into the freshly-cleared slot (codex P1; a pure slot-value CAS cannot
+    // catch the null->null case of a reset on a not-yet-bound chat). Absent
+    // (old bridge) = unguarded, the pre-existing behavior.
+    resetCount: v.optional(v.number()),
+  },
+  handler: async (ctx, { chatId, providerChatId, resetCount }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
+    if (resetCount !== undefined && (chat.providerResetCount ?? 0) !== resetCount) {
+      return;
+    }
     if (chat.openclawChatId === providerChatId) return;
     // A per-turn-routing chat NEVER persists a Hermes id to the SHARED
     // openclawChatId slot: that slot belongs to the chat's PRIMARY OpenClaw
@@ -657,6 +709,10 @@ export const clearProviderChat = internalMutation({
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
     const cur = chat.openclawChatId;
+    // The reset EPOCH bumps even when the slot is empty (nothing to clear):
+    // an in-flight turn's late bind must see the mismatch and stand down —
+    // the empty-slot case is exactly a not-yet-bound first turn (codex P1).
+    const bumped = { providerResetCount: (chat.providerResetCount ?? 0) + 1 };
     // BOTH Hermes session shapes: REST (`api_<ts>_<hex>`) and WS
     // (`YYYYMMDD_HHMMSS_<hex>`, the stored_session_id) — a reset must clear
     // whichever transport persisted it (codex P1), never a routing segment.
@@ -665,7 +721,9 @@ export const clearProviderChat = internalMutation({
       (/^api_[0-9]+_[0-9a-f]+$/i.test(cur) ||
         /^[0-9]{8}_[0-9]{6}_[0-9a-f]+$/i.test(cur))
     ) {
-      await ctx.db.patch(chatId, { openclawChatId: undefined });
+      await ctx.db.patch(chatId, { openclawChatId: undefined, ...bumped });
+    } else {
+      await ctx.db.patch(chatId, bumped);
     }
   },
 });
@@ -809,6 +867,20 @@ export const confirmTurnRouting = internalMutation({
       lastRoutedInstanceName: routedAgent.instanceName,
       lastRoutedAgentId: routedAgent.agentId,
     });
+  },
+});
+
+// BRANCHED chat (chatFork): consume the one-shot first-turn rehydration flag.
+// Called by the dispatch ONLY after an OPENCLAW gateway ACK'd the send (the
+// true acceptance point — same contract as confirmTurnRouting; getChatRouting
+// returns forkFresh:false on Hermes, where the flag stays armed and inert).
+export const consumeForkRehydration = internalMutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat?.forkPendingRehydration === true) {
+      await ctx.db.patch(chatId, { forkPendingRehydration: undefined });
+    }
   },
 });
 
@@ -1109,6 +1181,10 @@ export const dispatch = internalAction({
             // fetches prior history for session re-hydration (so the current
             // message is not duplicated into the injected context).
             messageId: row.messageId ?? null,
+            // Provider-session reset epoch: echoed back by the turn's session
+            // bind so bindProviderChat can refuse a bind that raced a /reset
+            // (see the mutation). An old bridge ignores this unknown field.
+            providerResetCount: routing.providerResetCount,
             // Per-chat knob intent: the bridge re-applies these (sessions.patch)
             // before chat.send so a reset session keeps the user's reasoning/model.
             sessionSettings: routing.sessionSettings,
@@ -1153,6 +1229,22 @@ export const dispatch = internalAction({
           chatId: row.chatId as Id<"chats">,
           routedAgent: row.routedAgent,
           segment: turnRouting.segment,
+        });
+      }
+      // BRANCHED chat: consume the one-shot rehydration flag HERE — the
+      // OpenClaw ACK is the true acceptance point (same contract as
+      // confirmTurnRouting above; routing.forkFresh is false on Hermes, whose
+      // 200 is not a delivery signal). Terminal message states over/under-
+      // approximate delivery: a Hermes WS submit-failure finalizes an error
+      // row though nothing was delivered, and the stuck-stream watchdog
+      // terminates rows without stream.finalize. An INLINE-attachment first
+      // send consumes too: the gateway-crash guard shipped it bare AND warmed
+      // the session, so no later turn of this session can carry the history —
+      // the SAME documented known-gap as an attachment turn right after a
+      // session reset (the fork re-grounds when the session next rolls).
+      if (routing.forkFresh) {
+        await ctx.runMutation(internal.bridge.consumeForkRehydration, {
+          chatId: row.chatId as Id<"chats">,
         });
       }
     } else {

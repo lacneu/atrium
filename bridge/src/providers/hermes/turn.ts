@@ -32,6 +32,11 @@ export interface HermesTurnOptions {
   /** The chat's stored Hermes session id (providerChatId), or null on turn 1. */
   providerChatId: string | null;
   text: string;
+  /** Re-request the prompt WITH the rehydration history: called when the turn
+   *  expected a warm session (providerChatId set) but had to MINT a fresh one
+   *  (404 auto-recovery) — the brand-new session must receive the history the
+   *  warm prompt deliberately omitted, or the agent starts cold. */
+  freshText?: () => Promise<string>;
   /** Persist a NEWLY minted session id back to Convex (turn 1 only). */
   onBoundSession?: (sessionId: string) => Promise<void>;
   /** Aborts the in-flight SSE request (Stop button). */
@@ -80,10 +85,11 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     let res: Response;
     try {
       let sessionId = await opts.client.ensureSession(opts.providerChatId);
-      // Newly minted (turn 1): persist so the next turn reuses this session.
-      if (!opts.providerChatId && opts.onBoundSession) {
-        await opts.onBoundSession(sessionId);
-      }
+      // Whether THIS turn minted the session (turn 1, or the 404 recovery
+      // below). The id is persisted only AFTER the gateway accepts the prompt:
+      // binding earlier would make a failed first send look WARM on retry (a
+      // resume of a session that never received the history-carrying prompt).
+      let mintedFresh = !opts.providerChatId;
       // The ACCEPTANCE point: POST returns the SSE stream, or throws (dispatch
       // failure). The gateway TOOK the run.
       try {
@@ -95,11 +101,30 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         const status = (err as { status?: number })?.status;
         if (status === 404 && opts.providerChatId) {
           sessionId = await opts.client.ensureSession(null);
-          if (opts.onBoundSession) await opts.onBoundSession(sessionId);
-          res = await opts.client.openStream(sessionId, opts.text, opts.signal);
+          mintedFresh = true;
+          // The REAL session is brand new despite the stored id — the prompt
+          // must carry the rehydration history after all (freshText is
+          // best-effort inside: a context-fetch failure returns the bare text).
+          const text = opts.freshText ? await opts.freshText() : opts.text;
+          res = await opts.client.openStream(sessionId, text, opts.signal);
         } else {
           throw err;
         }
+      }
+      // Persist the minted session now that the prompt was ACCEPTED on it.
+      // FIRE-AND-FORGET (off the critical path): the SSE response is already
+      // open — awaiting a slow Convex write here would leave it unconsumed and
+      // delay the streaming row. Best-effort: a bind failure is a continuity
+      // miss (the next turn mints a fresh session and re-carries the history),
+      // never a turn failure; the outbox serialization means the next send
+      // dispatches long after this write settles.
+      if (mintedFresh && opts.onBoundSession) {
+        void opts.onBoundSession(sessionId).catch((e) =>
+          console.error(
+            "[hermes-turn] session bind failed (continuity miss):",
+            (e as Error)?.message ?? e,
+          ),
+        );
       }
     } catch (err) {
       rejectAccepted(err);

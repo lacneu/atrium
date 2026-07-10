@@ -59,6 +59,7 @@ import {
   formatRuntime,
   isReportableSubAgent,
   isSubAgentSessionArchived,
+  isForkedSubAgentCopy,
   shortenSubAgentError,
   type SubAgentCardView,
   type SubAgentRow,
@@ -542,6 +543,9 @@ export function SubAgentPanelContent({
   // A terminal `cleanup: "delete"` child has no gateway session left to talk to —
   // the interaction composer disables with an explicit reason (pure, unit-tested).
   const sessionArchived = isSubAgentSessionArchived(card);
+  // A card COPIED by a chat branch (fork: key prefix) is display-only: its
+  // session belongs to the SOURCE chat — interact there, not from the copy.
+  const forkedCopy = isForkedSubAgentCopy(childKey);
   // Which sub-agents the user already reported (drives the report button's
   // already-flagged state) — owner-scoped, Convex-deduped across consumers.
   const reportedIds = useQuery(api.subAgentReports.myReportedSubAgentIds, {
@@ -697,7 +701,7 @@ export function SubAgentPanelContent({
     const text = draft.trim();
     // Same guard as the disabled button — Enter in the textarea calls doSend()
     // directly, so an archived session must be refused HERE too (codex P2).
-    if (sessionArchived) return;
+    if (sessionArchived || forkedCopy) return;
     if ((!text && attachments.length === 0) || sending || uploading) return;
     setSending(true);
     try {
@@ -1025,6 +1029,10 @@ export function SubAgentPanelContent({
                 <span className="oc-subpanel__prompt-hint">
                   {m.subagent_interact_wait_running()}
                 </span>
+              ) : forkedCopy ? (
+                <span className="oc-subpanel__prompt-hint">
+                  {m.subagent_interact_forked_copy()}
+                </span>
               ) : sessionArchived ? (
                 <span className="oc-subpanel__prompt-hint">
                   {m.subagent_interact_archived()}
@@ -1044,6 +1052,7 @@ export function SubAgentPanelContent({
                   uploading ||
                   card?.tone === "running" ||
                   sessionArchived ||
+                  forkedCopy ||
                   (interactions ?? []).some((it) => it.status === "pending")
                 }
                 onClick={() => void doSend()}

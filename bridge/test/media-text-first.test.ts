@@ -252,6 +252,24 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     expect(writer.lastFinalizeKind).toBe("empty_response");
   });
 
+  it("a DELEGATE-THEN-YIELD turn (sessions_yield) with no text is NOT empty_response (live prod denis 2026-07-10)", async () => {
+    // Denis' turn worked (read/exec/spawn) then called sessions_yield to hand off
+    // to a sub-agent that announced the real answer as a LATER spontaneous turn.
+    // The child ran AFTER the yield so no child key was on this turn's wire — the
+    // intersection can't save it, but the explicit yield must.
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_yield", writer);
+    await sink.beginTurn("run-yield");
+    await sink.apply([
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "tool.status", name: "sessions_spawn", phase: "completed", output: "{}" },
+      { type: "tool.status", name: "sessions_yield", phase: "completed" },
+      { type: "message.final", text: "" }, // deliberate: the child answers
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBeNull(); // complete, never an error card
+  });
+
   it("a turn that STREAMED text via deltas then an empty final is NOT converted (codex P2)", async () => {
     const writer = new OrderingWriter();
     const sink = new TurnSink("chat_st", writer);

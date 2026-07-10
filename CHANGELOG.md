@@ -8,6 +8,58 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.46.0] — Branch a conversation into a new chat
+
+Feature release (frontend + Convex + bridge). No breaking changes; additive
+schema only.
+
+- **Branch from any reply into a new chat.** A new action on every assistant
+  message forks the conversation: the new chat opens instantly with the same
+  history up to that point (messages and their file attachments — no duplicated
+  storage), so you can dig into a tangent while the original conversation
+  continues untouched. The branched chat keeps the same agent, title and
+  project; on your first message there, the agent is re-grounded with the
+  carried history through the existing rehydration engine (rolling summary
+  included when applicable) — on OpenClaw and Hermes alike. History carried is
+  bounded to the visible window (the newest 200 messages before the branch
+  point); a branch never includes anything said after it.
+- **A branch is a full continuation, not a bare transcript copy.** The fork
+  also carries your per-chat model/reasoning settings, the per-message agent
+  attribution and last-used agent of a multi-agent conversation, delegated
+  sub-agent result cards (display-only in the branch), and pasted-file
+  visibility — and it lands at the top of the chat list like any new chat.
+  Branching is refused on a reply still being written; operator rehydration
+  kill-switches keep working (a branch never overrides them).
+- **Hermes agents now recover their conversation on a fresh session.** When a
+  Hermes chat opens a brand-new server session — a branched chat's first
+  message, or an auto-recovery after the stored session vanished — the prompt
+  now carries the conversation history (both transports), so the agent
+  continues instead of starting cold. Session ids are persisted only once the
+  gateway actually accepted the prompt, so a failed first send retries cleanly.
+
+## [0.45.1] — Delegating turns no longer look like failures
+
+Corrective release. Bridge only; no breaking changes.
+
+- **A turn that hands off to a sub-agent is no longer shown as an error.** When
+  an agent does its work and then calls `sessions_yield` to let a sub-agent
+  finish and answer (the real reply then arrives as a separate follow-up
+  message), the handing-off turn produces no text of its own — and was being
+  flagged as an "empty response" error card, even though the conversation
+  succeeded. An explicit yield is now recognized as a deliberate hand-off, so
+  that turn finalizes cleanly. This also stops such turns from inflating the
+  failure count in the Bridge connections stats (live prod, 2026-07-10).
+
+- **The Bridge tab no longer flags a false "unknown protocol fields" warning.**
+  The OpenClaw 2026.6.11 gateway stamps five sub-agent metadata fields onto its
+  agent events (a child's role and control scope, its parent session key, its
+  runtime, and the parent's child-session list). These are benign, additive
+  fields the bridge already passed through untouched, but the protocol-drift
+  detector had not yet learned them — so Settings ▸ Platform showed a red
+  "5 unknown fields" badge. They are now part of the recognized 2026.6.11
+  protocol surface, so a validated install reports zero drift again. Metadata
+  field names only — no conversation content is ever inspected.
+
 ## [0.45.0] — Read documents in a side panel, without leaving the conversation
 
 Feature release (frontend + Convex). No breaking changes; additive schema only.
