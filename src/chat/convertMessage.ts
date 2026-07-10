@@ -184,6 +184,9 @@ export function convertConvexMessage(
         // The Convex message _id — surfaced so per-message actions (delete) call
         // the mutation with the authoritative id, not assistant-ui's internal one.
         messageId: message._id,
+        // The message's true moment (fork copies carry their SOURCE time in
+        // orderTime) — shown in the reply's contextual menu header.
+        sentAt: message.orderTime ?? message._creationTime,
         // The owning chat id — surfaced so per-message actions (forensic feedback)
         // can scope the mutation without threading chatId through React context.
         chatId: message.chatId,

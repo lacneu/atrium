@@ -93,6 +93,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         _id: echoId as Id<"messages">,
         chatId: args.chatId,
         _creationTime: now,
+        orderTime: undefined, // an echo's moment IS its creation time
         role: "user" as const,
         // `complete` keeps the status switches simple; the "sending…" affordance
         // keys off the `optimistic-` id prefix instead (see convertMessage), so no

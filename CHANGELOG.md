@@ -8,6 +8,26 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.47.0] — Branching flows like ChatGPT
+
+Feature release (frontend + Convex). No breaking changes.
+
+- **Branching now lives in the reply's ⋯ menu, asks for a name, and keeps you
+  where you are.** The branch action moved from a standalone icon into a new
+  "More actions" contextual menu on each assistant reply. Picking it opens a
+  small dialog asking for the new conversation's name (blank keeps the current
+  title); on confirm the branch is created WITHOUT leaving the current chat —
+  the new row pulses briefly at the top of the left panel so your eye catches
+  exactly where it landed (its section auto-expands if folded), and a toast
+  confirms it (useful when the sidebar is collapsed). Click the row whenever
+  you want to continue the tangent; reduced-motion setups get a static
+  highlight instead of the pulse.
+- **The ⋯ menu sits at the end of the action row and carries more context.**
+  Like ChatGPT: the menu opens with the message's date and time as a quiet
+  header, and the "show raw source" toggle moved off the action bar into the
+  menu. On a branched conversation, copied messages show their ORIGINAL time,
+  not the copy time.
+
 ## [0.46.0] — Branch a conversation into a new chat
 
 Feature release (frontend + Convex + bridge). No breaking changes; additive

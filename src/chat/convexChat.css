@@ -3859,6 +3859,34 @@
 }
 .oc-chatitem:hover { background: var(--sidebar-accent); }
 .oc-chatitem--active { background: var(--sidebar-accent); }
+/* The reply ⋯ menu's datetime header — quiet context, not an action. */
+.oc-msgmenu__when {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+/* One-shot BRANCH landing flash (chatFork keeps the user in the source chat;
+   this pulse is how the eye finds the new row). Three soft accent pulses then
+   back to normal — the row's onAnimationEnd clears the class (a JS timer
+   covers reduced-motion, where the animation never runs). */
+@keyframes oc-chatitem-flash {
+  0%, 100% { background: transparent; }
+  12%, 44%, 76% {
+    background: color-mix(in srgb, var(--primary) 26%, transparent);
+  }
+  28%, 60% {
+    background: color-mix(in srgb, var(--primary) 8%, transparent);
+  }
+}
+.oc-chatitem--flash {
+  animation: oc-chatitem-flash 1.9s ease-in-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-chatitem--flash {
+    animation: none;
+    background: color-mix(in srgb, var(--primary) 18%, transparent);
+  }
+}
 .oc-chatitem__grip {
   display: flex; align-items: center; justify-content: center;
   width: 1.25rem; height: 1.75rem; cursor: grab; color: var(--muted-foreground);

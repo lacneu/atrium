@@ -87,14 +87,17 @@ import {
   Check,
   X,
   GitBranch,
+  Ellipsis,
 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatDateTime } from "@/lib/format";
 import {
   Popover,
   PopoverContent,
@@ -102,7 +105,8 @@ import {
 } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { useConfirm } from "@/components/ConfirmDialog";
+import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
+import { flashSidebarChat } from "./sidebarFlash";
 import {
   Dialog,
   DialogContent,
@@ -1585,9 +1589,29 @@ function IconArrowDown() {
  *  in a new chat"): the fork carries the same visible history up to here, opens
  *  immediately, and its first send re-grounds the agent via the existing
  *  rehydration — the original conversation continues untouched. */
-function BranchChatButton() {
+/** The assistant reply's "more actions" contextual menu (ChatGPT-style ⋯,
+ *  LAST in the action row). Header = the message's datetime; items = the
+ *  source toggle (moved off the bar) and branching. Branching opens a NAME
+ *  dialog, creates the branch and STAYS in the current conversation — the new
+ *  row flashes in the sidebar so the eye finds where it landed (no navigation;
+ *  the earlier navigate-on-fork crashed the message tree's useMessage lookups
+ *  mid-teardown). */
+function AssistantMoreMenu({
+  sourceShown,
+  sourceActive,
+  onToggleSource,
+}: {
+  /** Whether the source toggle is offered at all (the showSource UI pref). */
+  sourceShown: boolean;
+  sourceActive: boolean;
+  onToggleSource: () => void;
+}) {
   const messageId = useMessage(
     (msg) => (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
+  // The message's true moment (fork copies carry their SOURCE time).
+  const sentAt = useMessage(
+    (msg) => (msg.metadata?.custom as { sentAt?: number } | undefined)?.sentAt,
   );
   // A STREAMING reply is not a valid branch point yet (the server refuses it —
   // no stable content); grey the affordance instead of toasting an error.
@@ -1597,39 +1621,79 @@ function BranchChatButton() {
       "streaming",
   );
   const fork = useMutation(api.chatFork.forkChat);
-  const navigate = useNavigate();
+  const prompt = usePrompt();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   if (!messageId) return null;
+  const branch = async () => {
+    // Name dialog first — cancel aborts the whole branch (nothing created).
+    const name = await prompt({
+      title: m.chat_branch_action(),
+      description: m.chat_branch_dialog_desc(),
+      label: m.sidebar_title_field(),
+      placeholder: m.chat_branch_name_placeholder(),
+      confirmLabel: m.chat_branch_confirm(),
+      // Blank confirm = keep the source title (the server-side fallback).
+      allowEmpty: true,
+    });
+    if (name === null) return;
+    setBusy(true);
+    try {
+      const { chatId } = await fork({
+        branchMessageId: messageId as Id<"messages">,
+        // Blank = keep the source title (server-side default).
+        ...(name.trim() ? { title: name.trim() } : {}),
+      });
+      // Stay HERE; the sidebar row pulse shows where the branch landed (and
+      // the toast covers a collapsed sidebar).
+      flashSidebarChat(chatId);
+      toast.success(m.chat_branch_created());
+    } catch (err) {
+      toast.error(m.chat_branch_failed(), err);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <button
-      type="button"
-      className="oc-iconbtn"
-      title={m.chat_branch_action()}
-      aria-label={m.chat_branch_action()}
-      disabled={busy || streaming}
-      onClick={() => {
-        setBusy(true);
-        void (async () => {
-          try {
-            const { chatId } = await fork({
-              branchMessageId: messageId as Id<"messages">,
-            });
-            // NO state reset after a successful navigate: this component sits
-            // INSIDE the message tree being torn down — a local setState would
-            // re-render it against the swapped (momentarily empty) thread and
-            // its useMessage lookup throws (index out of bounds). Busy stays
-            // latched until unmount; errors reset it below.
-            await navigate({ to: "/chat/$chatId", params: { chatId } });
-          } catch (err) {
-            toast.error(m.chat_branch_failed(), err);
-            setBusy(false);
-          }
-        })();
-      }}
-    >
-      <GitBranch size={15} />
-    </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="oc-iconbtn"
+          title={m.chat_more_actions()}
+          aria-label={m.chat_more_actions()}
+          disabled={busy}
+        >
+          <Ellipsis size={15} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {sentAt !== undefined ? (
+          <>
+            <DropdownMenuLabel className="oc-msgmenu__when">
+              {formatDateTime(sentAt, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              })}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {sourceShown ? (
+          <DropdownMenuItem onSelect={onToggleSource}>
+            <Code size={14} aria-hidden />
+            {sourceActive ? m.chat_show_rendered() : m.chat_show_source()}
+          </DropdownMenuItem>
+        ) : null}
+        <DropdownMenuItem
+          disabled={busy || streaming}
+          onSelect={() => void branch()}
+        >
+          <GitBranch size={14} aria-hidden />
+          {m.chat_branch_action()}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -2433,15 +2497,15 @@ function AssistantMessage() {
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
           <ReadAloudButton />
-          <BranchChatButton />
-          {ui.showSource ? (
-            <SourceToggleButton
-              active={showSource}
-              onToggle={() => setShowSource((s) => !s)}
-            />
-          ) : null}
           {ui.showReport ? <FeedbackButton /> : null}
           {ui.showDelete ? <DeleteMessageButton kind="assistant" /> : null}
+          {/* ChatGPT-style: the ⋯ menu closes the row (rightmost) and hosts the
+              datetime header + the source toggle + branching. */}
+          <AssistantMoreMenu
+            sourceShown={ui.showSource}
+            sourceActive={showSource}
+            onToggleSource={() => setShowSource((s) => !s)}
+          />
         </ActionBarPrimitive.Root>
       </div>
     </MessagePrimitive.Root>

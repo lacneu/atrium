@@ -275,6 +275,9 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           _id: message._id,
           chatId: message.chatId,
           _creationTime: message._creationTime,
+          // Logical-order stamp (fork copies carry the SOURCE time here) — the
+          // client shows `orderTime ?? _creationTime` as the message's moment.
+          orderTime: message.orderTime,
           role: message.role,
           status: message.status,
           runId: message.runId,

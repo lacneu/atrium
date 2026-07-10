@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
+import { clearSidebarFlash, useSidebarFlashChatId } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -216,6 +217,29 @@ export function ChatSidebar({
       return !c;
     });
   }
+
+  // A BRANCH landing flash (chatFork) must be visible even when its section is
+  // FOLDED: the row only mounts — and pulses/scrolls — once its group renders,
+  // so expand the section holding the flashed chat first (the flash is now the
+  // primary way the user locates the new conversation).
+  const flashChatId = useSidebarFlashChatId();
+  useEffect(() => {
+    if (!flashChatId) return;
+    const target = rows.find((c) => c._id === flashChatId);
+    if (!target) return; // not delivered by the live list yet — retriggers then
+    const pid = target.projectId ?? null;
+    if (pid === null) {
+      if (noProjectCollapsed) {
+        localStorage.setItem(COLLAPSE_KEY, "0");
+        setNoProjectCollapsed(false);
+      }
+      return;
+    }
+    const proj = (projects ?? []).find((p) => p._id === pid);
+    if (proj?.collapsed) {
+      void setProjectCollapsed({ projectId: pid, collapsed: false });
+    }
+  }, [flashChatId, rows, projects, noProjectCollapsed, setProjectCollapsed]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -630,6 +654,27 @@ function ChatItem({
   const confirm = useConfirm();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(chat.title ?? "");
+  // One-shot BRANCH flash (chatFork keeps the user in the source chat — this
+  // row pulse is how the eye finds where the new conversation landed). Scroll
+  // it into view, run the CSS animation once, then clear; the timer fallback
+  // covers environments where the animation never runs (reduced motion).
+  const flashing = useSidebarFlashChatId() === chat._id;
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!flashing) return;
+    // Instant (not smooth) scroll under prefers-reduced-motion: the CSS pulse
+    // is already static there, and a programmatic smooth scroll is exactly the
+    // kind of motion the preference asks to avoid.
+    const reduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    rowRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: reduced ? "auto" : "smooth",
+    });
+    const t = setTimeout(() => clearSidebarFlash(chat._id), 2600);
+    return () => clearTimeout(t);
+  }, [flashing, chat._id]);
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -642,11 +687,21 @@ function ChatItem({
   return (
     <>
       <div
-        ref={setNodeRef}
+        ref={(el) => {
+          setNodeRef(el);
+          rowRef.current = el;
+        }}
         style={style}
         className={
-          "oc-chatitem group/row" + (active ? " oc-chatitem--active" : "")
+          "oc-chatitem group/row" +
+          (active ? " oc-chatitem--active" : "") +
+          (flashing ? " oc-chatitem--flash" : "")
         }
+        onAnimationEnd={(e) => {
+          if (flashing && e.animationName === "oc-chatitem-flash") {
+            clearSidebarFlash(chat._id);
+          }
+        }}
       >
         <button
           className="oc-chatitem__grip"

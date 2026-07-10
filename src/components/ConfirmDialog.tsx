@@ -50,6 +50,9 @@ export type PromptOptions = {
   defaultValue?: string
   confirmLabel?: string
   cancelLabel?: string
+  /** Allow confirming with an EMPTY value (resolves to "") — for prompts whose
+   *  blank answer has a meaningful fallback (e.g. "keep the current title"). */
+  allowEmpty?: boolean
 }
 
 type ConfirmReq = { kind: "confirm"; opts: ConfirmOptions }
@@ -106,7 +109,9 @@ export function DialogsProvider({ children }: { children: React.ReactNode }) {
     !confirmWord ||
     value.trim().toLowerCase() === confirmWord.trim().toLowerCase()
 
-  const promptValid = value.trim().length > 0
+  const promptValid =
+    value.trim().length > 0 ||
+    (req?.kind === "prompt" && req.opts.allowEmpty === true)
 
   // Deterministically win the focus race against a closing DropdownMenu by
   // focusing our input on open (only when there is an input to focus).

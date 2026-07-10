@@ -124,6 +124,26 @@ describe("chatFork.forkChat", () => {
     expect(ordered.every((m) => m.runId === undefined)).toBe(true);
   });
 
+  test("the fork dialog's NAME wins over the copied title; blank keeps the source title", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, ids } = await seedChat(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const named = await as.mutation(api.chatFork.forkChat, {
+      branchMessageId: ids[1]!,
+      title: "  Tangente budget  ",
+    });
+    const blank = await as.mutation(api.chatFork.forkChat, {
+      branchMessageId: ids[1]!,
+      title: "   ",
+    });
+    const titles = await t.run(async (ctx) => ({
+      named: (await ctx.db.get(named.chatId as Id<"chats">))!.title,
+      blank: (await ctx.db.get(blank.chatId as Id<"chats">))!.title,
+    }));
+    expect(titles.named).toBe("Tangente budget"); // trimmed custom name
+    expect(titles.blank).toBe("Projet IFOA"); // blank -> source title copied
+  });
+
   test("IDOR: a message from SOMEONE ELSE's chat can never seed a fork", async () => {
     const t = convexTest(schema, modules);
     const { ids } = await seedChat(t); // owned by alice

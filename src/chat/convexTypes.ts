@@ -140,6 +140,9 @@ export interface ConvexMessageView {
   _id: ConvexId<"messages">;
   chatId: ConvexId<"chats">;
   _creationTime: number;
+  /** Logical-order stamp (fork copies carry the SOURCE message's time here) —
+   *  `orderTime ?? _creationTime` is the message's true "sent at" moment. */
+  orderTime?: number;
   role: MessageRole;
   runId?: string;
   status: MessageStatus;

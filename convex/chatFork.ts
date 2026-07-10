@@ -52,10 +52,13 @@ const SPAWN_TOOL_NAMES = new Set([
 export const forkChat = mutation({
   args: {
     branchMessageId: v.id("messages"),
+    // User-chosen name for the branch (the fork dialog). Blank/absent = the
+    // source title is copied (untitled stays untitled).
+    title: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { branchMessageId },
+    { branchMessageId, title },
   ): Promise<{ chatId: Id<"chats"> }> => {
     const { userId, actor } = await requireActive(ctx);
     // The source chat is DERIVED from the branch message (single arg, minimal
@@ -179,9 +182,14 @@ export const forkChat = mutation({
             lastRoutedAgentId: lastRoutedInSlice.routedAgentId,
           }
         : {}),
-      // Title copied as-is (user data; untitled stays untitled so every surface
-      // keeps its localized fallback). Provenance rides forkedFromChatId.
-      ...(source.title !== undefined ? { title: source.title } : {}),
+      // The dialog's name wins; else the title is copied as-is (user data;
+      // untitled stays untitled so every surface keeps its localized
+      // fallback). Provenance rides forkedFromChatId.
+      ...(title?.trim()
+        ? { title: title.trim() }
+        : source.title !== undefined
+          ? { title: source.title }
+          : {}),
       ...(source.projectId !== undefined
         ? { projectId: source.projectId }
         : {}),
