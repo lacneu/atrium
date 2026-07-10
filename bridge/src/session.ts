@@ -21,6 +21,7 @@ import {
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
+import { gatewayHostOf } from "./core/health.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
@@ -212,6 +213,9 @@ class Session implements BridgeSession {
     clock: Clock,
     outboundScan?: OutboundScan,
     transcriptFetcher?: TranscriptFetcher,
+    // Health-stats hook: a turn of THIS session finalizing in error is a
+    // downstream failure on its target (HealthRegistry.recordTurnError).
+    onTurnError?: (code: string) => void,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
@@ -219,7 +223,13 @@ class Session implements BridgeSession {
     this.canonical = routing.canonical;
     this.instanceName = routing.instanceName;
     this.connection = connection;
-    this.runManager = new RunManager(chatId, sessionKey, writer, outboundScan);
+    this.runManager = new RunManager(
+      chatId,
+      sessionKey,
+      writer,
+      outboundScan,
+      onTurnError,
+    );
     this.writer = writer;
     this.observer = new SubAgentObserver(sessionKey, chatId);
     this.clock = clock;
@@ -906,6 +916,19 @@ export class SessionRegistry {
     // turn's routed instance (one bridge, N gateways).
     private readonly served: Map<string, InstanceBundle>,
     private readonly clock: Clock = defaultClock,
+    // Health-stats hook wired by boot (index.ts): a turn finalizing in error is
+    // reported against its target (full identity — recordTurnError may have to
+    // CREATE the row when the error beats the send's recordOk) so the admin
+    // Connections stats count turn-level failures, not just send transport.
+    private readonly onTurnError?: (
+      target: {
+        instanceName: string;
+        canonical: string;
+        agentId: string;
+        gatewayHost: string;
+      },
+      code: string,
+    ) => void,
   ) {}
 
   /** The bundle serving `instanceName`, or undefined when this bridge does not serve
@@ -1054,6 +1077,7 @@ export class SessionRegistry {
         conn.close();
       }
     };
+    const onTurnError = this.onTurnError;
     const session = new Session(
       chatId,
       sessionKey,
@@ -1067,6 +1091,21 @@ export class SessionRegistry {
       this.clock,
       bundle.outboundScan,
       transcriptFetcher,
+      // Bind the session's own target identity once — the sink only supplies
+      // the failure code. Full identity (incl. host) so the health row can be
+      // ensured even when the error beats the send's recordOk (codex P2).
+      onTurnError
+        ? (code) =>
+            onTurnError(
+              {
+                instanceName,
+                canonical: routing.canonical,
+                agentId: routing.agentId,
+                gatewayHost: gatewayHostOf(cfg.openclawGatewayUrl),
+              },
+              code,
+            )
+        : undefined,
     );
     session.startConsumer();
     this.sessions.set(chatId, session);

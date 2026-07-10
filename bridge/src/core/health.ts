@@ -185,6 +185,24 @@ export class HealthRegistry {
     h.downstreamRejectCount += 1;
   }
 
+  /** A TURN failed AFTER its send was accepted (the gateway ACKed chat.send —
+   *  recordOk already counted the attempt — then the run errored: a session-init
+   *  conflict, a provider failure, an empty response…). Downstream-domain like
+   *  recordDownstreamReject (connectivity was PROVEN by the ack, so `state` and
+   *  the bridge-error counters stay untouched — the anti-deadlock rule), but it
+   *  bumps NO attempt (the send was already counted once). Without this, a user's
+   *  errored turns were invisible in the admin stats line ("0 échec(s)" while the
+   *  chat showed two error cards — report 2026-07-09). Takes the full ref (same
+   *  trust as recordOk/recordDownstreamReject): a Hermes turn can finalize its
+   *  error BEFORE the /send handler's recordOk creates the row (codex P2), so
+   *  the row is ensured here — state is left as-is (ensure() creates it idle;
+   *  only an ACKed send may claim `connected`). */
+  recordTurnError(ref: TargetRef, code: string): void {
+    const h = this.ensure(ref);
+    h.lastDownstreamReject = { code, at: this.clock() };
+    h.downstreamRejectCount += 1;
+  }
+
   snapshot(): HealthSnapshot {
     const now = this.clock();
     return {

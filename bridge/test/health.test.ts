@@ -73,6 +73,41 @@ describe("HealthRegistry", () => {
     expect(target.okCount).toBe(0); // the message was not accepted, only attempted
   });
 
+  test("recordTurnError -> counted as a downstream failure WITHOUT a new attempt or state flip", () => {
+    // The 2026-07-09 report: a send is ACKed (recordOk), then the RUN errors
+    // (session-init conflict) — the stats line must show the failure, but the
+    // attempt was already counted and connectivity was proven by the ack.
+    let t = 1;
+    const h = new HealthRegistry(0, () => t);
+    h.recordOk(REF);
+    t = 2;
+    h.recordTurnError(REF, "session_init_conflict");
+    const target = h.snapshot().targets[0]!;
+    expect(target.state).toBe("connected"); // never a bridge error (anti-deadlock)
+    expect(target.lastError).toBeNull();
+    expect(target.errorCount).toBe(0);
+    expect(target.downstreamRejectCount).toBe(1);
+    expect(target.lastDownstreamReject).toEqual({
+      code: "session_init_conflict",
+      at: 2,
+    });
+    expect(target.attempts).toBe(1); // the send's ONE attempt, not two
+    expect(target.okCount).toBe(1); // the ack stays counted
+  });
+
+  test("recordTurnError BEFORE any recordOk still lands (Hermes error-beats-ack) without claiming connectivity", () => {
+    // Hermes WS: the sink can finalize a turn error BEFORE the /send handler's
+    // recordOk creates the row (codex P2) — the failure must still be counted,
+    // but `connected` is reserved for an ACKed send.
+    const h = new HealthRegistry(0, () => 3);
+    h.recordTurnError(REF, "gateway_error");
+    const target = h.snapshot().targets[0]!;
+    expect(target.downstreamRejectCount).toBe(1);
+    expect(target.attempts).toBe(0); // never an attempt (send accounting owns those)
+    expect(target.state).toBe("idle"); // connectivity unproven — not `connected`
+    expect(target.lastError).toBeNull();
+  });
+
   // The exact production incident: re-sending the gateway's unparseable attachment
   // must leave the bridge GREEN, not paint it red.
   test("DISCRIMINATING: a downstream reject does NOT flip the bridge to error", () => {

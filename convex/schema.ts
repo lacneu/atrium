@@ -1493,6 +1493,11 @@ export default defineSchema({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    // AUTO-RETRY (turnRetry.ts): >0 marks this row as the Nth automatic re-dispatch
+    // of a turn the gateway failed with a TRANSIENT session-init conflict. The next
+    // finalize reads it to bound the retry chain (MAX_TURN_RETRIES); absent = a
+    // normal user send (attempt 0).
+    autoRetryAttempt: v.optional(v.number()),
     status: v.union(
       // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an
       // in-flight turn, held here until that turn ends. The drainer (lib/

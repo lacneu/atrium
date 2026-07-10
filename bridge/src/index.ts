@@ -99,8 +99,23 @@ async function main(): Promise<void> {
   // SessionRegistry and the HTTP server hold this SAME reference, so a runtime register()
   // makes an instance routable immediately — no restart.
   const served = new Map<string, InstanceBundle>();
-  const registry = new SessionRegistry(served);
   const health = new HealthRegistry(Date.now());
+  // Turn-level failures (a run that errors AFTER its accepted send) count as
+  // downstream failures on the target's stats — same key derivation as the
+  // server's targetRef, so they land on the row recordOk created at send time
+  // (or ensure it, when the error beats the ack — codex P2).
+  const registry = new SessionRegistry(served, undefined, (target, code) =>
+    health.recordTurnError(
+      {
+        key: `${target.instanceName}:${target.canonical}`,
+        canonical: target.canonical,
+        agentId: target.agentId,
+        gatewayHost: target.gatewayHost,
+        instanceName: target.instanceName,
+      },
+      code,
+    ),
+  );
   // Mutable so the self-heal loop can refresh it; the server reads it live for /health.
   let configIssues: ConfigIssue[] = [];
   // Declared before the server so `triggerRefresh` can close over it (assigned below);

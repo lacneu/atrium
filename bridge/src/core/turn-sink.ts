@@ -203,16 +203,24 @@ export class TurnSink {
   // into it (codex P1).
   private turnEpoch = 0;
 
+  // Notifies the health registry that a TURN finalized in error AFTER its send
+  // was accepted (HealthRegistry.recordTurnError) — else errored turns stay
+  // invisible in the admin Connections stats ("0 échec(s)" beside two error
+  // cards — report 2026-07-09). Observability-only; exceptions are swallowed.
+  private readonly onTurnError?: (code: string) => void;
+
   constructor(
     chatId: string,
     writer: ConvexWriter,
     outboundScan?: OutboundScan,
     sessionKey?: string,
+    onTurnError?: (code: string) => void,
   ) {
     this.chatId = chatId;
     this.writer = writer;
     this.outboundScan = outboundScan;
     this.sessionKey = sessionKey;
+    this.onTurnError = onTurnError;
   }
 
   /** True between beginTurn and the terminal flush; gates driving the provider. */
@@ -806,6 +814,16 @@ export class TurnSink {
       effectiveError,
       effectiveErrorKind,
     );
+    // Stats: a turn that ends in ERROR (never a user abort) counts as a
+    // downstream failure on its target — AFTER the finalize so a stats throw
+    // can never break the turn lifecycle.
+    if (effectiveStatus === "error") {
+      try {
+        this.onTurnError?.(effectiveErrorKind ?? "gateway_error");
+      } catch {
+        // observability-only — never let stats break a finalize
+      }
+    }
     // Context-pressure trace (Inc 2): one content-free record per turn — the
     // pre-turn fill counters + whether the gateway compacted. Fire-and-forget
     // AFTER finalize so observability never delays the visible reply; a write

@@ -8,6 +8,56 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.44.2] — Turns that heal themselves, alerts that catch real incidents
+
+Stabilization release for the newly opened platform (frontend + Convex +
+bridge). One additive schema field; no breaking changes.
+
+- **A transient gateway session conflict no longer kills the turn.** An OpenClaw
+  gateway can reject a message with "reply session initialization conflicted" —
+  a short-lived internal race (e.g. while it flushes the previous turn's memory)
+  that the gateway's own channels simply retry. Atrium now does the same: when a
+  turn fails this way *before producing anything*, it is retried automatically
+  (up to twice, ~5s then ~15s — the same delete-and-regenerate a user would do by
+  hand, so the gateway session is cleanly reset first). The retry stands down the
+  moment you move on (a new message, a delete, a manual regenerate) and never
+  runs for the internal utility chats. If the conflict persists, the error card
+  stays — now with a clear explanation and a "resend your message" hint instead
+  of a raw gateway error (live incident, 2026-07-09).
+
+- **Failed turns now count as failures in the Bridge connections stats.** The
+  Settings ▸ Bridge connections table counted only transport-level send
+  failures, so a user with two errored turns still read "0 échec(s)". Turn-level
+  failures (a run that errors after its send was accepted) are now recorded
+  against their connection — without affecting availability or the anti-deadlock
+  health semantics — and the "échec(s)" figure includes every failure class.
+
+- **The stream-errors detector now catches what real users actually hit.** A
+  real user's two consecutive errored turns sat exactly under the old alert
+  threshold of 3, so the admin was never notified of the platform's first real
+  incident. Real errors now alert from 2; user Stops (aborted turns) no longer
+  count toward the alert at all — pressing Stop is a choice, not a failure —
+  though a mass-interrupt burst still raises a critical. The anomaly also now
+  carries a sample correlation id, so the admin can jump straight from the
+  notification to the failing turn in Traces.
+
+- **Old trace windows are no longer silently empty.** Querying Traces (UI or
+  API) with a from/to window only searched the newest ~500 events of the whole
+  table, so investigating an incident more than a few hours old returned
+  nothing — misleadingly. Windowed queries now range the time index directly:
+  any window in the 14-day retention is addressable.
+
+- **File readers now see every file of their agents — MEMORY.md and USER.md
+  included.** A user granted the agent-files permission previously saw only the
+  four rules files (AGENTS/SOUL/IDENTITY/TOOLS.md); memory-class files were
+  hidden even in read, which blocked the legitimate "did my agent actually
+  memorize my instructions?" check on a personal agent. The visibility model is
+  now grant-aligned: a non-admin reads **all** files, but **only** for agents
+  they already have chat access to — someone who can talk to an agent can ask it
+  to print any of its files anyway, so the old depth filter protected nothing,
+  while reading files of agents you *cannot* talk to stays forbidden. Writes are
+  unchanged (admin-only, audited).
+
 ## [0.44.1] — No more heartbeat jitter on Safari and iOS
 
 Corrective release. Frontend only; no breaking changes.

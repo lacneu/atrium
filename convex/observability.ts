@@ -288,9 +288,25 @@ async function fetchRecentEvents(
     opts.kind || hasFilter
       ? Math.min(Math.max(limit, 1) * 5, MAX_LIST_LIMIT)
       : limit;
+  // Push the from/to WINDOW into the INDEX. As a post-filter (the previous
+  // shape) the scan could only ever see the newest `scan` rows of the WHOLE
+  // table, so any window older than those read as SILENTLY EMPTY — a live
+  // diagnostic trap (2026-07-09: an incident window a few hours old returned []
+  // and mis-steered the investigation). Ranging by_at makes an old window
+  // directly addressable; applyFilter re-checks from/to harmlessly below.
+  const from = opts.filter?.from;
+  const to = opts.filter?.to;
   const rows = await ctx.db
     .query("traceEvents")
-    .withIndex("by_at")
+    .withIndex("by_at", (q) =>
+      from !== undefined && to !== undefined
+        ? q.gte("at", from).lte("at", to)
+        : from !== undefined
+          ? q.gte("at", from)
+          : to !== undefined
+            ? q.lte("at", to)
+            : q,
+    )
     .order("desc")
     .take(scan);
   const byKind = opts.kind ? rows.filter((r) => r.kind === opts.kind) : rows;

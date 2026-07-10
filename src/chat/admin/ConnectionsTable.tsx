@@ -97,7 +97,13 @@ export function ConnectionsTable({
         gatewayHost: t.gatewayHost,
         gatewayVersion: t.gatewayVersion ?? null,
         okCount: t.okCount,
-        errorCount: t.errorCount,
+        // The failures figure = EVERYTHING that failed on this target:
+        // bridge-domain errors + downstream rejections + turn-level failures (a
+        // run erroring AFTER its accepted send rides downstreamRejectCount via
+        // recordTurnError). Without the fold, a user with two errored turns read
+        // zero failures here (report 2026-07-09) — the split stays visible in
+        // the error detail sub-row; state/availability semantics are untouched.
+        errorCount: t.errorCount + (t.downstreamRejectCount ?? 0),
         attempts: t.attempts,
         lastOkAt: t.lastOkAt ?? null,
         lastErrorCode: t.lastErrorCode ?? null,

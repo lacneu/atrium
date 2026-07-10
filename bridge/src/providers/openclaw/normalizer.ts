@@ -129,6 +129,17 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 const CONTEXT_OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens|reduce the length|exceeds? (?:the )?(?:model'?s )?(?:maximum )?context/i;
 
+// The gateway's per-session OCC guard: commitReplySessionInitialization retries a
+// stale snapshot ONCE, then throws this exact message when a concurrent writer
+// (e.g. the previous turn's post-run memory flush churning the session entry)
+// keeps invalidating the init snapshot (gateway get-reply, verified 2026.6.11;
+// live incident 2026-07-09). Upstream treats it as TRANSIENT: the Telegram
+// channel spool-retries on this same message with exponential backoff
+// (polling-session.ts REPLY_SESSION_INIT_CONFLICT_MESSAGE_RE). Classifying it to
+// a stable code lets Convex auto-retry the turn (turnRetry.ts) and the UI show
+// an honest "transient, retrying" card instead of a generic error.
+const SESSION_INIT_CONFLICT_RE = /reply session initialization conflicted/i;
+
 // Terminal stopReason values we persist into the (metadata-only) pressure
 // trace. The schema types stopReason as a FREE string — anything outside this
 // allowlist buckets to "other" so a raw network string never reaches traces
@@ -1389,8 +1400,14 @@ export class Normalizer {
       // FALLBACK classification: real 2026.6.11 gateways do not populate
       // errorKind (live-verified — like `usage`), so a hard overflow arrived
       // as bare text. Pin the known overflow phrasings to context_length so
-      // the actionable headline + pressure-trace marker still fire.
-      errorKind = CONTEXT_OVERFLOW_TEXT_RE.test(error) ? "context_length" : null;
+      // the actionable headline + pressure-trace marker still fire. Same for
+      // the session-init OCC conflict — the stable code Convex's bounded
+      // auto-retry keys on (only ever fired for a ZERO-content turn there).
+      errorKind = CONTEXT_OVERFLOW_TEXT_RE.test(error)
+        ? "context_length"
+        : SESSION_INIT_CONFLICT_RE.test(error)
+          ? "session_init_conflict"
+          : null;
     }
     if (errorKind) {
       // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:

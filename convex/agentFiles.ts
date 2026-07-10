@@ -2,11 +2,17 @@
 //
 // Surface:
 //   - listAgentFiles / getAgentFile — read agent workspace files via the bridge
-//     `POST /agent-files` ({ op: "list" | "get" }). RBAC (amendment A3): admins
-//     see everything; a non-admin needs `agents.files.read` AND is restricted
-//     SERVER-SIDE to the RULES_FILES allowlist (AGENTS/SOUL/IDENTITY/TOOLS .md).
-//     Memory/user/boot files stay admin-only even in read — agents are shared
-//     between users and their memory contains other people's data.
+//     `POST /agent-files` ({ op: "list" | "get" }). RBAC (amendment A3v2,
+//     GRANT-ALIGNED): admins see every agent; a non-admin needs
+//     `agents.files.read` AND may only target an agent in their EFFECTIVE
+//     GRANTS (checkFilesReadAccess) — and then sees ALL of that agent's files
+//     (MEMORY.md, USER.md, … included). Rationale: a user who can CHAT with an
+//     agent can already ask it to print any of its own files (no Atrium
+//     guardrail exists on that path), so a UI-only depth restriction was
+//     security theater; the real boundary worth enforcing is "no reading files
+//     of an agent you cannot talk to", which the grant check provides. Typical
+//     use: a per-user dedicated agent whose owner verifies what the agent
+//     memorized (report 2026-07-10).
 //   - setAgentFile — ADMIN-ONLY write with compare-and-set (amendment A4): the
 //     bridge op "set" carries `baseUpdatedAtMs`; a 409 means the file changed
 //     since it was loaded (the caller must re-get + re-diff). Every successful
@@ -53,37 +59,14 @@ import { PERMISSIONS } from "./lib/rbac";
 // Pure policy (exported for unit tests)
 // ===========================================================================
 
-/**
- * The RULE files a non-admin holding `agents.files.read` may read (amendment
- * A3). Everything else the bridge lists (USER.md, MEMORY.md, HEARTBEAT.md,
- * BOOT.md, BOOTSTRAP.md, ...) is ADMIN-ONLY even in read: agents are shared
- * between users, so memory-class files contain other people's data. This
- * filtering is SERVER-side policy — UI hiding is never the enforcement.
- */
-export const RULES_FILES = [
-  "AGENTS.md",
-  "SOUL.md",
-  "IDENTITY.md",
-  "TOOLS.md",
-] as const;
-
-/** True when `name` is a rules file readable under `agents.files.read`. */
-export function isRulesFile(name: string): boolean {
-  return (RULES_FILES as readonly string[]).includes(name);
-}
-
-/**
- * Role-based file-list filter: admins see the full bridge listing; everyone
- * else only the RULES_FILES entries. Pure so the policy is unit-testable
- * without mocking the bridge.
- */
-export function filterFilesForRole<T extends { name: string }>(
-  files: T[],
-  isAdmin: boolean,
-): T[] {
-  if (isAdmin) return files;
-  return files.filter((f) => isRulesFile(f.name));
-}
+// A3v2 (grant-aligned read): there is NO per-file-name depth filter anymore.
+// The former RULES_FILES allowlist (AGENTS/SOUL/IDENTITY/TOOLS .md, memory-class
+// files admin-only) was dropped 2026-07-10: a user who can chat with an agent
+// can already ask it to print MEMORY.md/USER.md — the depth restriction only
+// frustrated the legitimate "did my agent memorize my instructions?" check
+// without protecting anything. The ENFORCED boundary is checkFilesReadAccess:
+// a non-admin reads files ONLY for agents in their effective grants (the same
+// agents they can already talk to). Writes are untouched: admin-only.
 
 /** Thinking levels the gateway accepts (bench-verified enum, CONF probes). */
 export const THINKING_DEFAULTS = [
@@ -207,13 +190,13 @@ export function requireOkStatus(
 // ===========================================================================
 
 /**
- * Read gate for the files surface: admin (REAL identity, as everywhere) passes
- * with full visibility; otherwise `agents.files.read` is required and the
- * caller is flagged non-admin so the actions apply the RULES_FILES filter.
- * The permission only opens the SURFACE — the (instanceName, agentId) target
- * must additionally be in the caller's effective agent set (direct userAgents
- * ∪ group shares, the SAME union the picker/routing use), enforced here
- * server-side (red-team P2-1: never trust the UI's agent selector).
+ * Read gate for the files surface — THE enforcement (A3v2): admin (REAL
+ * identity, as everywhere) passes for any agent; otherwise `agents.files.read`
+ * is required AND the (instanceName, agentId) target must be in the caller's
+ * effective agent set (direct userAgents ∪ group shares, the SAME union the
+ * picker/routing use), enforced here server-side (red-team P2-1: never trust
+ * the UI's agent selector). Inside that scope the caller reads ALL files —
+ * there is no per-name depth filter anymore (see the policy note above).
  */
 export const checkFilesReadAccess = internalQuery({
   args: { instanceName: v.string(), agentId: v.string() },
@@ -362,17 +345,19 @@ function parseFileList(data: unknown): AgentFileInfo[] {
 // Public actions
 // ===========================================================================
 
-/** List an agent's workspace files (role-filtered server-side, A3). */
+/** List an agent's workspace files. Grant-aligned (A3v2): the access check is
+ *  the sole gate — a non-admin only reaches agents in their effective grants,
+ *  and then sees the FULL listing (MEMORY.md/USER.md included). */
 export const listAgentFiles = action({
   args: { instanceName: v.string(), agentId: v.string() },
   handler: async (
     ctx,
     { instanceName, agentId },
   ): Promise<{ files: AgentFileInfo[] }> => {
-    const access: { isAdmin: boolean } = await ctx.runQuery(
-      internal.agentFiles.checkFilesReadAccess,
-      { instanceName, agentId },
-    );
+    await ctx.runQuery(internal.agentFiles.checkFilesReadAccess, {
+      instanceName,
+      agentId,
+    });
     const bridgeUrl = await ctx.runQuery(
       internal.agentFiles.bridgeUrlForInstance,
       { instanceName },
@@ -384,11 +369,11 @@ export const listAgentFiles = action({
       bridgeUrl,
     );
     requireOkStatus(status, "agent-files list");
-    return { files: filterFilesForRole(parseFileList(data), access.isAdmin) };
+    return { files: parseFileList(data) };
   },
 });
 
-/** Read one workspace file. Non-admin: the name MUST be a rules file (A3). */
+/** Read one workspace file — any file of a grant-accessible agent (A3v2). */
 export const getAgentFile = action({
   args: { instanceName: v.string(), agentId: v.string(), name: v.string() },
   handler: async (
@@ -400,15 +385,10 @@ export const getAgentFile = action({
     updatedAtMs: number | null;
     missing: boolean;
   }> => {
-    const access: { isAdmin: boolean } = await ctx.runQuery(
-      internal.agentFiles.checkFilesReadAccess,
-      { instanceName, agentId },
-    );
-    // SERVER-side allowlist gate, before any bridge call: a non-admin may only
-    // read the rules files — never memory/user/boot files (A3).
-    if (!access.isAdmin && !isRulesFile(name)) {
-      throw new Error(`Forbidden: file not readable: ${name}`);
-    }
+    await ctx.runQuery(internal.agentFiles.checkFilesReadAccess, {
+      instanceName,
+      agentId,
+    });
     const bridgeUrl = await ctx.runQuery(
       internal.agentFiles.bridgeUrlForInstance,
       { instanceName },

@@ -43,9 +43,10 @@ export const PERMISSIONS = {
   // (the meta/critic gateway agent's support loop). A WRITE that reaches the
   // report owner's notification bell — service-account (agent role) + admin.
   FEEDBACK_RESPOND: "feedback.respond",
-  // Read agent RULE files (AGENTS/SOUL/IDENTITY/TOOLS .md) via the bridge.
-  // Amendment A3: covers ONLY the rules allowlist — memory/user/boot files stay
-  // admin-only even in read (agents are shared; memory holds others' data).
+  // Read agent workspace files via the bridge. A3v2 (grant-aligned): the holder
+  // reads ALL files (MEMORY/USER included) but ONLY for agents in their OWN
+  // effective grants — the same agents they can already chat with (and thus ask
+  // to print any file anyway). Enforced in agentFiles.checkFilesReadAccess.
   AGENT_FILES_READ: "agents.files.read",
   CHATS_READ: "chats.read", // read conversational data
   GROUPS_MANAGE: "groups.manage", // create/manage groups + group agents (admin-only)
@@ -65,9 +66,9 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
  * is consistent with the existing sensitivity model, NOT a new exposure. The
  * grant mutation enforces this set SERVER-SIDE (UI hiding is not enforcement).
  *
- * agents.files.read (A3) gates the read-only Settings "agentFiles" tab AND is
- * server-restricted in agentFiles.ts to the RULE files allowlist
- * (AGENTS/SOUL/IDENTITY/TOOLS .md) — never memory/user/boot files.
+ * agents.files.read (A3v2) gates the read-only Settings "agentFiles" tab AND is
+ * server-scoped in agentFiles.ts to the holder's OWN effective agents (full
+ * file depth there, incl. memory-class files — see checkFilesReadAccess).
  */
 export const GRANTABLE_USER_PERMISSIONS: readonly Permission[] = [
   PERMISSIONS.TRACES_READ,

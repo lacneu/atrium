@@ -108,6 +108,10 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   compaction_timeout: m.runstatus_error_compaction_timeout,
   // The turn finished but delivered nothing usable (no text, failed file).
   empty_response: m.runstatus_error_empty_response,
+  // The gateway's transient session-init OCC conflict — Convex auto-retries the
+  // turn (turnRetry.ts); this card shows during the short backoff window and, if
+  // the bounded retries exhaust, stays as the honest final state.
+  session_init_conflict: m.runstatus_error_session_init_conflict,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
   // reader's language — formerly pre-rendered French sentences).
   not_configured: m.runstatus_error_not_configured,

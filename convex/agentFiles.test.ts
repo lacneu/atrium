@@ -3,8 +3,10 @@
 // CONF-4c/4d — agent workspace files + chat defaults over the bridge.
 //
 // Pins the SERVER-side security properties (UI hiding is never enforcement):
-//   - A3 split: a non-admin with `agents.files.read` only ever sees/reads the
-//     RULES_FILES allowlist; memory/user/boot files are admin-only even in read.
+//   - A3v2 (grant-aligned): a non-admin with `agents.files.read` may only target
+//     agents in their EFFECTIVE GRANTS — and then sees ALL files (MEMORY.md,
+//     USER.md included: a user who can chat with an agent can already ask it to
+//     print its own files, so the former per-name depth filter protected nothing).
 //   - Writes are admin-only, CAS-aware (409 -> stable "conflict" error), and
 //     every success records a FULL before/after revision (A4).
 //   - compactSession is owner-scoped; chat-defaults read/write is admin-only
@@ -17,12 +19,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import {
-  filterFilesForRole,
-  isRulesFile,
-  MAX_AGENT_FILE_CHARS,
-  RULES_FILES,
-} from "./agentFiles";
+import { MAX_AGENT_FILE_CHARS } from "./agentFiles";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -110,26 +107,6 @@ const FULL_LISTING = [
   { name: "HEARTBEAT.md", size: 100, missing: true, updatedAtMs: 7 },
 ];
 
-describe("filterFilesForRole (pure A3 policy)", () => {
-  test("admin sees everything; non-admin only the rules files", () => {
-    expect(filterFilesForRole(FULL_LISTING, true)).toEqual(FULL_LISTING);
-    expect(filterFilesForRole(FULL_LISTING, false).map((f) => f.name)).toEqual([
-      "AGENTS.md",
-      "SOUL.md",
-      "IDENTITY.md",
-      "TOOLS.md",
-    ]);
-  });
-
-  test("isRulesFile matches exactly the allowlist", () => {
-    for (const name of RULES_FILES) expect(isRulesFile(name)).toBe(true);
-    expect(isRulesFile("MEMORY.md")).toBe(false);
-    expect(isRulesFile("USER.md")).toBe(false);
-    expect(isRulesFile("BOOTSTRAP.md")).toBe(false);
-    expect(isRulesFile("agents.md")).toBe(false); // case-sensitive
-  });
-});
-
 describe("agents.files.read grantability (server gate)", () => {
   test("an admin CAN grant agents.files.read as an extraPermission", async () => {
     const t = convexTest(schema, modules);
@@ -187,7 +164,10 @@ describe("agentFiles.listAgentFiles", () => {
     ).rejects.toThrow(/agent not accessible/);
   });
 
-  test("a granted non-admin gets the SERVER-filtered rules files only", async () => {
+  test("a granted non-admin gets the FULL listing of THEIR agent (A3v2 — MEMORY/USER included)", async () => {
+    // The report 2026-07-10: a per-user dedicated agent's owner must be able to
+    // check what the agent memorized (MEMORY.md) — the former rules-only filter
+    // hid exactly those files.
     const t = convexTest(schema, modules);
     const { as, userId } = await seedUser(t, "user", ["agents.files.read"]);
     await grantAgent(t, userId);
@@ -200,12 +180,9 @@ describe("agentFiles.listAgentFiles", () => {
         instanceName: "main",
         agentId: "alice",
       });
-      expect(res.files.map((f) => f.name)).toEqual([
-        "AGENTS.md",
-        "SOUL.md",
-        "IDENTITY.md",
-        "TOOLS.md",
-      ]);
+      expect(res.files.map((f) => f.name)).toEqual(
+        FULL_LISTING.map((f) => f.name),
+      );
       expect(bridge.calls[0]!.body).toMatchObject({
         op: "list",
         instanceName: "main",
@@ -236,18 +213,24 @@ describe("agentFiles.listAgentFiles", () => {
 });
 
 describe("agentFiles.getAgentFile", () => {
-  test("a granted non-admin CANNOT read a memory-class file (A3, pre-bridge)", async () => {
+  test("a granted non-admin READS a memory-class file of THEIR agent (A3v2)", async () => {
     const t = convexTest(schema, modules);
     const { as, userId } = await seedUser(t, "user", ["agents.files.read"]);
     await grantAgent(t, userId);
-    // No bridge stub on purpose: the name gate must reject BEFORE any fetch.
-    await expect(
-      as.action(api.agentFiles.getAgentFile, {
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: { ok: true, file: { content: "# Memory", updatedAtMs: 7 } },
+    }));
+    try {
+      const res = await as.action(api.agentFiles.getAgentFile, {
         instanceName: "main",
         agentId: "alice",
         name: "MEMORY.md",
-      }),
-    ).rejects.toThrow(/not readable/);
+      });
+      expect(res.content).toBe("# Memory");
+    } finally {
+      bridge.restore();
+    }
   });
 
   test("a granted non-admin reads a rules file", async () => {

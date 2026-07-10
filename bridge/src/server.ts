@@ -2632,16 +2632,40 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           });
           return;
         }
+        // A turn erroring AFTER acceptance (the background drain) counts as a
+        // downstream failure on this target's stats. An error that lands BEFORE
+        // this handler's recordOk below (a microtask race: accepted resolves,
+        // the drain fails immediately) is DEFERRED past it — recordOk clears
+        // lastDownstreamReject by design (a clean send makes a PRIOR note
+        // stale), which would wipe this concurrent error's detail (codex P3).
+        let ackRecorded = false;
+        let earlyTurnError: string | null = null;
+        const reportTurnError = (code: string) => {
+          if (ackRecorded) {
+            health.recordTurnError(
+              targetRef(body.agentId, body.canonical, sendInstance),
+              code,
+            );
+          } else {
+            earlyTurnError = code;
+          }
+        };
         await performHermesSend(
           cfg,
           bundle.writer,
           { ...body, attachments: inline },
           hermesTurns,
+          reportTurnError,
         );
-      } else {
-        const session = await registry.acquire(toRouting(body, sendInstance));
-        await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
+        // A real send proves connection + the ROUTED agent answered.
+        health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
+        ackRecorded = true;
+        if (earlyTurnError !== null) reportTurnError(earlyTurnError);
+        sendJson(res, 200, { ok: true });
+        return;
       }
+      const session = await registry.acquire(toRouting(body, sendInstance));
+      await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       sendJson(res, 200, { ok: true });

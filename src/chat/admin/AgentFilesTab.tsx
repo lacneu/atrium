@@ -51,9 +51,11 @@ import "./confTabs.css";
 
 // Settings › Fichiers d'agent (CONF-4c). Read (+ admin write) of an agent's
 // workspace files over the bridge. Visible with `agents.files.read` OR admin;
-// the SERVER filters what a non-admin can list/read (RULES_FILES allowlist, A3)
-// — this UI just renders whatever api.agentFiles returns. Writes are admin-only
-// with a confirm-with-mini-diff (A4) and compare-and-set (409 → reload).
+// the SERVER scopes a non-admin to the agents in their OWN effective grants and
+// serves the FULL file list there — MEMORY.md/USER.md included (A3v2, grant-
+// aligned: a user who can chat with an agent can already ask it to print its
+// files). This UI just renders whatever api.agentFiles returns. Writes are
+// admin-only with a confirm-with-mini-diff (A4) and compare-and-set (409 → reload).
 //
 // Agent selector (A10): the EXISTING agent registry, never an invented one —
 // admins browse instances (api.admin.listInstances + agents.listAgentsForInstance,

@@ -1028,6 +1028,40 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     }
   });
 
+  it("the gateway session-init OCC conflict (no errorKind) classifies to session_init_conflict", () => {
+    // The exact live-incident message (2026-07-09): the gateway's
+    // commitReplySessionInitialization threw after its one internal retry.
+    // Upstream (Telegram channel) retries on this same message — the stable
+    // code lets Convex's bounded auto-retry (turnRetry.ts) key on it.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        errorMessage:
+          "Error: reply session initialization conflicted for agent:jerome:atrium:chat:jnl:mh7abc",
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    const status = events.find((e) => e.type === "run.status");
+    expect(final?.errorKind).toBe("session_init_conflict");
+    expect(status?.status).toBe("error");
+    // A DIFFERENT bare error must NOT classify (the code is regex-specific).
+    const n2 = newNormalizer();
+    const c2 = new Clock();
+    n2.beginTurn(c2.now);
+    n2.noteRunStarted(OWN_RUN, c2.now);
+    const evs2 = n2.feed(
+      chatFrame({ state: "error", errorMessage: "some other gateway failure" }),
+      c2.tick(),
+    );
+    const final2 = evs2.find((e) => e.type === "message.final");
+    expect(final2?.errorKind ?? null).toBeNull();
+  });
+
   it("chat error with errorKind context_length finalizes the turn as a classified error", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();

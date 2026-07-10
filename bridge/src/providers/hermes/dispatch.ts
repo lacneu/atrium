@@ -223,9 +223,13 @@ export async function performHermesSend(
   writer: ConvexWriter,
   body: HermesSendBody,
   registry: HermesTurnRegistry,
+  // Health-stats hook: a turn erroring AFTER acceptance (the background drain)
+  // is reported as a downstream failure on its target (recordTurnError) — the
+  // /send handler only classifies PRE-acceptance rejections.
+  onTurnError?: (code: string) => void,
 ): Promise<void> {
   if ((cfg.transport ?? "ws") === "ws") {
-    return performHermesWsSend(cfg, writer, body, registry);
+    return performHermesWsSend(cfg, writer, body, registry, onTurnError);
   }
   const client = hermesClientFor(cfg);
   const abort = new AbortController();
@@ -252,6 +256,7 @@ export async function performHermesSend(
     providerChatId: priorSession,
     text: body.text,
     signal: abort.signal,
+    onTurnError,
     onBoundSession: async (sessionId) => {
       registry.rememberSession(targetKey, sessionId);
       await (writer.bindProviderChat?.(body.chatId, sessionId) ??
@@ -280,6 +285,7 @@ async function performHermesWsSend(
   writer: ConvexWriter,
   body: HermesSendBody,
   registry: HermesTurnRegistry,
+  onTurnError?: (code: string) => void,
 ): Promise<void> {
   const client = registry.wsClientFor(cfg);
   const targetKey = `${cfg.instanceName ?? ""}\u0000${body.agentId}\u0000${body.chatId}`;
@@ -307,6 +313,7 @@ async function performHermesWsSend(
       // directive, no scan, no hosting (codex P2).
       filesFetcher:
         cfg.mediaMode === "off" ? null : registry.filesFetcherFor(cfg),
+      onTurnError,
       onBoundSession: async (storedSid) => {
         registry.rememberSession(targetKey, storedSid);
         await (writer.bindProviderChat?.(body.chatId, storedSid) ??

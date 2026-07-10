@@ -25,6 +25,7 @@ import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
+import { maybeScheduleTurnRetry } from "./turnRetry";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
@@ -604,6 +605,18 @@ export const finalize = internalMutation({
     // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
     // any) — the engine of mid-turn message serialization (Phase 1).
     await drainNextQueued(ctx, message.chatId);
+
+    // TRANSIENT gateway session-init conflict (errorKind minted by the bridge
+    // classifier) on a ZERO-content turn → schedule the bounded auto-retry
+    // (turnRetry.ts: the system does the delete+regenerate the user would do by
+    // hand). AFTER drainNextQueued on purpose: if a queued follow-up just
+    // drained, the chat is busy and the retry stands down (checked inside).
+    if (status === "error") {
+      const fresh = await ctx.db.get(messageId);
+      if (fresh !== null) {
+        await maybeScheduleTurnRetry(ctx, fresh, errorKind, finalLen);
+      }
+    }
 
     // L2: a finished DOCUMENTARY fetch turn → correlate the returned files back to
     // the source reply's references. Best-effort: a correlation failure must NEVER

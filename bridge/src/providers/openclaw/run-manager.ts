@@ -105,10 +105,13 @@ export class RunManager {
     sessionKey: string,
     writer: ConvexWriter,
     outboundScan?: OutboundScan,
+    // Health-stats hook (see TurnSink.onTurnError): a turn finalizing in error
+    // counts as a downstream failure on this session's target.
+    onTurnError?: (code: string) => void,
   ) {
     this.sessionKey = sessionKey;
     this.normalizer = new Normalizer(sessionKey);
-    this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey);
+    this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
 
   private tallyFrame(frame: unknown): void {

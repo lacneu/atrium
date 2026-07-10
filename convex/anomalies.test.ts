@@ -163,6 +163,100 @@ describe("anomaly detection", () => {
     expect(hb2.criticalCount).toBe(1);
   });
 
+  test("TWO real stream errors trip the WARN (the 2026-07-09 live incident sat under the old threshold of 3)", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: `chatJ:webchat-run${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("assistant.stream_errors");
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.stream_errors"),
+        )
+        .first(),
+    );
+    expect(row!.severity).toBe("warn");
+    const ev = JSON.parse(row!.evidence!) as {
+      streamErrors: number;
+      streamAborts: number;
+      sampleCorrelationId: string;
+    };
+    expect(ev.streamErrors).toBe(2);
+    expect(ev.streamAborts).toBe(0);
+    // Drill-down anchor: the most RECENT failed turn's correlation chain.
+    expect(ev.sampleCorrelationId).toBe("chatJ:webchat-run0");
+  });
+
+  test("user STOPS (aborted) never trip the WARN — but a mass combined burst reaches CRITICAL", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    // 4 user aborts, zero errors -> NO anomaly (a Stop is a user choice).
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          meta: { phase: "finalize", streamStatus: "aborted" },
+        });
+      }
+    });
+    const r1 = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r1.detected).not.toContain("assistant.stream_errors");
+    // 10 combined (1 error + 9 aborts) -> CRITICAL (mass-interrupt burst).
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        at: now - 500,
+        meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+      });
+      for (let i = 0; i < 5; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 900 - i * 10,
+          meta: { phase: "finalize", streamStatus: "aborted" },
+        });
+      }
+    });
+    const r2 = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r2.detected).toContain("assistant.stream_errors");
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.stream_errors"),
+        )
+        .first(),
+    );
+    expect(row!.severity).toBe("critical"); // 1 error + 9 aborts = combined 10
+  });
+
+  test("a COMPLETE finalize never counts toward stream errors", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 5; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          meta: { phase: "finalize", streamStatus: "complete", textLen: 42 },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).not.toContain("assistant.stream_errors");
+  });
+
   test("reportAnomalyInternal inserts a source:agent anomaly", async () => {
     const t = convexTest(schema, modules);
 

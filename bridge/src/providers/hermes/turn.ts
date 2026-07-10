@@ -41,6 +41,10 @@ export interface HermesTurnOptions {
     contextTokens: number | null;
     costUsd?: number | null;
   };
+  /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
+   *  acceptance counts as a downstream failure on its target — a pre-acceptance
+   *  reject is already classified by the /send handler. */
+  onTurnError?: (code: string) => void;
 }
 
 /** A live Hermes turn. `accepted` resolves once the gateway took the run (or
@@ -108,7 +112,13 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     // arrives on run.started) — stamped below once learned, so /abort can still
     // target THIS turn. A beginTurn failure cancels the accepted stream (no
     // billing without a message) and rejects → /send 502.
-    const sink = new TurnSink(opts.chatId, opts.writer, undefined, opts.sessionKey);
+    const sink = new TurnSink(
+      opts.chatId,
+      opts.writer,
+      undefined,
+      opts.sessionKey,
+      opts.onTurnError,
+    );
     try {
       await sink.beginTurn(null, opts.pressure);
     } catch (err) {

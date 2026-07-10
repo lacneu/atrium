@@ -61,6 +61,9 @@ export interface HermesWsTurnOptions {
   filesFetcher?: HermesFilesFetcher | null;
   /** Persist a NEWLY minted stored_session_id (turn 1 / after reset). */
   onBoundSession?: (storedSessionId: string) => Promise<void>;
+  /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
+   *  acceptance counts as a downstream failure on its target. */
+  onTurnError?: (code: string) => void;
 }
 
 export interface HermesWsTurnRun {
@@ -155,7 +158,13 @@ export function runHermesWsTurn(
 
     // 2) Subscribe THIS turn to the session's event lane, buffering events that
     // race ahead of beginTurn (the sink serializes via the apply chain).
-    const sink = new TurnSink(opts.chatId, opts.writer, undefined, opts.sessionKey);
+    const sink = new TurnSink(
+      opts.chatId,
+      opts.writer,
+      undefined,
+      opts.sessionKey,
+      opts.onTurnError,
+    );
     const turnStartMs = Date.now();
     let lastThinkingBeatMs = 0;
     let moaAggregatorKey: string | null = null;

@@ -102,6 +102,7 @@ import type * as stuckStreams from "../stuckStreams.js";
 import type * as subAgentInteractions from "../subAgentInteractions.js";
 import type * as subAgentReports from "../subAgentReports.js";
 import type * as subAgents from "../subAgents.js";
+import type * as turnRetry from "../turnRetry.js";
 import type * as uploads from "../uploads.js";
 import type * as version from "../version.js";
 import type * as voice from "../voice.js";
@@ -207,6 +208,7 @@ declare const fullApi: ApiFromModules<{
   subAgentInteractions: typeof subAgentInteractions;
   subAgentReports: typeof subAgentReports;
   subAgents: typeof subAgents;
+  turnRetry: typeof turnRetry;
   uploads: typeof uploads;
   version: typeof version;
   voice: typeof voice;

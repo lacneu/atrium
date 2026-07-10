@@ -65,8 +65,16 @@ const API_ERROR_RATIO_CRITICAL = 0.5;
 const DISPATCH_FAIL_WARN = 1;
 const DISPATCH_FAIL_CRITICAL = 10;
 
-// assistant.stream_errors: error/aborted finalize bursts in the window.
-const STREAM_ERROR_WARN = 3;
+// assistant.stream_errors: REAL error finalizes in the window. WARN at 2
+// (operator decision 2026-07-09, mirroring the dispatch rationale: an errored
+// zero-reply turn = a user who got no answer): the live incident that opened
+// this — a real user's TWO consecutive gateway-conflict errors — sat exactly
+// under the old threshold of 3 and never notified the admin. User ABORTS
+// (the Stop button) are counted SEPARATELY: a Stop is a user choice, not a
+// platform failure, so aborts never trip the WARN — but a mass abort burst
+// (users interrupting everywhere = replies bad/slow) still reaches CRITICAL
+// via the combined count.
+const STREAM_ERROR_WARN = 2;
 const STREAM_ERROR_CRITICAL = 10;
 
 // openclaw.ingest_denied: ingest auth-denied spikes (possible misconfig/abuse).
@@ -101,17 +109,21 @@ export const ANOMALY_KINDS = {
   ACCESS_SCAN: "api.access_scan",
 } as const;
 
-/** Is this `assistant.stream` row an error/aborted finalize? (mirrors kpi.ts) */
-function isStreamError(row: Doc<"traceEvents">): boolean {
-  if (row.kind !== "assistant.stream" || row.meta === undefined) return false;
+/** The terminal class of an `assistant.stream` finalize row: a REAL "error",
+ *  a user "aborted" (Stop), or null (not a terminal / not a stream row). The
+ *  detector weighs the two differently (see STREAM_ERROR_WARN). */
+function streamFinalizeClass(
+  row: Doc<"traceEvents">,
+): "error" | "aborted" | null {
+  if (row.kind !== "assistant.stream" || row.meta === undefined) return null;
   try {
     const m = JSON.parse(row.meta) as { phase?: string; streamStatus?: string };
-    return (
-      m.phase === "finalize" &&
-      (m.streamStatus === "error" || m.streamStatus === "aborted")
-    );
+    if (m.phase !== "finalize") return null;
+    if (m.streamStatus === "error") return "error";
+    if (m.streamStatus === "aborted") return "aborted";
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -165,7 +177,11 @@ type WindowAgg = {
   // recent failed-turn correlationId, for a one-click drill-down into Traces.
   dispatchCodes: Record<string, number>;
   dispatchSampleCorrelation?: string;
+  // REAL error finalizes vs user Stops (aborted) — weighed differently (see
+  // STREAM_ERROR_WARN). Sample correlationId = drill-down anchor, like dispatch.
   streamErrors: number;
+  streamAborts: number;
+  streamSampleCorrelation?: string;
   ingestDenied: number;
   // principalId -> set of DISTINCT chatIds it read via the diagnostic API in the
   // window (access-scan detector). Non-PHI: a service-account id + chat ids.
@@ -300,6 +316,7 @@ export const detectAnomalies = internalMutation({
       dispatchFailures: 0,
       dispatchCodes: {},
       streamErrors: 0,
+      streamAborts: 0,
       ingestDenied: 0,
       accessByPrincipal: new Map(),
     };
@@ -328,7 +345,15 @@ export const detectAnomalies = internalMutation({
           break;
         }
         case "assistant.stream": {
-          if (isStreamError(row)) agg.streamErrors += 1;
+          const cls = streamFinalizeClass(row);
+          if (cls === "error") {
+            agg.streamErrors += 1;
+            // oldest -> newest scan: last write wins = most recent failed turn.
+            if (row.correlationId)
+              agg.streamSampleCorrelation = row.correlationId;
+          } else if (cls === "aborted") {
+            agg.streamAborts += 1;
+          }
           break;
         }
         case "openclaw.ingest.denied": {
@@ -396,16 +421,30 @@ export const detectAnomalies = internalMutation({
       detected.push(ANOMALY_KINDS.DISPATCH_FAILURES);
     }
 
-    // 3) assistant.stream error/aborted bursts.
-    if (agg.streamErrors >= STREAM_ERROR_WARN) {
-      const severity: Severity =
-        agg.streamErrors >= STREAM_ERROR_CRITICAL ? "critical" : "warn";
+    // 3) assistant.stream failures. REAL errors trip the WARN (threshold 2 —
+    //    see STREAM_ERROR_WARN's rationale); user Stops (aborted) never do, but
+    //    a mass combined burst still reaches CRITICAL (users interrupting
+    //    everywhere = replies bad/slow, worth an alert even with zero errors).
+    const streamCombined = agg.streamErrors + agg.streamAborts;
+    const streamSeverity: Severity | null =
+      agg.streamErrors >= STREAM_ERROR_CRITICAL ||
+      streamCombined >= STREAM_ERROR_CRITICAL
+        ? "critical"
+        : agg.streamErrors >= STREAM_ERROR_WARN
+          ? "warn"
+          : null;
+    if (streamSeverity !== null) {
       await upsertDetectorAnomaly(ctx, {
         kind: ANOMALY_KINDS.STREAM_ERRORS,
-        severity,
-        message: `Assistant stream error/aborted burst: ${agg.streamErrors} over ${windowMin}m`,
+        severity: streamSeverity,
+        message:
+          agg.streamAborts > 0
+            ? `Assistant stream errors: ${agg.streamErrors} (+${agg.streamAborts} user abort(s)) over ${windowMin}m`
+            : `Assistant stream errors: ${agg.streamErrors} over ${windowMin}m`,
         evidence: {
           streamErrors: agg.streamErrors,
+          streamAborts: agg.streamAborts,
+          sampleCorrelationId: agg.streamSampleCorrelation,
           windowMs: DETECT_WINDOW_MS,
           warnThreshold: STREAM_ERROR_WARN,
           criticalThreshold: STREAM_ERROR_CRITICAL,
