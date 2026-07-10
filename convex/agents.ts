@@ -1460,6 +1460,38 @@ export async function resolveCuratorTarget(
   return null;
 }
 
+/**
+ * The instance-DESIGNATED converter agent for `instanceName`, or null. Unlike the
+ * curator/documentary/summarizer resolvers (which pick a TYPED agent from the
+ * REQUESTING USER's grants), conversion is an INSTANCE-LEVEL service: the admin
+ * names one agentId in the instance config (`converterAgentId`), and it serves
+ * every user of that instance regardless of their personal pool. The designation
+ * IS the authorization — this does NOT require the agent to be in the caller's
+ * grants NOR enabled (the admin explicitly chose it). It still verifies the agent
+ * is a KNOWN, PRESENT agent of the instance, so a deleted/renamed designee falls
+ * back to null (→ the viewer's download fallback) instead of dispatching to a
+ * ghost. Content never crosses instances: the file's own instance converts it.
+ */
+export async function resolveConverterTarget(
+  ctx: QueryCtx | MutationCtx,
+  instanceName: string,
+): Promise<{ instanceName: string; agentId: string } | null> {
+  const instance = await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", instanceName))
+    .first();
+  const agentId = instance?.config?.converterAgentId;
+  if (!agentId) return null; // conversion not configured for this instance
+  const agent = await ctx.db
+    .query("agents")
+    .withIndex("by_instance_agent", (q) =>
+      q.eq("instanceName", instanceName).eq("agentId", agentId),
+    )
+    .first();
+  if (agent === null || agent.presentInLastOk === false) return null; // gone
+  return { instanceName, agentId };
+}
+
 export async function resolveSummarizerTarget(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,

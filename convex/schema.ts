@@ -852,6 +852,11 @@ export default defineSchema({
         // an over-budget agent file (MEMORY.md, rules) into a PROPOSED revision an
         // admin reviews + approves. Same hidden per-user pattern.
         v.literal("curator"),
+        // "converter": hosts document-rendition turns — the instance-designated
+        // converter agent turns an uploaded/delivered Office file (pptx/docx/xlsx)
+        // into a faithful PDF the right-column viewer renders. Same hidden per-user
+        // pattern; the file rides the turn as an ATTACHMENT (both providers).
+        v.literal("converter"),
       ),
     ),
     // The in-flight documentary fetch this hidden chat is serving — its CONVERSATIONAL
@@ -882,6 +887,16 @@ export default defineSchema({
     pendingCurate: v.optional(
       v.object({
         curationId: v.id("agentFileCurations"),
+        createdAt: v.number(),
+      }),
+    ),
+    // Document conversion: the in-flight RENDITION job this hidden chat is serving.
+    // Set at dispatch, read at finalize to store the delivered PDF as the source
+    // file's rendition, then cleared. Only meaningful on a `kind:"converter"` chat;
+    // jobs serialize (one in flight per hidden chat, i.e. per user).
+    pendingConvert: v.optional(
+      v.object({
+        renditionId: v.id("fileRenditions"),
         createdAt: v.number(),
       }),
     ),
@@ -1559,6 +1574,47 @@ export default defineSchema({
     .index("by_source_status", ["sourceMessageId", "status"])
     // Upsert: find the row for a specific selected card.
     .index("by_source_entry", ["sourceMessageId", "entryKey"]),
+
+  // Document RENDITIONS (Release B of the right-column viewer): the cached PDF the
+  // instance-designated converter agent produced from an Office file (pptx/docx/
+  // xlsx), so the viewer renders it with the same pdf.js path as a native PDF.
+  // ONE row per SOURCE storage blob (the cache key): a source storageId is unique
+  // per upload, so this never accidentally shares a rendition across users. The
+  // rendition is the SAME content as the source file, so its entitlement FOLLOWS
+  // the source — reads re-check the caller owns the source's chat (IDOR guard).
+  fileRenditions: defineTable({
+    // The cache key: the Convex storage id of the Office file being rendered.
+    sourceStorageId: v.id("_storage"),
+    // Entitlement anchor: the chat the source file appears in (+ its owner). A
+    // rendition read re-verifies the caller owns THIS chat before serving the PDF.
+    chatId: v.id("chats"),
+    userId: v.id("users"),
+    sourceFilename: v.string(),
+    sourceMimeType: v.string(),
+    status: v.union(
+      v.literal("pending"), // conversion dispatched, awaiting the converter turn
+      v.literal("ready"), // PDF delivered + stored (pdfStorageId set)
+      v.literal("failed"), // no PDF delivered / turn errored / oversized source
+    ),
+    pdfStorageId: v.optional(v.id("_storage")), // the rendered PDF (when ready)
+    // Non-secret failure reason code (attachment_too_large | no_pdf_delivered |
+    // dispatch_failed | timeout) — the viewer maps it to an honest message.
+    failureReason: v.optional(v.string()),
+    // The instance + agent that ran the conversion (the file's own instance — the
+    // content never crosses instances, mirroring curator).
+    converterInstance: v.string(),
+    converterAgentId: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    // Read/idempotency: THE row for a source blob (the cache key).
+    .index("by_source", ["sourceStorageId"])
+    // Watchdog: stale `pending` rows to time out (mirrors the documentary sweep).
+    .index("by_status", ["status"])
+    // Queue drain: the user's next PENDING rendition to dispatch once the (serial)
+    // converter chat is idle — so opening several Office files converts them
+    // one-by-one instead of leaving all-but-one to time out.
+    .index("by_user_status", ["userId", "status"]),
 
   // On-demand FORENSIC feedback (OpenRouter-style "Report Feedback"). When a user
   // flags a message (category + comment), we FREEZE a full forensic snapshot at

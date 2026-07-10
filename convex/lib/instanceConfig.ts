@@ -63,6 +63,14 @@ export const instanceConfigValidator = v.object({
   // auto-write.
   curationEnabled: v.optional(v.boolean()),
   curationBudgetChars: v.optional(v.number()),
+  // Document CONVERSION (right-column viewer, Release B). The agentId (on THIS
+  // instance) the admin designates to render Office files (pptx/docx/xlsx) into a
+  // faithful PDF via its own gateway skills. INSTANCE-LEVEL (not per-user grants):
+  // it serves every user of the instance, independent of their personal agent
+  // pool. Absent -> conversion is OFF for this instance (Office files fall back to
+  // download). The designation IS the authorization — resolveConverterTarget does
+  // not require the agent to be in the requester's grants (the admin chose it).
+  converterAgentId: v.optional(v.string()),
   // Voice (browser Web Speech): per-instance read-aloud settings. `voiceLang`
   // is a BCP-47 tag ("fr-FR") or "auto" (follow the UI locale); `voiceRate`
   // 0.5..2 (1 = normal). `voiceAutoRead` reads each completed reply aloud

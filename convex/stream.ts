@@ -30,6 +30,7 @@ import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
 import { correlateCuration } from "./agentFileCuration";
+import { correlateConversion } from "./fileRenditions";
 import {
   correlateSummarize,
   enrichedTurnText,
@@ -694,6 +695,21 @@ export const finalize = internalMutation({
           internal.agentFileCuration.cleanupCuratorChat,
           { hiddenChatId: chat._id },
         );
+      }
+    }
+    // Document conversion: a finished CONVERTER turn → the delivered PDF becomes
+    // the source file's rendition (ready), else the rendition fails. Same
+    // best-effort shape + FINALIZED re-read as the correlations above.
+    if (chat?.kind === "converter") {
+      if (chat.pendingConvert) {
+        try {
+          const finalized = await ctx.db.get(message._id);
+          if (finalized) {
+            await correlateConversion(ctx, chat, finalized);
+          }
+        } catch (e) {
+          console.error("[convert] correlate failed:", (e as Error)?.message ?? e);
+        }
       }
     }
     // Hybrid rehydration: a REGULAR chat's finished turn may have accumulated enough

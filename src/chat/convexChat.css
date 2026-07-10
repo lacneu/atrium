@@ -7063,3 +7063,207 @@
   opacity: 0.5;
 }
 
+
+/* ── Document Viewer (right-column file preview — Release A) ─────────────────
+   Third occupant of the shared right column (Sources / sub-agent / viewer).
+   PDF: thumbnail rail + current-page canvas + pager/zoom toolbar. */
+.oc-docviewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+.oc-docviewer__header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.oc-docviewer__icon { color: var(--muted-foreground); flex: 0 0 auto; }
+.oc-docviewer__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-docviewer__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+}
+.oc-docviewer__action:hover { background: var(--muted); color: var(--foreground); }
+.oc-docviewer__body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.oc-docviewer__loading {
+  padding: 1.4rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+.oc-docviewer__fallback {
+  padding: 1.4rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.oc-docviewer__fallbacklink { color: var(--primary); text-decoration: underline; width: fit-content; }
+
+/* PDF layout */
+.oc-docviewer__pdf { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.oc-docviewer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.oc-docviewer__navbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--foreground);
+}
+.oc-docviewer__navbtn:hover:not(:disabled) { background: var(--muted); }
+.oc-docviewer__navbtn:disabled { opacity: 0.35; }
+.oc-docviewer__pageinfo {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  min-width: 3.4rem;
+  text-align: center;
+}
+.oc-docviewer__zoom {
+  margin-left: auto;
+  font-size: 0.78rem;
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.15rem 0.35rem;
+}
+.oc-docviewer__pdfbody { display: flex; flex: 1 1 auto; min-height: 0; }
+.oc-docviewer__rail {
+  flex: 0 0 128px;
+  overflow-y: auto;
+  padding: 0.6rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border-right: 1px solid var(--border);
+  background: var(--muted);
+}
+.oc-docviewer__thumb {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+  background: var(--background);
+  box-shadow: 0 1px 3px color-mix(in oklch, black 12%, transparent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.oc-docviewer__thumb.is-active { border-color: var(--primary); }
+.oc-docviewer__thumbcanvas { display: block; width: 100%; height: auto; }
+.oc-docviewer__thumbnum {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  font-size: 0.66rem;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: color-mix(in oklch, black 55%, transparent);
+  color: white;
+}
+.oc-docviewer__railmore {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  text-align: center;
+  padding: 0.3rem 0;
+}
+.oc-docviewer__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  justify-content: safe center;
+  align-items: flex-start;
+  padding: 0.8rem;
+  background: var(--muted);
+}
+.oc-docviewer__canvas {
+  box-shadow: 0 2px 10px color-mix(in oklch, black 18%, transparent);
+  border-radius: 2px;
+  background: white;
+}
+
+/* Non-PDF bodies */
+.oc-docviewer__imagewrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 0.8rem;
+  background: var(--muted);
+}
+.oc-docviewer__image { max-width: 100%; max-height: 100%; object-fit: contain; }
+.oc-docviewer__video { width: 100%; max-height: 100%; background: black; }
+.oc-docviewer__audiowrap { padding: 1.2rem; }
+.oc-docviewer__audio { width: 100%; }
+.oc-docviewer__textwrap { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.8rem; }
+.oc-docviewer__truncated {
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.oc-docviewer__text {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* A viewable file chip reads as an ACTION (viewer), not a download. */
+.oc-media--viewable { cursor: pointer; }
+
+/* Rendition "preparing preview" state (Office → PDF conversion in flight). */
+.oc-docviewer__preparing {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  padding: 1.4rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  text-align: center;
+}
+.oc-docviewer__spinner {
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  animation: oc-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-docviewer__spinner { animation-duration: 2s; }
+}

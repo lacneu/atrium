@@ -118,6 +118,18 @@ crons.interval(
   {},
 );
 
+// Rendition timeout: every 2 minutes, fail `pending` document renditions older
+// than RENDITION_TIMEOUT_MS so the viewer's "preparing preview" spinner is always
+// bounded — covers a conversion whose dispatch was accepted but never streamed a
+// PDF (no stale stream row for the stuck-stream watchdog to catch). See
+// fileRenditions.timeoutStaleRenditions.
+crons.interval(
+  "timeout stale renditions",
+  { minutes: 2 },
+  internal.fileRenditions.timeoutStaleRenditions,
+  {},
+);
+
 // Stale sub-agent reaper: every 5 minutes, terminalize `running` subAgents rows
 // untouched for > SUBAGENT_STALE_TTL_MS (20 min). A running row gates the chat's
 // send queue (isChatBusy), so a DEAD observer (dropped terminal / bridge restart /

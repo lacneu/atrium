@@ -38,6 +38,83 @@ type LoadState =
   | { status: "error" }
   | { status: "done"; current: ChatDefaultsView };
 
+/** Document CONVERSION designation (DEFAULT OFF): the instance agent that renders
+ *  Office files (pptx/docx/xlsx) to PDF for the right-column viewer, via its own
+ *  gateway skills. INSTANCE-LEVEL — it serves every user of the instance. Absent
+ *  = conversion off (Office files fall back to download). Stored in instance config. */
+function ConverterCard({
+  instance,
+}: {
+  instance: { _id: string; name: string; config?: Record<string, unknown> };
+}) {
+  const upsert = useMutation(api.admin.upsertInstanceConfig);
+  const agentsData = useQuery(api.agents.listAgentsForInstance, {
+    instanceName: instance.name,
+  });
+  const storedAgentId =
+    typeof instance.config?.converterAgentId === "string"
+      ? (instance.config.converterAgentId as string)
+      : "";
+  const [agentId, setAgentId] = useState<string>(storedAgentId);
+  const [state, setState] = useState<"idle" | "saving" | "done" | "error">("idle");
+  useEffect(() => {
+    setAgentId(storedAgentId);
+    setState("idle");
+  }, [instance._id, storedAgentId]);
+  const NONE = "__none__";
+  const dirty = agentId !== storedAgentId;
+  async function save(): Promise<void> {
+    setState("saving");
+    try {
+      const next: Record<string, unknown> = { ...(instance.config ?? {}) };
+      if (agentId === "" || agentId === NONE) delete next.converterAgentId;
+      else next.converterAgentId = agentId;
+      await upsert({ instanceId: instance._id as Id<"instances">, config: next });
+      setState("done");
+    } catch {
+      setState("error");
+    }
+  }
+  const agents = agentsData?.agents ?? [];
+  return (
+    <div className="oc-cdefaults__row">
+      <span className="oc-cdefaults__label">{m.cdefaults_converter_label()}</span>
+      <p className="oc-admin__hint">{m.cdefaults_converter_hint()}</p>
+      <div className="oc-cdefaults__inline">
+        <Select
+          value={agentId === "" ? NONE : agentId}
+          onValueChange={(v) => setAgentId(v === NONE ? "" : v)}
+        >
+          <SelectTrigger className="oc-cdefaults__select" aria-label={m.cdefaults_converter_label()}>
+            <SelectValue placeholder={m.cdefaults_converter_none()} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>{m.cdefaults_converter_none()}</SelectItem>
+            {agents.map((a) => (
+              <SelectItem key={a.agentId} value={a.agentId}>
+                {a.displayName ? `${a.displayName} (${a.agentId})` : a.agentId}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          disabled={!dirty || state === "saving"}
+          onClick={() => void save()}
+        >
+          {state === "saving" ? m.conf_applying() : m.cdefaults_save()}
+        </Button>
+      </div>
+      {state === "done" ? (
+        <p className="oc-admin__hint" role="status">{m.cdefaults_saved()}</p>
+      ) : null}
+      {state === "error" ? (
+        <p className="oc-cdefaults__error" role="alert">{m.cdefaults_save_error()}</p>
+      ) : null}
+    </div>
+  );
+}
+
 /** Agent-file CURATION opt-in (DEFAULT OFF): enable + the per-file budget the
  *  curator rewrites over-budget files toward. Stored in the instance config; a
  *  lossy rewrite only runs when an admin turns this on. */
@@ -417,6 +494,13 @@ export function ChatDefaultsTab() {
               }}
             />
             <CurationCard
+              instance={inst as unknown as {
+                _id: string;
+                name: string;
+                config?: Record<string, unknown>;
+              }}
+            />
+            <ConverterCard
               instance={inst as unknown as {
                 _id: string;
                 name: string;

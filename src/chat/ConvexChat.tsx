@@ -169,6 +169,12 @@ import { FeedbackButton } from "./FeedbackDialog";
 import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
 import {
+  DocumentViewerContent,
+  DocumentViewerContext,
+  type DocumentViewerApi,
+  type ViewerDoc,
+} from "./DocumentViewer";
+import {
   capitalize,
   formatTokens,
   isOverridden,
@@ -430,8 +436,23 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   useEffect(() => {
     setActiveSubAgentKey(null);
   }, [chatId]);
-  // Sources + the sub-agent secondary-conversation panel SHARE one right column
-  // (mutually exclusive): opening one closes the other, so there's never a 4th
+  // Document Viewer (third occupant of the shared right column): a clicked
+  // file chip opens the file IN PLACE — conversation stays live on the left.
+  // Wider default than Sources (documents want room), own persisted width.
+  const { width: docViewerWidth, startResize: startDocViewerResize } =
+    useResizableWidth({
+      storageKey: "oc.docviewer.width",
+      defaultWidth: 560,
+      min: 380,
+      max: 900,
+      edge: "right",
+    });
+  const [activeDoc, setActiveDoc] = useState<ViewerDoc | null>(null);
+  useEffect(() => {
+    setActiveDoc(null);
+  }, [chatId]);
+  // Sources + the sub-agent panel + the document viewer SHARE one right column
+  // (mutually exclusive): opening one closes the others, so there's never a 4th
   // column. Each keeps its own resizable width.
   const sourcesApi = useMemo<SourcesPanelApi>(
     () => ({
@@ -439,6 +460,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       openFor: (id) => {
         setActiveSourcesMessageId(id);
         setActiveSubAgentKey(null);
+        setActiveDoc(null);
       },
       close: () => setActiveSourcesMessageId(null),
     }),
@@ -450,13 +472,27 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       openFor: (key) => {
         setActiveSubAgentKey(key);
         setActiveSourcesMessageId(null);
+        setActiveDoc(null);
       },
       close: () => setActiveSubAgentKey(null),
     }),
     [activeSubAgentKey],
   );
+  const docViewerApi = useMemo<DocumentViewerApi>(
+    () => ({
+      activeDoc,
+      openFor: (doc) => {
+        setActiveDoc(doc);
+        setActiveSourcesMessageId(null);
+        setActiveSubAgentKey(null);
+      },
+      close: () => setActiveDoc(null),
+    }),
+    [activeDoc],
+  );
   const sourcesOpen = activeSourcesMessageId !== null;
   const subAgentOpen = activeSubAgentKey !== null;
+  const docViewerOpen = activeDoc !== null;
 
   // Per-instance voice settings for THIS chat (read-aloud language/rate/auto).
   // One query at the root; the read-aloud button, the mic and the auto-reader
@@ -512,6 +548,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
       <SubAgentPanelContext.Provider value={subAgentApi}>
+      <DocumentViewerContext.Provider value={docViewerApi}>
       <LightboxProvider>
         <div className="oc-chat">
           <div className="oc-chat__convo">
@@ -535,12 +572,16 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           </div>
           {/* DESKTOP: integrated, resizable Sources column (conversation stays
               live on the left). MOBILE: overlay drawer below. */}
-          {(sourcesOpen || subAgentOpen) && !isMobile ? (
+          {(sourcesOpen || subAgentOpen || docViewerOpen) && !isMobile ? (
             <>
               <div
                 className="oc-sources-resizer"
                 onPointerDown={
-                  subAgentOpen ? startSubAgentResize : startSourcesResize
+                  docViewerOpen
+                    ? startDocViewerResize
+                    : subAgentOpen
+                      ? startSubAgentResize
+                      : startSourcesResize
                 }
                 role="separator"
                 aria-orientation="vertical"
@@ -549,11 +590,26 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
               <aside
                 className="oc-sources-col"
                 style={{
-                  width: subAgentOpen ? subAgentWidth : sourcesWidth,
-                  flex: `0 0 ${subAgentOpen ? subAgentWidth : sourcesWidth}px`,
+                  width: docViewerOpen
+                    ? docViewerWidth
+                    : subAgentOpen
+                      ? subAgentWidth
+                      : sourcesWidth,
+                  flex: `0 0 ${
+                    docViewerOpen
+                      ? docViewerWidth
+                      : subAgentOpen
+                        ? subAgentWidth
+                        : sourcesWidth
+                  }px`,
                 }}
               >
-                {subAgentOpen ? (
+                {docViewerOpen ? (
+                  <DocumentViewerContent
+                    doc={activeDoc as ViewerDoc}
+                    onClose={docViewerApi.close}
+                  />
+                ) : subAgentOpen ? (
                   <SubAgentPanelContent
                     chatId={chatId as string}
                     childKey={activeSubAgentKey as string}
@@ -592,7 +648,18 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
+        {docViewerOpen && isMobile ? (
+          <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
+            <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
+              <DocumentViewerContent
+                doc={activeDoc as ViewerDoc}
+                onClose={docViewerApi.close}
+              />
+            </SheetContent>
+          </Sheet>
+        ) : null}
       </LightboxProvider>
+      </DocumentViewerContext.Provider>
       </SubAgentPanelContext.Provider>
       </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>

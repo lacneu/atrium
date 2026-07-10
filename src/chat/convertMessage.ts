@@ -101,9 +101,11 @@ function filePartToContent(
     type: "file",
     mimeType: part.mimeType,
     data: part.url,
-    // `filename` is non-standard on the file content part but assistant-ui
-    // tolerates extra fields and our custom MediaPart renderer reads it.
+    // `filename` + `storageId` are non-standard on the file content part but
+    // assistant-ui tolerates extra fields and our MediaPart renderer reads them
+    // (storageId keys the Document Viewer's PDF-rendition request for Office files).
     filename: displayFilename(part.filename),
+    storageId: part.storageId,
   } as ContentPart;
 }
 

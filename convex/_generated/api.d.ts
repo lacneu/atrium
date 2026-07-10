@@ -31,6 +31,7 @@ import type * as dev from "../dev.js";
 import type * as deviceIdentity from "../deviceIdentity.js";
 import type * as documentAttachments from "../documentAttachments.js";
 import type * as feedback from "../feedback.js";
+import type * as fileRenditions from "../fileRenditions.js";
 import type * as files from "../files.js";
 import type * as groups from "../groups.js";
 import type * as http from "../http.js";
@@ -137,6 +138,7 @@ declare const fullApi: ApiFromModules<{
   deviceIdentity: typeof deviceIdentity;
   documentAttachments: typeof documentAttachments;
   feedback: typeof feedback;
+  fileRenditions: typeof fileRenditions;
   files: typeof files;
   groups: typeof groups;
   http: typeof http;

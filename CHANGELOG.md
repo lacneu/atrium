@@ -8,6 +8,29 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.45.0] — Read documents in a side panel, without leaving the conversation
+
+Feature release (frontend + Convex). No breaking changes; additive schema only.
+
+- **A document viewer in the right panel.** Click a file in a conversation and it
+  opens in a resizable side panel — the conversation stays live on the left, so
+  you can read a report and keep chatting. PDFs render page-by-page with a
+  thumbnail rail, pager and zoom (via an in-browser PDF engine, loaded on demand
+  so it never slows startup); images, audio, video and text/code files render in
+  place too. Works for files you send AND files an agent produces, on both
+  OpenClaw and Hermes.
+
+- **Office files (PowerPoint, Word, Excel) render as PDF — through your own
+  agent.** When you open a .pptx/.docx/.xlsx, Atrium asks the instance's
+  designated converter agent to turn it into a faithful PDF (using that agent's
+  own skills — Atrium embeds no conversion software), then shows it in the same
+  viewer. The result is cached, so it converts once and opens instantly after.
+  Conversion is opt-in per instance: an admin designates the converter agent in
+  Settings ▸ Platform (none = Office files stay download-only). If a conversion
+  can't be produced, the panel falls back to a download link — never a dead
+  spinner (a timeout and a per-user queue keep it honest even when several files
+  are opened at once).
+
 ## [0.44.2] — Turns that heal themselves, alerts that catch real incidents
 
 Stabilization release for the newly opened platform (frontend + Convex +

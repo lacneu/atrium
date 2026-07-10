@@ -276,6 +276,21 @@ export const failDispatch = internalMutation({
         );
       }
     }
+    // Document conversion: same shape — release the pendingConvert lock + fail the
+    // rendition, else the converter chat stays wedged and the viewer spins forever.
+    if (chat.kind === "converter" && chat.pendingConvert) {
+      try {
+        await ctx.runMutation(internal.fileRenditions.failRenditionForChat, {
+          chatId: chat._id,
+          reason: "dispatch_failed",
+        });
+      } catch (e) {
+        console.error(
+          "[convert] release on failed dispatch:",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
 
     // A failed dispatch is a turn-end: the chat is now idle, so drain the next
     // QUEUED send (mirrors markOutbox + finalize; drainNextQueued is documented as

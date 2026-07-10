@@ -47,6 +47,7 @@
     "clsx": "^2.1.1",
     "convex": "^1.39.1",
     "lucide-react": "^1.17.0",
+    "pdfjs-dist": "^6.1.200",
     "radix-ui": "^1.4.3",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

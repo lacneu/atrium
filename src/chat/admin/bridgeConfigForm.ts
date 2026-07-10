@@ -128,6 +128,7 @@ export type ConfigOverride = Partial<
   curationEnabled?: boolean;
   curationBudgetChars?: number;
   contentLocale?: string;
+  converterAgentId?: string;
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -140,6 +141,7 @@ const PASSTHROUGH_KEYS = [
   "curationEnabled",
   "curationBudgetChars",
   "contentLocale",
+  "converterAgentId",
 ] as const;
 
 export function buildConfigOverride(

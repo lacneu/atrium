@@ -95,6 +95,23 @@ async function releaseStuckCurate(
   }
 }
 
+/** Converter twin: a stuck conversion turn → fail the rendition (stuck_stream) +
+ *  clear the lock, so the viewer's spinner can't spin forever. Best-effort. */
+async function releaseStuckConvert(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+): Promise<void> {
+  if (chat?.kind !== "converter" || !chat.pendingConvert) return;
+  try {
+    await ctx.runMutation(internal.fileRenditions.failRenditionForChat, {
+      chatId: chat._id,
+      reason: "stuck_stream",
+    });
+  } catch {
+    /* never let a conversion cleanup error break the stuck-stream watchdog */
+  }
+}
+
 // A streaming message with NO update for this long is treated as orphaned.
 // Deliberately generous (12 min): a deep-reasoning, many-tool turn can have long
 // silent gaps between frames, and killing a still-live stream would be far worse
@@ -279,6 +296,7 @@ export const reconcileStuckStreams = internalMutation({
       await releaseStuckDocumentaryFetch(ctx, stuckChat);
       await releaseStuckSummarize(ctx, stuckChat);
       await releaseStuckCurate(ctx, stuckChat);
+      await releaseStuckConvert(ctx, stuckChat);
     }
 
     // Each chat whose turn we just released is now idle → drain its queue.

@@ -1,13 +1,18 @@
 import { m } from "@/paraglide/messages.js";
 import { useLightbox } from "./ImageLightbox";
+import { useDocumentViewer } from "./DocumentViewer";
+import { isConvertibleDocument, viewerKindFor } from "./documentViewerView";
 // Renders a `file` content part produced by convertMessage from the bridge's
 // `media {items}` events (kind:"media") and from kind:"file" parts. The data URL
 // is a resolved Convex storage URL (server-side ctx.storage.getUrl); the browser
 // never receives a storageId-to-path mapping or a filesystem path.
 //
 // Audio is rendered with a native <audio> player so OpenClaw TTS output is
-// playable inline. Images render inline; everything else becomes a download
-// link. assistant-ui routes `file` content parts to this component.
+// playable inline. Images render inline. Every other file renders as a chip:
+// when the Document Viewer can show it (PDF, text — see viewerKindFor), the
+// click opens it in the right-column viewer with the conversation still live;
+// otherwise it stays the open-in-new-tab link. assistant-ui routes `file`
+// content parts to this component.
 
 // assistant-ui renders a `file` content part as `<File {...part} />` (the part
 // fields are SPREAD as props, NOT wrapped in `{part}` — same contract as
@@ -18,9 +23,10 @@ interface FileContentPartProps {
   mimeType?: string;
   data?: string; // resolved Convex storage URL
   filename?: string;
+  storageId?: string; // opaque key → the Document Viewer's rendition request
 }
 
-export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
+export function MediaPart({ mimeType, data, filename, storageId }: FileContentPartProps) {
   const mime = mimeType ?? "";
   const url = data ?? "";
   const name = filename ?? "attachment";
@@ -57,13 +63,57 @@ export function MediaPart({ mimeType, data, filename }: FileContentPartProps) {
     );
   }
 
+  return <FileChip url={url} name={name} mime={mime} storageId={storageId} />;
+}
+
+/** Non-media file chip. Three cases:
+ *   1. natively viewable (PDF, text — viewerKindFor) → open in the right-column
+ *      Document Viewer (split view, conversation stays live);
+ *   2. a CONVERTIBLE Office file WITH a storageId → the viewer renders a PDF
+ *      rendition on demand (the instance converter agent produces it);
+ *   3. anything else → the open-in-new-tab link.
+ *  NOT `download`: that attribute is silently IGNORED for a cross-origin URL (the
+ *  Convex storage origin differs from the app), so the click would navigate the
+ *  CURRENT tab to the file instead. */
+function FileChip({
+  url,
+  name,
+  mime,
+  storageId,
+}: {
+  url: string;
+  name: string;
+  mime: string;
+  storageId?: string;
+}) {
+  const viewer = useDocumentViewer();
+  const nativelyViewable = viewerKindFor(mime, name) !== "none";
+  const convertible = !!storageId && isConvertibleDocument(mime, name);
+  if (nativelyViewable || convertible) {
+    return (
+      <button
+        type="button"
+        className="oc-media oc-media--file oc-media--viewable"
+        onClick={() =>
+          viewer.openFor({
+            url,
+            filename: name,
+            mimeType: mime || null,
+            // Only convertible Office files carry the source id → rendition path.
+            sourceStorageId: convertible ? storageId : undefined,
+          })
+        }
+        title={name}
+        aria-label={m.docviewer_open_aria({ name })}
+      >
+        <span className="oc-media__icon" aria-hidden>
+          📄
+        </span>
+        <span className="oc-media__name">{name}</span>
+      </button>
+    );
+  }
   return (
-    // ALWAYS open in a new tab and let the browser render by content-type. NOT
-    // `download`: that attribute is silently IGNORED for a cross-origin URL (the
-    // Convex storage origin differs from the app), so the click would navigate the
-    // CURRENT tab to the file instead. `target="_blank"` makes the new tab explicit
-    // regardless of origin; the browser then honors the stored Content-Type
-    // (PDF/image inline, others download).
     <a
       className="oc-media oc-media--file"
       href={url}

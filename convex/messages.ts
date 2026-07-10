@@ -78,8 +78,14 @@ type ClientPart =
       outputOmitted?: boolean;
       outputBytes?: number;
     }
-  | { kind: "media"; url: string | null; filename: string; mimeType: string }
-  | { kind: "file"; url: string | null; filename: string; mimeType: string }
+  // `storageId` is exposed (as an opaque string) ONLY so the Document Viewer can
+  // request a PDF rendition of an Office file (fileRenditions.requestRendition).
+  // SAFE despite the general "no raw storageId to the client" rule: every
+  // rendition op is OWNERSHIP-gated server-side (ownedFile) and READ-ONLY — this
+  // is NOT the delete-IDOR class (a client-provided id the SERVER deletes). The
+  // signed `url` already embeds the same storage path, so this reveals nothing new.
+  | { kind: "media"; url: string | null; storageId: string; filename: string; mimeType: string }
+  | { kind: "file"; url: string | null; storageId: string; filename: string; mimeType: string }
   // Gateway context-compaction marker (content-free: phase + timestamp).
   | { kind: "compaction"; phase: string; at: number }
   // `text` elided when oversized (same rationale as tool fields).
@@ -231,6 +237,7 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               parts.push({
                 kind: part.kind,
                 url,
+                storageId: part.storageId,
                 filename: part.filename,
                 mimeType: part.mimeType,
               });
