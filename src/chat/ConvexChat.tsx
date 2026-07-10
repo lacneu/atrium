@@ -1,4 +1,5 @@
 import {
+  ActionBarMorePrimitive,
   ActionBarPrimitive,
   AssistantRuntimeProvider,
   AttachmentPrimitive,
@@ -143,14 +144,18 @@ import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
 import { usageBadgeView, type ProviderUsageView } from "./usageView";
-import { assistantEmptyState } from "./assistantEmptyState";
+import { assistantEmptyState, extractSpawnedChildKeys } from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import type { ToolActivityPart } from "./toolActivityView";
-import { hasRunningSubAgent, type SubAgentRow } from "./subAgentActivityView";
+import {
+  hasRunningSubAgent,
+  subAgentRowsForMessage,
+  type SubAgentRow,
+} from "./subAgentActivityView";
 import {
   composerQueueState,
   type ComposerQueueReason,
@@ -1589,6 +1594,14 @@ function IconArrowDown() {
  *  in a new chat"): the fork carries the same visible history up to here, opens
  *  immediately, and its first send re-grounds the agent via the existing
  *  rehydration — the original conversation continues untouched. */
+// Shadcn dropdown-menu look, replicated for the ActionBarMorePrimitive
+// (which needs raw Radix parts — see the comment inside AssistantMoreMenu).
+// Keep in sync with components/ui/dropdown-menu.tsx.
+const MSG_MENU_CONTENT_CLS =
+  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
+const MSG_MENU_ITEM_CLS =
+  "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+
 /** The assistant reply's "more actions" contextual menu (ChatGPT-style ⋯,
  *  LAST in the action row). Header = the message's datetime; items = the
  *  source toggle (moved off the bar) and branching. Branching opens a NAME
@@ -1654,46 +1667,57 @@ function AssistantMoreMenu({
       setBusy(false);
     }
   };
+  // ActionBarMorePrimitive (NOT the plain shadcn DropdownMenu): the action bar
+  // AUTOHIDES on non-last messages (visible = hovering), and a plain Radix
+  // menu steals the pointer/focus on open -> the bar unmounts -> the trigger
+  // disappears -> the menu closes itself instantly. This primitive acquires
+  // the action bar's interaction LOCK while open, keeping the bar mounted.
+  // Classes mirror components/ui/dropdown-menu.tsx for an identical look.
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="oc-iconbtn"
-          title={m.chat_more_actions()}
-          aria-label={m.chat_more_actions()}
-          disabled={busy}
-        >
-          <Ellipsis size={15} />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+    <ActionBarMorePrimitive.Root>
+      <ActionBarMorePrimitive.Trigger
+        className="oc-iconbtn"
+        title={m.chat_more_actions()}
+        aria-label={m.chat_more_actions()}
+        disabled={busy}
+      >
+        <Ellipsis size={15} />
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        align="end"
+        sideOffset={4}
+        className={MSG_MENU_CONTENT_CLS}
+      >
         {sentAt !== undefined ? (
           <>
-            <DropdownMenuLabel className="oc-msgmenu__when">
+            <div className="oc-msgmenu__when px-2 py-1.5 text-sm">
               {formatDateTime(sentAt, {
                 dateStyle: "medium",
                 timeStyle: "short",
               })}
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
+            </div>
+            <ActionBarMorePrimitive.Separator className="bg-border -mx-1 my-1 h-px" />
           </>
         ) : null}
         {sourceShown ? (
-          <DropdownMenuItem onSelect={onToggleSource}>
+          <ActionBarMorePrimitive.Item
+            className={MSG_MENU_ITEM_CLS}
+            onSelect={onToggleSource}
+          >
             <Code size={14} aria-hidden />
             {sourceActive ? m.chat_show_rendered() : m.chat_show_source()}
-          </DropdownMenuItem>
+          </ActionBarMorePrimitive.Item>
         ) : null}
-        <DropdownMenuItem
+        <ActionBarMorePrimitive.Item
+          className={MSG_MENU_ITEM_CLS}
           disabled={busy || streaming}
           onSelect={() => void branch()}
         >
           <GitBranch size={14} aria-hidden />
           {m.chat_branch_action()}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </ActionBarMorePrimitive.Item>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
   );
 }
 
@@ -2076,17 +2100,50 @@ function MessageSource() {
   const raw = useMessage(
     (m) => (m.metadata?.custom as { rawText?: string } | undefined)?.rawText ?? "",
   );
+  // A DELEGATED turn can settle with an EMPTY message text while the visible
+  // answer is the sub-agent's resultText (rendered by AssistantEmptyState) —
+  // the source view must show THAT text, not "(no text)" under a rendered
+  // reply (live report). Same correlation as the empty state: parentMessageId
+  // primary, spawn-output keys fallback. The subscription only runs for the
+  // empty-text case (the common turn never pays it).
+  const chatId = useMessage(
+    (m) => (m.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  const messageId = useMessage(
+    (m) => (m.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
+  const toolParts = useMessage(
+    (m) =>
+      (m.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
+        ?.toolParts ?? EMPTY_TOOL_PARTS,
+  );
+  const subAgents = useQuery(
+    api.subAgents.listSubAgents,
+    raw === "" && chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  ) as SubAgentRow[] | undefined;
+  const delegated =
+    raw === ""
+      ? (subAgentRowsForMessage(
+          subAgents ?? [],
+          extractSpawnedChildKeys(toolParts),
+          messageId,
+        ).find((s) => s.status === "done" && s.resultText)?.resultText ?? "")
+      : "";
+  const fromSubAgent = raw === "" && delegated !== "";
+  const effective = raw !== "" ? raw : delegated;
   const [copied, setCopied] = useState(false);
   // Count CODE POINTS, not UTF-16 units (`.length`), so an emoji / non-BMP char
   // does not inflate the count — the number must be trustworthy.
-  const codePoints = [...raw].length;
+  const codePoints = [...effective].length;
   return (
     <div className="oc-msg__source">
       <div className="oc-msg__source-head">
         <span className="oc-msg__source-label">
-          {codePoints > 1
-            ? m.chat_source_label_plural({ count: codePoints })
-            : m.chat_source_label({ count: codePoints })}
+          {fromSubAgent
+            ? m.chat_source_label_subagent({ count: codePoints })
+            : codePoints > 1
+              ? m.chat_source_label_plural({ count: codePoints })
+              : m.chat_source_label({ count: codePoints })}
         </span>
         <button
           type="button"
@@ -2094,7 +2151,7 @@ function MessageSource() {
           title={m.chat_copy_source()}
           aria-label={m.chat_copy_source()}
           onClick={() => {
-            void navigator.clipboard?.writeText(raw).then(() => {
+            void navigator.clipboard?.writeText(effective).then(() => {
               setCopied(true);
               window.setTimeout(() => setCopied(false), 1200);
             });
@@ -2103,7 +2160,7 @@ function MessageSource() {
           {copied ? <IconCheck /> : <IconCopy />}
         </button>
       </div>
-      <pre className="oc-msg__source-pre">{raw.length > 0 ? raw : m.chat_source_empty()}</pre>
+      <pre className="oc-msg__source-pre">{effective.length > 0 ? effective : m.chat_source_empty()}</pre>
     </div>
   );
 }
@@ -2478,8 +2535,11 @@ function AssistantMessage() {
               answer would be) instead of a blank bubble. The FAILED case is owned
               by the in-context sub-agent card below; `show` lets the running note
               defer to the running card in the analysis view (no duplicate). Inert
-              on a normal or in-flight turn (renders null). */}
-          <AssistantEmptyState show={ui.showTools} />
+              on a normal or in-flight turn (renders null). HIDDEN while the raw
+              SOURCE view is open — MessageSource already shows the delegated
+              result's raw text, so rendering it here too would duplicate the
+              answer under its own source. */}
+          {showSource ? null : <AssistantEmptyState show={ui.showTools} />}
           {/* RunStatus reads the assistant identity for its long-wait label; scope
               it to the per-message routed agent so the reassurance names the right
               one (the override equals the chat identity on a single-agent chat). */}

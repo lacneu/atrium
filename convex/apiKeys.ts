@@ -14,6 +14,7 @@
 // so the inner mutation sees the same admin caller.
 
 import { v } from "convex/values";
+import { envLabel } from "./lib/envLabel";
 import {
   action,
   internalMutation,
@@ -329,7 +330,10 @@ export const mintApiKey = action({
     ctx,
     { serviceAccountId, expiresAt },
   ): Promise<{ keyId: Id<"apiKeys">; plaintext: string; prefix: string; lastFour: string }> => {
-    const generated = generateApiKey();
+    // Stamp the deployment's environment label into the key namespace
+    // (oc_<label>_…) — the same label the feedback references carry, so a
+    // pasted key is never ambiguous about which environment minted it.
+    const generated = generateApiKey(envLabel());
     const hashedKey = await hashKey(generated.plaintext);
     const keyId: Id<"apiKeys"> = await ctx.runMutation(
       internal.apiKeys.createKeyRecord,

@@ -8,6 +8,42 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.48.0] — Files you can actually grab, markdown you can actually read
+
+Feature + fix release (frontend + Convex + deploy docs). No breaking changes;
+additive only.
+
+- **Fixed: "show raw source" no longer reads "(no text)" on delegated
+  replies.** When an agent delegates and the visible answer is the
+  sub-agent's result, the raw-source view now shows that exact text (labeled
+  as the sub-agent's raw result) instead of claiming the message is empty.
+- **Fixed: the reply's ⋯ menu stays open on earlier messages.** On any message
+  except the last one, opening the new contextual menu closed it again
+  instantly (the hover-revealed action bar unmounted underneath it). The menu
+  now holds the action bar visible while open.
+- **File chips download again — with an explicit preview arrow.** Clicking a
+  delivered file (its name or the new download icon) downloads it for real —
+  including cross-origin storage files that used to just open in a tab — while
+  modified clicks (Ctrl/Cmd/middle) keep their native link behavior. Files the
+  right panel can display get an extra arrow at the far right that opens the
+  preview. Routing every viewable file into the viewer had made the file
+  itself hard to reach (live report: a delivered 22MB PPTX the user could not
+  save).
+- **Markdown files preview fully rendered.** Opening a `.md` file in the right
+  panel now shows the interpreted document (the same rendering as chat
+  replies), even when it was delivered with a generic text mime; a
+  Rendered/Raw toggle at the top switches to the exact source.
+- **API keys and feedback references now name their environment.** A minted
+  observability key reads `oc_<env>_…` (e.g. `oc_prod_…`) and a feedback
+  reference reads `<env>-<id>`, both from the deployment's `ATRIUM_ENV_LABEL`
+  — the same unambiguous construction as a Convex deploy key, so a pasted
+  identifier always tells you which environment it belongs to. Operators: set
+  `ATRIUM_ENV_LABEL` (e.g. `dev` / `prod`) on each Convex deployment (the
+  compose/Helm bootstrap scripts push it from your `.env`/values; blank leaves
+  a previously set label unchanged — remove with
+  `npx convex env remove ATRIUM_ENV_LABEL`). Unlabeled deployments keep the
+  legacy shapes.
+
 ## [0.47.0] — Branching flows like ChatGPT
 
 Feature release (frontend + Convex). No breaking changes.

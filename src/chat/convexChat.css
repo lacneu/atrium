@@ -2899,6 +2899,43 @@
   text-decoration: none;
   color: var(--foreground);
 }
+/* File chip, split affordances: the LEFT zone + the download icon both
+   download; the far-right arrow (previewable files only) opens the right
+   panel. The chip container keeps the pill border; inner zones own hover. */
+.oc-filechip {
+  padding: 0;
+  overflow: hidden;
+}
+.oc-filechip__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.2rem 0.4rem 0.6rem;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--foreground);
+}
+.oc-filechip__main:hover { background: var(--accent); }
+.oc-filechip__btn {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  align-self: stretch;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  text-decoration: none;
+}
+.oc-filechip__btn:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
 
 /* ── Unified composer card (design reference) ──────────────────────────────
    ONE rounded surface centered on the readable column: the input sits on top, a
@@ -7254,6 +7291,22 @@
 .oc-docviewer__video { width: 100%; max-height: 100%; background: black; }
 .oc-docviewer__audiowrap { padding: 1.2rem; }
 .oc-docviewer__audio { width: 100%; }
+/* Markdown preview: the rendered view reuses the chat's .oc-md styles; the
+   small top bar toggles rendered <-> raw. */
+.oc-docviewer__mdbar {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--background);
+  z-index: 1;
+}
+.oc-docviewer__mdwrap {
+  padding: 0.75rem 1rem 1.5rem;
+  overflow-wrap: anywhere;
+}
 .oc-docviewer__textwrap { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.8rem; }
 .oc-docviewer__truncated {
   margin: 0 0 0.6rem;

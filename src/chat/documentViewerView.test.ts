@@ -11,6 +11,13 @@ import {
 // feeds a binary to the text renderer (garbage on screen).
 
 describe("viewerKindFor", () => {
+  test("markdown renders INTERPRETED: text/markdown OR the .md extension — even over a generic text/plain mime", () => {
+    expect(viewerKindFor("text/markdown", "notes.md")).toBe("markdown");
+    expect(viewerKindFor("text/plain", "notes.md")).toBe("markdown");
+    expect(viewerKindFor("application/octet-stream", "README.markdown")).toBe("markdown");
+    // Plain text stays the raw text preview.
+    expect(viewerKindFor("text/plain", "notes.txt")).toBe("text");
+  });
   test("a SPECIFIC mime wins regardless of extension", () => {
     expect(viewerKindFor("application/pdf", "weird.bin")).toBe("pdf");
     expect(viewerKindFor("image/png", "photo")).toBe("image");
@@ -23,7 +30,7 @@ describe("viewerKindFor", () => {
   test("a GENERIC mime falls back to the extension (agent deliveries often ship octet-stream)", () => {
     expect(viewerKindFor("application/octet-stream", "rapport.pdf")).toBe("pdf");
     expect(viewerKindFor("application/octet-stream", "screen.png")).toBe("image");
-    expect(viewerKindFor("application/octet-stream", "notes.md")).toBe("text");
+    expect(viewerKindFor("application/octet-stream", "notes.md")).toBe("markdown"); // md renders interpreted since 0.47
     expect(viewerKindFor(undefined, "script.py")).toBe("text");
     expect(viewerKindFor(null, "doc.pdf")).toBe("pdf");
   });

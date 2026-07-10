@@ -8,6 +8,7 @@ import {
 import { useMutation, useQuery } from "convex/react";
 import { Download, ExternalLink, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AgentMarkdown } from "./MarkdownText";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -114,7 +115,11 @@ export function DocumentViewerContent({
             <audio controls preload="metadata" src={doc.url} className="oc-docviewer__audio" />
           </div>
         ) : kind === "text" ? (
-          <TextPreview url={doc.url} />
+          <TextPreview key={doc.url} url={doc.url} />
+        ) : kind === "markdown" ? (
+          // Keyed by URL: switching to ANOTHER markdown file must reset the
+          // raw/rendered toggle back to the rendered default.
+          <TextPreview key={doc.url} url={doc.url} markdown />
         ) : needsRendition ? (
           <RenditionView
             sourceStorageId={doc.sourceStorageId as string}
@@ -218,12 +223,20 @@ function RenditionView({
 /** Plain-text preview, size-capped: the panel must render a 100 MB log's HEAD,
  *  never freeze on it. A fetch failure (e.g. storage CORS) degrades to the
  *  open-in-tab fallback — honest, never a blank panel. */
-function TextPreview({ url }: { url: string }) {
+function TextPreview({
+  url,
+  markdown = false,
+}: {
+  url: string;
+  /** Markdown file: render INTERPRETED by default, raw behind the toggle. */
+  markdown?: boolean;
+}) {
   const [state, setState] = useState<
     | { phase: "loading" }
     | { phase: "ready"; text: string; truncated: boolean }
     | { phase: "error" }
   >({ phase: "loading" });
+  const [raw, setRaw] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setState({ phase: "loading" });
@@ -258,12 +271,41 @@ function TextPreview({ url }: { url: string }) {
       </div>
     );
   }
+  const showRendered = markdown && !raw;
   return (
     <div className="oc-docviewer__textwrap">
+      {markdown ? (
+        <div className="oc-docviewer__mdbar" role="group" aria-label={m.docviewer_md_view_label()}>
+          <Button
+            type="button"
+            size="sm"
+            variant={showRendered ? "secondary" : "ghost"}
+            aria-pressed={showRendered}
+            onClick={() => setRaw(false)}
+          >
+            {m.docviewer_view_rendered()}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={raw ? "secondary" : "ghost"}
+            aria-pressed={raw}
+            onClick={() => setRaw(true)}
+          >
+            {m.docviewer_view_raw()}
+          </Button>
+        </div>
+      ) : null}
       {state.truncated ? (
         <p className="oc-docviewer__truncated">{m.docviewer_text_truncated()}</p>
       ) : null}
-      <pre className="oc-docviewer__text">{state.text}</pre>
+      {showRendered ? (
+        <div className="oc-docviewer__mdwrap">
+          <AgentMarkdown text={state.text} />
+        </div>
+      ) : (
+        <pre className="oc-docviewer__text">{state.text}</pre>
+      )}
     </div>
   );
 }

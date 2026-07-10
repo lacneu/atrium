@@ -23,6 +23,7 @@
 // captures the environment (best available diagnostic), nothing more.
 
 import { v } from "convex/values";
+import { envLabel } from "./lib/envLabel";
 import {
   internalQuery, mutation, query, internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
@@ -92,11 +93,8 @@ function safeJson(value: unknown): string | undefined {
 // trailing id-like segment is authoritative — so old bare ids AND foreign
 // labels both resolve. Lowercase alphanumerics only (defense against header
 // injection through a copy-pasted reference).
-function envLabel(): string | null {
-  const raw = process.env.ATRIUM_ENV_LABEL ?? "";
-  const label = raw.trim().toLowerCase();
-  return /^[a-z0-9][a-z0-9_.]{0,15}$/.test(label) ? label : null;
-}
+// (envLabel moved to lib/envLabel.ts — one label now stamps BOTH the report
+// references AND the minted API keys, so the two correlate unambiguously.)
 
 /** Public shape of a reference: label-prefixed when the deployment is labeled. */
 export function displayReference(id: string): string {

@@ -25,7 +25,6 @@ type PdfPage = {
 type PdfDocument = {
   numPages: number;
   getPage(n: number): Promise<PdfPage>;
-  destroy(): Promise<void>;
 };
 
 // Hard bound on the thumbnail rail: a 500-page PDF must not queue 500 canvas
@@ -42,7 +41,12 @@ export function PdfViewer({ url, filename }: { url: string; filename: string }) 
   // frees the worker-side document — switching files repeatedly must not leak.
   useEffect(() => {
     let cancelled = false;
-    let loaded: PdfDocument | null = null;
+    // pdf.js lifecycle: destroy() lives on the LOADING TASK (it tears down the
+    // worker-side document) — the resolved document proxy has no destroy() in
+    // pdfjs-dist v6, so calling it there threw on every StrictMode double
+    // mount's cancelled path (a logged-but-harmless artifact; the second mount
+    // rendered fine).
+    let loadedTask: { destroy(): Promise<void> } | null = null;
     setDoc(null);
     setError(false);
     setPage(1);
@@ -53,12 +57,13 @@ export function PdfViewer({ url, filename }: { url: string; filename: string }) 
           "pdfjs-dist/build/pdf.worker.min.mjs",
           import.meta.url,
         ).toString();
-        const d = (await pdfjs.getDocument({ url }).promise) as unknown as PdfDocument;
+        const task = pdfjs.getDocument({ url });
+        const d = (await task.promise) as unknown as PdfDocument;
         if (cancelled) {
-          void d.destroy();
+          void task.destroy().catch(() => {});
           return;
         }
-        loaded = d;
+        loadedTask = task;
         setDoc(d);
       } catch (e) {
         console.error("[docviewer] pdf load failed:", (e as Error)?.message ?? e);
@@ -67,7 +72,7 @@ export function PdfViewer({ url, filename }: { url: string; filename: string }) 
     })();
     return () => {
       cancelled = true;
-      if (loaded) void loaded.destroy();
+      if (loadedTask) void loadedTask.destroy().catch(() => {});
     };
   }, [url]);
 

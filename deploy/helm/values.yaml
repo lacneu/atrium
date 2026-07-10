@@ -286,6 +286,11 @@ secrets:
     # credentials unrecoverable. REQUIRED: the bridge fetches its gateways' encrypted
     # credentials from Convex and cannot decrypt them without it.
     ATRIUM_SECRET_KEY: ""
+    # Environment LABEL stamped into feedback references (`<label>-<id>`) and
+    # minted API keys (`oc_<label>_…`) — e.g. dev / prod. Blank = left
+    # unchanged on the deployment (never-set = legacy shapes); remove an old
+    # label with `npx convex env remove ATRIUM_ENV_LABEL`.
+    ATRIUM_ENV_LABEL: ""
     # Optional trace shipping (leave blank to disable). Langfuse host = LANGFUSE_HOST.
     LANGFUSE_PUBLIC_KEY: ""
     LANGFUSE_SECRET_KEY: ""

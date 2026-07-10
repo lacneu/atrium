@@ -68,6 +68,7 @@ import type * as lib_crypto_keyProvider from "../lib/crypto/keyProvider.js";
 import type * as lib_curation from "../lib/curation.js";
 import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
+import type * as lib_envLabel from "../lib/envLabel.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
@@ -176,6 +177,7 @@ declare const fullApi: ApiFromModules<{
   "lib/curation": typeof lib_curation;
   "lib/diagnose": typeof lib_diagnose;
   "lib/domains": typeof lib_domains;
+  "lib/envLabel": typeof lib_envLabel;
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
   "lib/groupAccess": typeof lib_groupAccess;

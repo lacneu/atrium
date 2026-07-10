@@ -15,10 +15,15 @@
 // Base62 alphabet for the random secret body (URL/Bearer safe, no separators).
 const BASE62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-// Plaintext layout: "oc_live_" + <BODY_LEN base62 chars>. 40 base62 chars is
-// ~238 bits of entropy — comfortably beyond brute-force, and the full string is
-// only ever compared by its hash.
-const KEY_NAMESPACE = "oc_live_";
+// Plaintext layout: "oc_<label>_" + <BODY_LEN base62 chars>, where <label> is
+// the deployment's ATRIUM_ENV_LABEL (e.g. oc_dev_…, oc_prod_…) — the same
+// label the feedback report references carry, so a pasted key and a pasted
+// reference identify their environment the same unambiguous way (the Convex
+// deploy-key idea: `prod:deployment|secret`). Unlabeled deployments keep the
+// legacy "oc_live_" namespace. 40 base62 chars is ~238 bits of entropy —
+// comfortably beyond brute-force, and the full string is only ever compared by
+// its hash, so the namespace is display/labeling only, never trust.
+const LEGACY_NAMESPACE_LABEL = "live";
 const BODY_LEN = 40;
 
 export type GeneratedApiKey = {
@@ -33,13 +38,17 @@ export type GeneratedApiKey = {
 /**
  * Generate a fresh API key. Uses crypto.getRandomValues (CSPRNG) to fill a
  * base62 body without modulo bias by rejection-sampling bytes. Non-deterministic
- * => ACTION-ONLY (see file header / D3).
+ * => ACTION-ONLY (see file header / D3). `environmentLabel` (the deployment's
+ * sanitized ATRIUM_ENV_LABEL, null when unset) becomes the key namespace.
  */
-export function generateApiKey(): GeneratedApiKey {
+export function generateApiKey(
+  environmentLabel?: string | null,
+): GeneratedApiKey {
+  const namespace = `oc_${environmentLabel ?? LEGACY_NAMESPACE_LABEL}_`;
   const body = randomBase62(BODY_LEN);
-  const plaintext = `${KEY_NAMESPACE}${body}`;
+  const plaintext = `${namespace}${body}`;
   // Prefix is the namespace + first 4 body chars (non-secret display only).
-  const prefix = `${KEY_NAMESPACE}${body.slice(0, 4)}`;
+  const prefix = `${namespace}${body.slice(0, 4)}`;
   const lastFour = body.slice(-4);
   return { plaintext, prefix, lastFour };
 }

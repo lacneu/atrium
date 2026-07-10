@@ -13,6 +13,7 @@
 export type ViewerKind =
   | "pdf"
   | "image"
+  | "markdown"
   | "video"
   | "audio"
   | "text"
@@ -77,10 +78,17 @@ export function viewerKindFor(
   filename: string | null | undefined,
 ): ViewerKind {
   const mime = (mimeType ?? "").toLowerCase();
+  const ext = fileExtension(filename);
   if (mime === "application/pdf") return "pdf";
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
   if (mime.startsWith("audio/")) return "audio";
+  // Markdown renders INTERPRETED by default (raw behind a toggle). The .md
+  // extension wins even over a generic text/plain mime — deliverers often
+  // guess that mime for .md files, and the user expects the finished render.
+  if (mime === "text/markdown" || ext === "md" || ext === "markdown") {
+    return "markdown";
+  }
   if (
     mime.startsWith("text/") ||
     mime === "application/json" ||
@@ -90,7 +98,6 @@ export function viewerKindFor(
     return "text";
   }
   // Generic or missing mime → sniff the extension.
-  const ext = fileExtension(filename);
   if (ext === "pdf") return "pdf";
   if (ext !== null && IMAGE_EXTENSIONS.has(ext)) return "image";
   if (ext !== null && TEXT_EXTENSIONS.has(ext)) return "text";

@@ -24,6 +24,7 @@ import type { Id } from "./_generated/dataModel";
 import { getActor, requireAdmin } from "./lib/access";
 import { recordAudit } from "./lib/audit";
 import { generateApiKey, hashKey } from "./lib/apikeys";
+import { envLabel } from "./lib/envLabel";
 
 /**
  * Internal: persist a freshly-minted bridge secret (already hashed) for an instance,
@@ -75,7 +76,7 @@ export const mintBridgeSecret = action({
     ctx,
     { instanceId },
   ): Promise<{ plaintext: string; prefix: string; lastFour: string }> => {
-    const generated = generateApiKey();
+    const generated = generateApiKey(envLabel());
     const hashedSecret = await hashKey(generated.plaintext);
     await ctx.runMutation(internal.bridgeAuth.storeBridgeSecret, {
       instanceId,

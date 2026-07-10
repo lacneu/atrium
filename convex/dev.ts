@@ -13,6 +13,7 @@ import {
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
+import { envLabel } from "./lib/envLabel";
 import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
 import { resolveTargetForChat } from "./routing";
@@ -441,7 +442,7 @@ export const seedApiKey = action({
     prefix: string;
     lastFour: string;
   }> => {
-    const generated = generateApiKey();
+    const generated = generateApiKey(envLabel());
     const hashedKey = await hashKey(generated.plaintext);
     const { serviceAccountId, keyId } = await ctx.runMutation(
       internal.dev.seedApiKeyRecord,
@@ -1493,7 +1494,7 @@ export const seedInstanceCreds = action({
       deviceIdentity,
       `${instanceId}:deviceIdentity`,
     );
-    const generated = generateApiKey();
+    const generated = generateApiKey(envLabel());
     const hashedSecret = await hashKey(generated.plaintext);
     await ctx.runMutation(internal.dev._storeSeedCreds, {
       instanceId,
@@ -1540,7 +1541,7 @@ export const seedHermesInstance = action({
       apiKey,
       `${instanceId}:apiKey`,
     );
-    const generated = generateApiKey();
+    const generated = generateApiKey(envLabel());
     const hashedSecret = await hashKey(generated.plaintext);
     await ctx.runMutation(internal.dev._storeSeedHermesCreds, {
       instanceId,

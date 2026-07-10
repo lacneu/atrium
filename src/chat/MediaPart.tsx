@@ -1,4 +1,5 @@
 import { m } from "@/paraglide/messages.js";
+import { ArrowRight, Download } from "lucide-react";
 import { useLightbox } from "./ImageLightbox";
 import { useDocumentViewer } from "./DocumentViewer";
 import { isConvertibleDocument, viewerKindFor } from "./documentViewerView";
@@ -89,42 +90,100 @@ function FileChip({
   const viewer = useDocumentViewer();
   const nativelyViewable = viewerKindFor(mime, name) !== "none";
   const convertible = !!storageId && isConvertibleDocument(mime, name);
-  if (nativelyViewable || convertible) {
-    return (
-      <button
-        type="button"
-        className="oc-media oc-media--file oc-media--viewable"
-        onClick={() =>
-          viewer.openFor({
-            url,
-            filename: name,
-            mimeType: mime || null,
-            // Only convertible Office files carry the source id → rendition path.
-            sourceStorageId: convertible ? storageId : undefined,
-          })
+  const previewable = nativelyViewable || convertible;
+  // DOWNLOAD is the primary action again (the whole left zone AND the explicit
+  // download icon) — routing every viewable/convertible chip into the viewer
+  // made the FILE itself unreachable (live report: a delivered 22MB PPTX the
+  // user could not save). The PREVIEW is the extra affordance: an arrow at the
+  // far right, only when the right panel can actually show the document.
+  // A real download needs the BLOB round-trip: the storage URL is another
+  // origin, where the anchor `download` attribute is ignored (a PDF would just
+  // open in a tab). The controls stay REAL anchors (middle-click / "save link
+  // as" keep working natively); the click intercepts for the blob download and
+  // on a fetch failure falls back to opening the direct URL — a popup-blocked
+  // open (the async hop lost the user activation) last-resorts to a same-tab
+  // navigation so the button never silently does nothing.
+  const download = (e: React.MouseEvent) => {
+    // Modified clicks (ctrl/cmd/shift/middle) keep the anchor's native
+    // behavior — open in a new tab/window exactly as a real link promises.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
+      return;
+    }
+    e.preventDefault();
+    void (async () => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const obj = URL.createObjectURL(await res.blob());
+        const a = document.createElement("a");
+        a.href = obj;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(obj), 30_000);
+      } catch {
+        // window.open with the "noopener" feature returns null EVEN on
+        // success — open a blank proxy instead (null only when actually
+        // BLOCKED), sever the opener by hand, then navigate it; a genuinely
+        // blocked popup last-resorts to a same-tab navigation so the button
+        // never silently does nothing.
+        const w = window.open("", "_blank");
+        if (w) {
+          w.opener = null;
+          w.location.href = url;
+        } else {
+          window.location.href = url;
         }
-        title={name}
-        aria-label={m.docviewer_open_aria({ name })}
+      }
+    })();
+  };
+  return (
+    <span className="oc-media oc-media--file oc-filechip" title={name}>
+      <a
+        className="oc-filechip__main"
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={download}
+        aria-label={m.chat_filechip_download({ name })}
       >
         <span className="oc-media__icon" aria-hidden>
           📄
         </span>
         <span className="oc-media__name">{name}</span>
-      </button>
-    );
-  }
-  return (
-    <a
-      className="oc-media oc-media--file"
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      <span className="oc-media__icon" aria-hidden>
-        ⬇
-      </span>
-      <span className="oc-media__name">{name}</span>
-    </a>
+      </a>
+      <a
+        className="oc-filechip__btn"
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={download}
+        title={m.chat_filechip_download({ name })}
+        aria-label={m.chat_filechip_download({ name })}
+      >
+        <Download size={14} aria-hidden />
+      </a>
+      {previewable ? (
+        <button
+          type="button"
+          className="oc-filechip__btn"
+          onClick={() =>
+            viewer.openFor({
+              url,
+              filename: name,
+              mimeType: mime || null,
+              // Only convertible Office files carry the source id → rendition path.
+              sourceStorageId: convertible ? storageId : undefined,
+            })
+          }
+          title={m.docviewer_open_aria({ name })}
+          aria-label={m.docviewer_open_aria({ name })}
+        >
+          <ArrowRight size={14} aria-hidden />
+        </button>
+      ) : null}
+    </span>
   );
 }
 
