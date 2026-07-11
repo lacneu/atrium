@@ -244,6 +244,9 @@ export default defineSchema({
         showChatProvider: v.optional(v.boolean()),
         showUsage: v.optional(v.boolean()),
         autoReadAloud: v.optional(v.boolean()),
+        notifSound: v.optional(v.boolean()),
+        notifSystem: v.optional(v.boolean()),
+        replySound: v.optional(v.boolean()),
       }),
     ),
 
@@ -696,6 +699,9 @@ export default defineSchema({
         showChatProvider: v.optional(v.boolean()),
         showUsage: v.optional(v.boolean()),
         autoReadAloud: v.optional(v.boolean()),
+        notifSound: v.optional(v.boolean()),
+        notifSystem: v.optional(v.boolean()),
+        replySound: v.optional(v.boolean()),
       }),
     ),
     // System-level feature enablement. A gated UI pref (e.g. voiceInput) stays
@@ -981,6 +987,12 @@ export default defineSchema({
         clears: v.optional(v.array(v.string())),
       }),
     ),
+    // Timestamp of the last COMPLETED assistant reply (stamped by stream.finalize,
+    // status "complete" only — never error/aborted). The single arrival signal the
+    // sidebar consumes for the flash / unread dot / reply sound: compared against
+    // the user's chatReads.lastSeenAt. Distinct from `updatedAt`, which bumps at
+    // turn START (ordering) — this one flips when the answer has fully LANDED.
+    lastAssistantAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     // Hidden-utility-chat lookups (the summarizer engine checks per turn-finalize):
@@ -993,6 +1005,24 @@ export default defineSchema({
     .index("by_user_updated", ["userId", "updatedAt"])
     .index("by_user_pinned", ["userId", "pinned"])
     .index("by_project", ["projectId"]),
+
+  // Per-user per-chat read state (multi-chat UX). One row per (user, chat),
+  // upserted when the user OPENS/VIEWS the chat. The sidebar derives the
+  // unread dot client-side: chat.lastAssistantAt > lastSeenAt. Rows only exist
+  // for chats visited since the feature shipped — a chat with NO row shows no
+  // dot (quiet adoption: no wall of stale dots on first deploy). Kept OUT of
+  // listChats (its own light query) so the hottest sidebar query gains no
+  // extra reads (prod listChats saturation lesson).
+  chatReads: defineTable({
+    userId: v.id("users"),
+    chatId: v.id("chats"),
+    lastSeenAt: v.number(),
+  })
+    .index("by_user_chat", ["userId", "chatId"]) // upsert point-read
+    // Sidebar map: read DESC on lastSeenAt so the bounded window keeps the
+    // MOST RECENTLY seen chats (a plain by_user take() would return the 500
+    // oldest-created rows and silently drop current chats — codex P2).
+    .index("by_user_seen", ["userId", "lastSeenAt"]),
 
   // Individual messages within a chat. Streaming assistant text is patched in
   // place on `text` (reactivity -> assistant-ui re-render).
@@ -1897,6 +1927,10 @@ export default defineSchema({
       v.literal("feedback_reply"),
       // Support-side resolution of the user's report (distinct rendering).
       v.literal("feedback_resolved"),
+      // A user SUBMITTED a report (admin-facing fan-out) — the reactive half
+      // of "un utilisateur rencontre un probleme": every admin's bell badges
+      // the moment the report lands. Non-PHI: reference + category only.
+      v.literal("feedback_new"),
       // Agent-file curation proposal ready / failed (admin-facing).
       v.literal("curation"),
     ),
@@ -2089,15 +2123,39 @@ export default defineSchema({
     ),
     correlationId: v.optional(v.string()), // optional link to a span chain
     evidence: v.optional(v.string()), // JSON-encoded non-PHI signals
+    // Agent-AUTHORED proposal documents attached by the reporting agent (the
+    // meta/critic agent ships its full proposal markdown so admins read it in
+    // Atrium instead of SSH-ing to the gateway host). METADATA ONLY here
+    // (name + size): the text itself lives in `anomalyAttachments`, so the
+    // bounded list scans (fetchAnomalies reads up to 500 FULL rows before
+    // projecting) never carry proposal bodies — ~85 max-size inline rows would
+    // have blown Convex's per-transaction read limit (codex P1).
+    attachments: v.optional(
+      v.array(v.object({ name: v.string(), chars: v.number() })),
+    ),
     resolvedAt: v.optional(v.number()),
     resolvedBy: v.optional(v.string()), // principal/actor id (non-PHI), free-form
   })
     .index("by_status", ["status"]) // dedupe scan (open rows) + listing filter
     .index("by_at", ["at"]) // recent-first listing
+    // (child content table below: anomalyAttachments, keyed by_anomaly)
     // (status, kind) — look up THE single open detector row of a kind directly
     // so de-dupe (upsertDetectorAnomaly) + auto-resolve are correct regardless
     // of how large the open set grows (no .take(500) truncation hazard).
     .index("by_status_kind", ["status", "kind"]),
+
+  // The CONTENT of agent-attached proposal documents — one row per attachment,
+  // keyed by anomaly. Kept OUT of `anomalies` on purpose: the anomaly list
+  // scans (bounded 500-row reads) must never load proposal bodies; only the
+  // on-demand `getAnomalyAttachments` query touches this table. Same non-PHI
+  // contract as the parent's `attachments` metadata (agent-authored platform
+  // content, never chat/user data). Anomalies are never deleted today; if a
+  // retention/purge path is ever added, cascade these rows with the parent.
+  anomalyAttachments: defineTable({
+    anomalyId: v.id("anomalies"),
+    name: v.string(),
+    content: v.string(),
+  }).index("by_anomaly", ["anomalyId"]),
 
   // Outbound trace-shipping cursors (increment 5). One row per vendor
   // ("langfuse"/"opik"): `lastAt` is the `traceEvents.at` watermark up to and

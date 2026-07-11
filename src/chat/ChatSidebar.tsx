@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
 import { clearSidebarFlash, useSidebarFlashChatId } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
@@ -86,6 +86,9 @@ export type ChatRow = {
   pinned: boolean;
   color: string | null;
   updatedAt: number; // for the compact relative-age label (gated by showChatAge)
+  // When the last COMPLETED assistant reply landed (stream.finalize stamp).
+  // Crossed with chatReads.lastSeenAt for the unread dot + arrival flash/sound.
+  lastAssistantAt: number | null;
   // The bridge this chat routes to (bound instance, else the user's default).
   // Drives the self-hiding provider badge (shown only when chats span >1 kind).
   providerKind: "openclaw" | "hermes" | null;
@@ -140,6 +143,33 @@ export function ChatSidebar({
     (chats ?? []).map((c) => c.providerKind).filter((k): k is "openclaw" | "hermes" => k != null),
   );
   const showProviderBadge = showProviderPref && providerKinds.size > 1;
+
+  // --- Multi-chat unread dots (DISPLAY only) ---------------------------------
+  // chatReads = the user's per-chat "last seen" map (its OWN light query so the
+  // hot listChats gains no reads). Unread = lastAssistantAt beyond lastSeenAt;
+  // a chat with NO read row shows no dot (quiet adoption — no wall of stale
+  // dots on first deploy). The ACTIVE chat never dots. The arrival DETECTION
+  // (flash / sound / mark-seen) lives in ChatArrivalWatcher, mounted in the
+  // persistent chrome — this sidebar unmounts when collapsed or in Settings.
+  const reads = useQuery(api.chatReads.myChatReads, {}) as
+    | { chatId: Id<"chats">; lastSeenAt: number }[]
+    | undefined;
+  const readsMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of reads ?? []) map.set(r.chatId, r.lastSeenAt);
+    return map;
+  }, [reads]);
+  const unreadIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of chats ?? []) {
+      if (c._id === activeChatId) continue;
+      const seen = readsMap.get(c._id);
+      if (seen !== undefined && c.lastAssistantAt !== null && c.lastAssistantAt > seen) {
+        set.add(c._id);
+      }
+    }
+    return set;
+  }, [chats, readsMap, activeChatId]);
 
   // The relative-age labels read `Date.now()` at render — without a tick an idle
   // session would freeze a chat at "maintenant". Re-render on a minute cadence so
@@ -435,6 +465,7 @@ export function ChatSidebar({
                   key={c._id}
                   chat={c}
                   active={c._id === activeChatId}
+                  unread={unreadIds.has(c._id)}
                   projects={projects ?? []}
                   onSelect={onSelect}
                   showProviderBadge={showProviderBadge}
@@ -469,6 +500,7 @@ export function ChatSidebar({
                       key={c._id}
                       chat={c}
                       active={c._id === activeChatId}
+                      unread={unreadIds.has(c._id)}
                       projects={projects ?? []}
                       onSelect={onSelect}
                       showProviderBadge={showProviderBadge}
@@ -493,6 +525,7 @@ export function ChatSidebar({
                     key={c._id}
                     chat={c}
                     active={c._id === activeChatId}
+                    unread={unreadIds.has(c._id)}
                     projects={projects ?? []}
                     onSelect={onSelect}
                     showProviderBadge={showProviderBadge}
@@ -627,12 +660,16 @@ const PROVIDER_LABEL: Record<"openclaw" | "hermes", string> = {
 function ChatItem({
   chat,
   active,
+  unread,
   projects: _projects,
   onSelect,
   showProviderBadge,
 }: {
   chat: ChatRow;
   active: boolean;
+  // A completed reply landed since the user's last visit — subtle dot on the
+  // row until the chat is opened (multi-chat switching UX).
+  unread: boolean;
   projects: Project[];
   onSelect: (id: Id<"chats">) => void;
   showProviderBadge: boolean;
@@ -719,6 +756,13 @@ function ChatItem({
         <button className="oc-chatitem__label" onClick={() => onSelect(chat._id)}>
           {chat.title || m.sidebar_untitled()}
         </button>
+        {unread ? (
+          <span
+            className="oc-chatitem__unread"
+            title={m.sidebar_unread_reply()}
+            aria-label={m.sidebar_unread_reply()}
+          />
+        ) : null}
         {chat.readOnly ? (
           <span
             className="oc-chatitem__readonly"

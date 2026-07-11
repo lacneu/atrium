@@ -69,18 +69,22 @@ surfaces.
 1. The browser calls a Convex mutation to send a message. Convex inserts the user
    message and an `outbox` row, then schedules an internal dispatch action.
 2. The dispatch action (`convex/bridge.ts`) resolves routing for the chat — which
-   OpenClaw instance and agent this user is bound to — and `POST`s the turn to the
-   bridge's authenticated `/send` endpoint. Only non-secret instance/agent
-   **names** cross this boundary; the bridge maps names to gateway tokens from its
-   own environment.
+   gateway instance and agent this turn is addressed to (the chat's binding, or
+   the per-turn routed agent in a multi-agent conversation) — and `POST`s the
+   turn to the bridge's authenticated `/send` endpoint. Only non-secret
+   instance/agent **names** cross this boundary; the bridge maps names to the
+   encrypted per-instance gateway credentials it fetches from Convex (or, as the
+   single-instance fallback, from its own environment).
 3. The bridge applies any per-chat session settings, then sends the turn to the
-   gateway over its operator WebSocket. Inbound attachments are resolved from
-   Convex storage and inlined for the gateway.
+   gateway over that provider's transport — OpenClaw's operator WebSocket, or
+   Hermes over its JSON-RPC WebSocket / REST+SSE surface. Inbound attachments are
+   resolved from Convex storage and inlined for the gateway.
 
 ### Receiving a reply (gateway → browser)
 
-1. The gateway streams events back over the WebSocket. The bridge's normalizer
-   turns the version-specific frames into a small set of operations:
+1. The gateway streams events back over the same transport. The provider's
+   normalizer in the bridge turns the version-specific frames into a small set
+   of operations:
    `startAssistant`, `appendDelta`, `setSnapshot`, `addPart`, `addMediaPart`,
    `finalize`, plus session metadata.
 2. The bridge `POST`s each operation to Convex's `/bridge/ingest` HTTP action,
@@ -142,15 +146,60 @@ registered on the Convex HTTP router (`convex/http.ts`).
 A deployment can serve many users, each routed to the agent assigned to them, on a
 named gateway instance (which may be OpenClaw or Hermes). A chat is bound to a
 target (instance + agent); the dispatch path resolves and persists that binding,
-and re-binds cleanly if the bound agent was removed on the gateway. A bridge serves
-one named instance, declared consistently on both sides (the bridge's instance name
-and the Convex `instances` row / `BRIDGE_INSTANCE_NAME`) so a routing
-misconfiguration fails loudly instead of answering from the wrong gateway.
+and re-binds cleanly if the bound agent was removed on the gateway. Within one
+conversation, each turn can also be routed to a DIFFERENT assigned agent (a
+per-turn selector in the composer; every reply is attributed to the agent that
+produced it), with the full thread re-grounded into the newly routed agent's
+session. A bridge serves one named instance, declared consistently on both sides
+(the bridge's instance name and the Convex `instances` row /
+`BRIDGE_INSTANCE_NAME`) so a routing misconfiguration fails loudly instead of
+answering from the wrong gateway.
+
+Two admission gates sit in front of routing. Discovered agents are **disabled by
+default**: an admin enables each agent (Settings → Platform) before it can be
+assigned or answer anyone — a freshly synced gateway never silently exposes its
+agents. And each instance carries a live **availability gate**: while its bridge
+poll fails, chats bound to it grey their composer with an explanatory banner
+instead of accepting sends that would fail, and recover automatically when the
+poll succeeds again.
+
+## Conversation continuity (rehydration and branching)
+
+Gateway sessions are ephemeral (daily resets, pruning, restarts) while Atrium
+displays the full thread. When a turn lands on a fresh or reset gateway
+session, the bridge asks Convex for the stored conversation and prepends it to
+the prompt — a **hybrid** re-grounding: a rolling summary of the older turns
+plus a bounded block of recent verbatim ones. This works on both providers
+(including a brand-new Hermes server session), and it is also what powers
+per-turn agent switches and branching.
+
+Any assistant reply can be **branched into a new conversation** (the reply's
+contextual menu): the new chat carries the visible history up to that point —
+messages, attachments (no blob duplication), per-message agent attribution and
+finished sub-agent result cards — and opens on a fresh gateway session that the
+rehydration re-grounds on the first send. The user stays in the original
+conversation; the new row pulses in the sidebar. A branch never contains
+anything said after its branch point (the rolling summary only rides when its
+coverage stops at or before it). See `docs/design/` for the deeper mechanics.
+
+## Document viewer and renditions
+
+Delivered and uploaded files preview in a right-hand panel next to the
+conversation: PDFs render in-app (pdf.js, thumbnail rail + zoom), images,
+video, audio and text show natively, and markdown renders interpreted (with a
+raw toggle). Office documents (PPTX/DOCX/…) are converted to PDF **by an
+agent**, not by embedded infrastructure: each instance designates a converter
+agent (`converterAgentId`), and the first preview request dispatches a hidden
+conversion turn to it; the returned PDF is cached per source file
+(`fileRenditions`) so later viewers open instantly. No conversion service ships
+with Atrium — the agent's own tools do the work, which keeps the app deployable
+anywhere and works with either provider.
 
 ## Voice
 
-Read-aloud and dictation run in the browser through the Web Speech API — no API
-key and no gateway dependency — so they work identically for either provider. Each
+Read-aloud and dictation run in the browser through the Web Speech API by
+default — no API key, no gateway dependency — so they work identically for
+either provider. Each
 instance chooses its read-aloud engine: the browser's built-in system voices, or,
 on providers that expose a text-to-speech RPC (OpenClaw), the gateway's own
 configured voices — synthesized on demand through the bridge and played in the

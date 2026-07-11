@@ -13,6 +13,12 @@ import { formatDateTime } from "@/lib/format";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
 import {
   Select,
@@ -41,9 +47,12 @@ type AnomalyView = {
   severity: "info" | "warn" | "critical";
   status: "open" | "acknowledged" | "resolved";
   message: string;
-  source: "detector" | "agent";
+  source: "detector" | "agent" | "user";
   correlationId: string | null;
   evidence: string | null;
+  // Attachment metadata only (name + size); the full text is fetched on demand
+  // by the viewer dialog via api.anomalies.getAnomalyAttachments.
+  attachments: { name: string; chars: number }[] | null;
   resolvedAt: number | null;
   resolvedBy: string | null;
 };
@@ -332,7 +341,12 @@ export function AnomaliesTab() {
           },
           {
             header: m.anomalies_col_message(),
-            cell: (r) => <span className="oc-anomaly__msg">{r.message}</span>,
+            cell: (r) => (
+              <div className="oc-anomaly__msgcell">
+                <span className="oc-anomaly__msg">{r.message}</span>
+                <AttachmentsButton row={r} />
+              </div>
+            ),
             sort: (r) => r.message,
           },
           {
@@ -471,6 +485,56 @@ function CauseCell({ row }: { row: AnomalyView }) {
         </button>
       ) : null}
     </div>
+  );
+}
+
+// Agent-attached proposal documents (e.g. the meta-agent's full proposal
+// markdown). The LIST row only carries name+size metadata; the full text is
+// fetched ON OPEN via getAnomalyAttachments — so a 200-row table never streams
+// megabytes of proposal text, and the read stays admin/anomalies.read-gated.
+function AttachmentsButton({ row }: { row: AnomalyView }) {
+  const [open, setOpen] = useState(false);
+  const files = useQuery(
+    api.anomalies.getAnomalyAttachments,
+    open ? { anomalyId: row._id } : "skip",
+  );
+  if (!row.attachments || row.attachments.length === 0) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="oc-anomaly__drill"
+        onClick={() => setOpen(true)}
+      >
+        {m.anomalies_attachments_view()}
+        {row.attachments.length > 1 ? ` (${row.attachments.length})` : ""}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="oc-anomaly__attachments-dialog">
+          <DialogHeader>
+            <DialogTitle>{m.anomalies_attachments_title()}</DialogTitle>
+          </DialogHeader>
+          {files === undefined ? (
+            <p className="oc-traces__muted">{m.anomalies_attachments_loading()}</p>
+          ) : files.length === 0 ? (
+            <p className="oc-traces__muted">{m.anomalies_attachments_empty()}</p>
+          ) : (
+            <div className="oc-anomaly__attachments">
+              {files.map((f) => (
+                <section key={f.name} className="oc-anomaly__attachment">
+                  <h4 className="oc-anomaly__attachment-name">
+                    <code className="oc-traces__mono">{f.name}</code>
+                  </h4>
+                  <pre className="oc-anomaly__attachment-content">
+                    {f.content}
+                  </pre>
+                </section>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

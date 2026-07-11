@@ -409,7 +409,9 @@ function main(): void {
       title: "Report an anomaly",
       description:
         "Report an anomaly / self-repair signal (POST /anomalies). " +
-        "Key must have anomalies.report.",
+        "Key must have anomalies.report. Optional `attachments` ships " +
+        "agent-authored documents (e.g. a full proposal markdown) so admins " +
+        "read them directly in Atrium's Anomalies tab (max 4, 48k chars each).",
       inputSchema: reportAnomalyInput,
     },
     async (args) => run(() => reportAnomaly(config, args)),

@@ -213,6 +213,49 @@ describe("feedback.submitFeedback", () => {
     ).rejects.toThrow(/category/i);
   });
 
+  test("submission fans out a feedback_new notification to every admin — never the comment", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const admin1 = await seedUser(t, "admin");
+      const admin2 = await seedUser(t, "admin");
+      const { userId, as } = await seedUser(t); // plain reporter
+      const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+      const { replyId } = await seedTurn(t, chatId, userId, "q", "r");
+
+      const SECRET = "commentaire prive de l'utilisateur";
+      const { reference } = await as.mutation(api.feedback.submitFeedback, {
+        chatId,
+        messageId: replyId,
+        category: "latency",
+        comment: SECRET,
+        client: { displayedText: "r" },
+      });
+      // Fan-out is SCHEDULED off the submission — drain it.
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const notifs = await t.run(async (ctx) =>
+        (await ctx.db.query("notifications").collect()).filter(
+          (n) => n.kind === "feedback_new",
+        ),
+      );
+      // One per admin, none for the reporter.
+      const recipients = notifs.map((n) => n.userId).sort();
+      expect(recipients).toEqual([admin1.userId, admin2.userId].sort());
+      for (const n of notifs) {
+        expect(n.href).toBe("/settings/feedbacks");
+        expect(n.messageKey).toBe("notif_feedback_new");
+        expect(n.params?.reference).toBe(reference);
+        expect(n.params?.category).toBe("latency");
+        // Non-PHI guarantee: the user's free-text comment NEVER reaches a
+        // notification row (title/body/params).
+        expect(JSON.stringify(n)).not.toContain(SECRET);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("a report filed while impersonating is audited with the real admin id", async () => {
     const t = convexTest(schema, modules);
     const target = await seedUser(t); // the impersonated user owns the chat

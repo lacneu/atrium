@@ -588,6 +588,18 @@ export const finalize = internalMutation({
     // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
     // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
     if (stRow !== null) await ctx.db.delete(stRow._id);
+    // A COMPLETED reply stamps the chat's `lastAssistantAt` — the single signal
+    // the sidebar consumes for the arrival flash / unread dot / reply sound
+    // (multi-chat UX). Deliberately NOT on error/aborted: a failed turn already
+    // paints its own error card, and "ding + unread" on a failure would read as
+    // "a reply arrived". `updatedAt` (bumped at turn START) keeps ordering.
+    // ONLY on the INITIAL streaming→complete transition: a redelivered
+    // finalize(complete) passes the idempotence guard above (same-status
+    // re-finalize is supported) and must NOT re-stamp — it would resurrect the
+    // unread dot / replay the cue for a reply the user already saw (codex P2).
+    if (status === "complete" && message.status === "streaming") {
+      await ctx.db.patch(message.chatId, { lastAssistantAt: Date.now() });
+    }
     // SSE transport (Phase 1): GC the message's stream chunks (bounded + self-scheduling
     // — a long turn can accumulate hundreds). Off the lifecycle path; best-effort.
     await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {

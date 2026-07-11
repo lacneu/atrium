@@ -73,7 +73,12 @@ Compatibility. Setting or generating the device identity nudges the bridge to co
 right away, so the operator **pairing request appears at the gateway within seconds**
 (approve it there: `openclaw devices approve <id>`). Then click **Synchroniser
 maintenant** in the Credentials dialog to pull the discovered agents in immediately —
-otherwise a discovery cron does it within ~2 min. (Rotating an ALREADY-configured
+otherwise a discovery cron does it within ~2 min. **Discovered agents arrive
+DISABLED**: enable each one you intend to serve (Settings → Platform → Agents)
+before assigning it — a synced gateway never silently exposes its agents. If you
+want Office documents (PPTX/DOCX/…) to preview as PDF in the document viewer,
+also designate the instance's **converter agent** there (`converterAgentId`);
+without one, Office files stay download-only. (Rotating an ALREADY-configured
 instance's operator token or device identity takes effect after a bridge recreate —
 `docker compose up -d --no-deps --force-recreate bridge`.)
 
@@ -140,6 +145,10 @@ the SOC2 control mapping in [`compliance/`](../compliance/)):
 
 - Set `AUTH_ALLOWED_EMAIL_DOMAINS` **before** anyone signs in — the first sign-in
   from an allowed domain becomes admin.
+- Set `ATRIUM_ENV_LABEL` (e.g. `dev` / `prod`) on each Convex deployment so
+  every feedback reference (`prod-<id>`) and minted API key (`oc_prod_…`)
+  names its environment — running several environments without it makes pasted
+  identifiers ambiguous.
 - Generate and **back up** the secrets you cannot regenerate: `ATRIUM_SECRET_KEY`
   (lose it and every Convex-stored credential is unrecoverable), the Convex auth
   keys (`JWT_PRIVATE_KEY`/`JWKS`), and the Convex instance secret.

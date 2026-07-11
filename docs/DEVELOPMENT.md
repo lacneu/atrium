@@ -3,14 +3,15 @@
 This is the local workflow for hacking on Atrium. The repo has two
 runnable parts: the **app** (React front end + Convex backend, at the repo root)
 and the **bridge** (`bridge/`). You only need the bridge running when you want to
-exercise a real OpenClaw gateway end to end.
+exercise a real gateway (OpenClaw or Hermes) end to end.
 
 ## Prerequisites
 
 - Node.js (see the engines in `package.json`; Node 24 is what the Docker build
   uses).
-- An OpenClaw gateway only if you want a live end-to-end loop. The app and its
-  tests run fine without one.
+- A gateway (OpenClaw or Hermes) only if you want a live end-to-end loop. The
+  app and its tests run fine without one; the disposable harness below is
+  pinned to OpenClaw.
 
 ## App: install and run
 

@@ -14,6 +14,7 @@ describe("groupAndFilterPrefs", () => {
       "messages",
       "composer",
       "sidebar",
+      "notifications",
     ]);
     const flat = groups.flatMap((g) => g.keys);
     expect(flat.slice().sort()).toEqual(keys.slice().sort());

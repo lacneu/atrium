@@ -36,7 +36,7 @@ import {
   getProfile,
 } from "./lib/access";
 import { recordAudit } from "./lib/audit";
-import { notifyUser } from "./notifications";
+import { notifyAdmins, notifyUser } from "./notifications";
 import {
   PERMISSIONS,
   permissionsForRoleKey,
@@ -355,11 +355,27 @@ export const submitFeedback = mutation({
       resourceId: args.messageId,
     });
 
+    // Badge every admin's bell the moment a report lands (the reactive half of
+    // "a user just hit a problem"). Non-PHI by construction: reference +
+    // category only — NEVER the user's comment (free text) nor any snapshot
+    // content. Scheduled fan-out: the submission commits regardless of the
+    // admin-set size; dedupeKey makes re-runs idempotent.
+    const reference = displayReference(String(feedbackId));
+    await notifyAdmins(ctx, {
+      kind: "feedback_new",
+      title: "Nouveau signalement utilisateur",
+      body: `${reference} (${args.category})`,
+      messageKey: "notif_feedback_new",
+      params: { reference, category: args.category },
+      href: "/settings/feedbacks",
+      dedupeKey: `feedback_new:${feedbackId}`,
+    });
+
     return {
       feedbackId,
       displayedMatchesStored,
       // Environment-tagged shareable reference (what the dialog shows).
-      reference: displayReference(String(feedbackId)),
+      reference,
     };
   },
 });

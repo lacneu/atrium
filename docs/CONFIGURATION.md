@@ -98,10 +98,16 @@ Pushed by `bootstrap-env.sh` (or the Helm Job) via `convex env set`.
 | --- | --- | --- |
 | `AUTH_ALLOWED_EMAIL_DOMAINS` | yes | Comma-separated allowed sign-in domains. **Set before anyone signs in** — the first sign-in from an allowed domain becomes admin. |
 | `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | for Google | Google OAuth client credentials. |
-| `AUTH_MICROSOFT_ID` / `AUTH_MICROSOFT_SECRET` / `AUTH_MICROSOFT_TENANT_ID` | optional | Microsoft Entra OAuth (leave blank to disable). |
+| `AUTH_MICROSOFT_ENTRA_ID_ID` / `AUTH_MICROSOFT_ENTRA_ID_SECRET` / `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | optional | Microsoft Entra OAuth (leave blank to disable). The issuer must be your tenant-specific URL (`https://login.microsoftonline.com/<tenant-id>/v2.0`) — the multi-tenant `common` issuer is refused. |
 | `JWT_PRIVATE_KEY` | yes | `@convex-dev/auth` signing key (PEM with real newlines). |
 | `JWKS` | yes | `@convex-dev/auth` public JWKS (raw JSON). |
 | `SITE_URL` | yes | Public site URL used for OAuth callbacks (usually the front end's public origin). |
+
+### Environment labeling
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `ATRIUM_ENV_LABEL` | optional | Environment label stamped into everything this deployment hands out: feedback report references (`<label>-<id>`) and minted API keys (`oc_<label>_…`) — the same unambiguous construction as a Convex deploy key, so a pasted identifier always tells you which environment it came from. Lowercase alphanumerics plus `.` and `_`, 16 chars max, no dashes (e.g. `dev`, `prod`); invalid or unset keeps the legacy unlabeled shapes. Remove a previously set label with `npx convex env remove ATRIUM_ENV_LABEL` (the bootstrap scripts skip blank values). |
 
 ### Bridge wiring (Convex side)
 
@@ -126,6 +132,24 @@ Leave blank to disable. Keys live in the Convex deployment env, not the bridge.
 | --- | --- |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Langfuse trace export. |
 | `OPIK_API_KEY` / `OPIK_WORKSPACE` / `OPIK_BASE_URL` | Opik trace export. |
+
+## Per-instance settings (admin UI, not env)
+
+Beyond environment variables, each gateway instance carries hot-reloaded
+settings edited in **Settings → Platform** (stored in Convex, consumed in-band
+on every dispatch — no restart needed). The canonical list lives in
+`convex/lib/instanceConfig.ts`; the notable knobs:
+
+| Setting | What it controls |
+| --- | --- |
+| `mediaMode` / `inboundMediaMode` / `mediaMaxMb` | How agent files reach users and how user attachments reach the agent (inline base64, gateway HTTP, or shared filesystem), plus the size cap. |
+| `rehydration` | Whether a fresh/reset gateway session is re-grounded with the stored conversation before the next turn. |
+| `converterAgentId` | The instance's designated converter agent — powers the document viewer's Office→PDF renditions. Unset = Office files stay download-only. |
+| `voiceEnabled` / `voiceEngine` / `voiceLang` / `voiceRate` / `voiceAutoRead` | Read-aloud and dictation: browser Web Speech or the gateway's TTS RPC. |
+| `summarizeThresholdChars` | When the rolling conversation summary (hybrid rehydration) kicks in. |
+| `curationEnabled` / `curationBudgetChars` | Automatic agent-file curation (propose-and-approve). |
+| `contentLocale` | The language of injected instruction texts sent to this instance's agents. |
+| `promptInjections` | The per-instance registry of standing prompt instructions (each one can be disabled or customized). |
 
 ## Secrets discipline
 

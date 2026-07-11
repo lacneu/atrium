@@ -8,6 +8,38 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.49.0] — Agent proposals land in Atrium; the app learns to tap you on the shoulder
+
+Feature release (Convex + frontend + MCP). No breaking changes; the schema is
+additive and the new MCP parameter is optional.
+
+- **An agent's improvement proposal is now readable in Atrium — no more SSH to
+  the gateway host.** `report_anomaly` (API + MCP) accepts optional
+  `attachments` (up to 4 documents, 48k chars each — out-of-bounds is an
+  explicit 400, never a silent truncation). The Anomalies tab shows a "Read
+  the proposal" button that opens the full text in a dialog. The content is
+  stored in its own child table and fetched on demand, so anomaly lists and
+  scans stay light no matter how many proposals accumulate; the anomaly row
+  itself carries only name + size.
+- **Admins are notified the moment a user files a report.** A submitted
+  feedback report now fans out a bell notification (with badge) to every
+  admin, deep-linking to the Feedbacks tab — reference and category only,
+  never the user's free-text comment.
+- **Notification sounds and system notifications, per user (new "Notifications"
+  preference group, all opt-in).** A synthesized Atrium sound signature plays
+  on a new bell notification; a browser system notification can fire when the
+  tab is in the background (enabling it triggers the browser permission
+  prompt); and a discreet blip can mark a reply finishing in one of your
+  conversations. Arrival detection is identity-based and baselined, so a page
+  reload or an impersonation switch never replays old notifications.
+- **Run several conversations at once.** When a reply finishes in a chat you
+  are not looking at, its sidebar row flashes briefly and keeps a subtle dot
+  until you open it; switching to the chat (or returning to the tab) clears
+  it. A reply landing in a hidden tab keeps its unread state until you
+  actually come back. Per-user read-state lives in its own table and query, so
+  the hot chat-list query gains no extra reads; unread dots appear quietly as
+  chats are visited (no wall of stale dots on upgrade).
+
 ## [0.48.0] — Files you can actually grab, markdown you can actually read
 
 Feature + fix release (frontend + Convex + deploy docs). No breaking changes;

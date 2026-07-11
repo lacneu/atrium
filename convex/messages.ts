@@ -993,6 +993,9 @@ export const listChats = query({
         _id: c._id as Id<"chats">,
         title: c.title,
         updatedAt: c.updatedAt,
+        // Arrival signal (stamped by stream.finalize on COMPLETE replies) — the
+        // sidebar crosses it with chatReads.lastSeenAt for the unread dot/flash.
+        lastAssistantAt: c.lastAssistantAt ?? null,
         projectId: c.projectId ?? null,
         sortKey: c.sortKey ?? 0,
         pinned: c.pinned ?? false,

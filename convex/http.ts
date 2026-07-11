@@ -1019,6 +1019,64 @@ http.route({
       return apiJson({ ok: false, error: "evidence not serializable" }, 400);
     }
 
+    // Optional agent-authored proposal attachments ([{name, content}]): the
+    // reporting agent ships its full proposal text so admins read it in the
+    // Anomalies tab instead of on the gateway host. Hard bounds keep the row
+    // (and the reactive list payloads) sane; anything out of bounds is a 400 —
+    // never silently truncated (a cut proposal would mislead the reader).
+    const MAX_ATTACHMENTS = 4;
+    const MAX_ATTACHMENT_NAME_CHARS = 200;
+    const MAX_ATTACHMENT_CONTENT_CHARS = 48_000;
+    let attachments: { name: string; content: string }[] | undefined;
+    if (b.attachments !== undefined && b.attachments !== null) {
+      if (!Array.isArray(b.attachments)) {
+        return apiJson(
+          { ok: false, error: "attachments must be an array of {name, content}" },
+          400,
+        );
+      }
+      if (b.attachments.length > MAX_ATTACHMENTS) {
+        return apiJson(
+          { ok: false, error: `attachments: at most ${MAX_ATTACHMENTS} items` },
+          400,
+        );
+      }
+      const parsed: { name: string; content: string }[] = [];
+      for (const item of b.attachments as unknown[]) {
+        const a = (item ?? {}) as Record<string, unknown>;
+        if (typeof a.name !== "string" || typeof a.content !== "string") {
+          return apiJson(
+            {
+              ok: false,
+              error: "attachments items require name:string and content:string",
+            },
+            400,
+          );
+        }
+        const name = a.name.trim();
+        if (name.length === 0 || name.length > MAX_ATTACHMENT_NAME_CHARS) {
+          return apiJson(
+            {
+              ok: false,
+              error: `attachments: name must be 1-${MAX_ATTACHMENT_NAME_CHARS} chars`,
+            },
+            400,
+          );
+        }
+        if (a.content.length > MAX_ATTACHMENT_CONTENT_CHARS) {
+          return apiJson(
+            {
+              ok: false,
+              error: `attachments: content exceeds ${MAX_ATTACHMENT_CONTENT_CHARS} chars (attach a summary instead)`,
+            },
+            400,
+          );
+        }
+        parsed.push({ name, content: a.content });
+      }
+      if (parsed.length > 0) attachments = parsed;
+    }
+
     const result = await ctx.runMutation(
       internal.anomalies.reportAnomalyInternal,
       {
@@ -1027,6 +1085,7 @@ http.route({
         message,
         correlationId,
         evidence,
+        attachments,
       },
     );
 

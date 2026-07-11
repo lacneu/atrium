@@ -20,6 +20,9 @@ export const UI_PREF_KEYS = [
   "showChatProvider",
   "showUsage",
   "autoReadAloud",
+  "notifSound",
+  "notifSystem",
+  "replySound",
 ] as const;
 
 export type UiPrefKey = (typeof UI_PREF_KEYS)[number];
@@ -50,6 +53,15 @@ export const UI_PREF_CODE_DEFAULTS: Record<UiPrefKey, boolean> = {
   // may still silence it here (default ON = the admin's instance-level choice
   // applies, the user keeps the veto — matches the Voice tab's help text).
   autoReadAloud: true,
+  // Sound cues are OPT-IN (no surprise audio; browser autoplay policies make
+  // un-gestured audio unreliable anyway). notifSound/notifSystem fire on a NEW
+  // bell notification (admins get anomalies + user reports there); replySound
+  // fires when an assistant reply FINISHES in one of the user's chats.
+  notifSound: false,
+  // Browser (system-level) notification on a new bell notification. Turning it
+  // on triggers the browser permission prompt (handled client-side on toggle).
+  notifSystem: false,
+  replySound: false,
 };
 
 // Pref key -> the `featuresEnabled` key that must be true before a user may turn

@@ -3924,6 +3924,18 @@
     background: color-mix(in srgb, var(--primary) 18%, transparent);
   }
 }
+/* Persistent-but-subtle unread marker: a completed reply landed in this chat
+   since the user's last visit. Cleared the moment the chat is opened (the
+   read-state upsert). Static dot — the transient attention-grab is the flash
+   above; this one just lets the eye SCAN which chats have news. */
+.oc-chatitem__unread {
+  flex: none;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 9999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+}
 .oc-chatitem__grip {
   display: flex; align-items: center; justify-content: center;
   width: 1.25rem; height: 1.75rem; cursor: grab; color: var(--muted-foreground);
@@ -4532,6 +4544,41 @@
 }
 .oc-anomaly__drill:hover {
   background: var(--muted);
+}
+/* Message cell hosting the message text + the optional proposal button. */
+.oc-anomaly__msgcell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-start;
+}
+/* Agent-attached proposal viewer (dialog). The content is agent-authored
+   markdown shown as preformatted text (no HTML rendering — no injection
+   surface); scrolls inside the dialog, never the page. */
+.oc-anomaly__attachments-dialog {
+  max-width: min(52rem, 92vw);
+}
+.oc-anomaly__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-height: 65vh;
+  overflow-y: auto;
+}
+.oc-anomaly__attachment-name {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+}
+.oc-anomaly__attachment-content {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 0.4rem);
+  background: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Chat availability banner (bridge down) + greyed composer (anti-persist). */

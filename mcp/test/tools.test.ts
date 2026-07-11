@@ -120,6 +120,25 @@ describe("reportAnomaly wire format (M6)", () => {
     expect(body.severity).toBe("critical");
     expect(body.message).toBe("error ratio exceeded threshold");
   });
+
+  it("POSTs `attachments` verbatim (agent-authored proposal documents)", async () => {
+    const { impl, calls } = fakeFetch();
+    await reportAnomaly(
+      CONFIG,
+      {
+        kind: "improvement_proposal",
+        severity: "info",
+        message: "proposal: fix X",
+        attachments: [{ name: "2026-07-10-fix-x.md", content: "# Fix X\n..." }],
+      },
+      { fetchImpl: impl },
+    );
+
+    const body = bodyOf(calls[0]!.init);
+    expect(body.attachments).toEqual([
+      { name: "2026-07-10-fix-x.md", content: "# Fix X\n..." },
+    ]);
+  });
 });
 
 describe("reportAnomaly input schema (M6)", () => {
@@ -159,6 +178,46 @@ describe("reportAnomaly input schema (M6)", () => {
   it("exposes `evidence`, not `details`", () => {
     expect(reportAnomalyInput).toHaveProperty("evidence");
     expect(reportAnomalyInput).not.toHaveProperty("details");
+  });
+
+  it("accepts valid attachments and rejects out-of-bounds ones", () => {
+    const ok = schema.safeParse({
+      kind: "k",
+      severity: "info",
+      message: "m",
+      attachments: [{ name: "p.md", content: "text" }],
+    });
+    expect(ok.success).toBe(true);
+
+    // 5 items > max 4
+    const tooMany = schema.safeParse({
+      kind: "k",
+      severity: "info",
+      message: "m",
+      attachments: Array.from({ length: 5 }, (_, i) => ({
+        name: `p${i}.md`,
+        content: "x",
+      })),
+    });
+    expect(tooMany.success).toBe(false);
+
+    // content over 48k chars
+    const tooBig = schema.safeParse({
+      kind: "k",
+      severity: "info",
+      message: "m",
+      attachments: [{ name: "p.md", content: "x".repeat(48_001) }],
+    });
+    expect(tooBig.success).toBe(false);
+
+    // empty name
+    const emptyName = schema.safeParse({
+      kind: "k",
+      severity: "info",
+      message: "m",
+      attachments: [{ name: "", content: "x" }],
+    });
+    expect(emptyName.success).toBe(false);
   });
 });
 

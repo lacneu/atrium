@@ -299,7 +299,23 @@ export function PreferencesPanel() {
                       <Switch
                         checked={checked}
                         disabled={locked}
-                        onCheckedChange={(v) => void setPref({ key, value: v })}
+                        onCheckedChange={(v) => {
+                          // System notifications need the BROWSER permission,
+                          // which can only be requested on a user gesture —
+                          // this toggle IS that gesture. Fire-and-forget: the
+                          // pref stores the intent either way; the arrival
+                          // hook re-checks Notification.permission at fire
+                          // time (a later browser-side grant just works).
+                          if (
+                            key === "notifSystem" &&
+                            v &&
+                            typeof Notification !== "undefined" &&
+                            Notification.permission === "default"
+                          ) {
+                            void Notification.requestPermission();
+                          }
+                          void setPref({ key, value: v });
+                        }}
                         aria-label={label}
                       />
                     </div>

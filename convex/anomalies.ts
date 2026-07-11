@@ -523,6 +523,10 @@ type AnomalyView = {
   source: "detector" | "agent" | "user";
   correlationId: string | null;
   evidence: string | null;
+  // Attachment METADATA only (name + size). List payloads must stay light —
+  // an anomaly can carry up to ~4×48k chars of proposal text; the full content
+  // is served on demand by `getAnomalyAttachments`.
+  attachments: { name: string; chars: number }[] | null;
   resolvedAt: number | null;
   resolvedBy: string | null;
 };
@@ -538,6 +542,9 @@ function toView(r: Doc<"anomalies">): AnomalyView {
     source: r.source,
     correlationId: r.correlationId ?? null,
     evidence: r.evidence ?? null,
+    // Already metadata-only on the row (the content lives in anomalyAttachments).
+    attachments:
+      r.attachments && r.attachments.length > 0 ? r.attachments : null,
     resolvedAt: r.resolvedAt ?? null,
     resolvedBy: r.resolvedBy ?? null,
   };
@@ -657,6 +664,28 @@ export const listAnomalies = query({
 });
 
 /**
+ * Full attachment content of ONE anomaly, on demand (the list view only carries
+ * name+size). Same read gate as the listing (`anomalies.read` — admins via
+ * wildcard). Returns [] when the anomaly has no attachments or does not exist —
+ * the panel treats both as "nothing to show" (no existence oracle needed:
+ * callers got the id from the listing they were already allowed to read).
+ */
+export const getAnomalyAttachments = query({
+  args: { anomalyId: v.id("anomalies") },
+  handler: async (
+    ctx,
+    { anomalyId },
+  ): Promise<{ name: string; content: string }[]> => {
+    await requirePermission(ctx, PERMISSIONS.ANOMALIES_READ);
+    const rows = await ctx.db
+      .query("anomalyAttachments")
+      .withIndex("by_anomaly", (q) => q.eq("anomalyId", anomalyId))
+      .collect();
+    return rows.map((r) => ({ name: r.name, content: r.content }));
+  },
+});
+
+/**
  * Internal anomaly listing for the key-authed GET /api/v1/anomalies route. The
  * httpAction verifies the principal's `anomalies.read` permission BEFORE calling
  * this (the check cannot run in the httpAction's no-db context). NOT publicly
@@ -699,10 +728,16 @@ export const reportAnomalyInternal = internalMutation({
     message: v.string(),
     correlationId: v.optional(v.string()),
     evidence: v.optional(v.string()),
+    // Agent-authored proposal documents (bounds enforced by the route — see
+    // the schema comment). The row keeps name+size METADATA; the text goes to
+    // the anomalyAttachments child table (list scans must stay light).
+    attachments: v.optional(
+      v.array(v.object({ name: v.string(), content: v.string() })),
+    ),
   },
   handler: async (
     ctx,
-    { kind, severity, message, correlationId, evidence },
+    { kind, severity, message, correlationId, evidence, attachments },
   ): Promise<{ id: Doc<"anomalies">["_id"] }> => {
     const id = await ctx.db.insert("anomalies", {
       at: Date.now(),
@@ -713,7 +748,18 @@ export const reportAnomalyInternal = internalMutation({
       source: "agent",
       correlationId,
       evidence,
+      attachments:
+        attachments && attachments.length > 0
+          ? attachments.map((a) => ({ name: a.name, chars: a.content.length }))
+          : undefined,
     });
+    for (const a of attachments ?? []) {
+      await ctx.db.insert("anomalyAttachments", {
+        anomalyId: id,
+        name: a.name,
+        content: a.content,
+      });
+    }
     await notifyAdmins(ctx, {
       kind: "anomaly_open",
       title: `Anomalie : ${kind}`,

@@ -21,6 +21,7 @@ type NotifKind =
   | "anomaly_resolved"
   | "feedback_reply"
   | "feedback_resolved"
+  | "feedback_new"
   | "curation";
 
 const FEED_LIMIT = 50;
@@ -89,6 +90,7 @@ export const fanOutAnomalyToAdmins = internalMutation({
     kind: v.union(
       v.literal("anomaly_open"),
       v.literal("anomaly_resolved"),
+      v.literal("feedback_new"),
     ),
     title: v.string(),
     body: v.string(),
@@ -130,7 +132,7 @@ export const fanOutAnomalyToAdmins = internalMutation({
 export async function notifyAdmins(
   ctx: MutationCtx,
   args: {
-    kind: "anomaly_open" | "anomaly_resolved";
+    kind: "anomaly_open" | "anomaly_resolved" | "feedback_new";
     title: string;
     body: string;
     messageKey?: string;
@@ -168,6 +170,10 @@ export const myNotifications = query({
       params: r.params ?? null,
       href: r.href ?? null,
       createdAt: r.createdAt,
+      // INSERTION time (monotonic, unlike createdAt which producers may
+      // backdate): the bell's arrival-cue watermark, so an OLD row revealed by
+      // the bounded window (a newer one was cleared) never re-triggers a cue.
+      creationTime: r._creationTime,
       unread: r.readAt === undefined,
     }));
   },

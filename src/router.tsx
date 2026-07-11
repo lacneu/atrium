@@ -68,6 +68,7 @@ import {
 import type { ConvexId } from "./chat/convexTypes";
 import { ConvexChat } from "./chat/ConvexChat";
 import { ChatSidebar, ChatListSkeleton } from "./chat/ChatSidebar";
+import { ChatArrivalWatcher } from "./chat/ChatArrivalWatcher";
 import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
@@ -726,6 +727,12 @@ function AuthenticatedChrome({
   return (
     <div className="oc-shell">
       {picker}
+      {/* Headless reply-arrival watcher — persistent-chrome mounted so cues
+          (flash / reply sound / mark-seen) survive a collapsed sidebar and the
+          Settings pages, where ChatSidebar unmounts. */}
+      <ChatArrivalWatcher
+        activeChatId={(params.chatId ?? null) as Id<"chats"> | null}
+      />
       <ImpersonationBanner />
       <DevUserSwitcher />
       <AppTopBar

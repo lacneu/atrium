@@ -94,7 +94,9 @@ routing names and the turn payload:
 ```
 
 Only instance and agent **names** cross this boundary; the bridge maps
-`instanceName` to a gateway token and device identity from its own environment.
+`instanceName` to a gateway token and device identity from the encrypted
+per-instance credentials it fetches from Convex (the recommended UI-managed
+model) or, as the single-instance fallback, from its own environment.
 Inbound attachments are inlined as base64 (bounded by the gateway WebSocket
 payload limit). The bridge builds an idempotency key from `clientMessageId`, so
 an at-least-once delivery is safe. On a gateway refusal the bridge responds with
@@ -102,7 +104,10 @@ a `502` carrying a curated, non-secret error `code`; Convex surfaces that to the
 user as a failed turn without leaking the gateway's raw message.
 
 `/patch` and `/reset` take the same routing fields (`chatId`, `openclawChatId`,
-`instanceName`, `agentId`, `canonical`).
+`instanceName`, `agentId`, `canonical`). Convex also drives `/reset` itself for
+the bounded auto-retry of transient gateway session-init conflicts: a turn that
+dies with zero content on that error class is deleted and regenerated
+automatically (at most twice, with backoff) before the user sees a failure.
 
 ## Bridge → Convex: ingest
 
@@ -122,7 +127,17 @@ reactively. The op union (the canonical shape lives in
 | `addMediaPart` | Persist an already-uploaded media blob (`storageId`) as a media part. |
 | `finalize` | Commit the turn with a terminal status (`complete` / `error` / `aborted`). |
 | `setSessionMeta` | Mirror the gateway's session metadata (model, reasoning, context usage). |
-| `getRehydrationContext` | Read a bounded block of prior turns so the bridge can re-hydrate a fresh gateway session. |
+| `setPhase` | Update the in-flight turn's live processing phase (thinking-placeholder detail). |
+| `heartbeat` | Keep-alive for a long silent turn so the stuck-stream watchdog doesn't reap it. |
+| `updateRunId` | Stamp the provider run id onto an already-created streaming message (late-learned ids). |
+| `getRehydrationContext` | Read the stored conversation (rolling summary + a bounded block of verbatim prior turns — the hybrid re-grounding, used on both providers) so the bridge can re-hydrate a fresh gateway session. |
+| `bindProviderChat` / `clearProviderChat` | Persist / clear the provider-side conversation id on the chat (session continuity across turns; the bind is refused when it raced a `/reset`). |
+| `upsertSubAgent` / `upsertSubAgentToolPart` | Observe a spawned sub-agent's lifecycle, result and tool activity (the sub-agent monitor). |
+| `recordSubAgentInteractionReply` | Attach a sub-agent's reply to a user's follow-up interaction with it. |
+| `gatewayPressure` / `mediaTrace` / `rehydrateTrace` / `calibrate` | Content-free observability writes (context pressure, media delivery decisions, rehydration decisions, clock calibration). |
+
+The table matches the current union; when in doubt, the canonical shape in
+`bridge/src/convex-writer.ts` wins.
 
 ### Outbound media (no base64, no size ceiling)
 

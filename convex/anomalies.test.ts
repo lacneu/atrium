@@ -286,6 +286,64 @@ describe("anomaly detection", () => {
     expect(open.some((a) => a.kind === "self.repair")).toBe(true);
   });
 
+  test("attachments: stored verbatim, list views carry METADATA only (name+chars)", async () => {
+    const t = convexTest(schema, modules);
+
+    const proposal = "# Proposition\n\nConstat chiffre...\n\nRemede propose...";
+    const { id } = await t.mutation(internal.anomalies.reportAnomalyInternal, {
+      kind: "improvement_proposal",
+      severity: "info",
+      message: "proposal with full text attached",
+      evidence: JSON.stringify({ reportedBy: "svc-account-1" }),
+      attachments: [{ name: "2026-07-10-proposal.md", content: proposal }],
+    });
+
+    // The ROW carries metadata only; the text lives in the anomalyAttachments
+    // child table (bounded anomaly list scans must never load bodies).
+    const row = await t.run(async (ctx) => await ctx.db.get(id));
+    expect(row!.attachments).toEqual([
+      { name: "2026-07-10-proposal.md", chars: proposal.length },
+    ]);
+    const children = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalyAttachments")
+        .withIndex("by_anomaly", (q) => q.eq("anomalyId", id))
+        .collect(),
+    );
+    expect(children.map((c) => ({ name: c.name, content: c.content }))).toEqual([
+      { name: "2026-07-10-proposal.md", content: proposal },
+    ]);
+
+    // The LIST projection must NOT stream the content — name + size only.
+    // This is the payload-weight guarantee the UI relies on (a 200-row table
+    // must never carry megabytes of proposal text).
+    const open = await t.query(internal.anomalies.anomaliesInternal, {
+      status: "open",
+    });
+    const view = open.find((a) => a.kind === "improvement_proposal");
+    expect(view).toBeDefined();
+    expect(view!.attachments).toEqual([
+      { name: "2026-07-10-proposal.md", chars: proposal.length },
+    ]);
+    expect(JSON.stringify(view)).not.toContain("Constat chiffre");
+
+    // A row WITHOUT attachments projects null (not []): the UI renders no
+    // button at all for it.
+    const plain = open.find((a) => a.kind === "self.repair");
+    // (self.repair row is from the previous test's isolated instance — insert
+    // one here to assert within THIS instance.)
+    expect(plain ?? null).toBeNull();
+    const { id: plainId } = await t.mutation(
+      internal.anomalies.reportAnomalyInternal,
+      { kind: "self.repair", severity: "info", message: "no attachments" },
+    );
+    const open2 = await t.query(internal.anomalies.anomaliesInternal, {
+      status: "open",
+    });
+    const plainView = open2.find((a) => a._id === plainId);
+    expect(plainView!.attachments).toBeNull();
+  });
+
   test("access-scan: a key reading many distinct chats trips an ACCESS_SCAN anomaly", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {

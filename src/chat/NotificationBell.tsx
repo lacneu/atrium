@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
+import { APP_HOST } from "@/lib/appHost";
+import { playNotificationSound } from "./sounds";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
@@ -46,6 +48,7 @@ type NotifKind =
   | "anomaly_resolved"
   | "feedback_reply"
   | "feedback_resolved"
+  | "feedback_new"
   | "curation";
 type Notif = {
   _id: Id<"notifications">;
@@ -56,6 +59,9 @@ type Notif = {
   params: Record<string, string> | null;
   href: string | null;
   createdAt: number;
+  // Server _creationTime (monotonic insertion order — createdAt can be
+  // backdated by producers like the feedback backfill).
+  creationTime: number;
   unread: boolean;
 };
 
@@ -64,6 +70,7 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   anomaly_resolved: CircleCheck,
   feedback_reply: MessageSquare,
   feedback_resolved: MessageSquare,
+  feedback_new: MessageSquare,
   curation: FileText,
 };
 
@@ -87,6 +94,15 @@ const KEY_RENDERERS: Record<
   notif_feedback_resolved: () => ({
     title: m.notif_feedback_resolved_title(),
     body: m.notif_feedback_resolved_body(),
+  }),
+  // Admin-facing: a user just SUBMITTED a report. Reference + localized
+  // category label only (the producer never ships the user's comment).
+  notif_feedback_new: (p) => ({
+    title: m.notif_feedback_new_title(),
+    body: m.notif_feedback_new_body({
+      reference: p.reference ?? "?",
+      category: cat(p.category ?? "other"),
+    }),
   }),
   notif_curation_proposed: (p) => ({
     title: m.notif_curation_proposed_title(),
@@ -175,6 +191,86 @@ export function NotificationBell() {
   const closeMyFeedback = useMutation(api.feedback.closeMyFeedback);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+
+  // --- Arrival cues (opt-in prefs): sound signature + system notification ----
+  // getMe is already subscribed app-wide (same Convex subscription — no extra
+  // read). The cues fire on a NEW notification row appearing in the feed:
+  // baseline on the FIRST snapshot (a reload with old unread must stay silent),
+  // then any createdAt beyond the baseline triggers once.
+  const me = useQuery(api.me.getMe, { host: APP_HOST });
+  const notifSoundOn = me?.ui?.effective?.notifSound === true;
+  const notifSystemOn = me?.ui?.effective?.notifSystem === true;
+  // getMe.userId IS the effective identity (requireUserId →
+  // getActor().effectiveUserId, impersonation-aware): it flips to the target
+  // during impersonation — the rebaseline below keys off exactly that.
+  const effectiveUserId = me?.userId ?? null;
+  // Novelty = unseen IDENTITY *and* inserted after the watermark. Identity
+  // alone misfires when the bounded take-50 window shifts (clearing a recent
+  // row reveals an OLD 51st whose id was never seen); a createdAt watermark
+  // alone misses BACKDATED rows (the feedback backfill) and same-millisecond
+  // pairs. `_creationTime` (server insertion order, monotonic) + the seen-id
+  // set covers both failure modes (codex P2 ×2).
+  const seenNotifIds = useRef<Set<string> | null>(null);
+  const creationWatermark = useRef(0);
+  // Impersonation flips myNotifications to the TARGET user's feed without a
+  // remount — the admin's baseline would then misread the target's history as
+  // fresh (or a higher watermark would mute the target's real arrivals).
+  // Re-baseline whenever the EFFECTIVE identity changes (codex P2).
+  const baselineUserId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!items) return;
+    if (baselineUserId.current !== String(effectiveUserId)) {
+      baselineUserId.current = String(effectiveUserId);
+      seenNotifIds.current = null;
+      creationWatermark.current = 0;
+    }
+    const maxCreation = items.reduce(
+      (acc, n) => Math.max(acc, n.creationTime ?? 0),
+      0,
+    );
+    if (seenNotifIds.current === null) {
+      // First snapshot = baseline (a reload with old unread stays silent).
+      seenNotifIds.current = new Set(items.map((n) => String(n._id)));
+      creationWatermark.current = maxCreation;
+      return;
+    }
+    const seen = seenNotifIds.current;
+    const fresh = items.filter(
+      (n) =>
+        !seen.has(String(n._id)) &&
+        (n.creationTime ?? 0) > creationWatermark.current,
+    );
+    for (const n of items) seen.add(String(n._id));
+    creationWatermark.current = Math.max(creationWatermark.current, maxCreation);
+    // Bound the set: once it outgrows the visible feed, drop ids that left it.
+    if (seen.size > 500) {
+      const visible = new Set(items.map((n) => String(n._id)));
+      for (const id of seen) if (!visible.has(id)) seen.delete(id);
+    }
+    if (fresh.length === 0) return;
+    if (notifSoundOn) playNotificationSound();
+    // System notification only when the tab is NOT visible (in-tab arrivals
+    // already have the badge + optional sound; doubling them would be noise).
+    if (
+      notifSystemOn &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted" &&
+      document.visibilityState !== "visible"
+    ) {
+      const first = fresh[0]!;
+      const { title, body } = notifText(first);
+      try {
+        const sysNotif = new Notification(title, {
+          body,
+          tag: String(first._id), // OS-level dedupe on re-render races
+        });
+        sysNotif.onclick = () => window.focus();
+      } catch {
+        // Notification constructor can throw (e.g. some mobile browsers) —
+        // a missed system notification must never break the bell.
+      }
+    }
+  }, [items, notifSoundOn, notifSystemOn, effectiveUserId]);
 
   const openItem = (n: Notif) => {
     if (n.unread) void markRead({ notificationId: n._id });

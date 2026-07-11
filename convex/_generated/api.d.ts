@@ -23,6 +23,7 @@ import type * as bridge_credentials from "../bridge_credentials.js";
 import type * as bridge_ingest from "../bridge_ingest.js";
 import type * as charts from "../charts.js";
 import type * as chatFork from "../chatFork.js";
+import type * as chatReads from "../chatReads.js";
 import type * as chatSummaries from "../chatSummaries.js";
 import type * as chats from "../chats.js";
 import type * as compat from "../compat.js";
@@ -132,6 +133,7 @@ declare const fullApi: ApiFromModules<{
   bridge_ingest: typeof bridge_ingest;
   charts: typeof charts;
   chatFork: typeof chatFork;
+  chatReads: typeof chatReads;
   chatSummaries: typeof chatSummaries;
   chats: typeof chats;
   compat: typeof compat;

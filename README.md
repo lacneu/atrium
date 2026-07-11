@@ -83,7 +83,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
   shows only that, so a control a provider lacks is simply absent rather than
   broken.
 - Multi-user, multi-agent, multi-instance routing: each user is routed to the
-  gateway instance and agent assigned to them.
+  gateway instance and agent assigned to them — and within one conversation,
+  each turn can be addressed to a different assigned agent (composer selector,
+  per-reply attribution) with the shared thread carried over. When a gateway is
+  unreachable, its chats grey their composer with an explanatory banner and
+  recover automatically.
 - Streaming assistant replies with a stable contract (deltas, snapshots,
   finalize, run status, tool status, media), resilient to provider and version
   differences, empty/duplicate finals, follow-on runs, and auto-compaction.
@@ -97,6 +101,15 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 - File exchange in both directions (inbound attachments, outbound generated
   media served from Convex storage — server filesystem paths never reach the
   browser).
+- **Document viewer**: files preview in a right-hand panel while the
+  conversation continues — PDFs in-app (thumbnails + zoom), images/video/audio,
+  text, and markdown rendered with a raw toggle. Office documents are converted
+  to PDF by a designated converter *agent* (no embedded conversion service) and
+  cached per file.
+- **Branch a conversation**: fork any reply into a new chat that carries the
+  same history (messages, files, agent attribution) — explore a tangent while
+  the original continues, with the agent re-grounded on the branch's first
+  message.
 - **Agent workspace files** (identity / rules / tools) viewable and editable
   per instance, with concurrent-edit protection.
 - A key-authed observability API (`/api/v1`) and an MCP server (`mcp/`) for

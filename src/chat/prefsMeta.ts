@@ -6,7 +6,12 @@ import { m } from "@/paraglide/messages.js";
 // filtering live here ONCE. Server keys are the source of truth (UI_PREF_KEYS);
 // this is display-only — a key with no entry still renders (in "other").
 
-export type PrefCategory = "messages" | "composer" | "sidebar" | "other";
+export type PrefCategory =
+  | "messages"
+  | "composer"
+  | "sidebar"
+  | "notifications"
+  | "other";
 
 // Ordered categories (display order). "other" is the FALLBACK bucket: any pref
 // whose key has no explicit category lands here so it can NEVER silently vanish
@@ -15,6 +20,7 @@ export const PREF_CATEGORIES: { id: PrefCategory; label: () => string }[] = [
   { id: "messages", label: () => m.pref_category_messages() },
   { id: "composer", label: () => m.pref_category_composer() },
   { id: "sidebar", label: () => m.pref_category_sidebar() },
+  { id: "notifications", label: () => m.pref_category_notifications() },
   { id: "other", label: () => m.pref_category_other() },
 ];
 
@@ -71,6 +77,21 @@ export const PREF_META: Record<string, PrefMeta> = {
     category: "sidebar",
     label: () => m.pref_showChatProvider_label(),
     help: () => m.pref_showChatProvider_help(),
+  },
+  notifSound: {
+    category: "notifications",
+    label: () => m.pref_notifSound_label(),
+    help: () => m.pref_notifSound_help(),
+  },
+  notifSystem: {
+    category: "notifications",
+    label: () => m.pref_notifSystem_label(),
+    help: () => m.pref_notifSystem_help(),
+  },
+  replySound: {
+    category: "notifications",
+    label: () => m.pref_replySound_label(),
+    help: () => m.pref_replySound_help(),
   },
 };
 

@@ -360,6 +360,19 @@ export async function cascadeDeleteChat(
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .collect();
   for (const i of subAgentInteractions) await ctx.db.delete(i._id);
+  // Per-user read state: drop the owner's chatReads row with the chat (rows are
+  // owner-only by construction — markChatSeen is owner-scoped and no-ops under
+  // impersonation), so deletions never leave orphans eating the myChatReads
+  // window (codex P2).
+  if (chat) {
+    const read = await ctx.db
+      .query("chatReads")
+      .withIndex("by_user_chat", (q) =>
+        q.eq("userId", chat.userId).eq("chatId", chatId),
+      )
+      .first();
+    if (read) await ctx.db.delete(read._id);
+  }
   // L2: if this chat held the SOURCE of an in-flight documentary fetch, release the
   // hidden chat's lock (same as deleteMessage). `chatId` is skipped when IT is the
   // documentary chat — it is being deleted here anyway.

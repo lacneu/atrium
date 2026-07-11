@@ -72,6 +72,13 @@ export interface ReportAnomalyArgs {
   correlationId?: string;
   /** Maps to the server's `evidence` field (non-PHI structured context). */
   evidence?: unknown;
+  /**
+   * Agent-authored documents shipped WITH the anomaly (e.g. the full proposal
+   * markdown) so admins read them in Atrium's Anomalies tab. Server bounds:
+   * at most 4 items, name 1-200 chars, content <= 48000 chars each (400
+   * otherwise — never silently truncated). Must stay PII-free.
+   */
+  attachments?: { name: string; content: string }[];
 }
 
 /**
@@ -95,6 +102,21 @@ export const reportAnomalyInput = {
     .describe("Correlation chain this anomaly relates to."),
   evidence: z.unknown().optional()
     .describe("Free-form structured, non-PHI evidence."),
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(200)
+          .describe("Document name (e.g. the proposal filename)."),
+        content: z.string().max(48_000)
+          .describe("Full document text (markdown). Max 48000 chars."),
+      }),
+    )
+    .max(4)
+    .optional()
+    .describe(
+      "Agent-authored documents to ship with the anomaly (e.g. the full " +
+        "proposal text) so admins read them directly in Atrium. PII-free only.",
+    ),
 } as const;
 
 export const getDeliveryReportInput = {
