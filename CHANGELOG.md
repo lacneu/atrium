@@ -8,6 +8,41 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.51.0] — CSV, log and JSON files get real renders in the document viewer
+
+Feature release (frontend only). No breaking changes.
+
+- **A CSV file opens as a real table.** In the document viewer, `.csv`/`.tsv`
+  files render as a table with a sticky header and click-to-sort columns
+  (numeric columns sort numerically; a third click restores file order).
+  Parsing is RFC 4180-aware — quoted fields containing delimiters, doubled
+  quotes and even newlines stay in one cell — and the delimiter is
+  auto-detected (comma, semicolon or tab, so French-style `;` CSVs just work;
+  a `.tsv` always splits on tabs). Very large files show the first 1 000 rows
+  and 100 columns with honest "N of M" banners instead of freezing the panel.
+- **A log file opens colorized.** `.log` files tint each line by severity —
+  errors red, warnings amber, debug/trace dimmed — so scanning a long log for
+  the failure takes a glance, not a search. Lines without a level marker stay
+  neutral (`errors_total=0` is not an error).
+- **A JSON file opens as a collapsible tree.** Keys bold, values colored by
+  type, small nodes pre-expanded and deeper/large nodes loading lazily on
+  expand (with a hard per-node cap and an explicit "+N more" line) — a large
+  payload can't freeze the panel. 64-bit integer ids are displayed losslessly
+  instead of silently rounded. Invalid (or preview-truncated) JSON falls back
+  to the raw text with an explicit note.
+- **Every rich render keeps a Raw toggle, and your choice is remembered per
+  type.** The viewer's mode bar (Table/Colorized/Tree/Rendered vs Raw) now
+  stores your last choice per file type on this browser: if you always want
+  CSVs raw, they open raw — without affecting how markdown or JSON open.
+- **The document panel can now open much wider.** Its maximum width follows
+  your window (up to ~72% of it) instead of a fixed 900 px cap, so on a large
+  screen you can pull the panel across most of the window to read a document
+  comfortably — collapse the sidebar for even more room. The remembered width
+  still re-fits automatically when the window shrinks.
+- **Fixed: rows no longer peek above the pinned CSV header while scrolling** (a
+  Chrome sticky-positioning quirk with collapsed table borders and padded
+  scroll areas).
+
 ## [0.50.0] — The bridge status tells the whole truth
 
 Feature release (frontend + Convex). No breaking changes.

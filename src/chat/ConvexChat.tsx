@@ -449,12 +449,16 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // Document Viewer (third occupant of the shared right column): a clicked
   // file chip opens the file IN PLACE — conversation stays live on the left.
   // Wider default than Sources (documents want room), own persisted width.
+  // The ceiling is viewport-relative: reading the document is the point of
+  // this panel, so the user may pull it across most of the window (the
+  // conversation keeps the rest; collapsing the sidebar frees even more).
   const { width: docViewerWidth, startResize: startDocViewerResize } =
     useResizableWidth({
       storageKey: "oc.docviewer.width",
       defaultWidth: 560,
       min: 380,
-      max: 900,
+      max: 1800,
+      maxViewportFraction: 0.72,
       edge: "right",
     });
   const [activeDoc, setActiveDoc] = useState<ViewerDoc | null>(null);

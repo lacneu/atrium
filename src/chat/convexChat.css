@@ -7373,6 +7373,104 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Rich text kinds (markdown/csv/log/json): the mode bar sits FIXED above its
+   own scroll area, so in-content sticky elements (CSV header) anchor at 0. */
+.oc-docviewer__textwrap--bar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.oc-docviewer__textwrap--bar .oc-docviewer__mdbar { position: static; }
+.oc-docviewer__textscroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+/* Content padding INSIDE the scroller (it scrolls away with the content):
+   padding on the scroller itself would offset sticky descendants in Chrome. */
+.oc-docviewer__scrollpad { padding: 0.8rem; }
+
+/* CSV render: a real table with a sticky header and sortable columns.
+   border-collapse MUST stay "separate": Chrome pins sticky cells at a wrong
+   offset inside collapsed-border tables (rows peek out above the header). */
+.oc-docviewer__csv {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  min-width: 100%;
+}
+.oc-docviewer__csv th,
+.oc-docviewer__csv td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-docviewer__csv th:first-child,
+.oc-docviewer__csv td:first-child {
+  border-left: 1px solid var(--border);
+}
+.oc-docviewer__csv thead th {
+  position: sticky;
+  top: 0;
+  border-top: 1px solid var(--border);
+  background: var(--muted);
+  z-index: 1;
+  padding: 0;
+}
+.oc-docviewer__csv tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.oc-docviewer__csvsort {
+  width: 100%;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+}
+.oc-docviewer__csvsort:hover { background: color-mix(in srgb, var(--foreground) 8%, transparent); }
+
+/* Log render: line-level tint by severity; unknown lines stay default. */
+.oc-logline--error { color: var(--destructive); }
+.oc-logline--warn { color: #b45309; }
+.oc-logline--info { color: color-mix(in srgb, var(--foreground) 85%, transparent); }
+.oc-logline--debug { color: var(--muted-foreground); }
+.dark .oc-logline--warn { color: #fbbf24; }
+
+/* JSON render: a collapsible tree on native <details>. */
+.oc-docviewer__jsonwrap {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.oc-json__node { margin: 0; }
+.oc-json__node > summary {
+  cursor: pointer;
+  list-style-position: outside;
+  user-select: none;
+}
+.oc-json__children { padding-left: 1.1rem; border-left: 1px solid var(--border); margin-left: 0.35rem; }
+.oc-json__leaf { padding-left: 1.1rem; overflow-wrap: anywhere; }
+.oc-json__key { color: var(--foreground); font-weight: 600; }
+.oc-json__summary { color: var(--muted-foreground); }
+.oc-json__more { padding-left: 1.1rem; color: var(--muted-foreground); font-style: italic; }
+.oc-json__val--string { color: #15803d; }
+.oc-json__val--number { color: #1d4ed8; }
+.oc-json__val--boolean,
+.oc-json__val--null { color: #b45309; }
+.dark .oc-json__val--string { color: #4ade80; }
+.dark .oc-json__val--number { color: #93c5fd; }
+.dark .oc-json__val--boolean,
+.dark .oc-json__val--null { color: #fbbf24; }
 
 /* A viewable file chip reads as an ACTION (viewer), not a download. */
 .oc-media--viewable { cursor: pointer; }

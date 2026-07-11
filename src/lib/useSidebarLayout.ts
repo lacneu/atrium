@@ -37,22 +37,43 @@ export interface ResizableWidthOptions {
    *  edge (drag right = wider); "right" column → handle on its LEFT edge (drag
    *  left = wider). Determines the delta sign. */
   edge: "left" | "right";
+  /** Optional viewport-relative ceiling: the effective max becomes
+   *  min(max, viewportWidth × fraction), re-read at every clamp — a large
+   *  screen can open the column wide while a remembered width still fits
+   *  after the window shrinks. */
+  maxViewportFraction?: number;
 }
 
 /** A localStorage-persisted, pointer-resizable column width. */
 export function useResizableWidth(opts: ResizableWidthOptions) {
-  const { storageKey, defaultWidth, min, max, edge } = opts;
+  const { storageKey, defaultWidth, min, max, edge, maxViewportFraction } = opts;
   const clamp = useCallback(
-    (w: number) => Math.min(max, Math.max(min, w)),
-    [min, max],
+    (w: number) => {
+      const vpMax =
+        maxViewportFraction !== undefined
+          ? Math.round(window.innerWidth * maxViewportFraction)
+          : Infinity;
+      const effMax = Math.max(min, Math.min(max, vpMax));
+      return Math.min(effMax, Math.max(min, w));
+    },
+    [min, max, maxViewportFraction],
   );
   const [width, setWidth] = useState<number>(() => {
     const raw = Number(localStorage.getItem(storageKey));
-    return raw ? Math.min(max, Math.max(min, raw)) : defaultWidth;
+    return clamp(raw || defaultWidth);
   });
   useEffect(() => {
     localStorage.setItem(storageKey, String(width));
   }, [storageKey, width]);
+  // A viewport-relative ceiling must re-apply when the window shrinks:
+  // otherwise a remembered wide column overflows the new viewport and its
+  // right-edge actions become unreachable until the next manual drag.
+  useEffect(() => {
+    if (maxViewportFraction === undefined) return;
+    const onResize = () => setWidth((w) => clamp(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [maxViewportFraction, clamp]);
 
   const draggingRef = useRef(false);
   const startResize = useCallback(
