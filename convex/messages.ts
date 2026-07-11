@@ -278,6 +278,9 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // Logical-order stamp (fork copies carry the SOURCE time here) — the
           // client shows `orderTime ?? _creationTime` as the message's moment.
           orderTime: message.orderTime,
+          // Stable end of the generation window (first terminal transition,
+          // stamped once by stream.finalize) — feeds the reply-duration UI.
+          finalizedAt: message.finalizedAt,
           role: message.role,
           status: message.status,
           runId: message.runId,

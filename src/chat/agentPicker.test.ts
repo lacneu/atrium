@@ -62,4 +62,19 @@ describe("filterAgents", () => {
   test("no match returns empty", () => {
     expect(filterAgents(agents, "zzz")).toHaveLength(0);
   });
+  test("matches the specialty DESCRIPTION (searching a need finds the specialist)", () => {
+    const withDesc = [
+      ...agents,
+      mk("prod", "files", false, {
+        displayName: "Fichiers",
+        description: "Documents Office : créer, modifier, convertir en PDF.",
+      }),
+    ];
+    expect(filterAgents(withDesc, "convertir").map((a) => a.agentId)).toEqual([
+      "files",
+    ]);
+    expect(filterAgents(withDesc, "OFFICE").map((a) => a.agentId)).toEqual([
+      "files",
+    ]);
+  });
 });

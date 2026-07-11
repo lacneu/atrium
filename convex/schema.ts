@@ -446,6 +446,10 @@ export default defineSchema({
     // it). OPTIONAL/empty => CONVERSATIONAL by default (resolveAgentTypes). An agent
     // may hold several types.
     types: v.optional(v.array(v.string())),
+    // ADMIN curation: a one-or-two-sentence SPECIALTY blurb shown to users in
+    // the agent pickers (what this agent is for, when to pick it). Admin-managed
+    // + PRESERVED across discovery polls (the gateway exposes no such field).
+    description: v.optional(v.string()),
     // "discovered" = from a real provider enumeration; "manual" = admin fallback
     // when the provider cannot enumerate (agentDiscovery:false) => UNVERIFIED.
     source: v.union(v.literal("discovered"), v.literal("manual")),
@@ -1059,6 +1063,10 @@ export default defineSchema({
       v.literal("error"),
       v.literal("aborted"),
     ),
+    // The FIRST terminal transition's timestamp (stamped once by stream.finalize,
+    // never rewritten by re-finalize/late part writes) — the stable end of the
+    // generation window for the reply-duration UI. OPTIONAL (additive).
+    finalizedAt: v.optional(v.number()),
     text: v.string(),
     // A2 streaming (decision A2): during a turn, token deltas are patched into
     // this UN-INDEXED live field — NOT into `text` — so each ~50ms flush does NOT

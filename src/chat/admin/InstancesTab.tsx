@@ -4,7 +4,7 @@
 // payload chat users never need before first paint. Extracting it also DE-COUPLES the
 // barrel from BridgeTab (it imported InstanceConfigDialog), letting BridgeTab lazy too.
 // See router.tsx.
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../convexApi";
@@ -974,6 +974,27 @@ function InstanceAgentsDialog({
       );
     },
   );
+  const setDescription = useMutation(
+    api.agents.setAgentDescription,
+  ).withOptimisticUpdate((store, { instanceName, agentId, description }) => {
+    const cur = store.getQuery(api.agents.listAgentsForInstance, {
+      instanceName,
+    });
+    if (!cur) return;
+    const trimmed = description.trim();
+    store.setQuery(
+      api.agents.listAgentsForInstance,
+      { instanceName },
+      {
+        ...cur,
+        agents: cur.agents.map((a) =>
+          a.agentId === agentId
+            ? { ...a, description: trimmed.length === 0 ? null : trimmed }
+            : a,
+        ),
+      },
+    );
+  });
   const removeAgent = useMutation(api.agents.removeInstanceAgent);
   const confirm = useConfirm();
   const toast = useToast();
@@ -1124,6 +1145,29 @@ function InstanceAgentsDialog({
                           }
                         />
                       ) : null}
+                      {/* SPECIALTY blurb (enabled agents only): the 1-2 sentence
+                          description users see under the agent in the pickers.
+                          Saved on blur. */}
+                      {a.enabled ? (
+                        <AgentDescriptionEditor
+                          value={a.description ?? ""}
+                          onSave={async (next) => {
+                            if (!instanceName) return;
+                            try {
+                              await setDescription({
+                                instanceName,
+                                agentId: a.agentId,
+                                description: next,
+                              });
+                            } catch (err) {
+                              toast.error(
+                                m.settings_manage_agents_failed(),
+                                err,
+                              );
+                            }
+                          }}
+                        />
+                      ) : null}
                     </div>
                   );
                 })}
@@ -1133,6 +1177,41 @@ function InstanceAgentsDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Inline editor for the agent's SPECIALTY blurb (saved on blur, Enter also
+ *  commits). Local draft state so typing never fights the reactive query. */
+function AgentDescriptionEditor({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  const commit = () => {
+    if (draft.trim() !== value.trim()) void onSave(draft);
+  };
+  return (
+    <Input
+      className="oc-agentcard__desc"
+      value={draft}
+      maxLength={280}
+      placeholder={m.settings_agent_description_placeholder()}
+      aria-label={m.settings_agent_description_aria()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      }}
+    />
   );
 }
 

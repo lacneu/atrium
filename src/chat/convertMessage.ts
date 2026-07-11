@@ -187,6 +187,23 @@ export function convertConvexMessage(
         // The message's true moment (fork copies carry their SOURCE time in
         // orderTime) — shown in the reply's contextual menu header.
         sentAt: message.orderTime ?? message._creationTime,
+        // How long the reply took: dispatch creates the assistant placeholder,
+        // the finalize is its last write — so updatedAt − _creationTime IS the
+        // generation window. Only meaningful on a SETTLED assistant turn and
+        // never on a fork copy (its timestamps are the copy's, not the run's).
+        // Restricted to complete/aborted: an errored turn may be a dispatch
+        // failure that never generated anything (failDispatch inserts a
+        // terminal message directly) — showing "< 1 s" there would lie.
+        // Reads the STABLE finalizedAt stamp (first terminal transition), so a
+        // redelivered final / late part write can never inflate the duration;
+        // rows finalized before the stamp existed simply show nothing.
+        generationMs:
+          message.role === "assistant" &&
+          (message.status === "complete" || message.status === "aborted") &&
+          message.orderTime === undefined &&
+          typeof message.finalizedAt === "number"
+            ? Math.max(0, message.finalizedAt - message._creationTime)
+            : null,
         // The owning chat id — surfaced so per-message actions (forensic feedback)
         // can scope the mutation without threading chatId through React context.
         chatId: message.chatId,

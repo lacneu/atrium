@@ -44,6 +44,21 @@ describe("parseInstanceConfig", () => {
     expect(parseInstanceConfig({ mediaMode: "off", bogus: 1 })).toBe("invalid");
   });
 
+  test("converterAgentId round-trips (the 0.45 ConverterCard save bug: the key was missing from the parse allowlist)", () => {
+    expect(parseInstanceConfig({ converterAgentId: "files" })).toEqual({
+      converterAgentId: "files",
+    });
+    expect(parseInstanceConfig({ converterAgentId: "  files  " })).toEqual({
+      converterAgentId: "files",
+    });
+    // "none" is expressed by DELETING the key — an empty string is a caller bug.
+    expect(parseInstanceConfig({ converterAgentId: "" })).toBe("invalid");
+    expect(parseInstanceConfig({ converterAgentId: 7 })).toBe("invalid");
+    expect(
+      parseInstanceConfig({ converterAgentId: "x".repeat(129) }),
+    ).toBe("invalid");
+  });
+
   test("a bad enum is invalid (mediaMode / inboundMediaMode)", () => {
     expect(parseInstanceConfig({ mediaMode: "ftp" })).toBe("invalid");
     expect(parseInstanceConfig({ inboundMediaMode: "stream" })).toBe("invalid");

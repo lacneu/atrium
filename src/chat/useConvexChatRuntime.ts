@@ -103,6 +103,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         error: undefined,
         errorCode: undefined, // optimistic user echo never carries a dispatch code
         attachedDocCount: undefined, // a user echo never has attachments
+        finalizedAt: undefined, // a user echo has no generation window
         text: args.text,
         updatedAt: now,
         // MULTI-AGENT: echo the routed agent too, so the in-flight thinking

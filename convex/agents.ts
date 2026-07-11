@@ -469,6 +469,7 @@ export const listAgentsForInstance = query({
         displayName: a.displayName ?? null,
         emoji: a.emoji ?? null,
         model: a.model ?? null,
+        description: a.description ?? null,
         isDefaultOnInstance: a.isDefaultOnInstance ?? false,
         enabled: a.enabled === true,
         // Effective agent TYPE(s) — never empty (conversational by default).
@@ -595,6 +596,35 @@ export const setAgentEnabled = mutation({
       const next = enabled && ids.includes(agentId) ? agentId : ids[0];
       await ctx.db.patch(inst._id, { defaultAgentId: next });
     }
+  },
+});
+
+/** Longest admin-entered specialty blurb we store — a picker subtitle, not a
+ *  bio. Mirrored by the UI's maxLength. */
+export const AGENT_DESCRIPTION_MAX_CHARS = 280;
+
+/** ADMIN curation: the one-or-two-sentence specialty blurb users see in the
+ *  agent pickers. Empty/whitespace clears it. Preserved across discovery
+ *  polls (applyDiscovery never writes it). */
+export const setAgentDescription = mutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    description: v.string(),
+  },
+  handler: async (ctx, { instanceName, agentId, description }) => {
+    await requireAdmin(ctx);
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    const trimmed = description.trim();
+    if (trimmed.length > AGENT_DESCRIPTION_MAX_CHARS) {
+      throw new Error(
+        `Invalid description: exceeds ${AGENT_DESCRIPTION_MAX_CHARS} characters`,
+      );
+    }
+    await ctx.db.patch(agent._id, {
+      description: trimmed.length === 0 ? undefined : trimmed,
+    });
   },
 });
 
@@ -741,6 +771,8 @@ type EnrichedUserAgent = {
   displayName: string | null;
   emoji: string | null;
   model: string | null;
+  // Admin-entered specialty blurb (what this agent is for) — picker subtitle.
+  description: string | null;
   kind: "openclaw" | "hermes";
   // Admin enablement state — greys a non-enabled agent in the access editors.
   enabled: boolean;
@@ -1665,6 +1697,7 @@ async function agentDisplay(
   displayName: string | null;
   emoji: string | null;
   model: string | null;
+  description: string | null;
   kind: "openclaw" | "hermes";
   enabled: boolean;
   state: EnrichedUserAgent["state"];
@@ -1692,6 +1725,7 @@ async function agentDisplay(
     displayName: agent?.displayName ?? null,
     emoji: agent?.emoji ?? null,
     model: agent?.model ?? null,
+    description: agent?.description ?? null,
     kind: instance?.kind ?? "openclaw",
     // Admin enablement state — the user-access editor greys a non-enabled
     // agent (the assign mutation rejects it; opt-in gate).

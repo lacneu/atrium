@@ -140,6 +140,7 @@ export type InstanceConfig = {
   summarizeThresholdChars?: number;
   curationEnabled?: boolean;
   curationBudgetChars?: number;
+  converterAgentId?: string;
   voiceEnabled?: boolean;
   voiceEngine?: "browser" | "gateway";
   voiceLang?: string;
@@ -195,6 +196,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "summarizeThresholdChars",
     "curationEnabled",
     "curationBudgetChars",
+    "converterAgentId",
     "voiceEnabled",
     "voiceEngine",
     "voiceLang",
@@ -244,6 +246,15 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.curationEnabled !== undefined) {
     if (typeof o.curationEnabled !== "boolean") return "invalid";
     out.curationEnabled = o.curationEnabled;
+  }
+  if (o.converterAgentId !== undefined) {
+    // A provider agentId (the instance's designated Office->PDF converter).
+    // Non-empty, bounded; "none" is expressed by DELETING the key, never "".
+    const id = o.converterAgentId;
+    if (typeof id !== "string" || id.trim().length === 0 || id.length > 128) {
+      return "invalid";
+    }
+    out.converterAgentId = id.trim();
   }
   if (o.contentLocale !== undefined) {
     if (typeof o.contentLocale !== "string" || !isSupportedLocale(o.contentLocale)) {
@@ -402,7 +413,13 @@ export function resolveInstanceConfig(
  *  default never shadows an env-configured bridge) PLUS the RESOLVED bridge-applied
  *  prompt injections (full — the bridge cannot resolve them, it lacks the registry). The
  *  stored sparse `promptInjections` itself is never sent, only its resolution. */
-export type BridgeDispatchConfig = Omit<InstanceConfig, "promptInjections"> & {
+export type BridgeDispatchConfig = Omit<
+  InstanceConfig,
+  // Atrium-side designations the bridge has no use for (and must not start
+  // depending on): the resolved injections replace promptInjections; the
+  // converter designation is consumed by fileRenditions only.
+  "promptInjections" | "converterAgentId"
+> & {
   injections: Record<string, ResolvedInjection>;
   /** Set by getChatRouting ONLY on an actual per-turn agent SWITCH (codex P2). The
    *  bridge uses it to re-ground a freshly-routed agent's brand-new session; absent on
@@ -415,7 +432,8 @@ export function bridgeDispatchConfig(
   // The instance's CONTENT locale — picks the language of default injection texts.
   contentLocale: Locale,
 ): BridgeDispatchConfig {
-  const { promptInjections, ...transport } = cfg ?? {};
+  const { promptInjections, converterAgentId: _converter, ...transport } =
+    cfg ?? {};
   return { ...transport, injections: resolveBridgeInjections(promptInjections, contentLocale) };
 }
 

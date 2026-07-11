@@ -3902,6 +3902,14 @@
   font-size: 0.75rem;
   font-weight: 500;
 }
+/* Second header line: how long the reply took (settled assistant turns). */
+.oc-msgmenu__duration {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+  font-weight: 400;
+}
 /* One-shot BRANCH landing flash (chatFork keeps the user in the source chat;
    this pulse is how the eye finds the new row). Three soft accent pulses then
    back to normal — the row's onAnimationEnd clears the class (a JS timer
@@ -5583,6 +5591,19 @@
 .oc-agentpicker__item:disabled { opacity: 0.5; cursor: not-allowed; }
 .oc-agentpicker__icon { color: var(--muted-foreground); flex: 0 0 auto; }
 .oc-agentpicker__label, .oc-access__label { flex: 1 1 auto; font-weight: 500; }
+/* Name + specialty stacked: the blurb tells a user WHAT the agent is for. */
+.oc-agentpicker__main {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 0.1rem;
+}
+.oc-agentpicker__main > .oc-agentpicker__label { flex: none; }
+.oc-agentpicker__desc {
+  font-size: 0.72rem; color: var(--muted-foreground); line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Admin manage-agents card: the specialty editor input. */
+.oc-agentcard__desc { margin-top: 0.35rem; font-size: 0.8rem; }
 .oc-agentpicker__model, .oc-access__model {
   font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted-foreground);
 }

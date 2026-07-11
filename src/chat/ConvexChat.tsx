@@ -89,6 +89,7 @@ import {
   X,
   GitBranch,
   Ellipsis,
+  Timer,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -98,7 +99,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatDurationShort } from "@/lib/format";
 import {
   Popover,
   PopoverContent,
@@ -1630,6 +1631,11 @@ function AssistantMoreMenu({
   const sentAt = useMessage(
     (msg) => (msg.metadata?.custom as { sentAt?: number } | undefined)?.sentAt,
   );
+  const generationMs = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { generationMs?: number | null } | undefined)
+        ?.generationMs ?? null,
+  );
   // A STREAMING reply is not a valid branch point yet (the server refuses it —
   // no stable content); grey the affordance instead of toasting an error.
   const streaming = useMessage(
@@ -1699,6 +1705,18 @@ function AssistantMoreMenu({
                 dateStyle: "medium",
                 timeStyle: "short",
               })}
+              {(() => {
+                const dur =
+                  generationMs !== null
+                    ? formatDurationShort(generationMs)
+                    : null;
+                return dur !== null ? (
+                  <span className="oc-msgmenu__duration">
+                    <Timer size={12} aria-hidden />
+                    {m.chat_reply_duration({ duration: dur })}
+                  </span>
+                ) : null;
+              })()}
             </div>
             <ActionBarMorePrimitive.Separator className="bg-border -mx-1 my-1 h-px" />
           </>
@@ -2949,9 +2967,16 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
                     }}
                   >
                     <Bot size={15} aria-hidden className="oc-agentpicker__icon" />
-                    <span className="oc-agentpicker__label">
-                      {a.emoji ? `${a.emoji} ` : ""}
-                      {a.displayName ?? a.agentId}
+                    <span className="oc-agentpicker__main">
+                      <span className="oc-agentpicker__label">
+                        {a.emoji ? `${a.emoji} ` : ""}
+                        {a.displayName ?? a.agentId}
+                      </span>
+                      {a.description ? (
+                        <span className="oc-agentpicker__desc">
+                          {a.description}
+                        </span>
+                      ) : null}
                     </span>
                     {a.model ? (
                       <span className="oc-agentpicker__model">{a.model}</span>

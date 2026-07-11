@@ -19,6 +19,9 @@ export interface PickableAgent {
   displayName: string | null;
   emoji: string | null;
   model: string | null;
+  /** Admin-entered specialty blurb — the picker subtitle that tells a user
+   *  what this agent is for. */
+  description?: string | null;
   kind: "openclaw" | "hermes";
   state: "ok" | "deleted" | "stale" | "unknown";
 }
@@ -64,7 +67,9 @@ export function groupByInstance(agents: PickableAgent[]): AgentGroup[] {
   return groups;
 }
 
-// Case-insensitive filter over agent label / id / instance / model.
+// Case-insensitive filter over agent label / id / instance / model /
+// description — so searching a NEED ("pptx", "convertir") finds the
+// specialist even when its name doesn't contain the term.
 export function filterAgents(
   agents: PickableAgent[],
   q: string,
@@ -72,7 +77,7 @@ export function filterAgents(
   const term = q.trim().toLowerCase();
   if (!term) return agents;
   return agents.filter((a) =>
-    [a.displayName, a.agentId, a.instanceName, a.model]
+    [a.displayName, a.agentId, a.instanceName, a.model, a.description]
       .filter(Boolean)
       .some((s) => s!.toLowerCase().includes(term)),
   );
@@ -154,9 +159,16 @@ export function AgentPickerDialog({
                       }
                     >
                       <Bot size={15} aria-hidden className="oc-agentpicker__icon" />
-                      <span className="oc-agentpicker__label">
-                        {a.emoji ? `${a.emoji} ` : ""}
-                        {a.displayName ?? a.agentId}
+                      <span className="oc-agentpicker__main">
+                        <span className="oc-agentpicker__label">
+                          {a.emoji ? `${a.emoji} ` : ""}
+                          {a.displayName ?? a.agentId}
+                        </span>
+                        {a.description ? (
+                          <span className="oc-agentpicker__desc">
+                            {a.description}
+                          </span>
+                        ) : null}
                       </span>
                       {a.model ? (
                         <span className="oc-agentpicker__model">{a.model}</span>

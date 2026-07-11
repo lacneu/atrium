@@ -32,3 +32,21 @@ export function formatTime(ms: number): string {
 export function formatNumber(n: number): string {
   return n.toLocaleString(getLocale());
 }
+
+/** A short human duration for "how long the reply took": "< 1 s", "42 s",
+ *  "2 min 05 s", "1 h 03 min". Unit symbols are locale-neutral (s/min/h).
+ *  Returns null for a non-finite/negative input so callers can just hide it. */
+export function formatDurationShort(ms: number): string | null {
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  // ANY sub-second duration reads "< 1 s" (rounding 500-999 ms up to "1 s"
+  // would overstate it).
+  if (ms < 1000) return "< 1 s";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const min = Math.floor(s / 60);
+  const rs = s % 60;
+  if (min < 60) return rs === 0 ? `${min} min` : `${min} min ${String(rs).padStart(2, "0")} s`;
+  const h = Math.floor(min / 60);
+  const rm = min % 60;
+  return rm === 0 ? `${h} h` : `${h} h ${String(rm).padStart(2, "0")} min`;
+}

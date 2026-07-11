@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.53.0] — Agents you can understand at a glance
+
+Feature release (Convex + frontend). No breaking changes; the schema change is
+additive.
+
+- **Agents get an understandable directory.** Admins can now write a one-or-
+  two-sentence specialty blurb per agent (Settings ▸ Instances ▸ Manage
+  agents); it shows as a subtitle under the agent in both pickers (new chat +
+  per-turn selector), and the picker search matches it — typing a need
+  ("pptx", "convert") finds the right specialist even when its name doesn't
+  contain the term.
+- **Fixed: designating the document-converter agent failed with "save
+  failed".** The instance-config parser was missing `converterAgentId` from
+  its allowlist, so the Chat-defaults ▸ Document converter select could never
+  save (a 0.45 bug). The designation now round-trips — and it stays an
+  Atrium-side setting (never dispatched to the bridge).
+- **A reply's contextual menu now shows how long it took.** Under the
+  timestamp, settled assistant replies show "Generated in 42 s" (timer icon;
+  minutes/hours formatted human-readably). Streaming turns and branch copies
+  show nothing — the duration is only shown when it is real.
+
 ## [0.52.0] — Ready for OpenClaw 2026.7.1 and Hermes 0.18.2 (gpt-5.6 era)
 
 Compatibility release (bridge + Convex). No breaking changes.

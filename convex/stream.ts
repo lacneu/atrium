@@ -584,6 +584,11 @@ export const finalize = internalMutation({
       // too) — the UI maps context_length/rate_limit/... to actionable labels.
       ...(errorKind !== undefined ? { errorCode: errorKind } : {}),
       updatedAt: Date.now(),
+      // The FIRST terminal transition stamps the generation end. A same-status
+      // re-finalize (redelivered final) or a late addPart may bump updatedAt
+      // again, so the reply-duration UI reads THIS stable stamp, never
+      // updatedAt (codex: duration must not grow with redeliveries).
+      ...(message.finalizedAt === undefined ? { finalizedAt: Date.now() } : {}),
     });
     // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
     // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.

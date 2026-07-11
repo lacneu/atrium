@@ -143,6 +143,9 @@ export interface ConvexMessageView {
   /** Logical-order stamp (fork copies carry the SOURCE message's time here) —
    *  `orderTime ?? _creationTime` is the message's true "sent at" moment. */
   orderTime?: number;
+  /** Stable end of the generation window (first terminal transition, stamped
+   *  once by stream.finalize) — feeds the reply-duration line in the menu. */
+  finalizedAt?: number;
   role: MessageRole;
   runId?: string;
   status: MessageStatus;
