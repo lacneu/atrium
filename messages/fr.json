@@ -963,6 +963,8 @@
 	"bridge_unreachable": "Bridge injoignable",
 	"bridge_targets_in_error": "Bridge : {count} connexion(s) en erreur",
 	"bridge_checked_at": "Vérifié à {time}",
+	"bridge_gateways_unreachable": "Bridge joignable · {count} instance(s) injoignable(s)",
+	"bridge_gateways_unreachable_hint": "Le bridge principal tourne, mais ces instances ne répondent pas — passerelle en sauvegarde/maintenance, ou leur bridge dédié arrêté : {names}. Les conversations concernées sont en pause et reprennent automatiquement au retour.",
 	"bridge_started_at": "· Bridge démarré le {time}",
 	"bridge_anomalies_link": "↗ Anomalies",
 	"bridge_connections_section": "Connexions ({count})",

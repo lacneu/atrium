@@ -18,18 +18,30 @@ export function BridgeStatusBadge() {
   const a = useQuery(api.bridgeHealth.getBridgeAvailability, {});
   if (a === undefined) return null; // loading — no dot yet
 
-  const tone = !a.known ? "idle" : a.available ? "ok" : "error";
+  // Amber when the bridge is up but configured gateways are transport-down
+  // (backup/maintenance) — a green "operational" dot would contradict the
+  // gateway-unreachable banners on every affected chat.
+  const gatewaysDown = a.gatewaysUnreachable ?? 0;
+  const tone = !a.known
+    ? "idle"
+    : !a.available
+      ? "error"
+      : gatewaysDown > 0
+        ? "warn"
+        : "ok";
   const summary = !a.known
     ? m.bridgebadge_no_reading_yet()
-    : a.available
-      ? `${m.bridgebadge_operational()}${
-          a.checkedAt
-            ? m.bridgebadge_verified_at({
-                time: formatTime(a.checkedAt),
-              })
-            : ""
-        }`
-      : m.bridgebadge_unavailable({ reason: a.reason ?? "?" });
+    : !a.available
+      ? m.bridgebadge_unavailable({ reason: a.reason ?? "?" })
+      : gatewaysDown > 0
+        ? m.bridge_gateways_unreachable({ count: gatewaysDown })
+        : `${m.bridgebadge_operational()}${
+            a.checkedAt
+              ? m.bridgebadge_verified_at({
+                  time: formatTime(a.checkedAt),
+                })
+              : ""
+          }`;
 
   return (
     <TooltipProvider delayDuration={150}>

@@ -4756,6 +4756,7 @@
 .oc-bridge-dot--ok {
   background: #16a34a;
 }
+.oc-bridge-dot--warn { background: #d97706; }
 .oc-bridge-dot--error {
   background: var(--destructive);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--destructive) 22%, transparent);
@@ -4785,6 +4786,11 @@
   border-color: color-mix(in srgb, #16a34a 35%, transparent);
   background: color-mix(in srgb, #16a34a 7%, var(--background));
 }
+.oc-bridge-card--warn {
+  border-color: color-mix(in srgb, #d97706 45%, var(--border));
+  background: color-mix(in srgb, #d97706 8%, var(--background));
+}
+.oc-bridge-card--warn .oc-bridge-card__icon { color: #d97706; }
 .oc-bridge-card--error {
   border-color: color-mix(in srgb, var(--destructive) 38%, transparent);
   background: color-mix(in srgb, var(--destructive) 8%, var(--background));

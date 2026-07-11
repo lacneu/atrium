@@ -74,7 +74,8 @@ import {
   type TargetBadgeState,
   versionLabel,
 } from "./compatView";
-import { bridgeErrorTargets, isBridgeHealthy } from "./bridgeHealthView";
+import { bridgeErrorTargets,
+  bridgeVerdict, isBridgeHealthy } from "./bridgeHealthView";
 import { groupBridgeByProvider, providerLabel } from "./bridgeProviderView";
 import { ConnectionsTable } from "./ConnectionsTable";
 
@@ -320,8 +321,10 @@ function BridgeStatusCard({
 
   const errorTargets = bridgeErrorTargets(health.targets);
   const unreachable = !health.reachable;
-  const healthy = isBridgeHealthy(health);
-  const tone = healthy ? "ok" : "error";
+  const verdict = bridgeVerdict(health);
+  const gatewaysDown = health.unreachableInstances ?? [];
+  const tone =
+    verdict === "ok" ? "ok" : verdict === "gateways_unreachable" ? "warn" : "error";
   const checkedAt = formatDateTime(health.checkedAt);
   const startedAt =
     health.startedAt != null ? formatDateTime(health.startedAt) : null;
@@ -329,9 +332,9 @@ function BridgeStatusCard({
   return (
     <div className={`oc-bridge-card oc-bridge-card--${tone}`}>
       <div className="oc-bridge-card__icon" aria-hidden>
-        {healthy ? (
+        {verdict === "ok" ? (
           <CheckCircle2 size={22} />
-        ) : unreachable ? (
+        ) : unreachable || verdict === "gateways_unreachable" ? (
           <WifiOff size={22} />
         ) : (
           <AlertTriangle size={22} />
@@ -339,11 +342,13 @@ function BridgeStatusCard({
       </div>
       <div className="oc-bridge-card__body">
         <div className="oc-bridge-card__title">
-          {healthy
+          {verdict === "ok"
             ? m.bridge_operational()
-            : unreachable
-              ? m.bridge_unreachable()
-              : m.bridge_targets_in_error({ count: errorTargets.length })}
+            : verdict === "gateways_unreachable"
+              ? m.bridge_gateways_unreachable({ count: gatewaysDown.length })
+              : unreachable
+                ? m.bridge_unreachable()
+                : m.bridge_targets_in_error({ count: errorTargets.length })}
         </div>
         <div className="oc-bridge-card__meta">
           <span>
@@ -353,6 +358,13 @@ function BridgeStatusCard({
           {startedAt ? <span>{m.bridge_started_at({ time: startedAt })}</span> : null}
           {version}
         </div>
+        {verdict === "gateways_unreachable" ? (
+          <p className="oc-bridge-card__hint">
+            {m.bridge_gateways_unreachable_hint({
+              names: gatewaysDown.join(", "),
+            })}
+          </p>
+        ) : null}
         {unreachable ? (
           <p className="oc-bridge-card__hint">
             {dispatchErrorInfo(

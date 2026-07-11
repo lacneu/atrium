@@ -24,6 +24,7 @@ import { maxRawInboundBytes } from "./lib/attachmentLimits";
 import {
   resolveBridgeUrlForDispatch,
   resolveHealthPollTargets,
+  resolvePollTargets,
 } from "./lib/bridgeRouting";
 import { canonicalForUser, resolveTargetForTurn } from "./routing";
 
@@ -120,6 +121,11 @@ export interface Availability {
    *  composer rejects bigger files upfront). null when maxPayload is not yet known
    *  -> the composer fails OPEN (the bridge frame guard is the backstop). */
   maxInboundBytes: number | null;
+  /** GLOBAL view only (no chatId): how many configured instances currently fail
+   *  their discovery poll on a transport error — the settings-tab badge shows
+   *  amber ("bridge up, gateways unreachable") instead of a green dot during a
+   *  gateway backup/maintenance. Absent on chat-scoped reads. */
+  gatewaysUnreachable?: number;
 }
 
 /** Pure availability decision from a health doc (testable without auth). Fail
@@ -362,6 +368,40 @@ export const upsertBridgeHealth = internalMutation({
 });
 
 /** Admin: full health snapshot for the Settings badge / health view. */
+/** Instances the discovery poll CURRENTLY targets whose last poll failed on a
+ *  TRANSPORT error — the SAME per-instance signal that greys those chats'
+ *  composers. Scoped to POLLABLE instances (resolvePollTargets, the poller's
+ *  own resolution): an instance whose bridgeUrl was removed keeps its stale
+ *  discovery error forever (no future poll can clear it), so counting it would
+ *  promise an automatic recovery that can never happen. One indexed discovery
+ *  lookup per deduped instance name (duplicate-name rows are permitted), never
+ *  a bulk take that leftovers could crowd. NOTE: `error:"unreachable"` covers
+ *  BOTH a dead gateway and a dead per-instance bridge — either way the
+ *  instance's chats are paused, which is what the amber state reports.
+ */
+async function unreachablePolledInstances(ctx: QueryCtx): Promise<string[]> {
+  const rows = await ctx.db.query("instances").collect();
+  const targets = resolvePollTargets(
+    rows.map((i) => ({ name: i.name, bridgeUrl: i.bridgeUrl ?? null })),
+    {
+      envUrl: process.env.BRIDGE_URL?.trim() || null,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+    },
+  );
+  const names = [...new Set(targets.map((t) => t.name))];
+  const unreachable: string[] = [];
+  for (const name of names) {
+    const d = await ctx.db
+      .query("instanceDiscovery")
+      .withIndex("by_instance", (q) => q.eq("instanceName", name))
+      .first();
+    if (d && d.lastPollOk === false && isInstanceDownError(d.error)) {
+      unreachable.push(name);
+    }
+  }
+  return unreachable.sort();
+}
+
 export const getBridgeHealth = query({
   args: {},
   handler: async (ctx) => {
@@ -370,6 +410,12 @@ export const getBridgeHealth = query({
     await requirePermission(ctx, PERMISSIONS.BRIDGE_READ);
     const doc = await readDoc(ctx);
     if (doc === null) return null;
+    // Instances whose discovery poll currently fails on a TRANSPORT error —
+    // the SAME per-instance signal that greys those chats' composers. Without
+    // it the header reads "operational" (bridge process fine, zero connections)
+    // while every chat shows a gateway-unreachable banner: two truthful views
+    // telling contradictory stories during a gateway backup/maintenance.
+    const unreachableInstances = await unreachablePolledInstances(ctx);
     return {
       reachable: doc.reachable,
       status: doc.status ?? null,
@@ -377,6 +423,7 @@ export const getBridgeHealth = query({
       checkedAt: doc.checkedAt,
       lastError: doc.lastError ?? null,
       targets: doc.targets,
+      unreachableInstances,
     };
   },
 });
@@ -490,7 +537,7 @@ export const getBridgeAvailability = query({
           disc.lastPollOk === true || !isInstanceDownError(disc.error);
       }
     }
-    return computeAvailability(
+    const availability = computeAvailability(
       await readDoc(ctx),
       now,
       instanceName,
@@ -498,6 +545,12 @@ export const getBridgeAvailability = query({
       canonical,
       instanceReachable,
     );
+    if (chatId) return availability;
+    // GLOBAL view (the settings-tab badge): surface how many polled instances
+    // are transport-unreachable so the dot can show amber instead of a green
+    // "operational" while every affected chat is banner-blocked.
+    const gatewaysUnreachable = (await unreachablePolledInstances(ctx)).length;
+    return { ...availability, gatewaysUnreachable };
   },
 });
 

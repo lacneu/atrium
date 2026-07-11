@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.50.0] — The bridge status tells the whole truth
+
+Feature release (frontend + Convex). No breaking changes.
+
+- **The Bridge panel no longer says "operational" while your gateways are
+  down.** During a gateway backup or maintenance, the bridge process is fine
+  but its gateways stop answering — chats correctly showed the
+  gateway-unreachable banner, yet Settings → Bridge kept a green "Bridge
+  operational" header. The header (and the tab's status dot) now have a third,
+  amber state: "Bridge reachable · N instance(s) unreachable", naming the
+  affected instances and explaining that their conversations pause and resume
+  automatically once the gateway (or that instance's dedicated bridge) is
+  back. Red still means the bridge itself is down or erroring. The amber state
+  reads the same per-instance signal that pauses the affected composers, only
+  counts instances the discovery poll actually targets, and tolerates
+  duplicate instance rows.
+
 ## [0.49.0] — Agent proposals land in Atrium; the app learns to tap you on the shoulder
 
 Feature release (Convex + frontend + MCP). No breaking changes; the schema is

@@ -963,6 +963,8 @@
 	"bridge_unreachable": "Bridge unreachable",
 	"bridge_targets_in_error": "Bridge: {count} connection(s) in error",
 	"bridge_checked_at": "Checked at {time}",
+	"bridge_gateways_unreachable": "Bridge reachable · {count} instance(s) unreachable",
+	"bridge_gateways_unreachable_hint": "The main bridge is running, but these instances are not answering — gateway backup/maintenance, or their dedicated bridge is down: {names}. Affected conversations are paused and resume automatically once it returns.",
 	"bridge_started_at": "· Bridge started on {time}",
 	"bridge_anomalies_link": "↗ Anomalies",
 	"bridge_connections_section": "Connections ({count})",

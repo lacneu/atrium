@@ -36,6 +36,24 @@ export function isBridgeHealthy(health: {
   return health.reachable && bridgeErrorTargets(health.targets).length === 0;
 }
 
+/** The header verdict, THREE states: a bridge whose process is fine but whose
+ *  GATEWAYS are unreachable (backup/maintenance — the discovery poll fails on
+ *  transport) must not read "operational" while every affected chat shows the
+ *  gateway-unreachable banner. `unreachableInstances` is optional so a
+ *  pre-this-release health payload degrades to the two-state verdict. */
+export type BridgeVerdict = "ok" | "gateways_unreachable" | "error";
+export function bridgeVerdict(health: {
+  reachable: boolean;
+  targets: BridgeTargetView[];
+  unreachableInstances?: string[];
+}): BridgeVerdict {
+  if (!isBridgeHealthy(health)) return "error";
+  if ((health.unreachableInstances ?? []).length > 0) {
+    return "gateways_unreachable";
+  }
+  return "ok";
+}
+
 /** Show the red bridge-error detail block for a target? Only a CURRENT
  *  bridge-domain failure — never a stale lastErrorCode left on a recovered
  *  target (the bridge is talking to its gateway again). */

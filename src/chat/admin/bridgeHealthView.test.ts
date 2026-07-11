@@ -5,6 +5,7 @@ import {
   showsBridgeErrorDetail,
   showsDownstreamReject,
   type BridgeTargetView,
+  bridgeVerdict,
 } from "./bridgeHealthView";
 
 // Render decisions for the Bridge tab. The whole point of the fix is DISPLAY
@@ -110,5 +111,34 @@ describe("showsDownstreamReject (the neutral note)", () => {
 
   test("absent field (pre-this-release bridge) -> no note", () => {
     expect(showsDownstreamReject({ state: "connected", lastErrorCode: null })).toBe(false);
+  });
+});
+
+describe("bridgeVerdict (three-state header)", () => {
+  const t = (state: string) => ({ state, lastErrorCode: null });
+  test("ok: bridge reachable, no target error, all gateways polling fine", () => {
+    expect(
+      bridgeVerdict({ reachable: true, targets: [t("connected")], unreachableInstances: [] }),
+    ).toBe("ok");
+  });
+  test("gateways_unreachable: the bridge process is fine but a gateway is transport-down (backup) — must NOT read operational", () => {
+    expect(
+      bridgeVerdict({
+        reachable: true,
+        targets: [],
+        unreachableInstances: ["primary"],
+      }),
+    ).toBe("gateways_unreachable");
+  });
+  test("error wins over gateway state (bridge down / target error)", () => {
+    expect(
+      bridgeVerdict({ reachable: false, targets: [], unreachableInstances: ["a"] }),
+    ).toBe("error");
+    expect(
+      bridgeVerdict({ reachable: true, targets: [t("error")], unreachableInstances: [] }),
+    ).toBe("error");
+  });
+  test("a pre-this-release payload (no field) degrades to the two-state verdict", () => {
+    expect(bridgeVerdict({ reachable: true, targets: [] })).toBe("ok");
   });
 });
