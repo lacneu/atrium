@@ -94,7 +94,11 @@ const HEALTH_BODY = {
 
 describe("parseVersion / compareVersions", () => {
   test("dotted numeric versions parse; junk does not", () => {
-    expect(parseVersion("2026.6.5")).toEqual([2026, 6, 5]);
+    expect(parseVersion("2026.6.5")).toEqual({ nums: [2026, 6, 5], pre: null });
+    expect(parseVersion("2026.7.1-beta.2")).toEqual({
+      nums: [2026, 7, 1],
+      pre: "beta.2",
+    });
     // STRICT — aligned with the bridge parser: whitespace, missing or extra
     // segments all fail closed (badge can never contradict the bridge gating).
     expect(parseVersion(" 2026.5.19 ")).toBeNull();
@@ -103,6 +107,9 @@ describe("parseVersion / compareVersions", () => {
     expect(parseVersion("")).toBeNull();
     expect(parseVersion("1.x")).toBeNull();
     expect(parseVersion("v2026.6.5")).toBeNull();
+    expect(parseVersion("2026.6.5-")).toBeNull();
+    expect(parseVersion("2026.8.0-beta.")).toBeNull();
+    expect(parseVersion("2026.8.0-beta..1")).toBeNull();
   });
 
   test("compare is segment-wise with missing segments = 0", () => {
@@ -111,6 +118,14 @@ describe("parseVersion / compareVersions", () => {
     expect(compareVersions("2026.6", "2026.6.0")).toBeNull();
     expect(compareVersions("2026.6.5", "2026.6.5")).toBe(0);
     expect(compareVersions("garbage", "2026.6.5")).toBeNull();
+  });
+
+  test("a pre-release orders BEFORE its release (bridge mirror)", () => {
+    expect(compareVersions("2026.7.1-beta.2", "2026.7.1")).toBeLessThan(0);
+    expect(compareVersions("2026.7.1", "2026.7.1-beta.2")).toBeGreaterThan(0);
+    expect(compareVersions("2026.7.1-beta.2", "2026.6.11")).toBeGreaterThan(0);
+    expect(compareVersions("2026.7.1-beta.2", "2026.7.1-beta.10")).toBeLessThan(0);
+    expect(compareVersions("2026.7.1-beta.2", "2026.7.1-beta.2")).toBe(0);
   });
 });
 

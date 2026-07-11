@@ -132,13 +132,24 @@ export const COMPAT_MANIFEST: CompatManifest = {
   protocolVersion: PROTOCOL_VERSION,
   providers: {
     openclaw: {
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.6.11" },
+      // 2026.7.1 was validated through its 2026.7.1-beta.2 pre-release (the
+      // published release candidate; full live suite 2026-07-11 — chat core,
+      // tools, sub-agents, vision, media, explicit compaction, gpt-5.6 models).
+      // DELIBERATE POLICY (operator ask): declaring the release validated via
+      // its RC means instances upgrading on release day stay within support
+      // with no "ahead of validation" banner. If the shipped 2026.7.1 differs
+      // from beta.2, re-run the bench before trusting this row. The
+      // pre-release orders BEFORE the release, so the beta bench stays within
+      // range once 2026.7.1 ships.
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.7.1" },
       validatedVersions: [
         "2026.5.19",
         "2026.6.1",
         "2026.6.5",
         "2026.6.10",
         "2026.6.11",
+        "2026.7.1-beta.2",
+        "2026.7.1",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },
@@ -146,36 +157,80 @@ export const COMPAT_MANIFEST: CompatManifest = {
     // pins the manifest shape consumers (Convex/front) must handle: a provider
     // with NO validated range exposes zero capabilities.
     hermes: {
-      supportedRange: { min: "0.18.0", maxValidated: "0.18.0" },
-      validatedVersions: ["0.18.0"],
+      // 0.18.2 live-validated 2026-07-11 (WS transport: send/continuity/tools/
+      // delegation/file delivery on the upgraded bench).
+      supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
+      validatedVersions: ["0.18.0", "0.18.2"],
       capabilities: HERMES_CAPABILITIES,
     },
   },
 };
 
-/** A parsed "YYYY.M.P"-style version (three numeric parts). */
-export type ParsedVersion = [number, number, number];
+/** A parsed "YYYY.M.P"-style version: three numeric parts + an optional
+ *  pre-release tag ("beta.2" in "2026.7.1-beta.2"). */
+export type ParsedVersion = [number, number, number, string?];
 
 /**
- * Strict parse of a gateway version like "2026.6.5": EXACTLY three dot-
- * separated non-negative integers. Anything else (prefixes, suffixes, missing
+ * Strict parse of a gateway version like "2026.6.5" or a pre-release like
+ * "2026.7.1-beta.2": EXACTLY three dot-separated non-negative integers, with
+ * an optional semver-style `-<tag>` suffix. Anything else (prefixes, missing
  * parts, non-numeric) returns null — a malformed version must fall into the
  * CONSERVATIVE policy, never crash or accidentally unlock capabilities.
  */
 export function parseVersion(version: string): ParsedVersion | null {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-  const [a, b, c] = version.split(".").map((p) => Number.parseInt(p, 10));
-  if (a === undefined || b === undefined || c === undefined) return null;
-  return [a, b, c];
+  // Pre-release tag = dot-separated NON-EMPTY alphanumeric identifiers
+  // (semver): "beta." or "beta..1" must fail closed, not resolve capabilities.
+  const m =
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
+  if (!m) return null;
+  const parsed: ParsedVersion = [
+    Number.parseInt(m[1] as string, 10),
+    Number.parseInt(m[2] as string, 10),
+    Number.parseInt(m[3] as string, 10),
+  ];
+  if (m[4] !== undefined) parsed[3] = m[4];
+  return parsed;
 }
 
-/** Numeric three-part comparison: negative a<b, 0 equal, positive a>b. */
+/** Semver-style pre-release tag comparison (dot-separated identifiers:
+ *  numeric compare when both numeric, numeric < alphanumeric, shorter wins). */
+function comparePrerelease(a: string, b: string): number {
+  const as = a.split(".");
+  const bs = b.split(".");
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const x = as[i];
+    const y = bs[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number.parseInt(x, 10) : null;
+    const ny = /^\d+$/.test(y) ? Number.parseInt(y, 10) : null;
+    if (nx !== null && ny !== null) {
+      if (nx !== ny) return nx - ny;
+    } else if (nx !== null) {
+      return -1;
+    } else if (ny !== null) {
+      return 1;
+    } else {
+      const c = x < y ? -1 : x > y ? 1 : 0;
+      if (c !== 0) return c;
+    }
+  }
+  return 0;
+}
+
+/** Version comparison: numeric on the three parts; on a tie a PRE-RELEASE
+ *  orders BEFORE its release (2026.7.1-beta.2 < 2026.7.1), semver-style. */
 export function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
   for (let i = 0; i < 3; i++) {
     const d = (a[i] as number) - (b[i] as number);
     if (d !== 0) return d;
   }
-  return 0;
+  const pa = a[3];
+  const pb = b[3];
+  if (pa === undefined && pb === undefined) return 0;
+  if (pa === undefined) return 1;
+  if (pb === undefined) return -1;
+  return comparePrerelease(pa, pb);
 }
 
 /** The result of resolving the capability table against a live gateway. */

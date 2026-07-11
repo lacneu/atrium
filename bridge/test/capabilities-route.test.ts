@@ -151,7 +151,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
       min: "2026.5.19",
-      maxValidated: "2026.6.11",
+      maxValidated: "2026.7.1",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
       "2026.5.19",
@@ -159,10 +159,12 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.6.5",
       "2026.6.10",
       "2026.6.11",
+      "2026.7.1-beta.2",
+      "2026.7.1",
     ]);
     expect(body.compat.providers.hermes).toEqual({
-      supportedRange: { min: "0.18.0", maxValidated: "0.18.0" },
-      validatedVersions: ["0.18.0"],
+      supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
+      validatedVersions: ["0.18.0", "0.18.2"],
       capabilities: { abort: "0.18.0", agentsDiscovery: "0.18.0" },
     });
     // No live gateway session in this test -> no targets.

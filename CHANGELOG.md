@@ -8,6 +8,38 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.52.0] — Ready for OpenClaw 2026.7.1 and Hermes 0.18.2 (gpt-5.6 era)
+
+Compatibility release (bridge + Convex). No breaking changes.
+
+- **OpenClaw 2026.7.1 is validated ahead of its release.** The full live bench
+  suite ran against the published `2026.7.1-beta.2` image — chat round-trips,
+  streaming, tool turns, sub-agents, inbound vision, outbound file delivery,
+  explicit compaction (with the checkpoint surfacing in the compaction-history
+  API) and post-compaction continuity. The bridge compat manifest now declares
+  the `2026.5.19 → 2026.7.1` supported range, so instances upgrading to the
+  2026.7.1 release stay fully within validated support the day it ships.
+- **The gpt-5.6 model family works end to end.** Conversations, tool turns,
+  sub-agent delegation and compaction were validated on `gpt-5.6-sol`; the
+  chat's Advanced panel lists the 5.6 models from live discovery and the
+  per-chat model knob switches to them; the context gauge follows the larger
+  5.6 window (372k). A model your subscription does not serve yet surfaces a
+  clean, actionable error — never a stuck turn.
+- **Version strings with a pre-release tag are now understood.** A gateway
+  announcing `2026.7.1-beta.2` used to be treated as an unknown version and
+  dropped to the conservative capability floor (knobs, agent files and
+  session compaction switched off). Pre-release versions now order
+  semver-style — below their release, above everything older — on both the
+  bridge and the Convex mirror, so betas resolve their real capabilities.
+- **Hermes 0.18.2 is validated.** Send/streaming, session continuity, tool
+  turns, `delegate_task` delegation, file delivery and composer uploads
+  (file.attach) all re-validated live on the upgraded gateway; the manifest
+  now declares `0.18.0 → 0.18.2`.
+- **The vendored OpenClaw protocol contract moves to 2026.7.1.** The drift
+  watch found exactly one new protocol field in the beta
+  (`agent.effectiveResponseUsage`, session-config metadata) — it is now part
+  of the known surface, so a 2026.7.1 install reports zero drift.
+
 ## [0.51.0] — CSV, log and JSON files get real renders in the document viewer
 
 Feature release (frontend only). No breaking changes.

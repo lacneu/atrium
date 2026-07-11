@@ -95,27 +95,67 @@ const str = (x: unknown): string | null => (typeof x === "string" ? x : null);
 // bridge response can never balloon the singleton doc toward the 1MB doc limit.
 const COMPAT_MANIFEST_MAX_CHARS = 64 * 1024;
 
-/** STRICT parse of a gateway version ("2026.6.5"): EXACTLY three dot-separated
- *  non-negative integers, no surrounding whitespace; null otherwise. Mirrors
- *  the bridge's parseVersion (src/compat.ts) so the BridgeTab support badge can
+/** STRICT parse of a gateway version ("2026.6.5", or a pre-release like
+ *  "2026.7.1-beta.2"): EXACTLY three dot-separated non-negative integers with
+ *  an optional semver-style `-<tag>` suffix; null otherwise. Mirrors the
+ *  bridge's parseVersion (src/compat.ts) so the BridgeTab support badge can
  *  never contradict the capabilities the bridge actually resolved — both sides
  *  fail CLOSED on the same inputs. */
-export function parseVersion(version: string): number[] | null {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-  return version.split(".").map((p) => Number.parseInt(p, 10));
+export function parseVersion(
+  version: string,
+): { nums: number[]; pre: string | null } | null {
+  // Pre-release tag = dot-separated NON-EMPTY alphanumeric identifiers
+  // (semver); mirrors the bridge parser exactly.
+  const m =
+    /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(version);
+  if (!m) return null;
+  return {
+    nums: [m[1], m[2], m[3]].map((p) => Number.parseInt(p as string, 10)),
+    pre: m[4] ?? null,
+  };
 }
 
-/** Numeric three-part comparison. Returns a negative/zero/positive number, or
- *  null when either side is unparseable (fail closed). */
+/** Semver-style pre-release tag comparison (dot-separated identifiers:
+ *  numeric compare when both numeric, numeric < alphanumeric, shorter wins). */
+function comparePrerelease(a: string, b: string): number {
+  const as = a.split(".");
+  const bs = b.split(".");
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const x = as[i];
+    const y = bs[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number.parseInt(x, 10) : null;
+    const ny = /^\d+$/.test(y) ? Number.parseInt(y, 10) : null;
+    if (nx !== null && ny !== null) {
+      if (nx !== ny) return nx - ny;
+    } else if (nx !== null) {
+      return -1;
+    } else if (ny !== null) {
+      return 1;
+    } else {
+      const c = x < y ? -1 : x > y ? 1 : 0;
+      if (c !== 0) return c;
+    }
+  }
+  return 0;
+}
+
+/** Version comparison: numeric on the three parts; on a tie a PRE-RELEASE
+ *  orders BEFORE its release (2026.7.1-beta.2 < 2026.7.1), semver-style.
+ *  Returns null when either side is unparseable (fail closed). */
 export function compareVersions(a: string, b: string): number | null {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
   if (pa === null || pb === null) return null;
   for (let i = 0; i < 3; i++) {
-    const d = (pa[i] as number) - (pb[i] as number);
+    const d = (pa.nums[i] as number) - (pb.nums[i] as number);
     if (d !== 0) return d;
   }
-  return 0;
+  if (pa.pre === null && pb.pre === null) return 0;
+  if (pa.pre === null) return 1;
+  if (pb.pre === null) return -1;
+  return comparePrerelease(pa.pre, pb.pre);
 }
 
 /** Is `gatewayVersion` within the provider's support window? Fail CLOSED: an

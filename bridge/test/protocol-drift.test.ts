@@ -201,6 +201,8 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "parentSessionKey",
       "runtimeMs",
       "childSessions",
+      // 2026.7.1 session-config metadata (bench capture 2026-07-11, beta.2)
+      "effectiveResponseUsage",
     ])
       manifest.add(f);
     expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());

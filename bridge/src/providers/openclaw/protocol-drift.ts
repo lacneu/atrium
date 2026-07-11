@@ -16,6 +16,11 @@
 // ratcheted against the vendored TypeBox schemas. One chain, no drift:
 //   vendored schema <-> coverage.json <-> these runtime sets.
 
+// Stays 2026.6.11: that is the schema set actually vendored under
+// protocol/openclaw/ (and what coverage.json ratchets against). The 2026.7.1
+// bench observed EXACTLY ONE addition over it (`agent.effectiveResponseUsage`,
+// listed below), so 6.11 + that field IS the 7.1 surface; bump this only when
+// the published 2026.7.1 schemas are vendored and re-audited.
 export const DRIFT_VENDORED_VERSION = "2026.6.11";
 
 /** Union of the four chat event schemas' top-level payload fields. */
@@ -104,6 +109,11 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "parentSessionKey",
   "runtimeMs",
   "childSessions",
+  // 2026.7.1 session-config metadata (bench capture 2026-07-11, beta.2): the
+  // gateway's per-response usage accounting MODE ("off"/…), flattened onto
+  // agent events like thinkingLevel/fastMode. Config vocabulary, not content;
+  // consumed nowhere. The ONLY new protocol field 2026.6.11 → 2026.7.1.
+  "effectiveResponseUsage",
 ]);
 
 /**

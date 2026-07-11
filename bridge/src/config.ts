@@ -218,12 +218,21 @@ function optionalEnvOrNull(name: string): string | null {
   return value || null;
 }
 
-/** Optional STRICT "YYYY.M.P" version env; undefined when unset OR malformed
- *  (a bad value must never masquerade as a real gateway version → fail to
- *  undefined so the conservative no-version policy applies instead). */
+/** The ONE gateway-version grammar (mirrors compat.parseVersion): three
+ *  numeric parts + an optional semver pre-release tag of non-empty
+ *  dot-separated identifiers. Shared by BOTH config paths (env fallback and
+ *  Convex-resolved instances) so a pre-release never fails one but not the
+ *  other. */
+const GATEWAY_VERSION_RE =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+/** Optional STRICT version env (pre-release tags accepted, same grammar as
+ *  compat.parseVersion); undefined when unset OR malformed (a bad value must
+ *  never masquerade as a real gateway version → fail to undefined so the
+ *  conservative no-version policy applies instead). */
 function optionalVersionEnv(name: string): string | undefined {
   const value = (process.env[name] ?? "").trim();
-  return /^\d+\.\d+\.\d+$/.test(value) ? value : undefined;
+  return GATEWAY_VERSION_RE.test(value) ? value : undefined;
 }
 
 function parseIntEnv(name: string, fallback: number): number {
@@ -551,7 +560,7 @@ export function buildInstanceConfig(
     shared.inboundMediaDirOverride ??
     (seg ? `${MEDIA_ROOT}/${seg}/inbound` : `${MEDIA_ROOT}/inbound`);
   const version =
-    inst.gatewayVersion && /^\d+\.\d+\.\d+$/.test(inst.gatewayVersion)
+    inst.gatewayVersion && GATEWAY_VERSION_RE.test(inst.gatewayVersion)
       ? inst.gatewayVersion
       : undefined;
   return {
