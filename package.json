@@ -1,6 +1,6 @@
 {
   "name": "@lacneu/atrium",
-  "version": "0.54.2",
+  "version": "0.55.0",
   "description": "Atrium — public, self-hostable, Convex-backed web chat UI for AI agent gateways (OpenClaw today, Hermes next). Ships an origin-agnostic static bundle (Convex URL injected at runtime via /config.json).",
   "license": "MIT",
   "type": "module",
