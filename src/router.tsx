@@ -57,6 +57,8 @@ import {
   PanelLeftOpen,
   AlertTriangle,
   Compass,
+  LibraryBig,
+  Settings,
 } from "lucide-react";
 import { api } from "./chat/convexApi";
 import type { Id } from "./chat/convexApi";
@@ -153,6 +155,11 @@ const SubAgentReportsTab = lazy(() =>
 );
 const FilesTab = lazy(() =>
   import("./chat/admin/FilesTab").then((m) => ({ default: m.FilesTab })),
+);
+const ScheduledTab = lazy(() =>
+  import("./chat/admin/ScheduledTab").then((m) => ({
+    default: m.ScheduledTab,
+  })),
 );
 const AgentFilesTab = lazy(() =>
   import("./chat/admin/AgentFilesTab").then((m) => ({ default: m.AgentFilesTab })),
@@ -678,8 +685,15 @@ function AuthenticatedChrome({
   resolvedThemeMode: ThemeMode;
   brand: ChartBrand | undefined;
 }) {
-  const { width, collapsed, toggleCollapsed, collapse, startResize, isMobile } =
-    useSidebarLayout();
+  const {
+    width,
+    columnRef,
+    collapsed,
+    toggleCollapsed,
+    collapse,
+    startResize,
+    isMobile,
+  } = useSidebarLayout();
   const matchRoute = useMatchRoute();
   // Active-chat highlight: read the chatId param without requiring a match on a
   // specific route (strict:false → undefined off the chat route).
@@ -755,6 +769,12 @@ function AuthenticatedChrome({
         {!collapsed ? (
           <div
             className="oc-sidebar-col"
+            // Bound so the resize drag paints the width DIRECTLY on this node
+            // (rAF), committing React state only on pointerup — a per-pixel
+            // setState re-rendered the whole chrome and stuttered.
+            ref={(el) => {
+              columnRef.current = isMobile ? null : el;
+            }}
             // On mobile the drawer width is fixed by CSS (overlay); the inline
             // resizable width applies to the desktop in-flow column only.
             style={isMobile ? undefined : { width, flex: `0 0 ${width}px` }}
@@ -771,11 +791,22 @@ function AuthenticatedChrome({
                   onNewChat={() => void startNewChat()}
                   newChatShortcut={newChatShortcut}
                 />
+                {/* Library shortcut: the user's personal files (Settings ▸
+                    Personal ▸ Files) one click away from the chat list. */}
+                <Button variant="ghost" className="mx-2 justify-start" asChild>
+                  <Link to="/settings/$tab" params={{ tab: "files" }}>
+                    <LibraryBig aria-hidden />
+                    {m.sidebar_library()}
+                  </Link>
+                </Button>
                 {canOpenSettings ? (
-                  <Button variant="ghost" className="m-2 justify-start" asChild>
+                  <Button variant="ghost" className="mx-2 mb-2 justify-start" asChild>
                     {/* Land on the settings index, which redirects to the user's
                         FIRST allowed tab (not a hardcoded admin-only tab). */}
-                    <Link to="/settings">{m.app_settings()}</Link>
+                    <Link to="/settings">
+                      <Settings aria-hidden />
+                      {m.app_settings()}
+                    </Link>
                   </Button>
                 ) : null}
               </>
@@ -908,6 +939,8 @@ function paramlessTab(tab: string) {
       return <SubAgentReportsTab />;
     case "files":
       return <FilesTab />;
+    case "scheduled":
+      return <ScheduledTab />;
     case "agentFiles":
       return <AgentFilesTab />;
     case "preferences":

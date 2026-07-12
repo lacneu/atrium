@@ -554,6 +554,87 @@ export async function performHermesReset(
  *  decoded content, set enforces compare-and-set against the current mtime
  *  then uploads. Same response contract as the OpenClaw op so Convex/UI are
  *  untouched. */
+/** Hermes scheduled jobs via the WS RPC `cron.manage {action:"list"}`
+ *  (tui_gateway). Normalized to the provider-neutral /cron-list summaries;
+ *  agentId stays null — a Hermes instance has a single agent, so every job
+ *  belongs to it. Defensive field mapping: the cronjob tool's JSON is not a
+ *  pinned contract, unknown fields simply yield nulls. */
+export async function performHermesCronList(
+  cfg: BridgeConfig,
+  registry: HermesTurnRegistry,
+): Promise<
+  {
+    id: string | null;
+    name: string | null;
+    enabled: boolean | null;
+    schedule: string | null;
+    nextRunAtMs: number | null;
+    lastRunStatus: string | null;
+    agentId: string | null;
+  }[]
+> {
+  const client = registry.wsClientFor(cfg);
+  const payload = (await client.call("cron.manage", { action: "list" })) as
+    | Record<string, unknown>
+    | unknown[]
+    | undefined;
+  const rawList = Array.isArray(payload)
+    ? payload
+    : Array.isArray((payload as Record<string, unknown> | undefined)?.jobs)
+      ? ((payload as Record<string, unknown>).jobs as unknown[])
+      : Array.isArray((payload as Record<string, unknown> | undefined)?.result)
+        ? ((payload as Record<string, unknown>).result as unknown[])
+        : [];
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v ? v : null;
+  // ISO-8601 → epoch ms (Hermes stamps next_run_at/last_run_at as ISO strings).
+  const iso = (v: unknown): number | null => {
+    if (typeof v !== "string" || !v) return null;
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? ms : null;
+  };
+  return rawList
+    .filter((j): j is Record<string, unknown> => typeof j === "object" && j !== null)
+    .map((j) => {
+      // Hermes 0.18 jobs carry `schedule` as an OBJECT {kind, expr|at, display}
+      // plus a flat `schedule_display` — read the structured form too, or every
+      // job renders a bare "—" in the tab.
+      const sched = j.schedule;
+      const schedObj =
+        typeof sched === "object" && sched !== null
+          ? (sched as Record<string, unknown>)
+          : {};
+      return {
+        id: str(j.id) ?? str(j.job_id) ?? str(j.name),
+        name: str(j.name),
+        enabled:
+          typeof j.enabled === "boolean"
+            ? j.enabled
+            : typeof j.paused === "boolean"
+              ? !j.paused
+              : null,
+        schedule:
+          str(sched) ??
+          str(j.schedule_display) ??
+          str(schedObj.display) ??
+          str(schedObj.expr) ??
+          str(schedObj.at) ??
+          str(schedObj.kind) ??
+          str(j.cron) ??
+          str(j.when),
+        nextRunAtMs:
+          num(j.next_run_at_ms) ??
+          num(j.nextRunAtMs) ??
+          iso(j.next_run_at) ??
+          iso(j.next_run),
+        lastRunStatus: str(j.last_run_status) ?? str(j.last_status),
+        agentId: null,
+      };
+    });
+}
+
 export async function performHermesAgentFilesOp(
   cfg: BridgeConfig,
   registry: HermesTurnRegistry,

@@ -73,11 +73,6 @@ export const PREF_META: Record<string, PrefMeta> = {
     label: () => m.pref_showChatAge_label(),
     help: () => m.pref_showChatAge_help(),
   },
-  showChatProvider: {
-    category: "sidebar",
-    label: () => m.pref_showChatProvider_label(),
-    help: () => m.pref_showChatProvider_help(),
-  },
   notifSound: {
     category: "notifications",
     label: () => m.pref_notifSound_label(),

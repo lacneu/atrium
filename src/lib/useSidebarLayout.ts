@@ -44,7 +44,14 @@ export interface ResizableWidthOptions {
   maxViewportFraction?: number;
 }
 
-/** A localStorage-persisted, pointer-resizable column width. */
+/** A localStorage-persisted, pointer-resizable column width.
+ *
+ *  Perf contract: when the consumer binds `columnRef` to its column element,
+ *  the DRAG paints the width straight onto that element inside
+ *  requestAnimationFrame (no React state per pointermove — a per-pixel
+ *  setState re-renders the whole chrome and stutters); React state + the
+ *  localStorage persist commit ONCE on pointerup. Without the ref it falls
+ *  back to reactive per-move updates. */
 export function useResizableWidth(opts: ResizableWidthOptions) {
   const { storageKey, defaultWidth, min, max, edge, maxViewportFraction } = opts;
   const clamp = useCallback(
@@ -76,6 +83,7 @@ export function useResizableWidth(opts: ResizableWidthOptions) {
   }, [maxViewportFraction, clamp]);
 
   const draggingRef = useRef(false);
+  const columnRef = useRef<HTMLElement | null>(null);
   const startResize = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
@@ -83,16 +91,43 @@ export function useResizableWidth(opts: ResizableWidthOptions) {
       const startX = e.clientX;
       const startW = width;
       const sign = edge === "left" ? 1 : -1; // right column widens as the pointer moves LEFT
+      let latest = startW;
+      let raf = 0;
+      const paint = () => {
+        raf = 0;
+        const el = columnRef.current;
+        if (el) {
+          el.style.width = `${latest}px`;
+          el.style.flex = `0 0 ${latest}px`;
+        }
+      };
       const onMove = (ev: PointerEvent) => {
         if (!draggingRef.current) return;
-        setWidth(clamp(startW + sign * (ev.clientX - startX)));
+        latest = clamp(startW + sign * (ev.clientX - startX));
+        if (columnRef.current) {
+          if (raf === 0) raf = requestAnimationFrame(paint);
+        } else {
+          setWidth(latest); // no bound column — reactive fallback
+        }
       };
       const onUp = () => {
         draggingRef.current = false;
+        if (raf !== 0) cancelAnimationFrame(raf);
+        // Paint the FINAL width imperatively: a cancelled pending frame plus a
+        // setWidth that equals the existing state (drag returned to the start
+        // width) would re-render nothing and leave the last painted width on
+        // the DOM.
+        const el = columnRef.current;
+        if (el) {
+          el.style.width = `${latest}px`;
+          el.style.flex = `0 0 ${latest}px`;
+        }
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        // Single React commit (and localStorage persist) for the whole drag.
+        setWidth(latest);
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
@@ -103,14 +138,14 @@ export function useResizableWidth(opts: ResizableWidthOptions) {
     [width, edge, clamp],
   );
 
-  return { width, startResize, setWidth };
+  return { width, startResize, setWidth, columnRef };
 }
 
 // Sidebar layout (width + collapsed) persisted per-device in localStorage. The
 // width/resize now delegates to useResizableWidth (shared with the Sources
 // panel); collapse + the mobile off-canvas behavior stay here.
 export function useSidebarLayout() {
-  const { width, startResize } = useResizableWidth({
+  const { width, startResize, columnRef } = useResizableWidth({
     storageKey: WIDTH_KEY,
     defaultWidth: DEFAULT_WIDTH,
     min: MIN_WIDTH,
@@ -136,6 +171,7 @@ export function useSidebarLayout() {
 
   return {
     width,
+    columnRef,
     collapsed,
     toggleCollapsed,
     collapse,

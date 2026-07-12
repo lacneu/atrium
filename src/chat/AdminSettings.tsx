@@ -24,6 +24,7 @@ export const TABS = [
   "kpi",
   "anomalies",
   "files",
+  "scheduled",
   "agentFiles",
   "preferences",
   "integrations",
@@ -48,6 +49,7 @@ export const PARAMLESS_TABS = [
   "feedbacks",
   "subagentReports",
   "files",
+  "scheduled",
   "agentFiles",
   "preferences",
   "chatDefaults",
@@ -72,6 +74,7 @@ export const TAB_I18N: Record<Tab, () => string> = {
   kpi: () => m.settings_tab_kpi(),
   anomalies: () => m.settings_tab_anomalies(),
   files: () => m.files_tab_label(),
+  scheduled: () => m.scheduled_tab_label(),
   agentFiles: () => m.afiles_tab_label(),
   preferences: () => m.settings_tab_preferences(),
   integrations: () => m.settings_tab_integrations(),
@@ -109,6 +112,9 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   // base `chats.read` permission every approved user already holds (admins via
   // the wildcard) → visible to ALL users by default, NOT a grantable admin tab.
   files: "chats.read",
+  // Scheduled gateway jobs (crons) are owner-scoped like Files (each user sees
+  // only the jobs of their own entitled agents) → base `chats.read`.
+  scheduled: "chats.read",
   // Agent workspace files (CONF-4c). Grantable read permission; the server
   // additionally restricts non-admins to the RULE files (A3) and writes to
   // admin.manage — this gate only controls tab visibility.

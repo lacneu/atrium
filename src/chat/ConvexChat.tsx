@@ -426,7 +426,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // that message until closed or another chip is clicked, and resets on chat
   // switch. Mobile (< 767px) falls back to the overlay drawer (no 3rd column).
   const isMobile = useIsMobile();
-  const { width: sourcesWidth, startResize: startSourcesResize } = useResizableWidth(
+  const {
+    width: sourcesWidth,
+    startResize: startSourcesResize,
+    columnRef: sourcesColRef,
+  } = useResizableWidth(
     { storageKey: "oc.sources.width", defaultWidth: 380, min: 300, max: 680, edge: "right" },
   );
   const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(
@@ -435,7 +439,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   useEffect(() => {
     setActiveSourcesMessageId(null);
   }, [chatId]);
-  const { width: subAgentWidth, startResize: startSubAgentResize } =
+  const {
+    width: subAgentWidth,
+    startResize: startSubAgentResize,
+    columnRef: subAgentColRef,
+  } =
     useResizableWidth({
       storageKey: "oc.subagent.width",
       defaultWidth: 460,
@@ -453,7 +461,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // The ceiling is viewport-relative: reading the document is the point of
   // this panel, so the user may pull it across most of the window (the
   // conversation keeps the rest; collapsing the sidebar frees even more).
-  const { width: docViewerWidth, startResize: startDocViewerResize } =
+  const {
+    width: docViewerWidth,
+    startResize: startDocViewerResize,
+    columnRef: docViewerColRef,
+  } =
     useResizableWidth({
       storageKey: "oc.docviewer.width",
       defaultWidth: 560,
@@ -604,6 +616,14 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
               />
               <aside
                 className="oc-sources-col"
+                // One physical column shared by the three panels (mutually
+                // exclusive) — bind every hook's ref; only the active panel's
+                // drag writes to it.
+                ref={(el) => {
+                  sourcesColRef.current = el;
+                  subAgentColRef.current = el;
+                  docViewerColRef.current = el;
+                }}
                 style={{
                   width: docViewerOpen
                     ? docViewerWidth
@@ -1669,7 +1689,7 @@ function AssistantMoreMenu({
       });
       // Stay HERE; the sidebar row pulse shows where the branch landed (and
       // the toast covers a collapsed sidebar).
-      flashSidebarChat(chatId);
+      flashSidebarChat(chatId, { expand: true });
       toast.success(m.chat_branch_created());
     } catch (err) {
       toast.error(m.chat_branch_failed(), err);

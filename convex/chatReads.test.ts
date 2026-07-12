@@ -154,3 +154,62 @@ describe("chatReads (per-user read state)", () => {
     ).toBe(0);
   });
 });
+
+// myBusyChats — the sidebar "busy" pulse. Discriminating properties: OWNER-
+// scoped (another user's in-flight turn never pulses my sidebar — the query
+// probes MY chats, never a global streamingText scan) and presence-driven
+// (streamingText row exists → busy; deleted at finalize → idle).
+describe("chatReads.myBusyChats", () => {
+  async function stream(
+    t: ReturnType<typeof convexTest>,
+    a: Awaited<ReturnType<typeof seedChatWithStreaming>>,
+  ) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId: a.messageId,
+        chatId: a.chatId,
+        userId: a.userId,
+        text: "réponse en cours…",
+        updatedAt: Date.now(),
+      });
+    });
+  }
+
+  test("reports MY streaming chats only — a foreign user's turn never leaks", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const idle = await t.run(async (ctx) => {
+      // A second, idle chat for the SAME user — must not report busy.
+      return ctx.db.insert("chats", {
+        userId: mine.userId,
+        updatedAt: 2,
+        instanceName: "prod",
+        agentId: "main",
+      });
+    });
+    const other = await seedChatWithStreaming(t);
+    await stream(t, mine);
+    await stream(t, other);
+
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    const busy = await asMine.query(api.chatReads.myBusyChats, {});
+    expect(busy).toEqual([mine.chatId]);
+    expect(busy).not.toContain(idle);
+    expect(busy).not.toContain(other.chatId);
+  });
+
+  test("goes quiet when the streamingText row is deleted (finalize)", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    await stream(t, mine);
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+    await t.run(async (ctx) => {
+      const rows = await ctx.db.query("streamingText").collect();
+      for (const r of rows) await ctx.db.delete(r._id);
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+  });
+});

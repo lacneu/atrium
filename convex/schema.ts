@@ -241,6 +241,8 @@ export default defineSchema({
         showTools: v.optional(v.boolean()),
         voiceInput: v.optional(v.boolean()),
         showChatAge: v.optional(v.boolean()),
+        // Legacy (pref retired with the sidebar provider badge) — kept so
+        // existing documents still validate; ignored by the resolver.
         showChatProvider: v.optional(v.boolean()),
         showUsage: v.optional(v.boolean()),
         autoReadAloud: v.optional(v.boolean()),
@@ -700,6 +702,8 @@ export default defineSchema({
         showTools: v.optional(v.boolean()),
         voiceInput: v.optional(v.boolean()),
         showChatAge: v.optional(v.boolean()),
+        // Legacy (pref retired with the sidebar provider badge) — kept so
+        // existing documents still validate; ignored by the resolver.
         showChatProvider: v.optional(v.boolean()),
         showUsage: v.optional(v.boolean()),
         autoReadAloud: v.optional(v.boolean()),
@@ -1326,6 +1330,11 @@ export default defineSchema({
   streamingText: defineTable({
     messageId: v.id("messages"),
     chatId: v.id("chats"),
+    // Turn owner — lets the sidebar's busy signal (chatReads.myBusyChats) read
+    // ONE per-user index range instead of probing every owned chat per token.
+    // Optional: rows created mid-deploy by an older writer lack it and simply
+    // don't pulse (they finalize within seconds).
+    userId: v.optional(v.id("users")),
     text: v.string(),
     updatedAt: v.number(),
     // Live PROCESSING PHASE of the in-flight turn (processing_history /
@@ -1348,6 +1357,7 @@ export default defineSchema({
   })
     .index("by_message", ["messageId"])
     .index("by_chat", ["chatId"])
+    .index("by_user", ["userId"])
     // The stuck-stream watchdog ranges by heartbeat (updatedAt < cutoff) — every
     // row here is by definition a streaming message, so no status column is needed.
     .index("by_updated", ["updatedAt"]),

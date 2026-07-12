@@ -49,6 +49,7 @@ import {
   performHermesAbort,
   performHermesReset,
   performHermesAgentFilesOp,
+  performHermesCronList,
   discoverHermesAgents,
 } from "./providers/hermes/dispatch.js";
 import { validateSharedFs } from "./core/media-validate.js";
@@ -1196,6 +1197,98 @@ async function fetchCompactionHistory(
   return { count: checkpoints.length, checkpoints };
 }
 
+/** One normalized scheduled job (the /cron-list wire shape — provider-neutral). */
+export interface CronJobSummary {
+  id: string | null;
+  name: string | null;
+  enabled: boolean | null;
+  schedule: string | null;
+  nextRunAtMs: number | null;
+  lastRunStatus: string | null;
+  /** The job's pinned agent id; null = the gateway's default agent (OpenClaw)
+   *  or the instance's single agent (Hermes). Convex applies the policy. */
+  agentId: string | null;
+}
+
+/** OpenClaw `cron.list` → normalized summaries. FULL (non-compact) response so
+ *  each job's agentId is present — the compact projection drops it. Read-only,
+ *  never on the turn path. */
+async function fetchCronJobs(conn: OpenClawConnection): Promise<CronJobSummary[]> {
+  // includeDisabled: the tab renders a "Paused" state — the default listing
+  // omits disabled jobs, which would make every paused job invisible.
+  const res = await conn.request("cron.list", { includeDisabled: true }, 15_000);
+  const payload = res.payload as Record<string, unknown> | undefined;
+  const rawList = Array.isArray(payload?.jobs)
+    ? (payload.jobs as unknown[])
+    : Array.isArray(payload)
+      ? (payload as unknown[])
+      : [];
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v ? v : null;
+  // Interval cadence in a human-scannable unit — "every 3600000" tells a user
+  // nothing; "every 1h" does. Falls through to ms only for odd intervals.
+  const everyLabel = (ms: number): string => {
+    if (ms % 3_600_000 === 0) return `every ${ms / 3_600_000}h`;
+    if (ms % 60_000 === 0) return `every ${ms / 60_000}min`;
+    if (ms % 1_000 === 0) return `every ${ms / 1_000}s`;
+    return `every ${ms}ms`;
+  };
+  const jobs: CronJobSummary[] = [];
+  for (const j of rawList) {
+    if (typeof j !== "object" || j === null) continue;
+    const job = j as Record<string, unknown>;
+    // The schedule lives either as a cron expression, an --at timestamp, or a
+    // structured {kind, expr|at|everyMs} — surface a printable string either
+    // way (an "every" kind must keep its cadence, not just the word "every").
+    const sched = job.schedule;
+    let schedule = str(sched) ?? str(job.scheduleKind);
+    if (schedule === null && typeof sched === "object" && sched !== null) {
+      const s = sched as Record<string, unknown>;
+      const every = num(s.everyMs) ?? num(s.every);
+      schedule =
+        str(s.expr) ??
+        str(s.at) ??
+        (every !== null ? everyLabel(every) : str(s.kind));
+    }
+    // Fail CLOSED on a malformed agent pin: agentId semantics downstream are
+    // "null = the gateway default agent", so coercing a present-but-wrong-typed
+    // value to null would silently re-attribute the job to the default agent's
+    // users. Only true absence may mean "default"; anything else drops the job.
+    const rawAgent = job.agentId ?? job.agent;
+    let agentId: string | null;
+    if (rawAgent === undefined || rawAgent === null) {
+      agentId = null;
+    } else if (typeof rawAgent === "string" && rawAgent !== "") {
+      agentId = rawAgent;
+    } else {
+      continue; // protocol drift — never guess an owner
+    }
+    // Scheduler-maintained fields (nextRunAtMs, lastRunStatus) live in the
+    // job's nested `state` object; older shapes carried them top-level.
+    const state =
+      typeof job.state === "object" && job.state !== null
+        ? (job.state as Record<string, unknown>)
+        : {};
+    jobs.push({
+      id: str(job.id) ?? str(job.jobId),
+      name: str(job.name),
+      enabled: typeof job.enabled === "boolean" ? job.enabled : null,
+      schedule,
+      nextRunAtMs:
+        num(state.nextRunAtMs) ?? num(job.nextRunAtMs) ?? num(job.nextRunAt),
+      lastRunStatus:
+        str(state.lastRunStatus) ??
+        str(state.lastStatus) ??
+        str(job.lastRunStatus) ??
+        str(job.lastStatus),
+      agentId,
+    });
+  }
+  return jobs;
+}
+
 /**
  * Open a SHORT-LIVED operator connection for a non-chat-scoped op (same
  * pattern as `discoverAgents`): dedicated — never a registry session, so no
@@ -1981,6 +2074,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Phase 2c: dispatch a user's message to a SUB-AGENT session (chat.send to the
       // child key), arming the observer to capture the reply. Convex verifies IDOR.
       "/subagent-send",
+      // Scheduled gateway jobs (crons) for the Settings › Scheduled tab. Convex
+      // owns the user→agent policy; the bridge returns the instance's raw list.
+      "/cron-list",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2199,6 +2295,47 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compaction-history failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/cron-list") {
+      // LAZY read (Settings ▸ Personal ▸ Scheduled): the instance's cron jobs,
+      // provider-neutral summaries. READ-ONLY — dedicated short operator
+      // connection (OpenClaw) / the persistent ws client (Hermes); never the
+      // per-chat session registry, never the turn path. Agent-level FILTERING
+      // is Convex's job (it owns the instance-default knowledge).
+      let cronBody: { instanceName?: unknown } = {};
+      try {
+        cronBody = JSON.parse(raw || "{}") as { instanceName?: unknown };
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const cronInstance =
+        typeof cronBody.instanceName === "string" ? cronBody.instanceName : null;
+      const cronBundle = cronInstance ? served.get(cronInstance) : undefined;
+      if (!cronInstance || !cronBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      try {
+        const jobs =
+          cronBundle.config.kind === "hermes"
+            ? await performHermesCronList(cronBundle.config, hermesTurns)
+            : await withOperatorConnection(
+                cronBundle.config,
+                (conn) => fetchCronJobs(conn),
+                noteHandshakeFor(cronInstance),
+              );
+        sendJson(res, 200, { ok: true, jobs });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /cron-list failed [${code}]:`,
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });

@@ -38,6 +38,7 @@ const ALL_CAPS = [
   "mediaOutbound",
   "inboundAttachments",
   "subagents",
+  "cronList",
 ] as const;
 
 /**
@@ -60,6 +61,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     mediaOutbound: true,
     inboundAttachments: false,
     subagents: true,
+    cronList: true,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -75,6 +77,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     mediaOutbound: true,
     inboundAttachments: true,
     subagents: true,
+    cronList: true,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -90,6 +93,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     mediaOutbound: true,
     inboundAttachments: true,
     subagents: true,
+    cronList: true,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
   // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
@@ -109,6 +113,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     mediaOutbound: true,
     inboundAttachments: true,
     subagents: true,
+    cronList: true,
   },
 };
 

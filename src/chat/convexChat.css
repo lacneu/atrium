@@ -3880,22 +3880,123 @@
 }
 .oc-sidebar__group { display: flex; flex-direction: column; gap: 0.125rem; }
 .oc-sidebar__group-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; gap: 0.25rem;
   padding: 0 0.375rem; height: 1.5rem;
 }
+/* The NAME owns the leftover width (left-aligned, ellipsized): the folder
+   title must stay readable — chevron sits at the very left, the reorder grip
+   and actions menu live on the right and only show on hover. */
 .oc-sidebar__group-label {
+  flex: 1; min-width: 0; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.04em; color: var(--muted-foreground);
+}
+/* Project chevron carries the folder hue — one glyph does color + accordion. */
+.oc-sidebar__group-chev {
+  color: color-mix(in srgb, var(--proj-hue) 80%, var(--muted-foreground));
 }
 .oc-sidebar__group-del { opacity: 0; color: var(--muted-foreground); cursor: pointer; background: transparent; }
 .oc-sidebar__group-head:hover .oc-sidebar__group-del { opacity: 1; }
 
-.oc-chatitem {
-  display: flex; align-items: center; gap: 0.25rem;
-  border-radius: var(--radius-md); padding: 0.125rem 0.25rem 0.125rem 0;
+/* ---- Project folder identity -------------------------------------------
+   Each project carries ONE hue (--proj-hue, chosen preset or a stable auto
+   hue). Presets read the --oc-accent-* variables below, so a charte can
+   re-theme the whole folder palette in one place, per mode. */
+:root {
+  --oc-accent-red: oklch(0.63 0.21 25);
+  --oc-accent-orange: oklch(0.7 0.17 50);
+  --oc-accent-amber: oklch(0.8 0.15 85);
+  --oc-accent-green: oklch(0.7 0.16 150);
+  --oc-accent-teal: oklch(0.7 0.12 190);
+  --oc-accent-blue: oklch(0.62 0.19 250);
+  --oc-accent-violet: oklch(0.6 0.2 300);
+  --oc-accent-pink: oklch(0.7 0.2 350);
+  /* How strongly the folder hue shows (rail / swatch halo). Kept LOW on
+     purpose — the sidebar must never compete with the conversation. */
+  --oc-project-rail-mix: 32%;
 }
-.oc-chatitem:hover { background: var(--sidebar-accent); }
+.dark {
+  /* Slightly stronger mix in dark mode: low-alpha tints sink into dark
+     surfaces faster than into light ones. */
+  --oc-project-rail-mix: 42%;
+}
+/* Open folder: a tinted rail visually TIES the project's conversations
+   together — group membership reads at a glance without pulling focus. */
+.oc-sidebar__group-body {
+  border-left: 2px solid
+    color-mix(in srgb, var(--proj-hue) var(--oc-project-rail-mix), transparent);
+  margin-left: 0.55rem;
+  padding-left: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+/* Folded-folder busy pulse: a turn is running somewhere inside. Same shape
+   family as the unread dot; the slow opacity breath says "alive" without
+   demanding a look. */
+/* In-flight marker: a thin vertical bar hugging the row's RIGHT edge that
+   gently stretches — "this chat is moving". Unread uses the SAME spot with a
+   different symbol (pinging dot, below). Both derive their tint from the
+   folder hue when inside a project, else the charte's sidebar primary; both
+   fade out on hover/focus so the kebab menu reads cleanly. */
+@keyframes oc-busy-bar {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.55; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+.oc-chatitem__busy {
+  position: absolute;
+  right: 2px;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 85%, transparent);
+  transform-origin: center;
+  animation: oc-busy-bar 1.3s ease-in-out infinite;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.oc-chatitem:hover .oc-chatitem__busy,
+.oc-chatitem:focus-within .oc-chatitem__busy,
+.oc-sidebar__group-head:hover .oc-chatitem__busy,
+.oc-sidebar__group-head:focus-within .oc-chatitem__busy { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .oc-chatitem__busy { animation: none; opacity: 0.8; }
+}
+.oc-sidebar__group-menu { flex: none; }
+
+
+.oc-chatitem {
+  position: relative; /* anchors the right-edge busy/unread markers */
+  user-select: none; -webkit-user-select: none;
+  touch-action: manipulation;
+  display: flex; align-items: center; gap: 0.25rem;
+  /* Left inset replaces the grip that used to sit there (it moved to the
+     right, hover-only, next to the actions menu — same as folder headers). */
+  border-radius: var(--radius-md); padding: 0.125rem 0.25rem 0.125rem 0.375rem;
+  /* The WHOLE row is the click target (grip + menu excepted). */
+  cursor: pointer;
+}
+/* Hover reads LIGHTER than the active row so the two states stay tellable
+   apart; both switch the text to the accent's PAIRED foreground — a chart may
+   pair a dark accent with light text (or vice versa), and keeping the resting
+   color would make the label invisible on hover. */
+.oc-chatitem:hover {
+  background: color-mix(in srgb, var(--sidebar-accent) 62%, transparent);
+}
 .oc-chatitem--active { background: var(--sidebar-accent); }
+.oc-chatitem:hover .oc-chatitem__label,
+.oc-chatitem--active .oc-chatitem__label {
+  color: var(--sidebar-accent-foreground);
+}
+.oc-chatitem--active .oc-chatitem__label { font-weight: 500; }
+.oc-chatitem:hover .oc-chatitem__age,
+.oc-chatitem--active .oc-chatitem__age,
+.oc-chatitem:hover .oc-chatitem__readonly,
+.oc-chatitem--active .oc-chatitem__readonly {
+  color: color-mix(in srgb, var(--sidebar-accent-foreground) 70%, transparent);
+}
 /* The reply ⋯ menu's datetime header — quiet context, not an action. */
 .oc-msgmenu__when {
   color: var(--muted-foreground);
@@ -3917,10 +4018,10 @@
 @keyframes oc-chatitem-flash {
   0%, 100% { background: transparent; }
   12%, 44%, 76% {
-    background: color-mix(in srgb, var(--primary) 26%, transparent);
+    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 26%, transparent);
   }
   28%, 60% {
-    background: color-mix(in srgb, var(--primary) 8%, transparent);
+    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 8%, transparent);
   }
 }
 .oc-chatitem--flash {
@@ -3929,28 +4030,60 @@
 @media (prefers-reduced-motion: reduce) {
   .oc-chatitem--flash {
     animation: none;
-    background: color-mix(in srgb, var(--primary) 18%, transparent);
+    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 18%, transparent);
   }
 }
-/* Persistent-but-subtle unread marker: a completed reply landed in this chat
-   since the user's last visit. Cleared the moment the chat is opened (the
-   read-state upsert). Static dot — the transient attention-grab is the flash
-   above; this one just lets the eye SCAN which chats have news. */
+/* Unread marker: a completed reply landed since the user's last visit —
+   SAME right-edge spot as the busy bar, DIFFERENT symbol (a dot with a soft
+   expanding ping) so "moving" vs "news waiting" read at a glance. Cleared the
+   moment the chat is opened (the read-state upsert). */
+@keyframes oc-unread-ping {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 45%, transparent);
+  }
+  70%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
 .oc-chatitem__unread {
-  flex: none;
-  width: 0.42rem;
-  height: 0.42rem;
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  margin-top: -2.5px;
+  width: 5px;
+  height: 5px;
   border-radius: 9999px;
-  background: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+  background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 90%, transparent);
+  animation: oc-unread-ping 2.4s ease-out infinite;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
-.oc-chatitem__grip {
-  display: flex; align-items: center; justify-content: center;
-  width: 1.25rem; height: 1.75rem; cursor: grab; color: var(--muted-foreground);
-  opacity: 0; background: transparent; touch-action: none;
+.oc-chatitem:hover .oc-chatitem__unread,
+.oc-chatitem:focus-within .oc-chatitem__unread,
+.oc-sidebar__group-head:hover .oc-chatitem__unread,
+.oc-sidebar__group-head:focus-within .oc-chatitem__unread { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .oc-chatitem__unread {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 18%, transparent);
+  }
 }
-.oc-chatitem:hover .oc-chatitem__grip,
-.oc-chatitem:focus-within .oc-chatitem__grip { opacity: 1; }
+/* Hidden keyboard drag activator (grab-anywhere rows have no visible grip):
+   invisible in the flow, but Tab reaches it and Space/arrows drive the
+   keyboard drag; it pops back visible on keyboard focus. */
+.oc-drag-a11y {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; border: 0; background: transparent;
+  clip-path: inset(50%);
+  overflow: hidden;
+  color: var(--muted-foreground);
+}
+.oc-drag-a11y:focus-visible {
+  position: static;
+  width: auto; height: auto;
+  clip-path: none;
+  display: inline-flex; align-items: center;
+  outline: 2px solid var(--ring); border-radius: var(--radius-sm);
+}
 .oc-chatitem__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .oc-chatitem__dot--empty { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
 .oc-chatitem__label {
@@ -3979,28 +4112,6 @@
   align-items: center;
   color: var(--muted-foreground);
 }
-.oc-chatitem__bridge {
-  flex-shrink: 0;
-  font-size: 0.62rem;
-  font-weight: 600;
-  line-height: 1;
-  padding: 0.12rem 0.32rem;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  color: var(--muted-foreground);
-  background: var(--muted);
-  border: 1px solid var(--border);
-  transition: opacity 0.12s ease;
-}
-.oc-chatitem__bridge--openclaw {
-  color: color-mix(in srgb, var(--primary) 75%, var(--foreground));
-  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
-}
-.oc-chatitem__bridge--hermes {
-  color: color-mix(in srgb, var(--chart-4, var(--primary)) 75%, var(--foreground));
-  border-color: color-mix(in srgb, var(--chart-4, var(--primary)) 30%, var(--border));
-}
-
 .oc-colorgrid {
   display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.375rem;
   padding: 0.375rem 0.5rem;
@@ -4023,6 +4134,11 @@
   padding: 0.5rem; margin: 0 0.25rem; font-size: 0.8rem;
   color: var(--muted-foreground); border: 1px dashed var(--border);
   border-radius: var(--radius-md); text-align: center;
+}
+.oc-sidebar__group-head {
+  position: relative;
+  user-select: none; -webkit-user-select: none;
+  touch-action: manipulation;
 }
 .oc-sidebar__group-head--btn {
   width: 100%; background: transparent; cursor: pointer; gap: 0.25rem;

@@ -17,7 +17,6 @@ export const UI_PREF_KEYS = [
   "showTools",
   "voiceInput",
   "showChatAge",
-  "showChatProvider",
   "showUsage",
   "autoReadAloud",
   "notifSound",
@@ -44,7 +43,6 @@ export const UI_PREF_CODE_DEFAULTS: Record<UiPrefKey, boolean> = {
   showTools: false,
   voiceInput: false, // opt-in mic; needs the admin feature gate + user consent
   showChatAge: true, // compact relative age in the sidebar (OpenWebUI-style)
-  showChatProvider: true, // bridge badge in the sidebar — self-hides unless chats span >1 provider
   // Subscription-usage gauge in the chat composer strip (the routed instance's
   // most-constrained rate window). ON by default: quota transparency is what
   // explains slowdowns/429s to the user; an admin can turn it off fleet-wide.

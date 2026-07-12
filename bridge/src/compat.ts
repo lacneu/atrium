@@ -88,6 +88,9 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   mediaOutbound: "2026.5.19",
   inboundAttachments: "2026.6.1",
   subagents: "2026.5.19",
+  // Read-only gateway scheduler listing (`cron.list`) — the Settings ▸
+  // Personal ▸ Scheduled tab. Core gateway RPC across the validated range.
+  cronList: "2026.5.19",
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -111,6 +114,8 @@ const HERMES_CAPABILITIES: Record<string, string> = {
 const HERMES_WS_CAPABILITIES: Record<string, string> = {
   ...HERMES_CAPABILITIES,
   inboundAttachments: "0.18.0",
+  // `cron.manage {action:"list"}` on the WS RPC surface (single-agent scope).
+  cronList: "0.18.0",
   // The WS event stream carries structured delegation + Mixture-of-Agents
   // activity (subagent.* / moa.*) which the bridge feeds into the sub-agent
   // monitor — so the monitor UI unlocks on this transport.

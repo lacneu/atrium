@@ -62,6 +62,26 @@ export const createProject = mutation({
   },
 });
 
+/** Move a project in the sidebar's folder order — fractional key between the
+ *  drop slot's neighbours (same model as chats.reorderChat). */
+export const reorderProject = mutation({
+  args: {
+    projectId: v.id("projects"),
+    prevKey: v.union(v.number(), v.null()),
+    nextKey: v.union(v.number(), v.null()),
+  },
+  handler: async (ctx, { projectId, prevKey, nextKey }) => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedProject(ctx, userId, projectId);
+    let key: number;
+    if (prevKey === null && nextKey === null) key = 0;
+    else if (prevKey === null) key = nextKey! - 1;
+    else if (nextKey === null) key = prevKey + 1;
+    else key = (prevKey + nextKey) / 2;
+    await ctx.db.patch(projectId, { sortKey: key });
+  },
+});
+
 export const renameProject = mutation({
   args: { projectId: v.id("projects"), name: v.string() },
   handler: async (ctx, { projectId, name }) => {
@@ -72,6 +92,34 @@ export const renameProject = mutation({
       resource: "project",
       resourceId: projectId,
     });
+  },
+});
+
+// Same preset palette as chats (see chats.CHAT_COLORS) — one vocabulary for
+// every sidebar tint so the charte can theme them together.
+const PROJECT_COLORS = [
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "teal",
+  "blue",
+  "violet",
+  "pink",
+] as const;
+const projectColorValidator = v.union(
+  ...PROJECT_COLORS.map((c) => v.literal(c)),
+  v.null(),
+);
+
+/** The project's sidebar tint (rail + header dot). null clears back to the
+ *  AUTO hue (a stable per-project hue derived client-side). */
+export const setProjectColor = mutation({
+  args: { projectId: v.id("projects"), color: projectColorValidator },
+  handler: async (ctx, { projectId, color }) => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedProject(ctx, userId, projectId);
+    await ctx.db.patch(projectId, { color: color ?? undefined });
   },
 });
 

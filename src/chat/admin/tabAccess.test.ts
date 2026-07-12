@@ -69,15 +69,16 @@ describe("visibleTabs", () => {
     expect(visibleTabs(["agents.files.read"])).not.toContain("chatDefaults");
   });
 
-  test("a plain user (chats.read only) sees the owner-scoped tabs (Files + Preferences + Apparence)", () => {
-    // Files, Preferences AND Apparence (theme) are owner-scoped and gated on the
-    // base `chats.read` permission every approved user holds, so they see all
-    // three (and land on the first, Files). Apparence is visible to all because
-    // the per-user charte graphique picker lives there (P3); its admin controls
-    // are gated INSIDE the component on me.role==="admin". Order follows TABS
-    // (files, preferences, theme). A permission-less (pending) user sees nothing.
+  test("a plain user (chats.read only) sees the owner-scoped tabs (Files + Scheduled + Preferences + Apparence)", () => {
+    // Files, Scheduled, Preferences AND Apparence (theme) are owner-scoped and
+    // gated on the base `chats.read` permission every approved user holds, so
+    // they see all four (and land on the first, Files). Apparence is visible to
+    // all because the per-user charte graphique picker lives there (P3); its
+    // admin controls are gated INSIDE the component on me.role==="admin". Order
+    // follows TABS. A permission-less (pending) user sees nothing.
     expect(visibleTabs(["chats.read"])).toEqual([
       "files",
+      "scheduled",
       "preferences",
       "theme",
     ]);

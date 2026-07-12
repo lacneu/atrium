@@ -38,6 +38,29 @@ export const myChatReads = query({
   },
 });
 
+/** The caller's chats with a turn CURRENTLY in flight. Powered by the
+ *  streamingText table — one row per active turn, created at startAssistant
+ *  (t0) and deleted at finalize, so this is reactive from "thinking" through
+ *  the last token. Feeds the sidebar's per-row and per-folder "busy" pulse.
+ *
+ *  ONE indexed range on the CALLER's userId (never a global scan, never a
+ *  probe-per-owned-chat): the rows read are exactly the caller's live turns
+ *  (typically 0–3), so a token landing for user A costs user B's sidebar
+ *  nothing, and a user with hundreds of chats doesn't fan out hundreds of
+ *  index probes on every one of their own tokens. */
+export const myBusyChats = query({
+  args: {},
+  handler: async (ctx): Promise<Id<"chats">[]> => {
+    const { userId } = await requireActive(ctx);
+    const live = await ctx.db
+      .query("streamingText")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .take(50);
+    // Dedupe defensively (one row per turn normally implies one per chat).
+    return [...new Set(live.map((r) => r.chatId))];
+  },
+});
+
 export const markChatSeen = mutation({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }): Promise<void> => {

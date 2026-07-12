@@ -29,7 +29,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "personal",
     label: () => m.settings_group_personal(),
-    tabs: ["preferences", "theme", "files"],
+    tabs: ["preferences", "theme", "files", "scheduled"],
   },
   {
     id: "agents",

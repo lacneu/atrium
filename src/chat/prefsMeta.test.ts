@@ -43,7 +43,6 @@ describe("groupAndFilterPrefs", () => {
     const groups = groupAndFilterPrefs(Object.keys(PREF_META), "laterale");
     const flat = groups.flatMap((g) => g.keys);
     expect(flat).toContain("showChatAge");
-    expect(flat).toContain("showChatProvider");
     expect(flat).not.toContain("showSource"); // a Messages-category pref
   });
 

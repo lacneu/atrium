@@ -8,6 +8,81 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.54.0] — Folders that talk back, and your agents' schedules in one place
+
+Feature release (Convex + bridge + frontend). No breaking changes; the schema
+changes are additive.
+
+- **Project folders got a real context menu.** The ⋯ menu on a sidebar folder
+  now offers Rename (dialog), a color swatch grid, and Delete (with the
+  existing chat-count confirmation) — no more dead-end folders you can't
+  rename.
+- **Each folder carries a subtle color of its own.** Every project gets a
+  stable auto-assigned tint (overridable from the menu, 8 presets); the folder
+  shows a small swatch, and when open, its conversations are tied together by
+  a thin tinted rail. Deliberately low-key: it separates folders at a glance
+  without pulling the eye. All hues are theme-pack variables (`--oc-accent-*`)
+  and tuned for both light and dark modes.
+- **A folded folder now tells you what's happening inside.** A breathing pulse
+  on the folder header means a conversation inside is generating right now; a
+  dot means a reply landed that you haven't read. Both aggregate the folder's
+  conversations and disappear when you open it (the rows then carry their own
+  signals). Individual chat rows show the same in-flight pulse.
+- **Replies no longer pop folders open.** An arrival in a conversation you
+  filed away leaves the folder folded (the aggregate dot/pulse carries the
+  signal); only "locate me" flashes — a branch you just created — may unfold
+  the section. Stale flashes now self-expire instead of firing minutes later.
+- **The whole sidebar row is clickable.** Opening a conversation no longer
+  requires hitting the title: the provider badge, the age label and the empty
+  space all navigate too (the drag handle and the ⋯ menu stay exempt), which
+  makes narrow sidebars much more forgiving.
+- **New "Library" shortcut in the sidebar** — jumps straight to Settings ▸
+  Personal ▸ Files.
+- **New Settings ▸ Personal ▸ Scheduled tab.** A read-only listing of the
+  scheduled jobs (crons) your agents run on their gateways — name, agent,
+  schedule, next run and paused/active state, grouped per gateway, on both
+  OpenClaw and Hermes. You only see the jobs of agents you are entitled to;
+  a job with no explicit agent resolves to the gateway's own default agent
+  (fail-closed when unknown). Creating or changing a job stays a chat gesture —
+  the agent's cron tool call is visible right in its reply — and the tab is
+  capability-gated, so gateways that can't list jobs say so honestly instead
+  of erroring.
+- **Sidebar busy signal is cheap by construction.** The "generating right now"
+  indicator reads one per-user index range — another user's streaming tokens
+  never cost your sidebar anything.
+- **Folders can be reordered by drag & drop — grab them anywhere.** No grip
+  needed: pick up a conversation or a folder from any point of its row (4px of
+  mouse travel starts the drag, so a plain click still opens/toggles; on touch
+  a long-press picks up, so swipes keep scrolling). While dragging, the other
+  folders slide apart to preview the drop slot and the order persists on
+  release. Dropping a chat onto a folder header files it there too; keyboard
+  reordering stays available through hidden focusable handles.
+- **Folder headers read left-to-right again.** The folder's color now lives in
+  its chevron (one glyph instead of chevron + swatch), the name starts right
+  after it with the full row width (ellipsized when long), and the reorder
+  actions menu stays on the right, hover-only. Chat rows follow the same
+  convention and read title-first from the left edge.
+- **Sidebar resizing is smooth now.** Dragging the sidebar (or the right
+  panel) edge paints the width directly per animation frame instead of
+  re-rendering the whole app per pixel — the stutter is gone; the width is
+  saved once on release.
+- **Clearer in-flight and unread language on the rows.** A conversation being
+  generated shows a thin animated bar hugging the row's right edge ("this chat
+  is moving"); an unseen reply shows a softly pinging dot in the same spot.
+  Both take the folder's tint (or the theme's primary), fade out on hover, and
+  respect reduced-motion. The new-conversation flash now derives its color
+  from the active theme/folder as well.
+- **Hover and active rows are readable on every theme.** Hovering or selecting
+  a conversation now switches its text to the theme's paired accent foreground
+  (no more white-on-white on themes with dark accents), hover reads lighter
+  than the selected row, and the default Atrium theme's row contrast was
+  raised so both states are actually visible.
+- **The per-row gateway badge is gone.** With per-turn agent routing a single
+  conversation can span gateways, so a chat-level OpenClaw/Hermes pill no
+  longer means anything — the rows (and the matching preference) were
+  simplified away.
+- **The Settings link got its icon** (matching the Library shortcut above it).
+
 ## [0.53.0] — Agents you can understand at a glance
 
 Feature release (Convex + frontend). No breaking changes; the schema change is

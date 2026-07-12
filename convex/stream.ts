@@ -155,6 +155,7 @@ export const startAssistant = internalMutation({
     await ctx.db.insert("streamingText", {
       messageId,
       chatId,
+      userId: chat.userId,
       text: "",
       updatedAt: now,
     });
@@ -269,6 +270,7 @@ export const appendDelta = internalMutation({
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
+        userId: message.userId,
         text: full,
         updatedAt: now,
         chunkSeq: 2,
@@ -356,6 +358,7 @@ export const setSnapshot = internalMutation({
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
+        userId: message.userId,
         text,
         updatedAt: now,
         chunkSeq: 2,
@@ -437,6 +440,7 @@ export const addPart = internalMutation({
         await ctx.db.insert("streamingText", {
           messageId,
           chatId: message.chatId,
+          userId: message.userId,
           text: message.liveText ?? "",
           updatedAt: Date.now(),
         });
