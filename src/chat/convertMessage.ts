@@ -8,6 +8,10 @@ import {
   isReasoningPart,
   isToolPart,
   type ProvenancePartView,
+  isCronPart,
+  type CronPartView,
+  isPlanPart,
+  type PlanPartView,
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
@@ -119,10 +123,17 @@ function safeStringify(value: unknown): string {
 
 export function convertConvexMessage(
   message: ConvexMessageView,
+  // Per-message attribution resolved by the runtime (resolveMessageAgents):
+  // an assistant message usually carries NO routed fields of its own and
+  // INHERITS the preceding user turn's agent — the cron detail panel must
+  // target THAT instance, not the chat primary.
+  resolvedAgent?: { instanceName: string; agentId: string } | null,
 ): ThreadMessageLike {
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
   const provenanceParts: ProvenancePartView[] = [];
+  const cronParts: CronPartView[] = [];
+  const planParts: PlanPartView[] = [];
   // Gateway context-compaction marker (at most one is written per turn by the
   // bridge sink; keep the FIRST defensively). Rendered by CompactionNotice —
   // always visible (it explains the agent's shortened memory + a long wait),
@@ -145,6 +156,10 @@ export function convertConvexMessage(
       toolParts.push(toolPartToActivity(message, index, p));
     } else if (p.kind === "provenance") {
       provenanceParts.push(p);
+    } else if (isCronPart(p)) {
+      cronParts.push(p);
+    } else if (isPlanPart(p)) {
+      planParts.push(p);
     } else if (isCompactionPart(p) && compaction === null) {
       compaction = { phase: p.phase, at: p.at };
     }
@@ -225,6 +240,17 @@ export function convertConvexMessage(
         // Provenance reports (what the gateway plugins fed the LLM this turn),
         // in part order — rendered by SourcesActivity as the "Sources" line.
         provenanceParts,
+        // Cron jobs the agent created/updated/removed this turn — rendered by
+        // CronActivity as the dedicated "Crons" section next to Tools/Sources.
+        cronParts,
+        // Work-plan updates (update_plan) in part order — PlanActivity renders
+        // the NEWEST as the live plan (steps + progress).
+        planParts,
+        // Which instance answered this turn (per-turn routing, INHERITED
+        // attribution included); null = the chat's primary. The cron detail
+        // panel targets THIS gateway.
+        routedInstanceName:
+          resolvedAgent?.instanceName ?? message.routedInstanceName ?? null,
         // Gateway context-compaction marker for this turn (null = none) —
         // rendered by CompactionNotice above the reply body.
         compaction,

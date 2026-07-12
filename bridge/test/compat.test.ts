@@ -39,6 +39,7 @@ const ALL_CAPS = [
   "inboundAttachments",
   "subagents",
   "cronList",
+  "cronManage",
 ] as const;
 
 /**
@@ -62,6 +63,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     inboundAttachments: false,
     subagents: true,
     cronList: true,
+    cronManage: false,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -78,6 +80,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     inboundAttachments: true,
     subagents: true,
     cronList: true,
+    cronManage: false,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -94,6 +97,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     inboundAttachments: true,
     subagents: true,
     cronList: true,
+    cronManage: false,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
   // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
@@ -114,6 +118,26 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     inboundAttachments: true,
     subagents: true,
     cronList: true,
+    cronManage: false,
+  },
+  // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
+  // surface (cron.get/update/remove/run/runs), live-verified 2026-07-12.
+  "2026.7.1": {
+    knobThinkingLevel: true,
+    knobModel: true,
+    knobFastMode: true,
+    knobUnset: true,
+    agentFiles: true,
+    sessionCompact: true,
+    configDefaults: true,
+    messageToolRecovery: true,
+    agentsDiscovery: true,
+    abort: true,
+    mediaOutbound: true,
+    inboundAttachments: true,
+    subagents: true,
+    cronList: true,
+    cronManage: true,
   },
 };
 
@@ -265,7 +289,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     "%s enables all validated capabilities + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      expect(resolved.capabilities).toEqual(MATRIX["2026.6.10"]);
+      expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
       expect(resolved.versionBeyondValidated).toBe(true);
     },
   );
@@ -278,14 +302,15 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("the VALIDATED pre-release bench (2026.7.1-beta.2) is within range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.2");
-    // beta.2 > every 2026.6.x minVersion → the full 6.10/6.11 capability row.
-    expect(resolved.capabilities).toEqual(MATRIX["2026.6.10"]);
+    // beta.2 > every 2026.6.x minVersion AND >= the cronManage floor (the
+    // bench it was validated on) → the full 7.1 capability row.
+    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
   test("the 2026.7.1 RELEASE resolves within range, no flag (prepared support)", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1");
-    expect(resolved.capabilities).toEqual(MATRIX["2026.6.10"]);
+    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 });

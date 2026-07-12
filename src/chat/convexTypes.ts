@@ -83,7 +83,34 @@ export type ConvexMessagePartView =
       phase: string;
       at: number;
     }
+  | CronPartView
+  | PlanPartView
   | ProvenancePartView;
+
+/** A work-plan update (update_plan): the newest part in a message is the
+ *  plan's current state. Rendered by PlanActivity. */
+export type PlanPartView = {
+  kind: "plan";
+  steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
+  explanation?: string;
+};
+
+/** A cron job the agent created/updated/removed this turn (bridge-parsed
+ *  snapshot of the successful `cron` tool mutation). Rendered by CronActivity
+ *  as the dedicated "Crons" section; the detail panel re-fetches the LIVE
+ *  job from the gateway (api.scheduled.getCronDetail). */
+export type CronPartView = {
+  kind: "cron";
+  op: "created" | "updated" | "removed";
+  jobId?: string;
+  name?: string;
+  enabled?: boolean;
+  schedule?: string;
+  message?: string;
+  deliveryMode?: string;
+  agentId?: string;
+  nextRunAtMs?: number;
+};
 
 /**
  * Provenance report (provenance/v1 — docs/PROVENANCE_CONTRACT.md): what a
@@ -196,6 +223,16 @@ export function isReasoningPart(
   p: ConvexMessagePartView,
 ): p is Extract<ConvexMessagePartView, { kind: "reasoning" }> {
   return p.kind === "reasoning";
+}
+
+export function isPlanPart(p: ConvexMessagePartView): p is PlanPartView {
+  return p.kind === "plan";
+}
+
+export function isCronPart(
+  p: ConvexMessagePartView,
+): p is CronPartView {
+  return p.kind === "cron";
 }
 
 export function isCompactionPart(

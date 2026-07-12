@@ -7651,3 +7651,259 @@
 @media (prefers-reduced-motion: reduce) {
   .oc-docviewer__spinner { animation-duration: 2s; }
 }
+
+/* --- Crons section (per-message) + right-panel detail ---------------------- */
+.oc-cronact__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px 22px;
+}
+.oc-cronact__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.oc-cronact__item:hover {
+  background: color-mix(in oklab, var(--accent) 60%, transparent);
+  color: var(--foreground);
+}
+.oc-cronact__item--active {
+  background: color-mix(in oklab, var(--accent) 80%, transparent);
+  color: var(--foreground);
+}
+.oc-cronact__op {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.oc-cronact__op--created {
+  color: var(--primary);
+  border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
+}
+.oc-cronact__op--removed {
+  color: var(--destructive);
+  border-color: color-mix(in oklab, var(--destructive) 40%, var(--border));
+}
+.oc-cronact__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-cronact__sched {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.75;
+  white-space: nowrap;
+  flex: none;
+}
+
+.oc-cronpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow-y: auto;
+  height: 100%;
+  min-height: 0;
+}
+.oc-cronpanel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.oc-cronpanel__title {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-cronpanel__loading,
+.oc-cronpanel__notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.oc-cronpanel__notice {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.oc-cronpanel__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12.5px;
+  margin: 0;
+}
+.oc-cronpanel__facts dt {
+  color: var(--muted-foreground);
+}
+.oc-cronpanel__facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.oc-cronpanel__mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.oc-cronpanel__message-label,
+.oc-cronpanel__runs-label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  margin-bottom: 4px;
+}
+.oc-cronpanel__message-body {
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.oc-cronpanel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.oc-cronpanel__runs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.oc-cronpanel__run {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.oc-cronpanel__run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+}
+.oc-cronpanel__run-dur {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.oc-cronpanel__run-summary {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.oc-cronpanel__run-error {
+  margin-top: 4px;
+  color: var(--destructive);
+  overflow-wrap: anywhere;
+}
+.oc-cronedit__textarea {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+/* The always-visible cron wrapper collapses entirely when the turn produced
+   no cron mutation (CronActivity renders null). */
+.oc-msg__meta--cron:empty {
+  display: none;
+}
+
+/* --- Work-plan card (update_plan) ------------------------------------------ */
+.oc-planact__steps {
+  list-style: none;
+  margin: 2px 0 4px 22px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.oc-planact__step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  line-height: 1.45;
+}
+.oc-planact__step--in_progress {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.oc-planact__step--completed .oc-planact__step-text {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, currentColor 45%, transparent);
+  opacity: 0.8;
+}
+.oc-planact__icon {
+  flex: none;
+  margin-top: 2px;
+  opacity: 0.6;
+}
+.oc-planact__icon--done {
+  color: var(--primary);
+  opacity: 1;
+}
+.oc-planact__icon--current {
+  color: var(--primary);
+  opacity: 1;
+}
+.oc-planact__bar {
+  display: inline-block;
+  width: 72px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+  overflow: hidden;
+}
+.oc-planact__bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 300ms ease;
+}
+.oc-planact__note {
+  margin: 2px 0 4px 22px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-planact__bar-fill {
+    transition: none;
+  }
+}
+.oc-cronpanel__plain {
+  display: block;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+}

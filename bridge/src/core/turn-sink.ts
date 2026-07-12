@@ -22,6 +22,8 @@
 
 import type { NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
+import { cronPartFromTool } from "./cron-part.js";
+import { planPartFromTool } from "./plan-part.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   type ProvenancePart,
@@ -541,6 +543,38 @@ export class TurnSink {
             ...(event.output !== undefined ? { output: event.output } : {}),
           };
           await this.writer.addToolPart(messageId, part);
+          // A successful cron mutation (add/update/remove) ALSO gets its own
+          // compact part so the thread renders a dedicated "Crons" section —
+          // the user must see their prompt produced/changed scheduled jobs
+          // without digging into raw tool cards. Read-only cron actions and
+          // errored calls yield null. (OpenClaw only: Hermes tool events
+          // carry no args/result to parse — its jobs still surface in
+          // Settings > Scheduled via cron.manage.)
+          {
+            const cronPart = cronPartFromTool(
+              asString(event.name),
+              asString(event.phase),
+              event.input,
+              event.output,
+            );
+            if (cronPart !== null) {
+              await this.writer.addCronPart?.(messageId, cronPart);
+            }
+          }
+          // update_plan (GPT-5-family runs): each successful call is a plan
+          // snapshot part — the thread renders the newest as the live plan
+          // and the user watches steps complete in real time.
+          {
+            const planPart = planPartFromTool(
+              asString(event.name),
+              asString(event.phase),
+              event.input,
+              event.output,
+            );
+            if (planPart !== null) {
+              await this.writer.addPlanPart?.(messageId, planPart);
+            }
+          }
           break;
         }
         case "provenance": {

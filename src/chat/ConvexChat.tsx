@@ -116,6 +116,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
+import { CronActivity, CronDetailContext, type CronDetailApi } from "./CronActivity";
+import { PlanActivity } from "./PlanActivity";
+import { CronDetailContent } from "./CronDetailPanel";
+import type { CronPartView } from "./convexTypes";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 import {
@@ -488,6 +492,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         setActiveSourcesMessageId(id);
         setActiveSubAgentKey(null);
         setActiveDoc(null);
+        setActiveCron(null);
       },
       close: () => setActiveSourcesMessageId(null),
     }),
@@ -500,6 +505,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         setActiveSubAgentKey(key);
         setActiveSourcesMessageId(null);
         setActiveDoc(null);
+        setActiveCron(null);
       },
       close: () => setActiveSubAgentKey(null),
     }),
@@ -512,14 +518,42 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         setActiveDoc(doc);
         setActiveSourcesMessageId(null);
         setActiveSubAgentKey(null);
+        setActiveCron(null);
       },
       close: () => setActiveDoc(null),
     }),
     [activeDoc],
   );
+  // 4th occupant of the shared right column: the cron DETAIL (a job the turn
+  // created/updated, opened from the message's "Crons" section).
+  const [activeCron, setActiveCron] = useState<{
+    instanceName: string;
+    jobId: string | null;
+    part: CronPartView;
+  } | null>(null);
+  useEffect(() => {
+    setActiveCron(null);
+  }, [chatId]);
+  const chatInstanceName = agentInfo?.agent?.instanceName ?? null;
+  const cronApi = useMemo<CronDetailApi>(
+    () => ({
+      active: activeCron,
+      openFor: (part, routedInstanceName) => {
+        const instanceName = routedInstanceName ?? chatInstanceName;
+        if (instanceName === null) return; // no resolvable gateway — no panel
+        setActiveCron({ instanceName, jobId: part.jobId ?? null, part });
+        setActiveSourcesMessageId(null);
+        setActiveSubAgentKey(null);
+        setActiveDoc(null);
+      },
+      close: () => setActiveCron(null),
+    }),
+    [activeCron, chatInstanceName],
+  );
   const sourcesOpen = activeSourcesMessageId !== null;
   const subAgentOpen = activeSubAgentKey !== null;
   const docViewerOpen = activeDoc !== null;
+  const cronOpen = activeCron !== null;
 
   // Per-instance voice settings for THIS chat (read-aloud language/rate/auto).
   // One query at the root; the read-aloud button, the mic and the auto-reader
@@ -575,6 +609,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
       <SubAgentPanelContext.Provider value={subAgentApi}>
+      <CronDetailContext.Provider value={cronApi}>
       <DocumentViewerContext.Provider value={docViewerApi}>
       <LightboxProvider>
         <div className="oc-chat">
@@ -599,7 +634,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           </div>
           {/* DESKTOP: integrated, resizable Sources column (conversation stays
               live on the left). MOBILE: overlay drawer below. */}
-          {(sourcesOpen || subAgentOpen || docViewerOpen) && !isMobile ? (
+          {(sourcesOpen || subAgentOpen || docViewerOpen || cronOpen) && !isMobile ? (
             <>
               <div
                 className="oc-sources-resizer"
@@ -639,7 +674,13 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                   }px`,
                 }}
               >
-                {docViewerOpen ? (
+                {cronOpen ? (
+                  <CronDetailContent
+                    instanceName={(activeCron as { instanceName: string }).instanceName}
+                    part={(activeCron as { part: CronPartView }).part}
+                    onClose={cronApi.close}
+                  />
+                ) : docViewerOpen ? (
                   <DocumentViewerContent
                     doc={activeDoc as ViewerDoc}
                     onClose={docViewerApi.close}
@@ -683,6 +724,17 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
+        {cronOpen && isMobile ? (
+          <Sheet open onOpenChange={(o) => { if (!o) cronApi.close(); }}>
+            <SheetContent side="right" className="oc-sources-panel-sheet">
+              <CronDetailContent
+                instanceName={(activeCron as { instanceName: string }).instanceName}
+                part={(activeCron as { part: CronPartView }).part}
+                onClose={cronApi.close}
+              />
+            </SheetContent>
+          </Sheet>
+        ) : null}
         {docViewerOpen && isMobile ? (
           <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
@@ -695,6 +747,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
       </LightboxProvider>
       </DocumentViewerContext.Provider>
+      </CronDetailContext.Provider>
       </SubAgentPanelContext.Provider>
       </SourcesPanelContext.Provider>
       </AssistantIdentityContext.Provider>
@@ -2634,6 +2687,14 @@ function AssistantMessage() {
               an active treatment is lost. Everything BELOW the block is purely the
               agent's returned message (text + delivered files), un-mixed; above-the-
               body also keeps streamed text in view of the bottom-following scroll. */}
+          {/* Cron mutations are ALWAYS visible (like the compaction marker):
+              the user must notice their prompt produced/changed scheduled
+              jobs even in the clean view — that's conversation-level info,
+              not tool-call detail. */}
+          <div className="oc-msg__meta oc-msg__meta--cron">
+            <PlanActivity />
+            <CronActivity />
+          </div>
           {ui.showTools ? (
             <div className="oc-msg__meta">
               <MessageSubAgents />

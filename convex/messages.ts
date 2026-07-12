@@ -88,6 +88,27 @@ type ClientPart =
   | { kind: "file"; url: string | null; storageId: string; filename: string; mimeType: string }
   // Gateway context-compaction marker (content-free: phase + timestamp).
   | { kind: "compaction"; phase: string; at: number }
+  // A work-plan update (update_plan): ordered steps + status. Bounded at
+  // write time; the newest part is the plan's current state.
+  | {
+      kind: "plan";
+      steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
+      explanation?: string;
+    }
+  // A cron job the agent created/updated/removed this turn (compact snapshot;
+  // bounded at write time by the bridge — passes through untouched).
+  | {
+      kind: "cron";
+      op: "created" | "updated" | "removed";
+      jobId?: string;
+      name?: string;
+      enabled?: boolean;
+      schedule?: string;
+      message?: string;
+      deliveryMode?: string;
+      agentId?: string;
+      nextRunAtMs?: number;
+    }
   // `text` elided when oversized (same rationale as tool fields).
   | { kind: "reasoning"; text?: string; textOmitted?: boolean; textBytes?: number }
   // Provenance reports (docs/PROVENANCE_CONTRACT.md). The REACTIVE projection
@@ -241,6 +262,16 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
                 filename: part.filename,
                 mimeType: part.mimeType,
               });
+              break;
+            }
+            case "cron": {
+              // Compact and bounded at write time (core/cron-part.ts) — ship as-is.
+              parts.push(part);
+              break;
+            }
+            case "plan": {
+              // Compact and bounded at write time (core/plan-part.ts) — ship as-is.
+              parts.push(part);
               break;
             }
             case "reasoning": {
@@ -698,6 +729,23 @@ export const chatStateInternal = internalQuery({
             // Content-free by construction (phase + timestamp): the gateway
             // compacted this turn — pairs with the chat.gateway_pressure trace.
             return { kind: "compaction" as const, phase: p.phase };
+          case "cron":
+            // Structure only: the op + presence booleans — never the job's
+            // name/message/schedule values (user content).
+            return {
+              kind: "cron" as const,
+              op: p.op,
+              hasJobId: p.jobId !== undefined,
+              hasSchedule: p.schedule !== undefined,
+            };
+          case "plan":
+            // Structure only: step counts by status — never the step texts.
+            return {
+              kind: "plan" as const,
+              stepCount: p.steps.length,
+              completedCount: p.steps.filter((s) => s.status === "completed")
+                .length,
+            };
           default:
             return { kind: "unknown" as const };
         }

@@ -8,6 +8,56 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.55.0] — Scheduled jobs managed end-to-end, and the agent's work plan live in the reply
+
+Feature release (Convex + bridge + frontend). No breaking changes; the schema
+changes are additive.
+
+- **Watch the agent's plan unfold, live.** When a model maintains a work plan
+  (the `update_plan` tool of GPT-5-family runs), the reply shows a "Plan —
+  x/y steps" card with a progress bar: steps flip from pending to in-progress
+  to completed in real time while the turn streams, each update's short
+  "what changed" note included. Always visible (even with Tools off), the
+  card folds to its one-line summary once every step is done — so the user
+  can judge the planned vs delivered work at a glance.
+
+- **When the agent creates or changes a cron, the reply shows it.** A turn
+  that created, updated or removed scheduled jobs now carries a dedicated
+  "Scheduled jobs" section in the reply — always visible, even with Tools
+  off — listing each job with its operation (Created/Updated/Removed), name
+  and schedule. Clicking one opens its LIVE detail in the right panel:
+  status, human-readable schedule, next run, agent, delivery mode and the
+  job's prompt, plus its recent run history.
+- **Act on a cron right from the chat.** The detail panel offers Run now,
+  Enable/Disable, Delete (with confirmation) and a jump to Settings >
+  Scheduled — so a mis-scheduled job can be fixed the second the user
+  notices it. A job deleted since the message still shows its message-time
+  snapshot with an honest notice.
+- **Settings > Scheduled graduates from read-only to full management.** Per
+  job: run now, pause/resume, delete, and an editor for the name, the
+  frequency (cron expression + timezone, "every N minutes/hours/days", or a
+  one-shot date) and the job's message. A per-job History dialog shows the
+  latest runs with their status, result summary, duration and errors.
+  Untouched fields are never resent (no silent truncation of long prompts or
+  sub-minute cadences); emptied required fields are refused loudly.
+- **Cron syntax, translated for humans.** Wherever a schedule shows its cron
+  expression (the detail panel, the Scheduled table), a plain-language line
+  now sits under it — "30 9 * * 3" also reads "every Wednesday at 09:30", in
+  the user's language with locale-correct day/month names and time format.
+  The raw syntax always stays; expressions beyond the common shapes simply
+  show no translation rather than a wrong one.
+- **Scheduled jobs one click away.** The sidebar gains a "Scheduled" shortcut
+  right above Library and Settings, landing on Settings > Scheduled.
+- **Honest per-provider surface, version-gated.** OpenClaw gateways get the
+  full management set (verified live against 2026.7.1); Hermes offers
+  pause/resume and delete (its real `cron.manage` surface). Older gateways
+  that can only LIST keep the read-only tab — actions never appear where the
+  gateway can't honor them. Every mutation is ownership-checked server-side
+  (the job's agent must be one of the caller's entitled agents, fail-closed)
+  and audited. Long prompts and names are never silently truncated by an
+  edit: oversized values are refused, and a prompt beyond the editor's
+  round-trip limit keeps its message editing in chat only.
+
 ## [0.54.2] — You can see the background work, and set your own text size
 
 Bug-fix and comfort release (Convex + bridge + frontend). No breaking changes;

@@ -635,6 +635,50 @@ export async function performHermesCronList(
     });
 }
 
+/** Hermes cron management via `cron.manage` — the 0.18 surface only supports
+ *  remove + pause/resume (by job name); no update/run-now/history. Returns a
+ *  discriminated result so the endpoint maps unsupported ops to a clean 501
+ *  instead of a fake success. */
+export async function performHermesCronManage(
+  cfg: BridgeConfig,
+  registry: HermesTurnRegistry,
+  body: { op: string; jobId: string; patch?: { enabled?: boolean } },
+): Promise<{ ok: true } | { ok: false; code: "unsupported" | "gateway_error"; message?: string }> {
+  const client = registry.wsClientFor(cfg);
+  const call = async (action: string): Promise<{ ok: true }> => {
+    // Contract pinned against tui_gateway 0.18.2: the RPC param is CALLED
+    // `name` but CARRIES the opaque job id — the server does
+    // `params.get("name")` and passes it straight to cronjob(job_id=...),
+    // whose remove/pause/resume resolve by id. Send the verified id here.
+    await client.call("cron.manage", { action, name: body.jobId });
+    return { ok: true };
+  };
+  try {
+    switch (body.op) {
+      case "remove":
+        return await call("remove");
+      case "update": {
+        // Only the enabled flip maps onto pause/resume; any other field is
+        // beyond the Hermes surface (fail closed, never a partial apply).
+        const patch = body.patch ?? {};
+        const keys = Object.keys(patch);
+        if (keys.length === 1 && typeof patch.enabled === "boolean") {
+          return await call(patch.enabled ? "resume" : "pause");
+        }
+        return { ok: false, code: "unsupported" };
+      }
+      default:
+        return { ok: false, code: "unsupported" };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      code: "gateway_error",
+      message: (err as Error)?.message ?? String(err),
+    };
+  }
+}
+
 export async function performHermesAgentFilesOp(
   cfg: BridgeConfig,
   registry: HermesTurnRegistry,

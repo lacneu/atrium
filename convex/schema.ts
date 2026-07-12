@@ -56,6 +56,45 @@ export const messagePart = v.union(
     kind: v.literal("reasoning"),
     text: v.string(),
   }),
+  // A work-plan update (the builtin `update_plan` tool of GPT-5-family runs):
+  // the model's ordered step list with per-step status. One part PER update —
+  // the newest part is the plan's current state, and the sequence lets the UI
+  // stream progress live. Compact + bounded at write time (core/plan-part.ts).
+  v.object({
+    kind: v.literal("plan"),
+    steps: v.array(
+      v.object({
+        step: v.string(),
+        status: v.union(
+          v.literal("pending"),
+          v.literal("in_progress"),
+          v.literal("completed"),
+        ),
+      }),
+    ),
+    explanation: v.optional(v.string()),
+  }),
+  // A gateway cron job the agent CREATED/UPDATED/REMOVED during this turn (a
+  // successful `cron` tool mutation, parsed by the bridge — core/cron-part.ts).
+  // Compact + bounded by construction: enough for the thread's "Crons" section
+  // and the right-panel detail header; the LIVE job state is re-fetched from
+  // the gateway on demand (Settings actions), never from this snapshot.
+  v.object({
+    kind: v.literal("cron"),
+    op: v.union(
+      v.literal("created"),
+      v.literal("updated"),
+      v.literal("removed"),
+    ),
+    jobId: v.optional(v.string()),
+    name: v.optional(v.string()),
+    enabled: v.optional(v.boolean()),
+    schedule: v.optional(v.string()),
+    message: v.optional(v.string()),
+    deliveryMode: v.optional(v.string()),
+    agentId: v.optional(v.string()),
+    nextRunAtMs: v.optional(v.number()),
+  }),
   // The GATEWAY compacted this session's context during the turn (older history
   // summarized to fit the model window). Provider-neutral, content-free: the
   // detection phase ("preflight" = before the model call, detected by session-id

@@ -208,14 +208,16 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   });
 
   test("a validated live version resolves its full capability row", () => {
-    const targets = buildCapabilityTargets([LIVE("2026.6.5")], "primary");
+    // 2026.7.1 = the newest fully-validated row (cronManage included; 6.5
+    // resolves everything EXCEPT cronManage, whose floor is 7.1-beta.2).
+    const targets = buildCapabilityTargets([LIVE("2026.7.1")], "primary");
     expect(targets).toHaveLength(1);
     const t = targets[0]!;
     expect(t.key).toBe("u-alice");
     expect(t.instanceName).toBe("primary");
     expect(t.provider).toBe("openclaw");
     expect(t.agentId).toBe("main");
-    expect(t.gatewayVersion).toBe("2026.6.5");
+    expect(t.gatewayVersion).toBe("2026.7.1");
     expect(Object.values(t.capabilities).every((v) => v === true)).toBe(true);
     // The flag is OMITTED (not false) within the validated range.
     expect(t).not.toHaveProperty("versionBeyondValidated");

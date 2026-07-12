@@ -59,6 +59,7 @@ import {
   Compass,
   LibraryBig,
   Settings,
+  CalendarClock,
 } from "lucide-react";
 import { api } from "./chat/convexApi";
 import type { Id } from "./chat/convexApi";
@@ -803,6 +804,14 @@ function AuthenticatedChrome({
                   onNewChat={() => void startNewChat()}
                   newChatShortcut={newChatShortcut}
                 />
+                {/* Scheduled shortcut: the user's cron jobs (Settings ▸
+                    Personal ▸ Scheduled) one click away from the chat list. */}
+                <Button variant="ghost" className="mx-2 justify-start" asChild>
+                  <Link to="/settings/$tab" params={{ tab: "scheduled" }}>
+                    <CalendarClock aria-hidden />
+                    {m.sidebar_scheduled()}
+                  </Link>
+                </Button>
                 {/* Library shortcut: the user's personal files (Settings ▸
                     Personal ▸ Files) one click away from the chat list. */}
                 <Button variant="ghost" className="mx-2 justify-start" asChild>

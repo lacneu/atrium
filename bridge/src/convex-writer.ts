@@ -42,6 +42,12 @@ export interface CompactionPart {
 
 // The provenance part shape lives in core/provenance.ts (pure contract module).
 export type { ProvenancePart } from "./core/provenance.js";
+// The cron part shape lives in core/cron-part.ts (pure contract module).
+export type { CronPart } from "./core/cron-part.js";
+import type { CronPart } from "./core/cron-part.js";
+// The plan part shape lives in core/plan-part.ts (pure contract module).
+export type { PlanPart } from "./core/plan-part.js";
+import type { PlanPart } from "./core/plan-part.js";
 
 export type FinalizeStatus = "complete" | "error" | "aborted";
 
@@ -174,6 +180,12 @@ export interface ConvexWriter {
   setSnapshot(messageId: string, text: string): Promise<void>;
   /** tool.status -> internal.stream.addPart(kind:tool). */
   addToolPart(messageId: string, part: ToolPart): Promise<void>;
+  /** A successful cron-tool mutation -> internal.stream.addPart(kind:cron).
+   *  Optional so lightweight test writers need not implement it. */
+  addCronPart?(messageId: string, part: CronPart): Promise<void>;
+  /** A successful update_plan call -> internal.stream.addPart(kind:plan).
+   *  Optional so lightweight test writers need not implement it. */
+  addPlanPart?(messageId: string, part: PlanPart): Promise<void>;
   /** context.compaction -> internal.stream.addPart(kind:compaction): the
    *  gateway summarized older context during this turn (user-facing marker). */
   addCompactionPart(messageId: string, part: CompactionPart): Promise<void>;
@@ -406,6 +418,8 @@ type IngestOp =
       messageId: string;
       part:
         | ToolPart
+        | CronPart
+        | PlanPart
         | CompactionPart
         | import("./core/provenance.js").ProvenancePart;
       runId?: string | null;
@@ -1109,6 +1123,26 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
+    await this.flushDelta(messageId);
+    await this.post({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
+  }
+
+  async addCronPart(messageId: string, part: CronPart): Promise<void> {
+    await this.flushDelta(messageId);
+    await this.post({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
+  }
+
+  async addPlanPart(messageId: string, part: PlanPart): Promise<void> {
     await this.flushDelta(messageId);
     await this.post({
       op: "addPart",

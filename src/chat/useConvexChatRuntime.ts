@@ -511,11 +511,21 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     }
   }
 
+  // Memoized SEPARATELY from the adapter: assistant-ui clears its per-message
+  // conversion cache whenever convertMessage's identity changes, so an inline
+  // lambda here would reconvert the whole thread on EVERY streamed delta
+  // (`list` changes per token; `messageAgents` only when the message SET does).
+  const convertWithAgents = useCallback(
+    (msg: ConvexMessageView) =>
+      convertConvexMessage(msg, messageAgents.get(msg._id) ?? null),
+    [messageAgents],
+  );
+
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {
     return {
       messages: list,
       isRunning,
-      convertMessage: convertConvexMessage,
+      convertMessage: convertWithAgents,
 
       // New user turn: persist to Convex; the bridge picks it up from the
       // outbox and forwards it to OpenClaw. No HTTP streaming round-trip here —

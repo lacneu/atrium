@@ -91,6 +91,14 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // Read-only gateway scheduler listing (`cron.list`) — the Settings ▸
   // Personal ▸ Scheduled tab. Core gateway RPC across the validated range.
   cronList: "2026.5.19",
+  // Scheduled-job MANAGEMENT (cron.get/update/remove/run/runs via
+  // /cron-manage). The RPC surface was verified LIVE against the
+  // 2026.7.1-beta.2 bench (param schemas extracted from that dist) — and a
+  // pre-release sorts BELOW its release in the semver-lite comparator, so
+  // the gate must name the beta or the very gateway it was proven on would
+  // read as unsupported. Older gateways name the methods but their shapes
+  // are unverified — conservative floor.
+  cronManage: "2026.7.1-beta.2",
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -116,6 +124,9 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
   inboundAttachments: "0.18.0",
   // `cron.manage {action:"list"}` on the WS RPC surface (single-agent scope).
   cronList: "0.18.0",
+  // cron.manage remove/pause/resume (by job name) — the Hermes management
+  // subset (no update/run-now/history). Verified against the 0.18.2 bench.
+  cronManage: "0.18.0",
   // The WS event stream carries structured delegation + Mixture-of-Agents
   // activity (subagent.* / moa.*) which the bridge feeds into the sub-agent
   // monitor — so the monitor UI unlocks on this transport.

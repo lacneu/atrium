@@ -50,8 +50,20 @@ import {
   performHermesReset,
   performHermesAgentFilesOp,
   performHermesCronList,
+  performHermesCronManage,
   discoverHermesAgents,
 } from "./providers/hermes/dispatch.js";
+import {
+  buildGatewayCronPatch,
+  normalizeCronJobDetail,
+  normalizeCronRunEntries,
+  parseCronManagePatch,
+  RUNS_LIMIT_MAX,
+  type CronJobDetail,
+  type CronManagePatch,
+  type CronRunEntry,
+} from "./core/cron-manage.js";
+
 import { validateSharedFs } from "./core/media-validate.js";
 import {
   gatewayHostOf,
@@ -1289,6 +1301,85 @@ async function fetchCronJobs(conn: OpenClawConnection): Promise<CronJobSummary[]
   return jobs;
 }
 
+/** OpenClaw cron management on a short-lived operator connection. `get` is
+ *  also the OWNERSHIP probe Convex runs before every mutation (the job's
+ *  agentId decides whose job it is), so its detail shape is normalized and
+ *  fail-closed on a malformed agent pin (see normalizeCronJobDetail). */
+async function performOpenClawCronManage(
+  conn: OpenClawConnection,
+  body: {
+    op: string;
+    jobId: string;
+    patch?: CronManagePatch;
+    limit?: number;
+  },
+): Promise<
+  | { ok: true; job?: CronJobDetail; entries?: CronRunEntry[]; run?: unknown }
+  | { ok: false; code: string; message?: string }
+> {
+  const id = body.jobId;
+  switch (body.op) {
+    case "get": {
+      try {
+        const res = await conn.request("cron.get", { id }, 15_000);
+        return { ok: true, job: normalizeCronJobDetail(res.payload) };
+      } catch (err) {
+        // The gateway answers a missing id with INVALID_REQUEST "...not found";
+        // surface it as a distinct code so the UI can say "this cron is gone"
+        // instead of a generic gateway error.
+        if (/not found/i.test((err as Error)?.message ?? "")) {
+          return { ok: false, code: "not_found" };
+        }
+        throw err;
+      }
+    }
+    case "runs": {
+      const limit = Math.max(
+        1,
+        Math.min(RUNS_LIMIT_MAX, Math.floor(body.limit ?? 20)),
+      );
+      const res = await conn.request("cron.runs", { id, limit }, 15_000);
+      return { ok: true, entries: normalizeCronRunEntries(res.payload) };
+    }
+    case "update": {
+      if (!body.patch) return { ok: false, code: "invalid_patch" };
+      // The message maps onto the job's CURRENT payload kind — read it first.
+      let payloadKind: string | null = null;
+      if (body.patch.message !== undefined) {
+        const cur = await conn.request("cron.get", { id }, 15_000);
+        payloadKind = normalizeCronJobDetail(cur.payload).payloadKind;
+      }
+      const patch = buildGatewayCronPatch(body.patch, payloadKind);
+      if (patch === null) return { ok: false, code: "unsupported_payload" };
+      const res = await conn.request("cron.update", { id, patch }, 15_000);
+      return { ok: true, job: normalizeCronJobDetail(res.payload) };
+    }
+    case "remove": {
+      await conn.request("cron.remove", { id }, 15_000);
+      return { ok: true };
+    }
+    case "run": {
+      const res = await conn.request("cron.run", { id, mode: "force" }, 30_000);
+      // Response shape: {ok?, ran?, runId?, reason?}. A payload-level
+      // `ok:false` is a BUSINESS failure the RPC transport still acks —
+      // surface it as ran:false so no client toasts a false "started".
+      const p = res.payload as Record<string, unknown> | undefined;
+      const payloadOk = typeof p?.ok === "boolean" ? p.ok : null;
+      const ranRaw = typeof p?.ran === "boolean" ? p.ran : null;
+      return {
+        ok: true,
+        run: {
+          ran: payloadOk === false ? false : ranRaw,
+          runId: typeof p?.runId === "string" ? p.runId.slice(0, 200) : null,
+          reason: typeof p?.reason === "string" ? p.reason.slice(0, 200) : null,
+        },
+      };
+    }
+    default:
+      return { ok: false, code: "unsupported" };
+  }
+}
+
 /**
  * Open a SHORT-LIVED operator connection for a non-chat-scoped op (same
  * pattern as `discoverAgents`): dedicated — never a registry session, so no
@@ -2077,6 +2168,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Scheduled gateway jobs (crons) for the Settings › Scheduled tab. Convex
       // owns the user→agent policy; the bridge returns the instance's raw list.
       "/cron-list",
+      // Scheduled-job management (get/runs/update/remove/run) — Convex owns
+      // the ownership decision (op:"get" probe against the user's agents).
+      "/cron-manage",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2336,6 +2430,88 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /cron-list failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/cron-manage") {
+      // Scheduled-job MANAGEMENT (get/runs/update/remove/run). The caller is
+      // Convex (shared-secret auth like every endpoint here); the OWNERSHIP
+      // decision is Convex's (it probes op:"get" first and checks the job's
+      // agent against the user's effective agents). The client patch is a
+      // CLOSED field set (parseCronManagePatch) — never a raw gateway patch,
+      // which could re-attribute the job via agentId/sessionKey.
+      let manageBody: Record<string, unknown> = {};
+      try {
+        manageBody = JSON.parse(raw || "{}") as Record<string, unknown>;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const mInstance =
+        typeof manageBody.instanceName === "string" ? manageBody.instanceName : null;
+      const mBundle = mInstance ? served.get(mInstance) : undefined;
+      const mOp = typeof manageBody.op === "string" ? manageBody.op : null;
+      const mJobId =
+        typeof manageBody.jobId === "string" && manageBody.jobId !== ""
+          ? manageBody.jobId
+          : null;
+      if (!mInstance || !mBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (!mOp || !mJobId) {
+        sendJson(res, 400, { ok: false, error: { code: "invalid_request" } });
+        return;
+      }
+      let mPatch: CronManagePatch | undefined;
+      if (mOp === "update") {
+        const parsed = parseCronManagePatch(manageBody.patch);
+        if (parsed === null) {
+          sendJson(res, 400, { ok: false, error: { code: "invalid_patch" } });
+          return;
+        }
+        mPatch = parsed;
+      }
+      try {
+        if (mBundle.config.kind === "hermes") {
+          const r = await performHermesCronManage(mBundle.config, hermesTurns, {
+            op: mOp,
+            jobId: mJobId,
+            ...(mPatch !== undefined ? { patch: mPatch } : {}),
+          });
+          if (r.ok) sendJson(res, 200, { ok: true });
+          else if (r.code === "unsupported")
+            sendJson(res, 501, { ok: false, error: { code: "unsupported" } });
+          else sendJson(res, 502, { ok: false, error: { code: r.code } });
+          return;
+        }
+        const result = await withOperatorConnection(
+          mBundle.config,
+          (conn) =>
+            performOpenClawCronManage(conn, {
+              op: mOp,
+              jobId: mJobId,
+              ...(mPatch !== undefined ? { patch: mPatch } : {}),
+              ...(typeof manageBody.limit === "number"
+                ? { limit: manageBody.limit }
+                : {}),
+            }),
+          noteHandshakeFor(mInstance),
+        );
+        if (result.ok) sendJson(res, 200, result);
+        else if (result.code === "not_found")
+          sendJson(res, 404, { ok: false, error: { code: "not_found" } });
+        else if (result.code === "unsupported" || result.code === "invalid_patch")
+          sendJson(res, 400, { ok: false, error: { code: result.code } });
+        else sendJson(res, 502, { ok: false, error: { code: result.code } });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /cron-manage failed [${code}]:`,
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });
