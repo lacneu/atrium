@@ -236,7 +236,14 @@ describe("listByChat / getStreamingText live-text split", () => {
 
     // The cheap query carries the live text, keyed by messageId for the stitch.
     const live = await as.query(api.messages.getStreamingText, { chatId });
-    expect(live).toEqual([{ messageId, text: "live tokens…" }]);
+    expect(live).toEqual([
+      {
+        messageId,
+        // Stream generation key (announce-merge reopen detection).
+        streamRowId: expect.any(String),
+        text: "live tokens…",
+      },
+    ]);
   });
 
   test("getStreamingText is owner-scoped (foreign chat throws) and empty for a malformed id", async () => {

@@ -8,6 +8,32 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.54.1] — One question, one answer: sub-agent results land in the same bubble
+
+Bug-fix and reliability release (Convex + bridge). No breaking changes; the
+schema changes are additive.
+
+- **Fixed: a delegated task no longer produces two replies.** When an agent
+  handed work to a sub-agent and finished its own turn before the sub-agent
+  was done, the sub-agent's result used to arrive as a SECOND assistant
+  message minutes later. The result announcement now REOPENS the original
+  reply and streams into it: one bubble carries the agent's acknowledgement,
+  then the real result (text and generated files), with the unread dot /
+  reply sound firing when the result actually lands. Falls back to the old
+  separate-bubble behaviour whenever merging would be wrong (the conversation
+  moved on, the original reply failed or was stopped, or another sub-agent
+  result is still streaming in).
+- **Interrupted deliveries recover.** If the bridge dies mid-result, the
+  gateway's redelivery resumes into the same bubble without duplicating text
+  or files; a redelivery of an already-delivered result is recognized and
+  ignored (no duplicate messages, parts, or storage blobs). Stopping the
+  delivery with the Stop button is final — a later redelivery won't reopen it.
+- **Stream writes are generation-checked.** Every bridge write (text deltas,
+  snapshots, tool/media parts, phase updates, finalize) now carries the run it
+  belongs to, so a late or retried write from a previous turn can never
+  corrupt a reply that was since reopened for a sub-agent result — including
+  the user's Stop, which only ever settles the turn it targeted.
+
 ## [0.54.0] — Folders that talk back, and your agents' schedules in one place
 
 Feature release (Convex + bridge + frontend). No breaking changes; the schema

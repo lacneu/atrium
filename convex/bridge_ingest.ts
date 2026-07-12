@@ -120,6 +120,7 @@ type IngestOp =
       op: "appendDelta";
       messageId: string;
       text: string;
+      runId?: string | null;
       recSessionId?: string;
       bridgeRecvAt?: number;
       bridgeSentAt?: number;
@@ -130,13 +131,19 @@ type IngestOp =
       op: "setSnapshot";
       messageId: string;
       text: string;
+      runId?: string | null;
       recSessionId?: string;
       bridgeRecvAt?: number;
       bridgeSentAt?: number;
       bridgeSkew?: number;
       sizeBytes?: number;
     }
-  | { op: "addPart"; messageId: string; part: Record<string, unknown> }
+  | {
+      op: "addPart";
+      messageId: string;
+      part: Record<string, unknown>;
+      runId?: string | null;
+    }
   // Outbound media (base64-free, no size ceiling): the bridge asks for an upload
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
   // this endpoint — the 20MB httpAction limit never applies), then persists the
@@ -148,6 +155,7 @@ type IngestOp =
       storageId: string;
       filename: string;
       mimeType: string;
+      runId?: string | null;
     }
   // SOC2-safe outbound-media DIAGNOSTIC (recorded as an `openclaw.media` trace; no
   // message part, no DB write). Structural codes only — never filename/path/bytes.
@@ -203,6 +211,7 @@ type IngestOp =
       op: "setPhase";
       messageId: string;
       phase: string;
+      runId?: string | null;
     }
   | {
       op: "finalize";
@@ -211,6 +220,7 @@ type IngestOp =
       text: string;
       error: string | null;
       errorKind?: string | null;
+      runId?: string | null;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -409,6 +419,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.appendDelta, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,
         bridgeSentAt: body.bridgeSentAt,
@@ -421,6 +432,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,
         bridgeSentAt: body.bridgeSentAt,
@@ -435,6 +447,7 @@ export const ingest = httpAction(async (ctx, request) => {
         // The bridge only sends tool/reasoning parts through `addPart`; media
         // goes through `addMedia` (needs a storage round-trip).
         part: body.part as never,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -473,6 +486,7 @@ export const ingest = httpAction(async (ctx, request) => {
           filename: body.filename,
           mimeType,
         },
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       // Read the stored object's size/type for the trace (best-effort, non-PII):
       // distinguishes "bytes landed -> a failed download is the storage URL
@@ -640,6 +654,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setPhase, {
         messageId: body.messageId as Id<"messages">,
         phase: body.phase,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       return json({ ok: true });
     }
@@ -650,6 +665,7 @@ export const ingest = httpAction(async (ctx, request) => {
         text: body.text,
         error: body.error ?? undefined,
         errorKind: body.errorKind ?? undefined,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",

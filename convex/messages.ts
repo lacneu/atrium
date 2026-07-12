@@ -557,6 +557,10 @@ export const getStreamingText = query({
       .collect();
     return rows.map((r) => ({
       messageId: r.messageId,
+      // Stream GENERATION key: an announce merge can reopen a finished message
+      // with a FRESH live row under the SAME messageId — the SSE consumer must
+      // restart on that transition, and this row id is what changes.
+      streamRowId: r._id,
       text: r.text,
       // SSE transport (Phase 4): the reactive frontier seq, so the runtime can tell a
       // REPLAYING SSE connection (its lastSeq is behind this) from one AT the frontier

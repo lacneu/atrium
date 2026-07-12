@@ -657,6 +657,17 @@ export const updateMessageRunId = internalMutation({
     if (msg.status !== "streaming") return;
     if (msg.runId) return;
     await ctx.db.patch(messageId, { runId });
+    // Keep the live row's GENERATION in lockstep (Hermes reveals its run id
+    // AFTER startAssistant seeded generation=null): the bridge tags the
+    // subsequent stream writes with the new run id, and the generation guard
+    // would otherwise reject them all against the stale null.
+    const row = await ctx.db
+      .query("streamingText")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .first();
+    if (row !== null && (row.generation === null || row.generation === undefined)) {
+      await ctx.db.patch(row._id, { generation: runId });
+    }
   },
 });
 
@@ -1477,6 +1488,12 @@ export const dispatchAbort = internalAction({
         await ctx.runMutation(internal.stream.finalize, {
           messageId: finalizeMessageId,
           status: "aborted",
+          // Generation guard: if an announce merge re-owned this message for a
+          // NEWER run while the kill was in flight, this late settle must not
+          // abort the announce stream (it targeted the OLD run only). `null`
+          // pins a runId-LESS legacy turn — a reopen always sets a runId, so
+          // the mismatch still protects the new generation.
+          expectedRunId: runId ?? null,
         });
       }
     }

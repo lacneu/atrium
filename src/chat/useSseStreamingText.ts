@@ -30,13 +30,23 @@ export function sseDevOverride(): boolean {
  */
 export function useSseStreamingText(
   streamingMessageId: string | null,
+  // Stream GENERATION key (the live row's id): a reopened message (announce
+  // merge) keeps its messageId but gets a fresh live row — without this in the
+  // effect deps, the finished previous connection's stale state would shadow
+  // the new stream until its final.
+  generationKey: string | null,
   enabled: boolean,
   // Called with a chunk's (recTimingId, seq) the moment it ARRIVES over SSE (during a
   // recording), so the delivery recorder can stamp t4 on the SSE leg. The seq lets the runtime
   // gate on the chunk being at/past the displayed frontier (skip replay). Held in a ref so a
   // changing callback identity never reconnects the stream.
   onTimingSample?: (timingId: string, seq: number) => void,
-): { text: string; lastSeq: number; messageId: string } | null {
+): {
+  text: string;
+  lastSeq: number;
+  messageId: string;
+  generationKey: string | null;
+} | null {
   const token = useAuthToken();
   const onSampleRef = useRef(onTimingSample);
   onSampleRef.current = onTimingSample;
@@ -49,6 +59,10 @@ export function useSseStreamingText(
     text: string;
     lastSeq: number;
     messageId: string;
+    // The stream GENERATION this state belongs to — a reopened message (same
+    // messageId, fresh live row) resets the effect only AFTER a render, so
+    // the runtime must be able to reject the closed generation's state.
+    generationKey: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -112,6 +126,7 @@ export function useSseStreamingText(
                 text: accum.text,
                 lastSeq: accum.lastSeq,
                 messageId: streamingMessageId,
+                generationKey,
               });
             if (accum.done) break;
           }
@@ -132,7 +147,7 @@ export function useSseStreamingText(
       cancelled = true;
       ctrl.abort();
     };
-  }, [enabled, streamingMessageId, token]);
+  }, [enabled, streamingMessageId, token, generationKey]);
 
   return state;
 }

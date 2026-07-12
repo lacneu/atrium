@@ -1047,7 +1047,29 @@ export default defineSchema({
       v.literal("assistant"),
       v.literal("system"),
     ),
-    runId: v.optional(v.string()), // OpenClaw runId for assistant turns
+    runId: v.optional(v.string()),
+    // ANNOUNCE MERGE (sub-agent result lands in the SAME bubble): when a
+    // gateway announce-run reopens this finished message, the pre-announce
+    // text is parked here so finalize can recompose `prefix + separator +
+    // announce text` (the run's final frame carries ONLY the announce text).
+    // Set on reopen, cleared by finalize. Absent on every normal turn.
+    announcePrefix: v.optional(v.string()),
+    // Every announce run already MERGED into this message (bounded), so a
+    // rebroadcast of an older announce (bridge restart) can be recognized even
+    // after a NEWER announce overwrote `runId` — without it, replaying A after
+    // merging A then B would re-append A's result.
+    mergedAnnounceRuns: v.optional(v.array(v.string())),
+    // TRANSIENT replay window: the DEADLINE (epoch ms) until which addPart
+    // dedupes media by filename (a replay re-uploads the bytes, so storageIds
+    // never match). A deadline — not a boolean — so it self-expires and an
+    // older armer's cleanup timer can never shorten a newer window; outside
+    // it, dedup stays exact so a legitimate late file with a reused name is
+    // never swallowed. Set on rebroadcast/resume, cleared on merge/expiry.
+    announceReplayArmed: v.optional(v.number()),
+    // WHICH announce run the armed window replays — the dedup must compare
+    // against THAT run's parts, not `runId` (which a newer merge may have
+    // rotated to a different announce). Set/cleared with the window.
+    announceReplayRun: v.optional(v.string()), // OpenClaw runId for assistant turns
     // MULTI-AGENT per-turn routing: which agent THIS turn was routed to — the user
     // message the user addressed to a specialist, and the assistant reply that answered
     // it. One visible thread can route different turns to different agents; these record
@@ -1120,6 +1142,11 @@ export default defineSchema({
     messageId: v.id("messages"),
     order: v.number(),
     part: messagePart,
+    // Provenance stamp for parts born during an ANNOUNCE merge (the run id).
+    // The replay dedup compares an incoming part ONLY against parts of the
+    // SAME announce run — never against the parent reply's own attachments
+    // (a same-named parent file must survive a replay). Absent elsewhere.
+    announceRun: v.optional(v.string()),
   }).index("by_message", ["messageId"]),
 
   // SUB-AGENT observation store (increment 1 of the sub-agent monitor). A chat's
@@ -1335,6 +1362,12 @@ export default defineSchema({
     // Optional: rows created mid-deploy by an older writer lack it and simply
     // don't pulse (they finalize within seconds).
     userId: v.optional(v.id("users")),
+    // The GENERATION this live row belongs to (the owning run's id, null for a
+    // runId-less legacy turn). Stream writes carrying an expectedRunId compare
+    // against it so a late/retried write from a PREVIOUS generation (the
+    // message was reopened by an announce merge) drops instead of corrupting
+    // the new stream. Absent = written by an older bridge → not enforced.
+    generation: v.optional(v.union(v.string(), v.null())),
     text: v.string(),
     updatedAt: v.number(),
     // Live PROCESSING PHASE of the in-flight turn (processing_history /

@@ -137,6 +137,30 @@ export const startAssistant = internalMutation({
       throw new Error("startAssistant: chat not found");
     }
     const now = Date.now();
+    // SUB-AGENT ANNOUNCE MERGE: a gateway announce-run delivers the result of
+    // a sub-agent whose PARENT turn already finished — as a separate run. The
+    // user asked ONE question; the answer must land in ONE bubble. When the
+    // announce correlates to a finished parent message that is still the
+    // chat's last message, REOPEN it and stream the announce into it instead
+    // of creating a second assistant message.
+    if (runId !== undefined && runId.startsWith("announce:")) {
+      const merge = await reopenParentForAnnounce(ctx, chatId, runId, now);
+      if (merge !== null) {
+        if (merge.reopened) {
+          await ctx.db.patch(chatId, { updatedAt: now });
+          await traceStream(ctx, {
+            phase: "start",
+            chatId,
+            runId,
+            messageId: merge.messageId,
+            streamStatus: "streaming",
+          });
+        }
+        // Terminal rebroadcast: hand the settled message back SILENTLY — no
+        // sidebar reorder (chat.updatedAt), no bogus streaming trace.
+        return merge.messageId;
+      }
+    }
     const messageId = await ctx.db.insert("messages", {
       chatId,
       userId: chat.userId,
@@ -156,6 +180,7 @@ export const startAssistant = internalMutation({
       messageId,
       chatId,
       userId: chat.userId,
+      generation: runId ?? null,
       text: "",
       updatedAt: now,
     });
@@ -181,6 +206,227 @@ async function streamingRow(ctx: MutationCtx, messageId: Id<"messages">) {
     .first();
 }
 
+// Separator between the parent's own reply and the announced sub-agent result
+// when the two merge into one bubble.
+const ANNOUNCE_SEP = "\n\n";
+
+// How long the filename-keyed media dedup stays armed after an announce
+// rebroadcast — long enough for the replayed frames to drain, short enough
+// that a later legitimate same-named file is never mistaken for a replay.
+const ANNOUNCE_REPLAY_WINDOW_MS = 120_000;
+
+/** Timer-scheduled FIELD CLEANUP for an expired replay window. The window
+ *  itself is the stored DEADLINE (addPart compares against now), so an older
+ *  armer's timer firing during a NEWER window is a no-op — the deadline it
+ *  sees has not passed yet. */
+export const disarmAnnounceReplay = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const message = await ctx.db.get(messageId);
+    if (
+      message === null ||
+      message.announceReplayArmed === undefined ||
+      message.announceReplayArmed > Date.now()
+    ) {
+      return;
+    }
+    await ctx.db.patch(messageId, {
+      announceReplayArmed: undefined,
+      announceReplayRun: undefined,
+    });
+  },
+});
+
+/** Resolve an announce run to the finished PARENT message it belongs to and
+ *  reopen it for streaming. Returns the parent messageId, or null when the
+ *  merge must not happen (then the caller creates a fresh message — the
+ *  pre-merge behaviour).
+ *
+ *  Join: `announce:<version>:<childSessionKey>:<childRunId>` — the
+ *  childSessionKey (which itself contains ':') is everything between the
+ *  version segment and the last segment; the subAgents table maps it to the
+ *  spawning parent message. Merge conditions (all fail CLOSED to the old
+ *  two-bubble behaviour):
+ *    - the subAgents row exists for THIS chat and carries parentMessageId;
+ *    - the parent is a COMPLETED assistant message (never error/aborted);
+ *    - the parent is still the chat's LAST message (the conversation has not
+ *      moved on — merging into an older bubble would hide the result). */
+async function reopenParentForAnnounce(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  announceRunId: string,
+  now: number,
+): Promise<{ messageId: Id<"messages">; reopened: boolean } | null> {
+  const seg = announceRunId.split(":");
+  if (seg.length < 4) return null;
+  const childSessionKey = seg.slice(2, -1).join(":");
+  if (childSessionKey === "") return null;
+  const sub = await ctx.db
+    .query("subAgents")
+    .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+    .filter((q) => q.eq(q.field("chatId"), chatId))
+    .first();
+  const parentId = sub?.parentMessageId;
+  if (parentId === undefined) return null;
+  const parent = await ctx.db.get(parentId);
+  if (parent === null || parent.chatId !== chatId || parent.role !== "assistant") {
+    return null;
+  }
+  const alreadyMerged =
+    parent.runId === announceRunId ||
+    (parent.mergedAnnounceRuns ?? []).includes(announceRunId);
+  if (
+    alreadyMerged &&
+    (parent.status === "complete" || parent.status === "aborted")
+  ) {
+    // Terminal REBROADCAST of an announce already merged (a bridge restart
+    // loses its in-memory announce dedupe) — including an OLDER announce
+    // replayed after a newer one overwrote runId: hand back the settled
+    // parent — every follow-up write no-ops on its terminal status, so the
+    // result is never appended twice. An ABORTED merge is the user's explicit
+    // stop: same silent sink, never a reopen. On a COMPLETE parent, ARM the
+    // replay window so re-uploaded media parts dedupe by filename during the
+    // replay only.
+    if (parent.status === "complete") {
+      await ctx.db.patch(parentId, {
+        announceReplayArmed: now + ANNOUNCE_REPLAY_WINDOW_MS,
+        announceReplayRun: announceRunId,
+      });
+      await ctx.scheduler.runAfter(
+        ANNOUNCE_REPLAY_WINDOW_MS,
+        internal.stream.disarmAnnounceReplay,
+        { messageId: parentId },
+      );
+    }
+    return { messageId: parentId, reopened: false };
+  }
+  if (parent.status === "streaming") {
+    // Idempotent join ONLY for the SAME run (ingest retry). An announce
+    // ALREADY consumed stays a silent sink even while a newer one is merging
+    // (its writes then fail the generation guard — nothing lands twice). Any
+    // OTHER announce falls back to its own fresh bubble (no interleaving).
+    if (parent.runId === announceRunId && parent.announcePrefix !== undefined) {
+      return { messageId: parentId, reopened: false };
+    }
+    if ((parent.mergedAnnounceRuns ?? []).includes(announceRunId)) {
+      return { messageId: parentId, reopened: false };
+    }
+    return null;
+  }
+  // Never repaint an error/abort — EXCEPT to RESUME this very announce whose
+  // merge died on an ERROR (bridge lost mid-delivery, watchdog settled the
+  // parent): blocking its rebroadcast would lose the result forever. Aborts
+  // never resume (handled above).
+  const resuming = parent.status === "error" && alreadyMerged;
+  if (parent.status !== "complete" && !resuming) return null;
+  // "Still the chat's last message" uses the LOGICAL order (effectiveOrder):
+  // a follow-up queued in the pre-ack window has an EARLIER _creationTime than
+  // the parent reply but logically comes after it — creation order would then
+  // merge the announce into a bubble the conversation already moved past.
+  // Recent creation-window scan is safe: orderTime-bearing rows are always
+  // recent (messageOrder WINDOWING INVARIANT).
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(30);
+  if (recent.length === 0) return null;
+  const last = recent.reduce((a, b) =>
+    effectiveOrder(b) > effectiveOrder(a) ? b : a,
+  );
+  if (last._id !== parentId) return null;
+  // RESUME reuses the ORIGINAL prefix preserved by the failed finalize —
+  // parent.text at this point is `original + partial announce`, and
+  // re-prefixing with THAT would duplicate the partial fragment.
+  const prefix = resuming ? (parent.announcePrefix ?? "") : parent.text;
+  await ctx.db.patch(parentId, {
+    status: "streaming",
+    // A resume must not carry the failed attempt's error metadata into the
+    // (hopefully) successful generation — convertMessage would keep exposing
+    // it on a completed message otherwise.
+    error: undefined,
+    errorCode: undefined,
+    // Re-stamped by the merge's own finalize: the reply-duration UI must
+    // reflect the merged result's arrival, not the first generation's end.
+    finalizedAt: undefined,
+    // The message now belongs to the ANNOUNCE run: an abort clicked during
+    // the merge must target this run (and a LATE terminal write from the old
+    // parent run must miss the generation check in finalize).
+    runId: announceRunId,
+    // ALWAYS parked (even empty, e.g. a media-only parent): its presence is
+    // the "reopened by the merge" marker the idempotent-retry path checks.
+    announcePrefix: prefix,
+    // Consumed-announce history (bounded) — recognizes an OLD announce's
+    // rebroadcast even after further merges rotate `runId`.
+    mergedAnnounceRuns: [
+      ...(parent.mergedAnnounceRuns ?? []),
+      announceRunId,
+    ].slice(-50),
+    // A resume re-delivers parts the failed attempt already attached — arm
+    // the filename-keyed dedup for its duration. A NORMAL merge explicitly
+    // DISARMS any leftover window from a prior rebroadcast: announce B's
+    // legitimate parts must never dedupe against A's replay rules.
+    announceReplayArmed: resuming
+      ? now + ANNOUNCE_REPLAY_WINDOW_MS
+      : undefined,
+    announceReplayRun: resuming ? announceRunId : undefined,
+    updatedAt: now,
+  });
+  if (resuming) {
+    await ctx.scheduler.runAfter(
+      ANNOUNCE_REPLAY_WINDOW_MS,
+      internal.stream.disarmAnnounceReplay,
+      { messageId: parentId },
+    );
+  }
+  // Live row seeded with the parent text so the reopened bubble never blanks
+  // (deltas append after it). Guard a stray existing row (duplicate insert).
+  const existing = await streamingRow(ctx, parentId);
+  if (existing === null) {
+    // SSE cursor MONOTONY across generations: the closed generation's chunks
+    // may still exist (their GC is async) — restarting at seq 1 would collide
+    // with them and break Last-Event-ID resume. Continue after the max.
+    const lastChunk = await ctx.db
+      .query("streamChunks")
+      .withIndex("by_message_seq", (q) => q.eq("messageId", parentId))
+      .order("desc")
+      .first();
+    const seedText = prefix !== "" ? prefix + ANNOUNCE_SEP : "";
+    let nextSeq = lastChunk !== null ? lastChunk.seq + 1 : 1;
+    if (seedText !== "") {
+      // Publish the seeded prefix as a REPLACE chunk: an SSE consumer opening
+      // on the reopened turn must start from the parent's text — an empty
+      // chunk stream would clobber the reactive prefix with "" until the
+      // first delta (or forever, for a media-only announce).
+      await ctx.db.insert("streamChunks", {
+        messageId: parentId,
+        chatId,
+        seq: nextSeq,
+        kind: "replace",
+        text: seedText,
+      });
+      nextSeq += 1;
+    }
+    await ctx.db.insert("streamingText", {
+      messageId: parentId,
+      chatId,
+      userId: parent.userId,
+      generation: announceRunId,
+      text: seedText,
+      updatedAt: now,
+      ...(lastChunk !== null || seedText !== "" ? { chunkSeq: nextSeq } : {}),
+    });
+  } else {
+    // A stray leftover row: re-own it for the announce generation, or the
+    // merge's own deltas would fail the generation guard and drop.
+    await ctx.db.patch(existing._id, {
+      generation: announceRunId,
+      updatedAt: now,
+    });
+  }
+  return { messageId: parentId, reopened: true };
+}
+
 // Append incremental text (message.delta). Writes the LIVE-TEXT ROW, not the
 // `messages` doc — so the heavy loadChatView (which reads `messages`) does NOT
 // re-run on every delta; only the cheap getStreamingText query does. `updatedAt`
@@ -197,13 +443,27 @@ const TURN_PHASES = new Set([
 ]);
 
 export const setPhase = internalMutation({
-  args: { messageId: v.id("messages"), phase: v.string() },
-  handler: async (ctx, { messageId, phase }) => {
+  args: {
+    messageId: v.id("messages"),
+    phase: v.string(),
+    // Generation guard (see appendDelta): a delayed phase write from a run
+    // that no longer owns this message must not touch (nor heartbeat) the
+    // reopened stream.
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { messageId, phase, expectedRunId }) => {
     if (!TURN_PHASES.has(phase)) return; // unknown value: ignore, never throw
     const row = await streamingRow(ctx, messageId);
     // No live row (turn not open yet, or already finished): drop — the phase is
     // a live-only hint, never worth resurrecting a row the finalize GC'd.
     if (row === null) return;
+    if (
+      expectedRunId !== undefined &&
+      row.generation !== undefined &&
+      row.generation !== expectedRunId
+    ) {
+      return;
+    }
     // Heartbeat (updatedAt) ONLY for phases that prove REAL gateway activity.
     // querying_gateway is the bridge's own doubt about a silent turn — bumping
     // the watchdog there would let a bridge death during the recovery leave the
@@ -236,12 +496,38 @@ export const appendDelta = internalMutation({
     messageId: v.id("messages"),
     text: v.string(),
     ...recArgs,
+    // Generation guard (see finalize): a late/retried delta from a run that
+    // no longer owns this message drops silently.
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { messageId, text, recSessionId, bridgeRecvAt, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+  handler: async (
+    ctx,
+    {
+      messageId,
+      text,
+      recSessionId,
+      bridgeRecvAt,
+      bridgeSentAt,
+      bridgeSkew,
+      sizeBytes,
+      expectedRunId,
+    },
+  ) => {
     const now = Date.now(); // t2: Convex received
     // Only pay the recorder point-read when the bridge actually tagged this delta.
     const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
     const row = await streamingRow(ctx, messageId);
+    // GENERATION guard on the hot path — via the live row (no extra read):
+    // a write from a run that no longer owns this message (it was reopened by
+    // an announce merge for a NEWER run) must drop, not corrupt the stream.
+    if (
+      expectedRunId !== undefined &&
+      row !== null &&
+      row.generation !== undefined &&
+      row.generation !== expectedRunId
+    ) {
+      return;
+    }
     let streamRowId: Id<"streamingText">;
     let chatId: Id<"chats">;
     let seq: number;
@@ -264,13 +550,25 @@ export const appendDelta = internalMutation({
       // again to delete it, so it would leak a phantom live row that getStreamingText
       // returns forever. Drop it — the turn is over (mirrors addPart's status guard).
       if (message.status !== "streaming") return;
+      // Generation guard (fallback path — the message read is already paid).
+      if (
+        expectedRunId !== undefined &&
+        (message.runId ?? null) !== expectedRunId
+      ) {
+        return;
+      }
       seq = 1; // 1-based: a fresh SSE cursor of 0 reads from the first chunk (seq > 0)
-      const prefix = message.liveText ?? "";
+      const prefix =
+        message.liveText ??
+        (message.announcePrefix !== undefined && message.announcePrefix !== ""
+          ? message.announcePrefix + ANNOUNCE_SEP
+          : "");
       const full = prefix + text;
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
         chatId: message.chatId,
         userId: message.userId,
+        generation: message.runId ?? null,
         text: full,
         updatedAt: now,
         chunkSeq: 2,
@@ -340,17 +638,46 @@ export const setSnapshot = internalMutation({
     messageId: v.id("messages"),
     text: v.string(),
     ...recArgs,
+    // Generation guard (see appendDelta).
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { messageId, text, recSessionId, bridgeRecvAt, bridgeSentAt, bridgeSkew, sizeBytes }) => {
+  handler: async (
+    ctx,
+    {
+      messageId,
+      text: rawText,
+      recSessionId,
+      bridgeRecvAt,
+      bridgeSentAt,
+      bridgeSkew,
+      sizeBytes,
+      expectedRunId,
+    },
+  ) => {
     const now = Date.now(); // t2: Convex received
     const rec = recSessionId !== undefined ? await activeRecording(ctx) : null;
     const row = await streamingRow(ctx, messageId);
+    // A snapshot REPLACES the live text — on a reopened (announce-merged)
+    // message that would wipe the parent's own reply from the live view, so
+    // re-prefix it. One point-read per snapshot (never per delta).
+    const message = await ctx.db.get(messageId);
+    if (message === null) throw new Error("setSnapshot: message not found");
+    // Generation guard (see appendDelta): a snapshot from a run that no
+    // longer owns this message drops silently.
+    if (
+      expectedRunId !== undefined &&
+      (message.runId ?? null) !== expectedRunId
+    ) {
+      return;
+    }
+    const text =
+      message.announcePrefix !== undefined && message.announcePrefix !== ""
+        ? message.announcePrefix + ANNOUNCE_SEP + rawText
+        : rawText;
     let streamRowId: Id<"streamingText">;
     let chatId: Id<"chats">;
     let seq: number;
     if (row === null) {
-      const message = await ctx.db.get(messageId);
-      if (message === null) throw new Error("setSnapshot: message not found");
       // See appendDelta: never recreate a row for a finished turn (no finalize will
       // delete it again) — a late snapshot for a terminal message is dropped.
       if (message.status !== "streaming") return;
@@ -359,6 +686,7 @@ export const setSnapshot = internalMutation({
         messageId,
         chatId: message.chatId,
         userId: message.userId,
+        generation: message.runId ?? null,
         text,
         updatedAt: now,
         chunkSeq: 2,
@@ -420,11 +748,31 @@ export const addPart = internalMutation({
   args: {
     messageId: v.id("messages"),
     part: messagePart,
+    // Generation guard (see appendDelta): a part from a run that no longer
+    // owns this message (an announce merge reopened it) drops silently —
+    // it would otherwise pollute the merged result and its provenance.
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { messageId, part }) => {
+  handler: async (ctx, { messageId, part, expectedRunId }) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("addPart: message not found");
+    }
+    if (
+      expectedRunId !== undefined &&
+      (message.runId ?? null) !== expectedRunId
+    ) {
+      // The bridge uploaded a media part's bytes BEFORE this call — reclaim
+      // the blob or every stale-generation retransmit leaks a billable,
+      // unreachable storage object (mirrors the dedup path below).
+      if (part.kind === "media" || part.kind === "file") {
+        try {
+          await ctx.storage.delete(part.storageId);
+        } catch {
+          // best-effort: an already-gone blob must not fail the ingest
+        }
+      }
+      return;
     }
     // Heartbeat: a turn streaming ONLY tool/media/reasoning parts (no text deltas)
     // must still refresh its live-text row, else the watchdog (which keys off that
@@ -441,6 +789,7 @@ export const addPart = internalMutation({
           messageId,
           chatId: message.chatId,
           userId: message.userId,
+          generation: message.runId ?? null,
           text: message.liveText ?? "",
           updatedAt: Date.now(),
         });
@@ -450,8 +799,70 @@ export const addPart = internalMutation({
       .query("messageParts")
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .collect();
+    // TERMINAL-message idempotence: a replayed announce run (bridge restarted,
+    // its in-memory dedupe lost) re-delivers the same tool/media parts to the
+    // settled parent. A LATE part on a terminal message is legitimate (tool
+    // results landing after the final) — but an exact duplicate of a part the
+    // message already carries is a replay: drop it, or every rebroadcast would
+    // stack visible duplicates (and re-mint files rows for media).
+    const replayArmed =
+      message.runId?.startsWith("announce:") === true &&
+      message.announceReplayArmed !== undefined &&
+      message.announceReplayArmed > Date.now();
+    if (replayArmed) {
+      // Replay dedup — ONLY inside an ARMED window (rebroadcast/error-resume,
+      // the identifiable replay scenarios) and ONLY against parts born in the
+      // SAME announce run (provenance stamp below): the parent reply's own
+      // same-named attachment must survive a replay. Media/file parts key on
+      // filename+mimeType (a replay re-uploads the bytes, so the storageId
+      // always differs); everything else on exact content. OUTSIDE a window
+      // no message ever dedupes — late parts on ordinary terminal messages
+      // (even identical ones) keep landing, the historic contract.
+      const replayRun = message.announceReplayRun ?? message.runId;
+      const sameRun = existing.filter((e) => e.announceRun === replayRun);
+      const replayKey = (pt: typeof part): string => {
+        if (pt.kind === "media" || pt.kind === "file") {
+          return JSON.stringify({
+            kind: pt.kind,
+            filename: pt.filename,
+            mimeType: pt.mimeType,
+          });
+        }
+        return JSON.stringify(pt);
+      };
+      const incoming = replayKey(part);
+      if (sameRun.some((e) => replayKey(e.part) === incoming)) {
+        // The bridge already uploaded the replayed bytes — reclaim the blob,
+        // or every rebroadcast leaks an orphaned (billable) storage object.
+        if (
+          (part.kind === "media" || part.kind === "file") &&
+          !sameRun.some(
+            (e) =>
+              (e.part.kind === "media" || e.part.kind === "file") &&
+              e.part.storageId === part.storageId,
+          )
+        ) {
+          try {
+            await ctx.storage.delete(part.storageId);
+          } catch {
+            // best-effort: an already-gone blob must not fail the ingest
+          }
+        }
+        return;
+      }
+    }
     const order = existing.length;
-    await ctx.db.insert("messageParts", { messageId, order, part });
+    const announceRun = replayArmed
+      ? (message.announceReplayRun ?? message.runId)
+      : message.runId?.startsWith("announce:") === true
+        ? message.runId
+        : undefined;
+    await ctx.db.insert("messageParts", {
+      messageId,
+      order,
+      part,
+      ...(announceRun !== undefined ? { announceRun } : {}),
+    });
     // Paired files-row write (invariant): a file/media part gets an owner-scoped
     // `files` row. addPart is append-only (no per-flush re-insert), so this never
     // duplicates. Direction from the message role; instanceName = the chat's
@@ -477,17 +888,45 @@ export const addPart = internalMutation({
 // stay within Convex transaction limits (same idiom as the recorder's purge).
 const CHUNK_GC_BATCH = 2000;
 export const deleteStreamChunksStep = internalMutation({
-  args: { messageId: v.id("messages") },
-  handler: async (ctx, { messageId }) => {
-    const batch = await ctx.db
+  args: {
+    messageId: v.id("messages"),
+    // Only delete chunks with seq BELOW this bound (the closed generation) —
+    // an announce merge can reopen the message and stream fresh chunks (whose
+    // seq continues ABOVE the closed generation's max) while this GC
+    // (scheduled by the previous finalize) is still draining. Absent = delete
+    // everything (message-deletion flows, where no reopen can follow).
+    beforeSeq: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, beforeSeq }) => {
+    const rows = await ctx.db
       .query("streamChunks")
       .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
       .take(CHUNK_GC_BATCH);
+    const batch =
+      beforeSeq !== undefined
+        ? rows.filter((c) => c.seq < beforeSeq)
+        : rows;
     for (const c of batch) await ctx.db.delete(c._id);
-    if (batch.length === CHUNK_GC_BATCH) {
-      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
-        messageId,
-      });
+    // Reschedule ONLY if eligible rows remain under the bound RIGHT NOW —
+    // never on the page arithmetic alone: after an exactly-full final page,
+    // a reopen landing between the two passes restarts seq at 1 (no old
+    // chunks left to continue after), and a blind extra pass would then eat
+    // the NEW generation's chunks.
+    if (rows.length === CHUNK_GC_BATCH && batch.length > 0) {
+      const remaining = await ctx.db
+        .query("streamChunks")
+        .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+        .first();
+      if (
+        remaining !== null &&
+        (beforeSeq === undefined || remaining.seq < beforeSeq)
+      ) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.stream.deleteStreamChunksStep,
+          { messageId, ...(beforeSeq !== undefined ? { beforeSeq } : {}) },
+        );
+      }
     }
   },
 });
@@ -551,19 +990,39 @@ export const finalize = internalMutation({
     // timeout|rate_limit|context_length) — persisted into the message's existing
     // `errorCode` field so the UI maps it to an actionable localized label.
     errorKind: v.optional(v.string()),
+    // Generation guard for LATE terminal writers (dispatchAbort's guaranteed
+    // settle): when set and the message meanwhile belongs to ANOTHER run (an
+    // announce merge reopened it), this finalize targets a run that no longer
+    // owns the bubble — skip instead of killing the newer stream. `null`
+    // means "the targeted turn had NO runId" (legacy) — still enforced.
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { messageId, status, text, error, errorKind }) => {
+  handler: async (
+    ctx,
+    { messageId, status, text, error, errorKind, expectedRunId },
+  ) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("finalize: message not found");
+    }
+    if (
+      expectedRunId !== undefined &&
+      (message.runId ?? null) !== expectedRunId
+    ) {
+      console.log(
+        "[stream] finalize skipped: message re-owned by another run (announce merge)",
+      );
+      return;
     }
     // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
     // aborted when the gateway's late chat:final loses the race — and a reply
     // that COMPLETED before the abort RPC landed stays complete (the kill's
     // guaranteed-settle finalize must not repaint a finished answer as
-    // interrupted). Same-status re-finalize stays idempotent; the first
-    // finalize already drained the queue and scheduled the GC.
-    if (message.status !== "streaming" && message.status !== status) {
+    // interrupted). A SAME-status redelivery is a full no-op too: the first
+    // finalize already wrote the text (possibly recomposed from a consumed
+    // announcePrefix — re-running would wipe the merged parent reply), drained
+    // the queue and scheduled the GC.
+    if (message.status !== "streaming") {
       console.log(
         `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
       );
@@ -577,11 +1036,28 @@ export const finalize = internalMutation({
     // a fallback for a message that was mid-stream across a deploy to this version.
     const stRow = await streamingRow(ctx, messageId);
     const streamedText = stRow?.text ?? message.liveText ?? message.text;
+    // Announce merge: the run's final frame carries ONLY the announce text —
+    // recompose behind the parked parent reply (the streamed row is already
+    // prefixed, so the fallback needs no recomposition).
     const finalText =
-      text !== undefined && text !== "" ? text : streamedText;
+      text !== undefined && text !== ""
+        ? message.announcePrefix !== undefined && message.announcePrefix !== ""
+          ? message.announcePrefix + ANNOUNCE_SEP + text
+          : text
+        : streamedText;
     await ctx.db.patch(messageId, {
       status,
       text: finalText,
+      // Consumed on success/abort; PRESERVED on error — a rebroadcast may
+      // RESUME the merge and needs the pre-merge prefix (parent.text is by
+      // then `original + partial`, unusable as a prefix).
+      ...(status !== "error"
+        ? {
+            announcePrefix: undefined,
+            announceReplayArmed: undefined,
+            announceReplayRun: undefined,
+          }
+        : {}),
       liveText: undefined, // clear the legacy live field (optional → field removed)
       ...(error !== undefined ? { error } : {}),
       // Reuses the existing stable-code field (failDispatch codes live there
@@ -613,6 +1089,13 @@ export const finalize = internalMutation({
     // — a long turn can accumulate hundreds). Off the lifecycle path; best-effort.
     await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
       messageId,
+      // Generation isolation: an announce merge may REOPEN this message right
+      // after — this GC then races the new stream and must only ever delete
+      // the CLOSED generation's chunks. Bounded by SEQ (exact by
+      // construction: the reopened generation continues AFTER the closed
+      // one's max — see the reopen's cursor-monotony seed), never by wall
+      // clock (same-millisecond writes made a time bound ambiguous).
+      beforeSeq: stRow?.chunkSeq ?? 1,
     });
     // The finalized text length — never the text itself.
     const finalLen = finalText.length;

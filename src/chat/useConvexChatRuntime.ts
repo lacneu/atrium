@@ -178,7 +178,16 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     if (seq < sseFrontierRef.current) return;
     sseSamplesRef.current.push({ timingId, t4: Date.now() });
   }, []);
-  const sse = useSseStreamingText(sseMessageId, sseEnabled, onTimingSample);
+  const sseGenerationKey =
+    streamingRows && streamingRows.length > 0
+      ? ((streamingRows[0] as { streamRowId?: string }).streamRowId ?? null)
+      : null;
+  const sse = useSseStreamingText(
+    sseMessageId,
+    sseGenerationKey,
+    sseEnabled,
+    onTimingSample,
+  );
   sseFrontierRef.current = (streamingRows?.[0]?.chunkSeq ?? 1) - 1;
   // Segment-C recorder (one owner). Transport-AGNOSTIC: it reports min(reactive, SSE) per
   // delta — the receipt the user saw first. Lives here (not ConvexChat) so it sees the SSE
@@ -419,7 +428,14 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // `sse.messageId === sseMessageId` rejects STALE state: the hook resets only after the
       // next render, so on a chat/turn/transport switch the previous message's text would
       // otherwise flash on the new one for a frame (Codex review).
-      if (sse !== null && sse.messageId === sseMessageId && id === sseMessageId) {
+      // `generationKey` additionally rejects the CLOSED generation's state on
+      // an announce-merge reopen (same messageId, fresh live row).
+      if (
+        sse !== null &&
+        sse.messageId === sseMessageId &&
+        sse.generationKey === sseGenerationKey &&
+        id === sseMessageId
+      ) {
         const reactiveFrontier = (reactive?.chunkSeq ?? 1) - 1;
         const caughtUp = sse.lastSeq >= reactiveFrontier;
         return {

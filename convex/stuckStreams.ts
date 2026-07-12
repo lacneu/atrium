@@ -169,6 +169,10 @@ export const reconcileChatStuckStreams = internalMutation({
       // SSE transport (Phase 1): GC this message's stream chunks too (finalize's GC
       // never ran for an orphaned turn). Bounded + self-scheduling; no-op if none.
       await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        // Generation cutoff (by SEQ): an announce resume may reopen this
+        // message and stream fresh chunks (continuing above this bound)
+        // before this deferred GC runs.
+        beforeSeq: row?.chunkSeq ?? 1,
         messageId: msg._id,
       });
       await writeTraceEvent(ctx, {
@@ -256,6 +260,10 @@ export const reconcileStuckStreams = internalMutation({
       if (msg === null || msg.status !== "streaming") {
         await ctx.db.delete(row._id);
         await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        // Generation cutoff (by SEQ): an announce resume may reopen this
+        // message and stream fresh chunks (continuing above this bound)
+        // before this deferred GC runs.
+        beforeSeq: row.chunkSeq ?? 1,
           messageId: row.messageId,
         });
         continue;
@@ -272,6 +280,10 @@ export const reconcileStuckStreams = internalMutation({
       await ctx.db.delete(row._id);
       // SSE transport (Phase 1): GC the reaped message's stream chunks (no finalize ran).
       await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        // Generation cutoff (by SEQ): an announce resume may reopen this
+        // message and stream fresh chunks (continuing above this bound)
+        // before this deferred GC runs.
+        beforeSeq: row.chunkSeq ?? 1,
         messageId: msg._id,
       });
       touchedChats.add(msg.chatId);

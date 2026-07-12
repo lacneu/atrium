@@ -389,8 +389,18 @@ type IngestOp =
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
-  | ({ op: "appendDelta"; messageId: string; text: string } & RecTags)
-  | ({ op: "setSnapshot"; messageId: string; text: string } & RecTags)
+  | ({
+      op: "appendDelta";
+      messageId: string;
+      text: string;
+      runId?: string | null;
+    } & RecTags)
+  | ({
+      op: "setSnapshot";
+      messageId: string;
+      text: string;
+      runId?: string | null;
+    } & RecTags)
   | {
       op: "addPart";
       messageId: string;
@@ -398,6 +408,7 @@ type IngestOp =
         | ToolPart
         | CompactionPart
         | import("./core/provenance.js").ProvenancePart;
+      runId?: string | null;
     }
   // Content-free per-turn context-pressure trace (chat.gateway_pressure):
   // pre-turn token counters + whether the gateway compacted this turn.
@@ -430,6 +441,7 @@ type IngestOp =
       storageId: string;
       filename: string;
       mimeType: string;
+      runId?: string | null;
     }
   // SOC2-safe DIAGNOSTIC for the outbound-media path (no message part created).
   // Recorded as an `openclaw.media` trace so the chain "gateway surfaced a file
@@ -457,7 +469,12 @@ type IngestOp =
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
   | ({ op: "rehydrateTrace" } & RehydrateTraceArgs)
-  | { op: "setPhase"; messageId: string; phase: string }
+  | {
+      op: "setPhase";
+      messageId: string;
+      phase: string;
+      runId?: string | null;
+    }
   | {
       op: "finalize";
       messageId: string;
@@ -465,6 +482,7 @@ type IngestOp =
       text: string;
       error: string | null;
       errorKind?: string | null;
+      runId?: string | null;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -753,7 +771,25 @@ export class HttpConvexWriter implements ConvexWriter {
 
   /** Drop a finalized message's chain + buffers so the maps stay bounded (the
    *  finalize is its last op). Idempotent. */
+  // The run each open message belongs to — attached to every stream write as
+  // its GENERATION: an announce merge can re-own a message for a new run, and
+  // a late/retried write from the previous run must then be droppable
+  // server-side instead of corrupting the new stream.
+  private runByMessage = new Map<string, string | null>();
+
+  /** Generation tag for a stream write: present ONLY while the message is
+   *  tracked. After forgetMessage (post-finalize), late writes (tool results,
+   *  media) go out UNTAGGED — the server then applies no generation guard,
+   *  the historic late-part contract. A fabricated `null` would get them all
+   *  rejected on any message that owns a runId. */
+  private genTag(messageId: string): { runId?: string | null } {
+    return this.runByMessage.has(messageId)
+      ? { runId: this.runByMessage.get(messageId) ?? null }
+      : {};
+  }
+
   private forgetMessage(messageId: string): void {
+    this.runByMessage.delete(messageId);
     const t = this.flushTimer.get(messageId);
     if (t) {
       clearTimeout(t);
@@ -812,6 +848,7 @@ export class HttpConvexWriter implements ConvexWriter {
       messageId: string;
       rec?: { recording: boolean; sessionId: string | null };
     }>({ op: "startAssistant", chatId, runId, sessionKey: sessionKey ?? null });
+    this.runByMessage.set(ack.messageId, runId);
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
     // this turn's deltas with, and trigger a one-time clock calibration. The skew is
     // NOT derived from this round-trip (startAssistant does heavy server work between
@@ -954,6 +991,7 @@ export class HttpConvexWriter implements ConvexWriter {
           op: "appendDelta",
           messageId,
           text,
+          ...this.genTag(messageId),
           ...this.recTags(messageId, text, recvAt),
         });
         // liveText now == prior + this delta. Track it so a later snapshot can be
@@ -1042,6 +1080,7 @@ export class HttpConvexWriter implements ConvexWriter {
           op: "appendDelta",
           messageId,
           text: suffix,
+          ...this.genTag(messageId),
           ...this.recTags(messageId, suffix, recvAt),
         });
       } else {
@@ -1049,6 +1088,7 @@ export class HttpConvexWriter implements ConvexWriter {
           op: "setSnapshot",
           messageId,
           text,
+          ...this.genTag(messageId),
           ...this.recTags(messageId, text, recvAt),
         });
       }
@@ -1070,7 +1110,12 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
     await this.flushDelta(messageId);
-    await this.post({ op: "addPart", messageId, part });
+    await this.post({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
   }
 
   async addCompactionPart(
@@ -1078,7 +1123,12 @@ export class HttpConvexWriter implements ConvexWriter {
     part: CompactionPart,
   ): Promise<void> {
     await this.flushDelta(messageId);
-    await this.post({ op: "addPart", messageId, part });
+    await this.post({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
   }
 
   /** See ConvexWriter.recordGatewayPressure. Rides doPost directly (off the
@@ -1099,7 +1149,12 @@ export class HttpConvexWriter implements ConvexWriter {
   }
 
   setPhase(messageId: string, phase: string): void {
-    void this.doPost({ op: "setPhase", messageId, phase }).catch(() => {
+    void this.doPost({
+      op: "setPhase",
+      messageId,
+      phase,
+      ...this.genTag(messageId),
+    }).catch(() => {
       // Best-effort hint: losing it never affects the turn.
     });
   }
@@ -1109,7 +1164,12 @@ export class HttpConvexWriter implements ConvexWriter {
     part: import("./core/provenance.js").ProvenancePart,
   ): Promise<void> {
     await this.flushDelta(messageId);
-    await this.post({ op: "addPart", messageId, part });
+    await this.post({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
   }
 
   async addMedia(
@@ -1194,6 +1254,7 @@ export class HttpConvexWriter implements ConvexWriter {
       const uploadMs = Date.now() - uploadStartMs;
       await this.post({
         op: "addMediaPart",
+        ...this.genTag(messageId),
         messageId,
         storageId,
         filename: media.filename,
@@ -1318,7 +1379,15 @@ export class HttpConvexWriter implements ConvexWriter {
     try {
       await this.flushDelta(messageId); // never strand buffered deltas behind final
       const postStart = Date.now();
-      await this.post({ op: "finalize", messageId, status, text, error, errorKind });
+      await this.post({
+        op: "finalize",
+        messageId,
+        status,
+        text,
+        error,
+        errorKind,
+        ...this.genTag(messageId),
+      });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its
       // wall-clock here vs the gateway's turn end is the end-to-end lag readout.
       console.log(
@@ -1388,12 +1457,25 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async updateRunId(messageId: string, runId: string): Promise<void> {
     // Best-effort: a missed stamp only weakens abort targeting (falls back to
-    // best-effort), never the turn itself.
-    await this.doPost({ op: "updateRunId", messageId, runId }).catch((e) =>
-      console.error(
-        "[convex-writer] updateRunId failed:",
-        (e as Error)?.message ?? e,
-      ),
+    // best-effort), never the turn itself. The LOCAL run map advances only
+    // AFTER the server acknowledged — if this POST fails, the server-side
+    // generation still holds the old value and tagging subsequent writes with
+    // the new run id would get them all rejected by the generation guard.
+    await this.doPost({ op: "updateRunId", messageId, runId }).then(
+      () => {
+        this.runByMessage.set(messageId, runId);
+      },
+      (e) => {
+        // A lost ACK proves NOTHING about the server state (the mutation may
+        // have applied): stop tagging this message's writes entirely — an
+        // untagged write bypasses the generation guard, so the turn keeps
+        // flowing whichever side of the update the server landed on.
+        this.runByMessage.delete(messageId);
+        console.error(
+          "[convex-writer] updateRunId failed (generation tagging disabled for this message):",
+          (e as Error)?.message ?? e,
+        );
+      },
     );
   }
 
