@@ -1785,6 +1785,21 @@
   flex: 1 1 12rem;
   min-width: 0;
 }
+/* Thread-level "turn still working" chip (sub-agent running / result being
+   delivered) — sits under the last bubble, aligned with assistant content,
+   quiet (muted) but unmistakably ALIVE via the shared dots animation. */
+.oc-turn-activity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem auto 0.75rem;
+  max-width: var(--thread-max-width, 44rem);
+  width: 100%;
+  padding: 0 1rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+
 /* "Réflexion…" — three dots bouncing in sequence (the typing indicator). */
 .oc-dots {
   display: inline-flex;

@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 
@@ -580,5 +580,165 @@ describe("announce merge (one bubble per delegated turn)", () => {
     // PRESERVED so a rebroadcast can resume with it.
     expect(parent?.text).toContain("La tâche est lancée.");
     expect(parent?.announcePrefix).toBe("La tâche est lancée.");
+  });
+});
+
+// Thread-level activity signal (subAgents.turnActivity) — powers the clean
+// view's spinner while a delegated turn still works after the parent settled.
+describe("subAgents.turnActivity", () => {
+  test("running child → running; done child before re-settle → delivering; after re-settle → quiet", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+
+    // Child RUNNING → running:true.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "running" as const });
+      await ctx.db.patch(chatId, { lastAssistantAt: 1000 });
+    });
+    let a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(true);
+
+    // Child DONE after the last settle → delivering (announce being composed).
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, updatedAt: 5000 });
+    });
+    a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(false);
+    expect(a.deliveringSince).toBe(5000);
+
+    // The merge settles (finalize re-stamps lastAssistantAt) → quiet.
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "Résultat.",
+    });
+    a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(false);
+    expect(a.deliveringSince).toBeNull();
+  });
+
+  test("a merge whose parent scrolled beyond the recent-message window stays quiet", async () => {
+    // The announce merged into the parent, then 11 newer messages pushed it
+    // out of the 10-message mergedRuns scan, and the child's detached
+    // terminal upsert landed AFTER the parent finalized (so the finalizedAt
+    // test alone cannot filter it). The parent's own merge history must.
+    const t = convexTest(schema, modules);
+    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "Résultat livré.",
+    });
+    await t.run(async (ctx) => {
+      const parent = (await ctx.db.get(parentId))!;
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, {
+        status: "done" as const,
+        updatedAt: (parent.finalizedAt ?? 0) + 60_000,
+      });
+      for (let i = 0; i < 11; i++) {
+        await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "assistant" as const,
+          status: "complete" as const,
+          text: `Tour ${i}`,
+          updatedAt: 10_000 + i,
+        });
+      }
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBeNull();
+  });
+
+  test("a NEWER settled turn does NOT mask a child still delivering (no chat-clock filter)", async () => {
+    // Child of turn N finishes (announce not merged yet), then the user runs
+    // turn N+1 which settles AFTER the child's terminal — lastAssistantAt is
+    // now beyond the child's updatedAt, but its result is STILL in flight.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, updatedAt: 5000 });
+      // A newer, unrelated turn settles after the child finished.
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "Autre sujet.",
+        runId: "webchat-later-run",
+        finalizedAt: 9000,
+        updatedAt: 9000,
+      });
+      await ctx.db.patch(chatId, { lastAssistantAt: 9000 });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBe(5000);
+  });
+
+  test("a long-lived child that JUST finished is not pushed out by 20 younger siblings", async () => {
+    // by_chat_status orders by _creationTime: 21 younger done children would
+    // evict the OLDEST row from a creation-ordered take(20) even though it is
+    // the freshest TERMINATION. The updatedAt-ordered index must keep it.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, updatedAt: 5000 });
+      for (let i = 0; i < 21; i++) {
+        await ctx.db.insert("subAgents", {
+          chatId,
+          childSessionKey: `agent:files:subagent:younger-${i}`,
+          status: "done" as const,
+          createdAt: 3000 + i,
+          updatedAt: 100,
+        });
+      }
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBe(5000);
+  });
+
+  test("a LATE terminal upsert after the merge settled stays quiet (write order must not matter)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    // The announce merges and settles FIRST…
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "Résultat livré.",
+    });
+    // …then the child's detached terminal upsert lands LATE (updatedAt beyond
+    // lastAssistantAt) — the reply is already on screen, no spinner.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, {
+        status: "done" as const,
+        updatedAt: Date.now() + 60_000,
+      });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(false);
+    expect(a.deliveringSince).toBeNull();
   });
 });

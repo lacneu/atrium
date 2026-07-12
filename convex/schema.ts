@@ -209,6 +209,19 @@ export default defineSchema({
     // charts.setMyChart, which rejects a key not available to the user.
     themeName: v.optional(v.string()),
 
+    // Per-user text-size preference (identity-level, like themeMode): scales the
+    // root font-size so every rem-based measure follows (reading comfort /
+    // accessibility). OPTIONAL: unset => the code default "md" (100%). No admin
+    // default — comfort is personal, there is no fleet-wide "right" size.
+    fontScale: v.optional(
+      v.union(
+        v.literal("sm"),
+        v.literal("md"),
+        v.literal("lg"),
+        v.literal("xl"),
+      ),
+    ),
+
     // Per-user UI language preference (identity-level, like themeMode). OPTIONAL:
     // unset => resolver falls back to the admin default, then BASE_LOCALE.
     // Stored as a PLAIN string: membership is validated at the setter against

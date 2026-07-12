@@ -20,6 +20,15 @@
             window.matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.classList.toggle("dark", dark);
       })();
+      // Apply the saved text-size scale before first paint (mirror of the theme
+      // script): a late size jump is as jarring as a theme flash. The map MUST
+      // match src/lib/useFontScale.FONT_SCALE_CSS; useApplyFontScale reconciles
+      // with the Convex-resolved value right after hydration.
+      (function () {
+        var s = localStorage.getItem("oc.fontScale");
+        var map = { sm: "87.5%", lg: "112.5%", xl: "125%" };
+        if (s && map[s]) document.documentElement.style.fontSize = map[s];
+      })();
       // Reflect the saved UI locale on <html lang> before first paint (a11y),
       // mirror of the theme script above. Paraglide's localStorage strategy
       // persists the locale under PARAGLIDE_LOCALE; useApplyLocale then keeps it

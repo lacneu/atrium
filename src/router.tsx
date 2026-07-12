@@ -101,6 +101,7 @@ import { ToastProvider } from "@/components/ui/toast";
 import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
 import { useApplyTheme, type ThemeMode } from "@/lib/useTheme";
+import { useApplyFontScale, type FontScale } from "@/lib/useFontScale";
 import { useApplyChart, useResolvedMode } from "@/lib/useChart";
 import {
   isMac,
@@ -205,6 +206,10 @@ type Me = {
   themeMode: ThemeMode | null;
   resolvedThemeMode: ThemeMode;
   defaultThemeMode: ThemeMode | null;
+  // Text size (user-level only, mirror of theme): raw pref + resolved scale
+  // applied to the root font-size by useApplyFontScale.
+  fontScale: FontScale | null;
+  resolvedFontScale: FontScale;
   // Charte graphique (P3): the user's raw pick + the server-resolved effective
   // key (user pick if still available, else admin default, else null = native).
   chartKey: string | null;
@@ -284,6 +289,9 @@ function SignIn() {
   // not just at first paint. The listener is cleaned up when SignIn unmounts on
   // auth, so it can never override an authenticated user's explicit theme.
   useApplyTheme(undefined);
+  // Same cache fallback for the text size: a user who enlarged the text sees
+  // the sign-in screen at their size too (comfort starts before auth).
+  useApplyFontScale(undefined);
   // Charte par domaine: brand the LOGIN (colors + logo + label) for this host. A
   // PUBLIC pre-auth query (no identity); the localStorage cache lets us apply
   // tenant tokens on the first render instead of waiting the round-trip.
@@ -464,6 +472,10 @@ function RoleGate() {
   // Apply the Convex-resolved theme (source of truth). undefined until getMe
   // loads -> the hook falls back to the localStorage cache (no flash).
   useApplyTheme(me?.resolvedThemeMode);
+
+  // Apply the Convex-resolved text-size scale (source of truth), same
+  // cache-fallback contract as the theme above.
+  useApplyFontScale(me?.resolvedFontScale);
 
   // Apply the Convex-resolved charte graphique on top of the theme mode. The
   // chart's COLOR tokens are mode-scoped, so we first resolve the (possibly

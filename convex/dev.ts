@@ -1338,6 +1338,51 @@ export const peekSessionMeta = query({
   },
 });
 
+/**
+ * Bench probe for the announce-merge + sub-agent metadata path: the chat's
+ * subAgents rows (status/task/anchor/meta) + the latest assistant message's
+ * merge state. Read-only, dev-gated, SOC2-lean (task names are bench prompts).
+ *   npx convex run dev:peekSubAgents '{"chatId":"<id>"}'
+ */
+export const peekSubAgents = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const rows = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .collect();
+    const last = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .first();
+    return {
+      subAgents: rows.map((r) => ({
+        childSessionKey: r.childSessionKey,
+        status: r.status,
+        taskName: r.taskName ?? null,
+        parentMessageId: r.parentMessageId ?? null,
+        sessionMeta: r.sessionMeta ?? null,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+      lastMessage:
+        last === null
+          ? null
+          : {
+              id: last._id,
+              role: last.role,
+              status: last.status,
+              runId: last.runId ?? null,
+              mergedAnnounceRuns: last.mergedAnnounceRuns ?? [],
+              announceReplayArmed: last.announceReplayArmed ?? null,
+              textLen: last.text.length,
+            },
+    };
+  },
+});
+
 export const reset = mutation({
   args: {},
   handler: async (ctx) => {

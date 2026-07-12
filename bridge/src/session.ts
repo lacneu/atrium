@@ -531,11 +531,37 @@ class Session implements BridgeSession {
         }
         nextFrame = iterator.next();
         this.lastActivityAt = now; // active turn (or live child) -> not idle, don't reap
+        // Capture the live message BEFORE the feed: the frame that FINALIZES a
+        // turn clears currentMessageId inside feed(), and the observer below
+        // would then see null for the turn's own final — losing the anchor an
+        // announce-spawned child's sighting backfills from (its spawn often
+        // lands before the deferred message even opened). ONLY while the turn
+        // is actually ACTIVE: after a finished turn the sink still remembers
+        // its message, and handing that stale id to the FIRST frame of a NEW
+        // deferred run would anchor its spawns to the previous bubble.
+        const preFeedMessageId =
+          this.runManager.turnActive &&
+          this.runManager.frameOwnedByActiveTurn(winner.value)
+            ? this.runManager.currentMessageId
+            : null;
         try {
           await this.runManager.feed(winner.value, now);
         } catch (err) {
           console.error("session feed error:", (err as Error)?.message ?? err);
         }
+        // POST-feed re-evaluation: a legitimately NEW runId admitted DURING
+        // feed() (lifecycle_end / compaction adoption windows) was not in
+        // ownRunIds when preFeedMessageId was computed. If that first frame
+        // is the sessions_spawn result, registering without an anchor is
+        // permanent (no spawnRunHint on tool-result registrations). preFeed
+        // still wins when set — a turn-FINAL frame deactivates the turn
+        // inside feed(), so only the pre-feed view holds its anchor.
+        const postFeedMessageId =
+          this.runManager.turnActive &&
+          this.runManager.frameOwnedByActiveTurn(winner.value)
+            ? this.runManager.currentMessageId
+            : null;
+        const observeAnchor = preFeedMessageId ?? postFeedMessageId;
         // INBOUND-ONLY sub-agent observation, INDEPENDENT of the parent turn's
         // lifecycle (runs even after runManager finalized / its sink went inactive
         // — that's the gap this closes). Errors here never affect the turn.
@@ -547,11 +573,48 @@ class Session implements BridgeSession {
             this.observer.observe(
               winner.value,
               now,
+              // NO unconditional fallback to currentMessageId here: the
+              // anchor is null precisely when this frame does NOT belong to
+              // the active turn (a stashed announce) — reading the active
+              // turn's message back would re-anchor the announce's spawns to
+              // an unrelated reply.
+              observeAnchor,
+              // CHILD-lane registration fallback (child frames are never
+              // owned by the parent turn): the last-known message — the turn
+              // that spawned the child, or post-final the settled parent.
+              // Null while a deferred announce has not opened its message.
               this.runManager.currentMessageId,
             ),
           );
         } catch (err) {
           console.error("session subagent observe error:", (err as Error)?.message ?? err);
+        }
+        // Anchor propagation for frames the observer never re-observes (a
+        // stashed announce replays INSIDE feed()): hand the turn's run ids +
+        // message anchor to the observer's run-correlated backfill. NOT gated
+        // on turnActive — a deferred announce whose first visible frame is
+        // also terminal opens AND finalizes its message inside feed(), so the
+        // anchor only becomes readable once the turn is already inactive
+        // (ownRunIds and currentMessageId both persist until the NEXT turn).
+        // Correlation stays strict by runId, so a stashed announce's parked
+        // spawns can never take another turn's anchor. No-op when nothing is
+        // parked for those runs.
+        try {
+          const anchor = this.runManager.currentMessageId;
+          if (anchor !== null) {
+            await this.flushSubAgentObserved(
+              this.observer.noteRunAnchor(
+                this.runManager.activeRunIds,
+                anchor,
+                now,
+              ),
+            );
+          }
+        } catch (err) {
+          console.error(
+            "session subagent anchor error:",
+            (err as Error)?.message ?? err,
+          );
         }
       } else {
         // timeout: resolve any expired normalizer deadline (may finalize) AND reap

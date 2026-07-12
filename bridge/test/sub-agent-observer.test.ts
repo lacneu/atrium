@@ -1286,3 +1286,239 @@ describe("SubAgentObserver — HARNESS child tools (stream:item, real captured f
     expect([...a, ...c].every((u) => u.tools === undefined)).toBe(true);
   });
 });
+
+// --- ANNOUNCE-run spawns: no tool result, item-only sighting -------------------
+// A spawn issued during a gateway ANNOUNCE run emits ONLY `stream:"item"`
+// frames (no `stream:"tool"` result carrying the childSessionKey), and the
+// child's own frames carry no `session` object — live-pinned 2026-07-12. The
+// observer must park the item sighting (task + model/agent/cleanup from its
+// meta) and let the child's LAZY registration claim it.
+describe("SubAgentObserver — child-lane anchor fallback (missed spawn result)", () => {
+  // A child frame is NEVER "owned" by the parent turn (its runId is the
+  // child's), so the strict preFeed anchor is always null for it. When the
+  // spawn result was missed AND no item sighting is claimable, the session's
+  // last-known message is the plausible parent — losing the anchor entirely
+  // would make the announce merge impossible (two bubbles forever).
+  const PARENT = "agent:alice:atrium:chat:olivier:fallbackanchor1";
+  const CHILD = "agent:files:subagent:bbbb1111-2222-3333-4444-555566667777";
+  const childStartup = () => ({
+    event: "agent",
+    payload: {
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      runId: "child-run",
+      stream: "lifecycle",
+      data: { phase: "startup" },
+    },
+  });
+
+  it("lazy registration WITHOUT a sighting takes the childAnchorFallback", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    const ups = obs.observe(childStartup(), 1000, null, "msg-last-turn");
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg?.parentMessageId).toBe("msg-last-turn");
+  });
+
+  it("AMBIGUOUS pending sightings (>1) fail closed: no fallback anchor", () => {
+    // Two spawns parked (announce run) while another turn is active: the
+    // child cannot be correlated to either sighting — anchoring it to the
+    // active turn's message could merge its result into the wrong bubble.
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    for (const id of ["call_1|fc_1", "call_2|fc_2"]) {
+      obs.observe(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: PARENT,
+            runId: "announce:v1:agent:files:subagent:prev:run7",
+            stream: "item",
+            data: {
+              name: "sessions_spawn",
+              phase: "start",
+              toolCallId: id,
+              meta: "task T., agent files",
+            },
+          },
+        },
+        1000,
+        null,
+      );
+    }
+    const ups = obs.observe(childStartup(), 1010, null, "msg-active-turn");
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    expect(reg?.parentMessageId).toBeNull();
+  });
+
+  it("a sighting's null anchor is authoritative: the fallback must NOT override it", () => {
+    // An announce-run spawn parks a NULL anchor awaiting the run-correlated
+    // backfill — anchoring it to an unrelated last message would merge the
+    // child's result into the wrong bubble.
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          runId: "announce:v1:agent:files:subagent:prev:run9",
+          stream: "item",
+          data: {
+            name: "sessions_spawn",
+            phase: "start",
+            toolCallId: "call_F|fc_F",
+            meta: "task T., agent files",
+          },
+        },
+      },
+      1000,
+      null,
+    );
+    const ups = obs.observe(childStartup(), 1010, null, "msg-unrelated-turn");
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    expect(reg?.parentMessageId).toBeNull();
+    // The run-correlated path still anchors it later.
+    const late = obs.noteRunAnchor(
+      ["announce:v1:agent:files:subagent:prev:run9"],
+      "msg-announce",
+      1020,
+    );
+    // The re-anchor persists IMMEDIATELY (a dropped connection before the
+    // next heartbeat must not lose it) and the live observation carries it.
+    expect(late).toContainEqual({
+      chatId: "chatA",
+      parentMessageId: "msg-announce",
+      childSessionKey: CHILD,
+      status: "running",
+    });
+    const done = obs.observe(
+      {
+        event: "chat",
+        payload: { sessionKey: CHILD, spawnedBy: PARENT, state: "final" },
+      },
+      1030,
+      null,
+    );
+    expect(done.find((u) => u.childSessionKey === CHILD)?.parentMessageId).toBe(
+      "msg-announce",
+    );
+  });
+});
+
+describe("SubAgentObserver — announce-run item-spawn backfill", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:announcespawn1";
+  const CHILD = "agent:files:subagent:aaaa1111-2222-3333-4444-555566667777";
+  const META =
+    "task OBJECTIF: Convertir le DOCX en PDF., agent files, model openai/gpt-5.6-sol, cleanup keep";
+
+  const itemFrame = (phase: string, toolCallId = "call_X|fc_1") => ({
+    event: "agent",
+    payload: {
+      sessionKey: PARENT,
+      runId: "announce:v1:agent:files:subagent:prev:run0",
+      stream: "item",
+      data: { name: "sessions_spawn", phase, toolCallId, meta: META },
+    },
+  });
+  const childLifecycle = () => ({
+    event: "agent",
+    payload: {
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      runId: "child-run",
+      stream: "lifecycle",
+      data: { phase: "startup" },
+    },
+  });
+
+  it("lazy registration claims the parked item sighting (task + meta seed + anchor)", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    // Spawn item lands BEFORE the deferred announce message opened (anchor null)…
+    obs.observe(itemFrame("start"), 1000, null);
+    // …then a later parent frame OF THE SAME RUN (its streamed text) knows the
+    // message → backfill (run-correlated: an unrelated run must never anchor it).
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          runId: "announce:v1:agent:files:subagent:prev:run0",
+          stream: "assistant",
+          data: {},
+        },
+      },
+      1050,
+      "msg-announce",
+    );
+    // A frame from a DIFFERENT run must NOT anchor the other sighting.
+    obs.observe(
+      {
+        event: "agent",
+        payload: { sessionKey: PARENT, runId: "webchat-unrelated", stream: "assistant", data: {} },
+      },
+      1060,
+      "msg-unrelated",
+    );
+    const ups = obs.observe(childLifecycle(), 1100, null);
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    expect(reg?.taskName).toBe("OBJECTIF: Convertir le DOCX en PDF.");
+    expect(reg?.parentMessageId).toBe("msg-announce");
+    const meta = ups.find((u) => u.sessionMeta !== undefined)?.sessionMeta;
+    expect(meta?.model).toBe("gpt-5.6-sol");
+    expect(meta?.modelProvider).toBe("openai");
+    expect(meta?.cleanup).toBe("keep");
+    expect(meta?.agentId).toBe("files");
+  });
+
+  it("a tool-result-registered spawn's item END never re-parks (no cross-claim)", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    // Normal spawn: item start → tool result (registers child1, purges sighting)
+    // → item end (must NOT re-park).
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, "msg1");
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          stream: "tool",
+          data: {
+            name: "sessions_spawn",
+            phase: "result",
+            toolCallId: "call_A|fc_A",
+            meta: "task OBJECTIF: Créer le DOCX., agent files, model openai/gpt-5.6-sol, cleanup keep",
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    status: "accepted",
+                    childSessionKey:
+                      "agent:files:subagent:bbbb1111-2222-3333-4444-555566667777",
+                  }),
+                },
+              ],
+            },
+          },
+        },
+      },
+      1100,
+      "msg1",
+    );
+    obs.observe(itemFrame("end", "call_A|fc_A"), 1200, "msg1");
+    // The announce-run child registers lazily: it must claim NOTHING from the
+    // resolved first spawn (no parked sighting left).
+    const ups = obs.observe(childLifecycle(), 1250, null);
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    expect(reg?.taskName).toBeUndefined(); // never the FIRST child's task
+  });
+
+  it("extractTaskName strips ALL trailing metadata tokens", () => {
+    expect(
+      extractTaskName(
+        "task OBJECTIF: Faire X., agent files, model openai/gpt-5.6-sol, cleanup keep",
+      ),
+    ).toBe("OBJECTIF: Faire X.");
+  });
+});

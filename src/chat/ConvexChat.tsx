@@ -920,6 +920,63 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   }) as SubAgentRow[] | undefined;
   const subAgentBusy = hasRunningSubAgent(subAgentRows ?? []);
+  // Thread-level "still working" indicator — INDEPENDENT of the Tools toggle:
+  // in the clean view the sub-agent block is hidden, so without this the user
+  // sees a settled reply and NOTHING while the sub-agent still works (or while
+  // the gateway composes the follow-up delivery). Hidden whenever a message is
+  // actively streaming (that bubble already carries its own dots).
+  const turnActivity = useQuery(api.subAgents.turnActivity, {
+    chatId: chatId as Id<"chats">,
+  }) as { running: boolean; deliveringSince: number | null } | undefined;
+  const liveRows = useQuery(api.messages.getStreamingText, { chatId }) as
+    | unknown[]
+    | undefined;
+  const anyStreaming = (liveRows?.length ?? 0) > 0;
+  // Local cap on the delivering window: a NO_REPLY announce never re-stamps
+  // the chat, so the server-side signal alone would linger forever — and it
+  // also bounds the residual write-order race (a detached terminal upsert
+  // landing after the parent settled). Announces follow a done child within
+  // seconds in practice.
+  const DELIVERING_CAP_MS = 45_000;
+  // deliveringSince is a SERVER timestamp — subtracting it from the browser
+  // clock breaks the window under clock skew (a fast client never shows the
+  // indicator; a slow one holds it far too long). Arm a purely LOCAL window
+  // when the server value appears or changes instead.
+  // The MOUNT-TIME value is a baseline that never arms the window: a NO_REPLY
+  // announce (or a never-correlated terminal row) keeps the same server value
+  // indefinitely, and arming on it would flash a stale "finalizing" for 45s on
+  // every reopen — only a CHANGE observed while subscribed is a live delivery.
+  const deliverKey = turnActivity?.deliveringSince ?? null;
+  const deliverLoaded = turnActivity !== undefined;
+  const deliverBaseline = useRef<{ chatId: string; key: number | null } | null>(
+    null,
+  );
+  const [freshDeliverKey, setFreshDeliverKey] = useState<number | null>(null);
+  useEffect(() => {
+    if (!deliverLoaded) return;
+    if (deliverBaseline.current?.chatId !== chatId) {
+      deliverBaseline.current = { chatId, key: deliverKey };
+      setFreshDeliverKey(null);
+      return;
+    }
+    if (deliverKey == null || deliverKey === deliverBaseline.current.key) {
+      if (deliverKey == null) {
+        deliverBaseline.current = { chatId, key: null };
+        setFreshDeliverKey(null);
+      }
+      return;
+    }
+    deliverBaseline.current = { chatId, key: deliverKey };
+    setFreshDeliverKey(deliverKey);
+    const t = window.setTimeout(
+      () => setFreshDeliverKey(null),
+      DELIVERING_CAP_MS,
+    );
+    return () => window.clearTimeout(t);
+  }, [deliverLoaded, deliverKey, chatId]);
+  const deliveringFresh = deliverKey != null && freshDeliverKey === deliverKey;
+  const showTurnActivity =
+    !anyStreaming && (turnActivity?.running === true || deliveringFresh);
   useFocusMessage(chatId, focusMessageId);
   return (
     <GatewayDegradedContext.Provider value={gatewayDegraded}>
@@ -941,6 +998,9 @@ function ChatThread({
             SystemMessage,
           }}
         />
+        {showTurnActivity ? (
+          <TurnActivityIndicator running={turnActivity?.running === true} />
+        ) : null}
       </ThreadPrimitive.Viewport>
       {/* Auto-hides (returns null) when the viewport is at the bottom; also
           suppressed on an empty thread (nothing to scroll to). */}
@@ -966,6 +1026,25 @@ function ChatThread({
       />
     </ThreadPrimitive.Root>
     </GatewayDegradedContext.Provider>
+  );
+}
+
+// Thread-level activity chip: a settled reply whose TURN is still working
+// (sub-agent running, or its result being composed into the follow-up
+// delivery). Same visual language as the in-bubble thinking dots; shown in
+// BOTH the clean and the analysis views.
+function TurnActivityIndicator({ running }: { running: boolean }) {
+  return (
+    <div className="oc-turn-activity" role="status">
+      <span className="oc-dots" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </span>
+      <span>
+        {running ? m.turn_subagent_working() : m.turn_result_incoming()}
+      </span>
+    </div>
   );
 }
 

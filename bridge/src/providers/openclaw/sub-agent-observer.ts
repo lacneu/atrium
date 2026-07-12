@@ -88,6 +88,11 @@ interface Observation {
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
   interactionId?: string;
+  // When this observation was registered — bounds the late re-anchor window.
+  registeredAt: number;
+  // The run that spawned this child (from its item sighting) — gates the
+  // late anchor backfill to that run's own frames.
+  spawnRunHint?: string;
 }
 
 /** Bound the registry so a misbehaving stream can't grow it without limit. */
@@ -214,6 +219,12 @@ export class SubAgentObserver {
     frame: unknown,
     now: number,
     parentMessageId?: string | null,
+    // Fallback anchor for CHILD-lane lazy registration ONLY (a child frame is
+    // never "owned" by the parent turn — its runId is the child's — so the
+    // strict parentMessageId is always null for it). The session passes its
+    // last-known message id; parent-lane sightings NEVER read this (a stashed
+    // announce's spawns must stay null until the run-correlated backfill).
+    childAnchorFallback?: string | null,
   ): SubAgentUpsert[] {
     const payload = framePayload(frame);
     if (payload === null) return [];
@@ -226,10 +237,31 @@ export class SubAgentObserver {
     // we learn a childSessionKey + (best-effort) the task name. The spawn CONFIG
     // (context/runtime/mode/cleanup/sandbox) rides on the earlier `start` frame's
     // args — cache it by toolCallId here so the `result` registration can attach it.
+    // A spawn issued BEFORE the deferred announce message opened parked a
+    // NULL anchor — ANY later parent-lane frame that knows the message
+    // backfills it (the turn's chat:final is `event:"chat"`, and in a fast
+    // run it is often the ONLY frame observed after the open ack — the
+    // agent-only block below would miss it). Late re-anchors ACCUMULATE and
+    // ride out with whatever this frame otherwise emits — an early return
+    // would swallow a same-frame second spawn (start/result) of the run.
+    const lateAnchors: SubAgentUpsert[] = [];
+    if (sessionKey === this.parentSessionKey && parentMessageId != null) {
+      // Backfill is RUN-correlated: only sightings/observations born from THIS
+      // frame's run may take its anchor — a silent spawn's stale entry must
+      // never be re-attributed to an unrelated later turn (whose announce
+      // would then merge the child's result into the wrong bubble).
+      const frameRunId = readString(payload, "runId");
+      if (frameRunId !== null) {
+        lateAnchors.push(
+          ...this.anchorBackfillForRun(frameRunId, parentMessageId, now),
+        );
+      }
+    }
     if (eventType === "agent" && sessionKey === this.parentSessionKey) {
       this.maybeCacheSpawnConfig(payload);
+      this.maybeCacheItemSpawn(payload, now, parentMessageId);
       const reg = this.tryRegisterFromSpawn(payload, now, parentMessageId);
-      if (reg !== null) return reg;
+      if (reg !== null) return [...lateAnchors, ...reg];
     }
 
     // --- Child frame admission (contamination-proof) ---------------------------
@@ -238,11 +270,11 @@ export class SubAgentObserver {
     // different spawnedBy and is not a registered key here -> never admitted.
     const isChildBySpawn = spawnedBy !== null && spawnedBy === this.parentSessionKey;
     const childKey = sessionKey;
-    if (childKey === null) return [];
+    if (childKey === null) return lateAnchors;
     // Defense-in-depth (mirrors normalizer.handleSubAgent): a child lane is NEVER
     // the parent's own lane. Guards against a malformed/future frame carrying
     // spawnedBy === sessionKey === parent from registering the parent as its own child.
-    if (childKey === this.parentSessionKey) return [];
+    if (childKey === this.parentSessionKey) return lateAnchors;
     const isKnownChild = this.observations.has(childKey);
     if (!isChildBySpawn && !isKnownChild) return [];
     // A frame for an already-reaped child (resurrection guard): ignore entirely.
@@ -251,10 +283,60 @@ export class SubAgentObserver {
     // Lazily register a child we learn about from its own frames (the spawn result
     // was missed or arrived later). Respects the cap; null = refused.
     let obs = this.observations.get(childKey);
+    let lazySeedUpsert: SubAgentUpsert[] = [];
     if (obs === undefined) {
-      const created = this.register(childKey, now, { parentMessageId });
+      // ANNOUNCE-spawn backfill: no tool result ever names this child, so the
+      // parked item-spawn sighting is the only source of its task/config/anchor.
+      // Claim ONLY on a STARTUP frame: after a reconnect (observer cleared) an
+      // OLD child still streaming registers lazily too — its mid-run frames
+      // must never claim a fresh spawn's sighting (wrong task/anchor, and the
+      // announce could merge into the wrong bubble). A freshly-spawned child
+      // always leads with its lifecycle startup.
+      const isStartupFrame =
+        typeof payload.stream === "string" &&
+        payload.stream.endsWith("lifecycle") &&
+        (readString(readField(payload, "data") ?? {}, "phase") === "startup" ||
+          readString(readField(payload, "data") ?? {}, "phase") === "start");
+      const take = isStartupFrame
+        ? this.takePendingItemSpawn(now)
+        : { claimed: null, ambiguous: false };
+      const sighting = take.claimed;
+      const created = this.register(childKey, now, {
+        ...(sighting?.taskName !== undefined
+          ? { taskName: sighting.taskName }
+          : {}),
+        // With a sighting, its anchor is authoritative AS-IS — including a
+        // deliberate null awaiting the run-correlated backfill. Falling back
+        // to the session's current message there could anchor the child to an
+        // unrelated turn that started meanwhile (and merge its announce into
+        // that wrong bubble). WITHOUT a sighting (spawn result missed, no
+        // usable item sighting) the child would stay unanchored forever —
+        // fall back to the session's last-known message, the plausible parent
+        // (the historical behaviour; a stale anchor only fail-closes the
+        // announce merge to two bubbles, never merges into a wrong one).
+        parentMessageId:
+          sighting !== null
+            ? sighting.parentMessageId
+            : take.ambiguous
+              ? null
+              : (parentMessageId ?? childAnchorFallback ?? null),
+      });
       if (created === null) return []; // cap reached -> not tracked
       obs = created;
+      if (sighting?.runId != null) obs.spawnRunHint = sighting.runId;
+      if (sighting?.seed !== undefined) {
+        obs.sessionMeta = { ...sighting.seed };
+        lazySeedUpsert = [
+          {
+            chatId: this.chatId,
+            parentMessageId: obs.parentMessageId,
+            childSessionKey: childKey,
+            status: "running",
+            ...(obs.taskName !== undefined ? { taskName: obs.taskName } : {}),
+            sessionMeta: obs.sessionMeta,
+          },
+        ];
+      }
       // Fall through so the SAME frame is interpreted (its phase/final still maps).
     }
     obs.lastFrameAt = now;
@@ -265,7 +347,7 @@ export class SubAgentObserver {
     // — NEVER per-frame, so no live-telemetry write-per-tick); else []. Prepended to
     // whatever this frame otherwise emits so the bar fills promptly without its own
     // dedicated round-trip.
-    const meta = this.captureSessionMeta(obs, payload);
+    const meta = [...lazySeedUpsert, ...this.captureSessionMeta(obs, payload)];
 
     // --- Child TERMINAL via chat state (the PRIMARY discriminator) -------------
     // final=done (the answer, the one deterministic source — the parent lane does not
@@ -751,6 +833,20 @@ export class SubAgentObserver {
     if (data === null) return null;
     if (readString(data, "name") !== "sessions_spawn") return null;
     if (readString(data, "phase") !== "result") return null;
+    // ANY terminal result — including a FAILED/refused spawn with no child —
+    // retires this call's parked item sighting: a later unrelated child must
+    // never claim a dead spawn's task/config/anchor.
+    const resultCallId = readString(data, "toolCallId");
+    if (resultCallId !== null) {
+      this.pendingItemSpawns.delete(resultCallId);
+      if (this.resolvedSpawnCalls.size >= 64) {
+        const oldestResolved = this.resolvedSpawnCalls.values().next().value;
+        if (oldestResolved !== undefined) {
+          this.resolvedSpawnCalls.delete(oldestResolved);
+        }
+      }
+      this.resolvedSpawnCalls.add(resultCallId);
+    }
     const childKey = extractChildSessionKey(readField(data, "result"));
     if (childKey === null) return null;
     const taskName = this.sanitizeTaskName(extractTaskName(readString(data, "meta")));
@@ -763,6 +859,8 @@ export class SubAgentObserver {
     if (cfg !== undefined && toolCallId !== null) {
       this.pendingSpawnConfig.delete(toolCallId);
     }
+    // (This call's parked sighting was already retired above — for every
+    // terminal result, success or failure.)
     // The spawn result also announces the RESOLVED model/provider — a fill-gaps-only
     // seed (a child session frame's effective value, when already present, wins).
     const resolved = extractSpawnResolved(readField(data, "result"));
@@ -801,6 +899,13 @@ export class SubAgentObserver {
       let changed = false;
       if (taskName !== undefined && existing.taskName === undefined) {
         existing.taskName = taskName;
+        changed = true;
+      }
+      // The ANCHOR too: a child whose own frames raced ahead registered with
+      // null (child-lane frames never carry the parent turn's message id) —
+      // this exact spawn result runs on the PARENT turn and knows it.
+      if (existing.parentMessageId === null && parentMessageId != null) {
+        existing.parentMessageId = parentMessageId;
         changed = true;
       }
       if (cfg !== undefined) {
@@ -857,6 +962,165 @@ export class SubAgentObserver {
    * the small enum config fields (context / runtime / mode / cleanup / sandbox) —
    * NEVER the `task` text (content). Bounded so a runaway parent can't grow the map.
    */
+  // Item-shaped spawn sightings (an ANNOUNCE run's sessions_spawn emits ONLY
+  // `stream:"item"` frames — no tool result, hence no childSessionKey): park
+  // their meta (task + model/agent/cleanup) + the parent message, keyed by
+  // toolCallId, so the child's LAZY registration (from its own first frame)
+  // can claim the oldest fresh one. FIFO claim is a heuristic (two concurrent
+  // announce-spawns could cross), but it only ever applies where the exact
+  // correlation (the tool result) does not exist at all.
+  // Spawn calls already resolved by their EXACT tool result — their item
+  // frames (the `end` arrives after the tool result) must never re-park a
+  // sighting a lazy registration could mis-claim. Bounded FIFO.
+  private resolvedSpawnCalls = new Set<string>();
+
+  // Children REAPED before their run's deferred message opened (a fast child
+  // can finish first): their Convex row went out anchor-less, and without this
+  // ledger the late anchor could no longer reach them — the announce merge
+  // then can't correlate and the result lands in a separate bubble.
+  private pendingAnchorBackfills = new Map<
+    string, // childSessionKey
+    { runId: string; status: SubAgentStatus; at: number }
+  >();
+
+  private pendingItemSpawns = new Map<
+    string,
+    {
+      at: number;
+      taskName?: string;
+      seed?: SubAgentSessionMeta;
+      parentMessageId: string | null;
+      // The run that emitted the spawn item — anchors backfill ONLY from that
+      // run's own later frames (a global backfill would re-attribute a
+      // silent spawn to an unrelated later turn).
+      runId: string | null;
+    }
+  >();
+
+  /** Run-correlated anchor backfill: fill the parked sightings, live
+   *  observations and reaped-ledger entries born from `runId` with the run's
+   *  message anchor, emitting late re-anchor upserts for already-reaped
+   *  children (the Convex upsert only ever FILLS a missing anchor). */
+  private anchorBackfillForRun(
+    runId: string,
+    anchor: string,
+    now: number,
+  ): SubAgentUpsert[] {
+    for (const entry of this.pendingItemSpawns.values()) {
+      if (entry.parentMessageId === null && entry.runId === runId) {
+        entry.parentMessageId = anchor;
+      }
+    }
+    const lateAnchors: SubAgentUpsert[] = [];
+    for (const o of this.observations.values()) {
+      if (
+        o.parentMessageId === null &&
+        o.spawnRunHint === runId &&
+        now - o.registeredAt < 180
+      ) {
+        o.parentMessageId = anchor;
+        // Persist the anchor NOW — the child's first upsert went out without
+        // it, and waiting for the next heartbeat/terminal loses the anchor
+        // for good if the connection drops first.
+        lateAnchors.push({
+          chatId: this.chatId,
+          parentMessageId: anchor,
+          childSessionKey: o.childSessionKey,
+          status: o.status,
+        });
+      }
+    }
+    for (const [childKey, entry] of this.pendingAnchorBackfills) {
+      if (entry.runId !== runId) continue;
+      this.pendingAnchorBackfills.delete(childKey);
+      if (now - entry.at > 180) continue;
+      lateAnchors.push({
+        chatId: this.chatId,
+        parentMessageId: anchor,
+        childSessionKey: childKey,
+        status: entry.status,
+      });
+    }
+    return lateAnchors;
+  }
+
+  /** Session-driven anchor propagation for frames the observer never
+   *  re-observes (stashed announce frames replay INSIDE RunManager.feed):
+   *  called after each feed with the ACTIVE turn's run ids + message. */
+  noteRunAnchor(
+    runIds: readonly string[],
+    anchor: string,
+    now: number,
+  ): SubAgentUpsert[] {
+    const out: SubAgentUpsert[] = [];
+    for (const rid of runIds) {
+      out.push(...this.anchorBackfillForRun(rid, anchor, now));
+    }
+    return out;
+  }
+
+  private maybeCacheItemSpawn(
+    payload: Record<string, unknown>,
+    now: number,
+    parentMessageId?: string | null,
+  ): void {
+    if (readString(payload, "stream") !== "item") return;
+    const data = readField(payload, "data");
+    if (data === null) return;
+    if (readString(data, "name") !== "sessions_spawn") return;
+    // START only: the matching `end` item arrives AFTER the tool result purged
+    // this call's sighting — re-parking it there would hand the FIRST child's
+    // task/meta to the NEXT lazily-registered child (live-pinned 2026-07-12).
+    if (readString(data, "phase") !== "start") return;
+    const toolCallId = readString(data, "toolCallId");
+    if (toolCallId === null) return;
+    if (this.resolvedSpawnCalls.has(toolCallId)) return;
+    const meta = readString(data, "meta");
+    const taskName = this.sanitizeTaskName(extractTaskName(meta));
+    const seed = extractMetaSessionSeed(meta);
+    if (taskName === undefined && seed === undefined) return;
+    if (this.pendingItemSpawns.size >= 16 && !this.pendingItemSpawns.has(toolCallId)) {
+      const oldest = this.pendingItemSpawns.keys().next().value;
+      if (oldest !== undefined) this.pendingItemSpawns.delete(oldest);
+    }
+    this.pendingItemSpawns.set(toolCallId, {
+      at: now,
+      ...(taskName !== undefined ? { taskName } : {}),
+      ...(seed !== undefined ? { seed } : {}),
+      parentMessageId: parentMessageId ?? null,
+      runId: readString(payload, "runId"),
+    });
+  }
+
+  /** Claim the item-spawn sighting for a lazy registration — ONLY when it is
+   *  UNAMBIGUOUS (exactly one fresh sighting pending). With several pending,
+   *  children may start out of spawn order and a FIFO claim would hand one
+   *  child another spawn's task/config/anchor: better unattributed than
+   *  wrong. */
+  private takePendingItemSpawn(now: number): {
+    claimed: {
+      taskName?: string;
+      seed?: SubAgentSessionMeta;
+      parentMessageId: string | null;
+      runId: string | null;
+    } | null;
+    /** Fresh sightings existed but were AMBIGUOUS (>1) — the caller must keep
+     *  a NULL anchor (fail-closed): those spawns may belong to an announce
+     *  run, and a fallback anchor would attach them to an unrelated turn. */
+    ambiguous: boolean;
+  } {
+    const TTL_S = 180; // observer clock is SECONDS (see HEARTBEAT_THROTTLE_SECONDS)
+    for (const [key, entry] of this.pendingItemSpawns) {
+      if (now - entry.at > TTL_S) this.pendingItemSpawns.delete(key);
+    }
+    if (this.pendingItemSpawns.size !== 1) {
+      return { claimed: null, ambiguous: this.pendingItemSpawns.size > 1 };
+    }
+    const [key, entry] = this.pendingItemSpawns.entries().next().value!;
+    this.pendingItemSpawns.delete(key);
+    return { claimed: entry, ambiguous: false };
+  }
+
   private maybeCacheSpawnConfig(payload: Record<string, unknown>): void {
     if (readString(payload, "stream") !== "tool") return;
     const data = readField(payload, "data");
@@ -911,6 +1175,7 @@ export class SubAgentObserver {
       childSessionKey: childKey,
       taskName: extra.taskName,
       parentMessageId: extra.parentMessageId ?? null,
+      registeredAt: now,
       status: "running",
       lastFrameAt: now,
       // Seed the heartbeat clock at registration: the spawn-registration path emits a
@@ -968,6 +1233,24 @@ export class SubAgentObserver {
   }
 
   private reap(childKey: string, finalStatus: SubAgentStatus): void {
+    const reaped = this.observations.get(childKey);
+    if (
+      reaped !== undefined &&
+      reaped.parentMessageId === null &&
+      reaped.spawnRunHint !== undefined
+    ) {
+      // Anchor-less at reap: park it for the run's late anchor (see the
+      // pendingAnchorBackfills field comment).
+      if (this.pendingAnchorBackfills.size >= 16) {
+        const oldest = this.pendingAnchorBackfills.keys().next().value;
+        if (oldest !== undefined) this.pendingAnchorBackfills.delete(oldest);
+      }
+      this.pendingAnchorBackfills.set(childKey, {
+        runId: reaped.spawnRunHint,
+        status: finalStatus,
+        at: reaped.lastFrameAt,
+      });
+    }
     this.observations.delete(childKey);
     this.recentlyFinal.set(childKey, finalStatus);
     if (this.recentlyFinal.size > RECENT_FINAL_CAP) {
@@ -1141,6 +1424,39 @@ function extractSpawnResolved(
  * survives, and tolerating a leading "label …, " prefix (codex P3). Returns undefined
  * when neither is present.
  */
+/** Partial sessionMeta from an item-spawn's `meta` string ("task ..., agent X,
+ *  model P/M, cleanup C") — the ONLY config source for a spawn issued during an
+ *  ANNOUNCE run (the gateway emits no `stream:"tool"` result there, and the
+ *  child's own frames carry no `session` object either — live-pinned
+ *  2026-07-12). Fill-gaps semantics downstream: a real session value wins. */
+export function extractMetaSessionSeed(
+  meta: string | null,
+): SubAgentSessionMeta | undefined {
+  if (meta === null) return undefined;
+  const seed: SubAgentSessionMeta = {};
+  // Bounded like every other network-derived string here — an over-long value
+  // must never balloon the Convex sessionMeta document.
+  const CAP = 128;
+  const model = /, model ([^,]+)(?:,|$)/.exec(meta)?.[1]?.trim().slice(0, CAP);
+  if (model) {
+    const slash = model.indexOf("/");
+    if (slash > 0) {
+      seed.modelProvider = model.slice(0, slash);
+      seed.model = model.slice(slash + 1);
+    } else {
+      seed.model = model;
+    }
+  }
+  const cleanup = /, cleanup ([^,]+)(?:,|$)/
+    .exec(meta)?.[1]
+    ?.trim()
+    .slice(0, CAP);
+  if (cleanup) seed.cleanup = cleanup;
+  const agentId = /, agent ([^,]+)(?:,|$)/.exec(meta)?.[1]?.trim();
+  if (agentId) seed.agentId = agentId.slice(0, MAX_TASK_CHARS);
+  return Object.keys(seed).length > 0 ? seed : undefined;
+}
+
 export function extractTaskName(meta: string | null): string | undefined {
   if (meta === null) return undefined;
   const label = /^label ([^,]+),/.exec(meta)?.[1]?.trim();
@@ -1149,7 +1465,14 @@ export function extractTaskName(meta: string | null): string | undefined {
   // suffix, a label-LESS 6.10 spawn parsed to NO task name (card showed none).
   let task = /(?:^|, )task (.*)$/.exec(meta)?.[1]?.trim();
   if (task !== undefined) {
-    task = task.replace(/,\s*(?:agent|cleanup)\s+[^,]*$/, "").trim();
+    // Strip EVERY trailing gateway metadata token — 2026.7 metas chain several
+    // (", agent files, model openai/gpt-5.6-sol, cleanup keep"); a single-pass
+    // strip left the earlier ones glued to the task text.
+    let prev;
+    do {
+      prev = task;
+      task = task.replace(/,\s*(?:agent|cleanup|model)\s+[^,]*$/, "").trim();
+    } while (task !== prev);
   }
   const raw = label || task;
   if (!raw) return undefined;

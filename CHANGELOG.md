@@ -8,6 +8,31 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.54.2] — You can see the background work, and set your own text size
+
+Bug-fix and comfort release (Convex + bridge + frontend). No breaking changes;
+the schema change is additive.
+
+- **You can now SEE that background work is happening — even with Tools off.**
+  While a delegated sub-agent is still working after the reply settled, and
+  again while the gateway composes each result delivery, the thread shows a
+  discreet animated indicator ("A sub-agent is working in the background…" /
+  "The agent is finalizing its reply…"). It is independent of the Tools
+  toggle, disappears the moment real streaming starts, never lingers on a
+  reopened chat, and is robust to clock skew between browser and server.
+- **Sub-agents spawned during a result delivery keep their metadata.** A
+  follow-up sub-agent launched while the gateway was delivering a previous
+  result used to appear with almost no details; it now carries its task,
+  model/provider, cleanup mode and agent id, and stays attached to the message
+  that spawned it — so multi-wave deliveries (result, then a relaunched
+  sub-agent, then its result) all merge into the same bubble with full
+  attribution in the sub-agent monitor.
+- **Pick your text size.** Preferences now offers Small / Normal / Large /
+  Extra-large text. The choice scales the entire interface proportionally,
+  applies instantly, follows you across devices (stored with your profile),
+  and is restored before first paint — no size jump on load, including on the
+  sign-in screen.
+
 ## [0.54.1] — One question, one answer: sub-agent results land in the same bubble
 
 Bug-fix and reliability release (Convex + bridge). No breaking changes; the
@@ -245,6 +270,11 @@ additive and the new MCP parameter is optional.
   actually come back. Per-user read-state lives in its own table and query, so
   the hot chat-list query gains no extra reads; unread dots appear quietly as
   chats are visited (no wall of stale dots on upgrade).
+- **Pick your text size.** Settings → Preferences gains a "Text size" control
+  (Small / Normal / Large / Extra large) that scales the whole interface for
+  reading comfort. The choice applies instantly, follows you across devices
+  (stored on your profile, like the theme), and is cached locally so pages —
+  including the sign-in screen — render at your size from the first paint.
 
 ## [0.48.0] — Files you can actually grab, markdown you can actually read
 

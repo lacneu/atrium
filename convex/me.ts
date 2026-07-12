@@ -177,6 +177,11 @@ export const getMe = query({
       // (no chart / builtin demo) = { "Atrium", null }; a custom chart = its name
       // + uploaded logo URL (null => client uses the bundled Atrium mark).
       resolvedChartBrand: resolvedChartView.brand,
+      // Text size (mirror of theme, user-level only — no admin default): the
+      // user's own pref (or null) + the resolved value the client applies to the
+      // root font-size (useApplyFontScale). Unset resolves to "md" (100%).
+      fontScale: profile?.fontScale ?? null,
+      resolvedFontScale: profile?.fontScale ?? ("md" as const),
       // UI language (mirror of theme): the user's own pref (or null) + the
       // resolved effective locale the client applies via Paraglide + the admin
       // default. The client's useApplyLocale reconciles localStorage to this.
@@ -335,6 +340,48 @@ export const setThemeMode = mutation({
     if (profile.themeMode === nextMode) return;
     await ctx.db.patch(profile._id, { themeMode: nextMode });
     await auditImpersonated(ctx, actor, "theme.set", {
+      resource: "profile",
+      resourceId: userId,
+    });
+  },
+});
+
+// Set the calling user's text-size preference. Identity-level mirror of
+// setThemeMode (a pending user may size the waiting screen too). Passing null
+// clears the pref (revert to the "md" code default). The client applies the
+// resolved value to the root font-size via useApplyFontScale.
+export const setFontScale = mutation({
+  args: {
+    scale: v.union(
+      v.literal("sm"),
+      v.literal("md"),
+      v.literal("lg"),
+      v.literal("xl"),
+      v.null(),
+    ),
+  },
+  handler: async (ctx, { scale }) => {
+    // Effective identity: while impersonating, this acts on the TARGET's pref
+    // (full "act as the user" scope) and is audited.
+    const actor = await getActor(ctx);
+    const userId = actor.effectiveUserId;
+    const profile = await getProfile(ctx, userId);
+    const next = scale ?? undefined;
+    if (profile === null) {
+      // No profile yet (pre-bootstrap, real user only — a target always has
+      // one). Create a minimal pending profile carrying just the pref.
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "pending",
+        fontScale: next,
+      });
+      return;
+    }
+    // IDEMPOTENT: skip a no-op — it would invalidate getMe and cascade a full
+    // re-query of the chat page for nothing.
+    if (profile.fontScale === next) return;
+    await ctx.db.patch(profile._id, { fontScale: next });
+    await auditImpersonated(ctx, actor, "fontScale.set", {
       resource: "profile",
       resourceId: userId,
     });

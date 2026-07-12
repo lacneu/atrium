@@ -8,7 +8,16 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { type Locale } from "@/paraglide/runtime.js";
+import { FONT_SCALES, type FontScale } from "@/lib/useFontScale";
 import { PreferencesPanel } from "../PreferencesPanel";
+
+// Localized labels for the text-size choices (call-time so they re-localize).
+const FONT_SCALE_LABELS: Record<FontScale, () => string> = {
+  sm: () => m.fontsize_sm(),
+  md: () => m.fontsize_md(),
+  lg: () => m.fontsize_lg(),
+  xl: () => m.fontsize_xl(),
+};
 
 // Settings > Preferences (user-scoped, gated on chats.read like Files). Holds the
 // personal preferences that used to live in the account menu / its modal:
@@ -20,9 +29,27 @@ import { PreferencesPanel } from "../PreferencesPanel";
 // sign out.
 export function PreferencesTab() {
   const me = useQuery(api.me.getMe, { host: APP_HOST }) as
-    | { locale: Locale | null; name: string | null }
+    | {
+        locale: Locale | null;
+        name: string | null;
+        fontScale: FontScale | null;
+      }
     | undefined;
   const setLocale = useMutation(api.me.setLocale);
+  // OPTIMISTIC (mirror of UserMenu's setThemeMode): the whole UI resizes the
+  // instant a size is clicked — useApplyFontScale reads resolvedFontScale from
+  // the local getMe cache, so patching it here skips the server round-trip lag.
+  const setFontScale = useMutation(api.me.setFontScale).withOptimisticUpdate(
+    (store, { scale }) => {
+      const cur = store.getQuery(api.me.getMe, { host: APP_HOST });
+      if (!cur) return;
+      store.setQuery(
+        api.me.getMe,
+        { host: APP_HOST },
+        { ...cur, fontScale: scale, resolvedFontScale: scale ?? "md" },
+      );
+    },
+  );
   const setMyName = useMutation(api.me.setMyName);
   const toast = useToast();
   const localePref: Locale | "default" = me?.locale ?? "default";
@@ -98,6 +125,29 @@ export function PreferencesTab() {
           </Button>
         </div>
         <p className="oc-show__desc">{m.preferences_language_note()}</p>
+      </section>
+
+      <section className="oc-show__section">
+        <div className="oc-show__heading">
+          <h2 className="oc-show__title">{m.preferences_fontsize_title()}</h2>
+          <p className="oc-show__desc">{m.preferences_fontsize_desc()}</p>
+        </div>
+        <div className="oc-show__row">
+          {/* Same button-radio pattern as the language row above. The active
+              value is the user's pref resolved to the "md" code default (no
+              admin default for text size — comfort is personal). */}
+          {FONT_SCALES.map((scale) => (
+            <Button
+              key={scale}
+              variant={(me?.fontScale ?? "md") === scale ? "default" : "outline"}
+              size="sm"
+              onClick={() => void setFontScale({ scale })}
+            >
+              {FONT_SCALE_LABELS[scale]()}
+            </Button>
+          ))}
+        </div>
+        <p className="oc-show__desc">{m.preferences_fontsize_note()}</p>
       </section>
 
       <section className="oc-show__section">

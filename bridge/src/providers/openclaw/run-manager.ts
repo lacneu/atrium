@@ -205,6 +205,29 @@ export class RunManager {
     return this.sink.currentMessageId;
   }
 
+  /** True while a turn is actively driving the sink — gates whether
+   *  currentMessageId belongs to a LIVE turn (vs the last finished one). */
+  get turnActive(): boolean {
+    return this.sink.active;
+  }
+
+  /** Whether this parent-lane frame belongs to the ACTIVE turn's run. Gates
+   *  handing currentMessageId to the sub-agent observer: a STASHED announce
+   *  frame arriving mid-turn must not anchor its spawns to the active turn's
+   *  unrelated message. Child-lane frames (foreign sessionKey) return false —
+   *  their anchor comes from sightings/backfill, never from this shortcut. */
+  frameOwnedByActiveTurn(frame: unknown): boolean {
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    return rid !== null && this.normalizer.ownRunIds.has(rid);
+  }
+
+  /** The ACTIVE turn's run ids — lets the session propagate the turn's message
+   *  anchor to the sub-agent observer even for frames it never re-observes
+   *  (stashed announce frames replay INSIDE feed()). */
+  get activeRunIds(): string[] {
+    return [...this.normalizer.ownRunIds];
+  }
+
   /**
    * Arm the pre-ack frame buffer for ONE upcoming turn — call RIGHT BEFORE the
    * chat.send request so response frames that race the ack are captured (not

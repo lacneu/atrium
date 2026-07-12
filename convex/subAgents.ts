@@ -407,6 +407,114 @@ export const reapStaleSubAgents = internalMutation({
  * `requireOwnedChat` is the access boundary — a caller can only read their own
  * chats' rows. Returns [] for a chat with no sub-agents.
  */
+/** Thread-level "the turn is still working" signal — INDEPENDENT of the Tools
+ *  toggle (the clean view must show a spinner too). True while a sub-agent of
+ *  this chat RUNS, and while a freshly-finished one has not yet been delivered
+ *  back into a settled reply (child done AFTER the chat's last completed
+ *  assistant stamp = the gateway is composing the announce). The client caps
+ *  the delivering window locally (a NO_REPLY announce produces no new stamp). */
+export const turnActivity = query({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{ running: boolean; deliveringSince: number | null }> => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedChat(ctx, userId, chatId);
+    // RUNNING is exact whatever the chat's history: one indexed probe on
+    // (chatId, status) — a long-lived child created before 50 newer
+    // delegations must still hold the composer/spinner.
+    const running =
+      (await ctx.db
+        .query("subAgents")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chatId).eq("status", "running"),
+        )
+        .first()) !== null;
+    // DELIVERING scans the recently-UPDATED terminal rows (bounded): a
+    // finished child whose announce has not merged yet — including an ERROR
+    // one (the observer keeps error children alive for the documented
+    // error→done recovery, and failures announce too). by_chat_status_updated
+    // orders by updatedAt, so a long-lived child that JUST finished is never
+    // pushed out of the window by 20 younger siblings. Older-than-window rows
+    // degrade to no-spinner — never to a wrong signal.
+    const done = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", "done"),
+      )
+      .order("desc")
+      .take(20);
+    const errored = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", "error"),
+      )
+      .order("desc")
+      .take(10);
+    const rows = [...done, ...errored];
+    // A child whose announce ALREADY merged is delivered — never "delivering",
+    // whatever the write order (its detached terminal upsert can land AFTER
+    // the merge settled, making updatedAt > lastSettle misleading). The merge
+    // history carries the announce run ids, which embed the childSessionKey.
+    const mergedRuns: string[] = [];
+    const recent = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .take(10);
+    for (const m of recent) {
+      if (m.runId !== undefined && m.runId.startsWith("announce:")) {
+        mergedRuns.push(m.runId);
+      }
+      for (const r of m.mergedAnnounceRuns ?? []) mergedRuns.push(r);
+    }
+    let deliveringSince: number | null = null;
+    for (const r of rows) {
+      // NO chat-level lastAssistantAt filter here: a NEWER user turn settling
+      // after this child finished would mask a REAL in-flight delivery. The
+      // per-row checks below (merged announce / parent finalized after the
+      // child) are the correlated tests; stale never-announced terminals are
+      // bounded by the client's display cap, not by the chat clock.
+      // Announce already merged → delivered (write order can't fool this).
+      if (mergedRuns.some((run) => run.includes(r.childSessionKey))) continue;
+      // The child's own PARENT message is the window-independent test: its
+      // merge history (or its own announce runId) names this child even when
+      // the parent scrolled beyond the recent-messages scan above. INLINE
+      // delivery: the parent settled AFTER the child finished → the report
+      // rode inside that turn, no announce will follow (a detached terminal
+      // upsert landing late is the remaining race — the client's short
+      // display cap bounds that residue). Anchor-less rows degrade to that
+      // same cap.
+      if (r.parentMessageId !== undefined) {
+        const parentDoc = await ctx.db.get(r.parentMessageId);
+        if (parentDoc !== null) {
+          const parentRuns = [
+            ...(parentDoc.runId !== undefined ? [parentDoc.runId] : []),
+            ...(parentDoc.mergedAnnounceRuns ?? []),
+          ];
+          if (
+            parentRuns.some(
+              (run) =>
+                run.startsWith("announce:") && run.includes(r.childSessionKey),
+            )
+          ) {
+            continue;
+          }
+          if (
+            parentDoc.finalizedAt !== undefined &&
+            parentDoc.finalizedAt >= r.updatedAt
+          ) {
+            continue;
+          }
+        }
+      }
+      deliveringSince = Math.max(deliveringSince ?? 0, r.updatedAt);
+    }
+    return { running, deliveringSince };
+  },
+});
+
 export const listSubAgents = query({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
