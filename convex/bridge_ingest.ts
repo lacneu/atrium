@@ -284,6 +284,7 @@ type IngestOp =
       // the row so the task reconcile probes the registry the work runs on.
       instanceName?: string;
       parentMessageId?: string | null;
+      anchorExact?: boolean;
       childSessionKey: string;
       kind?: "subagent" | "task";
       bornOfRun?: string;
@@ -777,6 +778,7 @@ export const ingest = httpAction(async (ctx, request) => {
         parentMessageId: body.parentMessageId
           ? (body.parentMessageId as Id<"messages">)
           : undefined,
+        anchorExact: body.anchorExact === true ? true : undefined,
         childSessionKey: body.childSessionKey,
         kind: body.kind,
         bornOfRun: body.bornOfRun,

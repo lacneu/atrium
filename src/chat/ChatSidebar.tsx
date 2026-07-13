@@ -29,6 +29,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Bookmark,
   ChevronDown,
   ChevronRight,
   GripVertical,
@@ -183,6 +184,15 @@ export function ChatSidebar({
     | Id<"chats">[]
     | undefined;
   const busyIds = useMemo(() => new Set(busyList ?? []), [busyList]);
+  // Chats carrying at least one bookmark (own bounded query, same reasoning
+  // as myBusyChats: never a listChats passenger).
+  const bookmarkedList = useQuery(api.chatBookmarks.myBookmarkedChats, {}) as
+    | Id<"chats">[]
+    | undefined;
+  const bookmarkedIds = useMemo(
+    () => new Set(bookmarkedList ?? []),
+    [bookmarkedList],
+  );
   const unreadIds = useMemo(() => {
     const set = new Set<string>();
     for (const c of chats ?? []) {
@@ -587,6 +597,7 @@ export function ChatSidebar({
                   active={c._id === activeChatId}
                   unread={unreadIds.has(c._id)}
                   busy={busyIds.has(c._id)}
+                  bookmarked={bookmarkedIds.has(c._id)}
                   ageTick={minuteTick}
                   suppressClick={suppressClickRef}
                   onSelect={onSelect}
@@ -632,6 +643,7 @@ export function ChatSidebar({
                       active={c._id === activeChatId}
                       unread={unreadIds.has(c._id)}
                       busy={busyIds.has(c._id)}
+                      bookmarked={bookmarkedIds.has(c._id)}
                       ageTick={minuteTick}
                       suppressClick={suppressClickRef}
                       onSelect={onSelect}
@@ -661,6 +673,7 @@ export function ChatSidebar({
                     active={c._id === activeChatId}
                     unread={unreadIds.has(c._id)}
                     busy={busyIds.has(c._id)}
+                    bookmarked={bookmarkedIds.has(c._id)}
                     ageTick={minuteTick}
                     suppressClick={suppressClickRef}
                     onSelect={onSelect}
@@ -1002,6 +1015,7 @@ const ChatItem = memo(function ChatItem({
   active,
   unread,
   busy,
+  bookmarked,
   suppressClick,
   onSelect,
 }: {
@@ -1012,6 +1026,8 @@ const ChatItem = memo(function ChatItem({
   unread: boolean;
   // A turn is in flight on this chat RIGHT NOW — subtle pulse.
   busy: boolean;
+  // The chat holds at least one of the user's bookmarks — quiet flag icon.
+  bookmarked: boolean;
   // Minute cadence from the parent: memo would otherwise freeze the relative
   // age label (identical props skip the render, Date.now() never re-reads).
   // Not destructured — its only job is to defeat the memo once a minute.
@@ -1144,6 +1160,14 @@ const ChatItem = memo(function ChatItem({
             title={m.sidebar_readonly_label()}
           >
             <Lock size={12} aria-label={m.sidebar_readonly_label()} />
+          </span>
+        ) : null}
+        {bookmarked ? (
+          <span
+            className="oc-chatitem__bookmark group-hover/row:opacity-0 group-focus-within/row:opacity-0"
+            title={m.sidebar_has_bookmarks()}
+          >
+            <Bookmark size={12} aria-label={m.sidebar_has_bookmarks()} />
           </span>
         ) : null}
         {showAge ? (

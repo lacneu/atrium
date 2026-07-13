@@ -1889,5 +1889,17 @@
 	"prefs_dictation_shortcut_cancel": "Annuler",
 	"prefs_dictation_shortcut_clear": "Effacer",
 	"voice_test_gateway_error": "Le test de la voix de la passerelle a échoué.",
-	"chat_instance_unreachable_banner": "La passerelle de cet agent est momentanément injoignable (peut-être en maintenance). Les messages ne peuvent pas être envoyés pour l'instant — réessayez dans quelques minutes."
+	"chat_instance_unreachable_banner": "La passerelle de cet agent est momentanément injoignable (peut-être en maintenance). Les messages ne peuvent pas être envoyés pour l'instant — réessayez dans quelques minutes.",
+	"bookmark_add": "Ajouter un signet",
+	"bookmark_remove": "Retirer le signet",
+	"bookmark_rename": "Renommer",
+	"bookmark_delete": "Supprimer",
+	"bookmark_label_placeholder": "Nom du signet",
+	"bookmark_marker": "Signet",
+	"bookmark_nav_prev": "Signet précédent",
+	"bookmark_nav_next": "Signet suivant",
+	"bookmark_rail_label": "Signets",
+	"bookmark_unreachable": "{count} signet(s) hors de la fenêtre chargée",
+	"sidebar_has_bookmarks": "Contient des signets",
+	"bookmark_open_list": "Liste des signets"
 }

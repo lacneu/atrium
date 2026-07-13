@@ -65,6 +65,11 @@ interface Observation {
   childSessionKey: string;
   taskName?: string;
   parentMessageId?: string | null;
+  /** TRUE when parentMessageId is CORRELATED (spawn tool result / sighting /
+   *  run-keyed backfill). Absent = the last-known-message FALLBACK or a
+   *  pre-flag row: Convex keeps the positional merge gate for those (a stale
+   *  plausible anchor must fail-close to two bubbles, never merge wrong). */
+  anchorExact?: boolean;
   status: SubAgentStatus;
   /** Last time ANY frame for this child arrived (the TTL clock, in seconds). */
   lastFrameAt: number;
@@ -324,6 +329,9 @@ export class SubAgentObserver {
             : take.ambiguous
               ? null
               : (parentMessageId ?? childAnchorFallback ?? null),
+        ...(sighting !== null && sighting.parentMessageId != null
+          ? { anchorExact: true }
+          : {}),
       });
       if (created === null) return []; // cap reached -> not tracked
       obs = created;
@@ -342,6 +350,7 @@ export class SubAgentObserver {
           {
             chatId: this.chatId,
             parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
             childSessionKey: childKey,
             ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
             status: "running",
@@ -424,6 +433,7 @@ export class SubAgentObserver {
         const rec: SubAgentUpsert = {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
           childSessionKey: childKey,
           // The terminal write is the LAST word before the announce: carry the
           // delivery-run correlation so the engagement-anchor fallback always
@@ -477,6 +487,7 @@ export class SubAgentObserver {
         {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
           childSessionKey: childKey,
           status: "running",
           phase,
@@ -585,6 +596,7 @@ export class SubAgentObserver {
       {
         chatId: this.chatId,
         parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
         childSessionKey: obs.childSessionKey,
         // The child is still running while it uses tools; the Convex reorder guard
         // keeps a terminal row terminal, so this never un-finishes a done child.
@@ -675,6 +687,7 @@ export class SubAgentObserver {
         {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
           childSessionKey: obs.childSessionKey,
           status: obs.status,
           sessionMeta: merged,
@@ -767,6 +780,7 @@ export class SubAgentObserver {
       {
         chatId: this.chatId,
         parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
         childSessionKey: obs.childSessionKey,
         status: obs.status,
         sessionMeta: merged,
@@ -792,6 +806,7 @@ export class SubAgentObserver {
       if (now - obs.lastFrameAt >= this.ttlSeconds) {
         const wasRunning = obs.status === "running";
         const parentMessageId = obs.parentMessageId;
+        const anchorExact = obs.anchorExact;
         const interactionId = obs.interactionId;
         // A still-running child times out to `error`; an already-terminal one keeps
         // its last-known status (never downgraded).
@@ -809,6 +824,7 @@ export class SubAgentObserver {
           out.push({
             chatId: this.chatId,
             parentMessageId,
+            anchorExact,
             childSessionKey: key,
             status: "error",
             errorMessage: `Sub-agent timed out: no activity for ${this.ttlSeconds}s and the gateway never reported it finishing.`,
@@ -946,8 +962,12 @@ export class SubAgentObserver {
       // The ANCHOR too: a child whose own frames raced ahead registered with
       // null (child-lane frames never carry the parent turn's message id) —
       // this exact spawn result runs on the PARENT turn and knows it.
-      if (existing.parentMessageId === null && parentMessageId != null) {
+      if (
+        parentMessageId != null &&
+        (existing.parentMessageId === null || existing.anchorExact !== true)
+      ) {
         existing.parentMessageId = parentMessageId;
+        existing.anchorExact = true;
         changed = true;
       }
       if (cfg !== undefined) {
@@ -968,6 +988,9 @@ export class SubAgentObserver {
         {
           chatId: this.chatId,
           parentMessageId: existing.parentMessageId,
+          // Ship the provenance with the anchor: Convex's UPGRADE path
+          // (fallback -> correlated) requires an explicit anchorExact.
+          anchorExact: existing.anchorExact,
           childSessionKey: childKey,
           ...(existing.bornOfRun !== undefined
             ? { bornOfRun: existing.bornOfRun }
@@ -981,7 +1004,11 @@ export class SubAgentObserver {
       ];
     }
 
-    const obs = this.register(childKey, now, { taskName, parentMessageId });
+    const obs = this.register(childKey, now, {
+      taskName,
+      parentMessageId,
+      anchorExact: parentMessageId != null,
+    });
     if (obs === null) return []; // cap reached -> refused (logged)
     if (cfg !== undefined) {
       obs.sessionMeta = { ...obs.sessionMeta, ...cfg };
@@ -1004,6 +1031,7 @@ export class SubAgentObserver {
       {
         chatId: this.chatId,
         parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
         childSessionKey: childKey,
         ...(bornOfRun !== undefined ? { bornOfRun } : {}),
         taskName,
@@ -1076,12 +1104,14 @@ export class SubAgentObserver {
         now - o.registeredAt < 180
       ) {
         o.parentMessageId = anchor;
+        o.anchorExact = true; // run-keyed correlation
         // Persist the anchor NOW — the child's first upsert went out without
         // it, and waiting for the next heartbeat/terminal loses the anchor
         // for good if the connection drops first.
         lateAnchors.push({
           chatId: this.chatId,
           parentMessageId: anchor,
+          anchorExact: true,
           childSessionKey: o.childSessionKey,
           status: o.status,
         });
@@ -1094,6 +1124,7 @@ export class SubAgentObserver {
       lateAnchors.push({
         chatId: this.chatId,
         parentMessageId: anchor,
+        anchorExact: true,
         childSessionKey: childKey,
         status: entry.status,
       });
@@ -1217,7 +1248,11 @@ export class SubAgentObserver {
   private register(
     childKey: string,
     now: number,
-    extra: { taskName?: string; parentMessageId?: string | null },
+    extra: {
+      taskName?: string;
+      parentMessageId?: string | null;
+      anchorExact?: boolean;
+    },
   ): Observation | null {
     if (this.observations.size >= this.maxConcurrent) {
       if (!this.warnedCap) {
@@ -1232,6 +1267,7 @@ export class SubAgentObserver {
       childSessionKey: childKey,
       taskName: extra.taskName,
       parentMessageId: extra.parentMessageId ?? null,
+      ...(extra.anchorExact === true ? { anchorExact: true } : {}),
       registeredAt: now,
       status: "running",
       lastFrameAt: now,
@@ -1264,6 +1300,7 @@ export class SubAgentObserver {
       {
         chatId: this.chatId,
         parentMessageId: obs.parentMessageId,
+          anchorExact: obs.anchorExact,
         childSessionKey: obs.childSessionKey,
         status: "running",
         // Piggyback the last-known telemetry on this already-scheduled write, so a

@@ -360,6 +360,17 @@ export async function cascadeDeleteChat(
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .collect();
   for (const i of subAgentInteractions) await ctx.db.delete(i._id);
+  // The owner's bookmarks (rows are owner-only by construction — the mutations
+  // are owner-scoped): drop them with the chat, labels are user content.
+  if (chat) {
+    const bookmarkRows = await ctx.db
+      .query("chatBookmarks")
+      .withIndex("by_user_chat", (q) =>
+        q.eq("userId", chat.userId).eq("chatId", chatId),
+      )
+      .collect();
+    for (const b of bookmarkRows) await ctx.db.delete(b._id);
+  }
   // Per-user read state: drop the owner's chatReads row with the chat (rows are
   // owner-only by construction — markChatSeen is owner-scoped and no-ops under
   // impersonation), so deletions never leave orphans eating the myChatReads

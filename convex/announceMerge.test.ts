@@ -24,6 +24,9 @@ async function seedDelegatedTurn(
     parentText?: string;
     withSubAgentRow?: boolean;
     withParentPointer?: boolean;
+    /** FALSE = an uncorrelated (fallback / pre-flag) anchor. Default TRUE:
+     *  the nominal row is spawn-result/engagement-correlated. */
+    anchorExact?: boolean;
   },
 ) {
   return t.run(async (ctx) => {
@@ -62,6 +65,9 @@ async function seedDelegatedTurn(
         chatId,
         ...(opts?.withParentPointer !== false
           ? { parentMessageId: parentId }
+          : {}),
+        ...(opts?.withParentPointer !== false && opts?.anchorExact !== false
+          ? { anchorExact: true }
           : {}),
         childSessionKey: CHILD_KEY,
         status: "done" as const,
@@ -149,9 +155,51 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(row?.text).toBe("La tâche est lancée.\n\nRésultat (révision complète).");
   });
 
-  test("NO merge when the conversation moved on (a later user message) — falls back to a fresh bubble", async () => {
+  test("an ANCHORED delivery merges into its parent even after the conversation moved on (order fix)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);
+    // An interleaved follow-up + its reply: the parent is NOT the last
+    // message any more. The engagement anchor is exact, so the delivery must
+    // return to ITS turn — landing at the bottom made the thread read
+    // out-of-order (user report, pptx iteration chain).
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "Autre question entre-temps",
+        updatedAt: 3000,
+      });
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "Réponse au follow-up",
+        runId: "webchat-followup-run",
+        updatedAt: 3500,
+      });
+    });
+    const created = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    expect(created).toBe(parentId);
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("streaming"); // reopened by the merge
+    expect(parent?.announcePrefix).toBe("La tâche est lancée.");
+  });
+
+  test("an UNCORRELATED anchor keeps the positional gate: conversation moved -> fresh bubble", async () => {
+    const t = convexTest(schema, modules);
+    // The bridge missed the spawn result and anchored the row to the
+    // session's last-known message (no anchorExact flag — also the shape of
+    // every pre-flag row). Once the conversation moves on, merging there
+    // could paint the result into an unrelated turn: fail closed.
+    const { userId, chatId, parentId } = await seedDelegatedTurn(t, {
+      anchorExact: false,
+    });
     await t.run(async (ctx) => {
       await ctx.db.insert("messages", {
         chatId,
@@ -171,12 +219,51 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(parent?.status).toBe("complete"); // untouched
   });
 
-  test("NO merge when a QUEUED follow-up logically follows the parent (orderTime beats creation order)", async () => {
+  test("an uncorrelated anchor STILL merges while its parent is the last message (historical behaviour)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      anchorExact: false,
+    });
+    const created = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    expect(created).toBe(parentId);
+  });
+
+  test("an anchored delivery does NOT merge into a parent evicted from the loaded window (fresh bubble)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
+    // 200 newer messages push the parent OUT of loadChatView's window: a
+    // merge would stream into a bubble the client no longer renders — the
+    // delivery must fall back to a visible fresh bubble instead.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 200; i++) {
+        await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user" as const,
+          status: "complete" as const,
+          text: `filler ${i}`,
+          updatedAt: 3000 + i,
+        });
+      }
+    });
+    const created = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    expect(created).not.toBe(parentId);
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("complete"); // untouched
+  });
+
+  test("an anchored delivery also merges past a QUEUED follow-up (orderTime sentinel)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);
     // A mid-turn queued follow-up: _creationTime BEFORE the parent reply's,
-    // but its orderTime sentinel places it logically AFTER — the conversation
-    // has moved on, so the announce must open its own bubble.
+    // but its orderTime sentinel places it logically AFTER. The acked anchor
+    // still wins — the delivery merges into its own turn.
     await t.run(async (ctx) => {
       await ctx.db.insert("messages", {
         chatId,
@@ -192,7 +279,7 @@ describe("announce merge (one bubble per delegated turn)", () => {
       chatId,
       runId: ANNOUNCE_RUN,
     });
-    expect(created).not.toBe(parentId);
+    expect(created).toBe(parentId);
   });
 
   test("NO merge into an error/aborted parent (never repaint a failure)", async () => {
@@ -881,7 +968,9 @@ describe("subAgents.turnActivity", () => {
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);
     const asUser = t.withIdentity({ subject: `${userId}|s` });
 
-    // Child RUNNING → running:true.
+    // Child RUNNING → running:true, anchored to its parent bubble (the
+    // indicator renders UNDER the working turn, not at the thread bottom
+    // where a queued follow-up would claim it — user report).
     await t.run(async (ctx) => {
       const sub = await ctx.db.query("subAgents").first();
       await ctx.db.patch(sub!._id, { status: "running" as const });
@@ -889,6 +978,7 @@ describe("subAgents.turnActivity", () => {
     });
     let a = await asUser.query(api.subAgents.turnActivity, { chatId });
     expect(a.running).toBe(true);
+    expect(a.anchorMessageId).toBe(parentId);
 
     // Child DONE after the last settle → delivering (announce being composed).
     await t.run(async (ctx) => {
@@ -898,6 +988,8 @@ describe("subAgents.turnActivity", () => {
     a = await asUser.query(api.subAgents.turnActivity, { chatId });
     expect(a.running).toBe(false);
     expect(a.deliveringSince).toBe(5000);
+    // The delivery being composed anchors to the finished child's bubble.
+    expect(a.anchorMessageId).toBe(parentId);
 
     // The merge settles (finalize re-stamps lastAssistantAt) → quiet.
     await t.mutation(internal.stream.startAssistant, {

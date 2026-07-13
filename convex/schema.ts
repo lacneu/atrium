@@ -1077,12 +1077,39 @@ export default defineSchema({
     userId: v.id("users"),
     chatId: v.id("chats"),
     lastSeenAt: v.number(),
+    // The bookmark this user last placed or jumped to in this chat (their
+    // "working position"). Opening the chat auto-scrolls to it; cleared when
+    // that bookmark is deleted. Absent = open at the bottom as usual.
+    activeBookmarkId: v.optional(v.id("chatBookmarks")),
   })
     .index("by_user_chat", ["userId", "chatId"]) // upsert point-read
     // Sidebar map: read DESC on lastSeenAt so the bounded window keeps the
     // MOST RECENTLY seen chats (a plain by_user take() would return the 500
     // oldest-created rows and silently drop current chats — codex P2).
     .index("by_user_seen", ["userId", "lastSeenAt"]),
+
+  // PER-USER conversation bookmarks (IntelliJ-style): a named anchor into a
+  // chat, at message granularity or at one top-level markdown block inside a
+  // long message (blockIndex = index of the direct child in the rendered
+  // markdown container; a finished message only ever APPENDS blocks, so the
+  // index is stable; jump falls back to the top of the message if it is gone).
+  // The anchor triple (chatId, messageId, blockIndex) is deliberately a
+  // standalone concept: the upcoming cross-conversation references reuse it.
+  // Kept OUT of listChats (own light queries — prod saturation lesson).
+  chatBookmarks: defineTable({
+    userId: v.id("users"),
+    chatId: v.id("chats"),
+    messageId: v.id("messages"),
+    // Absent = the whole message (anchor at its top).
+    blockIndex: v.optional(v.number()),
+    // Optional user-given name (IntelliJ "Rename Bookmark").
+    label: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    // Per-chat list (the nav rail + markers) + toggle point-lookup.
+    .index("by_user_chat", ["userId", "chatId"])
+    // Sidebar "has bookmarks" map, bounded read across the user's chats.
+    .index("by_user", ["userId"]),
 
   // Individual messages within a chat. Streaming assistant text is patched in
   // place on `text` (reactivity -> assistant-ui re-render).
@@ -1230,6 +1257,12 @@ export default defineSchema({
     // a child lazily registered from its own later frames (spawn result missed) can
     // land without it. by_chat is the load-bearing index.
     parentMessageId: v.optional(v.id("messages")),
+    // TRUE when the anchor is CORRELATED (spawn result / task engagement /
+    // chain adoption): only these may merge a delivery into a NON-last
+    // bubble. Absent (bridge last-known-message fallback, or any row written
+    // before this flag existed) keeps the conservative positional gate — a
+    // stale plausible anchor fails closed to two bubbles, never merges wrong.
+    anchorExact: v.optional(v.boolean()),
     childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
     // Row family: absent/"subagent" = a spawned child session; "task" = a
     // gateway BACKGROUND-TASK engagement (`task:<taskId>` key, born from an

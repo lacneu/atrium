@@ -20,6 +20,7 @@ import { v } from "convex/values";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
   taskDeliveryIdentity,
@@ -305,6 +306,16 @@ async function reopenParentForAnnounce(
     .filter((q) => q.eq(q.field("chatId"), chatId))
     .first();
   let parentId = sub?.parentMessageId;
+  // TRUE when the anchor is CORRELATED (spawn result / task engagement /
+  // chain adoption — not the bridge's last-known-message fallback, flagged
+  // anchorHeuristic): the join is exact, so the merge may return to a bubble
+  // the conversation has moved PAST — the reply belongs to ITS turn, not to
+  // the bottom of the thread (user report: deliveries landing after an
+  // interleaved follow-up read as out-of-order). Heuristic anchors and the
+  // CHAIN fallback below stay position-gated (a stale plausible anchor must
+  // fail-close to two bubbles, never merge into a wrong one).
+  let anchoredResolution =
+    parentId !== undefined && sub?.anchorExact === true;
   if (parentId === undefined && sub?.bornOfRun !== undefined) {
     // The child was spawned INSIDE a task-delivery run that never opened a
     // message of its own (NO_REPLY): resolve the anchor through the
@@ -318,6 +329,8 @@ async function reopenParentForAnnounce(
         .filter((q) => q.eq(q.field("chatId"), chatId))
         .first();
       parentId = engagement?.parentMessageId ?? undefined;
+      anchoredResolution =
+        parentId !== undefined && engagement?.anchorExact === true;
     }
   }
   // Set by the CHAIN fallback below; consumed just before the successful
@@ -428,14 +441,28 @@ async function reopenParentForAnnounce(
   // never resume (handled above).
   const resuming = parent.status === "error" && alreadyMerged;
   if (parent.status !== "complete" && !resuming) return null;
-  // "Still the chat's last message" uses the LOGICAL order (effectiveOrder):
-  // a follow-up queued in the pre-ack window has an EARLIER _creationTime than
-  // the parent reply but logically comes after it — creation order would then
-  // merge the announce into a bubble the conversation already moved past.
-  // Recent creation-window scan is safe: orderTime-bearing rows are always
-  // recent (messageOrder WINDOWING INVARIANT).
-  const last = await latestChatMessage(ctx, chatId);
-  if (last === null || last._id !== parentId) return null;
+  // Position gate — CHAIN-resolved anchors only. An anchor inherited from
+  // the conversation's shape (no engagement row) is only trustworthy while
+  // the parent is still the LOGICALLY last message (effectiveOrder: a
+  // follow-up queued in the pre-ack window has an EARLIER _creationTime but
+  // logically comes after — messageOrder WINDOWING INVARIANT). An ACKED /
+  // engagement-resolved anchor is exact, so its delivery merges back into
+  // its own turn even after the conversation moved on.
+  if (!anchoredResolution) {
+    const last = await latestChatMessage(ctx, chatId);
+    if (last === null || last._id !== parentId) return null;
+  } else {
+    // An anchored merge may return to a NON-last bubble, but never to one the
+    // client no longer loads: loadChatView ships only the newest
+    // MESSAGE_WINDOW rows, so merging past it would make the delivery
+    // invisible. Fall back to the fresh bottom bubble instead (codex P2).
+    const recent = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .take(MESSAGE_WINDOW);
+    if (!recent.some((m2) => m2._id === parentId)) return null;
+  }
   // RESUME reuses the ORIGINAL prefix preserved by the failed finalize —
   // parent.text at this point is `original + partial announce`, and
   // re-prefixing with THAT would duplicate the partial fragment.
@@ -538,6 +565,7 @@ async function reopenParentForAnnounce(
       await ctx.db.insert("subAgents", {
         chatId,
         parentMessageId: parentId,
+        anchorExact: true, // validated by the chain gates just above
         childSessionKey: chainTaskKeyToAnchor,
         kind: "task",
         taskName: taskDeliveryIdentity(announceRunId)?.toolName,
@@ -546,7 +574,11 @@ async function reopenParentForAnnounce(
         updatedAt: now,
       });
     } else if (row.parentMessageId === undefined) {
-      await ctx.db.patch(row._id, { parentMessageId: parentId, updatedAt: now });
+      await ctx.db.patch(row._id, {
+        parentMessageId: parentId,
+        anchorExact: true, // validated by the chain gates just above
+        updatedAt: now,
+      });
     }
   }
   return { messageId: parentId, reopened: true };

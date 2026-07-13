@@ -1388,6 +1388,9 @@ describe("SubAgentObserver — child-lane anchor fallback (missed spawn result)"
     expect(late).toContainEqual({
       chatId: "chatA",
       parentMessageId: "msg-announce",
+      // Run-keyed correlation is EXACT provenance: the merge may return to
+      // this bubble even after the conversation moved on.
+      anchorExact: true,
       childSessionKey: CHILD,
       status: "running",
     });

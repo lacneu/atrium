@@ -60,6 +60,8 @@ export type FinalizeStatus = "complete" | "error" | "aborted";
 export interface SubAgentRecord {
   chatId: string;
   parentMessageId?: string | null;
+  /** Anchor provenance: TRUE = correlated (see observer). Absent = fallback. */
+  anchorExact?: boolean;
   childSessionKey: string;
   /** Row family: a spawned sub-agent (default) or a gateway BACKGROUND TASK
    *  engagement (`task:<taskId>` rows born from an async tool result). */
@@ -532,6 +534,7 @@ type IngestOp =
       chatId: string;
       instanceName?: string;
       parentMessageId?: string | null;
+      anchorExact?: boolean;
       childSessionKey: string;
       kind?: "subagent" | "task";
       bornOfRun?: string;
@@ -1563,6 +1566,7 @@ export class HttpConvexWriter implements ConvexWriter {
       chatId: record.chatId,
       instanceName: this.instanceName ?? undefined,
       parentMessageId: record.parentMessageId ?? null,
+      anchorExact: record.anchorExact,
       childSessionKey: record.childSessionKey,
       kind: record.kind,
       bornOfRun: record.bornOfRun,

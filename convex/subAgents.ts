@@ -179,6 +179,7 @@ export const upsertSubAgent = internalMutation({
     chatId: v.id("chats"),
     instanceName: v.optional(v.string()),
     parentMessageId: v.optional(v.id("messages")),
+    anchorExact: v.optional(v.boolean()),
     childSessionKey: v.string(),
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
     bornOfRun: v.optional(v.string()),
@@ -219,6 +220,10 @@ export const upsertSubAgent = internalMutation({
       // task N-1's delivery, ...) always resolves in ONE hop — the read-side
       // bornOfRun fallback never has to walk the chain.
       let parentMessageId = args.parentMessageId;
+      let anchorExact =
+        args.anchorExact === true && parentMessageId !== undefined
+          ? true
+          : undefined;
       if (parentMessageId === undefined && args.bornOfRun !== undefined) {
         const carrierKey = deliveryChildKey(args.bornOfRun);
         if (carrierKey !== null) {
@@ -228,12 +233,18 @@ export const upsertSubAgent = internalMutation({
             .filter((q) => q.eq(q.field("chatId"), args.chatId))
             .first();
           parentMessageId = carrier?.parentMessageId ?? undefined;
+          // The inherited anchor carries the CARRIER's provenance.
+          anchorExact =
+            parentMessageId !== undefined && carrier?.anchorExact === true
+              ? true
+              : undefined;
         }
       }
       const insertedId = await ctx.db.insert("subAgents", {
         chatId: args.chatId,
         instanceName: args.instanceName,
         parentMessageId,
+        anchorExact,
         childSessionKey: args.childSessionKey,
         kind: args.kind,
         bornOfRun: args.bornOfRun,
@@ -269,6 +280,7 @@ export const upsertSubAgent = internalMutation({
       sessionMeta?: SubAgentSessionMeta;
       telemetry?: SubAgentTelemetry;
       parentMessageId?: typeof args.parentMessageId;
+      anchorExact?: boolean;
       kind?: "subagent" | "task";
       instanceName?: string;
       bornOfRun?: string;
@@ -332,9 +344,14 @@ export const upsertSubAgent = internalMutation({
     }
     if (
       args.parentMessageId !== undefined &&
-      existing.parentMessageId === undefined
+      (existing.parentMessageId === undefined ||
+        (args.anchorExact === true && existing.anchorExact !== true))
     ) {
+      // Fill an empty anchor, or UPGRADE a fallback anchor to a CORRELATED
+      // one (the spawn result raced behind the child's own frames) — an
+      // exact anchor never downgrades back.
       patch.parentMessageId = args.parentMessageId;
+      if (args.anchorExact === true) patch.anchorExact = true;
     }
     await ctx.db.patch(existing._id, patch);
     // The STORED status after this write: `patch.status` when we wrote one, else
@@ -488,19 +505,31 @@ export const turnActivity = query({
   handler: async (
     ctx,
     { chatId },
-  ): Promise<{ running: boolean; deliveringSince: number | null }> => {
+  ): Promise<{
+    running: boolean;
+    deliveringSince: number | null;
+    // Where the signal should RENDER: the message the live row is anchored
+    // to (its bubble already carries the sub-agent card), so the thread can
+    // place the indicator UNDER the working turn instead of at the bottom —
+    // where a queued follow-up would otherwise make it read as belonging to
+    // the WAITING user message. Null when the row has no anchor (fallback:
+    // bottom-of-thread, the historical placement).
+    anchorMessageId: Id<"messages"> | null;
+  }> => {
     const { userId } = await requireActive(ctx);
     await requireOwnedChat(ctx, userId, chatId);
     // RUNNING is exact whatever the chat's history: one indexed probe on
     // (chatId, status) — a long-lived child created before 50 newer
-    // delegations must still hold the composer/spinner.
-    const running =
-      (await ctx.db
-        .query("subAgents")
-        .withIndex("by_chat_status", (q) =>
-          q.eq("chatId", chatId).eq("status", "running"),
-        )
-        .first()) !== null;
+    // delegations must still hold the composer/spinner. Read on the
+    // updatedAt-ordered index so the anchor follows the FRESHEST live child.
+    const runningRow = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", "running"),
+      )
+      .order("desc")
+      .first();
+    const running = runningRow !== null;
     // DELIVERING scans the recently-UPDATED terminal rows (bounded): a
     // finished child whose announce has not merged yet — including an ERROR
     // one (the observer keeps error children alive for the documented
@@ -540,6 +569,7 @@ export const turnActivity = query({
       for (const r of m.mergedAnnounceRuns ?? []) mergedRuns.push(r);
     }
     let deliveringSince: number | null = null;
+    let deliveringAnchor: Id<"messages"> | null = null;
     for (const r of rows) {
       // A background-task row's "delivery" is the run that settled it: when
       // it merged, mergedRuns above already covers it; when it was silent
@@ -595,9 +625,18 @@ export const turnActivity = query({
           }
         }
       }
+      if (deliveringSince === null || r.updatedAt > deliveringSince) {
+        deliveringAnchor = r.parentMessageId ?? null;
+      }
       deliveringSince = Math.max(deliveringSince ?? 0, r.updatedAt);
     }
-    return { running, deliveringSince };
+    // The running child's anchor wins (it is the CURRENT work); a delivery
+    // in flight anchors to the row being composed into the thread.
+    const anchorMessageId =
+      runningRow !== null
+        ? (runningRow.parentMessageId ?? null)
+        : deliveringAnchor;
+    return { running, deliveringSince, anchorMessageId };
   },
 });
 
@@ -907,6 +946,8 @@ export const adoptDiscoveredTask = internalMutation({
       chatId,
       instanceName,
       parentMessageId,
+      // Anchor validated at the task's BIRTH (chain rule) -> correlated.
+      ...(parentMessageId !== undefined ? { anchorExact: true } : {}),
       childSessionKey: key,
       kind: "task",
       taskName: toolName,

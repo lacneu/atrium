@@ -481,6 +481,8 @@
    left). --oc-thread-w is the single knob for that width. */
 .oc-thread {
   --oc-thread-w: 48rem;
+  /* Positioning context for the floating bookmark rail. */
+  position: relative;
 }
 .oc-thread__viewport {
   flex: 1;
@@ -1403,32 +1405,248 @@
   }
 }
 
-/* Deep-link target flash (`?m=` jump from a feedback report): a tinted ring +
-   wash that fades, drawing the eye to the message then settling. Added
-   imperatively for ~2.4s (see useFocusMessage). `!important` because the reported
-   message is often the LAST one, whose entrance rule
-   (`.oc-thread__viewport > .oc-msg:last-child { animation: oc-msg-in }`) has a
-   HIGHER specificity and would otherwise win the `animation` property. */
-.oc-msg--highlight {
-  border-radius: 0.6rem;
-  animation: oc-msg-flash 2.4s ease-out !important;
+/* Jump-target highlight (deep-link `?m=`, bookmark navigation): a GRACEFUL
+   edge glow instead of the old solid slab + hard ring (user feedback: the
+   filled box read as a crude selection). A thin accent bar hugs the left
+   edge and a soft wash bleeds a little past the content then fades — drawn
+   on an ::after overlay so the element's own layout/colors never move.
+   Applied imperatively for ~2.4s (see useFocusMessage / focusAnchor). */
+.oc-msg--highlight,
+.oc-anchor--flash {
+  position: relative;
 }
-@keyframes oc-msg-flash {
-  0%,
-  45% {
-    background-color: color-mix(in oklch, var(--primary) 22%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 55%, transparent);
+.oc-msg--highlight::after,
+.oc-anchor--flash::after {
+  content: "";
+  position: absolute;
+  /* Tight LEFT overhang: a list item's number lives just left of its content
+     box, and a wider bleed painted the accent bar across it (user report).
+     0.25rem slots the bar into the gap between marker and text. */
+  inset: -0.3rem -0.5rem -0.3rem -0.25rem;
+  border-radius: 0.55rem;
+  pointer-events: none;
+  /* Behind the element's own ink: the glow can never mask content. */
+  z-index: -1;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--oc-flash-hue) 16%, transparent),
+    color-mix(in oklch, var(--oc-flash-hue) 5%, transparent) 45%,
+    transparent 80%
+  );
+  box-shadow: inset 3px 0 0 color-mix(in oklch, var(--oc-flash-hue) 85%, transparent);
+  opacity: 0;
+  animation: oc-flash-breathe 2.4s ease-out;
+}
+/* `?m=` / whole-message jumps keep the charte accent; BOOKMARK anchors glow
+   in the bookmarks' own amber so the flash visibly answers the marker. */
+.oc-msg--highlight {
+  --oc-flash-hue: var(--highlight);
+}
+.oc-anchor--flash {
+  --oc-flash-hue: var(--bookmark);
+}
+@keyframes oc-flash-breathe {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  50% {
+    opacity: 1;
   }
   100% {
-    background-color: transparent;
-    box-shadow: 0 0 0 3px transparent;
+    opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oc-msg--highlight {
-    animation: none !important;
-    background-color: color-mix(in oklch, var(--primary) 14%, transparent);
+  .oc-msg--highlight::after,
+  .oc-anchor--flash::after {
+    animation: none;
+    opacity: 0.6;
   }
+}
+
+/* ---- Conversation bookmarks (IntelliJ-style) ---- */
+/* Hover gutter toggle: floats in the bubble's left margin at the hovered
+   block's top. Hidden on coarse pointers (no hover) via the media query. */
+.oc-bmk-gutter {
+  position: absolute;
+  left: -1.7rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+  cursor: pointer;
+  border-radius: 0.35rem;
+}
+.oc-bmk-gutter:hover {
+  opacity: 1;
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+}
+.oc-bmk-gutter.is-set {
+  opacity: 1;
+  color: var(--bookmark);
+}
+.oc-bmk-gutter.is-set svg {
+  fill: currentColor;
+}
+/* Placed bookmark marker: persistent amber flag in the gutter. */
+.oc-bmk-marker {
+  position: absolute;
+  left: -1.7rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--bookmark);
+  cursor: pointer;
+  border-radius: 0.35rem;
+}
+.oc-bmk-marker svg {
+  fill: currentColor;
+}
+.oc-bmk-marker:hover {
+  background: color-mix(in oklch, var(--bookmark) 15%, transparent);
+}
+/* The hover toggle sits above a coincident marker so the click TOGGLES. */
+.oc-bmk-gutter {
+  z-index: 2;
+}
+.oc-bmk-marker {
+  z-index: 1;
+}
+@media (hover: none) {
+  .oc-bmk-gutter {
+    display: none;
+  }
+}
+/* Rename/delete popover */
+.oc-bmk-pop {
+  width: 15rem;
+  padding: 0.6rem;
+}
+.oc-bmk-pop__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.oc-bmk-pop__actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+/* Floating navigation rail: right edge of the thread, vertically centered. */
+.oc-bmk-rail {
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.3rem 0.2rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--border);
+  background: color-mix(in oklch, var(--background) 88%, transparent);
+  backdrop-filter: blur(6px);
+  z-index: 5;
+}
+.oc-bmk-rail__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.oc-bmk-rail__btn {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+/* Bookmark list (click the rail counter): name or block excerpt per entry. */
+.oc-bmk-menu {
+  width: 17rem;
+}
+.oc-bmk-menu__flag {
+  flex-shrink: 0;
+  color: var(--bookmark);
+  fill: currentColor;
+}
+.oc-bmk-menu__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-bmk-menu__item--current {
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.oc-bmk-menu__foot {
+  padding: 0.35rem 0.5rem 0.25rem;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  border-top: 1px solid var(--border);
+  margin-top: 0.25rem;
+}
+/* The counter is now a real trigger button — keep the quiet chip look. */
+button.oc-bmk-rail__count {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0.1rem 0.15rem;
+  border-radius: 0.35rem;
+}
+button.oc-bmk-rail__count:hover {
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+
+/* Header bookmark toggle (top of the assistant bubble): hidden at rest,
+   revealed on bubble hover; stays visible amber once set. */
+.oc-bmk-headbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  margin-left: 0.15rem;
+  border: 0;
+  background: transparent;
+  border-radius: 0.3rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.oc-msg:hover .oc-bmk-headbtn,
+.oc-bmk-headbtn:focus-visible,
+.oc-bmk-headbtn.is-set {
+  opacity: 1;
+}
+.oc-bmk-headbtn:hover {
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.oc-bmk-headbtn.is-set {
+  color: var(--bookmark);
+}
+.oc-bmk-headbtn.is-set svg {
+  fill: currentColor;
+}
+
+/* User-message bookmark button: amber fill when set (matches the markers). */
+.oc-iconbtn--bmk-set {
+  color: var(--bookmark);
+}
+.oc-iconbtn--bmk-set svg {
+  fill: currentColor;
 }
 
 /* User turn: subtle low-contrast bubble, right-aligned (Open WebUI style). */
@@ -1436,6 +1654,8 @@
   justify-content: flex-end;
 }
 .oc-msg__bubble {
+  /* Positioning context for the bookmark marker (portaled in). */
+  position: relative;
   max-width: 85%;
   padding: 0.625rem 0.95rem;
   border-radius: 1.25rem;
@@ -1586,6 +1806,8 @@
   color: var(--foreground);
   line-height: 1.65;
   word-break: break-word;
+  /* Positioning context for the bookmark gutter/markers (portaled in). */
+  position: relative;
 }
 
 /* System turn: discreet centered note (plain text -> keep newlines). */
@@ -1798,6 +2020,14 @@
   padding: 0 1rem;
   color: var(--muted-foreground);
   font-size: 0.85rem;
+}
+/* Anchored variant: rendered INSIDE the working bubble's body (under the
+   sub-agent card / reply text), so it inherits the bubble width — drop the
+   thread-level centering + gutter. */
+.oc-turn-activity--anchored {
+  margin: 0.5rem 0 0;
+  max-width: none;
+  padding: 0;
 }
 
 /* "Réflexion…" — three dots bouncing in sequence (the typing indicator). */
@@ -3966,7 +4196,7 @@
   bottom: 22%;
   width: 3px;
   border-radius: 9999px;
-  background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 85%, transparent);
+  background: color-mix(in srgb, var(--proj-hue, var(--highlight)) 85%, transparent);
   transform-origin: center;
   animation: oc-busy-bar 1.3s ease-in-out infinite;
   pointer-events: none;
@@ -4027,25 +4257,44 @@
   font-weight: 400;
 }
 /* One-shot BRANCH landing flash (chatFork keeps the user in the source chat;
-   this pulse is how the eye finds the new row). Three soft accent pulses then
-   back to normal — the row's onAnimationEnd clears the class (a JS timer
-   covers reduced-motion, where the animation never runs). */
+   this glow is how the eye finds the new row). ONE gentle swell — a soft
+   left accent bar + a light wash that breathes in and fades — instead of the
+   old triple strobe (user feedback). The row's onAnimationEnd clears the
+   class (a JS timer covers reduced-motion, where the animation never runs). */
 @keyframes oc-chatitem-flash {
-  0%, 100% { background: transparent; }
-  12%, 44%, 76% {
-    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 26%, transparent);
+  0% {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
   }
-  28%, 60% {
-    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 8%, transparent);
+  18%,
+  55% {
+    background: color-mix(
+      in srgb,
+      var(--proj-hue, var(--highlight)) 10%,
+      transparent
+    );
+    box-shadow: inset 3px 0 0
+      color-mix(
+        in srgb,
+        var(--proj-hue, var(--highlight)) 70%,
+        transparent
+      );
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
   }
 }
 .oc-chatitem--flash {
+  border-radius: 0.375rem;
   animation: oc-chatitem-flash 1.9s ease-in-out 1;
 }
 @media (prefers-reduced-motion: reduce) {
   .oc-chatitem--flash {
     animation: none;
-    background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 18%, transparent);
+    background: color-mix(in srgb, var(--proj-hue, var(--highlight)) 10%, transparent);
+    box-shadow: inset 3px 0 0
+      color-mix(in srgb, var(--proj-hue, var(--highlight)) 70%, transparent);
   }
 }
 /* Unread marker: a completed reply landed since the user's last visit —
@@ -4054,7 +4303,7 @@
    moment the chat is opened (the read-state upsert). */
 @keyframes oc-unread-ping {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 45%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--proj-hue, var(--highlight)) 45%, transparent);
   }
   70%, 100% { box-shadow: 0 0 0 7px transparent; }
 }
@@ -4066,7 +4315,7 @@
   width: 5px;
   height: 5px;
   border-radius: 9999px;
-  background: color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 90%, transparent);
+  background: color-mix(in srgb, var(--proj-hue, var(--highlight)) 90%, transparent);
   animation: oc-unread-ping 2.4s ease-out infinite;
   pointer-events: none;
   transition: opacity 0.12s ease;
@@ -4078,7 +4327,7 @@
 @media (prefers-reduced-motion: reduce) {
   .oc-chatitem__unread {
     animation: none;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--proj-hue, var(--sidebar-primary, var(--primary))) 18%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--proj-hue, var(--highlight)) 18%, transparent);
   }
 }
 /* Hidden keyboard drag activator (grab-anywhere rows have no visible grip):
@@ -4126,6 +4375,17 @@
   display: inline-flex;
   align-items: center;
   color: var(--muted-foreground);
+}
+/* Quiet bookmark flag on a chat row (the chat holds the user's bookmarks).
+   Amber like the in-thread markers; fades on hover (grip/kebab swap). */
+.oc-chatitem__bookmark {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--bookmark);
+}
+.oc-chatitem__bookmark svg {
+  fill: currentColor;
 }
 .oc-colorgrid {
   display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.375rem;

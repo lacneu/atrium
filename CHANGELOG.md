@@ -8,6 +8,30 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.56.0] — Conversation bookmarks; deliveries return to their turn
+
+Feature + ordering release. No breaking changes; one additive table
+(`chatBookmarks`) and one additive field (`chatReads.activeBookmarkId`).
+
+- **Conversation bookmarks (IntelliJ-style).** Hover any block of a reply and
+  click the gutter flag to place a bookmark — on a whole message (user turns,
+  the reply's ⋯ menu) or on ONE paragraph/section inside a long delivered
+  answer. Placed bookmarks show as amber markers (rename/delete via their
+  popover), a floating x/y rail + mod+shift+↑/↓ navigate the ring, and
+  reopening a chat lands directly on the bookmark you last worked at (deep
+  links via `?m=` keep priority). A quiet flag in the sidebar shows which
+  chats hold bookmarks. Bookmarks are per-user and never leave the account.
+- **Background-task deliveries merge back into THEIR turn.** When a follow-up
+  (and its reply) interleaved before a background task finished, the delivery
+  used to open a fresh bubble at the bottom — reading as an out-of-order
+  answer. An anchored delivery now reopens its own bubble even after the
+  conversation moved on; only unanchored (inferred-chain) deliveries keep the
+  conservative bottom fallback.
+- **The "sub-agent is working" indicator sits under its turn.** It used to
+  float at the bottom of the thread, where a queued follow-up made it read as
+  belonging to the waiting message; it now anchors under the bubble that owns
+  the running work (bottom fallback only when the anchor is unknown).
+
 ## [0.55.4] — The activity indicator survives between chain links
 
 Feature/bug-fix release (Convex + bridge + frontend). No breaking changes.

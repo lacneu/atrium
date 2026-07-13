@@ -57,6 +57,12 @@ export const COLOR_TOKENS = [
   "sidebar-accent-foreground",
   "sidebar-border",
   "sidebar-ring",
+  // Jump-target highlight (deep-link `?m=` flash, fork landing glow). Falls
+  // back to the chart's primary when unset (index.css default).
+  "highlight",
+  // Conversation-bookmark accent (markers, rail, anchor flash). Amber by
+  // default (index.css); a chart may re-tint the whole bookmark language.
+  "bookmark",
 ] as const;
 
 /** A single mode-scoped color token name (closed set). */

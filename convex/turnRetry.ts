@@ -29,6 +29,7 @@
 //     autoRetryAttempt stamp — a persistent conflict ends in the honest error
 //     card (labeled session_init_conflict → actionable UI copy), never a loop.
 import { v } from "convex/values";
+import { purgeBookmarksForMessages } from "./chatBookmarks";
 import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -226,6 +227,14 @@ export const autoRetryTurn = internalMutation({
 
     // --- All guards passed: this is a pure re-run. -------------------------
     // 1. Drop the empty error card (nothing visible is lost — guarded above).
+    //    Purge any bookmark anchored to it first (placeable mid-stream via the
+    //    message menu) — this path bypasses messages.deleteMessage's cleanup.
+    await purgeBookmarksForMessages(
+      ctx,
+      last.userId,
+      chatId,
+      new Set([messageId]),
+    );
     await ctx.db.delete(messageId);
     // 2. Rebuild the outbox row from the user turn — same shape as the manual
     //    regenerate (messages.deleteMessage), incl. file attachments + per-turn

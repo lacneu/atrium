@@ -632,6 +632,8 @@ export class TurnSink {
               const engagement = {
                 chatId: this.chatId,
                 parentMessageId: messageId,
+                // The ack landed in THIS run's own message -> correlated.
+                anchorExact: true,
                 childSessionKey: taskChildKey(asyncStart.taskId),
                 kind: "task" as const,
                 status: "running" as const,

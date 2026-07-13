@@ -17,6 +17,7 @@
 // `listByChatPaginated`) rather than widen this window.
 
 import { v } from "convex/values";
+import { purgeBookmarksForMessages } from "./chatBookmarks";
 import { query, mutation, internalQuery, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { STALE_STREAM_MS } from "./stuckStreams";
@@ -47,7 +48,7 @@ import {
 // to cover a typical visible conversation while keeping the query (and the
 // per-message part fan-out below) cheap and bounded. Older history must be
 // reached via pagination, not by raising this.
-const MESSAGE_WINDOW = 200;
+export const MESSAGE_WINDOW = 200;
 
 // Bounded caps for the key-authed chat-state diagnostic reads (NEVER the
 // unbounded listSubAgents.collect()): mirror subAgentReports' bounded
@@ -1238,6 +1239,16 @@ export const deleteMessage = mutation({
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }
+
+    // Bookmarks anchored to a deleted turn: purge them with the message
+    // (labels are user content; stale rows would also eat the bounded
+    // windows). Rows are owner-only by construction.
+    await purgeBookmarksForMessages(
+      ctx,
+      chat.userId,
+      chat._id,
+      deletedIds,
+    );
 
     // Sub-agents anchored to a deleted turn: the spawning message is gone, so on a
     // retry/regenerate the child's SESSION is considered gone too — purge the row +

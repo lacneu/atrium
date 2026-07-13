@@ -1889,5 +1889,17 @@
 	"prefs_dictation_shortcut_cancel": "Cancel",
 	"prefs_dictation_shortcut_clear": "Clear",
 	"voice_test_gateway_error": "The gateway voice test failed.",
-	"chat_instance_unreachable_banner": "This agent's gateway is temporarily unreachable (it may be under maintenance). Messages can't be sent right now — try again in a few minutes."
+	"chat_instance_unreachable_banner": "This agent's gateway is temporarily unreachable (it may be under maintenance). Messages can't be sent right now — try again in a few minutes.",
+	"bookmark_add": "Add bookmark",
+	"bookmark_remove": "Remove bookmark",
+	"bookmark_rename": "Rename",
+	"bookmark_delete": "Delete",
+	"bookmark_label_placeholder": "Bookmark name",
+	"bookmark_marker": "Bookmark",
+	"bookmark_nav_prev": "Previous bookmark",
+	"bookmark_nav_next": "Next bookmark",
+	"bookmark_rail_label": "Bookmarks",
+	"bookmark_unreachable": "{count} bookmark(s) outside the loaded window",
+	"sidebar_has_bookmarks": "Has bookmarks",
+	"bookmark_open_list": "Bookmark list"
 }

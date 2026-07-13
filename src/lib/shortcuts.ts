@@ -21,6 +21,19 @@ export interface Shortcut {
 export const SHORTCUT_SEARCH: Shortcut = { mod: true, key: "k" };
 /** Start a new chat (ChatGPT-style ⌘⇧O / Ctrl+Shift+O convention). */
 export const SHORTCUT_NEW_CHAT: Shortcut = { mod: true, shift: true, key: "o" };
+/** Bookmark ring: previous/next bookmark inside the open conversation. Arrow
+ *  keys with mod+shift are free OUTSIDE editable fields (the listener skips
+ *  typing surfaces, where they mean "extend selection"). */
+export const SHORTCUT_BOOKMARK_PREV: Shortcut = {
+  mod: true,
+  shift: true,
+  key: "ArrowUp",
+};
+export const SHORTCUT_BOOKMARK_NEXT: Shortcut = {
+  mod: true,
+  shift: true,
+  key: "ArrowDown",
+};
 
 /**
  * True when `source` (a platform/userAgent string) denotes a Mac-family device.
@@ -54,8 +67,17 @@ export function isMac(): boolean {
  * per Apple HIG (⌥ ⇧ ⌘, Command last) e.g. `⌘K`, `⇧⌘O`; other platforms use
  * `+`-joined words e.g. `Ctrl+K`, `Ctrl+Shift+O`.
  */
+// Non-character keys render as their conventional symbols on every platform
+// ("⌘⇧ARROWUP" would be unreadable).
+const KEY_SYMBOLS: Record<string, string> = {
+  arrowup: "\u2191",
+  arrowdown: "\u2193",
+  arrowleft: "\u2190",
+  arrowright: "\u2192",
+};
+
 export function shortcutLabel(sc: Shortcut, mac: boolean): string {
-  const key = sc.key.toUpperCase();
+  const key = KEY_SYMBOLS[sc.key.toLowerCase()] ?? sc.key.toUpperCase();
   if (mac) {
     let prefix = "";
     if (sc.alt) prefix += "⌥";

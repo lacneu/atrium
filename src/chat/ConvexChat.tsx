@@ -64,6 +64,7 @@ import {
   type ExportMessage,
 } from "./transcriptExport";
 import {
+  Bookmark as BookmarkIcon,
   Volume2,
   SlidersHorizontal,
   ChevronDown,
@@ -145,6 +146,13 @@ import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
+import {
+  BookmarkGutter,
+  BookmarkNavRail,
+  BookmarksProvider,
+  BookmarkToggleButton,
+  useBookmarks,
+} from "./Bookmarks";
 import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
@@ -286,6 +294,16 @@ export function useUiPrefs(): UiEffective {
 // delete-assistant flow arm the SAME thinking placeholder + composer lock a
 // send uses, from inside any message row.
 const TurnGateContext = createContext<TurnGate | null>(null);
+
+// Where the thread-level "still working" indicator should ANCHOR: under the
+// bubble whose sub-agent row carries the live work. Null = bottom-of-thread
+// fallback (no anchor, or the anchor's bubble is not mounted). Without this a
+// QUEUED follow-up sits between the working bubble and the indicator, and the
+// signal reads as belonging to the WAITING user message (user report).
+const TurnActivityAnchorContext = createContext<{
+  messageId: string;
+  running: boolean;
+} | null>(null);
 
 // Mid-turn QUEUE (Phase 1): the composer reads this to send a follow-up WHILE a
 // turn is in flight. Null when no chat is mounted. Provided by ConvexChat from the
@@ -1080,7 +1098,13 @@ function ChatThread({
   // actively streaming (that bubble already carries its own dots).
   const turnActivity = useQuery(api.subAgents.turnActivity, {
     chatId: chatId as Id<"chats">,
-  }) as { running: boolean; deliveringSince: number | null } | undefined;
+  }) as
+    | {
+        running: boolean;
+        deliveringSince: number | null;
+        anchorMessageId: string | null;
+      }
+    | undefined;
   const liveRows = useQuery(api.messages.getStreamingText, { chatId }) as
     | unknown[]
     | undefined;
@@ -1130,9 +1154,36 @@ function ChatThread({
   const deliveringFresh = deliverKey != null && freshDeliverKey === deliverKey;
   const showTurnActivity =
     !anyStreaming && (turnActivity?.running === true || deliveringFresh);
+  // Anchor the indicator under the WORKING bubble when that bubble is
+  // actually mounted (a >window-old anchor degrades to the bottom fallback,
+  // never to a lost signal). DOM-checked on a slow tick: bounded to the
+  // active-work period, and remount races self-heal on the next tick.
+  const anchorId = turnActivity?.anchorMessageId ?? null;
+  const [anchorMounted, setAnchorMounted] = useState(false);
+  useEffect(() => {
+    if (!showTurnActivity || anchorId === null) {
+      setAnchorMounted(false);
+      return;
+    }
+    const check = () =>
+      setAnchorMounted(
+        document.querySelector(
+          `[data-message-id="${CSS.escape(anchorId)}"]`,
+        ) !== null,
+      );
+    check();
+    const t = window.setInterval(check, 2000);
+    return () => window.clearInterval(t);
+  }, [showTurnActivity, anchorId]);
+  const anchoredActivity =
+    showTurnActivity && anchorId !== null && anchorMounted
+      ? { messageId: anchorId, running: turnActivity?.running === true }
+      : null;
   useFocusMessage(chatId, focusMessageId);
   return (
     <GatewayDegradedContext.Provider value={gatewayDegraded}>
+    <TurnActivityAnchorContext.Provider value={anchoredActivity}>
+    <BookmarksProvider chatId={chatId} focusMessageId={focusMessageId}>
     <ThreadPrimitive.Root className="oc-thread">
       <ChatHeader chatId={chatId} />
       <ThreadAnnouncer chatId={chatId} />
@@ -1151,10 +1202,11 @@ function ChatThread({
             SystemMessage,
           }}
         />
-        {showTurnActivity ? (
+        {showTurnActivity && anchoredActivity === null ? (
           <TurnActivityIndicator running={turnActivity?.running === true} />
         ) : null}
       </ThreadPrimitive.Viewport>
+      <BookmarkNavRail />
       {/* Auto-hides (returns null) when the viewport is at the bottom; also
           suppressed on an empty thread (nothing to scroll to). */}
       <ThreadPrimitive.If empty={false}>
@@ -1178,6 +1230,8 @@ function ChatThread({
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
+    </BookmarksProvider>
+    </TurnActivityAnchorContext.Provider>
     </GatewayDegradedContext.Provider>
   );
 }
@@ -1186,9 +1240,18 @@ function ChatThread({
 // (sub-agent running, or its result being composed into the follow-up
 // delivery). Same visual language as the in-bubble thinking dots; shown in
 // BOTH the clean and the analysis views.
-function TurnActivityIndicator({ running }: { running: boolean }) {
+function TurnActivityIndicator({
+  running,
+  anchored = false,
+}: {
+  running: boolean;
+  anchored?: boolean;
+}) {
   return (
-    <div className="oc-turn-activity" role="status">
+    <div
+      className={`oc-turn-activity${anchored ? " oc-turn-activity--anchored" : ""}`}
+      role="status"
+    >
       <span className="oc-dots" aria-hidden>
         <span />
         <span />
@@ -1990,8 +2053,29 @@ function AssistantMoreMenu({
           <GitBranch size={14} aria-hidden />
           {m.chat_branch_action()}
         </ActionBarMorePrimitive.Item>
+        <BookmarkMenuItem />
       </ActionBarMorePrimitive.Content>
     </ActionBarMorePrimitive.Root>
+  );
+}
+
+// Message-level bookmark toggle in the assistant ⋯ menu (discoverability
+// twin of the per-block gutter; anchors at the TOP of the whole reply).
+function BookmarkMenuItem() {
+  const bmApi = useBookmarks();
+  const messageId = useMessage((msg) => msg.id);
+  if (!bmApi) return null;
+  const has =
+    bmApi.byMessage.get(messageId)?.some((b) => b.blockIndex === null) ??
+    false;
+  return (
+    <ActionBarMorePrimitive.Item
+      className={MSG_MENU_ITEM_CLS}
+      onSelect={() => bmApi.toggle(messageId, null)}
+    >
+      <BookmarkIcon size={14} aria-hidden />
+      {has ? m.bookmark_remove() : m.bookmark_add()}
+    </ActionBarMorePrimitive.Item>
   );
 }
 
@@ -2488,6 +2572,7 @@ function UserMessage() {
       data-message-id={messageId}
     >
       <div className="oc-msg__col oc-msg__col--user">
+        <BookmarkGutter />
         <div className="oc-msg__bubble">
           {showSource ? (
             <MessageSource />
@@ -2510,6 +2595,7 @@ function UserMessage() {
             className="oc-msg__actions oc-msg__actions--user"
             autohide="not-last"
           >
+          <BookmarkToggleButton />
           {ui.copyUser ? (
             <ActionBarPrimitive.Copy className="oc-iconbtn" title={m.chat_copy_message()}>
               <MessagePrimitive.If copied>
@@ -2697,6 +2783,11 @@ function AssistantMessage() {
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // Anchored thread-activity indicator: render under THIS bubble when the
+  // live sub-agent work is anchored here (see TurnActivityAnchorContext).
+  const anchorCtx = useContext(TurnActivityAnchorContext);
+  const anchoredHere =
+    anchorCtx !== null && anchorCtx.messageId === messageId ? anchorCtx : null;
   // A QUEUED user turn's synthetic upcoming-message placeholder (assistant-ui shows it
   // only because ANOTHER turn is streaming; it carries no status of its own) is
   // redundant with the queued USER message's "En attente" badge. `status===undefined`
@@ -2772,6 +2863,10 @@ function AssistantMessage() {
               {assistantDisplayName(identity)}
             </>
           )}
+          {/* Whole-message bookmark, placed FROM THE TOP of the bubble (where
+              its marker will sit) — quicker than digging into the bottom ⋯
+              menu on a long reply (user request). */}
+          <BookmarkToggleButton header />
         </div>
         <div className="oc-msg__body">
           {/* "Outils" ON = the ANALYSIS view: ONE grouped meta block above the answer
@@ -2828,7 +2923,11 @@ function AssistantMessage() {
           <AssistantIdentityContext.Provider value={messageIdentity}>
             <RunStatus />
           </AssistantIdentityContext.Provider>
+          {anchoredHere !== null ? (
+            <TurnActivityIndicator running={anchoredHere.running} anchored />
+          ) : null}
         </div>
+        <BookmarkGutter messageLevelMarkers={false} />
         {/* Per-message actions, hidden while a turn runs + revealed on hover for
             non-last turns (always shown on the last). Copy + Delete. Deleting an
             assistant turn truncates from here and REGENERATES the last user turn
