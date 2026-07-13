@@ -61,6 +61,13 @@ export interface SubAgentRecord {
   chatId: string;
   parentMessageId?: string | null;
   childSessionKey: string;
+  /** Row family: a spawned sub-agent (default) or a gateway BACKGROUND TASK
+   *  engagement (`task:<taskId>` rows born from an async tool result). */
+  kind?: "subagent" | "task";
+  /** The delivery run this child was spawned INSIDE (`<tool>:<taskId>:ok`):
+   *  lets the announce merge fall back to the ENGAGEMENT's anchor when the
+   *  delivery run never opened a message of its own. */
+  bornOfRun?: string;
   taskName?: string;
   status: "running" | "done" | "error" | "aborted";
   resultText?: string;
@@ -525,6 +532,8 @@ type IngestOp =
       chatId: string;
       parentMessageId?: string | null;
       childSessionKey: string;
+      kind?: "subagent" | "task";
+      bornOfRun?: string;
       taskName?: string;
       status: "running" | "done" | "error" | "aborted";
       resultText?: string;
@@ -1547,6 +1556,8 @@ export class HttpConvexWriter implements ConvexWriter {
       chatId: record.chatId,
       parentMessageId: record.parentMessageId ?? null,
       childSessionKey: record.childSessionKey,
+      kind: record.kind,
+      bornOfRun: record.bornOfRun,
       taskName: record.taskName,
       status: record.status,
       resultText: record.resultText,

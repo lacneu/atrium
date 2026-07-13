@@ -1227,6 +1227,15 @@ export default defineSchema({
     // land without it. by_chat is the load-bearing index.
     parentMessageId: v.optional(v.id("messages")),
     childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
+    // Row family: absent/"subagent" = a spawned child session; "task" = a
+    // gateway BACKGROUND-TASK engagement (`task:<taskId>` key, born from an
+    // async tool ack {async:true, taskId}) — same lifecycle/anchor semantics,
+    // rendered distinctly by the monitor.
+    kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
+    // The delivery run this child was spawned INSIDE (`<tool>:<taskId>:ok`):
+    // when that run never opened a message, the announce merge resolves the
+    // anchor through the ENGAGEMENT row this points to.
+    bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
     status: v.union(
       v.literal("running"),
@@ -1323,6 +1332,9 @@ export default defineSchema({
     // cap). by_chat_status only orders by _creationTime, which can drop exactly the
     // stale running rows the stuck check needs (Codex P2).
     .index("by_chat_status_updated", ["chatId", "status", "updatedAt"])
+    // Busy-check point lookups: "does a RUNNING row of THIS kind exist?"
+    // (kind=undefined covers legacy sub-agent rows written before the field).
+    .index("by_chat_status_kind", ["chatId", "status", "kind"])
     // Bounded scan for the stale-sub-agent reaper (subAgents.reapStaleSubAgents):
     // a `running` row is a best-effort observer write, and since a running row gates
     // isChatBusy, a dead observer (dropped terminal / bridge restart / connection-

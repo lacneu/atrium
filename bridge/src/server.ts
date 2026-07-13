@@ -2171,6 +2171,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Scheduled-job management (get/runs/update/remove/run) — Convex owns
       // the ownership decision (op:"get" probe against the user's agents).
       "/cron-manage",
+      // Background-task reconciliation (tasks.get by id) — the thread's
+      // activity indicator verifies with the GATEWAY before expiring an
+      // engagement instead of a blind timeout.
+      "/tasks-probe",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2430,6 +2434,104 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /cron-list failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/tasks-probe") {
+      // Verify background-task engagements against the gateway's task
+      // registry (`tasks.get`). READ-ONLY, short operator connection; a
+      // gateway without the RPC (older version) fails soft — the caller
+      // falls back to its local expiry.
+      let probeBody: Record<string, unknown> = {};
+      try {
+        probeBody = JSON.parse(raw || "{}") as Record<string, unknown>;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const pInstance =
+        typeof probeBody.instanceName === "string" ? probeBody.instanceName : null;
+      const pBundle = pInstance ? served.get(pInstance) : undefined;
+      const pIds = Array.isArray(probeBody.taskIds)
+        ? probeBody.taskIds
+            .filter((t): t is string => typeof t === "string" && t !== "")
+            // Matches the Convex sender's cap (pendingTaskEngagements take(20))
+            // — a smaller cap here would starve tasks beyond it forever.
+            .slice(0, 20)
+        : [];
+      if (!pInstance || !pBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (pBundle.config.kind === "hermes" || pIds.length === 0) {
+        // No Hermes task registry — honest empty answer (caller keeps its cap).
+        sendJson(res, 200, { ok: true, tasks: [] });
+        return;
+      }
+      try {
+        const tasks = await withOperatorConnection(
+          pBundle.config,
+          async (conn) => {
+            // PARALLEL lookups on the multiplexed socket: a sequential batch
+            // (10 ids x 10s worst case + a cold 30s connect) would blow past
+            // the Convex client's 50s budget and lose EVERY already-fetched
+            // status. Worst case here: connect + one 8s window.
+            const settled = await Promise.all(
+              pIds.map(async (taskId) => {
+                try {
+                  const r = await conn.request("tasks.get", { taskId }, 8_000);
+                  const task = (r.payload as { task?: Record<string, unknown> })
+                    ?.task;
+                  return {
+                    taskId,
+                    status:
+                      typeof task?.status === "string"
+                        ? task.status.slice(0, 40)
+                        : null,
+                    summary:
+                      typeof task?.terminalSummary === "string"
+                        ? task.terminalSummary.slice(0, 600)
+                        : null,
+                    error:
+                      typeof task?.error === "string"
+                        ? task.error.slice(0, 400)
+                        : null,
+                  };
+                } catch (err) {
+                  // DISTINGUISH the registry's explicit "task not found"
+                  // (pinned: INVALID_REQUEST `task not found: <id>`) from a
+                  // transient failure (timeout, drop, missing RPC on an old
+                  // gateway): only the former may ever settle a row as lost —
+                  // a transient error must leave the local state untouched,
+                  // so the entry is OMITTED from the batch.
+                  const msg = (err as Error)?.message ?? "";
+                  if (/task not found/i.test(msg)) {
+                    return {
+                      taskId,
+                      status: "not_found",
+                      summary: null,
+                      error: null,
+                    };
+                  }
+                  return null;
+                }
+              }),
+            );
+            return settled.filter(
+              (t): t is NonNullable<typeof t> => t !== null,
+            );
+          },
+          noteHandshakeFor(pInstance),
+        );
+        sendJson(res, 200, { ok: true, tasks });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /tasks-probe failed [${code}]:`,
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });

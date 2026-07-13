@@ -36,6 +36,10 @@ export interface ActivityRowProps {
   ariaExpanded?: boolean;
   /** Set on the panel-openers so AT announces "opens a dialog". */
   ariaHasPopup?: boolean;
+  /** Render as a NON-interactive row (no button semantics, no chevron): for
+   *  informational entries like background-task engagements — a button that
+   *  ignores clicks would lie to assistive tech. */
+  inert?: boolean;
 }
 
 export function ActivityRow({
@@ -51,7 +55,25 @@ export function ActivityRow({
   ariaLabel,
   ariaExpanded,
   ariaHasPopup,
+  inert = false,
 }: ActivityRowProps) {
+  if (inert) {
+    return (
+      <div
+        className={`oc-actrow oc-actrow--${tone} oc-actrow--inert`}
+        title={title}
+      >
+        <span className="oc-actrow__top">
+          <span className="oc-actrow__icon" aria-hidden>
+            {icon}
+          </span>
+          <span className="oc-actrow__label">{label}</span>
+          {trailing ? <span className="oc-actrow__trail">{trailing}</span> : null}
+        </span>
+        {sublabel ? <span className="oc-actrow__sub">{sublabel}</span> : null}
+      </div>
+    );
+  }
   return (
     <button
       type="button"

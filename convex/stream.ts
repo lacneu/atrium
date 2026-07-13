@@ -20,6 +20,7 @@ import { v } from "convex/values";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { deliveryChildKey, taskDeliveryOutcome } from "./lib/deliveryRuns";
 import { Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
@@ -143,7 +144,27 @@ export const startAssistant = internalMutation({
     // announce correlates to a finished parent message that is still the
     // chat's last message, REOPEN it and stream the announce into it instead
     // of creating a second assistant message.
-    if (runId !== undefined && runId.startsWith("announce:")) {
+    if (runId !== undefined && deliveryChildKey(runId) !== null) {
+      // A task-delivery run arriving means the background task IS finished:
+      // settle its engagement row (turns the thread indicator off) whatever
+      // the merge decision below. The silent (NO_REPLY) path settles from the
+      // bridge sink instead — this covers the visible path.
+      const outcome = taskDeliveryOutcome(runId);
+      if (outcome !== null) {
+        const engagement = await ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) =>
+            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+          )
+          .filter((q) => q.eq(q.field("chatId"), chatId))
+          .first();
+        if (engagement !== null && engagement.status === "running") {
+          await ctx.db.patch(engagement._id, {
+            status: outcome === "ok" ? ("done" as const) : ("error" as const),
+            updatedAt: now,
+          });
+        }
+      }
       const merge = await reopenParentForAnnounce(ctx, chatId, runId, now);
       if (merge !== null) {
         if (merge.reopened) {
@@ -257,16 +278,29 @@ async function reopenParentForAnnounce(
   announceRunId: string,
   now: number,
 ): Promise<{ messageId: Id<"messages">; reopened: boolean } | null> {
-  const seg = announceRunId.split(":");
-  if (seg.length < 4) return null;
-  const childSessionKey = seg.slice(2, -1).join(":");
-  if (childSessionKey === "") return null;
+  const childSessionKey = deliveryChildKey(announceRunId);
+  if (childSessionKey === null) return null;
   const sub = await ctx.db
     .query("subAgents")
     .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
     .filter((q) => q.eq(q.field("chatId"), chatId))
     .first();
-  const parentId = sub?.parentMessageId;
+  let parentId = sub?.parentMessageId;
+  if (parentId === undefined && sub?.bornOfRun !== undefined) {
+    // The child was spawned INSIDE a task-delivery run that never opened a
+    // message of its own (NO_REPLY): resolve the anchor through the
+    // ENGAGEMENT row of that run — the bubble of the turn that STARTED the
+    // background task is where the user expects the result.
+    const engagementKey = deliveryChildKey(sub.bornOfRun);
+    if (engagementKey !== null) {
+      const engagement = await ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", engagementKey))
+        .filter((q) => q.eq(q.field("chatId"), chatId))
+        .first();
+      parentId = engagement?.parentMessageId ?? undefined;
+    }
+  }
   if (parentId === undefined) return null;
   const parent = await ctx.db.get(parentId);
   if (parent === null || parent.chatId !== chatId || parent.role !== "assistant") {
@@ -806,7 +840,8 @@ export const addPart = internalMutation({
     // message already carries is a replay: drop it, or every rebroadcast would
     // stack visible duplicates (and re-mint files rows for media).
     const replayArmed =
-      message.runId?.startsWith("announce:") === true &&
+      message.runId !== undefined &&
+      deliveryChildKey(message.runId) !== null &&
       message.announceReplayArmed !== undefined &&
       message.announceReplayArmed > Date.now();
     if (replayArmed) {
@@ -854,7 +889,7 @@ export const addPart = internalMutation({
     const order = existing.length;
     const announceRun = replayArmed
       ? (message.announceReplayRun ?? message.runId)
-      : message.runId?.startsWith("announce:") === true
+      : message.runId !== undefined && deliveryChildKey(message.runId) !== null
         ? message.runId
         : undefined;
     await ctx.db.insert("messageParts", {

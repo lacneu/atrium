@@ -583,6 +583,113 @@ describe("announce merge (one bubble per delegated turn)", () => {
   });
 });
 
+// Background-task delivery runs (`<tool>:<taskId>:ok`) reuse the announce
+// merge machinery through the ENGAGEMENT row written when the task started.
+describe("task-delivery merge (async tools)", () => {
+  const TASK_ID = "c3e21208-67c2-40ca-b9a4-7368a7109605";
+  const DELIVERY_RUN = `image_generate:${TASK_ID}:ok`;
+
+  async function seedEngagement(
+    t: ReturnType<typeof convexTest>,
+    withAnchor = true,
+  ) {
+    const seeded = await seedDelegatedTurn(t, { withSubAgentRow: false });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subAgents", {
+        chatId: seeded.chatId,
+        ...(withAnchor ? { parentMessageId: seeded.parentId } : {}),
+        childSessionKey: `task:${TASK_ID}`,
+        kind: "task" as const,
+        status: "running" as const,
+        taskName: "image_generate",
+        createdAt: 1500,
+        updatedAt: 1500,
+      });
+    });
+    return seeded;
+  }
+
+  test("the delivery run MERGES into the requesting turn's bubble + settles the engagement", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedEngagement(t);
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: DELIVERY_RUN,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    // Reopened for streaming: the delivery lands in the SAME bubble.
+    expect(parent?.status).toBe("streaming");
+    expect(parent?.runId).toBe(DELIVERY_RUN);
+    expect(parent?.announcePrefix).toBe("La tâche est lancée.");
+    // The engagement row settled (thread indicator off).
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${TASK_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.status).toBe("done");
+  });
+
+  test("an :error delivery settles the engagement as error (still merges)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedEngagement(t);
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${TASK_ID}:error`,
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${TASK_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.status).toBe("error");
+  });
+
+  test("a child spawned INSIDE the delivery run (bornOfRun, no own anchor) merges via the ENGAGEMENT anchor", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedEngagement(t);
+    // The delivery run stayed invisible (NO_REPLY): the spawned child was
+    // registered WITHOUT an anchor but stamped bornOfRun.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: CHILD_KEY,
+        bornOfRun: DELIVERY_RUN,
+        status: "done" as const,
+        createdAt: 2600,
+        updatedAt: 2700,
+      });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    // The announce resolved its anchor THROUGH the engagement row.
+    expect(parent?.status).toBe("streaming");
+    expect(parent?.runId).toBe(ANNOUNCE_RUN);
+  });
+
+  test("no engagement row -> fail closed (fresh bubble, no crash)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: DELIVERY_RUN,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("complete"); // untouched — separate bubble
+  });
+});
+
 // Thread-level activity signal (subAgents.turnActivity) — powers the clean
 // view's spinner while a delegated turn still works after the parent settled.
 describe("subAgents.turnActivity", () => {

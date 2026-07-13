@@ -601,7 +601,7 @@ export function ScheduledTab() {
                                   <Zap size={14} aria-hidden />
                                 </Button>
                               ) : null}
-                              {canManage && j.enabled !== null ? (
+                              {full && j.enabled !== null ? (
                                 <Button
                                   variant="ghost"
                                   size="icon-sm"

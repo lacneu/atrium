@@ -25,6 +25,11 @@ import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js
 import { cronPartFromTool } from "./cron-part.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
+  asyncTaskStartFromTool,
+  taskChildKey,
+  taskDeliveryRunFromRunId,
+} from "./async-task.js";
+import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   type ProvenancePart,
 } from "./provenance.js";
@@ -142,6 +147,15 @@ export class TurnSink {
   // turn's wire (the intersection can't catch that case). Live prod: denis'
   // delegate-then-yield turn was falsely marked empty_response (2026-07-10).
   private yieldCalledThisTurn = false;
+  /** A tool result STARTED a gateway background task this turn (structured
+   *  details {async:true, taskId}): the reply may legitimately end silent —
+   *  the delivery arrives later as a correlated spontaneous run. Same
+   *  empty-response exemption class as an explicit yield. */
+  private asyncTaskStartedThisTurn = false;
+  /** The ack runId of the CURRENT turn (normal or deferred). Lets the settle
+   *  paths recognize a background-task DELIVERY run and close its engagement
+   *  row even when the run stayed invisible (NO_REPLY). */
+  private turnRunId: string | null = null;
   // Last child-activity heartbeat (ms wall): while the parent waits silently on
   // a long-running child, each observed child frame refreshes the streaming
   // row's updatedAt (via the awaiting_subagents phase) at most once a minute,
@@ -289,6 +303,8 @@ export class TurnSink {
     this.spawnedChildKeysThisTurn = new Set();
     this.spawnCalledThisTurn = false;
     this.yieldCalledThisTurn = false;
+    this.asyncTaskStartedThisTurn = false;
+    this.turnRunId = ackRunId;
     this.lastChildHeartbeatMs = 0;
     this.pendingRehydrated = false;
     this.pendingOpen = false;
@@ -325,6 +341,29 @@ export class TurnSink {
       // Tools-ON placeholder detail: the gateway is silently processing the
       // prepended history before any visible output.
       this.writer.setPhase?.(this.messageId, "processing_history");
+    }
+  }
+
+  /** When the settling turn IS a background-task delivery run, close its
+   *  engagement row (`task:<taskId>`), bubble or not: the task registry has
+   *  delivered — the thread indicator must stop pointing at it. Idempotent
+   *  (the Convex upsert never downgrades a terminal row). */
+  private async settleTaskDeliveryEngagement(): Promise<void> {
+    const delivery = taskDeliveryRunFromRunId(this.turnRunId);
+    if (delivery === null) return;
+    try {
+      await this.writer.upsertSubAgent?.({
+        chatId: this.chatId,
+        childSessionKey: taskChildKey(delivery.taskId),
+        kind: "task",
+        status: delivery.outcome === "ok" ? "done" : "error",
+        taskName: delivery.toolName,
+      });
+    } catch (err) {
+      console.error(
+        "task engagement settle failed (non-fatal):",
+        (err as Error)?.message ?? err,
+      );
     }
   }
 
@@ -372,6 +411,8 @@ export class TurnSink {
         // sentinel / an empty reply): no message was ever created — silence.
         console.log("[announce] silent run discarded (no visible content)");
       }
+      // Even a silent delivery means the background task FINISHED.
+      await this.settleTaskDeliveryEngagement();
       this.resetDeferred();
       return true;
     }
@@ -573,6 +614,49 @@ export class TurnSink {
             );
             if (planPart !== null) {
               await this.writer.addPlanPart?.(messageId, planPart);
+            }
+          }
+          // BACKGROUND TASK started (structured {async:true, taskId} on the
+          // tool result — image/video generation, any durable gateway work):
+          // record the ENGAGEMENT as a task row anchored to THIS message, so
+          // the thread's activity indicator keeps running after the turn
+          // settles and the delivery run can merge back into this bubble.
+          {
+            const asyncStart = asyncTaskStartFromTool(
+              asString(event.name),
+              asString(event.phase),
+              event.output,
+            );
+            if (asyncStart !== null) {
+              this.asyncTaskStartedThisTurn = true;
+              const engagement = {
+                chatId: this.chatId,
+                parentMessageId: messageId,
+                childSessionKey: taskChildKey(asyncStart.taskId),
+                kind: "task" as const,
+                status: "running" as const,
+                taskName: asyncStart.toolName,
+              };
+              try {
+                await this.writer.upsertSubAgent?.(engagement);
+              } catch (err) {
+                // Non-critical observation write: a transient failure must
+                // never abort the frame (it would not be replayed) — but the
+                // row is the ONLY seed the reconciliation reads, so retry
+                // once off the critical path before giving up.
+                console.error(
+                  "task engagement upsert failed (retrying once):",
+                  (err as Error)?.message ?? err,
+                );
+                setTimeout(() => {
+                  void this.writer.upsertSubAgent?.(engagement).catch((e) =>
+                    console.error(
+                      "task engagement upsert retry failed:",
+                      (e as Error)?.message ?? e,
+                    ),
+                  );
+                }, 2_000);
+              }
             }
           }
           break;
@@ -835,6 +919,10 @@ export class TurnSink {
       // the yield, so no child key was on THIS turn's wire — live prod denis
       // 2026-07-10, falsely flagged empty_response).
       !this.yieldCalledThisTurn &&
+      // A background task was STARTED this turn (async tool ack): the reply
+      // arrives later as the task's correlated delivery run — a silent end
+      // here is the async pattern, not an empty response.
+      !this.asyncTaskStartedThisTurn &&
       // A child SPAWNED BY THIS TURN was observed working (intersection of the
       // turn's own spawn results with the observed child keys): the parent
       // ending silent is the ANNOUNCE pattern (reply arrives as a spontaneous
@@ -871,6 +959,10 @@ export class TurnSink {
       effectiveError,
       effectiveErrorKind,
     );
+    // A visible task-delivery run also settles its engagement here (the
+    // Convex-side settle on startAssistant covers the merge path; this one is
+    // the belt for a delivery that opened its own bubble).
+    await this.settleTaskDeliveryEngagement();
     // Stats: a turn that ends in ERROR (never a user abort) counts as a
     // downstream failure on its target — AFTER the finalize so a stats throw
     // can never break the turn lifecycle.

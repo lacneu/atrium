@@ -8,6 +8,43 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.55.1] — Background work you can trust: async tools tracked, merged and verified
+
+Bug-fix release (Convex + bridge + frontend). No breaking changes; the schema
+changes are additive.
+
+- **Fixed: async tools (image/video generation…) broke the one-bubble
+  contract.** A turn that started a gateway background task used to end with
+  a false "empty response" error, show NO indicator while the task worked,
+  and deliver the result as a separate bubble — with the sub-agents spawned
+  during that delivery losing their metadata anchor (reported live on dev,
+  root-caused from gateway logs + frame captures). Now: the async tool's
+  structured ack ({async:true, taskId}) records an ENGAGEMENT anchored to the
+  requesting turn; the thread indicator runs through the whole background
+  window; the delivery run (`<tool>:<taskId>:ok`) merges into the requesting
+  turn's bubble exactly like sub-agent announces (same fail-closed rules,
+  same replay dedup); and a sub-agent spawned inside a silent delivery run
+  inherits the engagement's anchor, so ITS result merges into the right
+  bubble too.
+- **The gateway's task registry is now the source of truth.** While an
+  engagement spins, Atrium verifies it against the gateway (`tasks.get`
+  through the bridge) instead of guessing: a task whose delivery frame was
+  missed (bridge restart, dropped wake) settles from the registry's verdict;
+  a registry-unknown OLD task is honestly marked lost; transient probe
+  failures never touch local state; and an unverifiable task expires via a
+  24h safety net instead of spinning forever. Background tasks show in the
+  sub-agent monitor as informational "Background task" rows — and they never
+  block sending new messages (only real sub-agent sessions hold the
+  composer).
+- **Fixed: pausing a Hermes cron made it disappear for good.** Hermes'
+  `cron.manage` list API cannot show disabled jobs, so a cron paused from the
+  Scheduled tab vanished from the table with no way to re-enable it from
+  Atrium (validated live against the 0.18.2 bench: the pause itself works —
+  the job just becomes invisible). The pause/resume toggle is therefore no
+  longer offered on Hermes jobs (delete remains); the server refuses the
+  underlying update fail-closed. Ask the agent in chat to pause/resume a
+  Hermes cron; OpenClaw jobs keep the full toggle.
+
 ## [0.55.0] — Scheduled jobs managed end-to-end, and the agent's work plan live in the reply
 
 Feature release (Convex + bridge + frontend). No breaking changes; the schema

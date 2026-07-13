@@ -147,6 +147,7 @@
 	"plan_activity_label": "Plan — {done}/{total} steps",
 	"plan_activity_expand": "Show the work plan",
 	"plan_activity_collapse": "Collapse the work plan",
+	"subagent_task_label": "Background task: {tool}",
 	"scheduled_hint_manage": "Run, pause, edit or delete a job from this table — or ask the agent in a conversation.",
 	"turn_subagent_working": "A sub-agent is working in the background…",
 	"turn_result_incoming": "The agent is finalizing its reply…",

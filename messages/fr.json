@@ -147,6 +147,7 @@
 	"plan_activity_label": "Plan — {done}/{total} étapes",
 	"plan_activity_expand": "Afficher le plan de travail",
 	"plan_activity_collapse": "Replier le plan de travail",
+	"subagent_task_label": "Tâche de fond : {tool}",
 	"scheduled_hint_manage": "Lancez, suspendez, modifiez ou supprimez une tâche depuis ce tableau — ou demandez-le à l'agent en conversation.",
 	"turn_subagent_working": "Un sous-agent travaille en arrière-plan…",
 	"turn_result_incoming": "L'agent finalise sa réponse…",

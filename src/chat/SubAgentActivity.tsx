@@ -1,7 +1,9 @@
 import { useContext, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { useMessage } from "@assistant-ui/react";
-import { Bot, Check, CircleAlert, LoaderCircle } from "lucide-react";
+import { Bot, Check, CircleAlert, LoaderCircle,
+  Zap,
+} from "lucide-react";
 import { ActivityRow } from "./ActivityRow";
 import { SubAgentPanelContext } from "./SubAgentPanel";
 import { m } from "@/paraglide/messages.js";
@@ -13,6 +15,7 @@ import {
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
   type EmptyStateToolPart,
+  toolPartsStartedAsyncTask,
 } from "./assistantEmptyState";
 import {
   subAgentKindLabel,
@@ -101,16 +104,22 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
     >
       <ActivityRow
         tone={card.tone}
-        icon={<Bot size={15} />}
-        label={subAgentKindLabel(card)}
-        sublabel={card.taskName}
+        icon={card.isTask ? <Zap size={15} /> : <Bot size={15} />}
+        label={card.isTask ? card.label : subAgentKindLabel(card)}
+        sublabel={card.isTask ? undefined : card.taskName}
         trailing={trailing}
         active={isActive}
-        ariaExpanded={isActive}
-        ariaHasPopup
-        title={m.subagent_panel_open()}
-        ariaLabel={m.subagent_panel_open()}
-        onClick={() => panel?.openFor(card.childSessionKey)}
+        ariaExpanded={card.isTask ? undefined : isActive}
+        ariaHasPopup={!card.isTask}
+        title={card.isTask ? undefined : m.subagent_panel_open()}
+        ariaLabel={card.isTask ? undefined : m.subagent_panel_open()}
+        // A background-task row is informational only: task:<id> is not a
+        // gateway session — no panel, and INERT so assistive tech never
+        // announces a dialog-opening button that ignores clicks.
+        inert={card.isTask}
+        onClick={() => {
+          if (!card.isTask) panel?.openFor(card.childSessionKey);
+        }}
       />
       {/* Visible-FAILURE inline (un-missable). The full detail (tools + result,
           rendered markdown) + the "signaler une anomalie" action live in the
@@ -160,7 +169,12 @@ export function MessageSubAgents() {
   // Gate on whether the turn CALLED sessions_spawn (its tool part NAME, always
   // present) — not on a parseable key set — so the subscriptions run for every
   // delegating turn and the rows correlate by parentMessageId below.
-  const hasSpawn = useMemo(() => toolPartsHaveSpawn(toolParts), [toolParts]);
+  // Spawn OR async-task start both put rows in the monitor (a task's
+  // engagement row is created by e.g. image_generate — no sessions_spawn).
+  const hasSpawn = useMemo(
+    () => toolPartsHaveSpawn(toolParts) || toolPartsStartedAsyncTask(toolParts),
+    [toolParts],
+  );
   // The Convex message _id (convertMessage surfaces it as custom.messageId) = the
   // bridge's parentMessageId (robust correlation key).
   const messageId = useMessage(

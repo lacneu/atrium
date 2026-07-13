@@ -282,6 +282,8 @@ type IngestOp =
       chatId: string;
       parentMessageId?: string | null;
       childSessionKey: string;
+      kind?: "subagent" | "task";
+      bornOfRun?: string;
       taskName?: string;
       status: "running" | "done" | "error" | "aborted";
       resultText?: string;
@@ -769,6 +771,8 @@ export const ingest = httpAction(async (ctx, request) => {
           ? (body.parentMessageId as Id<"messages">)
           : undefined,
         childSessionKey: body.childSessionKey,
+        kind: body.kind,
+        bornOfRun: body.bornOfRun,
         taskName: body.taskName,
         status: body.status,
         resultText: body.resultText,

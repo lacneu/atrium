@@ -12,6 +12,7 @@
 import { Normalizer } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
+import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
@@ -689,7 +690,14 @@ export class RunManager {
  */
 function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
   const runId = sessionRunIdFor(frame, sessionKey);
-  return runId !== null && runId.startsWith("announce:") ? runId : null;
+  if (runId === null) return null;
+  // Two gateway-initiated delivery families ride the same spontaneous-turn
+  // machinery (deferOpen + stash-during-active-turn + NO_REPLY discard):
+  // sub-agent announces AND background-task deliveries (`<tool>:<taskId>:ok`,
+  // pinned live 2026-07-12 — image_generate/video/any durable tool).
+  if (runId.startsWith("announce:")) return runId;
+  if (taskDeliveryRunFromRunId(runId) !== null) return runId;
+  return null;
 }
 
 /** The frame's runId when it is an agent/chat event addressed EXACTLY to this

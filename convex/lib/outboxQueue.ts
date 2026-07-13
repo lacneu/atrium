@@ -111,13 +111,28 @@ export async function isChatBusy(
   // the chat has accumulated (a by_chat scan + JS status filter would read the whole
   // per-chat history on the hot send/drain path). A dead-observer row that never goes
   // terminal is bounded by the reaper (subAgents.reapStaleSubAgents), NOT here.
-  const liveSubAgent = await ctx.db
+  // BACKGROUND TASKS (kind:"task") do NOT hold: the parent turn is settled,
+  // the session is free, and a delivery racing a new turn is stashed by the
+  // bridge — blocking sends for a 2-minute image generation would be wrong.
+  // Only real sub-agent sessions (one-turn-per-session constraint) hold.
+  // Two POINT lookups on (chat, status, kind): real sub-agent rows are
+  // kind:"subagent" or legacy kind:undefined — background tasks (kind:"task")
+  // never hold, and long-running tasks must not degrade this hot send/drain
+  // path into a slice scan.
+  const legacyRunning = await ctx.db
     .query("subAgents")
-    .withIndex("by_chat_status", (q) =>
-      q.eq("chatId", chatId).eq("status", "running"),
+    .withIndex("by_chat_status_kind", (q) =>
+      q.eq("chatId", chatId).eq("status", "running").eq("kind", undefined),
     )
     .first();
-  return liveSubAgent !== null;
+  if (legacyRunning !== null) return true;
+  const subagentRunning = await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat_status_kind", (q) =>
+      q.eq("chatId", chatId).eq("status", "running").eq("kind", "subagent"),
+    )
+    .first();
+  return subagentRunning !== null;
 }
 
 /** How many sends are currently parked behind the in-flight turn for a chat. */

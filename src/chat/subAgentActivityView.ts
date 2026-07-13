@@ -68,6 +68,9 @@ export type SubAgentRow = {
    *  registration). The ROBUST correlation key — message-precise, no toolPart parse. */
   parentMessageId?: string;
   childSessionKey: string;
+  /** "task" = a gateway background-task engagement (async tool, e.g. image
+   *  generation) rather than a spawned sub-agent session. */
+  kind?: "subagent" | "task";
   taskName?: string;
   status: SubAgentStatus;
   resultText?: string;
@@ -89,6 +92,9 @@ export type SubAgentTone = "running" | "done" | "failed";
  *  true the card surfaces `errorMessage` PROMINENTLY (the user's headline pain is
  *  a sub-agent that failed/hung with no way to see it). */
 export type SubAgentCardView = {
+  /** A gateway BACKGROUND TASK engagement (task:<id>) — NOT an interactive
+   *  child session: the monitor row is informational (no panel, no send). */
+  isTask?: boolean;
   id: string;
   /** The child's session key — the panel open/correlation key. */
   childSessionKey: string;
@@ -189,6 +195,11 @@ export function subAgentKindLabel(card: Pick<SubAgentCardView, "moaRole">): stri
 /** A card's label: the task name when the spawn meta carried one, else a short
  *  tail of the child session key. A blank/whitespace taskName falls back too. */
 export function subAgentLabel(row: SubAgentRow): string {
+  if (row.kind === "task") {
+    // A background task's taskName is the TOOL name (image_generate…): wrap
+    // it in a human sentence so the monitor reads as work, not an identifier.
+    return m.subagent_task_label({ tool: row.taskName?.trim() || "task" });
+  }
   const name = row.taskName?.trim();
   if (name) return name;
   const short = shortSessionKey(row.childSessionKey);
@@ -200,7 +211,9 @@ export function subAgentLabel(row: SubAgentRow): string {
  *  runs the parent turn has finalized but the bridge is one-turn-per-session, so a
  *  follow-up must be HELD (and the hold made visible) rather than silently parked. */
 export function hasRunningSubAgent(rows: readonly SubAgentRow[]): boolean {
-  return rows.some((r) => r.status === "running");
+  // Background-task rows do not hold the composer (the session is free; the
+  // bridge stashes a racing delivery) — mirrors the server-side isChatBusy.
+  return rows.some((r) => r.status === "running" && r.kind !== "task");
 }
 
 /** status -> display tone. error AND aborted both map to the visible-FAILURE
@@ -255,6 +268,7 @@ function toCard(row: SubAgentRow): SubAgentCardView {
   return {
     id: row._id,
     childSessionKey: row.childSessionKey,
+    ...(row.kind === "task" ? { isTask: true } : {}),
     ...(role === "moa_reference" || role === "moa_aggregator"
       ? { moaRole: role }
       : {}),

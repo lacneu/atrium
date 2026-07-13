@@ -973,6 +973,36 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   }) as SubAgentRow[] | undefined;
   const subAgentBusy = hasRunningSubAgent(subAgentRows ?? []);
+  // Background-task engagements verify against the GATEWAY's task registry
+  // while they spin (30s cadence + once on sight): the indicator reflects
+  // the registry's truth — a task whose delivery frame was missed (bridge
+  // restart, dropped wake) still settles instead of spinning forever.
+  const reconcileTasks = useAction(api.subAgents.reconcileTaskEngagements);
+  const hasRunningTask = (subAgentRows ?? []).some(
+    (r) => (r as { kind?: string }).kind === "task" && r.status === "running",
+  );
+  useEffect(() => {
+    if (!hasRunningTask || !chatId) return;
+    let cancelled = false;
+    // In-flight lock: a probe can take up to ~50s on a cold gateway — the
+    // 30s cadence must never stack concurrent operator connections.
+    let inFlight = false;
+    const tick = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      void reconcileTasks({ chatId: chatId as Id<"chats"> })
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    tick();
+    const t = window.setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [hasRunningTask, chatId, reconcileTasks]);
   // Thread-level "still working" indicator — INDEPENDENT of the Tools toggle:
   // in the clean view the sub-agent block is hidden, so without this the user
   // sees a settled reply and NOTHING while the sub-agent still works (or while

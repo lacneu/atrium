@@ -30,6 +30,7 @@
 // from resurrecting a reaped child.
 
 import { sanitizeText } from "./sanitize.js";
+import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
 import {
   childChatTerminalStatus,
   type SubAgentStatus,
@@ -84,6 +85,9 @@ interface Observation {
    *  session-bearing frame but attached ONLY to already-scheduled upserts
    *  (heartbeat + terminal) — telemetry alone never triggers a write. */
   telemetry?: SubAgentTelemetry;
+  /** The task-delivery run this child was spawned inside (persisted on the
+   *  registration upserts; kept here so raced paths can fill it once). */
+  bornOfRun?: string;
   /** Phase 2c: when set, the child was re-woken by a USER INTERACTION (chat.send from
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
@@ -323,7 +327,15 @@ export class SubAgentObserver {
       });
       if (created === null) return []; // cap reached -> not tracked
       obs = created;
-      if (sighting?.runId != null) obs.spawnRunHint = sighting.runId;
+      if (sighting?.runId != null) {
+        obs.spawnRunHint = sighting.runId;
+        // An item-only spawn inside a task-DELIVERY run: persist the
+        // correlation too (the tool-result path stamps it in
+        // tryRegisterFromSpawn; this is the sighting-claim equivalent).
+        if (taskDeliveryRunFromRunId(sighting.runId) !== null) {
+          obs.bornOfRun = sighting.runId;
+        }
+      }
       if (sighting?.seed !== undefined) {
         obs.sessionMeta = { ...sighting.seed };
         lazySeedUpsert = [
@@ -331,6 +343,7 @@ export class SubAgentObserver {
             chatId: this.chatId,
             parentMessageId: obs.parentMessageId,
             childSessionKey: childKey,
+            ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
             status: "running",
             ...(obs.taskName !== undefined ? { taskName: obs.taskName } : {}),
             sessionMeta: obs.sessionMeta,
@@ -412,6 +425,10 @@ export class SubAgentObserver {
           chatId: this.chatId,
           parentMessageId: obs.parentMessageId,
           childSessionKey: childKey,
+          // The terminal write is the LAST word before the announce: carry the
+          // delivery-run correlation so the engagement-anchor fallback always
+          // has it, whatever registration path ran (Convex fills once).
+          ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
           status: term,
           // The FINAL telemetry (total runtime/tokens/cost) rides on the terminal
           // write — the one place a finished child's numbers become durable.
@@ -877,13 +894,25 @@ export class SubAgentObserver {
         ...(resolved ?? {}),
         ...(cfg ?? {}),
       };
-      if (Object.keys(lateMeta).length === 0 && taskName === undefined) return [];
+      const reapedRun = readString(payload, "runId");
+      const reapedBorn =
+        reapedRun !== null && taskDeliveryRunFromRunId(reapedRun) !== null
+          ? reapedRun
+          : undefined;
+      if (
+        Object.keys(lateMeta).length === 0 &&
+        taskName === undefined &&
+        reapedBorn === undefined
+      ) {
+        return [];
+      }
       return [
         {
           chatId: this.chatId,
           childSessionKey: childKey,
           status: finalStatus,
           ...(taskName !== undefined ? { taskName } : {}),
+          ...(reapedBorn !== undefined ? { bornOfRun: reapedBorn } : {}),
           ...(Object.keys(lateMeta).length > 0 ? { sessionMeta: lateMeta } : {}),
         },
       ];
@@ -899,6 +928,19 @@ export class SubAgentObserver {
       let changed = false;
       if (taskName !== undefined && existing.taskName === undefined) {
         existing.taskName = taskName;
+        changed = true;
+      }
+      // bornOfRun counts as a change too: without it a child whose frames
+      // raced ahead of the spawn result would return [] here and its
+      // delivery-run correlation (the engagement-anchor fallback) would
+      // never be persisted.
+      const racedRun = readString(payload, "runId");
+      const racedBorn =
+        racedRun !== null && taskDeliveryRunFromRunId(racedRun) !== null
+          ? racedRun
+          : undefined;
+      if (racedBorn !== undefined && existing.bornOfRun === undefined) {
+        existing.bornOfRun = racedBorn;
         changed = true;
       }
       // The ANCHOR too: a child whose own frames raced ahead registered with
@@ -927,6 +969,9 @@ export class SubAgentObserver {
           chatId: this.chatId,
           parentMessageId: existing.parentMessageId,
           childSessionKey: childKey,
+          ...(existing.bornOfRun !== undefined
+            ? { bornOfRun: existing.bornOfRun }
+            : {}),
           status: existing.status, // reorder-guarded Convex-side; never downgrades
           ...(existing.taskName !== undefined
             ? { taskName: existing.taskName }
@@ -944,11 +989,23 @@ export class SubAgentObserver {
     if (resolved !== undefined) {
       obs.sessionMeta = { ...resolved, ...obs.sessionMeta };
     }
+    // A spawn issued INSIDE a background-task DELIVERY run: stamp the run id
+    // so the announce merge can resolve the anchor through the ENGAGEMENT row
+    // when this delivery run never opens a message (NO_REPLY yield).
+    const spawnFrameRun = readString(payload, "runId");
+    const bornOfRun =
+      spawnFrameRun !== null && taskDeliveryRunFromRunId(spawnFrameRun) !== null
+        ? spawnFrameRun
+        : undefined;
+    // Keep it on the OBSERVATION too: if this registration upsert is lost
+    // (flush tolerates failures), the terminal upsert still carries it.
+    if (bornOfRun !== undefined) obs.bornOfRun = bornOfRun;
     return [
       {
         chatId: this.chatId,
         parentMessageId: obs.parentMessageId,
         childSessionKey: childKey,
+        ...(bornOfRun !== undefined ? { bornOfRun } : {}),
         taskName,
         status: "running",
         ...(obs.sessionMeta ? { sessionMeta: obs.sessionMeta } : {}),

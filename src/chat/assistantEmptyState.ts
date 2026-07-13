@@ -109,6 +109,22 @@ export function toolPartsHaveSpawn(
   return toolParts.some((p) => SPAWN_TOOL_NAMES.has(p.toolName));
 }
 
+/** Whether this turn STARTED a gateway background task (an async tool ack —
+ *  result.details {async:true, taskId}): its engagement row lives in the
+ *  same monitor, so the monitor gate must open for it too. */
+export function toolPartsStartedAsyncTask(
+  toolParts: readonly EmptyStateToolPart[],
+): boolean {
+  return toolParts.some((p) => {
+    const result = p.result;
+    if (typeof result !== "object" || result === null) return false;
+    const details = (result as { details?: unknown }).details;
+    if (typeof details !== "object" || details === null) return false;
+    const d = details as { async?: unknown; taskId?: unknown };
+    return d.async === true && typeof d.taskId === "string";
+  });
+}
+
 /** Trim a task name to a clean label, or undefined when blank. */
 function cleanTaskName(name: string | undefined): string | undefined {
   const trimmed = name?.trim();
@@ -150,11 +166,17 @@ export function assistantEmptyState(
 
   // A still-running child takes precedence: the parent yielded and the gateway
   // resumes it when the child returns, so "waiting" is the truthful state even if
-  // a sibling already failed.
+  // a sibling already failed. Background-task rows COUNT here — a silent turn
+  // that started an async tool is genuinely waiting on its delivery.
   const running = mine.find((s) => s.status === "running");
   if (running) return { kind: "waiting", taskName: cleanTaskName(running.taskName) };
 
-  const failed = mine.find(
+  // TERMINAL states consider only real delegation children: a task settled
+  // silently (NO_REPLY) carries no resultText — surfacing it as done/failed
+  // would render an empty or misleading bubble (the generic state is honest).
+  const settled = mine.filter((s) => s.kind !== "task");
+
+  const failed = settled.find(
     (s) => s.status === "error" || s.status === "aborted",
   );
   if (failed) {
@@ -168,7 +190,7 @@ export function assistantEmptyState(
   // A child that FINISHED with a result: the parent delegated and never relayed the
   // answer, so the sub-agent's OWN result IS this turn's answer — surfaced as a
   // distinct "done" state (never the blank "generic" bubble for a real delegation).
-  const done = mine.find((s) => s.status === "done");
+  const done = settled.find((s) => s.status === "done");
   if (done) {
     return {
       kind: "done",

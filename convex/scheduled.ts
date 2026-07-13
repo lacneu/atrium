@@ -228,7 +228,11 @@ function cronCapabilitiesFor(
     canEdit: full,
     canRunNow: full,
     canHistory: full,
-    canToggle: manageSupported,
+    // Hermes pause WORKS but its list API cannot show disabled jobs (no
+    // include_disabled on the 0.18 WS RPC) — a paused job would vanish from
+    // the tab with no way back. Never offer an action whose effect is an
+    // unrecoverable disappearance: toggle is OpenClaw-only.
+    canToggle: full,
     canDelete: manageSupported,
   };
 }
@@ -521,10 +525,10 @@ export const updateCron = action({
     if (keys.length === 0) throw new ConvexError({ code: "invalid_patch" });
     const { target } = await requireOwnedCronJob(ctx as never, instanceName, jobId);
     if (!target.manageSupported) throw new ConvexError({ code: "unsupported" });
-    if (
-      target.kind === "hermes" &&
-      (keys.length !== 1 || patch.enabled === undefined)
-    ) {
+    if (target.kind === "hermes") {
+      // No Hermes updates at all: the only candidate (enabled flip) would
+      // make the paused job invisible to its own list API (see
+      // cronCapabilitiesFor) — fail closed instead of stranding the job.
       throw new ConvexError({ code: "unsupported" });
     }
     // Worst case with a COLD operator connection: connect (~30s) + cron.get

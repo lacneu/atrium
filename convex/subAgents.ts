@@ -16,11 +16,19 @@
 // own chats' sub-agents.
 
 import { v } from "convex/values";
-import { internalMutation, query, MutationCtx } from "./_generated/server";
+import {
+  action,
+  internalMutation,
+  internalQuery,
+  query,
+  MutationCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
+import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
+import { deliveryChildKey } from "./lib/deliveryRuns";
 
 /** Bounded reaper batch (mirrors stuckStreams.BATCH) — running rows are few. */
 const REAP_BATCH = 50;
@@ -168,6 +176,8 @@ export const upsertSubAgent = internalMutation({
     chatId: v.id("chats"),
     parentMessageId: v.optional(v.id("messages")),
     childSessionKey: v.string(),
+    kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
+    bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()),
     status: STATUS,
     resultText: v.optional(v.string()),
@@ -202,6 +212,8 @@ export const upsertSubAgent = internalMutation({
         chatId: args.chatId,
         parentMessageId: args.parentMessageId,
         childSessionKey: args.childSessionKey,
+        kind: args.kind,
+        bornOfRun: args.bornOfRun,
         taskName: args.taskName,
         status: args.status,
         resultText: args.resultText,
@@ -234,8 +246,17 @@ export const upsertSubAgent = internalMutation({
       sessionMeta?: SubAgentSessionMeta;
       telemetry?: SubAgentTelemetry;
       parentMessageId?: typeof args.parentMessageId;
+      kind?: "subagent" | "task";
+      bornOfRun?: string;
       updatedAt: number;
     } = { updatedAt: now };
+    // Fill-only metadata (never rewritten once set).
+    if (args.kind !== undefined && existing.kind === undefined) {
+      patch.kind = args.kind;
+    }
+    if (args.bornOfRun !== undefined && existing.bornOfRun === undefined) {
+      patch.bornOfRun = args.bornOfRun;
+    }
     // Never downgrade a terminal child back to running (reorder-tolerance).
     if (!(terminal && args.status === "running")) {
       patch.status = args.status;
@@ -368,11 +389,25 @@ export const reapStaleSubAgents = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
     const cutoff = now - SUBAGENT_STALE_TTL_MS;
+    // Task engagements are EXCLUDED from the 20-minute pass (long generations
+    // are legitimate; their truth is the gateway registry + the client-side
+    // reconciliation) — but they get a 24h SAFETY-NET pass below, so a task
+    // whose delivery was lost on a gateway without tasks.get still expires
+    // instead of spinning the indicator forever.
     const stale = await ctx.db
       .query("subAgents")
       .withIndex("by_status_updated", (q) =>
         q.eq("status", "running").lt("updatedAt", cutoff),
       )
+      .filter((q) => q.neq(q.field("kind"), "task"))
+      .take(REAP_BATCH);
+    const taskCutoff = now - 24 * 60 * 60 * 1000;
+    const staleTasks = await ctx.db
+      .query("subAgents")
+      .withIndex("by_status_updated", (q) =>
+        q.eq("status", "running").lt("updatedAt", taskCutoff),
+      )
+      .filter((q) => q.eq(q.field("kind"), "task"))
       .take(REAP_BATCH);
 
     const touchedChats = new Set<Id<"chats">>();
@@ -380,6 +415,14 @@ export const reapStaleSubAgents = internalMutation({
       await ctx.db.patch(row._id, {
         status: "error",
         errorMessage: STALE_SUBAGENT_MESSAGE,
+        updatedAt: now,
+      });
+      touchedChats.add(row.chatId);
+    }
+    for (const row of staleTasks) {
+      await ctx.db.patch(row._id, {
+        status: "error",
+        errorMessage: "background task expired (no delivery, unverifiable)",
         updatedAt: now,
       });
       touchedChats.add(row.chatId);
@@ -464,20 +507,36 @@ export const turnActivity = query({
       .order("desc")
       .take(10);
     for (const m of recent) {
-      if (m.runId !== undefined && m.runId.startsWith("announce:")) {
+      if (m.runId !== undefined && deliveryChildKey(m.runId) !== null) {
         mergedRuns.push(m.runId);
       }
       for (const r of m.mergedAnnounceRuns ?? []) mergedRuns.push(r);
     }
     let deliveringSince: number | null = null;
     for (const r of rows) {
+      // A background-task row's "delivery" is the run that settled it: when
+      // it merged, mergedRuns above already covers it; when it was silent
+      // (NO_REPLY), nothing will arrive — either way "delivering" would be a
+      // false 45s indicator. Tasks only ever contribute to `running`.
+      if (r.kind === "task") continue;
       // NO chat-level lastAssistantAt filter here: a NEWER user turn settling
       // after this child finished would mask a REAL in-flight delivery. The
       // per-row checks below (merged announce / parent finalized after the
       // child) are the correlated tests; stale never-announced terminals are
       // bounded by the client's display cap, not by the chat clock.
       // Announce already merged → delivered (write order can't fool this).
-      if (mergedRuns.some((run) => run.includes(r.childSessionKey))) continue;
+      // Task-delivery runs (`image_generate:<taskId>:ok`) do NOT contain the
+      // row key (`task:<taskId>`) literally — resolve through the shared
+      // correlation instead.
+      if (
+        mergedRuns.some(
+          (run) =>
+            run.includes(r.childSessionKey) ||
+            deliveryChildKey(run) === r.childSessionKey,
+        )
+      ) {
+        continue;
+      }
       // The child's own PARENT message is the window-independent test: its
       // merge history (or its own announce runId) names this child even when
       // the parent scrolled beyond the recent-messages scan above. INLINE
@@ -618,5 +677,194 @@ export const listSubAgentToolParts = query({
     return rows
       .filter((r) => r.chatId === chatId)
       .sort((a, b) => a._creationTime - b._creationTime);
+  },
+});
+
+
+// ===========================================================================
+// Background-task engagement RECONCILIATION: verify pending `task:` rows
+// against the gateway's task registry (tasks.get via the bridge) instead of
+// expiring the thread indicator on a blind timeout. Fail-soft everywhere —
+// an unreachable gateway or an unknown id leaves the local state untouched.
+// ===========================================================================
+
+/** The chat's RUNNING task engagements + bridge target, ownership-gated. */
+export const pendingTaskEngagements = internalQuery({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{
+    instanceName: string;
+    bridgeUrl: string | null;
+    taskIds: string[];
+  } | null> => {
+    const { userId } = await requireActive(ctx);
+    const chat = await requireOwnedChat(ctx, userId, chatId);
+    if (!chat.instanceName) return null;
+    // Filter INSIDE the query so 20+ running sub-agent rows can never
+    // saturate the batch before a task row is reached, and order by
+    // updatedAt ASCENDING (by_chat_status_updated): each successful probe
+    // refreshes updatedAt, pushing the row to the back — the batch ROTATES,
+    // so a chat with more than 20 live tasks still reconciles all of them
+    // over successive polls (tasks have no reaper fallback).
+    const rows = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", "running"),
+      )
+      .order("asc")
+      .filter((q) => q.eq(q.field("kind"), "task"))
+      .take(20);
+    const taskIds = rows
+      .filter((r) => r.childSessionKey.startsWith("task:"))
+      .map((r) => r.childSessionKey.slice("task:".length));
+    if (taskIds.length === 0) return null;
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", chat.instanceName!))
+      .first();
+    return {
+      instanceName: chat.instanceName,
+      bridgeUrl: inst?.bridgeUrl ?? null,
+      taskIds,
+    };
+  },
+});
+
+/** Refresh a poll-confirmed STILL-RUNNING engagement so the stale-row reaper
+ *  (SUBAGENT_STALE_TTL_MS) never falsely errors a long legitimate task. */
+export const refreshTaskEngagement = internalMutation({
+  args: { chatId: v.id("chats"), taskId: v.string() },
+  handler: async (ctx, { chatId, taskId }) => {
+    const row = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", `task:${taskId}`))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    if (row === null || row.status !== "running") return null;
+    await ctx.db.patch(row._id, { updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/** Apply a gateway-verified terminal status onto an engagement row. */
+export const settleTaskEngagement = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    taskId: v.string(),
+    status: v.union(v.literal("done"), v.literal("error")),
+    errorMessage: v.optional(v.string()),
+    /** Guard for "registry does not know this id": only settle a row older
+     *  than this (a fresh row may simply have raced the task's creation). */
+    onlyIfOlderThanMs: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    { chatId, taskId, status, errorMessage, onlyIfOlderThanMs },
+  ) => {
+    const row = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", `task:${taskId}`))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    if (row === null || row.status !== "running") return null;
+    if (
+      onlyIfOlderThanMs !== undefined &&
+      Date.now() - row.updatedAt < onlyIfOlderThanMs
+    ) {
+      return null;
+    }
+    await ctx.db.patch(row._id, {
+      status,
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
+      updatedAt: Date.now(),
+    });
+    // Same post-settle hooks as the upsert path: the summarize watermark
+    // waits on unsettled children — a registry-driven settle must release it.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.chatSummaries.maybeScheduleSummarize,
+      { chatId },
+    );
+    await maybeDrainOnTerminal(ctx, chatId, status);
+    return null;
+  },
+});
+
+const TERMINAL_TASK_STATUSES: Record<string, "done" | "error"> = {
+  succeeded: "done",
+  failed: "error",
+  timed_out: "error",
+  cancelled: "error",
+  lost: "error",
+};
+
+/** Reconcile the chat's pending background tasks with the gateway registry.
+ *  Called by the thread while its activity indicator is up — the indicator
+ *  then reflects the gateway's truth, not a local guess. */
+export const reconcileTaskEngagements = action({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<null> => {
+    const pending = await ctx.runQuery(
+      internal.subAgents.pendingTaskEngagements,
+      { chatId },
+    );
+    if (pending === null) return null;
+    let data: unknown;
+    try {
+      const res = await postBridge(
+        "/tasks-probe",
+        { instanceName: pending.instanceName, taskIds: pending.taskIds },
+        50_000,
+        pending.bridgeUrl,
+      );
+      if (res.status !== 200) return null; // fail soft — keep local state
+      data = res.data;
+    } catch {
+      return null;
+    }
+    const tasks = (data as { tasks?: unknown[] } | null)?.tasks;
+    if (!Array.isArray(tasks)) return null;
+    for (const t of tasks) {
+      if (typeof t !== "object" || t === null) continue;
+      const r = t as Record<string, unknown>;
+      const taskId = typeof r.taskId === "string" ? r.taskId : null;
+      const status = typeof r.status === "string" ? r.status : null;
+      if (taskId === null || status === null) continue;
+      if (status === "not_found") {
+        // The registry EXPLICITLY does not know this id (purged after
+        // retention): settle an OLD row as lost — never a fresh one (the
+        // probe may have raced the task's creation). Transient probe errors
+        // never reach here (the bridge omits them from the batch).
+        await ctx.runMutation(internal.subAgents.settleTaskEngagement, {
+          chatId,
+          taskId,
+          status: "error",
+          errorMessage: "task no longer known to the gateway registry",
+          onlyIfOlderThanMs: 60 * 60 * 1000,
+        });
+        continue;
+      }
+      const mapped = TERMINAL_TASK_STATUSES[status];
+      if (mapped === undefined) {
+        // queued/running CONFIRMED by the registry: refresh the row so the
+        // stale-reaper never falsely errors a long legitimate task.
+        await ctx.runMutation(internal.subAgents.refreshTaskEngagement, {
+          chatId,
+          taskId,
+        });
+        continue;
+      }
+      await ctx.runMutation(internal.subAgents.settleTaskEngagement, {
+        chatId,
+        taskId,
+        status: mapped,
+        ...(typeof r.error === "string" && r.error !== ""
+          ? { errorMessage: r.error.slice(0, 400) }
+          : {}),
+      });
+    }
+    return null;
   },
 });

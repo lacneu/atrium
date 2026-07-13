@@ -67,6 +67,7 @@ import type * as lib_crypto_cipher from "../lib/crypto/cipher.js";
 import type * as lib_crypto_convexValidator from "../lib/crypto/convexValidator.js";
 import type * as lib_crypto_keyProvider from "../lib/crypto/keyProvider.js";
 import type * as lib_curation from "../lib/curation.js";
+import type * as lib_deliveryRuns from "../lib/deliveryRuns.js";
 import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
 import type * as lib_envLabel from "../lib/envLabel.js";
@@ -179,6 +180,7 @@ declare const fullApi: ApiFromModules<{
   "lib/crypto/convexValidator": typeof lib_crypto_convexValidator;
   "lib/crypto/keyProvider": typeof lib_crypto_keyProvider;
   "lib/curation": typeof lib_curation;
+  "lib/deliveryRuns": typeof lib_deliveryRuns;
   "lib/diagnose": typeof lib_diagnose;
   "lib/domains": typeof lib_domains;
   "lib/envLabel": typeof lib_envLabel;
