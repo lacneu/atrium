@@ -175,6 +175,7 @@ export interface ConvexMessageView {
   finalizedAt?: number;
   role: MessageRole;
   runId?: string;
+  hasMergedRuns?: boolean;
   status: MessageStatus;
   text: string;
   error?: string;

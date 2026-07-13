@@ -315,6 +315,10 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           role: message.role,
           status: message.status,
           runId: message.runId,
+          // TRUE only when a delivery/announce actually MERGED into this
+          // bubble (reopen history) — the renderer skips its typewriter
+          // replay there; a fail-closed FRESH delivery bubble keeps it.
+          hasMergedRuns: (message.mergedAnnounceRuns?.length ?? 0) > 0,
           // MULTI-AGENT per-turn routing (read projection only — routing/dispatch is
           // owned server-side). Which agent THIS turn was addressed to; absent on a
           // single-agent message. The frontend attributes each reply (inheriting the

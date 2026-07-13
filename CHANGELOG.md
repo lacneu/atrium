@@ -8,6 +8,29 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.55.4] — The activity indicator survives between chain links
+
+Feature/bug-fix release (Convex + bridge + frontend). No breaking changes.
+
+- **The thread's activity indicator now stays alive across a sequential
+  background chain** (e.g. slide-by-slide generation). Between two links the
+  next task was invisible (the gateway emits no tool frames on delivery
+  runs), so the spinner died until the next delivery. The task probe now
+  also DISCOVERS the chat's live registry tasks (server-side session filter
+  on `tasks.list`) and adopts them as anchored engagements before their
+  delivery — the indicator runs continuously and the delivery merges through
+  a proper anchor instead of the read-side chain fallback. The thread's
+  reconcile poll gains a grace window (4 min after the last task activity)
+  so it can see the next link even while nothing is locally running.
+- **Fixed: the task reconcile never ran on multi-agent per-turn chats.** The
+  probe read the chat-level instance name, which a routed chat doesn't have
+  — it now falls back to the newest routed message's instance.
+- **Fixed: a merged chain bubble visibly blanked and re-typed its whole
+  content on every link.** Each delivery merge re-streams the accumulated
+  text and the markdown typewriter reveal replayed it from scratch (reported
+  live: ~10 rapid flashes at the end of a 67-slide chain). Merged bubbles now
+  render instantly — the smoothing stays on for ordinary streaming.
+
 ## [0.55.3] — Support access self-heals; report references visible to admins
 
 Bug-fix release (Convex + frontend). No breaking changes.

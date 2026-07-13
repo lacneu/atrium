@@ -788,6 +788,72 @@ describe("task-delivery merge (async tools)", () => {
     expect(parent?.status).toBe("complete"); // untouched — separate bubble
   });
 
+  test("adoptDiscoveredTask: creates the row EARLY with the inherited chain anchor (indicator between links)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedEngagement(t); // task 1 anchored
+    await t.mutation(internal.subAgents.adoptDiscoveredTask, {
+      chatId,
+      taskId: NEXT_ID,
+      toolName: "image_generate",
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${NEXT_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.status).toBe("running"); // lights the activity indicator
+    expect(row?.kind).toBe("task");
+    expect(row?.parentMessageId).toBe(parentId); // chain anchor inherited
+    // Idempotent: a second sighting only refreshes, never duplicates.
+    await t.mutation(internal.subAgents.adoptDiscoveredTask, {
+      chatId,
+      taskId: NEXT_ID,
+      toolName: "image_generate",
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${NEXT_ID}`),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  test("adoptDiscoveredTask fail-closed: conversation moved on -> row created WITHOUT anchor", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedEngagement(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        text: "autre sujet",
+        status: "complete" as const,
+        updatedAt: 3000,
+      });
+    });
+    await t.mutation(internal.subAgents.adoptDiscoveredTask, {
+      chatId,
+      taskId: NEXT_ID,
+      toolName: "image_generate",
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${NEXT_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.status).toBe("running"); // indicator still lights up
+    expect(row?.parentMessageId).toBeUndefined(); // but no wrong anchor
+  });
+
   test("CHAIN fail-closed: a DIFFERENT tool's delivery never chain-merges", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedDelegatedTurn(t, {

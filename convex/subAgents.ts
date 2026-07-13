@@ -21,7 +21,9 @@ import {
   internalMutation,
   internalQuery,
   query,
+  ActionCtx,
   MutationCtx,
+  QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
@@ -29,6 +31,7 @@ import type { Id } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { deliveryChildKey } from "./lib/deliveryRuns";
+import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 /** Bounded reaper batch (mirrors stuckStreams.BATCH) — running rows are few. */
 const REAP_BATCH = 50;
@@ -174,6 +177,7 @@ export function mergeSubAgentTools(
 export const upsertSubAgent = internalMutation({
   args: {
     chatId: v.id("chats"),
+    instanceName: v.optional(v.string()),
     parentMessageId: v.optional(v.id("messages")),
     childSessionKey: v.string(),
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
@@ -228,6 +232,7 @@ export const upsertSubAgent = internalMutation({
       }
       const insertedId = await ctx.db.insert("subAgents", {
         chatId: args.chatId,
+        instanceName: args.instanceName,
         parentMessageId,
         childSessionKey: args.childSessionKey,
         kind: args.kind,
@@ -265,12 +270,16 @@ export const upsertSubAgent = internalMutation({
       telemetry?: SubAgentTelemetry;
       parentMessageId?: typeof args.parentMessageId;
       kind?: "subagent" | "task";
+      instanceName?: string;
       bornOfRun?: string;
       updatedAt: number;
     } = { updatedAt: now };
     // Fill-only metadata (never rewritten once set).
     if (args.kind !== undefined && existing.kind === undefined) {
       patch.kind = args.kind;
+    }
+    if (args.instanceName !== undefined && existing.instanceName === undefined) {
+      patch.instanceName = args.instanceName;
     }
     if (args.bornOfRun !== undefined && existing.bornOfRun === undefined) {
       patch.bornOfRun = args.bornOfRun;
@@ -706,6 +715,67 @@ export const listSubAgentToolParts = query({
 // an unreachable gateway or an unknown id leaves the local state untouched.
 // ===========================================================================
 
+/** The instance a chat's background tasks live on. A multi-agent PER-TURN
+ *  chat may carry no chat-level instanceName (the router stamps it on each
+ *  message instead, and dispatch skips bindChatTarget) — fall back to the
+ *  newest routed message's instance so the reconcile still probes. */
+export async function taskProbeInstanceName(
+  ctx: { db: QueryCtx["db"] },
+  chat: { _id: Id<"chats">; instanceName?: string },
+): Promise<string | null> {
+  // FIRST: the newest task engagement that RECORDED its instance (stamped by
+  // the per-instance bridge writer at ack time) — the ground truth for where
+  // the chain actually runs, immune to queued-follow-up races and per-turn
+  // re-routing. Only rows predating the stamp fall through to the guesses.
+  const rows = await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
+    .order("desc")
+    .take(64);
+  const stamped = rows
+    .filter((r) => r.kind === "task" && r.instanceName !== undefined)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  // The NEWEST routed turn wins over the chat's primary binding: a chat
+  // bound to instance A whose latest turns route to B runs its background
+  // tasks on B's registry — probing A would miss (or falsely "not_found")
+  // them. Chats that never routed fall back to the primary binding.
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
+    .order("desc")
+    .take(30);
+  let routedInstance: string | null = null;
+  let routedAt = 0;
+  for (const m of recent) {
+    // Only the USER message carries the per-turn route (the assistant echo
+    // is a known deferred gap) — but a QUEUED follow-up's user message is
+    // stamped BEFORE it dispatches anywhere: while parked its orderTime is
+    // the QUEUED_ORDER_SENTINEL (re-stamped on drain), so skipping it keeps
+    // the probe on the registry where the live task actually runs.
+    const routed = (m as { routedInstanceName?: string }).routedInstanceName;
+    if (routed === undefined || routed === "") continue;
+    if ((m as { orderTime?: number }).orderTime === QUEUED_ORDER_SENTINEL) {
+      continue;
+    }
+    routedInstance = routed;
+    routedAt = effectiveOrder(m);
+    break;
+  }
+  // RECENCY decides between the two witnesses: an old stamped task must not
+  // shadow a NEWER routed turn (whose next link may only be discoverable on
+  // its own registry) — and vice-versa, a live chain's stamped row beats a
+  // routed turn that predates it.
+  if (stamped?.instanceName !== undefined && routedInstance !== null) {
+    return stamped.updatedAt >= routedAt ? stamped.instanceName : routedInstance;
+  }
+  if (stamped?.instanceName !== undefined) return stamped.instanceName;
+  if (routedInstance !== null) return routedInstance;
+  if (chat.instanceName !== undefined && chat.instanceName !== "") {
+    return chat.instanceName;
+  }
+  return null;
+}
+
 /** The chat's RUNNING task engagements + bridge target, ownership-gated. */
 export const pendingTaskEngagements = internalQuery({
   args: { chatId: v.id("chats") },
@@ -719,7 +789,8 @@ export const pendingTaskEngagements = internalQuery({
   } | null> => {
     const { userId } = await requireActive(ctx);
     const chat = await requireOwnedChat(ctx, userId, chatId);
-    if (!chat.instanceName) return null;
+    const instanceName = await taskProbeInstanceName(ctx, chat);
+    if (instanceName === null) return null;
     // Filter INSIDE the query so 20+ running sub-agent rows can never
     // saturate the batch before a task row is reached, and order by
     // updatedAt ASCENDING (by_chat_status_updated): each successful probe
@@ -735,18 +806,115 @@ export const pendingTaskEngagements = internalQuery({
       .filter((q) => q.eq(q.field("kind"), "task"))
       .take(20);
     const taskIds = rows
-      .filter((r) => r.childSessionKey.startsWith("task:"))
+      .filter(
+        (r) =>
+          r.childSessionKey.startsWith("task:") &&
+          // Only the rows living on the instance THIS poll probes: a task
+          // stamped for another gateway would come back not_found there and
+          // be falsely errored after an hour. Unstamped (legacy) rows keep
+          // the old behaviour; other-instance rows wait for their own poll
+          // (the 24h reaper stays the ultimate net).
+          (r.instanceName === undefined || r.instanceName === instanceName),
+      )
       .map((r) => r.childSessionKey.slice("task:".length));
-    if (taskIds.length === 0) return null;
+    // NOTE: an empty taskIds is NOT a stop condition anymore — the probe also
+    // DISCOVERS session-scoped tasks the chat knows nothing about (a chain
+    // link started inside a delivery run acks invisibly), and that discovery
+    // is precisely what keeps the activity indicator alive between links.
     const inst = await ctx.db
       .query("instances")
-      .withIndex("by_name", (q) => q.eq("name", chat.instanceName!))
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
       .first();
     return {
-      instanceName: chat.instanceName,
+      instanceName,
       bridgeUrl: inst?.bridgeUrl ?? null,
       taskIds,
     };
+  },
+});
+
+/** Adopt a task DISCOVERED in the gateway registry (session-scoped list):
+ *  create its engagement row before its delivery ever arrives, so the
+ *  activity indicator runs between chain links and the delivery merges via
+ *  the row instead of the read-side chain fallback. The anchor is inherited
+ *  under the SAME strict rule as the chain merge: the newest anchored
+ *  same-tool engagement whose anchor is still the chat's last message —
+ *  anything else leaves the row unanchored (fail closed). */
+export const adoptDiscoveredTask = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    taskId: v.string(),
+    toolName: v.optional(v.string()),
+    instanceName: v.optional(v.string()),
+  },
+  handler: async (ctx, { chatId, taskId, toolName, instanceName }) => {
+    const key = `task:${taskId}`;
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", key))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    if (existing !== null) {
+      // Known row: a live registry sighting is a freshness signal (same as
+      // refreshTaskEngagement — keeps the stale reaper honest).
+      if (existing.status === "running") {
+        await ctx.db.patch(existing._id, { updatedAt: now });
+      }
+      return "refreshed" as const;
+    }
+    // Deleted-chat race (same guard as upsertSubAgent): the reconcile's
+    // network call may outlive the chat's cascade delete — never recreate an
+    // orphaned row for a purged chat.
+    if ((await ctx.db.get(chatId)) === null) return null;
+    let parentMessageId: Id<"messages"> | undefined;
+    if (toolName !== undefined) {
+      const recent = await ctx.db
+        .query("subAgents")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .order("desc")
+        .take(64);
+      const anchored = recent
+        .filter(
+          (r) =>
+            r.kind === "task" &&
+            r.taskName === toolName &&
+            r.parentMessageId !== undefined,
+        )
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      const candidate = anchored[0]?.parentMessageId;
+      const ambiguous =
+        candidate !== undefined &&
+        anchored.some(
+          (r) => r.status === "running" && r.parentMessageId !== candidate,
+        );
+      if (candidate !== undefined && !ambiguous) {
+        const msgs = await ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .order("desc")
+          .take(30);
+        const last = msgs.reduce(
+          (a, b) => (effectiveOrder(b) > effectiveOrder(a) ? b : a),
+          msgs[0]!,
+        );
+        if (msgs.length > 0 && last._id === candidate) {
+          parentMessageId = candidate;
+        }
+      }
+    }
+    await ctx.db.insert("subAgents", {
+      chatId,
+      instanceName,
+      parentMessageId,
+      childSessionKey: key,
+      kind: "task",
+      taskName: toolName,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    });
+    return "created" as const;
   },
 });
 
@@ -829,11 +997,37 @@ export const reconcileTaskEngagements = action({
       { chatId },
     );
     if (pending === null) return null;
+    await runTaskReconcile(ctx, chatId, pending);
+    return null;
+  },
+});
+
+/** The reconcile body, shared by the user-facing action above (ownership
+ *  gated through pendingTaskEngagements) and the dev bench probe (dev.ts):
+ *  probe the bridge (gets + session-scoped discovery), settle/refresh the
+ *  known rows, adopt the discovered ones. */
+export async function runTaskReconcile(
+  ctx: ActionCtx,
+  chatId: Id<"chats">,
+  pending: {
+    instanceName: string;
+    bridgeUrl: string | null;
+    taskIds: string[];
+  },
+): Promise<{ probed: number; discovered: number; adopted: number } | null> {
+  {
     let data: unknown;
     try {
       const res = await postBridge(
         "/tasks-probe",
-        { instanceName: pending.instanceName, taskIds: pending.taskIds },
+        {
+          instanceName: pending.instanceName,
+          taskIds: pending.taskIds,
+          // Session-scoped DISCOVERY: chain links started inside a delivery
+          // run never ack visibly — the registry list is the only way to see
+          // them early enough to keep the indicator alive between links.
+          discoverForChat: chatId,
+        },
         50_000,
         pending.bridgeUrl,
       );
@@ -883,6 +1077,37 @@ export const reconcileTaskEngagements = action({
           : {}),
       });
     }
-    return null;
-  },
-});
+    // Adopt DISCOVERED session-scoped tasks (bounded): their engagement rows
+    // light the indicator between chain links and give the coming delivery a
+    // proper anchor to merge into.
+    const discovered = (data as { discovered?: unknown[] } | null)?.discovered;
+    let adopted = 0;
+    if (Array.isArray(discovered)) {
+      // The bridge already bounds the list (10): process it whole — slicing
+      // tighter would starve links beyond the window behind already-adopted
+      // entries (tasks.list order is stable).
+      for (const d of discovered) {
+        if (typeof d !== "object" || d === null) continue;
+        const rec = d as Record<string, unknown>;
+        if (typeof rec.taskId !== "string" || rec.taskId === "") continue;
+        const outcome = await ctx.runMutation(
+          internal.subAgents.adoptDiscoveredTask,
+          {
+            chatId,
+            taskId: rec.taskId,
+            instanceName: pending.instanceName,
+            ...(typeof rec.toolName === "string" && rec.toolName !== ""
+              ? { toolName: rec.toolName }
+              : {}),
+          },
+        );
+        if (outcome === "created") adopted += 1;
+      }
+    }
+    return {
+      probed: tasks.length,
+      discovered: Array.isArray(discovered) ? discovered.length : 0,
+      adopted,
+    };
+  }
+}

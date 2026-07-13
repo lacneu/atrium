@@ -62,6 +62,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
     ingestSecret: config.convexIngestSecret,
+    instanceName: config.instanceName,
     deltaFlushMs: config.deltaFlushMs,
     getFetcher: () =>
       hermesFetcher !== null ? hermesFetcher : mediaProvider.current(),

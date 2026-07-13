@@ -530,6 +530,7 @@ type IngestOp =
   | {
       op: "upsertSubAgent";
       chatId: string;
+      instanceName?: string;
       parentMessageId?: string | null;
       childSessionKey: string;
       kind?: "subagent" | "task";
@@ -567,6 +568,10 @@ type IngestOp =
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
   convexHttpActionsUrl: string;
+  /** The served instance this writer belongs to (one writer per bundle).
+   *  Auto-stamped on sub-agent/task rows so the task reconcile probes the
+   *  registry the work actually runs on — never a guess from chat state. */
+  instanceName?: string | null;
   /** Bearer secret presented to the ingest endpoint. */
   ingestSecret: string;
   /** Coalesce window for deltas in ms (one mutation per flush, not per token). */
@@ -688,6 +693,7 @@ const STALE_MENTION_GRACE_MS = 120_000;
 export class HttpConvexWriter implements ConvexWriter {
   private readonly url: string;
   private readonly ingestSecret: string;
+  private readonly instanceName: string | null;
   private readonly deltaFlushMs: number;
   private readonly fetchImpl: typeof fetch;
   // Resolve the current fetcher lazily (hot-swap seam). Built from `getFetcher`
@@ -747,6 +753,7 @@ export class HttpConvexWriter implements ConvexWriter {
   constructor(opts: HttpConvexWriterOptions) {
     this.url = opts.convexHttpActionsUrl.replace(/\/$/, "") + INGEST_PATH;
     this.ingestSecret = opts.ingestSecret;
+    this.instanceName = opts.instanceName ?? null;
     this.deltaFlushMs = opts.deltaFlushMs ?? 50;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     const staticFetcher = opts.mediaFetcher;
@@ -1554,6 +1561,7 @@ export class HttpConvexWriter implements ConvexWriter {
     await this.doPost({
       op: "upsertSubAgent",
       chatId: record.chatId,
+      instanceName: this.instanceName ?? undefined,
       parentMessageId: record.parentMessageId ?? null,
       childSessionKey: record.childSessionKey,
       kind: record.kind,

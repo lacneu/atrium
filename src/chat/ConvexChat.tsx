@@ -981,14 +981,82 @@ function ChatThread({
   const hasRunningTask = (subAgentRows ?? []).some(
     (r) => (r as { kind?: string }).kind === "task" && r.status === "running",
   );
+  // GRACE window: a sequential chain starts its next task INSIDE the previous
+  // delivery run, invisibly (no ack ever reaches the bridge) — for a few
+  // minutes after the last task activity the registry is the only witness,
+  // so the poll keeps running (its discovery adopts the next link, which
+  // re-lights the indicator). Expired + nothing running → the interval stops.
+  // The window is armed on the LOCAL clock when the server activity stamp
+  // CHANGES (comparing a server updatedAt to Date.now() would kill — or
+  // eternalize — the window on a skewed client, same reasoning as the local
+  // deliveringSince cap below).
+  const TASK_POLL_GRACE_MS = 4 * 60_000;
+  const lastTaskActivityAt = (subAgentRows ?? []).reduce(
+    (max, r) =>
+      (r as { kind?: string }).kind === "task" && r.updatedAt > max
+        ? r.updatedAt
+        : max,
+    0,
+  );
+  const taskGraceRef = useRef<{
+    chatId: string | null;
+    seenStamp: number;
+    armedAtLocal: number;
+  }>({ chatId: null, seenStamp: 0, armedAtLocal: 0 });
+  // The component is REUSED across chat switches: without this reset the new
+  // chat's first (historical) stamp would differ from the previous chat's and
+  // wrongly arm four minutes of probes — and a still-armed window would even
+  // probe the new chat before its rows load.
+  if (taskGraceRef.current.chatId !== (chatId ?? null)) {
+    taskGraceRef.current = {
+      chatId: chatId ?? null,
+      seenStamp: 0,
+      armedAtLocal: 0,
+    };
+  }
+  if (
+    lastTaskActivityAt > 0 &&
+    taskGraceRef.current.seenStamp !== lastTaskActivityAt
+  ) {
+    // FIRST sight arms ONLY for RECENT activity (wide 10-min tolerance on
+    // the client clock — the cost of a skewed clock here is a few pointless
+    // probes or a missed resume, never a wrong signal): a reload mid-chain
+    // must resume probing for the invisible next link, while a months-old
+    // stamp on a historical thread must not open four minutes of pointless
+    // probes. Later CHANGES always arm (live activity under observation).
+    const first = taskGraceRef.current.seenStamp === 0;
+    const recent = Date.now() - lastTaskActivityAt < 10 * 60_000;
+    taskGraceRef.current = {
+      chatId: chatId ?? null,
+      seenStamp: lastTaskActivityAt,
+      armedAtLocal: first && !recent ? 0 : Date.now(),
+    };
+  }
+  const inTaskGraceWindow =
+    taskGraceRef.current.armedAtLocal > 0 &&
+    Date.now() - taskGraceRef.current.armedAtLocal < TASK_POLL_GRACE_MS;
   useEffect(() => {
-    if (!hasRunningTask || !chatId) return;
+    if ((!hasRunningTask && !inTaskGraceWindow) || !chatId) return;
     let cancelled = false;
     // In-flight lock: a probe can take up to ~50s on a cold gateway — the
     // 30s cadence must never stack concurrent operator connections.
     let inFlight = false;
+    let t: number | undefined;
     const tick = () => {
       if (cancelled || inFlight) return;
+      // The deadline is read from the REF at tick time: every reconcile
+      // refresh bumps the rows' updatedAt (re-arming the window), and a
+      // dependency on the armed timestamp would REMOUNT this effect on each
+      // probe — an immediate tick() loop of back-to-back operator
+      // connections. The booleans below only flip on real state changes.
+      // Expired → SKIP (never clearInterval here: later activity can re-arm
+      // the ref without flipping the rendered booleans, and a killed
+      // interval would then never restart). The idle tick is a no-op; the
+      // effect unmounts on the next render once the window is truly over.
+      const deadline = taskGraceRef.current.armedAtLocal + TASK_POLL_GRACE_MS;
+      if (!hasRunningTask && Date.now() > deadline) {
+        return;
+      }
       inFlight = true;
       void reconcileTasks({ chatId: chatId as Id<"chats"> })
         .catch(() => {})
@@ -997,12 +1065,14 @@ function ChatThread({
         });
     };
     tick();
-    const t = window.setInterval(tick, 30_000);
+    t = window.setInterval(tick, 30_000);
     return () => {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [hasRunningTask, chatId, reconcileTasks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the armed
+    // timestamp is deliberately read through the ref (see comment above).
+  }, [hasRunningTask, inTaskGraceWindow, chatId, reconcileTasks]);
   // Thread-level "still working" indicator — INDEPENDENT of the Tools toggle:
   // in the clean view the sub-agent block is hidden, so without this the user
   // sees a settled reply and NOTHING while the sub-agent still works (or while

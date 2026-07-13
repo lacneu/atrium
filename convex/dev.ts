@@ -6,10 +6,12 @@ import { v } from "convex/values";
 import {
   action,
   internalMutation,
+  internalQuery,
   mutation,
   query,
   MutationCtx,
 } from "./_generated/server";
+import { runTaskReconcile, taskProbeInstanceName } from "./subAgents";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
@@ -1346,6 +1348,68 @@ export const peekSessionMeta = query({
  * merge state. Read-only, dev-gated, SOC2-lean (task names are bench prompts).
  *   npx convex run dev:peekSubAgents '{"chatId":"<id>"}'
  */
+/** DEV-ONLY: the bench's auth-free mirror of pendingTaskEngagements — same
+ *  projection, no user identity (the CLI has none). Feeds benchReconcileTasks.
+ *
+ *   npx convex run dev:benchReconcileTasks '{"chatId":"<id>"}'
+ */
+export const benchPendingTasks = internalQuery({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{
+    instanceName: string;
+    bridgeUrl: string | null;
+    taskIds: string[];
+  } | null> => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const instanceName = await taskProbeInstanceName(ctx, chat);
+    if (instanceName === null) return null;
+    const rows = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_updated", (q) =>
+        q.eq("chatId", chatId).eq("status", "running"),
+      )
+      .order("asc")
+      .filter((q) => q.eq(q.field("kind"), "task"))
+      .take(20);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    return {
+      instanceName,
+      bridgeUrl: inst?.bridgeUrl ?? null,
+      taskIds: rows
+        .filter((r) => r.childSessionKey.startsWith("task:"))
+        .map((r) => r.childSessionKey.slice("task:".length)),
+    };
+  },
+});
+
+/** DEV-ONLY: run the task reconcile (probe + settle + adopt) exactly like the
+ *  thread's 30s poll would — the bench has no browser to drive it. */
+export const benchReconcileTasks = action({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{ probed: number; discovered: number; adopted: number } | null> => {
+    assertDev();
+    const pending = await ctx.runQuery(internal.dev.benchPendingTasks, {
+      chatId,
+    });
+    if (pending === null) return null;
+    // Same live-instance allowlist as every other dev live operation: the
+    // bench must never reach a protected tenant's bridge.
+    assertDevInstance(pending.instanceName);
+    return await runTaskReconcile(ctx, chatId, pending);
+  },
+});
+
 export const peekSubAgents = query({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
@@ -1359,10 +1423,13 @@ export const peekSubAgents = query({
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .first();
+    const chatDoc = await ctx.db.get(chatId);
     return {
+      chatInstanceName: chatDoc?.instanceName ?? null,
       subAgents: rows.map((r) => ({
         childSessionKey: r.childSessionKey,
         status: r.status,
+        instanceName: r.instanceName ?? null,
         taskName: r.taskName ?? null,
         parentMessageId: r.parentMessageId ?? null,
         sessionMeta: r.sessionMeta ?? null,

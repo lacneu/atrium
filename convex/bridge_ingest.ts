@@ -280,6 +280,9 @@ type IngestOp =
   | {
       op: "upsertSubAgent";
       chatId: string;
+      // The writer's own served instance (one writer per bundle): persisted on
+      // the row so the task reconcile probes the registry the work runs on.
+      instanceName?: string;
       parentMessageId?: string | null;
       childSessionKey: string;
       kind?: "subagent" | "task";
@@ -767,6 +770,10 @@ export const ingest = httpAction(async (ctx, request) => {
     case "upsertSubAgent": {
       await ctx.runMutation(internal.subAgents.upsertSubAgent, {
         chatId: body.chatId as Id<"chats">,
+        instanceName:
+          typeof body.instanceName === "string" && body.instanceName !== ""
+            ? body.instanceName
+            : undefined,
         parentMessageId: body.parentMessageId
           ? (body.parentMessageId as Id<"messages">)
           : undefined,

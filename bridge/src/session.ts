@@ -971,6 +971,15 @@ export const IDLE_SESSION_TTL_SECONDS = 15 * 60;
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
+  // RECENT session keys per chat (bounded history): the sessions map keeps
+  // ONE entry per chat, so an agent/instance re-key drops the previous key
+  // instantly — but a background chain started on it can still produce
+  // invisible links for a while, and the task discovery must keep matching
+  // that registry session. Cap 4 keys / 30 min TTL per chat.
+  private readonly recentChatKeys = new Map<
+    string,
+    { key: string; at: number }[]
+  >();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -1172,6 +1181,14 @@ export class SessionRegistry {
     );
     session.startConsumer();
     this.sessions.set(chatId, session);
+    {
+      const hist = this.recentChatKeys.get(chatId) ?? [];
+      if (!hist.some((h) => h.key === session.sessionKey)) {
+        hist.push({ key: session.sessionKey, at: this.clock() });
+        if (hist.length > 4) hist.shift();
+      }
+      this.recentChatKeys.set(chatId, hist);
+    }
     return session;
   }
 
@@ -1192,6 +1209,33 @@ export class SessionRegistry {
       });
     }
     return out;
+  }
+
+  /** The LIVE session keys currently bound to a chat (any instance). The
+   *  task-discovery probe matches them against the gateway registry's
+   *  requesterSessionKey (measured live: it IS the requesting session's
+   *  exact key) to find background tasks this chat started — including the
+   *  chain links whose ack the gateway never surfaced as a tool frame. */
+  sessionKeysForChat(chatId: string): string[] {
+    const keys = new Set<string>();
+    for (const session of this.sessions.values()) {
+      if (session.chatId === chatId && !session.connection.isClosed) {
+        keys.add(session.sessionKey);
+      }
+    }
+    // RECENT keys too (see recentChatKeys): a chain started before an
+    // agent/instance re-key keeps producing invisible links on the OLD
+    // session for a while — drop entries past the TTL as we read.
+    const hist = this.recentChatKeys.get(chatId);
+    if (hist !== undefined) {
+      const cutoff = this.clock() - 30 * 60;
+      const fresh = hist.filter((h) => h.at >= cutoff);
+      if (fresh.length !== hist.length) {
+        this.recentChatKeys.set(chatId, fresh);
+      }
+      for (const h of fresh) keys.add(h.key);
+    }
+    return [...keys];
   }
 
   /** Cleanly close every live session (graceful shutdown). */

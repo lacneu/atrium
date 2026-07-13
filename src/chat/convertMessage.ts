@@ -224,6 +224,9 @@ export function convertConvexMessage(
         chatId: message.chatId,
         status: message.status,
         runId: message.runId ?? null,
+        // TRUE only when a delivery/announce actually MERGED into this bubble
+        // (see loadChatView) — MarkdownText skips its typewriter replay there.
+        hasMergedRuns: message.hasMergedRuns ?? false,
         error: message.error ?? null,
         // Stable failure class (gateway errorKind or dispatch code) — drives
         // the actionable localized headline on the error card.

@@ -113,6 +113,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // undefined on an unrouted send) to match the query's inferred shape.
         routedInstanceName: args.routedAgent?.instanceName,
         routedAgentId: args.routedAgent?.agentId,
+        // A user echo is never a merged bubble; key present to match the
+        // query's inferred shape.
+        hasMergedRuns: false,
         // Attachments reconcile a beat later with their server-signed URL; the
         // instant echo carries the text (the primary case). Empty is fine — the
         // converter renders the text bubble immediately.

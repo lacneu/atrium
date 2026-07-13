@@ -1219,6 +1219,10 @@ export default defineSchema({
   // the bridge before they land here.
   subAgents: defineTable({
     chatId: v.id("chats"),
+    // The served instance the child/task runs on (stamped by the per-instance
+    // bridge writer). The task reconcile probes THIS registry — chat-level
+    // state cannot answer it on multi-agent per-turn chats.
+    instanceName: v.optional(v.string()),
     // The parent assistant message the spawn happened under. The observer is fed the
     // run's current streaming messageId (session.ts -> runManager.currentMessageId),
     // so a spawn registered DURING the parent turn carries it -> the per-message card

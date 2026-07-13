@@ -2467,13 +2467,30 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
-      if (pBundle.config.kind === "hermes" || pIds.length === 0) {
+      // DISCOVERY: list the registry's live tasks whose requesterSessionKey
+      // is one of this chat's LIVE sessions — the only way to see a chain
+      // link's next task (the gateway emits no tool frames on delivery runs,
+      // so its ack never reaches the bridge). Registry truth, zero guessing:
+      // no live session (e.g. bridge restarted) → honest empty answer.
+      const discoverForChat =
+        typeof probeBody.discoverForChat === "string" &&
+        probeBody.discoverForChat !== ""
+          ? probeBody.discoverForChat
+          : null;
+      const discoverKeys =
+        discoverForChat !== null
+          ? registry.sessionKeysForChat(discoverForChat)
+          : [];
+      if (
+        pBundle.config.kind === "hermes" ||
+        (pIds.length === 0 && discoverKeys.length === 0)
+      ) {
         // No Hermes task registry — honest empty answer (caller keeps its cap).
-        sendJson(res, 200, { ok: true, tasks: [] });
+        sendJson(res, 200, { ok: true, tasks: [], discovered: [] });
         return;
       }
       try {
-        const tasks = await withOperatorConnection(
+        const { tasks, discovered, discoveryMeta } = await withOperatorConnection(
           pBundle.config,
           async (conn) => {
             // PARALLEL lookups on the multiplexed socket: a sequential batch
@@ -2521,13 +2538,93 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                 }
               }),
             );
-            return settled.filter(
+            const gets = settled.filter(
               (t): t is NonNullable<typeof t> => t !== null,
             );
+            // Session-scoped discovery (best-effort: a gateway without the
+            // RPC, or a transient failure, yields an empty list — the local
+            // state stays untouched).
+            let found: {
+              taskId: string;
+              status: string;
+              toolName: string | null;
+            }[] = [];
+            // COUNTS-only diagnostics (no keys/content — SOC2): how many live
+            // sessions matched the chat and how many records the registry
+            // listed. A persistent {sessions:0} explains an empty discovery.
+            let discoveryMeta: { sessions: number; listed: number } | null =
+              null;
+            if (discoverKeys.length > 0) {
+              try {
+                // SERVER-side filters (TasksListParamsSchema, pinned from the
+                // gateway dist: sessionKey + status[] + limit): an unfiltered
+                // list is paginated (~100 oldest records) and NEVER contains
+                // the live link — the very task this discovery exists for.
+                // One request per live session key (normally exactly one).
+                let listedTotal = 0;
+                const records: Record<string, unknown>[] = [];
+                for (const key of discoverKeys.slice(0, 3)) {
+                  const r = await conn.request(
+                    "tasks.list",
+                    { sessionKey: key, status: ["queued", "running"], limit: 50 },
+                    10_000,
+                  );
+                  const payload = r.payload as { tasks?: unknown[] } | null;
+                  const list = Array.isArray(payload?.tasks)
+                    ? payload.tasks
+                    : [];
+                  listedTotal += list.length;
+                  for (const t of list) {
+                    if (typeof t === "object" && t !== null) {
+                      records.push(t as Record<string, unknown>);
+                    }
+                  }
+                }
+                discoveryMeta = {
+                  sessions: discoverKeys.length,
+                  listed: listedTotal,
+                };
+                // Known ids are excluded BEFORE the cap: with 10+ live tasks
+                // a stable-ordered list would otherwise return the same known
+                // entries forever and starve the new invisible link behind
+                // them (the gets batch already refreshes the known ones).
+                const known = new Set(pIds);
+                found = records
+                  .filter((rec) => {
+                    const id = rec.taskId ?? rec.id;
+                    return (
+                      (rec.status === "queued" || rec.status === "running") &&
+                      typeof id === "string" &&
+                      id !== "" &&
+                      !known.has(id)
+                    );
+                  })
+                  .slice(0, 10)
+                  .map((rec) => ({
+                    taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
+                    status: (rec.status as string).slice(0, 40),
+                    // The chain key: the tool family. Pinned live shape:
+                    // sourceId "image_generate:openai" (tool before ':'),
+                    // summary `kind` ("image_generation") as the fallback.
+                    toolName:
+                      typeof rec.sourceId === "string" && rec.sourceId !== ""
+                        ? rec.sourceId.split(":")[0]!.slice(0, 60)
+                        : typeof rec.kind === "string" && rec.kind !== ""
+                          ? rec.kind.slice(0, 60)
+                          : null,
+                  }));
+              } catch (err) {
+                console.error(
+                  "tasks-probe discovery failed (non-fatal):",
+                  (err as Error)?.message ?? err,
+                );
+              }
+            }
+            return { tasks: gets, discovered: found, discoveryMeta };
           },
           noteHandshakeFor(pInstance),
         );
-        sendJson(res, 200, { ok: true, tasks });
+        sendJson(res, 200, { ok: true, tasks, discovered, discoveryMeta });
       } catch (err) {
         const code = classifyGatewayError(err);
         console.error(

@@ -1,4 +1,5 @@
 import { memo, type ComponentPropsWithoutRef } from "react";
+import { useMessage } from "@assistant-ui/react";
 import {
   StreamdownTextPrimitive,
   type StreamdownTextComponents,
@@ -75,6 +76,19 @@ export function AgentMarkdown({ text }: { text: string }) {
 }
 
 export const MarkdownText = memo(function MarkdownText() {
+  // A bubble a delivery/announce actually MERGED into (explicit reopen
+  // marker, NOT the runId format: a fail-closed FRESH delivery bubble
+  // carries the same runId family but streams NEW text and keeps the
+  // smoothing). Each merge re-streams the WHOLE accumulated text, and
+  // replaying the typewriter reveal makes the bubble visibly
+  // blank-then-retype on every chain link (reported live on a 67-slide
+  // chain: ~10 rapid flashes at the end) — render merged bubbles instantly.
+  const mergedDelivery = useMessage((m) => {
+    const custom = m.metadata?.custom as
+      | { hasMergedRuns?: boolean }
+      | undefined;
+    return custom?.hasMergedRuns === true;
+  });
   return (
     <StreamdownTextPrimitive
       className="oc-md"
@@ -86,7 +100,7 @@ export const MarkdownText = memo(function MarkdownText() {
       // If `@streamdown/code` (syntax highlighting) is ever added, re-evaluate — per-frame
       // re-highlight of one growing code block would reintroduce jank; cap it via
       // SmoothOptions or disable smooth for code.
-      smooth
+      smooth={!mergedDelivery}
       components={components}
     />
   );
