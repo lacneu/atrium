@@ -19,6 +19,7 @@ import { m } from "@/paraglide/messages.js";
 type Row = {
   _id: string;
   at: number;
+  reference: string;
   category: string;
   hasComment: boolean;
   messageRole: string;
@@ -110,9 +111,11 @@ function FidelityBadge({
 
 function Detail({
   data,
+  reference,
   closeReason,
 }: {
   data: Snapshot;
+  reference?: string;
   closeReason?: string | null;
 }) {
   const s = data.snapshot;
@@ -155,6 +158,17 @@ function Detail({
           {s.openclawModel ? ` · ${s.openclawModel}` : ""}
           {s.openclawRuntime ? ` (${s.openclawRuntime})` : ""}
         </span>
+        {reference ? (
+          // The shareable reference (what the support API takes): SELECTABLE
+          // code so the admin can hand the report to an agent/support key.
+          <code
+            className="oc-fbadmin__ref"
+            style={{ userSelect: "all", marginLeft: "auto" }}
+            title={m.feedbacks_reference_title()}
+          >
+            {reference}
+          </code>
+        ) : null}
       </div>
 
       {data.comment ? (
@@ -363,7 +377,11 @@ export function FeedbacksTab() {
         isExpanded={(r) => openId === r._id && !!byId[r._id]}
         renderExpanded={(r) =>
           byId[r._id] ? (
-            <Detail data={byId[r._id]} closeReason={r.userCloseReason} />
+            <Detail
+              data={byId[r._id]}
+              reference={r.reference}
+              closeReason={r.userCloseReason}
+            />
           ) : null
         }
         columns={[

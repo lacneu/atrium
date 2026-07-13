@@ -434,6 +434,11 @@ export const listForAdmin = query({
         return {
           _id: r._id,
           at: r.at,
+          // The shareable env-labeled reference (what the reporter saw at
+          // submit time, and what the key-authed support API takes): without
+          // it here the admin has NO way to hand a report to an agent — the
+          // reporter's submit dialog is the only other place it ever shows.
+          reference: displayReference(r._id),
           category: r.category,
           hasComment: !!r.comment,
           messageRole: r.snapshot.messageRole,

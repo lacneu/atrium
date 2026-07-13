@@ -151,6 +151,19 @@ export function RolesTab() {
   async function togglePermission(role: StoredRole, permKey: string) {
     // Never mutate a wildcard role (admin) into a partial set (lockout guard).
     if (isWildcard(role.permissions)) return;
+    // BUILT-IN roles follow the product definition: the seed overwrites any
+    // stored drift and the auth path self-heals stale rows by union, so an
+    // edit here would be silently undone. The server rejects the write; the
+    // matrix explains instead of pretending.
+    if (role.builtin) {
+      const ok = await confirm({
+        title: m.roles_confirm_edit_builtin_title({ name: role.name }),
+        description: m.roles_builtin_readonly(),
+        confirmLabel: m.roles_builtin_readonly_ack(),
+      });
+      void ok;
+      return;
+    }
     // Already writing for this role — ignore (the checkbox is also disabled).
     if (pending.has(role._id)) return;
 
@@ -158,16 +171,6 @@ export function RolesTab() {
     const next = has
       ? role.permissions.filter((p) => p !== permKey)
       : [...role.permissions, permKey];
-
-    // Warn before editing a built-in role (they may be edited, with caution).
-    if (role.builtin) {
-      const ok = await confirm({
-        title: m.roles_confirm_edit_builtin_title({ name: role.name }),
-        description: m.roles_confirm_edit_builtin_desc(),
-        confirmLabel: m.roles_confirm_edit_builtin_label(),
-      });
-      if (!ok) return;
-    }
 
     setPending((prev) => new Set(prev).add(role._id));
     try {

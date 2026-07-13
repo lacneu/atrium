@@ -92,7 +92,7 @@ describe("M1 — approveUser routes through the last-admin guard", () => {
   });
 });
 
-describe("L1 — updateRolePermissions guards the builtin admin wildcard", () => {
+describe("L1 — updateRolePermissions locks built-in roles", () => {
   test("rejects downgrading the builtin admin role out of ['*']", async () => {
     const t = convexTest(schema, modules);
     const { as } = await seedAdmin(t);
@@ -111,7 +111,7 @@ describe("L1 — updateRolePermissions guards the builtin admin wildcard", () =>
         roleId: adminRoleId,
         permissions: ["traces.read"], // strips the wildcard
       }),
-    ).rejects.toThrow(/wildcard/i);
+    ).rejects.toThrow(/built-in roles follow the product definition/i);
 
     // The wildcard is intact.
     const perms = await t.run(async (ctx) => {
@@ -121,7 +121,10 @@ describe("L1 — updateRolePermissions guards the builtin admin wildcard", () =>
     expect(perms).toEqual(["*"]);
   });
 
-  test("allows editing a NON-admin builtin role's permissions", async () => {
+  test("rejects editing ANY built-in role (they follow the code definition)", async () => {
+    // A removal on a built-in was never durable (the seed overwrites drift,
+    // and auth self-heals stale rows by union) — allowing the write would be
+    // a silently ineffective revocation, so the server refuses it.
     const t = convexTest(schema, modules);
     const { as } = await seedAdmin(t);
     const observerRoleId = await t.run(async (ctx) => {
@@ -132,15 +135,31 @@ describe("L1 — updateRolePermissions guards the builtin admin wildcard", () =>
         .unique();
       return role!._id as Id<"roles">;
     });
+    await expect(
+      as.mutation(api.apiKeys.updateRolePermissions, {
+        roleId: observerRoleId,
+        permissions: ["traces.read", "kpi.read"],
+      }),
+    ).rejects.toThrow(/built-in roles follow the product definition/i);
+  });
+
+  test("still allows editing a CUSTOM role's permissions", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedAdmin(t);
+    const customRoleId = (await as.mutation(api.apiKeys.createRole, {
+      key: "support-light",
+      name: "Support light",
+      permissions: [],
+    })) as Id<"roles">;
     await as.mutation(api.apiKeys.updateRolePermissions, {
-      roleId: observerRoleId,
-      permissions: ["traces.read", "kpi.read"],
+      roleId: customRoleId,
+      permissions: ["traces.read", "feedback.respond"],
     });
     const perms = await t.run(async (ctx) => {
-      const r = await ctx.db.get(observerRoleId);
+      const r = await ctx.db.get(customRoleId);
       return r!.permissions;
     });
-    expect(perms.sort()).toEqual(["kpi.read", "traces.read"]);
+    expect(perms.sort()).toEqual(["feedback.respond", "traces.read"]);
   });
 });
 

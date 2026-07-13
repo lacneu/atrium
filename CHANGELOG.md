@@ -8,6 +8,28 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.55.3] — Support access self-heals; report references visible to admins
+
+Bug-fix release (Convex + frontend). No breaking changes.
+
+- **Fixed: built-in API-key roles went stale until an admin happened to visit
+  the Roles tab.** A permission added to a built-in role definition (e.g.
+  `feedback.respond` on the `agent` role) only reached existing deployments
+  when the lazy role-seed ran — until then every key minted with that role
+  got 403s on the new surface. Built-in roles now self-heal at auth time
+  (the checked permission set is the union of the stored row and the code
+  definition — built-ins are not admin-editable by design, the seed already
+  overwrites any drift).
+- **Built-in roles are now explicitly read-only** (server-enforced). Editing
+  one appeared to work but was silently undone by the role seed — an
+  ineffective revocation. The Roles matrix now explains this and points to
+  custom roles for tailored permission sets.
+- **Settings ▸ Observability ▸ Feedbacks now shows each report's shareable
+  reference** (the `env-id` the reporter saw at submit time, and the id the
+  key-authed support API takes). Without it, an admin had no way to hand a
+  report to the support agent — the reporter's submit dialog was the only
+  place the reference ever appeared.
+
 ## [0.55.2] — Sequential task chains keep one bubble
 
 Bug-fix release (Convex only). No breaking changes.

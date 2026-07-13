@@ -142,7 +142,7 @@ describe("observability spine", () => {
   // re-seed (lazy on listRoles/mintApiKey, or at deploy) MUST reconcile the
   // drift and grant bridge.read — otherwise the observer key keeps getting 403
   // on /api/v1/compat even after the code ships. This pins that migration.
-  test("re-seed reconciles a pre-existing observer role missing bridge.read", async () => {
+  test("a STALE built-in role row self-heals at auth time + re-seed reconciles the row", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {
       // Simulate the deployed-prod state (observer row WITHOUT bridge.read).
@@ -158,11 +158,26 @@ describe("observability spine", () => {
         ],
       });
 
+      // AUTH-TIME SELF-HEAL: a permission added to the built-in definition is
+      // effective immediately (union with the stored row), WITHOUT waiting
+      // for an admin to visit the Roles tab (the gap that 403'd the prod
+      // agent key on feedback.respond for days).
       const before = await permissionsForRoleKey(ctx, "observer");
-      expect(roleHasPermission(before, PERMISSIONS.BRIDGE_READ)).toBe(false);
+      expect(roleHasPermission(before, PERMISSIONS.BRIDGE_READ)).toBe(true);
+      // ...while the STORED row is still stale (the union never writes).
+      const staleRow = await ctx.db
+        .query("roles")
+        .withIndex("by_key", (q) => q.eq("key", "observer"))
+        .unique();
+      expect(staleRow?.permissions).not.toContain(PERMISSIONS.BRIDGE_READ);
 
-      // Deploy-time / hot-path re-seed reconciles the drift.
+      // Deploy-time / hot-path re-seed reconciles the ROW itself.
       await seedBuiltinRoles(ctx);
+      const seededRow = await ctx.db
+        .query("roles")
+        .withIndex("by_key", (q) => q.eq("key", "observer"))
+        .unique();
+      expect(seededRow?.permissions).toContain(PERMISSIONS.BRIDGE_READ);
 
       const after = await permissionsForRoleKey(ctx, "observer");
       expect(roleHasPermission(after, PERMISSIONS.BRIDGE_READ)).toBe(true);

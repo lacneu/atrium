@@ -195,9 +195,18 @@ export async function permissionsForRoleKey(
     .withIndex("by_key", (q) => q.eq("key", roleKey))
     .unique();
 
-  const perms: string[] | typeof WILDCARD = row
-    ? row.permissions
-    : (BUILTIN_ROLES[roleKey]?.permissions ?? []);
+  // BUILT-IN roles: the CODE definition is authoritative at auth time, in
+  // BOTH directions. The stored row only reconciles when an admin happens to
+  // visit the Roles tab or mint a key, so a permission ADDED to a built-in
+  // would otherwise 403 every existing deployment until that manual visit
+  // (bit prod: the agent key lacked feedback.respond for days) — and a
+  // permission REMOVED from a built-in would keep granting stale access.
+  // Built-ins are locked against admin edits (updateRolePermissions rejects
+  // them; seedBuiltinRoles overwrites any historical drift), so the stored
+  // row carries no intent of its own. Custom roles use the row verbatim.
+  const builtin = BUILTIN_ROLES[roleKey]?.permissions;
+  const perms: string[] | typeof WILDCARD =
+    builtin !== undefined ? builtin : (row?.permissions ?? []);
 
   return expandPermissions(perms);
 }

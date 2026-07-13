@@ -479,17 +479,16 @@ export const updateRolePermissions = mutation({
     const role = await ctx.db.get(roleId);
     if (role === null) throw new Error("Not found: role");
     assertValidPermissions(permissions);
-    // L1: the builtin admin role must stay the wildcard set. Reject downgrading
-    // it out of ["*"] so the lockout is authoritative server-side (the client
-    // matrix guard alone is not enough — any service account on roleKey 'admin'
-    // would otherwise lose all permissions). seedBuiltinRoles self-heals, but a
-    // hard reject is the defense-in-depth bar.
-    if (
-      role.key === ADMIN_ROLE_KEY &&
-      role.builtin &&
-      !permissions.includes("*")
-    ) {
-      throw new Error("Refused: the builtin admin role must keep the '*' wildcard");
+    // BUILT-IN roles follow the code definition, full stop: seedBuiltinRoles
+    // has always overwritten any stored drift back to the definition, and the
+    // auth path now self-heals stale rows by union — an admin "removal" on a
+    // built-in was never durable and would be silently ineffective, the worst
+    // kind of security UI. Reject the write outright (this also covers the
+    // old admin-must-keep-wildcard guard). Customization = a custom role.
+    if (role.builtin) {
+      throw new Error(
+        "Refused: built-in roles follow the product definition; create a custom role to customize permissions",
+      );
     }
     await ctx.db.patch(roleId, { permissions });
     const actor = await getActor(ctx);
