@@ -20,8 +20,12 @@ import { v } from "convex/values";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { deliveryChildKey, taskDeliveryOutcome } from "./lib/deliveryRuns";
-import { Id } from "./_generated/dataModel";
+import {
+  deliveryChildKey,
+  taskDeliveryIdentity,
+  taskDeliveryOutcome,
+} from "./lib/deliveryRuns";
+import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
@@ -272,6 +276,21 @@ export const disarmAnnounceReplay = internalMutation({
  *    - the parent is a COMPLETED assistant message (never error/aborted);
  *    - the parent is still the chat's LAST message (the conversation has not
  *      moved on — merging into an older bubble would hide the result). */
+/** The chat's LOGICALLY last message (effectiveOrder — see the windowing
+ *  invariant note in reopenParentForAnnounce), or null on an empty chat. */
+async function latestChatMessage(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+): Promise<Doc<"messages"> | null> {
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(30);
+  if (recent.length === 0) return null;
+  return recent.reduce((a, b) => (effectiveOrder(b) > effectiveOrder(a) ? b : a));
+}
+
 async function reopenParentForAnnounce(
   ctx: MutationCtx,
   chatId: Id<"chats">,
@@ -299,6 +318,62 @@ async function reopenParentForAnnounce(
         .filter((q) => q.eq(q.field("chatId"), chatId))
         .first();
       parentId = engagement?.parentMessageId ?? undefined;
+    }
+  }
+  // Set by the CHAIN fallback below; consumed just before the successful
+  // reopen return — the synthetic engagement row must only be anchored to a
+  // VALIDATED target (an anchor written before the status/last-message gates
+  // would leave a pointer to a rejected bubble).
+  let chainTaskKeyToAnchor: string | null = null;
+  if (parentId === undefined) {
+    // CHAIN fallback — measured live (OpenClaw 2026.7.1-beta.5, 2026-07-13):
+    // the gateway emits NO tool frames on delivery runs, so a task started
+    // INSIDE one (sequential generation: deliver item N, start N+1 in that
+    // run) is invisible to the bridge — no acked engagement row exists and
+    // nothing above can resolve. The chain itself is the remaining join:
+    // (1) the newest ANCHORED same-tool engagement whose anchor is still the
+    // conversation's last bubble, or (2) a last bubble already carrying the
+    // tool's delivery family. Anything else keeps failing CLOSED to the
+    // fresh-bubble behaviour.
+    const identity = taskDeliveryIdentity(announceRunId);
+    if (identity !== null) {
+      const last = await latestChatMessage(ctx, chatId);
+      const carriesSameTool = (m: Doc<"messages">): boolean => {
+        const own = m.runId !== undefined ? taskDeliveryIdentity(m.runId) : null;
+        if (own !== null && own.toolName === identity.toolName) return true;
+        return (m.mergedAnnounceRuns ?? []).some(
+          (r) => taskDeliveryIdentity(r)?.toolName === identity.toolName,
+        );
+      };
+      // Newest-first BOUNDED window (an old chat accumulates task rows; an
+      // unbounded collect could blow the mutation's read limits and kill the
+      // delivery). A live chain's rows are always among the newest.
+      const recentRows = await ctx.db
+        .query("subAgents")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .order("desc")
+        .take(64);
+      const sameTool = recentRows.filter(
+        (r) => r.kind === "task" && r.taskName === identity.toolName,
+      );
+      const anchored = sameTool
+        .filter((r) => r.parentMessageId !== undefined)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      const newestAnchor = anchored[0]?.parentMessageId ?? null;
+      // TWO concurrent chains of the same tool (a running row anchored to a
+      // DIFFERENT bubble) make the join ambiguous — fail closed rather than
+      // merge a result into the wrong chain.
+      const ambiguous =
+        newestAnchor !== null &&
+        anchored.some(
+          (r) => r.status === "running" && r.parentMessageId !== newestAnchor,
+        );
+      if (last !== null && last.role === "assistant" && !ambiguous) {
+        if (newestAnchor === last._id || carriesSameTool(last)) {
+          parentId = last._id;
+          chainTaskKeyToAnchor = `task:${identity.taskId}`;
+        }
+      }
     }
   }
   if (parentId === undefined) return null;
@@ -359,16 +434,8 @@ async function reopenParentForAnnounce(
   // merge the announce into a bubble the conversation already moved past.
   // Recent creation-window scan is safe: orderTime-bearing rows are always
   // recent (messageOrder WINDOWING INVARIANT).
-  const recent = await ctx.db
-    .query("messages")
-    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-    .order("desc")
-    .take(30);
-  if (recent.length === 0) return null;
-  const last = recent.reduce((a, b) =>
-    effectiveOrder(b) > effectiveOrder(a) ? b : a,
-  );
-  if (last._id !== parentId) return null;
+  const last = await latestChatMessage(ctx, chatId);
+  if (last === null || last._id !== parentId) return null;
   // RESUME reuses the ORIGINAL prefix preserved by the failed finalize —
   // parent.text at this point is `original + partial announce`, and
   // re-prefixing with THAT would duplicate the partial fragment.
@@ -457,6 +524,30 @@ async function reopenParentForAnnounce(
       generation: announceRunId,
       updatedAt: now,
     });
+  }
+  if (chainTaskKeyToAnchor !== null) {
+    // The chain fallback resolved AND the target passed every gate: anchor
+    // the engagement row now (create-or-patch) so the settle at the end of
+    // this run finds an anchored row and the NEXT link resolves through it.
+    const row = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", chainTaskKeyToAnchor))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    if (row === null) {
+      await ctx.db.insert("subAgents", {
+        chatId,
+        parentMessageId: parentId,
+        childSessionKey: chainTaskKeyToAnchor,
+        kind: "task",
+        taskName: taskDeliveryIdentity(announceRunId)?.toolName,
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+      });
+    } else if (row.parentMessageId === undefined) {
+      await ctx.db.patch(row._id, { parentMessageId: parentId, updatedAt: now });
+    }
   }
   return { messageId: parentId, reopened: true };
 }

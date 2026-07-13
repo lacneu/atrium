@@ -165,6 +165,12 @@ export const COMPAT_MANIFEST: CompatManifest = {
         "2026.6.10",
         "2026.6.11",
         "2026.7.1-beta.2",
+        // beta.5: full live suite GO 2026-07-12 (9/9 — wire contracts, SSE,
+        // plan, media, spawn/announce, async tasks, cron, Hermes co-run).
+        // Upgrade notes: startup migrations refuse to boot on codex binding
+        // sidecars with an unresolvable session owner (move them aside), and
+        // containerized gateways now REQUIRE auth for non-loopback binds.
+        "2026.7.1-beta.5",
         "2026.7.1",
       ],
       capabilities: OPENCLAW_CAPABILITIES,

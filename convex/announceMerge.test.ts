@@ -688,6 +688,123 @@ describe("task-delivery merge (async tools)", () => {
     const parent = await t.run((ctx) => ctx.db.get(parentId));
     expect(parent?.status).toBe("complete"); // untouched — separate bubble
   });
+
+  // Sequential chains: the gateway emits NO tool frames on delivery runs
+  // (measured live, 2026.7.1-beta.5), so a task started INSIDE one has no
+  // acked engagement. The chain fallback merges the next link into the last
+  // same-tool delivery bubble — and anchors its row at merge time.
+  const NEXT_ID = "7d10a2be-0000-4a11-8b22-93c344d55e66";
+
+  test("CHAIN: a next-link delivery without engagement merges into the last same-tool bubble + anchors its row", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+    });
+    // The chat's last bubble IS link N's delivery (its runId carries the family).
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, { runId: DELIVERY_RUN });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${NEXT_ID}:ok`,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("streaming"); // reopened: ONE bubble per chain
+    expect(parent?.runId).toBe(`image_generate:${NEXT_ID}:ok`);
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${NEXT_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.parentMessageId).toBe(parentId);
+    expect(row?.kind).toBe("task");
+  });
+
+  test("CHAIN: recognizes the family in mergedAnnounceRuns too (link N itself was merged)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, { mergedAnnounceRuns: [DELIVERY_RUN] });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${NEXT_ID}:ok`,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("streaming");
+  });
+
+  test("CHAIN: silent middle links — inherits through the newest ANCHORED same-tool row (measured live)", async () => {
+    // The agent NO_REPLYed deliveries 1..N-1 while starting the next task in
+    // each (no startAssistant ever ran, the turn bubble is still the chat's
+    // last message and carries NO delivery family) — only task 1's row,
+    // acked in the user turn, is anchored. Delivery N must land in that
+    // anchor.
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedEngagement(t); // task 1 anchored, done later
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${NEXT_ID}:ok`,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("streaming"); // merged into the turn bubble
+    expect(parent?.runId).toBe(`image_generate:${NEXT_ID}:ok`);
+    // And link N's row was anchored at merge time.
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", `task:${NEXT_ID}`),
+        )
+        .first(),
+    );
+    expect(row?.parentMessageId).toBe(parentId);
+  });
+
+  test("CHAIN fail-closed: the conversation moved on (anchor no longer last) -> fresh bubble", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId, parentId } = await seedEngagement(t);
+    // A newer user message arrived after the anchor bubble.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        text: "autre sujet",
+        status: "complete" as const,
+        updatedAt: 3000,
+      });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${NEXT_ID}:ok`,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("complete"); // untouched — separate bubble
+  });
+
+  test("CHAIN fail-closed: a DIFFERENT tool's delivery never chain-merges", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, {
+        runId: `video_generate:${TASK_ID}:ok`,
+      });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${NEXT_ID}:ok`,
+    });
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("complete"); // untouched — separate bubble
+  });
 });
 
 // Thread-level activity signal (subAgents.turnActivity) — powers the clean

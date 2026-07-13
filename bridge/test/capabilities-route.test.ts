@@ -160,6 +160,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.6.10",
       "2026.6.11",
       "2026.7.1-beta.2",
+      "2026.7.1-beta.5",
       "2026.7.1",
     ]);
     expect(body.compat.providers.hermes).toEqual({

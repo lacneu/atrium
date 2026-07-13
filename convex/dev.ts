@@ -760,7 +760,7 @@ export const testSend = mutation({
  * the real composer does, so bridge.dispatch runs beginTurnRouting + getChatRouting
  * with the routed agent (epoch-on-switch + forced rehydration). Test scaffolding,
  * not a product path.
- *   npx convex run dev:testSendRouted '{"chatId":"<id>","text":"oui","instanceName":"olivier","agentId":"bob"}'
+ *   npx convex run dev:testSendRouted '{"chatId":"<id>","text":"oui","instanceName":"primary","agentId":"bob"}'
  */
 export const testSendRouted = mutation({
   args: {
@@ -937,6 +937,8 @@ export const inspectChat = query({
         textLen: m.text.length,
         liveTextLen: (m.liveText ?? "").length,
         textPreview: m.text.slice(0, 80),
+        runId: m.runId ?? null,
+        mergedAnnounceRuns: m.mergedAnnounceRuns ?? [],
         parts: parts.map((p) => ({
           kind: p.part.kind,
           name: "name" in p.part ? p.part.name : undefined,
@@ -1380,6 +1382,24 @@ export const peekSubAgents = query({
               textLen: last.text.length,
             },
     };
+  },
+});
+
+/**
+ * Live-bench probe: is a turn CURRENTLY streaming on this chat, and how much
+ * text has arrived? The bench asserts streaming was OBSERVED mid-turn (the
+ * WS->Convex->SSE pipeline is alive), not just that a final landed.
+ *   npx convex run dev:peekStreaming '{"chatId":"<id>"}'
+ */
+export const peekStreaming = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const rows = await ctx.db
+      .query("streamingText")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .collect();
+    return rows.map((r) => ({ len: r.text.length, updatedAt: r.updatedAt }));
   },
 });
 

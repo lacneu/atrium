@@ -162,6 +162,7 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.6.10",
       "2026.6.11",
       "2026.7.1-beta.2",
+      "2026.7.1-beta.5",
       "2026.7.1",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
@@ -304,6 +305,14 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.2");
     // beta.2 > every 2026.6.x minVersion AND >= the cronManage floor (the
     // bench it was validated on) → the full 7.1 capability row.
+    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
+
+  test("the VALIDATED pre-release bench (2026.7.1-beta.5) is within range, no flag", () => {
+    // Live suite GO 2026-07-12 (9/9). Same capability row as the release:
+    // beta.5 sorts above the cronManage floor (beta.2) and below 2026.7.1.
+    const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.5");
     expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });

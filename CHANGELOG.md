@@ -8,6 +8,25 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.55.2] — Sequential task chains keep one bubble
+
+Bug-fix release (Convex only). No breaking changes.
+
+- **Fixed: sequential background-task chains (e.g. slide-by-slide image
+  generation) split into one bubble per delivery.** Measured live on OpenClaw
+  2026.7.1: the gateway emits NO tool frames on delivery runs, so a task
+  started inside one (deliver item N, start N+1 in that same run) is invisible
+  to the bridge — no engagement is ever acked for it, and every subsequent
+  delivery opened a fresh bubble with no anchor (reported on dev during a
+  67-slide regeneration). Delivery runs without an engagement row now resolve
+  their anchor through the CHAIN itself: the newest anchored same-tool
+  engagement of the chat — or the last bubble already carrying that tool's
+  delivery family — receives the next link, provided that anchor is still the
+  conversation's last message (everything else keeps failing closed to a
+  separate bubble). The merged link's row is anchored at merge time, and rows
+  born inside a delivery/announce run denormalize their inherited anchor at
+  creation, so chains stay resolvable in one hop.
+
 ## [0.55.1] — Background work you can trust: async tools tracked, merged and verified
 
 Bug-fix release (Convex + bridge + frontend). No breaking changes; the schema

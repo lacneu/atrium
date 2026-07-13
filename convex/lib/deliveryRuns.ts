@@ -32,3 +32,16 @@ export function taskDeliveryOutcome(runId: string): "ok" | "error" | null {
   const m = TASK_DELIVERY_RE.exec(runId);
   return m === null ? null : (m[3] as "ok" | "error");
 }
+
+/** A task-delivery run's parsed identity ({toolName, taskId}), or null for
+ *  non-task runs. The toolName is the CHAIN key: sequential generations keep
+ *  starting the next task inside the previous delivery run, and the gateway
+ *  emits no tool frames on those runs, so the tool family is the only stable
+ *  correlation between the links. */
+export function taskDeliveryIdentity(
+  runId: string,
+): { toolName: string; taskId: string } | null {
+  const m = TASK_DELIVERY_RE.exec(runId);
+  if (m === null || m[1] === undefined || m[2] === undefined) return null;
+  return { toolName: m[1], taskId: m[2] };
+}

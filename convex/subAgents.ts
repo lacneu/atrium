@@ -208,9 +208,27 @@ export const upsertSubAgent = internalMutation({
       // content (codex P1). A patch path can't reach here for a purged chat — the cascade
       // deletes its rows, so `existing` is null and this guard catches the re-insert.
       if ((await ctx.db.get(args.chatId)) === null) return null;
+      // Denormalize the inherited anchor AT BIRTH: a row born inside a
+      // delivery/announce run (bornOfRun, no direct anchor) copies the
+      // anchor of that run's own row. Because every row gets this treatment
+      // when it is created, a CHAIN of silent runs (task N started inside
+      // task N-1's delivery, ...) always resolves in ONE hop — the read-side
+      // bornOfRun fallback never has to walk the chain.
+      let parentMessageId = args.parentMessageId;
+      if (parentMessageId === undefined && args.bornOfRun !== undefined) {
+        const carrierKey = deliveryChildKey(args.bornOfRun);
+        if (carrierKey !== null) {
+          const carrier = await ctx.db
+            .query("subAgents")
+            .withIndex("by_child", (q) => q.eq("childSessionKey", carrierKey))
+            .filter((q) => q.eq(q.field("chatId"), args.chatId))
+            .first();
+          parentMessageId = carrier?.parentMessageId ?? undefined;
+        }
+      }
       const insertedId = await ctx.db.insert("subAgents", {
         chatId: args.chatId,
-        parentMessageId: args.parentMessageId,
+        parentMessageId,
         childSessionKey: args.childSessionKey,
         kind: args.kind,
         bornOfRun: args.bornOfRun,
