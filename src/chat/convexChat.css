@@ -1437,13 +1437,13 @@
   opacity: 0;
   animation: oc-flash-breathe 2.4s ease-out;
 }
-/* `?m=` / whole-message jumps keep the charte accent; BOOKMARK anchors glow
-   in the bookmarks' own amber so the flash visibly answers the marker. */
-.oc-msg--highlight {
-  --oc-flash-hue: var(--highlight);
-}
+/* EVERY jump flash (deep-link `?m=`, whole-message and per-block bookmark
+   jumps) glows in the chart's `highlight` token — one consistent charte-bound
+   language (user ask). The `bookmark` token stays the identity of the
+   bookmark chrome itself (markers, rail, gutter icons). */
+.oc-msg--highlight,
 .oc-anchor--flash {
-  --oc-flash-hue: var(--bookmark);
+  --oc-flash-hue: var(--highlight);
 }
 @keyframes oc-flash-breathe {
   0% {
