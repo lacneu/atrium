@@ -145,6 +145,7 @@
 	"cron_edit_invalid_schedule": "La fréquence saisie est incomplète ou invalide — corrigez-la avant d'enregistrer.",
 	"cron_edit_empty_field": "Le nom et le message du cron ne peuvent pas être vides.",
 	"plan_activity_label": "Plan — {done}/{total} étapes",
+	"plan_activity_estimated": "progression estimée",
 	"plan_activity_expand": "Afficher le plan de travail",
 	"plan_activity_collapse": "Replier le plan de travail",
 	"subagent_task_label": "Tâche de fond : {tool}",

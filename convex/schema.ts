@@ -73,6 +73,12 @@ export const messagePart = v.union(
       }),
     ),
     explanation: v.optional(v.string()),
+    // TRUE when this update was INFERRED, not read from the wire: delivery
+    // runs (sub-agent announce / task delivery) carry no tool frames, so an
+    // update_plan there only proves "the plan moved" — the bridge advances
+    // the last known plan one step per call (stream.advancePlanPart) and the
+    // UI labels the progression as estimated.
+    estimated: v.optional(v.boolean()),
   }),
   // A gateway cron job the agent CREATED/UPDATED/REMOVED during this turn (a
   // successful `cron` tool mutation, parsed by the bridge — core/cron-part.ts).
@@ -1024,7 +1030,14 @@ export default defineSchema({
           v.array(v.object({ id: v.string(), label: v.string() })),
         ),
         verboseLevel: v.optional(v.string()), // e.g. "full"
-        totalTokens: v.optional(v.number()), // used context tokens
+        totalTokens: v.optional(v.number()), // gateway sessions.get counter (CUMULATIVE under a context engine — not the window fill)
+        // REAL window usage of the LAST turn (bridge post-usage snapshot):
+        // the context gauge's primary source. totalTokens alone reads 859%
+        // on an LCM-managed long session (cumulative / window — prod report).
+        activeTokens: v.optional(v.number()),
+        // Bridge observation time of activeTokens: fire-and-forget POSTs can
+        // arrive out of order — Convex rejects stale writes by this stamp.
+        activeTokensAt: v.optional(v.number()),
         contextTokens: v.optional(v.number()), // context window size
         estimatedCostUsd: v.optional(v.number()),
         updatedAt: v.optional(v.number()),

@@ -1474,6 +1474,22 @@ describe("SubAgentObserver — announce-run item-spawn backfill", () => {
     expect(meta?.agentId).toBe("files");
   });
 
+  it("a child sighted inside a sub-agent ANNOUNCE run carries bornOfRun (chain-anchor inheritance key)", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    // The spawn item lands during another child's announce run (a CHAINED
+    // spawn — delivery runs emit no tool result, so the sighting is the only
+    // registration source) and the deferred announce message never opened.
+    obs.observe(itemFrame("start"), 1000, null);
+    const ups = obs.observe(childLifecycle(), 1100, null);
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    // bornOfRun = the ANNOUNCE run: Convex birth-inheritance resolves the
+    // carrier's row and copies its ROOT anchor — without it the chained
+    // child's delivery opened its own bubble (live incident 2026-07-14).
+    expect(reg?.bornOfRun).toBe("announce:v1:agent:files:subagent:prev:run0");
+    expect(reg?.parentMessageId).toBeNull();
+  });
+
   it("a tool-result-registered spawn's item END never re-parks (no cross-claim)", () => {
     const obs = new SubAgentObserver(PARENT, "chatA");
     // Normal spawn: item start → tool result (registers child1, purges sighting)

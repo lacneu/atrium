@@ -1009,6 +1009,13 @@ export class SessionRegistry {
     return this.served.get(instanceName);
   }
 
+  /** NON-ACQUIRING lookup of a chat's live session (the map holds one per
+   *  chat). For observation-only signals (e.g. the /abort handler flagging a
+   *  user stop) — never re-keys or closes anything. */
+  peekByChat(chatId: string): Session | undefined {
+    return this.sessions.get(chatId);
+  }
+
   /** Register a newly-resolved instance at RUNTIME (boot self-heal). Mutates the SAME
    *  served map the HTTP server holds, so the instance becomes routable immediately —
    *  no restart. Callers check membership/collision before building the bundle. */

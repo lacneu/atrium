@@ -144,6 +144,13 @@ type IngestOp =
       part: Record<string, unknown>;
       runId?: string | null;
     }
+  | {
+      op: "advancePlan";
+      messageId: string;
+      count: number;
+      settleIfIdle: boolean;
+      runId?: string | null;
+    }
   // Outbound media (base64-free, no size ceiling): the bridge asks for an upload
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
   // this endpoint — the 20MB httpAction limit never applies), then persists the
@@ -247,7 +254,9 @@ type IngestOp =
       messageId: string;
     }
   | {
-      op: "setSessionMeta";
+      op: "setSessionMeta" | "setSessionActiveTokens";
+      activeTokens?: number;
+      observedAt?: number;
       chatId: string;
       meta: {
         model?: string;
@@ -466,6 +475,25 @@ export const ingest = httpAction(async (ctx, request) => {
             typeof body.part.kind === "string" ? body.part.kind : undefined,
           ok: true,
         },
+      });
+      return json({ ok: true });
+    }
+    case "advancePlan": {
+      // Item-derived update_plan on a DELIVERY run (announce / task delivery):
+      // those runs carry no tool frames, so only "the plan moved N times"
+      // reaches the wire — stream.advancePlanPart advances the message's last
+      // known plan part accordingly (estimated), or settles it when the turn
+      // left the pipeline idle.
+      await ctx.runMutation(internal.stream.advancePlanPart, {
+        messageId: body.messageId as Id<"messages">,
+        count: Number(body.count ?? 0),
+        settleIfIdle: body.settleIfIdle === true,
+        ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        correlationId: body.messageId,
+        meta: { op: body.op, messageId: body.messageId, ok: true },
       });
       return json({ ok: true });
     }
@@ -718,6 +746,15 @@ export const ingest = httpAction(async (ctx, request) => {
     case "heartbeat": {
       await ctx.runMutation(internal.stream.heartbeatStream, {
         messageId: body.messageId as Id<"messages">,
+      });
+      return json({ ok: true });
+    }
+    case "setSessionActiveTokens": {
+      await ctx.runMutation(internal.stream.setSessionActiveTokens, {
+        chatId: body.chatId as Id<"chats">,
+        activeTokens: body.activeTokens as number,
+        observedAt:
+          typeof body.observedAt === "number" ? body.observedAt : undefined,
       });
       return json({ ok: true });
     }

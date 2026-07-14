@@ -53,7 +53,11 @@ export function PlanActivity() {
     <div className="oc-planact">
       <ActivityRow
         icon={<ListTodo size={14} />}
-        label={m.plan_activity_label({ done, total })}
+        label={
+          plan.estimated
+            ? `${m.plan_activity_label({ done, total })} \u00b7 ${m.plan_activity_estimated()}`
+            : m.plan_activity_label({ done, total })
+        }
         sublabel={
           !expanded && current !== undefined ? current.step : undefined
         }

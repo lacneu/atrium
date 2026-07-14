@@ -205,6 +205,7 @@ import {
   isOverridden,
   type SessionMetaView,
   type SessionSettingsView,
+  effectiveContextUsed,
 } from "./sessionKnobs";
 
 // Top-level chat surface. Wires the reactive Convex-backed runtime into
@@ -1455,11 +1456,15 @@ function ContextMeter({
   // the Advanced popover always passes detail).
   detail?: boolean;
 }) {
+  // effectiveContextUsed: the per-turn active stamp, else the legacy counter
+  // — and NULL when only a session-cumulative value is available (an
+  // LCM-managed session read "859% - 3194.3k/372.0k" in prod).
+  const used = effectiveContextUsed(sm);
   const pct =
-    sm.totalTokens != null && sm.contextTokens && sm.contextTokens > 0
-      ? Math.round((sm.totalTokens / sm.contextTokens) * 100)
+    used != null && sm.contextTokens && sm.contextTokens > 0
+      ? Math.round((used / sm.contextTokens) * 100)
       : null;
-  if (pct == null) return null;
+  if (pct == null || used == null) return null;
   // Calm → escalating usage colors (universal meter language, theme-stable).
   const level = pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
   return (
@@ -1467,7 +1472,7 @@ function ContextMeter({
       className={`oc-meter ${level}`}
       title={m.chat_context_used({
         pct,
-        used: formatTokens(sm.totalTokens as number),
+        used: formatTokens(used),
         total: formatTokens(sm.contextTokens as number),
       })}
     >
@@ -1482,7 +1487,7 @@ function ContextMeter({
         {detail ? (
           <span className="oc-meter__detail">
             {" · "}
-            {formatTokens(sm.totalTokens as number)}/
+            {formatTokens(used)}/
             {formatTokens(sm.contextTokens as number)}
           </span>
         ) : null}
@@ -1815,7 +1820,7 @@ function SessionKnobsMenu({
         {/* Read-only context-window usage. Lives here too so it stays reachable —
             with its full detail + on touch (no hover title) — when a narrow header
             compacts the inline meter. Model/reasoning are the knobs below. */}
-        {sm.totalTokens != null && sm.contextTokens ? (
+        {effectiveContextUsed(sm) != null && sm.contextTokens ? (
           <div className="oc-spanel-pop__usage">
             <span className="oc-spanel-pop__usage-label">
               {m.chat_context_label()}

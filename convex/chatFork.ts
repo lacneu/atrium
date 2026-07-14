@@ -162,6 +162,10 @@ export const forkChat = mutation({
               ...source.sessionMeta,
               totalTokens: undefined,
               estimatedCostUsd: undefined,
+              // Per-turn window-usage stamp: a usage measure like the two
+              // above — a fresh forked session must not show the source's.
+              activeTokens: undefined,
+              activeTokensAt: undefined,
             },
           }
         : {}),

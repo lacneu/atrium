@@ -1041,6 +1041,121 @@ export const addPart = internalMutation({
   },
 });
 
+// Advance the message's LAST plan part from item-derived update_plan calls.
+// DELIVERY runs (sub-agent announce / task delivery) carry no tool frames —
+// an update_plan there surfaces as a bare item whose meta only names the
+// plan's FIRST step (gateway progress-line builder, verified in the 2026.7.1
+// dist), so the actual step content never reaches the wire. The bridge
+// forwards "the plan moved N times this turn" + whether the turn left the
+// pipeline idle; this mutation advances the last known plan accordingly and
+// stamps the new part `estimated` (the UI labels the inferred progression).
+export const advancePlanPart = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    // update_plan calls observed on the delivery turn (one step each).
+    count: v.number(),
+    // TRUE when the turn spawned no further child: if NO child of the chat is
+    // still running, the pipeline settled — the final update_plan call is the
+    // model closing its plan, so mark every step completed.
+    settleIfIdle: v.optional(v.boolean()),
+    // Generation guard (see addPart): a stale run must not advance a plan on
+    // a message another run has since re-owned.
+    expectedRunId: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { messageId, count, settleIfIdle, expectedRunId }) => {
+    if (count <= 0) return;
+    const message = await ctx.db.get(messageId);
+    if (message === null) return;
+    if (
+      expectedRunId !== undefined &&
+      (message.runId ?? null) !== expectedRunId
+    ) {
+      return;
+    }
+    const existing = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .collect();
+    const planRows = existing
+      .filter((e) => e.part.kind === "plan")
+      .sort((a, b) => a.order - b.order);
+    // Replay dedup (same policy as addPart's armed window): a rebroadcast
+    // announce re-delivers its frames after a bridge restart — the estimated
+    // advance for THAT run already landed, re-applying it would skip an
+    // extra step per rebroadcast (codex P2).
+    const replayArmed =
+      message.announceReplayArmed !== undefined &&
+      message.announceReplayArmed > Date.now();
+    if (replayArmed) {
+      const replayRun = message.announceReplayRun ?? message.runId;
+      if (
+        planRows.some(
+          (e) =>
+            e.announceRun === replayRun &&
+            e.part.kind === "plan" &&
+            e.part.estimated === true,
+        )
+      ) {
+        return;
+      }
+    }
+    const lastPlan = planRows[planRows.length - 1];
+    if (lastPlan === undefined || lastPlan.part.kind !== "plan") return;
+    const prevSteps = lastPlan.part.steps;
+    const steps = prevSteps.map((st) => ({ ...st }));
+    let settled = false;
+    if (settleIfIdle === true) {
+      // DIRECT existence probe on (chatId, running): a bounded newest-window
+      // could miss an old still-running child behind 64 later terminal rows
+      // and settle a live pipeline's plan (codex P2).
+      const running = await ctx.db
+        .query("subAgents")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", message.chatId).eq("status", "running"),
+        )
+        .first();
+      if (running === null) {
+        for (const st of steps) st.status = "completed";
+        settled = true;
+      }
+    }
+    if (!settled) {
+      const bounded = Math.min(count, steps.length);
+      for (let n = 0; n < bounded; n++) {
+        const cur = steps.findIndex((st) => st.status === "in_progress");
+        if (cur >= 0) {
+          const step = steps[cur];
+          if (step !== undefined) step.status = "completed";
+          const next = steps.findIndex(
+            (st, i) => i > cur && st.status !== "completed",
+          );
+          const nextStep = next >= 0 ? steps[next] : undefined;
+          if (nextStep !== undefined) nextStep.status = "in_progress";
+        } else {
+          // Nothing in flight: promote the first pending step instead.
+          const first = steps.find((st) => st.status === "pending");
+          if (first === undefined) break;
+          first.status = "in_progress";
+        }
+      }
+    }
+    if (steps.every((st, i) => st.status === prevSteps[i]?.status)) {
+      return;
+    }
+    const announceRun =
+      message.runId !== undefined && deliveryChildKey(message.runId) !== null
+        ? message.runId
+        : undefined;
+    await ctx.db.insert("messageParts", {
+      messageId,
+      order: existing.length,
+      part: { kind: "plan", steps, estimated: true },
+      ...(announceRun !== undefined ? { announceRun } : {}),
+    });
+    await ctx.db.patch(messageId, { updatedAt: Date.now() });
+  },
+});
+
 // SSE transport (Phase 1): bounded, self-scheduling GC of a finished message's stream
 // chunks. A long turn can accumulate hundreds, so delete in batches and reschedule to
 // stay within Convex transaction limits (same idiom as the recorder's purge).
@@ -1416,13 +1531,97 @@ export const setSessionMeta = internalMutation({
       totalTokens: v.optional(v.number()),
       contextTokens: v.optional(v.number()),
       estimatedCostUsd: v.optional(v.number()),
+      observedAt: v.optional(v.number()),
     }),
   },
   handler: async (ctx, { chatId, meta }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return; // chat gone (e.g. deleted mid-turn) — nothing to do
+    // Preserve the bridge's per-turn activeTokens stamp across sessions.get
+    // refreshes — UNLESS this refresh, OBSERVED AFTER the stamp, describes a
+    // NEW session: its cumulative counter FELL below the previous values, or
+    // it carries no counter at all (a fresh session's describe legitimately
+    // omits usage). Snapshots and stamps travel as independent
+    // fire-and-forget POSTs, so a PRE-turn snapshot landing late must never
+    // outrank the newer stamp (codex P2 ×2): ordering comes from the
+    // bridge-stamped observedAt; a legacy snapshot without one only drops
+    // the stamp on the conservative counter-fell signal.
+    const { observedAt: metaAt, ...metaRest } = meta;
+    const prev = chat.sessionMeta;
+    const stampAt = prev?.activeTokensAt;
+    const metaIsNewer =
+      metaAt !== undefined && (stampAt === undefined || metaAt > stampAt);
+    const counterFell =
+      meta.totalTokens != null &&
+      ((prev?.totalTokens != null && meta.totalTokens < prev.totalTokens) ||
+        (prev?.activeTokens != null && meta.totalTokens < prev.activeTokens));
+    const dropStamp =
+      metaAt !== undefined
+        ? metaIsNewer && (counterFell || meta.totalTokens == null)
+        : counterFell;
+    const keepActive =
+      prev?.activeTokens !== undefined && !dropStamp
+        ? {
+            activeTokens: prev.activeTokens,
+            ...(prev.activeTokensAt !== undefined
+              ? { activeTokensAt: prev.activeTokensAt }
+              : {}),
+          }
+        : dropStamp && metaAt !== undefined
+          ? // The stamp is CLEARED but its watermark survives at the
+            // snapshot's observation time: a stale end-of-turn POST from the
+            // DEAD session still in flight (observedAt < metaAt) must keep
+            // losing the ordering check — without this it would resurrect
+            // the old session's fill (codex P2).
+            { activeTokensAt: metaAt }
+          : prev?.activeTokensAt !== undefined
+            ? // No active value to carry, but a watermark exists (a prior
+              // drop, or a stampless refresh after one): it must survive
+              // EVERY later snapshot until a fresh active observation
+              // replaces it — dropping it here would re-admit the dead
+              // session's in-flight POST one refresh later (codex P2).
+              {
+                activeTokensAt:
+                  metaAt !== undefined && metaAt > prev.activeTokensAt
+                    ? metaAt
+                    : prev.activeTokensAt,
+              }
+            : {};
     await ctx.db.patch(chatId, {
-      sessionMeta: { ...meta, updatedAt: Date.now() },
+      sessionMeta: {
+        ...metaRest,
+        ...keepActive,
+        updatedAt: Date.now(),
+      },
+    });
+  },
+});
+
+/** Per-turn REAL window usage (the bridge's post-usage snapshot at turn end):
+ *  merged into sessionMeta so the context gauge shows the window fill, not
+ *  the session-cumulative counter (859% prod report). */
+export const setSessionActiveTokens = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    activeTokens: v.number(),
+    // Bridge observation time: fire-and-forget POSTs of two rapid turns can
+    // land out of order — the stale one must lose (codex P2).
+    observedAt: v.optional(v.number()),
+  },
+  handler: async (ctx, { chatId, activeTokens, observedAt }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    const prevAt = chat.sessionMeta?.activeTokensAt;
+    if (observedAt !== undefined && prevAt !== undefined && observedAt <= prevAt) {
+      return; // an older observation arriving late must not overwrite
+    }
+    await ctx.db.patch(chatId, {
+      sessionMeta: {
+        ...(chat.sessionMeta ?? {}),
+        activeTokens,
+        ...(observedAt !== undefined ? { activeTokensAt: observedAt } : {}),
+        updatedAt: Date.now(),
+      },
     });
   },
 });

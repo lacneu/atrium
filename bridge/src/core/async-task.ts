@@ -75,3 +75,17 @@ export function taskDeliveryRunFromRunId(
     outcome: m[3] as "ok" | "error",
   };
 }
+
+/**
+ * True for ANY gateway-initiated DELIVERY run on a chat's own session: the
+ * background-task family (`<tool>:<taskId>:ok|error`) or a sub-agent announce
+ * (`announce:v1:<childSessionKey>:<childRunId>`). On BOTH families the gateway
+ * emits no `tool` stream frames (measured live on 2026.7.1) — `item` frames
+ * are the only tool telemetry, and a tool started inside one is invisible to
+ * the exact spawn-result correlation.
+ */
+export function isDeliveryRunId(runId: string | null | undefined): boolean {
+  if (typeof runId !== "string") return false;
+  if (taskDeliveryRunFromRunId(runId) !== null) return true;
+  return runId.startsWith("announce:v1:") && runId.split(":").length >= 4;
+}

@@ -34,6 +34,7 @@ import {
   agentLine,
   contextLine,
   contextPct,
+  effectiveContextUsed,
   costLine,
   verbosityLine,
   type SessionMetaView,
@@ -257,10 +258,11 @@ export function SessionPanel({
     if (ok) await runReset();
   }
 
-  const pct = contextPct(sm?.totalTokens, sm?.contextTokens);
+  const used = effectiveContextUsed(sm);
+  const pct = contextPct(used ?? undefined, sm?.contextTokens);
   const meterLevel =
     pct == null ? "" : pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
-  const context = contextLine(sm?.totalTokens, sm?.contextTokens);
+  const context = contextLine(used ?? undefined, sm?.contextTokens);
   const cost = costLine(sm?.estimatedCostUsd, sm?.totalTokens);
   // getChatAgent only names the agent for multi-agent users; runtime/model
   // still come from sessionMeta, so the line degrades gracefully.

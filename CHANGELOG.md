@@ -8,6 +8,39 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.60.0] — Delegated pipelines: one bubble, visible work, a moving plan
+
+Reliability and visibility release for delegated (sub-agent) work, plus a
+context-gauge correctness fix. Additive schema fields only; no breaking
+changes.
+
+- **Delegated pipelines land in ONE bubble.** When an agent chains sub-agents
+  (audit, then rebuild, then review…), each intermediate delivery used to open
+  its own assistant bubble — one prompt could fragment into seven blocks, out
+  of any functional order. Children spawned inside a delivery turn now inherit
+  the original turn's anchor, so every announce of the chain merges back into
+  the bubble that answered you — with full replay dedup across bridge
+  restarts.
+- **Continuation turns show their work.** Delivery turns (sub-agent announces,
+  background-task completions) carry no regular tool frames on the wire; their
+  tool calls now surface as activity cards (name + outcome) derived from the
+  gateway's item stream — including the `sessions_spawn` that keeps a chain
+  going. A continuation that only ran tools is no longer silently discarded
+  (its plan/spawn activity used to vanish entirely), and its text-less close
+  no longer paints the merged reply as "interrupted" — while a real user Stop
+  or a regeneration keeps its interrupted status.
+- **The work plan keeps moving during delegated work.** The full plan content
+  never reaches the wire on delivery turns, so the plan card used to freeze at
+  its first state ("0/4 steps" through an entire pipeline). Each plan update
+  observed on a delivery turn now advances the last known plan one step — and
+  settles it when the pipeline finishes cleanly — clearly labeled as estimated
+  progress in the card.
+- **The context gauge shows the real window fill.** On long sessions managed
+  by a context engine (LCM), the gateway's session counter is cumulative —
+  the gauge could read absurd values ("859% - 3194.3k/372.0k", production
+  report). The bridge now stamps the actual window usage of the last turn,
+  and the gauge refuses to present a cumulative counter as a fill percentage.
+
 ## [0.59.0] — Collaborative documents: edit a delivered file, hand it back
 
 Feature release. One additive table (`documentDrafts`); no breaking changes.

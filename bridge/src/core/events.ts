@@ -36,6 +36,15 @@ export const EVENT_MEDIA_UNDELIVERED = "media.undelivered";
 // by the SubAgentObserver (persisted) + a later capability-gated UI; the turn-sink ignores it.
 //   { type: "agent.activity", childSessionKey, status?, phase?, text?, errorMessage?, done? }
 export const EVENT_AGENT_ACTIVITY = "agent.activity";
+// An item-derived update_plan on a DELIVERY run (announce / task delivery): those
+// runs carry NO `tool` stream frames (measured live, 2026.7.1 bench capture
+// 2026-07-14), so neither the plan array nor the current step reaches the wire
+// (the item meta only names the plan's FIRST step — gateway progress-line
+// builder). The event just proves "the plan moved"; the sink counts them per
+// turn and Convex advances the last known plan one step per call, stamped
+// `estimated`.
+//   { type: "plan.advance", runId }
+export const EVENT_PLAN_ADVANCE = "plan.advance";
 // The GATEWAY compacted this session's context during the turn — older history was
 // summarized to fit the model window. Provider-neutral (any gateway that manages
 // context emits the same shape). Two detection paths, both pinned on live capture

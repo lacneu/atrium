@@ -25,6 +25,10 @@ export type SessionMetaView = {
   availableModels?: { id: string; label: string }[];
   verboseLevel?: string;
   totalTokens?: number;
+  // REAL window usage of the last turn (bridge post-usage stamp). Primary
+  // gauge source: totalTokens is CUMULATIVE under a context engine (LCM) and
+  // dividing it by the window read 859% in prod.
+  activeTokens?: number;
   contextTokens?: number;
   estimatedCostUsd?: number;
   updatedAt?: number;
@@ -104,6 +108,23 @@ export function shortLevelLabel(id: string, label: string): string {
 }
 
 /** Context-window usage percentage, or null when the meta is unusable. */
+/** The number the context gauge should treat as "used window tokens":
+ *  the per-turn active stamp when present, else the legacy counter — but a
+ *  legacy counter LARGER than the window is a session-cumulative value
+ *  (context-engine sessions), not a fill: unusable, report null. */
+export function effectiveContextUsed(
+  sm:
+    | { activeTokens?: number; totalTokens?: number; contextTokens?: number }
+    | null
+    | undefined,
+): number | null {
+  if (!sm) return null;
+  if (sm.activeTokens != null) return sm.activeTokens;
+  if (sm.totalTokens == null) return null;
+  if (sm.contextTokens && sm.totalTokens > sm.contextTokens) return null;
+  return sm.totalTokens;
+}
+
 export function contextPct(
   totalTokens?: number,
   contextTokens?: number,

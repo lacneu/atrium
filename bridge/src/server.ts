@@ -2261,6 +2261,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       try {
         const session = await registry.acquire(toRouting(reset, resetInstance));
+        // A reset mid-delivery aborts the run too: flag it as USER-initiated
+        // so the sink's delivery-run fold never repaints the interruption as
+        // a completed merge (same contract as /abort — codex P2).
+        session.runManager.noteUserAbort();
         await performReset(session);
         sendJson(res, 200, { ok: true });
       } catch (err) {
@@ -2334,6 +2338,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             abort.agentId,
             abort.canonical,
           );
+        // Flag the live session BEFORE the kill: the gateway's chat:aborted
+        // frame that follows is the USER'S stop — the sink's delivery-run
+        // fold must not repaint it as complete (dispatchAbort is kill-THEN-
+        // finalize, so Convex has not settled the message yet — codex P2).
+        registry.peekByChat(abort.chatId)?.runManager.noteUserAbort();
         await withOperatorConnection(
           abortBundle.config,
           // With runId, the gateway cancels the NAMED run (immune to a newer

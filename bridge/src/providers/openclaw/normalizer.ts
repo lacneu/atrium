@@ -44,8 +44,10 @@ import {
   EVENT_MEDIA_UNDELIVERED,
   EVENT_AGENT_ACTIVITY,
   EVENT_CONTEXT_COMPACTION,
+  EVENT_PLAN_ADVANCE,
   type BridgeEvent,
 } from "../../core/events.js";
+import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   isProvenanceStream,
   parseProvenanceReport,
@@ -1015,6 +1017,40 @@ export class Normalizer {
       // the turn ends up holding a bare ack (wantsHistoryRecovery below).
       if (data.kind === "tool" && data.name === "message") {
         this.sawMessageToolItem = true;
+        return;
+      }
+      // DELIVERY runs (sub-agent announce / task delivery) carry NO `tool`
+      // stream frames — item frames are the only tool telemetry on the wire
+      // (measured live, 2026.7.1 bench capture 2026-07-14). Derive the tool
+      // card from the item's terminal frame (name + outcome; args/result do
+      // not exist on these runs) so the turn's work is user-visible: the
+      // deferred announce open then triggers and merges into the anchored
+      // bubble instead of the whole tool-only turn being discarded as silent.
+      // Ordinary runs keep their exact tool-frame pipeline — never both.
+      if (
+        (data.kind === "tool" || data.kind === "command") &&
+        isString(data.name) &&
+        data.name !== "" &&
+        isDeliveryRunId(this.currentRunId) &&
+        data.phase === "end"
+      ) {
+        const itemStatus = isString(data.status) ? data.status : null;
+        events.push({
+          type: EVENT_TOOL_STATUS,
+          name: data.name,
+          phase: itemStatus === "completed" ? "completed" : "error",
+          runId: this.currentRunId,
+        });
+        // update_plan: the plan CONTENT never reaches a delivery run's wire
+        // (the item meta only names the plan's first step) — emit the bare
+        // "plan moved" signal; the sink counts them and Convex advances the
+        // last known plan at turn end.
+        if (data.name === "update_plan" && itemStatus === "completed") {
+          events.push({
+            type: EVENT_PLAN_ADVANCE,
+            runId: this.currentRunId,
+          });
+        }
       }
       return;
     }

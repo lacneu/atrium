@@ -384,6 +384,11 @@ export class RunManager {
     }
   }
 
+  /** A user /abort RPC targeted this chat's active run — see TurnSink. */
+  noteUserAbort(): void {
+    this.sink.noteUserAbort();
+  }
+
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
   async feed(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).

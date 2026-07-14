@@ -145,6 +145,7 @@
 	"cron_edit_invalid_schedule": "The entered frequency is incomplete or invalid — fix it before saving.",
 	"cron_edit_empty_field": "The cron's name and message cannot be empty.",
 	"plan_activity_label": "Plan — {done}/{total} steps",
+	"plan_activity_estimated": "estimated progress",
 	"plan_activity_expand": "Show the work plan",
 	"plan_activity_collapse": "Collapse the work plan",
 	"subagent_task_label": "Background task: {tool}",

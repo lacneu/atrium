@@ -95,6 +95,7 @@ type ClientPart =
       kind: "plan";
       steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
       explanation?: string;
+      estimated?: boolean;
     }
   // A cron job the agent created/updated/removed this turn (compact snapshot;
   // bounded at write time by the bridge — passes through untouched).

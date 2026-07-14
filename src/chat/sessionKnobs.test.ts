@@ -20,6 +20,7 @@ import {
   speedOptionLabel,
   speedSelection,
   verbosityLine,
+  effectiveContextUsed,
 } from "./sessionKnobs";
 
 describe("isOverridden — binary, intent-based provenance (A1)", () => {
@@ -165,5 +166,31 @@ describe("formatTokens / capitalize (moved from ConvexChat — header parity)", 
   test("capitalize uppercases the first letter only", () => {
     expect(capitalize("high")).toBe("High");
     expect(capitalize("")).toBe("");
+  });
+});
+
+describe("effectiveContextUsed (context gauge source)", () => {
+  test("prefers the per-turn active stamp over the legacy counter", () => {
+    expect(
+      effectiveContextUsed({
+        activeTokens: 112000,
+        totalTokens: 3194300,
+        contextTokens: 372000,
+      }),
+    ).toBe(112000);
+  });
+  test("keeps a sane legacy counter (no stamp yet)", () => {
+    expect(
+      effectiveContextUsed({ totalTokens: 90000, contextTokens: 272000 }),
+    ).toBe(90000);
+  });
+  test("REFUSES a cumulative legacy counter larger than the window (859% prod report)", () => {
+    expect(
+      effectiveContextUsed({ totalTokens: 3194300, contextTokens: 372000 }),
+    ).toBeNull();
+  });
+  test("null on missing data", () => {
+    expect(effectiveContextUsed(null)).toBeNull();
+    expect(effectiveContextUsed({})).toBeNull();
   });
 });

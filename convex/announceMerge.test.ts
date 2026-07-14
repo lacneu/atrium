@@ -1124,3 +1124,103 @@ describe("subAgents.turnActivity", () => {
     expect(a.deliveringSince).toBeNull();
   });
 });
+
+// SUB-AGENT CHAINS — a child spawned INSIDE another child's announce run
+// (delivery runs carry no tool frames, so only the item sighting + bornOfRun
+// register it). Its row must inherit the ROOT anchor at birth, and its own
+// announce must merge into the ROOT bubble — never fragment the pipeline into
+// one bubble per link (live incident 2026-07-14: seven announce bubbles for
+// one prompt, plan card frozen).
+describe("sub-agent announce CHAIN (bornOfRun = announce run)", () => {
+  const CHAIN_CHILD =
+    "agent:files:subagent:c0dec0de-1111-2222-3333-444455556666";
+  const CHAIN_ANNOUNCE = `announce:v1:${CHAIN_CHILD}:aa0150d5-fa3d-4c7c-825c-e6684997f82d`;
+
+  test("upsertSubAgent inherits the carrier's ROOT anchor at birth (announce-family bornOfRun)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    // The chained child registers with NO anchor of its own, born inside the
+    // FIRST child's announce run (the bridge stamps bornOfRun).
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHAIN_CHILD,
+      bornOfRun: ANNOUNCE_RUN,
+      status: "running",
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHAIN_CHILD))
+        .first(),
+    );
+    expect(row?.parentMessageId).toBe(parentId);
+    expect(row?.anchorExact).toBe(true);
+  });
+
+  test("the chained child's announce merges into the ROOT bubble (one bubble per pipeline)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHAIN_CHILD,
+      bornOfRun: ANNOUNCE_RUN,
+      status: "running",
+    });
+    const merged = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: CHAIN_ANNOUNCE,
+    });
+    expect(merged).toBe(parentId);
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("streaming");
+    expect(parent?.runId).toBe(CHAIN_ANNOUNCE);
+    // No second bubble.
+    const assistants = await assistantMessages(t, chatId);
+    expect(assistants).toHaveLength(1);
+  });
+
+  test("a LEGACY unanchored row (no birth inheritance) still resolves through the carrier at announce time", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    // Row inserted raw (no upsert): bornOfRun present, anchor absent.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: CHAIN_CHILD,
+        bornOfRun: ANNOUNCE_RUN,
+        status: "done" as const,
+        createdAt: 2600,
+        updatedAt: 2700,
+      });
+    });
+    const merged = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: CHAIN_ANNOUNCE,
+    });
+    expect(merged).toBe(parentId);
+  });
+
+  test("carrier row missing -> fail closed (fresh bubble)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: CHAIN_CHILD,
+        bornOfRun: ANNOUNCE_RUN,
+        status: "done" as const,
+        createdAt: 2600,
+        updatedAt: 2700,
+      });
+    });
+    const created = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: CHAIN_ANNOUNCE,
+    });
+    expect(created).not.toBe(parentId);
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.status).toBe("complete"); // untouched
+  });
+});

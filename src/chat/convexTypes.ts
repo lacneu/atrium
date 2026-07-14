@@ -93,6 +93,9 @@ export type PlanPartView = {
   kind: "plan";
   steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
   explanation?: string;
+  /** TRUE = inferred progression (a delivery run's update_plan carries no
+   *  plan content on the wire — the server advanced the last known plan). */
+  estimated?: boolean;
 };
 
 /** A cron job the agent created/updated/removed this turn (bridge-parsed

@@ -195,6 +195,16 @@ export interface ConvexWriter {
   /** A successful update_plan call -> internal.stream.addPart(kind:plan).
    *  Optional so lightweight test writers need not implement it. */
   addPlanPart?(messageId: string, part: PlanPart): Promise<void>;
+  /** plan.advance -> internal.stream.advancePlanPart: update_plan calls on a
+   *  DELIVERY run (no tool frames on the wire) only prove the plan moved.
+   *  Convex advances the message's last plan part one step per call — or
+   *  settles it when the turn left the pipeline idle (settleIfIdle + no
+   *  running child). */
+  advancePlanPart?(
+    messageId: string,
+    count: number,
+    settleIfIdle: boolean,
+  ): Promise<void>;
   /** context.compaction -> internal.stream.addPart(kind:compaction): the
    *  gateway summarized older context during this turn (user-facing marker). */
   addCompactionPart(messageId: string, part: CompactionPart): Promise<void>;
@@ -292,6 +302,15 @@ export interface ConvexWriter {
    * a turn on a meta write.
    */
   reportSessionMeta(chatId: string, meta: SessionMetaReport): Promise<void>;
+  /** Per-turn REAL window usage (post-usage snapshot at turn end) — feeds the
+   *  context gauge; sessions.get totalTokens is cumulative under a context
+   *  engine and reads absurd percentages (859% prod report). OPTIONAL: test
+   *  fakes may omit it. */
+  reportSessionActiveTokens?(
+    chatId: string,
+    activeTokens: number,
+    observedAt?: number,
+  ): Promise<void>;
   /** Persist a provider-minted conversation id onto the chat (Hermes creates its
    *  session id lazily on turn 1; later turns must reuse it for continuity).
    *  OPTIONAL: test fakes / degraded writers may omit it. */
@@ -384,6 +403,9 @@ export interface SessionMetaReport {
   totalTokens?: number;
   contextTokens?: number;
   estimatedCostUsd?: number;
+  // Bridge observation time: snapshots and per-turn stamps travel as
+  // independent fire-and-forget POSTs — Convex orders them by this.
+  observedAt?: number;
 }
 
 // Delivery-recorder tags, present only while a turn is being recorded (learned once
@@ -422,6 +444,13 @@ type IngestOp =
       text: string;
       runId?: string | null;
     } & RecTags)
+  | {
+      op: "advancePlan";
+      messageId: string;
+      count: number;
+      settleIfIdle: boolean;
+      runId?: string | null;
+    }
   | {
       op: "addPart";
       messageId: string;
@@ -517,6 +546,12 @@ type IngestOp =
   // Mirror the gateway's `sessions.describe` meta onto the chat so the header
   // strip (model + reasoning chips + context meter) shows LIVE values.
   | { op: "setSessionMeta"; chatId: string; meta: SessionMetaReport }
+  | {
+      op: "setSessionActiveTokens";
+      chatId: string;
+      activeTokens: number;
+      observedAt?: number;
+    }
   | {
       op: "bindProviderChat";
       chatId: string;
@@ -1171,6 +1206,21 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
+  async advancePlanPart(
+    messageId: string,
+    count: number,
+    settleIfIdle: boolean,
+  ): Promise<void> {
+    await this.flushDelta(messageId);
+    await this.post({
+      op: "advancePlan",
+      messageId,
+      count,
+      settleIfIdle,
+      ...this.genTag(messageId),
+    });
+  }
+
   async addCompactionPart(
     messageId: string,
     part: CompactionPart,
@@ -1550,7 +1600,24 @@ export class HttpConvexWriter implements ConvexWriter {
     // both call sites already handle the rejection (performSend voids+catches,
     // performPatch awaits in try/catch). Two near-concurrent describes may land
     // last-write-wins — acceptable for a meta snapshot.
-    await this.doPost({ op: "setSessionMeta", chatId, meta });
+    await this.doPost({
+      op: "setSessionMeta",
+      chatId,
+      meta: { ...meta, observedAt: meta.observedAt ?? Date.now() },
+    });
+  }
+
+  async reportSessionActiveTokens(
+    chatId: string,
+    activeTokens: number,
+    observedAt?: number,
+  ): Promise<void> {
+    await this.doPost({
+      op: "setSessionActiveTokens",
+      chatId,
+      activeTokens,
+      observedAt,
+    });
   }
 
   async upsertSubAgent(record: SubAgentRecord): Promise<void> {

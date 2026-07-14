@@ -26,6 +26,7 @@ import { cronPartFromTool } from "./cron-part.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
   asyncTaskStartFromTool,
+  isDeliveryRunId,
   taskChildKey,
   taskDeliveryRunFromRunId,
 } from "./async-task.js";
@@ -205,6 +206,23 @@ export class TurnSink {
   // overflow reads causally at a glance ("40% pre-turn + 66 tool calls ->
   // overflow") instead of needing a manual reconstruction.
   private toolCallCount = 0;
+  // update_plan calls observed on a DELIVERY run this turn (item-derived —
+  // the plan content never reaches those runs' wire). Applied ONCE at turn
+  // end: the advance must know whether the turn spawned a further child
+  // (chain continues -> one step per call) or left the pipeline idle (the
+  // model closed its plan -> settle it), which is only known at finalize.
+  private planAdvancesThisTurn = 0;
+  // Non-update_plan tool calls this turn: a delivery run may keep the chain
+  // going through ANY tool (an async generation's item carries no taskId, a
+  // spawn's item no childSessionKey) — settling the plan is only safe when
+  // update_plan was the turn's ONLY tool activity (codex P2).
+  private otherToolCallsThisTurn = 0;
+  // A USER abort (the /abort RPC) targeted this turn: dispatchAbort is
+  // kill-THEN-finalize, so the gateway's chat:aborted lands while the message
+  // is still streaming — without this flag the delivery-run fold below would
+  // record the user's stop as a success before the guaranteed settle
+  // (codex P2). Set by the /abort handler through the session registry.
+  private userAbortThisTurn = false;
   // --- Deferred open (SPONTANEOUS announce turns) ---------------------------
   // A gateway-initiated announce run may be entirely silent (the NO_REPLY
   // protocol sentinel: "nothing to show the user"). For those turns the
@@ -251,6 +269,12 @@ export class TurnSink {
     return this.turnActive;
   }
 
+  /** A user /abort RPC targeted the active turn: the terminal `aborted` that
+   *  follows is the USER'S stop — the delivery-run fold must let it stand. */
+  noteUserAbort(): void {
+    this.userAbortThisTurn = true;
+  }
+
   /** True while a deferred (spontaneous) turn is active but its assistant
    *  message has not been created yet — the preemption-sensitive window. */
   get deferredUnopened(): boolean {
@@ -293,6 +317,9 @@ export class TurnSink {
     this.pressure = pressure ?? null;
     this.compactionPhase = null;
     this.toolCallCount = 0;
+    this.planAdvancesThisTurn = 0;
+    this.otherToolCallsThisTurn = 0;
+    this.userAbortThisTurn = false;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
     this.mediaChain = Promise.resolve();
@@ -544,6 +571,10 @@ export class TurnSink {
               (ph === "start" && asString(event.name) === "message")
             ) {
               this.toolCallCount++;
+              const nm = asString(event.name);
+              if (nm !== "update_plan" && nm !== "message") {
+                this.otherToolCallsThisTurn++;
+              }
             }
             if (
               asString(event.name) === "sessions_spawn" &&
@@ -778,6 +809,14 @@ export class TurnSink {
           // representation -> dropped.
           break;
         }
+        case "plan.advance": {
+          // Item-derived update_plan on a DELIVERY run (no tool frames on the
+          // wire — see the normalizer's item branch). Counted here, applied
+          // once at flushFinal: only the turn's END knows whether the chain
+          // continued (a further spawn) or the pipeline settled.
+          this.planAdvancesThisTurn++;
+          break;
+        }
         case "context.compaction": {
           this.writer.setPhase?.(messageId, "compacting");
           // The gateway summarized this session's older context during the turn
@@ -910,8 +949,29 @@ export class TurnSink {
     let effectiveStatus = status;
     let effectiveError = this.pendingFinalError;
     let effectiveErrorKind = this.pendingFinalErrorKind;
+    // A DELIVERY run's terminal `aborted` with nothing streamed is the gateway
+    // closing a TOOL-ONLY continuation turn (measured live 2026.7.1: an
+    // announce turn that only ran update_plan/sessions_spawn ends
+    // state=aborted with no content) — never a user stop on visible work.
+    // Fold it to complete so a bubble the turn merged into keeps its settled
+    // look (its parts stay). A real abort of streamed text keeps aborting.
+    if (
+      status === "aborted" &&
+      isDeliveryRunId(this.turnRunId) &&
+      !this.userAbortThisTurn &&
+      !this.sawVisibleText &&
+      replyText.trim().length === 0 &&
+      effectiveError === null
+    ) {
+      effectiveStatus = "complete";
+    }
     if (
       status === "complete" &&
+      // DELIVERY runs are exempt: their tool-only turns legitimately end with
+      // no text of their own (the item-derived cards ARE the content, and the
+      // turn usually merged into an already-complete bubble) — the guard
+      // would misread every one of them as an empty response.
+      !isDeliveryRunId(this.turnRunId) &&
       effectiveErrorKind === null &&
       replyText.trim().length === 0 &&
       !this.sawVisibleText &&
@@ -951,6 +1011,32 @@ export class TurnSink {
       effectiveStatus = "error";
       effectiveError = EMPTY_RESPONSE_TEXT;
       effectiveErrorKind = EMPTY_RESPONSE_CODE;
+    }
+    if (this.planAdvancesThisTurn > 0) {
+      // Apply the delivery turn's plan movement now that the chain outcome is
+      // known: a turn that spawned a further child advances one step per
+      // update_plan call; a turn that spawned nothing may settle the plan
+      // (Convex checks that no child is still running). Best-effort — a plan
+      // estimation must never break the finalize.
+      try {
+        await this.writer.advancePlanPart?.(
+          messageId,
+          this.planAdvancesThisTurn,
+          // Settle only when update_plan was the turn's ONLY tool activity
+          // AND the turn closed successfully: any other call (spawn, async
+          // generation, exec) may be the next link of the chain — its item
+          // carries no taskId/childSessionKey, so no engagement row exists
+          // yet for Convex's idle check — and an errored/aborted close must
+          // never mark the whole plan done (codex P2). The one-step advances
+          // themselves stand: their update_plan calls DID complete.
+          this.otherToolCallsThisTurn === 0 && effectiveStatus === "complete",
+        );
+      } catch (e) {
+        console.error(
+          "[sink] plan advance failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
     }
     // The error string (if any) was buffered from message.final; on a clean turn
     // it is null. lifecycle:error finalizes with both partial text + error.
@@ -1025,6 +1111,20 @@ export class TurnSink {
         .catch((e) =>
           console.error(
             "[gateway-pressure] trace skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+    }
+    // REAL window usage of this turn -> the chat's context gauge. The
+    // sessions.get totalTokens is CUMULATIVE under a context engine (LCM):
+    // dividing it by the window read 859% in prod. Fire-and-forget.
+    const active = this.pendingDiagUsage?.totalTokens;
+    if (active != null && active > 0) {
+      void this.writer
+        .reportSessionActiveTokens?.(this.chatId, active, Date.now())
+        ?.catch((e) =>
+          console.error(
+            "[session-active-tokens] skipped (non-fatal):",
             (e as Error)?.message ?? e,
           ),
         );

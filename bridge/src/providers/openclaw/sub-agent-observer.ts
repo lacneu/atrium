@@ -30,7 +30,7 @@
 // from resurrecting a reaped child.
 
 import { sanitizeText } from "./sanitize.js";
-import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
+import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   childChatTerminalStatus,
   type SubAgentStatus,
@@ -337,10 +337,14 @@ export class SubAgentObserver {
       obs = created;
       if (sighting?.runId != null) {
         obs.spawnRunHint = sighting.runId;
-        // An item-only spawn inside a task-DELIVERY run: persist the
-        // correlation too (the tool-result path stamps it in
-        // tryRegisterFromSpawn; this is the sighting-claim equivalent).
-        if (taskDeliveryRunFromRunId(sighting.runId) !== null) {
+        // An item-only spawn inside a DELIVERY run (task delivery OR sub-agent
+        // announce): persist the correlation too (the tool-result path stamps
+        // it in tryRegisterFromSpawn; this is the sighting-claim equivalent).
+        // The announce family is how CHAINED spawns (child N spawning inside
+        // child N-1's announce turn) inherit the ROOT bubble's anchor at
+        // birth — without it every chained delivery opens its own bubble
+        // (live incident 2026-07-14).
+        if (isDeliveryRunId(sighting.runId)) {
           obs.bornOfRun = sighting.runId;
         }
       }
@@ -912,7 +916,7 @@ export class SubAgentObserver {
       };
       const reapedRun = readString(payload, "runId");
       const reapedBorn =
-        reapedRun !== null && taskDeliveryRunFromRunId(reapedRun) !== null
+        reapedRun !== null && isDeliveryRunId(reapedRun)
           ? reapedRun
           : undefined;
       if (
@@ -952,7 +956,7 @@ export class SubAgentObserver {
       // never be persisted.
       const racedRun = readString(payload, "runId");
       const racedBorn =
-        racedRun !== null && taskDeliveryRunFromRunId(racedRun) !== null
+        racedRun !== null && isDeliveryRunId(racedRun)
           ? racedRun
           : undefined;
       if (racedBorn !== undefined && existing.bornOfRun === undefined) {
@@ -1016,12 +1020,13 @@ export class SubAgentObserver {
     if (resolved !== undefined) {
       obs.sessionMeta = { ...resolved, ...obs.sessionMeta };
     }
-    // A spawn issued INSIDE a background-task DELIVERY run: stamp the run id
-    // so the announce merge can resolve the anchor through the ENGAGEMENT row
-    // when this delivery run never opens a message (NO_REPLY yield).
+    // A spawn issued INSIDE a DELIVERY run (task delivery or sub-agent
+    // announce): stamp the run id so the announce merge can resolve the anchor
+    // through the carrier's row when this delivery run never opens a message
+    // (NO_REPLY / tool-only turn).
     const spawnFrameRun = readString(payload, "runId");
     const bornOfRun =
-      spawnFrameRun !== null && taskDeliveryRunFromRunId(spawnFrameRun) !== null
+      spawnFrameRun !== null && isDeliveryRunId(spawnFrameRun)
         ? spawnFrameRun
         : undefined;
     // Keep it on the OBSERVATION too: if this registration upsert is lost
