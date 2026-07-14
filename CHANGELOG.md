@@ -8,6 +8,17 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.58.0] — OpenClaw 2026.7.1 (release) validated
+
+Compatibility release. No breaking changes; no schema changes.
+
+- **OpenClaw 2026.7.1 (release) validated.** The shipped release passed the
+  full live validation suite (9/9 scenarios: streaming contracts, tools,
+  plan updates, media delivery, sub-agent announce merge, async tasks, cron,
+  Hermes co-run) with zero contract drift from the previously validated
+  release candidate. Gateways upgrading to 2026.7.1 are fully within the
+  bridge's directly validated support range.
+
 ## [0.57.0] — Cross-conversation references
 
 Feature release. No breaking changes; no schema changes.

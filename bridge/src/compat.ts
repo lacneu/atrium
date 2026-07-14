@@ -148,15 +148,14 @@ export const COMPAT_MANIFEST: CompatManifest = {
   protocolVersion: PROTOCOL_VERSION,
   providers: {
     openclaw: {
-      // 2026.7.1 was validated through its 2026.7.1-beta.2 pre-release (the
-      // published release candidate; full live suite 2026-07-11 — chat core,
-      // tools, sub-agents, vision, media, explicit compaction, gpt-5.6 models).
-      // DELIBERATE POLICY (operator ask): declaring the release validated via
-      // its RC means instances upgrading on release day stay within support
-      // with no "ahead of validation" banner. If the shipped 2026.7.1 differs
-      // from beta.2, re-run the bench before trusting this row. The
-      // pre-release orders BEFORE the release, so the beta bench stays within
-      // range once 2026.7.1 ships.
+      // 2026.7.1 (RELEASE) validated DIRECTLY: full live suite GO 9/9 on the
+      // shipped release (2026-07-13 — wire contracts, SSE, plan, media,
+      // spawn/announce merge, async tasks, cron, Hermes co-run). Static drift
+      // vs the beta.5 bench: NONE (plan/cron/tasks schemas, announce
+      // idempotency and subagent-announce byte-identical modulo chunk
+      // hashes). It had previously been declared through its beta.2 RC
+      // (release-day upgrades stay in support with no banner) — that proxy
+      // note is now history, the row stands on its own run.
       supportedRange: { min: "2026.5.19", maxValidated: "2026.7.1" },
       validatedVersions: [
         "2026.5.19",
@@ -171,6 +170,8 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // sidecars with an unresolvable session owner (move them aside), and
         // containerized gateways now REQUIRE auth for non-loopback binds.
         "2026.7.1-beta.5",
+        // Shipped release, re-validated directly (GO 9/9, 2026-07-13) after
+        // the beta.2-proxy declaration. Standing bench.
         "2026.7.1",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
