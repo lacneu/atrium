@@ -1490,6 +1490,161 @@ describe("SubAgentObserver — announce-run item-spawn backfill", () => {
     expect(reg?.parentMessageId).toBeNull();
   });
 
+  it("PARALLEL spawns (ambiguous sightings) still stamp the shared carrier run as bornOfRun", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    // TWO spawn items parked under the SAME announce run (parallel review
+    // gates) — the claim is ambiguous (no task/anchor), but the carrier run
+    // is certain and the chain-anchor inheritance depends on it.
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, null);
+    obs.observe(itemFrame("start", "call_B|fc_B"), 1001, null);
+    const CHILD2 = "agent:files:subagent:cccc1111-2222-3333-4444-555566667777";
+    const ups1 = obs.observe(childLifecycle(), 1100, null);
+    const reg1 = ups1.find((u) => u.childSessionKey === CHILD);
+    expect(reg1).toBeDefined();
+    expect(reg1?.taskName).toBeUndefined(); // ambiguous: never a guessed claim
+    expect(reg1?.parentMessageId).toBeNull();
+    expect(reg1?.bornOfRun).toBe("announce:v1:agent:files:subagent:prev:run0");
+    const ups2 = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD2,
+          spawnedBy: PARENT,
+          runId: "child-run-2",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1150,
+      null,
+    );
+    const reg2 = ups2.find((u) => u.childSessionKey === CHILD2);
+    expect(reg2?.bornOfRun).toBe("announce:v1:agent:files:subagent:prev:run0");
+  });
+
+  it("the LAST slot of an ambiguous batch stays unclaimed (order is not guaranteed)", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, null);
+    obs.observe(itemFrame("start", "call_B|fc_B"), 1001, null);
+    const CHILD2 = "agent:files:subagent:cccc1111-2222-3333-4444-555566667777";
+    obs.observe(childLifecycle(), 1100, null);
+    // Second child claims the batch LEFTOVER: still ambiguous — no task, no
+    // anchor — but the shared carrier run is stamped.
+    const ups2 = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD2,
+          spawnedBy: PARENT,
+          runId: "child-run-2",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1150,
+      null,
+    );
+    const reg2 = ups2.find((u) => u.childSessionKey === CHILD2);
+    expect(reg2?.taskName).toBeUndefined();
+    expect(reg2?.parentMessageId).toBeNull();
+    expect(reg2?.bornOfRun).toBe("announce:v1:agent:files:subagent:prev:run0");
+    // The batch is drained: a LATER fresh single sighting claims normally.
+    obs.observe(itemFrame("start", "call_C|fc_C"), 1200, "msg-later");
+    const CHILD3 = "agent:files:subagent:dddd1111-2222-3333-4444-555566667777";
+    const ups3 = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD3,
+          spawnedBy: PARENT,
+          runId: "child-run-3",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1250,
+      null,
+    );
+    const reg3 = ups3.find((u) => u.childSessionKey === CHILD3);
+    expect(reg3?.taskName).toBe("OBJECTIF: Convertir le DOCX en PDF.");
+  });
+
+  it("sightings from DIFFERENT runs never fabricate a bornOfRun", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, null);
+    const other = itemFrame("start", "call_C|fc_C") as {
+      payload: { runId: string };
+    };
+    other.payload.runId = "announce:v1:agent:files:subagent:other:run9";
+    obs.observe(other, 1001, null);
+    const ups = obs.observe(childLifecycle(), 1100, null);
+    const reg = ups.find((u) => u.childSessionKey === CHILD);
+    expect(reg).toBeDefined();
+    expect(reg?.bornOfRun).toBeUndefined();
+  });
+
+  it("a MIXED ambiguous batch stays bornOfRun-less for EVERY slot (frozen at formation)", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, null);
+    const other = itemFrame("start", "call_C|fc_C") as {
+      payload: { runId: string };
+    };
+    other.payload.runId = "announce:v1:agent:files:subagent:other:run9";
+    obs.observe(other, 1001, null);
+    // First child consumes a slot: mixed batch -> no bornOfRun.
+    const ups1 = obs.observe(childLifecycle(), 1100, null);
+    expect(ups1.find((u) => u.childSessionKey === CHILD)?.bornOfRun).toBeUndefined();
+    // Second child claims the LEFTOVER: the batch's frozen sharedRun (null)
+    // must apply — recomputing on the single leftover would fabricate one.
+    const CHILD2 = "agent:files:subagent:cccc1111-2222-3333-4444-555566667777";
+    const ups2 = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD2,
+          spawnedBy: PARENT,
+          runId: "child-run-2",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1150,
+      null,
+    );
+    const reg2 = ups2.find((u) => u.childSessionKey === CHILD2);
+    expect(reg2?.bornOfRun).toBeUndefined();
+    expect(reg2?.taskName).toBeUndefined();
+  });
+
+  it("a NEW batch parked after a TTL-expired ambiguous leftover claims normally", () => {
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(itemFrame("start", "call_A|fc_A"), 1000, null);
+    obs.observe(itemFrame("start", "call_B|fc_B"), 1001, null);
+    // One slot consumed (batch ambiguous)…
+    obs.observe(childLifecycle(), 1050, null);
+    // …the leftover expires (TTL 180s, observer clock in SECONDS), then a
+    // FRESH single sighting parks: it is a NEW batch, not a tainted one.
+    obs.observe(itemFrame("start", "call_C|fc_C"), 1400, "msg-later");
+    const CHILD3 = "agent:files:subagent:dddd1111-2222-3333-4444-555566667777";
+    const ups3 = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD3,
+          spawnedBy: PARENT,
+          runId: "child-run-3",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1420,
+      null,
+    );
+    const reg3 = ups3.find((u) => u.childSessionKey === CHILD3);
+    expect(reg3?.taskName).toBe("OBJECTIF: Convertir le DOCX en PDF.");
+    expect(reg3?.parentMessageId).toBe("msg-later");
+  });
+
   it("a tool-result-registered spawn's item END never re-parks (no cross-claim)", () => {
     const obs = new SubAgentObserver(PARENT, "chatA");
     // Normal spawn: item start → tool result (registers child1, purges sighting)

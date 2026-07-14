@@ -1110,6 +1110,7 @@ function ChatThread({
   }) as
     | {
         running: boolean;
+        runningTtlRemainingMs: number | null;
         deliveringSince: number | null;
         anchorMessageId: string | null;
       }
@@ -1161,8 +1162,21 @@ function ChatThread({
     return () => window.clearTimeout(t);
   }, [deliverLoaded, deliverKey, chatId]);
   const deliveringFresh = deliverKey != null && freshDeliverKey === deliverKey;
-  const showTurnActivity =
-    !anyStreaming && (turnActivity?.running === true || deliveringFresh);
+  // LOCAL expiry of the running signal: Date.now() is not a reactive Convex
+  // dependency, so a dead child's row keeps `running:true` cached client-side
+  // until the reaper writes. The query ships the remaining display TTL —
+  // arm a local timer for it (re-armed on every reactive re-run; a live
+  // child's activity keeps refreshing the row, so the timer never fires).
+  const runningTtl = turnActivity?.runningTtlRemainingMs ?? null;
+  const [runningExpired, setRunningExpired] = useState(false);
+  useEffect(() => {
+    setRunningExpired(false);
+    if (turnActivity?.running !== true || runningTtl === null) return;
+    const t = window.setTimeout(() => setRunningExpired(true), runningTtl);
+    return () => window.clearTimeout(t);
+  }, [turnActivity?.running, runningTtl, chatId]);
+  const runningLive = turnActivity?.running === true && !runningExpired;
+  const showTurnActivity = !anyStreaming && (runningLive || deliveringFresh);
   // Anchor the indicator under the WORKING bubble when that bubble is
   // actually mounted (a >window-old anchor degrades to the bottom fallback,
   // never to a lost signal). DOM-checked on a slow tick: bounded to the
@@ -1186,7 +1200,7 @@ function ChatThread({
   }, [showTurnActivity, anchorId]);
   const anchoredActivity =
     showTurnActivity && anchorId !== null && anchorMounted
-      ? { messageId: anchorId, running: turnActivity?.running === true }
+      ? { messageId: anchorId, running: runningLive }
       : null;
   useFocusMessage(chatId, focusMessageId);
   return (
@@ -1212,7 +1226,7 @@ function ChatThread({
           }}
         />
         {showTurnActivity && anchoredActivity === null ? (
-          <TurnActivityIndicator running={turnActivity?.running === true} />
+          <TurnActivityIndicator running={runningLive} />
         ) : null}
       </ThreadPrimitive.Viewport>
       <BookmarkNavRail />

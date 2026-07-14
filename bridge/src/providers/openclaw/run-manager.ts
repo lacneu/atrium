@@ -417,9 +417,13 @@ export class RunManager {
         return;
       }
       if (announceRun !== null) {
-        if (this.replayArmed) {
-          // A real dispatch is in flight: stash — flushed after that turn ends.
-          // Never the pre-ack buffer (the replay would drop it as foreign-run).
+        if (this.replayArmed || this.sink.finalizing) {
+          // A real dispatch is in flight (replayArmed), OR the previous
+          // turn's finalize is still writing its tail: in Convex the merged
+          // message is still `streaming`, so opening this announce NOW would
+          // fail the reopen's streaming gate and fall to a fresh bubble
+          // (live incident 2026-07-14: back-to-back parallel deliveries).
+          // Stash — flushed right after the finalize settles.
           this.stashAnnounceFrame(frame, now);
           return;
         }
@@ -575,7 +579,12 @@ export class RunManager {
    * wait again (a new send armed mid-flush) simply re-stashes.
    */
   private async flushPendingAnnounce(now: number): Promise<void> {
-    if (this.sink.active || this.replayArmed || this.pendingAnnounce.length === 0) {
+    if (
+      this.sink.active ||
+      this.sink.finalizing ||
+      this.replayArmed ||
+      this.pendingAnnounce.length === 0
+    ) {
       return;
     }
     const stashed = this.pendingAnnounce;

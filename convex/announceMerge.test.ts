@@ -973,7 +973,12 @@ describe("subAgents.turnActivity", () => {
     // where a queued follow-up would claim it — user report).
     await t.run(async (ctx) => {
       const sub = await ctx.db.query("subAgents").first();
-      await ctx.db.patch(sub!._id, { status: "running" as const });
+      // updatedAt fresh, as the real upsert stamps on every status change —
+      // the staleness gate must not hide a live transition.
+      await ctx.db.patch(sub!._id, {
+        status: "running" as const,
+        updatedAt: Date.now(),
+      });
       await ctx.db.patch(chatId, { lastAssistantAt: 1000 });
     });
     let a = await asUser.query(api.subAgents.turnActivity, { chatId });
@@ -1198,6 +1203,159 @@ describe("sub-agent announce CHAIN (bornOfRun = announce run)", () => {
       runId: CHAIN_ANNOUNCE,
     });
     expect(merged).toBe(parentId);
+  });
+
+  test("the announce SETTLES a still-running child row (timeout-killed child, no terminal frame)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t);
+    // The child died gateway-side without a terminal frame: its row is stuck
+    // running when the announce arrives.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "running" as const });
+    });
+    await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD_KEY))
+        .first(),
+    );
+    expect(row?.status).toBe("done");
+  });
+
+  test("turnActivity ignores a STALE running row (spinner never armed by a dead child)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, {
+        status: "running" as const,
+        updatedAt: Date.now() - 30 * 60_000,
+      });
+    });
+    const stale = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(stale.running).toBe(false);
+    // A FRESH running row still arms it.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { updatedAt: Date.now() });
+    });
+    const fresh = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(fresh.running).toBe(true);
+  });
+
+  test("settleAnnouncedChild flips ONLY a running row (silent NO_REPLY announce path)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t);
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "running" as const });
+    });
+    await t.mutation(internal.subAgents.settleAnnouncedChild, {
+      chatId,
+      childSessionKey: CHILD_KEY,
+    });
+    let row = await t.run(async (ctx) => ctx.db.query("subAgents").first());
+    expect(row?.status).toBe("done");
+    // An observer-recorded failure stands.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "error" as const });
+    });
+    await t.mutation(internal.subAgents.settleAnnouncedChild, {
+      chatId,
+      childSessionKey: CHILD_KEY,
+    });
+    row = await t.run(async (ctx) => ctx.db.query("subAgents").first());
+    expect(row?.status).toBe("error");
+  });
+
+  test("a STALE sub-agent row never masks an older still-active task (eligible pick)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      // Older long-running TASK (legitimately quiet).
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: "task:11112222-3333-4444-5555-666677778888",
+        kind: "task" as const,
+        status: "running" as const,
+        createdAt: Date.now() - 60 * 60_000,
+        updatedAt: Date.now() - 40 * 60_000,
+      });
+      // Newer STALE sub-agent (dead observer).
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, {
+        status: "running" as const,
+        updatedAt: Date.now() - 30 * 60_000,
+      });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(true); // the task holds the signal
+    expect(a.runningTtlRemainingMs).toBeNull(); // task rows have no display TTL
+  });
+
+  test("LATE bornOfRun fill runs the birth-inheritance too (upsert ordering race)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    // First write persisted WITHOUT bornOfRun (e.g. a session-meta capture).
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHAIN_CHILD,
+      status: "running",
+    });
+    // The correlated write lands next: the anchor must inherit NOW.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHAIN_CHILD,
+      bornOfRun: ANNOUNCE_RUN,
+      status: "running",
+    });
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHAIN_CHILD))
+        .first(),
+    );
+    expect(row?.parentMessageId).toBe(parentId);
+    expect(row?.anchorExact).toBe(true);
+  });
+
+  test("a DONE child is never repainted error by a late observer sweep", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t);
+    // Announce settle already flipped the child done…
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const });
+    });
+    // …then the in-memory observer's TTL sweep synthesizes a timeout error.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD_KEY,
+      status: "error",
+      errorMessage: "Sub-agent timed out",
+    });
+    const row = await t.run(async (ctx) => ctx.db.query("subAgents").first());
+    expect(row?.status).toBe("done");
+    // The documented recovery direction still works: error -> done.
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "error" as const });
+    });
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD_KEY,
+      status: "done",
+    });
+    const row2 = await t.run(async (ctx) => ctx.db.query("subAgents").first());
+    expect(row2?.status).toBe("done");
   });
 
   test("carrier row missing -> fail closed (fresh bubble)", async () => {

@@ -352,6 +352,45 @@ describe("announce run with item-only tool activity (captured 2026-07-14)", () =
     ]);
   });
 
+  it("an announce arriving DURING the previous merge's finalize is stashed, then opened", async () => {
+    const writer = new ItemWriter();
+    // Make finalize hang until released: the finalizing window under test.
+    let releaseFinalize: () => void = () => {};
+    const gate = new Promise<void>((res) => {
+      releaseFinalize = res;
+    });
+    const origFinalize = writer.finalize.bind(writer);
+    writer.finalize = async (...args: Parameters<typeof origFinalize>) => {
+      await gate;
+      return origFinalize(...args);
+    };
+    const manager = new RunManager("annitems1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "start"), (now += 1));
+    await manager.feed(
+      itemFrame(ANNOUNCE_RUN, "update_plan", "end", "completed", PLAN_STEP),
+      (now += 1),
+    );
+    // Terminal of announce A: its finalize hangs on the gate — do NOT await.
+    const closing = manager.feed(chatAborted(ANNOUNCE_RUN), (now += 1));
+    await new Promise((r) => setTimeout(r, 10));
+    // Announce B lands INSIDE the finalize window: it must be stashed, not
+    // opened (opening now would fail Convex's streaming gate -> fresh bubble).
+    const RUN_B = `announce:v1:${CHILD_B}:99995555-9ce4-4468-bd1e-8c19ef301b41`;
+    await manager.feed(lifecycleFrame(RUN_B, "start"), (now += 1));
+    await manager.feed(
+      itemFrame(RUN_B, "update_plan", "end", "completed", PLAN_STEP, "call_B|fc_9"),
+      (now += 1),
+    );
+    expect(writer.started).toBe(1); // B not opened during the window
+    releaseFinalize();
+    await closing;
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "end"), (now += 1));
+    // The stash drains between turns (tick / next inactive-window frame).
+    await manager.tick(now + 100_000);
+    expect(writer.started).toBe(2); // B opened AFTER the finalize settled
+  });
+
   it("a NORMAL run's item frames still derive nothing (the tool pipeline owns them)", async () => {
     const writer = new ItemWriter();
     const manager = new RunManager("annitems1", SESSION_KEY, writer);

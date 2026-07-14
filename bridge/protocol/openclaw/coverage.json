@@ -201,7 +201,7 @@
         },
         "data": {
           "status": "handled",
-          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields)"
+          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14)"
         }
       }
     },

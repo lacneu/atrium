@@ -169,6 +169,29 @@ export const startAssistant = internalMutation({
             updatedAt: now,
           });
         }
+      } else if (runId.startsWith("announce:")) {
+        // SUB-AGENT family: the announce itself proves the child FINISHED.
+        // Normally the observer settles the row off the child's terminal
+        // frame — but a child killed by the gateway (run timeout) can die
+        // without one, and its stuck `running` row keeps the activity
+        // spinner and the composer's stop affordance armed forever (live
+        // report 2026-07-14). The announce is the authoritative settle;
+        // `done` here means "no longer running" — the announce text carries
+        // the real outcome (the observer's error path, when it DID see a
+        // terminal, already recorded it and this patch never runs).
+        const row = await ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) =>
+            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+          )
+          .filter((q) => q.eq(q.field("chatId"), chatId))
+          .first();
+        if (row !== null && row.status === "running") {
+          await ctx.db.patch(row._id, {
+            status: "done" as const,
+            updatedAt: now,
+          });
+        }
       }
       const merge = await reopenParentForAnnounce(ctx, chatId, runId, now);
       if (merge !== null) {

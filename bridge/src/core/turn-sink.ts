@@ -269,6 +269,15 @@ export class TurnSink {
     return this.turnActive;
   }
 
+  /** True while flushFinal is writing the turn's tail (media chain, plan
+   *  advance, the finalize POST): `active` is already false there, but the
+   *  message is still `streaming` in Convex — an announce opened in that
+   *  window would fail the reopen's streaming gate and fall to a fresh
+   *  bubble. The run-manager stashes announce frames while this holds. */
+  get finalizing(): boolean {
+    return this.finalizeInFlight;
+  }
+
   /** A user /abort RPC targeted the active turn: the terminal `aborted` that
    *  follows is the USER'S stop — the delivery-run fold must let it stand. */
   noteUserAbort(): void {
@@ -377,20 +386,42 @@ export class TurnSink {
    *  (the Convex upsert never downgrades a terminal row). */
   private async settleTaskDeliveryEngagement(): Promise<void> {
     const delivery = taskDeliveryRunFromRunId(this.turnRunId);
-    if (delivery === null) return;
-    try {
-      await this.writer.upsertSubAgent?.({
-        chatId: this.chatId,
-        childSessionKey: taskChildKey(delivery.taskId),
-        kind: "task",
-        status: delivery.outcome === "ok" ? "done" : "error",
-        taskName: delivery.toolName,
-      });
-    } catch (err) {
-      console.error(
-        "task engagement settle failed (non-fatal):",
-        (err as Error)?.message ?? err,
-      );
+    if (delivery !== null) {
+      try {
+        await this.writer.upsertSubAgent?.({
+          chatId: this.chatId,
+          childSessionKey: taskChildKey(delivery.taskId),
+          kind: "task",
+          status: delivery.outcome === "ok" ? "done" : "error",
+          taskName: delivery.toolName,
+        });
+      } catch (err) {
+        console.error(
+          "task engagement settle failed (non-fatal):",
+          (err as Error)?.message ?? err,
+        );
+      }
+      return;
+    }
+    // SUB-AGENT announce family: a SILENT (NO_REPLY) announce never reaches
+    // startAssistant, so its Convex-side settle never runs — yet the announce
+    // proves the child ended. Flip a stuck running row here (running->done
+    // only, server-side; an observer-recorded failure stands) or the dead
+    // child holds the chat until the reaper (codex P2).
+    const runId = this.turnRunId;
+    if (typeof runId === "string" && runId.startsWith("announce:v1:")) {
+      const seg = runId.split(":");
+      const childKey = seg.slice(2, -1).join(":");
+      if (childKey !== "") {
+        try {
+          await this.writer.settleAnnouncedChild?.(this.chatId, childKey);
+        } catch (err) {
+          console.error(
+            "announced child settle failed (non-fatal):",
+            (err as Error)?.message ?? err,
+          );
+        }
+      }
     }
   }
 
@@ -873,12 +904,26 @@ export class TurnSink {
   }
 
   /** Emit the buffered final via writer.finalize(); ends the turn. */
+  private finalizeInFlight = false;
+
   private async flushFinal(status: FinalizeStatus): Promise<void> {
     const messageId = this.messageId;
     if (messageId === null || !this.turnActive) {
       return;
     }
     this.turnActive = false;
+    this.finalizeInFlight = true;
+    try {
+      await this.flushFinalInner(messageId, status);
+    } finally {
+      this.finalizeInFlight = false;
+    }
+  }
+
+  private async flushFinalInner(
+    messageId: string,
+    status: FinalizeStatus,
+  ): Promise<void> {
     // DETERMINISTIC outbound media — PHASE 1 (DETECT, fast, no upload): list any
     // file the agent dropped in the outbound dir this turn (LLM omitted MEDIA:,
     // or an explicit delivery lost a readiness race). Runs first so the

@@ -151,6 +151,11 @@ type IngestOp =
       settleIfIdle: boolean;
       runId?: string | null;
     }
+  | {
+      op: "settleAnnouncedChild";
+      chatId: string;
+      childSessionKey: string;
+    }
   // Outbound media (base64-free, no size ceiling): the bridge asks for an upload
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
   // this endpoint — the 20MB httpAction limit never applies), then persists the
@@ -475,6 +480,19 @@ export const ingest = httpAction(async (ctx, request) => {
             typeof body.part.kind === "string" ? body.part.kind : undefined,
           ok: true,
         },
+      });
+      return json({ ok: true });
+    }
+    case "settleAnnouncedChild": {
+      // A silent (NO_REPLY) sub-agent announce still proves the child ended —
+      // flip its stuck `running` row without waiting for the reaper.
+      await ctx.runMutation(internal.subAgents.settleAnnouncedChild, {
+        chatId: body.chatId as Id<"chats">,
+        childSessionKey: body.childSessionKey,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        meta: { op: body.op, ok: true },
       });
       return json({ ok: true });
     }

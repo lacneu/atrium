@@ -308,7 +308,7 @@ export class SubAgentObserver {
           readString(readField(payload, "data") ?? {}, "phase") === "start");
       const take = isStartupFrame
         ? this.takePendingItemSpawn(now)
-        : { claimed: null, ambiguous: false };
+        : { claimed: null, ambiguous: false, sharedRun: null };
       const sighting = take.claimed;
       const created = this.register(childKey, now, {
         ...(sighting?.taskName !== undefined
@@ -346,6 +346,17 @@ export class SubAgentObserver {
         // (live incident 2026-07-14).
         if (isDeliveryRunId(sighting.runId)) {
           obs.bornOfRun = sighting.runId;
+        }
+      } else if (take.ambiguous && take.sharedRun !== null) {
+        // AMBIGUOUS sightings (a turn spawned several children — parallel
+        // review gates): which spawn this child matches is unknowable, so no
+        // task/anchor claim — but every parked sighting was emitted under the
+        // SAME delivery run, so the carrier run itself is certain. Stamp it:
+        // Convex birth-inheritance then walks the carrier's row to the ROOT
+        // anchor and the parallel children's deliveries still merge into the
+        // one pipeline bubble (live incident 2026-07-14, second round).
+        if (isDeliveryRunId(take.sharedRun)) {
+          obs.bornOfRun = take.sharedRun;
         }
       }
       if (sighting?.seed !== undefined) {
@@ -493,6 +504,10 @@ export class SubAgentObserver {
           parentMessageId: obs.parentMessageId,
           anchorExact: obs.anchorExact,
           childSessionKey: childKey,
+          // The chain-anchor correlation must ride the FIRST persisted upsert:
+          // an ambiguous parallel spawn has no sighting seed, so this
+          // lifecycle write is the row's birth (Convex fills once).
+          ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
           status: "running",
           phase,
         },
@@ -693,6 +708,9 @@ export class SubAgentObserver {
           parentMessageId: obs.parentMessageId,
           anchorExact: obs.anchorExact,
           childSessionKey: obs.childSessionKey,
+          // The chain correlation must ride whatever upsert persists FIRST
+          // (this one can precede the lifecycle write — codex P2).
+          ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
           status: obs.status,
           sessionMeta: merged,
         },
@@ -1073,6 +1091,20 @@ export class SubAgentObserver {
     { runId: string; status: SubAgentStatus; at: number }
   >();
 
+  // TRUE while the CURRENT batch of parked sightings was ever ambiguous (>1
+  // pending at claim time): consuming slots one by one must not make the
+  // LAST sighting look unambiguous — children start in no guaranteed order,
+  // so a late child claiming the leftover would take the wrong task/anchor
+  // (codex P1). Reset when the batch fully drains OR a NEW batch starts
+  // (first sighting parked on an empty map — a TTL-expired leftover must not
+  // taint the next spawn, codex P2).
+  private ambiguousSpawnBatch = false;
+  // The carrier run FROZEN at the moment the batch became ambiguous: computed
+  // over the FULL batch, never recomputed on the shrinking leftover — a mixed
+  // batch (two delivery runs) stays bornOfRun-less for EVERY slot, because
+  // which child belongs to which run is exactly what is unknowable (codex P1).
+  private ambiguousBatchSharedRun: string | null = null;
+
   private pendingItemSpawns = new Map<
     string,
     {
@@ -1172,17 +1204,46 @@ export class SubAgentObserver {
     const taskName = this.sanitizeTaskName(extractTaskName(meta));
     const seed = extractMetaSessionSeed(meta);
     if (taskName === undefined && seed === undefined) return;
+    // Purge BEFORE the new-batch check: a TTL-dead leftover must not chain
+    // the old batch's ambiguity onto this fresh sighting (codex P2).
+    this.purgeExpiredItemSpawns(now);
+    if (this.pendingItemSpawns.size === 0) {
+      // First sighting of a NEW batch: a stale ambiguity flag from a
+      // TTL-expired previous batch must not taint it (codex P2).
+      this.ambiguousSpawnBatch = false;
+      this.ambiguousBatchSharedRun = null;
+    }
     if (this.pendingItemSpawns.size >= 16 && !this.pendingItemSpawns.has(toolCallId)) {
       const oldest = this.pendingItemSpawns.keys().next().value;
       if (oldest !== undefined) this.pendingItemSpawns.delete(oldest);
     }
+    const parkedRun = readString(payload, "runId");
     this.pendingItemSpawns.set(toolCallId, {
       at: now,
       ...(taskName !== undefined ? { taskName } : {}),
       ...(seed !== undefined ? { seed } : {}),
       parentMessageId: parentMessageId ?? null,
-      runId: readString(payload, "runId"),
+      runId: parkedRun,
     });
+    // A sighting from ANOTHER run joining a still-ambiguous batch (a failed
+    // spawn can leave leftovers for up to the TTL) makes the batch MIXED:
+    // its frozen carrier run no longer holds for the next claims (codex P1).
+    if (
+      this.ambiguousSpawnBatch &&
+      this.ambiguousBatchSharedRun !== null &&
+      parkedRun !== this.ambiguousBatchSharedRun
+    ) {
+      this.ambiguousBatchSharedRun = null;
+    }
+  }
+
+  /** Drop parked sightings older than the TTL (observer clock is SECONDS —
+   *  see HEARTBEAT_THROTTLE_SECONDS). Shared by the park + claim paths. */
+  private purgeExpiredItemSpawns(now: number): void {
+    const TTL_S = 180;
+    for (const [key, entry] of this.pendingItemSpawns) {
+      if (now - entry.at > TTL_S) this.pendingItemSpawns.delete(key);
+    }
   }
 
   /** Claim the item-spawn sighting for a lazy registration — ONLY when it is
@@ -1201,17 +1262,50 @@ export class SubAgentObserver {
      *  a NULL anchor (fail-closed): those spawns may belong to an announce
      *  run, and a fallback anchor would attach them to an unrelated turn. */
     ambiguous: boolean;
+    /** The ONE run every fresh sighting was emitted under, or null when they
+     *  span several runs (or none pend). The ambiguity above is about WHICH
+     *  spawn a child matches (task/meta/anchor) — the carrier RUN is still
+     *  certain when unique, and it is what the chain-anchor inheritance
+     *  (bornOfRun) needs: a turn that spawns SEVERAL children (parallel
+     *  review gates, live incident 2026-07-14) must not orphan them all. */
+    sharedRun: string | null;
   } {
-    const TTL_S = 180; // observer clock is SECONDS (see HEARTBEAT_THROTTLE_SECONDS)
-    for (const [key, entry] of this.pendingItemSpawns) {
-      if (now - entry.at > TTL_S) this.pendingItemSpawns.delete(key);
+    this.purgeExpiredItemSpawns(now);
+    if (this.pendingItemSpawns.size === 0) {
+      this.ambiguousSpawnBatch = false;
+      this.ambiguousBatchSharedRun = null;
+      return { claimed: null, ambiguous: false, sharedRun: null };
     }
-    if (this.pendingItemSpawns.size !== 1) {
-      return { claimed: null, ambiguous: this.pendingItemSpawns.size > 1 };
+    if (this.pendingItemSpawns.size > 1 && !this.ambiguousSpawnBatch) {
+      // The batch turns ambiguous NOW: freeze its carrier run over the FULL
+      // set. Never recomputed on the leftover — a mixed batch stays null.
+      this.ambiguousSpawnBatch = true;
+      const runs = new Set(
+        [...this.pendingItemSpawns.values()].map((e) => e.runId ?? ""),
+      );
+      this.ambiguousBatchSharedRun =
+        runs.size === 1 && [...runs][0] !== ""
+          ? ([...runs][0] as string)
+          : null;
+    }
+    if (this.ambiguousSpawnBatch) {
+      // AMBIGUOUS BATCH: no task/anchor claim for ANY child of the batch —
+      // children start in no guaranteed order, so even the LAST leftover
+      // sighting must not be claimed (codex P1). Each child startup still
+      // CONSUMES one slot (FIFO): N parallel spawns feed at most N children,
+      // so a stale entry can never leak onto a later unrelated child.
+      const oldest = this.pendingItemSpawns.keys().next().value;
+      if (oldest !== undefined) this.pendingItemSpawns.delete(oldest);
+      const sharedRun = this.ambiguousBatchSharedRun;
+      if (this.pendingItemSpawns.size === 0) {
+        this.ambiguousSpawnBatch = false;
+        this.ambiguousBatchSharedRun = null;
+      }
+      return { claimed: null, ambiguous: true, sharedRun };
     }
     const [key, entry] = this.pendingItemSpawns.entries().next().value!;
     this.pendingItemSpawns.delete(key);
-    return { claimed: entry, ambiguous: false };
+    return { claimed: entry, ambiguous: false, sharedRun: entry.runId ?? null };
   }
 
   private maybeCacheSpawnConfig(payload: Record<string, unknown>): void {

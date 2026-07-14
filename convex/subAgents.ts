@@ -295,9 +295,41 @@ export const upsertSubAgent = internalMutation({
     }
     if (args.bornOfRun !== undefined && existing.bornOfRun === undefined) {
       patch.bornOfRun = args.bornOfRun;
+      // LATE chain correlation: the row was inserted before its bornOfRun
+      // reached us (upsert ordering — e.g. a session-meta capture persisted
+      // first). Run the same birth-inheritance the insert path runs, else a
+      // chained child whose first write raced stays anchorless and its
+      // delivery opens a fresh bubble (codex P2).
+      if (
+        existing.parentMessageId === undefined &&
+        args.parentMessageId === undefined
+      ) {
+        const carrierKey = deliveryChildKey(args.bornOfRun);
+        if (carrierKey !== null) {
+          const carrier = await ctx.db
+            .query("subAgents")
+            .withIndex("by_child", (q) => q.eq("childSessionKey", carrierKey))
+            .filter((q) => q.eq(q.field("chatId"), args.chatId))
+            .first();
+          if (
+            carrier?.parentMessageId !== undefined &&
+            carrier.anchorExact === true
+          ) {
+            patch.parentMessageId = carrier.parentMessageId;
+            patch.anchorExact = true;
+          }
+        }
+      }
     }
-    // Never downgrade a terminal child back to running (reorder-tolerance).
-    if (!(terminal && args.status === "running")) {
+    // Never downgrade a terminal child back to running (reorder-tolerance),
+    // and never repaint a DONE child as error: the announce settle can beat
+    // the in-memory observer, whose 15-min TTL sweep then synthesizes a
+    // "timed out" upsert for a child the announce PROVED finished (codex
+    // P2). The documented recovery direction is error -> done, never back.
+    if (
+      !(terminal && args.status === "running") &&
+      !(existing.status === "done" && args.status === "error")
+    ) {
       patch.status = args.status;
     }
     // Overflow-recovery transition (error -> done): the gateway can abandon an
@@ -507,6 +539,12 @@ export const turnActivity = query({
     { chatId },
   ): Promise<{
     running: boolean;
+    // How long `running` stays trustworthy WITHOUT a further document change
+    // (ms). Date.now() is not a reactive dependency: a subscribed client only
+    // re-runs this query on a write, so it arms a LOCAL timer for this delay
+    // and drops the spinner when it fires (the reaper's flip then confirms).
+    // Null when running is false or held by a task row (no display TTL).
+    runningTtlRemainingMs: number | null;
     deliveringSince: number | null;
     // Where the signal should RENDER: the message the live row is anchored
     // to (its bubble already carries the sub-agent card), so the thread can
@@ -522,13 +560,52 @@ export const turnActivity = query({
     // (chatId, status) — a long-lived child created before 50 newer
     // delegations must still hold the composer/spinner. Read on the
     // updatedAt-ordered index so the anchor follows the FRESHEST live child.
-    const runningRow = await ctx.db
+    // STALENESS gate (display-only, the row itself is untouched): a child the
+    // gateway killed without a terminal frame (run timeout) leaves its row
+    // `running` until the reaper — without the gate the spinner stays armed
+    // with nothing actually working (live report 2026-07-14). Scope + TTL:
+    //   - kind:"task" rows are EXEMPT (long generations are legitimately
+    //     quiet; their truth is the gateway-registry reconciliation + the
+    //     24h net — reapStaleSubAgents);
+    //   - the TTL is the REAPER'S (SUBAGENT_STALE_TTL_MS): the spinner dies
+    //     exactly when the row becomes reap-eligible, so the display and the
+    //     dispatch hold (isChatBusy, deliberately passive) diverge by at most
+    //     the reaper's cron cadence.
+    // Date.now() is NOT reactive: an already-subscribed client re-runs only
+    // on a document change (the reaper's flip). runningTtlRemainingMs lets
+    // the client arm a LOCAL expiry timer (same pattern as the delivering
+    // display cap) so the spinner also dies without a server write.
+    // Pick the freshest ELIGIBLE row, not merely the freshest row: a stale
+    // sub-agent must neither mask an older still-active task behind it nor
+    // steal the delivery anchor (codex P2). Bounded scan — concurrent
+    // running rows are few by construction.
+    const runningCandidates = await ctx.db
       .query("subAgents")
       .withIndex("by_chat_status_updated", (q) =>
         q.eq("chatId", chatId).eq("status", "running"),
       )
       .order("desc")
-      .first();
+      .take(10);
+    const nowMs = Date.now();
+    let runningRow =
+      runningCandidates.find(
+        (r) =>
+          r.kind === "task" ||
+          nowMs - r.updatedAt < SUBAGENT_STALE_TTL_MS,
+      ) ?? null;
+    if (runningRow === null && runningCandidates.length === 10) {
+      // The window was FULL of stale sub-agents: an older TTL-exempt task
+      // may hide beyond it (codex P2). Point probe on the typed index — a
+      // post-index filter could walk the whole running slice (codex P2).
+      runningRow =
+        (await ctx.db
+          .query("subAgents")
+          .withIndex("by_chat_status_kind", (q) =>
+            q.eq("chatId", chatId).eq("status", "running").eq("kind", "task"),
+          )
+          .first()) ?? null;
+    }
+    const runningAge = runningRow === null ? null : nowMs - runningRow.updatedAt;
     const running = runningRow !== null;
     // DELIVERING scans the recently-UPDATED terminal rows (bounded): a
     // finished child whose announce has not merged yet — including an ERROR
@@ -636,7 +713,50 @@ export const turnActivity = query({
       runningRow !== null
         ? (runningRow.parentMessageId ?? null)
         : deliveringAnchor;
-    return { running, deliveringSince, anchorMessageId };
+    // The client-side TTL must never mask a co-existing RUNNING task (TTL
+    // exempt): the bounded candidate window can miss an old task behind ten
+    // fresher sub-agents, so probe the typed index directly (codex P2).
+    const coexistingTask =
+      runningRow !== null && runningRow.kind !== "task"
+        ? runningCandidates.some((r) => r.kind === "task") ||
+          (await ctx.db
+            .query("subAgents")
+            .withIndex("by_chat_status_kind", (q) =>
+              q.eq("chatId", chatId).eq("status", "running").eq("kind", "task"),
+            )
+            .first()) !== null
+        : false;
+    const runningTtlRemainingMs =
+      running && runningRow !== null && runningRow.kind !== "task" && !coexistingTask
+        ? Math.max(0, SUBAGENT_STALE_TTL_MS - (runningAge ?? 0))
+        : null;
+    return { running, runningTtlRemainingMs, deliveringSince, anchorMessageId };
+  },
+});
+
+/**
+ * Settle the announced child's row (running -> done) when its announce run
+ * produced NO visible message (NO_REPLY): startAssistant's settle never runs
+ * on that path, and a child whose terminal frame was lost would otherwise
+ * hold the chat until the reaper (codex P2). Conservative: only a `running`
+ * row flips — an observer-recorded error/aborted stands. Drains any send
+ * held behind the child (the visible path drains via finalize; this silent
+ * path has no finalize).
+ */
+export const settleAnnouncedChild = internalMutation({
+  args: { chatId: v.id("chats"), childSessionKey: v.string() },
+  handler: async (ctx, { chatId, childSessionKey }) => {
+    const row = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    if (row === null || row.status !== "running") return;
+    await ctx.db.patch(row._id, {
+      status: "done" as const,
+      updatedAt: Date.now(),
+    });
+    await maybeDrainOnTerminal(ctx, chatId, "done");
   },
 });
 

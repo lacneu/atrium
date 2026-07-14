@@ -205,6 +205,9 @@ export interface ConvexWriter {
     count: number,
     settleIfIdle: boolean,
   ): Promise<void>;
+  /** Silent (NO_REPLY) sub-agent announce -> flip the child's stuck running
+   *  row (startAssistant's settle only runs on the visible path). */
+  settleAnnouncedChild?(chatId: string, childSessionKey: string): Promise<void>;
   /** context.compaction -> internal.stream.addPart(kind:compaction): the
    *  gateway summarized older context during this turn (user-facing marker). */
   addCompactionPart(messageId: string, part: CompactionPart): Promise<void>;
@@ -450,6 +453,11 @@ type IngestOp =
       count: number;
       settleIfIdle: boolean;
       runId?: string | null;
+    }
+  | {
+      op: "settleAnnouncedChild";
+      chatId: string;
+      childSessionKey: string;
     }
   | {
       op: "addPart";
@@ -1204,6 +1212,13 @@ export class HttpConvexWriter implements ConvexWriter {
       part,
       ...this.genTag(messageId),
     });
+  }
+
+  async settleAnnouncedChild(
+    chatId: string,
+    childSessionKey: string,
+  ): Promise<void> {
+    await this.post({ op: "settleAnnouncedChild", chatId, childSessionKey });
   }
 
   async advancePlanPart(

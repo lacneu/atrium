@@ -8,6 +8,27 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.60.1] — Parallel delegations stay in one bubble; the spinner tells the truth
+
+Corrective release for 0.60.0, from field retest of a real delegated
+pipeline. No schema changes; no breaking changes.
+
+- **Parallel delegations keep the pipeline in one bubble too.** A turn that
+  fans out SEVERAL sub-agents at once (parallel review gates) used to orphan
+  all of them — 0.60.0's chain anchoring only held for one spawn per turn,
+  and the deliveries fragmented the thread again. The chain correlation now
+  survives parallel spawns (the carrier turn stays certain even when which
+  child is which is not), and deliveries landing back-to-back no longer race
+  each other into fresh bubbles. With the pipeline back in one bubble, the
+  work plan advances all the way to done again.
+- **The activity spinner tells the truth.** A sub-agent killed by the gateway
+  without a terminal signal used to keep the "working" spinner and the stop
+  affordance armed indefinitely — leaving no way to tell whether anything was
+  still running. Its delivery now settles the child on arrival (even a silent
+  one), a child silent beyond the staleness TTL stops holding the spinner
+  (long-running background tasks keep theirs), and a delivered child can no
+  longer be repainted as "timed out" by a late watchdog.
+
 ## [0.60.0] — Delegated pipelines: one bubble, visible work, a moving plan
 
 Reliability and visibility release for delegated (sub-agent) work, plus a
