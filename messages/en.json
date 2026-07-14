@@ -1901,5 +1901,10 @@
 	"bookmark_rail_label": "Bookmarks",
 	"bookmark_unreachable": "{count} bookmark(s) outside the loaded window",
 	"sidebar_has_bookmarks": "Has bookmarks",
-	"bookmark_open_list": "Bookmark list"
+	"bookmark_open_list": "Bookmark list",
+	"sidebar_copy_reference": "Copy conversation reference",
+	"sidebar_reference_copied": "Reference copied: {reference}",
+	"sidebar_reference_copy_failed": "Could not copy the reference",
+	"chat_reference_attached": "Conversation attached as a file",
+	"chat_reference_attach_failed": "Could not attach the referenced conversation"
 }

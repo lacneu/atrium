@@ -1901,5 +1901,10 @@
 	"bookmark_rail_label": "Signets",
 	"bookmark_unreachable": "{count} signet(s) hors de la fenêtre chargée",
 	"sidebar_has_bookmarks": "Contient des signets",
-	"bookmark_open_list": "Liste des signets"
+	"bookmark_open_list": "Liste des signets",
+	"sidebar_copy_reference": "Copier la référence de conversation",
+	"sidebar_reference_copied": "Référence copiée : {reference}",
+	"sidebar_reference_copy_failed": "Impossible de copier la référence",
+	"chat_reference_attached": "Conversation attachée en fichier",
+	"chat_reference_attach_failed": "Impossible d'attacher la conversation référencée"
 }

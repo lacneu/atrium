@@ -8,6 +8,20 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.57.0] — Cross-conversation references
+
+Feature release. No breaking changes; no schema changes.
+
+- **Reference a conversation inside another one.** Every chat's ⋯ menu in the
+  sidebar gains "Copy conversation reference" — an env-labeled identifier
+  (`dev-…`) you can paste into ANY chat's composer. The paste is recognized
+  automatically and attaches the referenced conversation as a markdown export
+  (title, agent, chronological transcript), so the receiving agent can read
+  the full verbatim — including conversations held with an agent on another
+  gateway. Resolution is owner-scoped and silent: an unknown or foreign
+  reference simply pastes as plain text. Long conversations export the newest
+  window and say so in the file header.
+
 ## [0.56.0] — Conversation bookmarks; deliveries return to their turn
 
 Feature + ordering release. No breaking changes; one additive table

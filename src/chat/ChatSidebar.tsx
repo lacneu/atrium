@@ -3,6 +3,8 @@ import { APP_HOST } from "@/lib/appHost";
 import { clearSidebarFlash, useSidebarFlash } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
+import { useToast } from "@/components/ui/toast";
+import { formatChatReference } from "../../convex/lib/envLabel";
 import {
   DndContext,
   DragOverlay,
@@ -29,6 +31,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Link2,
   Bookmark,
   ChevronDown,
   ChevronRight,
@@ -188,6 +191,12 @@ export function ChatSidebar({
   // as myBusyChats: never a listChats passenger).
   const bookmarkedList = useQuery(api.chatBookmarks.myBookmarkedChats, {}) as
     | Id<"chats">[]
+    | undefined;
+  // Prefetched once: the copy-reference clipboard write must run INSIDE the
+  // click's transient user activation (Safari/Firefox) — no network hop.
+  const referenceLabel = useQuery(api.chatExport.referenceLabel, {}) as
+    | string
+    | null
     | undefined;
   const bookmarkedIds = useMemo(
     () => new Set(bookmarkedList ?? []),
@@ -598,6 +607,7 @@ export function ChatSidebar({
                   unread={unreadIds.has(c._id)}
                   busy={busyIds.has(c._id)}
                   bookmarked={bookmarkedIds.has(c._id)}
+                  referenceLabel={referenceLabel}
                   ageTick={minuteTick}
                   suppressClick={suppressClickRef}
                   onSelect={onSelect}
@@ -644,6 +654,7 @@ export function ChatSidebar({
                       unread={unreadIds.has(c._id)}
                       busy={busyIds.has(c._id)}
                       bookmarked={bookmarkedIds.has(c._id)}
+                  referenceLabel={referenceLabel}
                       ageTick={minuteTick}
                       suppressClick={suppressClickRef}
                       onSelect={onSelect}
@@ -674,6 +685,7 @@ export function ChatSidebar({
                     unread={unreadIds.has(c._id)}
                     busy={busyIds.has(c._id)}
                     bookmarked={bookmarkedIds.has(c._id)}
+                  referenceLabel={referenceLabel}
                     ageTick={minuteTick}
                     suppressClick={suppressClickRef}
                     onSelect={onSelect}
@@ -1016,6 +1028,7 @@ const ChatItem = memo(function ChatItem({
   unread,
   busy,
   bookmarked,
+  referenceLabel,
   suppressClick,
   onSelect,
 }: {
@@ -1028,6 +1041,9 @@ const ChatItem = memo(function ChatItem({
   busy: boolean;
   // The chat holds at least one of the user's bookmarks — quiet flag icon.
   bookmarked: boolean;
+  // Deployment env label for the SYNCHRONOUS reference copy (null = bare id;
+  // undefined = still loading, the copy item is disabled meanwhile).
+  referenceLabel: string | null | undefined;
   // Minute cadence from the parent: memo would otherwise freeze the relative
   // age label (identical props skip the render, Date.now() never re-reads).
   // Not destructured — its only job is to defeat the memo once a minute.
@@ -1044,6 +1060,19 @@ const ChatItem = memo(function ChatItem({
     onKeyDown?: React.KeyboardEventHandler;
   } & Record<string, unknown>;
   const renameChat = useMutation(api.chats.renameChat);
+  const refToast = useToast();
+  // Copy this chat's cross-conversation REFERENCE (env-labeled id): pasted
+  // into any composer, it attaches the exported conversation as a file.
+  // SYNCHRONOUS clipboard write (the label was prefetched): Safari/Firefox
+  // void the click's transient activation across an async hop (codex P1).
+  const copyReference = () => {
+    if (referenceLabel === undefined) return;
+    const ref = formatChatReference(referenceLabel, chat._id);
+    navigator.clipboard.writeText(ref).then(
+      () => refToast.success(m.sidebar_reference_copied({ reference: ref })),
+      () => refToast.error(m.sidebar_reference_copy_failed()),
+    );
+  };
   const deleteChat = useMutation(api.chats.deleteChat);
   const pinChat = useMutation(api.chats.pinChat);
   const setColor = useMutation(api.chats.setChatColor);
@@ -1212,6 +1241,12 @@ const ChatItem = memo(function ChatItem({
             >
               {chat.pinned ? <PinOff /> : <Pin />}
               {chat.pinned ? m.sidebar_unpin() : m.sidebar_pin()}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={copyReference}
+              disabled={referenceLabel === undefined}
+            >
+              <Link2 /> {m.sidebar_copy_reference()}
             </DropdownMenuItem>
 
             <DropdownMenuLabel>{m.sidebar_color()}</DropdownMenuLabel>

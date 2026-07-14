@@ -161,6 +161,7 @@ import { assistantEmptyState, extractSpawnedChildKeys } from "./assistantEmptySt
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
+import { parseChatReferenceCandidate } from "./chatReference";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import type { ToolActivityPart } from "./toolActivityView";
@@ -3509,6 +3510,7 @@ function Composer({
   const queued = queueMode.mode === "queue";
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
+  const convexClient = useConvex();
   // Large-paste routing: a big pasted text becomes a FILE attachment instead
   // of inlining into the prompt (a single paste could overflow the agent's
   // context before compaction ran — live 2026-07-04). The attachment pipeline
@@ -3531,6 +3533,67 @@ function Composer({
     if ((e.clipboardData?.files?.length ?? 0) > 0) return;
     const text = e.clipboardData?.getData("text/plain") ?? "";
     if (!text) return;
+    // CROSS-CONVERSATION REFERENCE: pasting a copied chat reference attaches
+    // that conversation's markdown export instead of raw text. Resolution is
+    // server-side and silent — an unrecognized candidate falls back to a
+    // plain text paste (setText below), so a random 30-char token costs one
+    // no-op query, never a lost paste.
+    const reference = parseChatReferenceCandidate(text);
+    if (reference !== null && attachmentsSupported && !queued) {
+      e.preventDefault();
+      // Snapshot the paste POSITION: an unrecognized candidate falls back to
+      // a plain-text paste, which must land where the caret was (replacing
+      // the selection) — not appended at the end (codex P2). If the draft
+      // changed while the query ran, append to the CURRENT text instead so
+      // typed characters are never overwritten.
+      const target = e.currentTarget;
+      const selStart = target.selectionStart ?? null;
+      const selEnd = target.selectionEnd ?? null;
+      const textAtPaste = composerRuntime.getState().text;
+      // Reproduce the native paste (caret position / selection replacement)
+      // when the reference does NOT become an attachment — unknown reference
+      // AND failures alike (a network error after preventDefault must not
+      // eat the paste — codex P2).
+      const insertPastedText = () => {
+        const st = composerRuntime.getState();
+        if (st.text === textAtPaste && selStart !== null && selEnd !== null) {
+          composerRuntime.setText(
+            textAtPaste.slice(0, selStart) + text + textAtPaste.slice(selEnd),
+          );
+        } else {
+          composerRuntime.setText(st.text + text);
+        }
+      };
+      setPasteAttachCount((n) => n + 1);
+      void convexClient
+        .query(api.chatExport.exportByReference, { reference })
+        .then((res) => {
+          const exported = res as {
+            filename: string;
+            markdown: string;
+          } | null;
+          if (exported === null) {
+            insertPastedText();
+            return;
+          }
+          const file = new File([exported.markdown], exported.filename, {
+            type: "text/markdown; charset=utf-8",
+          });
+          markPastedFile(file);
+          return composerRuntime.addAttachment(file).then(() => {
+            setPasteAnnouncement("");
+            requestAnimationFrame(() =>
+              setPasteAnnouncement(m.chat_reference_attached()),
+            );
+          });
+        })
+        .catch(() => {
+          insertPastedText();
+          pasteToast.error(m.chat_reference_attach_failed());
+        })
+        .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
+      return;
+    }
     const route = routePaste(text, pasteSeq.current);
     if (route.kind !== "file") return;
     // Instance without attachment support (Hermes): let the paste land as

@@ -15,3 +15,14 @@ export function envLabel(): string | null {
   const label = raw.trim().toLowerCase();
   return /^[a-z0-9][a-z0-9_.]{0,15}$/.test(label) ? label : null;
 }
+
+/** The copyable cross-conversation reference for a chat id. Shared by the
+ *  server query AND the sidebar's synchronous clipboard write (Safari/Firefox
+ *  drop the transient user activation if a network round-trip sits between
+ *  the click and clipboard.writeText — the label is prefetched instead). */
+export function formatChatReference(
+  label: string | null,
+  chatId: string,
+): string {
+  return label !== null ? `${label}-${chatId}` : chatId;
+}
