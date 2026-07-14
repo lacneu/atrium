@@ -360,6 +360,16 @@ export async function cascadeDeleteChat(
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .collect();
   for (const i of subAgentInteractions) await ctx.db.delete(i._id);
+  // The owner's document drafts (edited-file text is user content).
+  if (chat) {
+    const draftRows = await ctx.db
+      .query("documentDrafts")
+      .withIndex("by_user_chat_filename", (q) =>
+        q.eq("userId", chat.userId).eq("chatId", chatId),
+      )
+      .collect();
+    for (const d of draftRows) await ctx.db.delete(d._id);
+  }
   // The owner's bookmarks (rows are owner-only by construction — the mutations
   // are owner-scoped): drop them with the chat, labels are user content.
   if (chat) {

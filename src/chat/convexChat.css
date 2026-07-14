@@ -803,11 +803,17 @@
 }
 
 /* ── Scroll-to-bottom pill (auto-hidden when already at the bottom) ───────── */
+.oc-scrolldown-anchor {
+  position: relative;
+  height: 0;
+  align-self: center;
+}
 .oc-scrolldown {
   position: absolute;
   left: 50%;
-  bottom: 5.5rem;
+  bottom: 0.6rem;
   transform: translateX(-50%);
+  white-space: nowrap;
   z-index: 5;
   display: inline-flex;
   align-items: center;
@@ -7773,6 +7779,86 @@ button.oc-bmk-rail__count:hover {
   overflow-wrap: anywhere;
 }
 .oc-docviewer__textwrap { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0.8rem; }
+/* ---- Collaborative document editing (viewer edit mode) ---- */
+.oc-docviewer__newversion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.5rem 0.75rem 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid color-mix(in oklch, var(--highlight) 40%, var(--border));
+  background: color-mix(in oklch, var(--highlight) 8%, transparent);
+  border-radius: 0.5rem;
+  font-size: 0.82rem;
+}
+.oc-docviewer__draftnote {
+  margin: 0.4rem 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.oc-docviewer__draftnote-discard {
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 0.72rem;
+  text-decoration: underline;
+  padding: 0;
+}
+.oc-docviewer__editbtn {
+  margin-left: auto;
+  gap: 0.3rem;
+}
+.oc-docviewer__draftdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bookmark);
+}
+.oc-docviewer__editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0.4rem;
+  padding: 0.5rem 0.8rem 0.8rem;
+}
+.oc-docviewer__editarea {
+  flex: 1 1 auto;
+  /* The flex chain sizes it to the full panel (user ask: maximum work
+     area); no fixed min-height to fall back to. */
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  font-family: var(--ui-font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+  color: var(--foreground);
+}
+.oc-docviewer__editarea:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--ring) 60%, transparent);
+}
+.oc-docviewer__editbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.oc-docviewer__savestate {
+  margin-right: auto;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+
 .oc-docviewer__truncated {
   margin: 0 0 0.6rem;
   font-size: 0.75rem;

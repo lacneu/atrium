@@ -34,6 +34,7 @@ import type * as deliveryTiming from "../deliveryTiming.js";
 import type * as dev from "../dev.js";
 import type * as deviceIdentity from "../deviceIdentity.js";
 import type * as documentAttachments from "../documentAttachments.js";
+import type * as documentDrafts from "../documentDrafts.js";
 import type * as feedback from "../feedback.js";
 import type * as fileRenditions from "../fileRenditions.js";
 import type * as files from "../files.js";
@@ -149,6 +150,7 @@ declare const fullApi: ApiFromModules<{
   dev: typeof dev;
   deviceIdentity: typeof deviceIdentity;
   documentAttachments: typeof documentAttachments;
+  documentDrafts: typeof documentDrafts;
   feedback: typeof feedback;
   fileRenditions: typeof fileRenditions;
   files: typeof files;

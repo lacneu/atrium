@@ -173,6 +173,9 @@ function FileChip({
               url,
               filename: name,
               mimeType: mime || null,
+              // Stable version identity (signed URLs rotate): keys the
+              // viewer's version tracking + the edit draft's source anchor.
+              storageId,
               // Only convertible Office files carry the source id → rendition path.
               sourceStorageId: convertible ? storageId : undefined,
             })

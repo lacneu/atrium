@@ -1586,6 +1586,29 @@ export default defineSchema({
   //   - instanceName: the chat's bound bridge SNAPSHOT at creation (frozen so a
   //     later rebind can't mislabel it); undefined for an unbound chat. Degenerate
   //     today (single provider) — the filter self-hides like the sidebar badge.
+  // PER-USER document drafts (collaborative documents v1): the edited text of
+  // a delivered file, keyed by (user, chat, filename) — the filename is the
+  // stable identity of a document ACROSS agent-delivered versions. The
+  // delivered storage objects stay immutable (chat history integrity); the
+  // draft is what "use in next prompt" sends back to the agent (attachment
+  // when the instance supports them, inline fenced text otherwise — the
+  // full-compliance path that works on every gateway incl. Hermes). Content
+  // lives IN the row (text kinds only, capped well under the 1MiB doc limit).
+  documentDrafts: defineTable({
+    userId: v.id("users"),
+    chatId: v.id("chats"),
+    filename: v.string(),
+    // The delivered version (STABLE storage id — signed URLs rotate) this
+    // edit started from: a NEWER delivery with the same filename flags the
+    // draft as diverged in the UI.
+    sourceStorageId: v.optional(v.string()),
+    text: v.string(),
+    updatedAt: v.number(),
+    createdAt: v.number(),
+  })
+    // Point lookup + per-chat cascade.
+    .index("by_user_chat_filename", ["userId", "chatId", "filename"]),
+
   files: defineTable({
     userId: v.id("users"), // owner (denormalized)
     chatId: v.id("chats"),

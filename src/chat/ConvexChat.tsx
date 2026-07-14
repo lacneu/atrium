@@ -162,6 +162,7 @@ import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { parseChatReferenceCandidate } from "./chatReference";
+import { PromptBridgeContext, type PromptBridge } from "./promptBridge";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import type { ToolActivityPart } from "./toolActivityView";
@@ -530,6 +531,8 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     }),
     [activeSubAgentKey],
   );
+  // Composer -> viewer bridge (collaborative documents "use in prompt").
+  const promptBridgeRef = useRef<PromptBridge | null>(null);
   const docViewerApi = useMemo<DocumentViewerApi>(
     () => ({
       activeDoc,
@@ -629,7 +632,8 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <SourcesPanelContext.Provider value={sourcesApi}>
       <SubAgentPanelContext.Provider value={subAgentApi}>
       <CronDetailContext.Provider value={cronApi}>
-      <DocumentViewerContext.Provider value={docViewerApi}>
+      <PromptBridgeContext.Provider value={promptBridgeRef}>
+    <DocumentViewerContext.Provider value={docViewerApi}>
       <LightboxProvider>
         <div className="oc-chat">
           <div className="oc-chat__convo">
@@ -702,6 +706,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                 ) : docViewerOpen ? (
                   <DocumentViewerContent
                     doc={activeDoc as ViewerDoc}
+                    chatId={chatId as string}
                     onClose={docViewerApi.close}
                   />
                 ) : subAgentOpen ? (
@@ -759,6 +764,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
               <DocumentViewerContent
                 doc={activeDoc as ViewerDoc}
+                chatId={chatId as string}
                 onClose={docViewerApi.close}
               />
             </SheetContent>
@@ -766,6 +772,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
       </LightboxProvider>
       </DocumentViewerContext.Provider>
+    </PromptBridgeContext.Provider>
       </CronDetailContext.Provider>
       </SubAgentPanelContext.Provider>
       </SourcesPanelContext.Provider>
@@ -1209,13 +1216,18 @@ function ChatThread({
       </ThreadPrimitive.Viewport>
       <BookmarkNavRail />
       {/* Auto-hides (returns null) when the viewport is at the bottom; also
-          suppressed on an empty thread (nothing to scroll to). */}
-      <ThreadPrimitive.If empty={false}>
-        <ThreadPrimitive.ScrollToBottom className="oc-scrolldown">
-          <IconArrowDown />
-          <span>{m.chat_latest_messages()}</span>
-        </ThreadPrimitive.ScrollToBottom>
-      </ThreadPrimitive.If>
+          suppressed on an empty thread (nothing to scroll to). Anchored to a
+          zero-height row ABOVE the bottom block so it floats over the REAL
+          composer top whatever its height — a fixed offset overlapped the
+          composer once attachment chips grew it (user report). */}
+      <div className="oc-scrolldown-anchor">
+        <ThreadPrimitive.If empty={false}>
+          <ThreadPrimitive.ScrollToBottom className="oc-scrolldown">
+            <IconArrowDown />
+            <span>{m.chat_latest_messages()}</span>
+          </ThreadPrimitive.ScrollToBottom>
+        </ThreadPrimitive.If>
+      </div>
       {readOnly ? (
         <ChatReadOnlyBanner />
       ) : unavailable ? (
@@ -3511,6 +3523,51 @@ function Composer({
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
   const convexClient = useConvex();
+  // Publish the composer's capabilities to the right-panel document viewer
+  // ("use in prompt"): ref-carried so the panel reads the LIVE composer state
+  // at click time without re-render coupling.
+  const promptBridgeRef = useContext(PromptBridgeContext);
+  useEffect(() => {
+    if (promptBridgeRef === null) return;
+    promptBridgeRef.current = {
+      // QUEUED follow-ups are text-only (their attachments would silently
+      // not ride) — the viewer then falls back to the inline block, which
+      // DOES travel with a queued send (codex P1).
+      canAttach: attachmentsSupported && !queued,
+      // NOT marked as pasted: an edited document is a real user file, and
+      // the "pasted" origin would hide it in Settings › Files (codex P2).
+      // The paste-attach counter holds SEND while the async size-policy
+      // checks run — an immediate Enter must never send without the
+      // document it just claimed to include (codex P2).
+      attachFile: (file: File) => {
+        setPasteAttachCount((n) => n + 1);
+        return composerRuntime
+          .addAttachment(file)
+          .then(() => {
+            // The chip appearing IS the visible confirmation (a success
+            // toast covered the panel's own button — user report); the
+            // sr-only region announces it for non-visual users
+            // (clear-then-set so repeats re-announce).
+            setPasteAnnouncement("");
+            requestAnimationFrame(() =>
+              setPasteAnnouncement(m.docviewer_prompt_attached()),
+            );
+          })
+          .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
+      },
+      insertText: (text: string) => {
+        const st = composerRuntime.getState();
+        composerRuntime.setText(st.text + text);
+        setPasteAnnouncement("");
+        requestAnimationFrame(() =>
+          setPasteAnnouncement(m.docviewer_prompt_inlined()),
+        );
+      },
+    };
+    return () => {
+      promptBridgeRef.current = null;
+    };
+  }, [promptBridgeRef, attachmentsSupported, queued, composerRuntime]);
   // Large-paste routing: a big pasted text becomes a FILE attachment instead
   // of inlining into the prompt (a single paste could overflow the agent's
   // context before compaction ran — live 2026-07-04). The attachment pipeline

@@ -8,6 +8,24 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.59.0] — Collaborative documents: edit a delivered file, hand it back
+
+Feature release. One additive table (`documentDrafts`); no breaking changes.
+
+- **Edit delivered text documents in place.** The right-panel viewer gains an
+  "Edit" mode for text documents (markdown, txt, csv, json, logs): change the
+  content directly, auto-saved as YOUR draft — the delivered file itself stays
+  untouched, so the conversation history remains exact. The rendered preview
+  shows your draft (clearly badged), and the original is one "discard" away.
+- **Hand the edited version back to the agent.** "Use in prompt" adds your
+  edited document to the composer: as a file attachment on instances that
+  support them, or as a safely fenced inline block on instances that do not
+  (Hermes) — the loop works on EVERY gateway, no configuration required.
+- **The panel follows the document, not a frozen file.** When the agent
+  delivers a new version of the same document, the open viewer offers to
+  switch to it in place — edit, send back, review, repeat: the canvas-style
+  collaboration loop, Atrium-shaped.
+
 ## [0.58.0] — OpenClaw 2026.7.1 (release) validated
 
 Compatibility release. No breaking changes; no schema changes.

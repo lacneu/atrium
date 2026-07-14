@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -7,14 +8,18 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { Download, ExternalLink, FileText, X } from "lucide-react";
+import { Download, ExternalLink, FileText, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentMarkdown } from "./MarkdownText";
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { PdfViewer } from "./PdfViewer";
+import { PromptBridgeContext, buildInlineDocBlock } from "./promptBridge";
+import { LARGE_PASTE_CHARS } from "./pasteRouting";
+import { useToast } from "@/components/ui/toast";
 import {
+  isConvertibleDocument,
   CSV_PREVIEW_MAX_COLS,
   JSON_TREE_MAX_CHILDREN,
   JSON_TREE_OPEN_MAX_ENTRIES,
@@ -42,6 +47,10 @@ export type ViewerDoc = {
   url: string;
   filename: string;
   mimeType: string | null;
+  // STABLE identity of the displayed version (signed URLs rotate): the
+  // version-tracking comparison and the draft's source anchor key on it.
+  // Absent on legacy openers → URL comparison fallback.
+  storageId?: string;
   // Set ONLY for a convertible Office file: its source storage id, which keys the
   // on-demand PDF rendition (the instance converter agent produces it). Absent for
   // natively-viewable files (PDF/image/text/media).
@@ -66,14 +75,48 @@ export function useDocumentViewer(): DocumentViewerApi {
 
 export function DocumentViewerContent({
   doc,
+  chatId,
   onClose,
 }: {
   doc: ViewerDoc;
+  /** The chat this document belongs to — keys the edit draft + the version
+   *  tracking. Null on legacy call sites (edit affordances hidden). */
+  chatId: string | null;
   onClose: () => void;
 }) {
   const kind = viewerKindFor(doc.mimeType, doc.filename);
   // A convertible Office file renders THROUGH a PDF rendition (Release B).
   const needsRendition = kind === "none" && doc.sourceStorageId !== undefined;
+  const viewer = useDocumentViewer();
+  // VERSION TRACKING (collaborative documents): the panel follows (chat,
+  // filename), not a frozen URL — when the agent delivers a NEWER version of
+  // this document, offer to switch to it in place.
+  const latest = useQuery(
+    api.documentDrafts.latestDeliveredFile,
+    chatId !== null
+      ? {
+          chatId: chatId as Id<"chats">,
+          filename: doc.filename,
+          ...(doc.storageId !== undefined
+            ? { currentStorageId: doc.storageId }
+            : {}),
+        }
+      : "skip",
+  ) as
+    | { url: string; storageId: string; mimeType: string; createdAt: number }
+    | null
+    | undefined;
+  // STABLE comparison: signed URLs rotate, so a URL mismatch alone would
+  // cry "new version" on a mere re-sign (codex P2). Fall back to the URL
+  // only for legacy openers that did not pass a storageId.
+  const newer =
+    latest !== undefined &&
+    latest !== null &&
+    (doc.storageId !== undefined
+      ? latest.storageId !== doc.storageId
+      : latest.url !== doc.url)
+      ? latest
+      : null;
   return (
     <div className="oc-docviewer">
       <header className="oc-docviewer__header">
@@ -111,6 +154,36 @@ export function DocumentViewerContent({
         </Button>
       </header>
       <div className="oc-docviewer__body">
+        {newer !== null ? (
+          <div className="oc-docviewer__newversion" role="status">
+            <span>{m.docviewer_new_version()}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                // FULL new-version identity: a redelivery can change the
+                // mime/format, so classification, re-attachment AND the
+                // Office-rendition decision follow the NEW metadata, never
+                // the version being replaced (codex P2).
+                viewer.openFor({
+                  url: newer.url,
+                  filename: doc.filename,
+                  mimeType: newer.mimeType || null,
+                  storageId: newer.storageId,
+                  sourceStorageId: isConvertibleDocument(
+                    newer.mimeType,
+                    doc.filename,
+                  )
+                    ? newer.storageId
+                    : undefined,
+                })
+              }
+            >
+              {m.docviewer_open_new_version()}
+            </Button>
+          </div>
+        ) : null}
         {kind === "pdf" ? (
           <PdfViewer url={doc.url} filename={doc.filename} />
         ) : kind === "image" ? (
@@ -124,13 +197,24 @@ export function DocumentViewerContent({
             <audio controls preload="metadata" src={doc.url} className="oc-docviewer__audio" />
           </div>
         ) : kind === "text" ? (
-          <TextPreview key={doc.url} url={doc.url} />
+          <TextPreview
+            key={doc.url}
+            url={doc.url}
+            chatId={chatId}
+            filename={doc.filename}
+            mimeType={doc.mimeType}
+            storageId={doc.storageId ?? null}
+          />
         ) : kind === "markdown" || kind === "csv" || kind === "log" || kind === "json" ? (
           // Keyed by URL: switching files must reset any per-document view
           // state back to this type's default.
           <TextPreview
             key={doc.url}
             url={doc.url}
+            chatId={chatId}
+            filename={doc.filename}
+            mimeType={doc.mimeType}
+            storageId={doc.storageId ?? null}
             rich={kind}
             csvDelimiter={
               kind === "csv"
@@ -264,10 +348,21 @@ const rawPrefKey = (rich: RichTextKind) => `oc.docviewer.raw.${rich}`;
  *  open-in-tab fallback — honest, never a blank panel. */
 function TextPreview({
   url,
+  chatId,
+  filename,
+  mimeType,
+  storageId,
   rich,
   csvDelimiter,
 }: {
   url: string;
+  /** Draft key (collaborative documents). Null = editing unavailable. */
+  chatId: string | null;
+  filename: string;
+  /** Original mime — preserved on the re-attached edited file (codex P2). */
+  mimeType: string | null;
+  /** Stable id of the displayed version (draft source anchor). */
+  storageId: string | null;
   /** Rich kind: render INTERPRETED by default, raw behind the toggle. */
   rich?: RichTextKind;
   /** Delimiter imposed by the file's TYPE (.tsv → tab); undefined = detect. */
@@ -285,6 +380,28 @@ function TextPreview({
     setRawState(next);
     if (rich) localStorage.setItem(rawPrefKey(rich), next ? "1" : "0");
   };
+  // COLLABORATIVE EDITING: the user's auto-saved draft of this document. The
+  // interpreted/raw views render the DRAFT text when one exists (previewing
+  // your own edit is the point of the canvas loop) behind an explicit badge;
+  // the delivered original stays reachable by discarding the draft.
+  const [editing, setEditing] = useState(false);
+  const draft = useQuery(
+    api.documentDrafts.getDraft,
+    chatId !== null
+      ? { chatId: chatId as Id<"chats">, filename }
+      : "skip",
+  ) as
+    | { text: string; sourceStorageId: string | null; updatedAt: number }
+    | null
+    | undefined;
+  // Editing waits for BOTH the file and the draft query: entering the editor
+  // before an existing draft resolved would seed it with the ORIGINAL text
+  // and the first keystroke would overwrite the saved draft (codex P2).
+  const editable =
+    chatId !== null &&
+    state.phase === "ready" &&
+    !state.truncated &&
+    draft !== undefined;
   useEffect(() => {
     let cancelled = false;
     setState({ phase: "loading" });
@@ -323,28 +440,51 @@ function TextPreview({
   const truncatedNote = state.truncated ? (
     <p className="oc-docviewer__truncated">{m.docviewer_text_truncated()}</p>
   ) : null;
-  const body =
-    showRendered && rich === "markdown" ? (
+  const displayText = draft?.text ?? state.text;
+  const draftNote =
+    draft != null ? (
+      <DraftNote
+        chatId={chatId as string}
+        filename={filename}
+        diverged={
+          draft.sourceStorageId !== null &&
+          storageId !== null &&
+          draft.sourceStorageId !== storageId
+        }
+      />
+    ) : null;
+  const body = editing ? (
+    <DocumentEditor
+      chatId={chatId as string}
+      filename={filename}
+      mimeType={mimeType}
+      sourceStorageId={storageId}
+      initialText={displayText}
+      hasDraft={draft != null}
+      onExit={() => setEditing(false)}
+    />
+  ) : showRendered && rich === "markdown" ? (
       <div className="oc-docviewer__mdwrap">
-        <AgentMarkdown text={state.text} />
+        <AgentMarkdown text={displayText} />
       </div>
     ) : showRendered && rich === "csv" ? (
       <CsvTableView
-        text={state.text}
+        text={displayText}
         textTruncated={state.truncated}
         delimiter={csvDelimiter}
       />
     ) : showRendered && rich === "log" ? (
-      <LogView text={state.text} textTruncated={state.truncated} />
+      <LogView text={displayText} textTruncated={state.truncated} />
     ) : showRendered && rich === "json" ? (
-      <JsonTreeView text={state.text} />
+      <JsonTreeView text={displayText} />
     ) : (
-      <pre className="oc-docviewer__text">{state.text}</pre>
+      <pre className="oc-docviewer__text">{displayText}</pre>
     );
-  if (rich === undefined) {
+  if (rich === undefined && !editable) {
     return (
       <div className="oc-docviewer__textwrap">
         {truncatedNote}
+        {draftNote}
         {body}
       </div>
     );
@@ -354,34 +494,349 @@ function TextPreview({
   return (
     <div className="oc-docviewer__textwrap oc-docviewer__textwrap--bar">
       <div className="oc-docviewer__mdbar" role="group" aria-label={m.docviewer_md_view_label()}>
-        <Button
-          type="button"
-          size="sm"
-          variant={showRendered ? "secondary" : "ghost"}
-          aria-pressed={showRendered}
-          onClick={() => setRaw(false)}
-        >
-          {richModeLabel(rich)}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={raw ? "secondary" : "ghost"}
-          aria-pressed={raw}
-          onClick={() => setRaw(true)}
-        >
-          {m.docviewer_view_raw()}
-        </Button>
+        {rich !== undefined ? (
+          <>
+            <Button
+              type="button"
+              size="sm"
+              variant={showRendered && !editing ? "secondary" : "ghost"}
+              aria-pressed={showRendered && !editing}
+              onClick={() => {
+                setEditing(false);
+                setRaw(false);
+              }}
+            >
+              {richModeLabel(rich)}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={raw && !editing ? "secondary" : "ghost"}
+              aria-pressed={raw && !editing}
+              onClick={() => {
+                setEditing(false);
+                setRaw(true);
+              }}
+            >
+              {m.docviewer_view_raw()}
+            </Button>
+          </>
+        ) : null}
+        {editable ? (
+          <Button
+            type="button"
+            size="sm"
+            variant={editing ? "secondary" : "ghost"}
+            aria-pressed={editing}
+            onClick={() => setEditing((e) => !e)}
+            className="oc-docviewer__editbtn"
+          >
+            <Pencil size={13} aria-hidden />
+            {m.docviewer_edit()}
+            {draft != null ? <span className="oc-docviewer__draftdot" aria-hidden /> : null}
+          </Button>
+        ) : null}
       </div>
-      <div className="oc-docviewer__textscroll">
-        {/* Padding lives on this inner wrapper, NOT the scroller: sticky
-            offsets resolve against the scroller's padding edge in Chrome, and
-            scroller padding would leave a see-through strip above a stuck
-            header. */}
-        <div className="oc-docviewer__scrollpad">
-          {truncatedNote}
-          {body}
+      {editing ? (
+        // The editor fills the WHOLE remaining panel height (its textarea is
+        // the scroll surface) — nesting it in the scroller collapsed the
+        // work area to its min-height (user report).
+        body
+      ) : (
+        <div className="oc-docviewer__textscroll">
+          {/* Padding lives on this inner wrapper, NOT the scroller: sticky
+              offsets resolve against the scroller's padding edge in Chrome, and
+              scroller padding would leave a see-through strip above a stuck
+              header. */}
+          <div className="oc-docviewer__scrollpad">
+            {truncatedNote}
+            {draftNote}
+            {body}
+          </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The draft badge shown OUTSIDE the editor, with an inline discard: a draft
+ *  must never be stuck (e.g. a preview-truncated new delivery disables the
+ *  editor, which used to hold the only delete affordance — codex P2). */
+function DraftNote({
+  chatId,
+  filename,
+  diverged,
+}: {
+  chatId: string;
+  filename: string;
+  diverged: boolean;
+}) {
+  const deleteDraft = useMutation(api.documentDrafts.deleteDraft);
+  const toast = useToast();
+  return (
+    <p className="oc-docviewer__draftnote">
+      {diverged ? m.docviewer_draft_diverged() : m.docviewer_draft_badge()}
+      <button
+        type="button"
+        className="oc-docviewer__draftnote-discard"
+        onClick={() =>
+          void deleteDraft({ chatId: chatId as Id<"chats">, filename })
+            .then((res) => {
+              if ((res as { applied: boolean }).applied === false) {
+                toast.error(m.docviewer_save_not_applied());
+              }
+            })
+            .catch(() => toast.error(m.docviewer_discard_failed()))
+        }
+      >
+        {m.docviewer_discard_draft()}
+      </button>
+    </p>
+  );
+}
+
+/** The collaborative-document EDITOR: a plain monospace textarea over the
+ *  draft text, auto-saved (debounced) to the per-user Convex draft — never
+ *  mutating the delivered file (chat-history integrity). "Use in prompt"
+ *  hands the edited version back to the agent through the composer: a file
+ *  attachment when the instance supports them, an inline fenced block when
+ *  it does not (Hermes) — the full-compliance path. */
+function DocumentEditor({
+  chatId,
+  filename,
+  mimeType,
+  sourceStorageId,
+  initialText,
+  hasDraft,
+  onExit,
+}: {
+  chatId: string;
+  filename: string;
+  mimeType: string | null;
+  sourceStorageId: string | null;
+  initialText: string;
+  hasDraft: boolean;
+  onExit: () => void;
+}) {
+  const saveDraft = useMutation(api.documentDrafts.saveDraft);
+  const deleteDraft = useMutation(api.documentDrafts.deleteDraft);
+  const bridgeRef = useContext(PromptBridgeContext);
+  const toast = useToast();
+  // LOCAL parachute for the unmount flush: if that last save fails (network
+  // blip) the component — sole holder of the text — is already gone, so the
+  // failure parks the text in localStorage and the next editor mount for the
+  // same document restores + re-saves it (codex P2: never a silent loss).
+  const fallbackKey = `oc.docdraft.fallback.${chatId}.${filename}`;
+  const [text, setText] = useState(() => {
+    try {
+      const parked = localStorage.getItem(fallbackKey);
+      if (parked !== null) return parked;
+    } catch {
+      // storage unavailable -> plain initial text
+    }
+    return initialText;
+  });
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
+    "idle",
+  );
+  const debounceRef = useRef(0);
+  const latestRef = useRef(text);
+  latestRef.current = text;
+  // TRUE once the user explicitly discarded: the unmount flush below must
+  // not resurrect the draft it just deleted (codex P1).
+  const discardedRef = useRef(false);
+  // TRUE after a real user edit in THIS session: only then may a save
+  // re-anchor sourceStorageId onto the displayed version — an unchanged
+  // open/close must keep a diverged draft flagged (codex P2).
+  const dirtyRef = useRef(false);
+
+  const flush = useCallback(
+    (value: string) => {
+      setSaveState("saving");
+      void saveDraft({
+        chatId: chatId as Id<"chats">,
+        filename,
+        text: value,
+        ...(sourceStorageId !== null && (dirtyRef.current || !hasDraft)
+          ? { sourceStorageId }
+          : {}),
+      })
+        .then((res) => {
+          // An impersonating admin's writes are server-side no-ops: showing
+          // "saved" would be fictional (codex P2).
+          if ((res as { applied: boolean }).applied === false) {
+            toast.error(m.docviewer_save_not_applied());
+            setSaveState("idle");
+            return;
+          }
+          setSaveState("saved");
+        })
+        .catch((e) => {
+          console.error("[docviewer] draft save failed:", e);
+          toast.error(m.docviewer_save_failed());
+          setSaveState("idle");
+        });
+    },
+    [saveDraft, chatId, filename, sourceStorageId, hasDraft, toast],
+  );
+  const onChange = (value: string) => {
+    dirtyRef.current = true;
+    setText(value);
+    window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => flush(value), 800);
+  };
+  // FLUSH on unmount/exit: a save settling <800ms before leaving must not be
+  // lost (same rule as the bookmark scroll persistence).
+  useEffect(() => {
+    // A parked fallback found at mount: it IS the user's latest text — flush
+    // it to the real draft now, and clear the parachute once that lands.
+    try {
+      if (localStorage.getItem(fallbackKey) !== null) {
+        dirtyRef.current = true;
+        void saveDraft({
+          chatId: chatId as Id<"chats">,
+          filename,
+          text: latestRef.current,
+          ...(sourceStorageId !== null ? { sourceStorageId } : {}),
+        }).then(() => localStorage.removeItem(fallbackKey));
+      }
+    } catch {
+      // storage unavailable -> nothing parked
+    }
+    // TAB DESTRUCTION (close/reload <800ms after the last keystroke): the
+    // React cleanup's async mutation may never leave the dying page — park
+    // the text SYNCHRONOUSLY on pagehide; the parachute clears once a real
+    // save confirms (codex P2).
+    const onPageHide = () => {
+      if (!dirtyRef.current || discardedRef.current) return;
+      try {
+        localStorage.setItem(fallbackKey, latestRef.current);
+      } catch {
+        // storage full/unavailable
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.clearTimeout(debounceRef.current);
+      if (discardedRef.current) return;
+      // Only a REAL edit flushes (an unchanged open/close must neither touch
+      // the draft nor silently re-anchor it — codex P1/P2). dirty ALONE
+      // decides: a user who reverted to the initial text after an
+      // intermediate auto-save still needs that reversion persisted
+      // (codex P2 — comparing to initialText would drop it).
+      if (dirtyRef.current) {
+        // Park FIRST (synchronous), then try the real save: if the context
+        // dies mid-mutation the parachute already holds the text (codex P2).
+        try {
+          localStorage.setItem(fallbackKey, latestRef.current);
+        } catch {
+          // storage full/unavailable
+        }
+        void saveDraft({
+          chatId: chatId as Id<"chats">,
+          filename,
+          text: latestRef.current,
+          ...(sourceStorageId !== null ? { sourceStorageId } : {}),
+        })
+          .then(() => {
+            try {
+              localStorage.removeItem(fallbackKey);
+            } catch {
+              // best effort
+            }
+          })
+          .catch(() => {
+            // parachute already written above
+          });
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount recovery + unmount flush only
+  }, []);
+
+  const useInPrompt = () => {
+    const bridge = bridgeRef?.current ?? null;
+    if (bridge === null) {
+      toast.error(m.docviewer_prompt_unavailable());
+      return;
+    }
+    window.clearTimeout(debounceRef.current);
+    flush(text);
+    if (bridge.canAttach) {
+      // ORIGINAL mime preserved (a JSON/CSV/log re-attached as markdown would
+      // reach the agent mistyped — codex P2); strip existing params first.
+      const baseMime = (mimeType ?? "text/plain").split(";")[0]!.trim();
+      const file = new File([text], filename, {
+        type: `${baseMime}; charset=utf-8`,
+      });
+      // Success feedback = the composer chip + its sr-only announcement
+      // (owned by the bridge); a toast here covered this panel's buttons.
+      void bridge.attachFile(file).catch((e) => {
+        console.error("[docviewer] attach failed:", e);
+        toast.error(m.docviewer_prompt_attach_failed());
+      });
+    } else {
+      // The inline path exists because this instance/mode cannot carry an
+      // attachment — but a huge inline document is exactly what the
+      // large-paste guard protects the context window from. Refuse honestly
+      // past the same threshold (codex P2).
+      if (text.length > LARGE_PASTE_CHARS) {
+        toast.error(m.docviewer_inline_too_large());
+        return;
+      }
+      bridge.insertText(
+        buildInlineDocBlock(filename, text, m.docviewer_inline_label()),
+      );
+    }
+  };
+  const discard = () => {
+    discardedRef.current = true;
+    window.clearTimeout(debounceRef.current);
+    try {
+      localStorage.removeItem(fallbackKey);
+    } catch {
+      // best effort
+    }
+    // AWAIT the deletion: closing on a failed delete would leave the draft
+    // silently overriding the delivered document (codex P2).
+    void deleteDraft({ chatId: chatId as Id<"chats">, filename })
+      .then((res) => {
+        if ((res as { applied: boolean }).applied === false) {
+          discardedRef.current = false;
+          toast.error(m.docviewer_save_not_applied());
+          return;
+        }
+        onExit();
+      })
+      .catch((e) => {
+        console.error("[docviewer] draft discard failed:", e);
+        discardedRef.current = false;
+        toast.error(m.docviewer_discard_failed());
+      });
+  };
+  return (
+    <div className="oc-docviewer__editor">
+      <textarea
+        className="oc-docviewer__editarea"
+        value={text}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        aria-label={m.docviewer_edit()}
+      />
+      <div className="oc-docviewer__editbar">
+        <span className="oc-docviewer__savestate" role="status">
+          {saveState === "saving"
+            ? m.docviewer_saving()
+            : saveState === "saved"
+              ? m.docviewer_saved()
+              : "\u00a0"}
+        </span>
+        <Button type="button" size="sm" variant="ghost" onClick={discard}>
+          {m.docviewer_discard_draft()}
+        </Button>
+        <Button type="button" size="sm" variant="secondary" onClick={useInPrompt}>
+          {m.docviewer_use_in_prompt()}
+        </Button>
       </div>
     </div>
   );
