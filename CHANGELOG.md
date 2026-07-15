@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.60.3] — A turn only attaches the files it actually produced
+
+Corrective release — cross-conversation containment of the outbound file
+scan (production reports). Bridge-only; no schema changes; no breaking
+changes.
+
+- **A concurrent conversation can no longer capture another mission's
+  deliverables.** The end-of-turn file scan (the safety net that attaches a
+  file the agent produced but forgot to announce) matched on freshness alone
+  — in the shared per-instance outbound directory, a turn running in ANOTHER
+  conversation at the wrong moment attached deliverables it had nothing to do
+  with, and the owning conversation looked like it never received them
+  (production reports, 2026-07-14/15). The scan now requires the turn to have
+  actually NAMED the file — in its tool calls, their outputs, or its reply —
+  which is precisely the footprint of the legitimate rescue case. Files left
+  alone are counted in the bridge log for diagnosis.
+
 ## [0.60.2] — Plan progress survives back-to-back deliveries
 
 Corrective release for 0.60.1. One guard relaxation; no schema changes; no

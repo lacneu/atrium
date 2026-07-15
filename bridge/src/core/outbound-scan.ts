@@ -27,6 +27,15 @@ export interface OutboundScanDeps {
 // file mtime. Small enough not to catch a PRIOR turn's file, big enough for skew.
 const MTIME_GRACE_MS = 2_000;
 
+// The outbound dir is shared by EVERY chat (and every user) of the instance:
+// an mtime window alone lets a concurrent turn of ANOTHER conversation attach
+// files a background mission just produced (live prod reports 2026-07-14/15:
+// deliverables landed in unrelated chats). A candidate must therefore be
+// NAMED by the turn that claims it — its basename appearing in the turn's
+// tool args/outputs or reply text — which is exactly the footprint of the
+// legitimate rescue case (the agent created the file with ITS tools but
+// omitted the MEDIA: directive).
+
 // Dirs we've already warned about being unreadable, so the runtime backstop logs
 // the misconfig ONCE per dir instead of every turn (keyed by dir so a hot config
 // change to a new bad dir still surfaces).
@@ -46,6 +55,9 @@ export async function scanAndHostOutbound(
   chatId: string,
   sinceMs: number,
   hosted: Set<string>,
+  /** TRUE when the turn's own artifacts (tool args/outputs, reply text) name
+   *  this file — the cross-conversation containment gate (see above). */
+  correlated: (name: string) => boolean,
 ): Promise<{ candidates: string[]; host: () => Promise<void> }> {
   const none = { candidates: [] as string[], host: async () => {} };
   if (!deps.enabled()) return none;
@@ -75,6 +87,7 @@ export async function scanAndHostOutbound(
   // drives the sink's text-first gate; PHASE 2 (host) runs AFTER the explicit
   // media chain so it dedups/rescues against the real attach state.
   const candidates: string[] = [];
+  let uncorrelated = 0;
   for (const name of entries) {
     if (name.startsWith(".")) continue; // dotfiles + validate markers
     if (hosted.has(name)) continue; // already attached this turn (dedup)
@@ -83,12 +96,26 @@ export async function scanAndHostOutbound(
       if (!s.isFile()) continue; // skip subdirs (converted/, …)
       if (s.mtimeMs < sinceMs - MTIME_GRACE_MS) continue; // not from this turn
       if (s.size > deps.maxBytes) continue; // absurd
+      // CONTAINMENT: a fresh file this turn never NAMED belongs to another
+      // conversation's concurrent work — attaching it would leak it here
+      // (and rob the conversation that owns it). Count, never attach.
+      if (!correlated(name)) {
+        uncorrelated++;
+        continue;
+      }
       // The fetcher basename-resolves under its baseDir (== deps.dir), so the
       // basename IS the path it opens.
       candidates.push(name);
     } catch {
       // racing delete / unreadable entry — skip; the turn still finalizes.
     }
+  }
+  if (uncorrelated > 0) {
+    // Structural only (count, never filenames — they are user content): the
+    // diagnostic for "my file never arrived" investigations.
+    console.log(
+      `[outbound-scan] ${uncorrelated} fresh outbound file(s) not named by this turn — left for their own conversation`,
+    );
   }
   // PHASE 2 — HOST (post-chain). Re-check `hosted` at EXECUTION so a file the
   // explicit chain already attached is skipped (no duplicate), while one whose

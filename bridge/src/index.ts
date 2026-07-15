@@ -67,7 +67,13 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
     getFetcher: () =>
       hermesFetcher !== null ? hermesFetcher : mediaProvider.current(),
   });
-  const outboundScan: OutboundScan = (messageId, chatId, sinceMs, hosted) =>
+  const outboundScan: OutboundScan = (
+    messageId,
+    chatId,
+    sinceMs,
+    hosted,
+    correlated,
+  ) =>
     scanAndHostOutbound(
       {
         writer,
@@ -79,6 +85,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
       chatId,
       sinceMs,
       hosted,
+      correlated,
     );
   return { config, writer, mediaProvider, outboundScan };
 }

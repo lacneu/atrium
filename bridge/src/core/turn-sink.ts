@@ -89,6 +89,9 @@ export type OutboundScan = (
   chatId: string,
   sinceMs: number,
   hosted: Set<string>,
+  /** TRUE when the turn's own artifacts name this file — the scan's
+   *  cross-conversation containment gate (see outbound-scan.ts). */
+  correlated: (name: string) => boolean,
 ) => Promise<{ candidates: string[]; host: () => Promise<void> }>;
 
 export class TurnSink {
@@ -217,6 +220,13 @@ export class TurnSink {
   // spawn's item no childSessionKey) — settling the plan is only safe when
   // update_plan was the turn's ONLY tool activity (codex P2).
   private otherToolCallsThisTurn = 0;
+  // Everything the TURN itself said or touched (tool args/outputs + the
+  // final reply text), flattened to strings and bounded: the outbound scan's
+  // correlation source. A shared-dir file the turn never NAMED is another
+  // conversation's work — the scan must leave it alone (prod leak reports
+  // 2026-07-14/15).
+  private turnArtifactChunks: string[] = [];
+  private turnArtifactBytes = 0;
   // A USER abort (the /abort RPC) targeted this turn: dispatchAbort is
   // kill-THEN-finalize, so the gateway's chat:aborted lands while the message
   // is still streaming — without this flag the delivery-run fold below would
@@ -329,6 +339,8 @@ export class TurnSink {
     this.planAdvancesThisTurn = 0;
     this.otherToolCallsThisTurn = 0;
     this.userAbortThisTurn = false;
+    this.turnArtifactChunks = [];
+    this.turnArtifactBytes = 0;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
     this.mediaChain = Promise.resolve();
@@ -638,6 +650,13 @@ export class TurnSink {
               this.yieldCalledThisTurn = true;
             }
           }
+          // Correlation source for the outbound scan: the call's ARGUMENTS
+          // only — an agent that CREATED a file chose its name, so the name
+          // rides its own tool args (or the reply text / a media event).
+          // Tool OUTPUTS are deliberately excluded: a mere `ls`/`find` of the
+          // shared dir would list ANOTHER conversation's fresh files and
+          // turn a listing into false ownership (codex P1).
+          this.noteTurnArtifacts(event.input);
           const part: ToolPart = {
             kind: "tool",
             name: asString(event.name),
@@ -741,6 +760,11 @@ export class TurnSink {
             const filename = item.filename;
             const path = item.path;
             const explicit = item.explicit;
+            // Correlation source too: an explicit MEDIA:/mediaUrls delivery
+            // whose attach FAILS (readiness race) must stay rescuable by the
+            // scan — the directive is stripped from the visible text, so
+            // this event is the only place its name appears (codex P1).
+            this.noteTurnArtifacts(filename, path);
             const turnStartMs = this.turnStartMs;
             // ALWAYS enqueue on the SEQUENTIAL chain — dedup is at ATTACH time
             // only (hostedThisTurn), never at claim time. A delivery that fails
@@ -904,6 +928,46 @@ export class TurnSink {
   }
 
   /** Emit the buffered final via writer.finalize(); ends the turn. */
+  /** Flatten every string reachable in a tool payload into the turn's
+   *  artifact bag (bounded — older chunks stay, overflow is dropped: the
+   *  filename of a rescue-worthy file appears in the SAME call that created
+   *  it, so early chunks are the valuable ones). */
+  private noteTurnArtifacts(...values: unknown[]): void {
+    const CAP = 512 * 1024;
+    // FIFO walk (never LIFO): tool ARGS come before a possibly huge OUTPUT —
+    // the filename of a rescue-worthy file usually rides the args (codex P2).
+    const queue = [...values];
+    let head = 0;
+    while (head < queue.length) {
+      if (this.turnArtifactBytes >= CAP) return;
+      const v = queue[head++];
+      if (typeof v === "string") {
+        if (v === "") continue;
+        // Truncate to the remaining budget: one multi-megabyte tool output
+        // must not blow past the announced cap (codex P2).
+        const room = CAP - this.turnArtifactBytes;
+        const chunk = v.length > room ? v.slice(0, room) : v;
+        this.turnArtifactChunks.push(chunk);
+        this.turnArtifactBytes += chunk.length;
+      } else if (Array.isArray(v)) {
+        queue.push(...v);
+      } else if (typeof v === "object" && v !== null) {
+        queue.push(...Object.values(v));
+      }
+    }
+  }
+
+  /** TRUE when the turn's artifacts name `name` — the outbound scan's
+   *  containment predicate. WHOLE-name match: `report.pdf` inside
+   *  `annual-report.pdf` is another file (codex P1), so the char before the
+   *  hit must not be filename material, and the char after must not extend
+   *  it (an extension continuation like `.old` refuses; a sentence period
+   *  does not). */
+  private turnNames(name: string): boolean {
+    if (name === "") return false;
+    return this.turnArtifactChunks.some((c) => chunkNamesFile(c, name));
+  }
+
   private finalizeInFlight = false;
 
   private async flushFinal(status: FinalizeStatus): Promise<void> {
@@ -932,14 +996,29 @@ export class TurnSink {
     let scanCandidates = 0;
     if (this.outboundScan) {
       try {
+        // The reply text is part of the turn's artifacts too (an agent that
+        // wrote "j'ai produit rapport.pdf" without MEDIA: still names it).
+        // Pushed DIRECTLY, bypassing the cap: an early oversized tool-args
+        // chunk must never starve the final reply out of the correlation
+        // (codex P2). Bounded on its own.
+        const replyArtifact = this.hasPendingFinal ? this.pendingFinalText : "";
+        if (replyArtifact !== "") {
+          this.turnArtifactChunks.push(replyArtifact.slice(0, 64 * 1024));
+        }
         const r = await this.outboundScan(
           messageId,
           this.chatId,
           this.turnStartMs,
           this.hostedThisTurn,
+          (name) => this.turnNames(name),
         );
         scanHost = r.host;
         scanCandidates = r.candidates.length;
+        // The predicate is consumed at DETECT time (candidates are already
+        // filtered) — release the bag now instead of holding up to the cap
+        // across an idle session until the next turn (codex P2).
+        this.turnArtifactChunks = [];
+        this.turnArtifactBytes = 0;
       } catch (e) {
         console.error(
           "[outbound-scan] detect skipped (non-fatal):",
@@ -1209,6 +1288,43 @@ function eventIsVisible(event: NormalizedEvent): boolean {
 function meaningfulText(text: string): boolean {
   const t = text.trim();
   return t.length > 0 && t !== "NO_REPLY";
+}
+
+// Anything that can CONTINUE a filename on a Unix filesystem: Unicode
+// letters/digits (accented names are common here) plus the usual joiners.
+// `~` included (backup suffixes). Everything else — spaces, quotes,
+// brackets, slashes, punctuation — delimits (codex P1).
+const FILENAME_CHAR = /[\p{L}\p{N}._~-]/u;
+
+/** WHOLE-name occurrence of `name` in `chunk` (see turnNames). Pure.
+ *  KNOWN residual: a Unix filename may itself contain spaces/punctuation
+ *  ("IFOA Presentation.pdf"), so a foreign file named exactly like the TAIL
+ *  of a mentioned space-containing name still whole-matches. Accepted:
+ *  reaching it requires an exact tail collision inside the turn's own mtime
+ *  window on top of the args-only sourcing — defense in depth, not a proof
+ *  of creation (a per-conversation outbound dir would be the real proof;
+ *  that is a gateway-side layout change, out of the bridge's hands). */
+export function chunkNamesFile(chunk: string, name: string): boolean {
+  let from = 0;
+  for (;;) {
+    const i = chunk.indexOf(name, from);
+    if (i < 0) return false;
+    from = i + 1;
+    const before = i > 0 ? (chunk[i - 1] as string) : "";
+    // A filename char right BEFORE the hit means we matched a suffix of a
+    // longer name (`annual-report.pdf` vs `report.pdf`). Path separators are
+    // fine (`outbound/report.pdf`).
+    if (before !== "" && FILENAME_CHAR.test(before)) continue;
+    const after = i + name.length < chunk.length ? (chunk[i + name.length] as string) : "";
+    if (after === "" || !FILENAME_CHAR.test(after)) return true;
+    // A dot may end a SENTENCE ("j'ai produit report.pdf.") — only a dot that
+    // CONTINUES into filename material extends the name (`report.pdf.old`).
+    if (after === ".") {
+      const next = i + name.length + 1 < chunk.length ? (chunk[i + name.length + 1] as string) : "";
+      if (next === "" || !FILENAME_CHAR.test(next)) return true;
+    }
+    // Otherwise the hit extends into a longer name — keep scanning.
+  }
 }
 
 function asString(value: unknown): string {
