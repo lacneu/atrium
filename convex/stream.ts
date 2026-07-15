@@ -1091,7 +1091,15 @@ export const advancePlanPart = internalMutation({
     if (message === null) return;
     if (
       expectedRunId !== undefined &&
-      (message.runId ?? null) !== expectedRunId
+      (message.runId ?? null) !== expectedRunId &&
+      // Back-to-back deliveries: the NEXT announce can reopen the bubble
+      // (rotating runId) before THIS turn's advance lands. An advance from a
+      // run that MERGED into this very message belongs to the same pipeline
+      // and is still true — only a run foreign to the bubble stays rejected.
+      !(
+        typeof expectedRunId === "string" &&
+        (message.mergedAnnounceRuns ?? []).includes(expectedRunId)
+      )
     ) {
       return;
     }

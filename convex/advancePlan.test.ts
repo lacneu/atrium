@@ -214,6 +214,34 @@ describe("stream.advancePlanPart", () => {
     expect(await planParts(t, messageId)).toHaveLength(3);
   });
 
+  test("an advance from a run ALREADY MERGED into the bubble survives the runId rotation", async () => {
+    const t = convexTest(schema, modules);
+    const RUN_N = "announce:v1:agent:files:subagent:x:turnN";
+    const RUN_N1 = "announce:v1:agent:files:subagent:y:turnN1";
+    const { messageId } = await seedPlanMessage(t, {
+      runId: RUN_N1,
+      withRunningChild: true,
+    });
+    // Turn N merged here, then turn N+1 reopened the bubble (runId rotated)
+    // before turn N's advance landed.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { mergedAnnounceRuns: [RUN_N] });
+    });
+    await t.mutation(internal.stream.advancePlanPart, {
+      messageId,
+      count: 1,
+      expectedRunId: RUN_N,
+    });
+    expect(await planParts(t, messageId)).toHaveLength(2);
+    // A run foreign to the bubble stays rejected.
+    await t.mutation(internal.stream.advancePlanPart, {
+      messageId,
+      count: 1,
+      expectedRunId: "announce:v1:agent:files:subagent:z:foreign",
+    });
+    expect(await planParts(t, messageId)).toHaveLength(2);
+  });
+
   test("generation guard: a stale run must not advance a re-owned message", async () => {
     const t = convexTest(schema, modules);
     const { messageId } = await seedPlanMessage(t, {

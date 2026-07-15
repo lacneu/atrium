@@ -8,6 +8,19 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.60.2] — Plan progress survives back-to-back deliveries
+
+Corrective release for 0.60.1. One guard relaxation; no schema changes; no
+breaking changes.
+
+- **A plan advance no longer gets lost between two deliveries.** When two
+  sub-agent deliveries land back to back, the second can reopen the pipeline
+  bubble before the first turn's estimated plan advance is recorded — the
+  write-ownership guard then dropped that advance, and the plan card fell one
+  step behind for the rest of the pipeline. An advance coming from a delivery
+  already merged into the very same bubble is now accepted (a replayed
+  delivery after a bridge restart stays deduplicated).
+
 ## [0.60.1] — Parallel delegations stay in one bubble; the spinner tells the truth
 
 Corrective release for 0.60.0, from field retest of a real delegated
