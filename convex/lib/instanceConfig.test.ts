@@ -128,3 +128,19 @@ describe("configSignature", () => {
     );
   });
 });
+
+describe("parseInstanceConfig — talkEnabled (per-instance realtime voice gate)", () => {
+  test("accepts a boolean, rejects anything else (the checkbox regression guard)", () => {
+    // The exact shape the Voice > Talk card writes (spread of existing config
+    // + the flag) — this was rejected as "Invalid instance config" before the
+    // allowlist knew the key (live repro 2026-07-16).
+    expect(parseInstanceConfig({ talkEnabled: true })).toMatchObject({
+      talkEnabled: true,
+    });
+    expect(parseInstanceConfig({ voiceEnabled: true, talkEnabled: false })).toMatchObject(
+      { talkEnabled: false },
+    );
+    expect(parseInstanceConfig({ talkEnabled: "yes" })).toBe("invalid");
+    expect(parseInstanceConfig({ talkEnabled: 1 })).toBe("invalid");
+  });
+});

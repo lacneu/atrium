@@ -8676,6 +8676,63 @@ button.oc-bmk-rail__count:hover {
 .oc-talk__btn--end {
   color: var(--destructive);
 }
+/* Talk pill — mirrors the agent chip (.oc-composer__agent): rounded border,
+   icons only. Body = start the conversation; chevron = settings popover. */
+.oc-talk__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.oc-talk__pill:hover {
+  color: var(--foreground);
+  border-color: color-mix(in srgb, var(--voice) 35%, var(--border));
+}
+.oc-talk__pillmain,
+.oc-talk__pillchev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.oc-talk__pillmain {
+  padding: 0 0.35rem 0 0.6rem;
+}
+.oc-talk__pillmain:hover {
+  background: var(--muted);
+}
+.oc-talk__pillchev {
+  padding: 0 0.45rem 0 0.2rem;
+}
+.oc-talk__pillchev:hover {
+  background: var(--muted);
+}
+.oc-talk__settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  width: 240px;
+}
+.oc-talk__setting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.oc-talk__settinglabel {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
 .oc-talk__btn--end:hover {
   background: color-mix(in srgb, var(--destructive) 15%, transparent);
 }

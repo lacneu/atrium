@@ -2965,7 +2965,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // relays the payload VERBATIM to Convex and NEVER logs it (it is a
       // provider credential, ephemeral but a credential). Convex owns the
       // user/chat authorization + the admin talk.enabled gate.
-      let talkBody: { instanceName?: unknown; transport?: unknown } = {};
+      let talkBody: {
+        instanceName?: unknown;
+        transport?: unknown;
+        voice?: unknown;
+        vadThreshold?: unknown;
+      } = {};
       try {
         talkBody = JSON.parse(raw || "{}") as typeof talkBody;
       } catch {
@@ -2991,11 +2996,35 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         ["webrtc", "provider-websocket", "gateway-relay"].includes(talkBody.transport)
           ? talkBody.transport
           : "webrtc";
+      // Optional per-session VOICE (the composer's picker): forwarded verbatim
+      // — the gateway normalizes against ITS voice allowlist (unknown values
+      // fall back to the configured default, measured 2026.7.1).
+      const talkVoice =
+        typeof talkBody.voice === "string" && talkBody.voice !== ""
+          ? talkBody.voice.slice(0, 60)
+          : null;
+      // Mic sensitivity (server_vad threshold, 0..1 exclusive) — the gateway
+      // normalizes (asUnitInterval) and the provider defaults when absent.
+      const talkVad =
+        typeof talkBody.vadThreshold === "number" &&
+        Number.isFinite(talkBody.vadThreshold) &&
+        talkBody.vadThreshold > 0 &&
+        talkBody.vadThreshold < 1
+          ? talkBody.vadThreshold
+          : null;
       try {
         const created = await withOperatorConnection(
           talkBundle.config,
           (conn) =>
-            conn.request("talk.client.create", { transport: talkTransport }, 15_000),
+            conn.request(
+              "talk.client.create",
+              {
+                transport: talkTransport,
+                ...(talkVoice !== null ? { voice: talkVoice } : {}),
+                ...(talkVad !== null ? { vadThreshold: talkVad } : {}),
+              },
+              15_000,
+            ),
           noteHandshakeFor(talkInstance),
         );
         const session = created.payload ?? null;

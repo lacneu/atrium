@@ -13,8 +13,8 @@
 // matrix; an illegal transition is ignored (stale event), never applied.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAction } from "convex/react";
-import { AudioLines, Mic, MicOff, PhoneOff } from "lucide-react";
+import { useAction, useQuery } from "convex/react";
+import { AudioLines, ChevronDown, Mic, MicOff, PhoneOff } from "lucide-react";
 import * as m from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -22,13 +22,32 @@ import { useToast } from "@/components/ui/toast";
 import {
   exchangeSdp,
   INITIAL_TALK_STATUS,
+  loadTalkVad,
+  loadTalkVoice,
   nextTalkPhase,
   parseTalkToolCall,
+  saveTalkVad,
+  saveTalkVoice,
+  TALK_VAD_LEVELS,
+  TALK_VOICES,
   talkErrorKey,
+  talkVadThreshold,
   type TalkPhase,
   type TalkStatus,
   type TalkToolCall,
 } from "./talkSession";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 /** i18n dispatch for the (pure) talkErrorKey result — kept here so the pure
  *  module stays free of paraglide imports. The GENERIC message carries the
@@ -50,6 +69,15 @@ function talkErrorMessage(code: string): string {
 
 export function TalkControl({ chatId }: { chatId: string }) {
   const [status, setStatus] = useState<TalkStatus>(INITIAL_TALK_STATUS);
+  // The user's voice pick ("" = the gateway's configured default), persisted
+  // per browser — passed to the mint; the gateway validates against ITS list.
+  const [voice, setVoice] = useState<string>(() => loadTalkVoice());
+  const [vad, setVad] = useState<string>(() => loadTalkVad());
+  // Per-instance admin gate, REACTIVE: no button at all on a chat whose
+  // instance has talk disabled (the capability alone is version-level).
+  const available = useQuery(api.talk.talkAvailable, {
+    chatId: chatId as Id<"chats">,
+  });
   const mint = useAction(api.talk.mintTalkSession);
   const relayToolCall = useAction(api.talk.relayTalkToolCall);
   const toast = useToast();
@@ -124,7 +152,12 @@ export function TalkControl({ chatId }: { chatId: string }) {
       setStatus((s) => ({ ...s, errorCode: code }));
       toast.error(talkErrorMessage(code));
     };
-    const minted = await mint({ chatId: chatId as Id<"chats"> });
+    const vadValue = talkVadThreshold(vad);
+    const minted = await mint({
+      chatId: chatId as Id<"chats">,
+      ...(voice !== "" ? { voice } : {}),
+      ...(vadValue !== null ? { vadThreshold: vadValue } : {}),
+    });
     if (genRef.current !== gen) return;
     if (!minted.ok) {
       fail(minted.code);
@@ -267,7 +300,7 @@ export function TalkControl({ chatId }: { chatId: string }) {
     if (genRef.current !== gen) return;
     advance("connected");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity stable
-  }, [advance, chatId, mint, teardown]);
+  }, [advance, chatId, mint, teardown, voice, vad]);
 
   const toggleMute = useCallback(() => {
     const mic = resourcesRef.current.mic;
@@ -278,20 +311,99 @@ export function TalkControl({ chatId }: { chatId: string }) {
   }, [status.muted]);
 
   const phase = status.phase;
+  // Hidden while the instance is not enabled (or the probe still loads). An
+  // ACTIVE session keeps rendering so a mid-call admin flip never strands a
+  // live mic without its controls.
+  if (phase === "idle" && available !== true) return null;
   return (
     <>
       {/* Remote (agent) audio sink — never rendered visibly. */}
       <audio ref={audioRef} autoPlay className="oc-talk__audio" />
       {phase === "idle" ? (
-        <button
-          type="button"
-          className="oc-composer__icon"
-          title={m.talk_start()}
-          aria-label={m.talk_start()}
-          onClick={() => void start()}
-        >
-          <AudioLines size={18} aria-hidden />
-        </button>
+        <span className="oc-talk__pill">
+          {/* The pill BODY starts the conversation; the chevron opens the
+              settings (voice + mic sensitivity) — mirrors the agent chip,
+              icons only (i18n widths never squeeze the composer). */}
+          <button
+            type="button"
+            className="oc-talk__pillmain"
+            title={m.talk_start()}
+            aria-label={m.talk_start()}
+            onClick={() => void start()}
+          >
+            <AudioLines size={16} aria-hidden />
+          </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="oc-talk__pillchev"
+                title={m.talk_settings()}
+                aria-label={m.talk_settings()}
+              >
+                <ChevronDown size={13} aria-hidden />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="oc-talk__settings">
+              <label className="oc-talk__setting">
+                <span className="oc-talk__settinglabel">{m.talk_voice_label()}</span>
+                <Select
+                  value={voice === "" ? "__default__" : voice}
+                  onValueChange={(v) => {
+                    const next = v === "__default__" ? "" : v;
+                    setVoice(next);
+                    saveTalkVoice(next);
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label={m.talk_voice_label()}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">
+                      {m.talk_voice_default()}
+                    </SelectItem>
+                    {TALK_VOICES.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="oc-talk__setting">
+                <span className="oc-talk__settinglabel">
+                  {m.talk_sensitivity_label()}
+                </span>
+                <Select
+                  value={vad === "" ? "__default__" : vad}
+                  onValueChange={(v) => {
+                    const next = v === "__default__" ? "" : v;
+                    setVad(next);
+                    saveTalkVad(next);
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label={m.talk_sensitivity_label()}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">
+                      {m.talk_sensitivity_default()}
+                    </SelectItem>
+                    {TALK_VAD_LEVELS.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.id === "low"
+                          ? m.talk_sensitivity_low()
+                          : l.id === "medium"
+                            ? m.talk_sensitivity_medium()
+                            : m.talk_sensitivity_high()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </PopoverContent>
+          </Popover>
+        </span>
       ) : (
         <span
           className={`oc-talk${phase === "live" ? " oc-talk--live" : ""}`}

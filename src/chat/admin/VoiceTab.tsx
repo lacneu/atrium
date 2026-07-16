@@ -410,11 +410,18 @@ export function VoiceTab() {
           <section className="oc-voice__card">
             <header className="oc-voice__cardhead">
               <span className="oc-voice__instance">{m.voice_talk_title()}</span>
-              <Badge variant="outline">{m.voice_talk_coming()}</Badge>
             </header>
             <p className="oc-cdefaults__help">{m.voice_talk_help()}</p>
-            <TalkEnableToggle />
           </section>
+          {instances === undefined ? (
+            <p className="oc-admin__hint">{m.common_loading()}</p>
+          ) : instances.length === 0 ? (
+            <p className="oc-admin__hint">{m.voice_no_instances()}</p>
+          ) : (
+            instances.map((inst) => (
+              <TalkInstanceCard key={inst._id} instance={inst} />
+            ))
+          )}
         </TabsContent>
       </Tabs>
     </div>
@@ -422,25 +429,43 @@ export function VoiceTab() {
 }
 
 /**
- * The deployment-wide talk switch (admin.setIntegrationConfig `talk.enabled`,
- * default OFF). Renders ONLY for admins: talkAdminState soft-gates to null for
- * an `admin.manage` grantee who can see this tab but cannot flip a
- * deployment-wide switch. Reactive — no local draft needed for one checkbox.
+ * PER-INSTANCE talk switch — realtime voice is a GATEWAY feature (the gateway
+ * owns provider/model/voice defaults and the realtime API key); this flag only
+ * decides whether Atrium OFFERS the conversation button on this instance's
+ * chats (default OFF). Same write path as the per-instance read-aloud settings.
  */
-function TalkEnableToggle() {
-  const state = useQuery(api.talk.talkAdminState, {});
-  const setCfg = useMutation(api.admin.setIntegrationConfig);
-  if (state === undefined || state === null) return null; // loading or not admin
+function TalkInstanceCard({ instance }: { instance: InstanceRow }) {
+  const upsert = useMutation(api.admin.upsertInstanceConfig);
+  const cfg = instance.config ?? {};
+  const enabled = cfg.talkEnabled === true;
+  const hermes = instance.kind === "hermes";
   return (
-    <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
-      <Checkbox
-        checked={state.enabled}
-        onCheckedChange={(v) =>
-          void setCfg({ talk: { enabled: v === true } })
-        }
-        aria-label={m.integrations_talk_enable()}
-      />
-      <span className="oc-cdefaults__label">{m.integrations_talk_enable()}</span>
-    </label>
+    <section className="oc-voice__card">
+      <header className="oc-voice__cardhead">
+        <span className="oc-voice__instance">{instance.name}</span>
+        <Badge variant="secondary">{hermes ? "Hermes" : "OpenClaw"}</Badge>
+      </header>
+      {hermes ? (
+        // No talk surface on Hermes — say it instead of a dead switch.
+        <p className="oc-cdefaults__help">{m.voice_talk_hermes_note()}</p>
+      ) : (
+        <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
+          <Checkbox
+            checked={enabled}
+            onCheckedChange={(v) => {
+              const next: Record<string, unknown> = { ...cfg };
+              if (v === true) next.talkEnabled = true;
+              else delete next.talkEnabled;
+              void upsert({
+                instanceId: instance._id as Id<"instances">,
+                config: next,
+              });
+            }}
+            aria-label={m.integrations_talk_enable()}
+          />
+          <span className="oc-cdefaults__label">{m.integrations_talk_enable()}</span>
+        </label>
+      )}
+    </section>
   );
 }

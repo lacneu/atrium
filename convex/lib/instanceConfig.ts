@@ -76,6 +76,11 @@ export const instanceConfigValidator = v.object({
   // 0.5..2 (1 = normal). `voiceAutoRead` reads each completed reply aloud
   // (the per-user preference still gates it client-side).
   voiceEnabled: v.optional(v.boolean()),
+  // Realtime voice conversation ("talk", the composer's conversation button).
+  // PER GATEWAY like every voice feature: the gateway owns the talk
+  // configuration (provider/model/voice defaults, API key); this flag only
+  // decides whether Atrium OFFERS the feature on this instance. DEFAULT OFF.
+  talkEnabled: v.optional(v.boolean()),
   // Read-aloud ENGINE: "browser" (Web Speech, default) or "gateway" (the
   // instance gateway's own TTS — OpenClaw tts.convert; real provider voices).
   voiceEngine: v.optional(
@@ -142,6 +147,7 @@ export type InstanceConfig = {
   curationBudgetChars?: number;
   converterAgentId?: string;
   voiceEnabled?: boolean;
+  talkEnabled?: boolean;
   voiceEngine?: "browser" | "gateway";
   voiceLang?: string;
   voiceRate?: number;
@@ -198,6 +204,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "curationBudgetChars",
     "converterAgentId",
     "voiceEnabled",
+    "talkEnabled",
     "voiceEngine",
     "voiceLang",
     "voiceRate",
@@ -277,6 +284,10 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.voiceEnabled !== undefined) {
     if (typeof o.voiceEnabled !== "boolean") return "invalid";
     out.voiceEnabled = o.voiceEnabled;
+  }
+  if (o.talkEnabled !== undefined) {
+    if (typeof o.talkEnabled !== "boolean") return "invalid";
+    out.talkEnabled = o.talkEnabled;
   }
   if (o.voiceEngine !== undefined) {
     if (o.voiceEngine !== "browser" && o.voiceEngine !== "gateway") {

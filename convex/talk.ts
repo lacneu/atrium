@@ -19,15 +19,37 @@
 import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireAdmin, requireOwnedChat } from "./lib/access";
+import { requireActive, requireOwnedChat } from "./lib/access";
 import { resolveTargetForChat } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
-import { readIntegrationConfig } from "./integrations/config";
-import {
-  normalizeTalkTransport,
-  parseTalkSessionResponse,
-  type TalkSession,
-} from "./lib/talk";
+import { parseTalkSessionResponse, type TalkSession } from "./lib/talk";
+
+/**
+ * Is realtime voice OFFERED on this chat? Drives the composer button's
+ * VISIBILITY (the gateway-version capability alone is not enough — the admin
+ * enables talk PER INSTANCE, and a disabled instance must show no button at
+ * all, not a button that errors on click). Reactive: flipping the instance
+ * switch adds/removes the button live. SOFT on every failure (false) — a
+ * visibility probe must never crash the composer.
+ */
+export const talkAvailable = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<boolean> => {
+    try {
+      const { userId } = await requireActive(ctx);
+      const chat = await requireOwnedChat(ctx, userId, chatId);
+      const res = await resolveTargetForChat(ctx, chat, userId);
+      if (!res.target) return false;
+      const instance = await ctx.db
+        .query("instances")
+        .withIndex("by_name", (q) => q.eq("name", res.target!.instanceName))
+        .first();
+      return instance?.kind !== "hermes" && instance?.config?.talkEnabled === true;
+    } catch {
+      return false;
+    }
+  },
+});
 
 const TALK_MINT_TIMEOUT_MS = 50_000; // cold gateway connect (30s) + mint
 
@@ -40,37 +62,12 @@ type PrepareResult =
     }
   | { ok: false; code: string };
 
-/**
- * The deployment-wide talk state for the Settings › Voice › Talk tab.
- * SOFT-gated: `null` for non-admins — the Voice tab is reachable through the
- * `admin.manage` per-tab grant, and a thrown query would crash the whole tab
- * for a grantee who simply cannot flip a deployment-wide switch (the write
- * path, admin.setIntegrationConfig, stays hard-gated on the admin role).
- */
-export const talkAdminState = query({
-  args: {},
-  handler: async (ctx): Promise<{ enabled: boolean } | null> => {
-    try {
-      await requireAdmin(ctx);
-    } catch {
-      return null;
-    }
-    const cfg = await readIntegrationConfig(ctx);
-    return { enabled: cfg?.talk?.enabled === true };
-  },
-});
-
-/** Ownership + admin-gate + routing resolution (query ctx owns the db). */
+/** Ownership + per-instance gate + routing resolution (query ctx owns the db). */
 export const prepareTalkSession = internalQuery({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }): Promise<PrepareResult> => {
     const { userId } = await requireActive(ctx);
     const chat = await requireOwnedChat(ctx, userId, chatId);
-    // Admin opt-in (default OFF): realtime voice opens a mic + spends
-    // provider realtime minutes — never enabled implicitly.
-    const cfg = await readIntegrationConfig(ctx);
-    const talk = cfg?.talk ?? {};
-    if (talk.enabled !== true) return { ok: false, code: "talk_disabled" };
     const res = await resolveTargetForChat(ctx, chat, userId);
     if (!res.target) return { ok: false, code: "no_agent" };
     const target = res.target;
@@ -81,6 +78,13 @@ export const prepareTalkSession = internalQuery({
     // Hermes has no talk surface (capability-gated in the UI too) — answer
     // with the honest code rather than a bridge 400.
     if (instance?.kind === "hermes") return { ok: false, code: "talk_unsupported" };
+    // PER-GATEWAY opt-in (default OFF), like every voice feature: the admin
+    // enables talk on the instances whose gateway is configured for it. The
+    // GATEWAY owns the talk configuration (provider/model/voice defaults, API
+    // key) — Atrium only consumes the surface.
+    if (instance?.config?.talkEnabled !== true) {
+      return { ok: false, code: "talk_disabled" };
+    }
     const someInstances = await ctx.db.query("instances").take(2);
     const bridgeUrl = resolveBridgeUrlForDispatch(instance, {
       instanceName: target.instanceName,
@@ -91,7 +95,9 @@ export const prepareTalkSession = internalQuery({
       ok: true,
       instanceName: target.instanceName,
       bridgeUrl: bridgeUrl ?? null,
-      transport: normalizeTalkTransport(talk.transport),
+      // The browser lane — the only client-owned transport; the gateway
+      // validates it regardless.
+      transport: "webrtc",
     };
   },
 });
@@ -115,10 +121,6 @@ export const prepareTalkToolCall = internalQuery({
   handler: async (ctx, { chatId }): Promise<ToolCallPrepare> => {
     const { userId } = await requireActive(ctx);
     const chat = await requireOwnedChat(ctx, userId, chatId);
-    const cfg = await readIntegrationConfig(ctx);
-    if ((cfg?.talk ?? {}).enabled !== true) {
-      return { ok: false, code: "talk_disabled" };
-    }
     const res = await resolveTargetForChat(ctx, chat, userId);
     if (!res.target) return { ok: false, code: "no_agent" };
     const target = res.target;
@@ -127,6 +129,10 @@ export const prepareTalkToolCall = internalQuery({
       .withIndex("by_name", (q) => q.eq("name", target.instanceName))
       .first();
     if (instance?.kind === "hermes") return { ok: false, code: "talk_unsupported" };
+    // Same PER-GATEWAY opt-in as the session mint.
+    if (instance?.config?.talkEnabled !== true) {
+      return { ok: false, code: "talk_disabled" };
+    }
     const someInstances = await ctx.db.query("instances").take(2);
     const bridgeUrl = resolveBridgeUrlForDispatch(instance, {
       instanceName: target.instanceName,
@@ -262,10 +268,18 @@ export const relayTalkToolCall = action({
  * (transport), talk_malformed (unexpected gateway shape).
  */
 export const mintTalkSession = action({
-  args: { chatId: v.id("chats") },
+  args: {
+    chatId: v.id("chats"),
+    // The composer's voice pick (optional): forwarded to the gateway, which
+    // validates against ITS allowlist (unknown -> configured default).
+    voice: v.optional(v.string()),
+    // Mic sensitivity (server_vad threshold 0..1) — the composer's talk
+    // settings; the gateway/provider clamps and defaults.
+    vadThreshold: v.optional(v.number()),
+  },
   handler: async (
     ctx,
-    { chatId },
+    { chatId, voice, vadThreshold },
   ): Promise<{ ok: true; session: TalkSession } | { ok: false; code: string }> => {
     const prep: PrepareResult = await ctx.runQuery(
       internal.talk.prepareTalkSession,
@@ -290,6 +304,15 @@ export const mintTalkSession = action({
           body: JSON.stringify({
             instanceName: prep.instanceName,
             transport: prep.transport,
+            ...(typeof voice === "string" && voice !== ""
+              ? { voice: voice.slice(0, 60) }
+              : {}),
+            ...(typeof vadThreshold === "number" &&
+            Number.isFinite(vadThreshold) &&
+            vadThreshold > 0 &&
+            vadThreshold < 1
+              ? { vadThreshold }
+              : {}),
           }),
           signal: controller.signal,
         },

@@ -208,3 +208,49 @@ describe("talkErrorKey (total mapping)", () => {
     expect(talkErrorKey("")).toBe("talk_error_generic");
   });
 });
+
+describe("talk voice pick (measured gateway allowlist)", () => {
+  it("sanitizes to a known voice or the gateway default (empty)", async () => {
+    const { sanitizeTalkVoice, TALK_VOICES } = await import("./talkSession");
+    // The measured 2026.7.1 allowlist — docs-recommended french-friendly picks first.
+    expect([...TALK_VOICES].sort()).toEqual(
+      ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"].sort(),
+    );
+    expect(sanitizeTalkVoice("cedar")).toBe("cedar");
+    expect(sanitizeTalkVoice("marin")).toBe("marin");
+    expect(sanitizeTalkVoice("Homer")).toBe("");
+    expect(sanitizeTalkVoice("")).toBe("");
+    expect(sanitizeTalkVoice(null)).toBe("");
+  });
+
+  it("load/save round-trips through localStorage and clears on default", async () => {
+    const { loadTalkVoice, saveTalkVoice } = await import("./talkSession");
+    saveTalkVoice("cedar");
+    expect(loadTalkVoice()).toBe("cedar");
+    saveTalkVoice(""); // back to the gateway default
+    expect(loadTalkVoice()).toBe("");
+    saveTalkVoice("not-a-voice"); // sanitized away
+    expect(loadTalkVoice()).toBe("");
+  });
+});
+
+describe("talk mic sensitivity (server_vad threshold presets)", () => {
+  it("maps levels to thresholds (higher sensitivity = lower threshold)", async () => {
+    const { talkVadThreshold, sanitizeTalkVad } = await import("./talkSession");
+    expect(talkVadThreshold("low")).toBe(0.8);
+    expect(talkVadThreshold("medium")).toBe(0.5);
+    expect(talkVadThreshold("high")).toBe(0.3);
+    expect(talkVadThreshold("")).toBeNull(); // provider default: nothing sent
+    expect(talkVadThreshold("nope")).toBeNull();
+    expect(sanitizeTalkVad("high")).toBe("high");
+    expect(sanitizeTalkVad("0.5")).toBe("");
+  });
+
+  it("persists the level and clears on default", async () => {
+    const { loadTalkVad, saveTalkVad } = await import("./talkSession");
+    saveTalkVad("high");
+    expect(loadTalkVad()).toBe("high");
+    saveTalkVad("");
+    expect(loadTalkVad()).toBe("");
+  });
+});

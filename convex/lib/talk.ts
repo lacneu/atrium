@@ -5,25 +5,6 @@
 //     expiresAt }
 // PURE module (no Convex imports) so the projection is unit-testable.
 
-/** Transports the gateway advertises (talk.catalog). webrtc is the only one
- *  whose MINT response shape has been live-verified — it is the default. */
-export const TALK_TRANSPORTS = [
-  "webrtc",
-  "provider-websocket",
-  "gateway-relay",
-] as const;
-export type TalkTransport = (typeof TALK_TRANSPORTS)[number];
-
-/** Coerce an admin-configured transport knob to a known transport (default
- *  webrtc — the live-verified lane). */
-export function normalizeTalkTransport(
-  value: string | null | undefined,
-): TalkTransport {
-  return (TALK_TRANSPORTS as readonly string[]).includes(value ?? "")
-    ? (value as TalkTransport)
-    : "webrtc";
-}
-
 /** The session material the browser needs to open the realtime connection.
  *  `clientSecret` is a SHORT-LIVED provider credential: it transits to the
  *  authenticated chat owner and must never be logged or persisted. */

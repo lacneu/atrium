@@ -8,6 +8,31 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.62.1] — Talk, tuned: per-gateway activation, voice picker, mic sensitivity
+
+Corrective release for the realtime voice lot. Additive; one operational
+change (see the migration note).
+
+- **Activation is now per gateway instance.** Realtime voice is enabled per
+  instance (Settings › Platform › Voice › Talk — one switch per instance,
+  like every other voice feature), replacing 0.62.0's deployment-wide toggle.
+  Hermes instances state plainly that no talk surface exists. The conversation
+  control now only renders on chats whose instance is enabled — and
+  appears/disappears live when the switch flips (0.62.0 showed it wherever
+  the gateway version allowed, and only failed on click). **Migration:** if
+  you enabled talk on 0.62.0, re-enable it per instance.
+- **Pick your voice and your mic sensitivity.** The talk control is now a
+  compact pill styled like the agent selector: its body starts the
+  conversation, its chevron opens per-user settings — the gateway's ten
+  realtime voices (marin and cedar are the recommended picks) and a
+  microphone-sensitivity preset (low / medium / high, for noisy or quiet
+  rooms). Choices persist per browser and ride each session; the gateway
+  validates everything and keeps owning the configuration (provider, model,
+  default voice, realtime API key).
+- **Fixes.** Enabling the instance switch no longer fails with "Invalid
+  instance config"; the composer bar stays icon-only, immune to
+  locale-dependent label widths.
+
 ## [0.62.0] — Talk to your agent: realtime voice conversations
 
 Feature release: live two-way voice conversations with an agent, straight from

@@ -117,6 +117,90 @@ export async function exchangeSdp(
   }
 }
 
+/** The gateway's realtime voice allowlist — MEASURED on OpenClaw 2026.7.1
+ *  (OPENAI_REALTIME_VOICES in the gateway dist; mirrored by the official talk
+ *  docs). Order: the two the docs RECOMMEND first, then the rest. An unknown
+ *  value never breaks anything — the gateway falls back to its configured
+ *  default. */
+export const TALK_VOICES = [
+  "marin",
+  "cedar",
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "sage",
+  "shimmer",
+  "verse",
+] as const;
+
+const TALK_VOICE_KEY = "oc.talk.voice";
+const TALK_VAD_KEY = "oc.talk.vad";
+
+/** Mic-sensitivity presets -> the provider's server_vad `threshold` (0..1 —
+ *  HIGHER threshold = needs LOUDER speech = LESS sensitive; provider default
+ *  ~0.5). "" = don't send, the gateway/provider default applies. */
+export const TALK_VAD_LEVELS = [
+  { id: "low", threshold: 0.8 }, // noisy room: only clear speech triggers
+  { id: "medium", threshold: 0.5 },
+  { id: "high", threshold: 0.3 }, // quiet room: picks up soft speech
+] as const;
+export type TalkVadLevel = (typeof TALK_VAD_LEVELS)[number]["id"];
+
+/** Sanitize a stored value to a known level id, or "" (= provider default). */
+export function sanitizeTalkVad(value: string | null | undefined): string {
+  return TALK_VAD_LEVELS.some((l) => l.id === value) ? (value as string) : "";
+}
+
+/** The provider threshold for a stored level ("" -> null = don't send). */
+export function talkVadThreshold(level: string): number | null {
+  const found = TALK_VAD_LEVELS.find((l) => l.id === level);
+  return found ? found.threshold : null;
+}
+
+export function loadTalkVad(): string {
+  try {
+    return sanitizeTalkVad(localStorage.getItem(TALK_VAD_KEY));
+  } catch {
+    return "";
+  }
+}
+
+export function saveTalkVad(level: string): void {
+  try {
+    if (sanitizeTalkVad(level) === "") localStorage.removeItem(TALK_VAD_KEY);
+    else localStorage.setItem(TALK_VAD_KEY, level);
+  } catch {
+    /* storage unavailable — the pick just doesn't persist */
+  }
+}
+
+/** Sanitize a stored/user value to a known voice, or "" (= gateway default). */
+export function sanitizeTalkVoice(value: string | null | undefined): string {
+  return (TALK_VOICES as readonly string[]).includes(value ?? "")
+    ? (value as string)
+    : "";
+}
+
+/** The user's persisted voice pick ("" = gateway default). Never throws. */
+export function loadTalkVoice(): string {
+  try {
+    return sanitizeTalkVoice(localStorage.getItem(TALK_VOICE_KEY));
+  } catch {
+    return "";
+  }
+}
+
+export function saveTalkVoice(voice: string): void {
+  try {
+    if (sanitizeTalkVoice(voice) === "") localStorage.removeItem(TALK_VOICE_KEY);
+    else localStorage.setItem(TALK_VOICE_KEY, voice);
+  } catch {
+    /* storage unavailable — the pick just doesn't persist */
+  }
+}
+
 /** A voice-model TOOL CALL surfaced on the provider's data channel — the
  *  browser must relay `openclaw_agent_consult` to the gateway (a real agent
  *  run) and feed the result back as function_call_output. */

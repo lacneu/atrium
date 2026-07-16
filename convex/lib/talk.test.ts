@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  normalizeTalkTransport,
-  parseTalkSessionResponse,
-} from "./talk";
+import { parseTalkSessionResponse } from "./talk";
 
 // The VERBATIM mint shape probed live on OpenClaw 2026.7.1 (2026-07-16),
 // secret value swapped for an obvious fake.
@@ -70,17 +67,5 @@ describe("parseTalkSessionResponse (bridge /talk-session projection)", () => {
     expect(parseTalkSessionResponse({})).toBeNull();
     expect(parseTalkSessionResponse({ session: "nope" })).toBeNull();
     expect(parseTalkSessionResponse({ session: null })).toBeNull();
-  });
-});
-
-describe("normalizeTalkTransport", () => {
-  it("passes known transports through and defaults everything else to webrtc", () => {
-    expect(normalizeTalkTransport("webrtc")).toBe("webrtc");
-    expect(normalizeTalkTransport("provider-websocket")).toBe("provider-websocket");
-    expect(normalizeTalkTransport("gateway-relay")).toBe("gateway-relay");
-    expect(normalizeTalkTransport("managed-room")).toBe("webrtc"); // catalog-only, unverified
-    expect(normalizeTalkTransport("")).toBe("webrtc");
-    expect(normalizeTalkTransport(null)).toBe("webrtc");
-    expect(normalizeTalkTransport(undefined)).toBe("webrtc");
   });
 });
