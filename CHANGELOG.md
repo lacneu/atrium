@@ -8,6 +8,35 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.62.0] — Talk to your agent: realtime voice conversations
+
+Feature release: live two-way voice conversations with an agent, straight from
+the composer — and voice-triggered agent tasks that land in the conversation
+like any typed turn. Additive across frontend, Convex and bridge; no breaking
+changes.
+
+- **Realtime voice conversation in the composer.** Chats whose gateway
+  supports realtime voice (OpenClaw 2026.7.1+) show a conversation button:
+  one click opens a live WebRTC session with the agent's voice — speak,
+  interrupt it mid-sentence (native barge-in), mute, hang up. The session
+  token is an ephemeral secret minted by the gateway, which holds the
+  realtime provider key; this deployment never sees or stores it. The mode is
+  an explicit administrator opt-in (Settings › Platform › Voice › Talk tab,
+  default off) and the button only renders on gateways that advertise the
+  capability — a Hermes chat simply never shows it.
+- **The voice can run real agent tasks.** Ask for something that needs tools
+  ("what's the weather tomorrow?") and the voice model delegates to the
+  chat's agent: a real agent run starts on the conversation's session, the
+  voice acknowledges ("let me check"), then speaks the actual result. Long
+  tasks keep going — the voice tells you the work continues and the thread
+  keeps streaming.
+- **Voice-triggered turns land in the thread — identically to typed turns.**
+  The turn appears the moment the task starts (in-progress indicator),
+  streams live, and renders through the exact same pipeline as a typed
+  prompt: tool cards with inputs/outputs, generated files, error states. One
+  implementation — future improvements to turn rendering apply to voice
+  turns automatically.
+
 ## [0.61.0] — A composer built for dictation
 
 Feature release: the composer becomes a first-class dictation surface. Pure

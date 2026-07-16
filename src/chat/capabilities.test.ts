@@ -66,6 +66,9 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       // The UI now CONSUMES inboundAttachments (gates the composer attach button)
       // — already present in the bridge OPENCLAW_CAPABILITIES table.
       "inboundAttachments",
+      // Realtime voice (gateway-minted ephemeral browser session) — floor =
+      // the 2026.7.1 release.
+      "talk",
     ]);
   });
 
@@ -124,6 +127,8 @@ describe("capabilityOf — capability x set matrix", () => {
         // subagents is NOT in the legacy fallback set (LEGACY_CAPABILITIES) — an
         // old/unknown bridge does not unlock the monitor.
         subagents: false, inboundAttachments: false,
+        // talk is absent from every one of these sets -> false.
+        talk: false,
       },
     ],
     [
@@ -138,6 +143,8 @@ describe("capabilityOf — capability x set matrix", () => {
         sessionCompact: true,
         configDefaults: true,
         subagents: true, inboundAttachments: true,
+        // talk is absent from every one of these sets -> false.
+        talk: false,
       },
     ],
     [
@@ -153,6 +160,8 @@ describe("capabilityOf — capability x set matrix", () => {
         configDefaults: false,
         // subagents is available from the 5.19 floor.
         subagents: true, inboundAttachments: true,
+        // talk is absent from every one of these sets -> false.
+        talk: false,
       },
     ],
     [
@@ -167,6 +176,8 @@ describe("capabilityOf — capability x set matrix", () => {
         sessionCompact: false,
         configDefaults: false,
         subagents: false, inboundAttachments: false,
+        // talk is absent from every one of these sets -> false.
+        talk: false,
       },
     ],
     [
@@ -181,6 +192,8 @@ describe("capabilityOf — capability x set matrix", () => {
         sessionCompact: true,
         configDefaults: true,
         subagents: true, inboundAttachments: true,
+        // talk is absent from every one of these sets -> false.
+        talk: false,
       },
     ],
   ];

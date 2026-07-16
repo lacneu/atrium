@@ -40,6 +40,7 @@ const ALL_CAPS = [
   "subagents",
   "cronList",
   "cronManage",
+  "talk",
 ] as const;
 
 /**
@@ -64,6 +65,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
+    talk: false,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -81,6 +83,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
+    talk: false,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -98,6 +101,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
+    talk: false,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
   // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
@@ -119,6 +123,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
+    talk: false,
   },
   // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
   // surface (cron.get/update/remove/run/runs), live-verified 2026-07-12.
@@ -138,6 +143,9 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: true,
+    // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
+    // on the 2026.7.1 bench (2026-07-16).
+    talk: true,
   },
 };
 
@@ -304,8 +312,9 @@ describe("resolveCapabilities — beyond maxValidated", () => {
   test("the VALIDATED pre-release bench (2026.7.1-beta.2) is within range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.2");
     // beta.2 > every 2026.6.x minVersion AND >= the cronManage floor (the
-    // bench it was validated on) → the full 7.1 capability row.
-    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
+    // bench it was validated on) → the 7.1 capability row EXCEPT talk (its
+    // floor is the 2026.7.1 RELEASE, and a pre-release sorts below it).
+    expect(resolved.capabilities).toEqual({ ...MATRIX["2026.7.1"], talk: false });
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
@@ -313,7 +322,8 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     // Live suite GO 2026-07-12 (9/9). Same capability row as the release:
     // beta.5 sorts above the cronManage floor (beta.2) and below 2026.7.1.
     const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.5");
-    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
+    // Same talk exception as beta.2: the talk floor is the 7.1 RELEASE.
+    expect(resolved.capabilities).toEqual({ ...MATRIX["2026.7.1"], talk: false });
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 

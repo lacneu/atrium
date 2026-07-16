@@ -8626,6 +8626,60 @@ button.oc-bmk-rail__count:hover {
   border-bottom-right-radius: 0.9rem;
 }
 
+/* Realtime voice ("talk") — the composer's live-conversation pill. Chart-bound
+   voice accent; the live dot pulses SUBTLY (contained, like oc-mic-live). */
+.oc-talk__audio {
+  display: none;
+}
+.oc-talk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--voice) 45%, var(--border));
+  background: color-mix(in srgb, var(--voice) 10%, var(--card));
+  color: var(--foreground);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.oc-talk__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--voice) 65%, var(--muted-foreground));
+}
+.oc-talk--live .oc-talk__dot {
+  background: var(--voice);
+  animation: oc-mic-live 1.5s ease-in-out infinite;
+}
+.oc-talk__label {
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-talk__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: color-mix(in srgb, var(--voice) 60%, var(--foreground));
+  cursor: pointer;
+}
+.oc-talk__btn:hover {
+  background: color-mix(in srgb, var(--voice) 18%, transparent);
+}
+.oc-talk__btn--end {
+  color: var(--destructive);
+}
+.oc-talk__btn--end:hover {
+  background: color-mix(in srgb, var(--destructive) 15%, transparent);
+}
+
 /* Reduced motion: the dictation/dock animations are decorative — the state is
    already conveyed by color and labels. Honor the OS setting (a11y contract
    shared with the rest of the chat). */
@@ -8636,7 +8690,8 @@ button.oc-bmk-rail__count:hover {
   .oc-composer--expanded,
   .oc-detach,
   .oc-detach__icon--rec,
-  .oc-detach__wave i {
+  .oc-detach__wave i,
+  .oc-talk--live .oc-talk__dot {
     animation: none;
   }
   .oc-composer__input,

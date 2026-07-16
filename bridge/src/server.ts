@@ -30,6 +30,8 @@ import {
 } from "./providers/openclaw/openclaw-client.js";
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
+import { claimTalkRun, observeFinalize } from "./core/talk-consult.js";
+import { RunManager } from "./providers/openclaw/run-manager.js";
 import { base64FitsFrame } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
@@ -2175,6 +2177,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // activity indicator verifies with the GATEWAY before expiring an
       // engagement instead of a blind timeout.
       "/tasks-probe",
+      // Realtime voice: gateway-minted ephemeral browser session
+      // (talk.client.create). Convex owns the user/chat authorization.
+      "/talk-session",
+      // Realtime voice: relay the voice model's agent-consult tool call to a
+      // REAL agent run (talk.client.toolCall) and wait (bounded) for its final.
+      "/talk-toolcall",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2946,6 +2954,246 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         console.error(`bridge /tts ${method} failed [${code}]:`, (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: { code } });
       }
+      return;
+    }
+
+    if (req.url === "/talk-session") {
+      // Realtime voice: mint an EPHEMERAL browser session on the gateway
+      // (talk.client.create -> {clientSecret, offerUrl, model, voice,
+      // expiresAt} — shape probed LIVE on 2026.7.1). The gateway holds the
+      // provider key and mints the short-lived clientSecret; the bridge
+      // relays the payload VERBATIM to Convex and NEVER logs it (it is a
+      // provider credential, ephemeral but a credential). Convex owns the
+      // user/chat authorization + the admin talk.enabled gate.
+      let talkBody: { instanceName?: unknown; transport?: unknown } = {};
+      try {
+        talkBody = JSON.parse(raw || "{}") as typeof talkBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const talkInstance =
+        typeof talkBody.instanceName === "string" ? talkBody.instanceName : null;
+      const talkBundle = talkInstance ? served.get(talkInstance) : undefined;
+      if (!talkInstance || !talkBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (talkBundle.config.kind === "hermes") {
+        // No talk surface on Hermes — honest code instead of an opaque RPC error.
+        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        return;
+      }
+      // Only transports the gateway advertises; webrtc is the live-verified
+      // default (the mint response shape was probed on it).
+      const talkTransport =
+        typeof talkBody.transport === "string" &&
+        ["webrtc", "provider-websocket", "gateway-relay"].includes(talkBody.transport)
+          ? talkBody.transport
+          : "webrtc";
+      try {
+        const created = await withOperatorConnection(
+          talkBundle.config,
+          (conn) =>
+            conn.request("talk.client.create", { transport: talkTransport }, 15_000),
+          noteHandshakeFor(talkInstance),
+        );
+        const session = created.payload ?? null;
+        if (session === null || typeof session !== "object") {
+          sendJson(res, 502, { ok: false, error: { code: "talk_malformed" } });
+          return;
+        }
+        sendJson(res, 200, { ok: true, session });
+      } catch (err) {
+        // A gateway without a CONFIGURED realtime provider errors here — the
+        // classified code is the graceful "not ready" answer (the capability
+        // gate is static/version-level by design). Message only: the error
+        // never carries the secret, but keep the log minimal regardless.
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /talk-session failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/talk-toolcall") {
+      // Realtime voice AGENT-CONSULT relay: the voice model asked (via the
+      // browser's data channel) to delegate work to the chat's agent. The
+      // gateway starts a REAL agent run on the chat's session
+      // (talk.client.toolCall -> {runId}); this route then HOLDS its operator
+      // connection open, feeding inbound frames through consultFrameOutcome
+      // until the run's final/error or the deadline — the browser hands the
+      // returned text back to the voice model (function_call_output) so it
+      // SPEAKS the real result. Convex owns the user/chat authorization and
+      // passes the resolved routing (never client-supplied).
+      let tcBody: {
+        instanceName?: unknown;
+        chatId?: unknown;
+        openclawChatId?: unknown;
+        canonical?: unknown;
+        agentId?: unknown;
+        callId?: unknown;
+        args?: unknown;
+      } = {};
+      try {
+        tcBody = JSON.parse(raw || "{}") as typeof tcBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const tcStr = (v: unknown): string | null =>
+        typeof v === "string" && v !== "" ? v : null;
+      const tcInstance = tcStr(tcBody.instanceName);
+      const tcChatId = tcStr(tcBody.chatId);
+      const tcCanonical = tcStr(tcBody.canonical);
+      const tcAgentId = tcStr(tcBody.agentId);
+      const tcCallId = tcStr(tcBody.callId);
+      const tcArgs =
+        tcBody.args !== null && typeof tcBody.args === "object"
+          ? (tcBody.args as Record<string, unknown>)
+          : null;
+      const tcBundle = tcInstance ? served.get(tcInstance) : undefined;
+      if (!tcInstance || !tcBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (tcBundle.config.kind === "hermes") {
+        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        return;
+      }
+      if (!tcChatId || !tcCanonical || !tcAgentId || !tcCallId || !tcArgs) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const tcSessionKey = buildSessionKey(
+        tcStr(tcBody.openclawChatId) ?? tcChatId,
+        tcAgentId,
+        tcCanonical,
+      );
+      // The consult is a real agent turn: it can run long. The VOICE hold is
+      // bounded (on deadline the caller reports "still working" to the voice
+      // model); the THREAD writer below is DETACHED from this response and
+      // keeps streaming the turn to its true terminal.
+      const CONSULT_HOLD_MS = 90_000;
+      const CONSULT_THREAD_MS = 10 * 60_000;
+      // started: the toolCall RPC settled (runId or error) — gates the HTTP
+      // status. terminal: the run's true outcome — raced against the voice
+      // hold; the detached writer keeps going after a "pending" response.
+      let resolveStarted!: (
+        v: { ok: true; runId: string } | { ok: false; code: string },
+      ) => void;
+      let resolveTerminal!: (v: { resultText?: string; errorText?: string }) => void;
+      const started = new Promise<
+        { ok: true; runId: string } | { ok: false; code: string }
+      >((r) => (resolveStarted = r));
+      const terminal = new Promise<{ resultText?: string; errorText?: string }>(
+        (r) => (resolveTerminal = r),
+      );
+      // DETACHED consult driver: relays the tool call, then owns the thread
+      // bubble end-to-end — created IMMEDIATELY (the user sees an in-progress
+      // turn while the voice says "checking" — user feedback 2026-07-16),
+      // deltas streamed, finalized at the true terminal. Never throws.
+      void (async () => {
+        try {
+          await withOperatorConnection(
+            tcBundle.config,
+            async (conn) => {
+              const created = await conn.request(
+                "talk.client.toolCall",
+                {
+                  sessionKey: tcSessionKey,
+                  callId: tcCallId,
+                  name: "openclaw_agent_consult",
+                  args: tcArgs,
+                },
+                15_000,
+              );
+              const runId = (created.payload as { runId?: unknown } | undefined)
+                ?.runId;
+              if (typeof runId !== "string" || runId === "") {
+                resolveStarted({ ok: false, code: "talk_malformed" });
+                return;
+              }
+              // The relay owns this run's thread bubble (a voice-first chat
+              // has no warm session consumer). Claimed for the run's LIFETIME
+              // — a warm session never double-writes, and a gateway retransmit
+              // after the final stays inert (the claim set is size-bounded).
+              claimTalkRun(runId);
+              resolveStarted({ ok: true, runId });
+              // SAME IMPLEMENTATION as a typed turn (user requirement: a
+              // change to tool/media/reasoning handling must apply to voice
+              // consults automatically): a relay-local RunManager drives the
+              // full normalizer/sink pipeline. beginTurn(runId) opens the
+              // bubble IMMEDIATELY (in-progress indicator) and seeds
+              // ownRunIds so the consult streams first-class. The finalize
+              // observer captures the terminal for the VOICE reply.
+              let settled = false;
+              const facade = observeFinalize(
+                tcBundle.writer,
+                (status, text, error) => {
+                  settled = true;
+                  if (status === "complete") {
+                    resolveTerminal({ resultText: text });
+                  } else {
+                    resolveTerminal({ errorText: error ?? status });
+                  }
+                },
+              );
+              const manager = new RunManager(tcChatId, tcSessionKey, facade);
+              const nowSec = () => Date.now() / 1000;
+              await manager.beginTurn(nowSec(), runId);
+              const deadline = Date.now() + CONSULT_THREAD_MS;
+              const it = conn.frames()[Symbol.asyncIterator]();
+              while (!settled && Date.now() < deadline) {
+                const remaining = deadline - Date.now();
+                const raced = await Promise.race([
+                  it.next(),
+                  new Promise<"timeout">((r) =>
+                    setTimeout(() => r("timeout"), remaining),
+                  ),
+                ]);
+                if (raced === "timeout") break;
+                if (raced.done) break; // connection closed under us
+                await manager.feed(raced.value, nowSec());
+              }
+              if (!settled) {
+                // Deadline / connection closed with no terminal: the message
+                // (if opened) is reconciled by the stuck-stream watchdog; the
+                // voice reports the work as still running.
+                resolveTerminal({ errorText: "timeout" });
+              }
+            },
+            noteHandshakeFor(tcInstance),
+          );
+        } catch (err) {
+          const code = classifyGatewayError(err);
+          console.error(
+            `bridge /talk-toolcall failed [${code}]:`,
+            (err as Error)?.message ?? err,
+          );
+          resolveStarted({ ok: false, code });
+          resolveTerminal({ errorText: code });
+        }
+      })();
+      const startRes = await started;
+      if (!startRes.ok) {
+        sendJson(res, 502, { ok: false, error: { code: startRes.code } });
+        return;
+      }
+      const voiceRaced = await Promise.race([
+        terminal,
+        new Promise<"pending">((r) => setTimeout(() => r("pending"), CONSULT_HOLD_MS)),
+      ]);
+      if (voiceRaced === "pending") {
+        // The voice tells the user the work continues; the DETACHED writer
+        // keeps streaming the thread bubble to its real terminal.
+        sendJson(res, 200, { ok: true, pending: true, runId: startRes.runId });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ...voiceRaced, runId: startRes.runId });
       return;
     }
     if (req.url === "/agent-files") {

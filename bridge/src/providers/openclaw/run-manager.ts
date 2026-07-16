@@ -13,6 +13,10 @@ import { Normalizer } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
 import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
+import {
+  isRelayOwnedTalkRun,
+  isTalkConsultRunId,
+} from "../../core/talk-consult.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
@@ -705,12 +709,20 @@ export class RunManager {
 function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
   const runId = sessionRunIdFor(frame, sessionKey);
   if (runId === null) return null;
-  // Two gateway-initiated delivery families ride the same spontaneous-turn
+  // THREE gateway-initiated run families ride the same spontaneous-turn
   // machinery (deferOpen + stash-during-active-turn + NO_REPLY discard):
-  // sub-agent announces AND background-task deliveries (`<tool>:<taskId>:ok`,
-  // pinned live 2026-07-12 — image_generate/video/any durable tool).
+  // sub-agent announces, background-task deliveries (`<tool>:<taskId>:ok`,
+  // pinned live 2026-07-12 — image_generate/video/any durable tool), and
+  // realtime-voice agent consults (`talk-<callId>-<uuid>`, measured
+  // 2026-07-16) — the voice-triggered agent turn lands in the thread too.
   if (runId.startsWith("announce:")) return runId;
   if (taskDeliveryRunFromRunId(runId) !== null) return runId;
+  // Talk consults are normally written by the /talk-toolcall RELAY itself
+  // (voice-first chats have no warm session): skip the runs it CLAIMED so a
+  // warm session never double-writes the bubble. Unclaimed talk runs (relay
+  // timed out and released, or a consult triggered by another client, e.g.
+  // the Control UI) still merge here.
+  if (isTalkConsultRunId(runId) && !isRelayOwnedTalkRun(runId)) return runId;
   return null;
 }
 

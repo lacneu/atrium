@@ -702,3 +702,176 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     expect(writer.calls).toHaveLength(0);
   });
 });
+
+describe("realtime-voice AGENT-CONSULT run -> spontaneous turn (talk- family)", () => {
+  // The voice model's openclaw_agent_consult relay starts a REAL agent run on
+  // the chat session, keyed `talk-<callId>-<uuid>` (measured 2026-07-16). It
+  // must land in the conversation thread exactly like an announce (the user
+  // hears the result AND sees the turn) — user repro: the spoken result
+  // arrived but the thread showed nothing.
+  const TALK_RUN = "talk-call_AbC123-1f2e3d4c-5b6a-7980-a1b2-c3d4e5f60718";
+  const talkFrame = (over: Record<string, unknown>) => ({
+    type: "event",
+    event: "chat",
+    payload: { runId: TALK_RUN, sessionKey: SESSION_KEY, ...over },
+  });
+
+  it("between turns: consult frames open ONE assistant message and finalize complete", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager("chatTalk", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(
+      talkFrame({ state: "delta", deltaText: "Demain: ", message: { role: "assistant", content: [{ type: "text", text: "Demain: " }] } }),
+      (now += 1),
+    );
+    await manager.feed(
+      talkFrame({
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "Demain: 26°C, dégagé." }] },
+      }),
+      (now += 1),
+    );
+    const starts = writer.calls.filter((c) => c[0] === "startAssistant");
+    expect(starts).toHaveLength(1);
+    expect(starts[0]?.[2]).toBe(TALK_RUN);
+    const finals = writer.calls.filter((c) => c[0] === "finalize");
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.[2]).toBe("complete");
+    expect(finals[0]?.[3]).toContain("26°C");
+  });
+
+  it("a talk run for a FOREIGN session stays dropped (isolation strict)", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(
+      "chatTalk",
+      "agent:alice:atrium:chat:olivier:someOtherChat",
+      writer,
+    );
+    let now = 1000;
+    await manager.feed(
+      talkFrame({
+        state: "final",
+        message: { role: "assistant", content: [{ type: "text", text: "fuite ?" }] },
+      }),
+      (now += 1),
+    );
+    expect(writer.calls).toHaveLength(0);
+  });
+  it("a RELAY-CLAIMED talk run is skipped by the session machinery (single writer)", async () => {
+    const { claimTalkRun, releaseTalkRun } = await import(
+      "../src/core/talk-consult.js"
+    );
+    const CLAIMED_RUN = "talk-call_Own1-9f8e7d6c";
+    claimTalkRun(CLAIMED_RUN);
+    try {
+      const writer = new FakeWriter();
+      const manager = new RunManager("chatTalk", SESSION_KEY, writer);
+      await manager.feed(
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: CLAIMED_RUN,
+            sessionKey: SESSION_KEY,
+            state: "final",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "écrit par le relais, pas ici" }],
+            },
+          },
+        },
+        1001,
+      );
+      // The relay owns the thread write — the warm session must NOT duplicate.
+      expect(writer.calls).toHaveLength(0);
+      // Once RELEASED (relay timeout), a late final merges through the session.
+      releaseTalkRun(CLAIMED_RUN);
+      await manager.feed(
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: CLAIMED_RUN,
+            sessionKey: SESSION_KEY,
+            state: "final",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "final tardif" }],
+            },
+          },
+        },
+        1002,
+      );
+      expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(1);
+    } finally {
+      releaseTalkRun(CLAIMED_RUN);
+    }
+  });
+
+  it("RELAY-driven consult (beginTurn + real pipeline) renders TOOL CARDS like a typed turn", async () => {
+    // The /talk-toolcall relay drives a first-class turn: beginTurn(runId)
+    // opens the bubble immediately and the SAME normalizer/sink pipeline as a
+    // typed turn processes tool frames — one implementation, zero drift
+    // (user requirement 2026-07-16).
+    class ToolRecordingWriter extends FakeWriter {
+      readonly toolParts: ToolPart[] = [];
+      override async addToolPart(_m: string, part: ToolPart): Promise<void> {
+        this.toolParts.push(part);
+      }
+    }
+    const RELAY_RUN = "talk-call_Relay1-0a1b2c3d";
+    const { claimTalkRun: claim, releaseTalkRun: release } = await import(
+      "../src/core/talk-consult.js"
+    );
+    // The route CLAIMS the run BEFORE beginTurn — that claim is what routes
+    // the frames through the first-class path (an unclaimed talk run would be
+    // stashed by the active-turn announce guard instead).
+    claim(RELAY_RUN);
+    const writer = new ToolRecordingWriter();
+    const manager = new RunManager("chatTalk", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.beginTurn((now += 1), RELAY_RUN);
+    // Bubble opens at beginTurn (in-progress indicator) — before any frame.
+    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(1);
+    const agentTool = (data: Record<string, unknown>) => ({
+      type: "event",
+      event: "agent",
+      payload: { runId: RELAY_RUN, sessionKey: SESSION_KEY, stream: "tool", data },
+    });
+    await manager.feed(
+      agentTool({ phase: "start", name: "web_search", toolCallId: "t1", args: { q: "météo" } }),
+      (now += 1),
+    );
+    await manager.feed(
+      agentTool({ phase: "result", name: "web_search", toolCallId: "t1", result: { hits: 3 } }),
+      (now += 1),
+    );
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: RELAY_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "Demain: 26°C." }] },
+        },
+      },
+      (now += 1),
+    );
+    // The REAL normalizer coalesced start+result into one completed card.
+    expect(writer.toolParts).toHaveLength(1);
+    expect(writer.toolParts[0]).toMatchObject({
+      kind: "tool",
+      name: "web_search",
+      phase: "completed",
+      input: { q: "météo" },
+      output: { hits: 3 },
+    });
+    const finals = writer.calls.filter((c) => c[0] === "finalize");
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.[2]).toBe("complete");
+    expect(finals[0]?.[3]).toContain("26°C");
+    release(RELAY_RUN);
+  });
+});

@@ -29,6 +29,10 @@ export const CAPABILITY_KEYS = [
   "configDefaults",
   "subagents",
   "inboundAttachments",
+  // Realtime voice ("talk"): the gateway mints an ephemeral browser session
+  // (talk.client.create). Version-gated by the bridge manifest; whether a
+  // realtime provider is CONFIGURED stays dynamic (checked at session create).
+  "talk",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

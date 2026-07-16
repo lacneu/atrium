@@ -227,6 +227,9 @@ export function IntegrationsTab() {
         />
       </Section>
 
+      {/* Talk (realtime voice) is configured in Settings > Agents > Voice >
+          Talk — the voice features' home (user request 2026-07-16); this tab
+          stays trace-vendors only. */}
     </>
   );
 }

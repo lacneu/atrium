@@ -99,6 +99,14 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // read as unsupported. Older gateways name the methods but their shapes
   // are unverified — conservative floor.
   cronManage: "2026.7.1-beta.2",
+  // Realtime voice ("talk"): the gateway mints an EPHEMERAL provider session
+  // (talk.client.create -> {clientSecret, offerUrl, model, voice, expiresAt})
+  // for a browser-owned WebRTC session; discovery via talk.catalog. Verified
+  // LIVE against the 2026.7.1 bench (probe-talk, 2026-07-16). Version says
+  // "the surface exists" only — whether a realtime provider is CONFIGURED is
+  // dynamic gateway state, checked at session-create time with a graceful
+  // error (same split as inboundAttachments vs the dynamic maxPayload cap).
+  talk: "2026.7.1",
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API

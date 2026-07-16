@@ -40,6 +40,7 @@ import {
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
 import { attachmentAddInFlight } from "./attachmentBusy";
+import { TalkControl } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
@@ -4325,6 +4326,12 @@ function Composer({
               onStart={dictation.start}
               onStop={dictation.stop}
             />
+          ) : null}
+          {/* Realtime voice — FAIL CLOSED (unlike attachments' fail-open): a
+              talk button on a gateway without the surface would hard-fail at
+              mint, so it only renders on an explicitly resolved capability. */}
+          {!capsLoading && capsResolved && chatCan("talk") ? (
+            <TalkControl chatId={chatId} />
           ) : null}
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a

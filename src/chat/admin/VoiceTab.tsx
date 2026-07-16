@@ -413,9 +413,34 @@ export function VoiceTab() {
               <Badge variant="outline">{m.voice_talk_coming()}</Badge>
             </header>
             <p className="oc-cdefaults__help">{m.voice_talk_help()}</p>
+            <TalkEnableToggle />
           </section>
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+/**
+ * The deployment-wide talk switch (admin.setIntegrationConfig `talk.enabled`,
+ * default OFF). Renders ONLY for admins: talkAdminState soft-gates to null for
+ * an `admin.manage` grantee who can see this tab but cannot flip a
+ * deployment-wide switch. Reactive — no local draft needed for one checkbox.
+ */
+function TalkEnableToggle() {
+  const state = useQuery(api.talk.talkAdminState, {});
+  const setCfg = useMutation(api.admin.setIntegrationConfig);
+  if (state === undefined || state === null) return null; // loading or not admin
+  return (
+    <label className="oc-cdefaults__inline" style={{ cursor: "pointer" }}>
+      <Checkbox
+        checked={state.enabled}
+        onCheckedChange={(v) =>
+          void setCfg({ talk: { enabled: v === true } })
+        }
+        aria-label={m.integrations_talk_enable()}
+      />
+      <span className="oc-cdefaults__label">{m.integrations_talk_enable()}</span>
+    </label>
   );
 }

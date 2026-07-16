@@ -63,6 +63,9 @@ export const LIVE_CAPABILITIES_BODY = {
           // src/compat.ts OPENCLAW_CAPABILITIES) — pending a real /capabilities
           // re-capture, this entry mirrors what the updated bridge emits.
           subagents: "2026.5.19",
+          // Same lockstep hand-add: realtime voice, floor = the 2026.7.1
+          // release (live-probed 2026-07-16).
+          talk: "2026.7.1",
         },
       },
       hermes: {
@@ -93,6 +96,8 @@ export const LIVE_CAPABILITIES_BODY = {
         inboundAttachments: false,
         // 5.19 target: subagents is available from the 5.19 floor -> true.
         subagents: true,
+        // 5.19 target: far below the talk floor (2026.7.1) -> false.
+        talk: false,
       },
     },
   ],
