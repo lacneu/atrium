@@ -70,6 +70,11 @@
   inherits: true;
   initial-value: oklch(0.78 0.14 75);
 }
+@property --voice {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: oklch(0.205 0 0);
+}
 @property --primary-foreground {
   syntax: "<color>";
   inherits: true;
@@ -281,6 +286,7 @@
      its own; bookmark accent defaults to the product amber. */
   --highlight: var(--primary);
   --bookmark: oklch(0.78 0.14 75);
+  --voice: var(--primary);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -321,6 +327,7 @@
   --ring: oklch(0.556 0 0);
   --highlight: var(--primary);
   --bookmark: oklch(0.82 0.13 78);
+  --voice: var(--primary);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);

@@ -63,6 +63,9 @@ export const COLOR_TOKENS = [
   // Conversation-bookmark accent (markers, rail, anchor flash). Amber by
   // default (index.css); a chart may re-tint the whole bookmark language.
   "bookmark",
+  // Voice/dictation accent (composer morph ring, mic pulse, live-transcript
+  // ghost, held-dictation dock). Follows the chart's primary unless set.
+  "voice",
 ] as const;
 
 /** A single mode-scoped color token name (closed set). */

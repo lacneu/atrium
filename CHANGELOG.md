@@ -8,6 +8,34 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.61.0] — A composer built for dictation
+
+Feature release: the composer becomes a first-class dictation surface. Pure
+frontend; one additive chart token (`voice`); no breaking changes.
+
+- **The composer morphs while you dictate.** Activating the mic transforms the
+  composer in place: a voice-accent ring (chart-bound `voice` token), a live
+  transcript ghost showing what the engine is hearing BEFORE it commits, and a
+  growth cap that expands so long dictated prompts stay fully visible — while
+  the conversation above remains readable and scrollable. The caret is
+  auto-followed; a long spoken pause opens a new paragraph, so dictated
+  prompts arrive structured.
+- **Full-page focus mode, on demand.** A composer toggle opens the same
+  composer — text, attachments, dictation, everything intact — across the
+  whole page for heads-down dictation of long prompts; Escape (or the toggle)
+  returns to the compact form.
+- **Detach the composer and keep moving.** Pin the composer — whether you're
+  dictating or typing — and it lifts out into a floating panel you can drag,
+  resize, edit, and dictate into. Every conversation then shows a small note in
+  place of its inline composer, so it's always clear which draft is in flight
+  and where it belongs. Send from the panel and you land back in the target
+  conversation; "dock it back" and the draft returns inline with nothing lost.
+  The draft (and any live dictation) survives navigation, stays bound to its
+  origin conversation, and is stopped and purged on any identity change.
+  Attachments keep the draft inline (the panel carries text only). Works out of
+  the box as a large, reliable typing target for external local dictation tools
+  (e.g. OpenWhispr running local Whisper).
+
 ## [0.60.3] — A turn only attaches the files it actually produced
 
 Corrective release — cross-conversation containment of the outbound file

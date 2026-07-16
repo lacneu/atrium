@@ -14,6 +14,9 @@ import {
 } from "@assistant-ui/react";
 import {
   createContext,
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -21,8 +24,6 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type CSSProperties,
-  type ReactNode,
 } from "react";
 import {
   useAction, useQuery, useMutation, useConvex } from "convex/react";
@@ -38,6 +39,7 @@ import {
 } from "@/lib/shortcuts";
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
+import { attachmentAddInFlight } from "./attachmentBusy";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
@@ -64,33 +66,36 @@ import {
   type ExportMessage,
 } from "./transcriptExport";
 import {
+  ArrowUp,
   Bookmark as BookmarkIcon,
-  Volume2,
-  SlidersHorizontal,
+  Bot,
+  Check,
   ChevronDown,
   ChevronRight,
-  Download,
-  Plus,
-  ArrowUp,
-  Square,
-  Mic,
-  Trash2,
-  Code,
-  Search,
   CircleAlert,
+  Clock,
+  Code,
+  Download,
+  Ellipsis,
   Eye,
-  Bot,
-  Server,
+  GitBranch,
+  Image as ImageIcon,
   LoaderCircle,
   Lock,
-  Clock,
+  Maximize2,
+  Mic,
+  Minimize2,
   Paperclip,
-  Image as ImageIcon,
-  Check,
-  X,
-  GitBranch,
-  Ellipsis,
+  Pin,
+  Plus,
+  Search,
+  Server,
+  SlidersHorizontal,
+  Square,
   Timer,
+  Trash2,
+  Volume2,
+  X,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -136,6 +141,24 @@ import {
   type ChatVoiceConfig,
   type DictationHandle,
 } from "./speech";
+import { createPortal } from "react-dom";
+import {
+  appendDictated,
+  appendHeldDictation,
+  currentEngineGen,
+  getHeldDictation,
+  holdDictation,
+  markHeldEngineEnded,
+  releaseHeldDictation,
+  releaseHeldDictationById,
+  clearHeldPendingSend,
+  clearHeldPendingRestore,
+  endHeldSendingById,
+  reattachHeldEngine,
+  requestHeldRestore,
+  setHeldInterim,
+  subscribeHeldDictation,
+} from "./dictationHold";
 import {
   useConvexChatRuntime,
   type TurnGate,
@@ -989,6 +1012,14 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  // Held-dictation dock chip: the REAL conversation title, from the TARGETED
+  // getSessionMeta query (already subscribed here — Convex dedupes) rather
+  // than the sidebar's bounded listChats window, which deliberately omits
+  // old conversations opened via search/deep link (codex P2).
+  const metaForTitle = useQuery(api.messages.getSessionMeta, {
+    chatId: chatId as Id<"chats">,
+  }) as { title?: string | null } | null | undefined;
+  const chatTitleForDock = metaForTitle?.title ?? "";
   // The chat is ALSO busy when a sub-agent it spawned is still running: the parent
   // turn has finalized but the bridge is one-turn-per-session, so a follow-up must
   // be HELD (queued) — and that hold made VISIBLE in the composer. Owner-scoped +
@@ -1252,6 +1283,7 @@ function ChatThread({
       ) : null}
       <Composer
         chatId={chatId}
+        chatTitle={chatTitleForDock}
         showTools={showTools}
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
@@ -3391,20 +3423,308 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
 }
 
 
-/** The composer mic — REAL dictation (browser SpeechRecognition). Toggle:
- *  start → live transcription (final pieces appended to the composer text) →
- *  stop (button, or the engine's own end). Language follows the instance's
- *  voice config. Errors surface as a toast, and an unsupported browser gets a
- *  clear message instead of a dead button. */
-function DictationButton() {
+/** The composer's dictation controller — LIFTED state so the whole composer
+ *  can morph while recording (grow, live-transcript ghost, hold/pin). The mic
+ *  starts the browser SpeechRecognition engine; committed segments append to
+ *  the composer text (a long spoken pause opens a new paragraph) and the
+ *  in-flight hypothesis streams to a display-only ghost. "Hold" transfers
+ *  ownership of the engine + text to the module store (dictationHold.ts) so
+ *  the dictation survives navigating away — the global dock takes over. */
+function useDictationController(opts: {
+  chatId: string;
+  chatTitle: string;
+  voiceInput: boolean;
+  rootRef: React.RefObject<HTMLFormElement | null>;
+}) {
   const voice = useContext(VoiceConfigContext);
   const composer = useComposerRuntime();
   const toast = useToast();
   const [recording, setRecording] = useState(false);
+  const [interim, setInterim] = useState("");
   const handleRef = useRef<DictationHandle | null>(null);
-  // Stop the engine when the composer unmounts mid-dictation (chat switch).
-  useEffect(() => () => handleRef.current?.stop(), []);
+  // The ACTIVE session's descriptor (engine handle + whether its ownership
+  // moved to the pinned store): hold() flips boundToHold so the session's
+  // natural onEnd still settles the dock's recording state.
+  const activeSessionRef = useRef<{
+    h: DictationHandle | null;
+    boundToHold: boolean;
+    holdGen?: number;
+  } | null>(null);
+  // The route component is REUSED across conversations (no per-chat key):
+  // every callback reads the CURRENT chat through this ref, never a captured
+  // one — a dictation started after navigating must never route to the
+  // previous conversation (codex P1).
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
+  const heldNow = useSyncExternalStore(subscribeHeldDictation, getHeldDictation);
+  const heldHere = heldNow !== null && heldNow.targetChatId === opts.chatId;
+
+  // Chat switch (same mounted component): stop a LOCAL engine (the pre-pin
+  // behavior — leaving the conversation ends its dictation) and reset the
+  // local mirrors so the next chat never inherits A's recording UI (codex P2).
+  useEffect(() => {
+    return () => {
+      handleRef.current?.stop();
+      handleRef.current = null;
+      setRecording(false);
+      setInterim("");
+    };
+  }, [opts.chatId]);
+
+  // Follow the insertion point while dictating: the textarea grows up to its
+  // (enlarged) cap, then scrolls — the user must always see what just landed.
+  const followCaret = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = opts.rootRef.current?.querySelector<HTMLTextAreaElement>(
+        ".oc-composer__input",
+      );
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ref identity is stable
+  }, []);
+
   const lang = resolveSpeechLang(voice.lang, getLocale());
+  // Fresh refs for the pin snapshot (hold is a stable useCallback): the panel
+  // is cross-chat, so it captures the ORIGIN's dictation language + voice gate.
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const voiceInputRef = useRef(opts.voiceInput);
+  voiceInputRef.current = opts.voiceInput;
+  const stop = useCallback(() => {
+    const heldState = getHeldDictation();
+    if (heldState !== null && heldState.targetChatId === optsRef.current.chatId) {
+      // Unpin AND stop: the composer on the target chat already mirrors the
+      // text, so releasing here just retires the dock + engine. Another
+      // conversation's hold is NOT ours to release (codex P1).
+      releaseHeldDictation();
+    }
+    handleRef.current?.stop();
+    handleRef.current = null;
+    setRecording(false);
+    setInterim("");
+  }, []);
+
+  const start = useCallback(() => {
+    if (!dictationSupported()) {
+      toast.error(m.chat_mic_error_unsupported());
+      return;
+    }
+    // One live engine at a time: a pinned dictation still RECORDING for
+    // another conversation owns the browser's recognizer — surface it
+    // instead of silently killing it (codex P1).
+    const heldState = getHeldDictation();
+    if (
+      heldState !== null &&
+      heldState.targetChatId !== optsRef.current.chatId &&
+      heldState.recording
+    ) {
+      toast.error(m.chat_mic_error_held_elsewhere());
+      return;
+    }
+    // The ENGINE SESSION is bound to the chat it started on: after a pin the
+    // user may navigate away while this very session keeps running — its
+    // segments must keep flowing to the pinned target, never to whatever
+    // conversation the reused route component now shows (codex P1).
+    const startedChatId = optsRef.current.chatId;
+    // Session-scoped guards: an OLD engine's async onEnd (e.g. stopped from
+    // the dock) can fire AFTER a newer session started here — it must never
+    // reset the newer session's state (codex P1). `boundToHold` marks a
+    // session whose ownership moved to the pinned store.
+    const session: {
+      h: DictationHandle | null;
+      boundToHold: boolean;
+      holdGen?: number;
+    } = {
+      h: null,
+      boundToHold: false,
+    };
+    activeSessionRef.current = session;
+    const h = startDictation({
+      lang,
+      onText: (t, meta) => {
+        // A session whose ownership moved to a pin is STALE once a newer pin
+        // (or dock re-arm) bumped the engine generation: its trailing final
+        // must pollute NEITHER the new hold NOR the composer (codex re-review
+        // P2 — targetChatId alone can't tell two pins of the same chat apart).
+        if (session.holdGen !== undefined && session.holdGen !== currentEngineGen()) {
+          return;
+        }
+        // Route to the pinned store ONLY when the pin targets the chat this
+        // SESSION started on: a leftover hold from another conversation must
+        // never absorb a new dictation started here (codex P1).
+        const heldState = getHeldDictation();
+        if (heldState !== null && heldState.targetChatId === startedChatId) {
+          appendHeldDictation(t, meta.paragraph);
+          // Mirror into the composer ONLY while it still shows the session's
+          // own chat: the runtime is REUSED across conversations, so writing
+          // here from B would overwrite B's draft with A's dictation (codex
+          // P1) — the resync effect restores the text on return instead.
+          if (optsRef.current.chatId === startedChatId) {
+            const nowHeld = getHeldDictation();
+            if (nowHeld !== null) {
+              composer.setText(nowHeld.text);
+              followCaret();
+            }
+          }
+          return;
+        }
+        // Local (un-pinned) path: the reused composer now belongs to ANOTHER
+        // chat — a trailing final flushed by stop() must not leak into it.
+        if (optsRef.current.chatId !== startedChatId) return;
+        const cur = composer.getState().text;
+        composer.setText(appendDictated(cur, t, meta.paragraph));
+        followCaret();
+      },
+      onInterim: (t) => {
+        if (session.holdGen !== undefined && session.holdGen !== currentEngineGen()) {
+          return;
+        }
+        const heldState = getHeldDictation();
+        if (heldState !== null && heldState.targetChatId === startedChatId) {
+          setHeldInterim(t);
+        }
+        setInterim(t);
+      },
+      onEnd: () => {
+        // Settle the detached recording ONLY for this session's generation: a
+        // fast stop-then-resume from the dock bumps the generation, and this
+        // stale terminal must not mark the newer engine as stopped (codex P2).
+        if (session.boundToHold) markHeldEngineEnded(session.holdGen);
+        // A NEWER local session owns the state now: leave it alone.
+        if (handleRef.current !== null && handleRef.current !== session.h) {
+          return;
+        }
+        handleRef.current = null;
+        setRecording(false);
+        setInterim("");
+      },
+      onError: (code) => {
+        if (session.boundToHold) markHeldEngineEnded(session.holdGen);
+        if (handleRef.current !== null && handleRef.current !== session.h) {
+          return;
+        }
+        handleRef.current = null;
+        setRecording(false);
+        setInterim("");
+        if (code === "not-allowed" || code === "service-not-allowed") {
+          toast.error(m.chat_mic_error_denied());
+        } else if (code !== "no-speech" && code !== "aborted") {
+          toast.error(m.chat_mic_error_generic({ code }));
+        }
+      },
+    });
+    if (h === null) {
+      toast.error(m.chat_mic_error_unsupported());
+      return;
+    }
+    session.h = h;
+    const heldAfter = getHeldDictation();
+    if (heldAfter !== null && heldAfter.targetChatId === startedChatId) {
+      // RESUMING a pinned dictation: the store re-takes ownership of the new
+      // engine so the dock keeps a truthful stop control (codex P2).
+      session.boundToHold = true;
+      reattachHeldEngine(() => h.stop());
+      // Capture the generation AFTER the reattach bump: this session's later
+      // terminal only settles the store while it is still current (codex P2).
+      session.holdGen = currentEngineGen();
+      setRecording(true);
+      return;
+    }
+    handleRef.current = h;
+    setRecording(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime identity is stable
+  }, [lang, toast]);
+
+  const hold = useCallback(() => {
+    // Pin the CURRENT composer — dictation OR manual: the detached panel keeps
+    // it editable/sendable across navigation. A live engine (if any) moves to
+    // the store; a manual pin carries just the text.
+    // The detached panel carries ONLY text: refuse a pin that would strand
+    // attachments in the (hidden) inline runtime — they would ride an invisible
+    // send or leak onto the next message (codex P1). Also refuse while an
+    // addAttachment is IN FLIGHT (attachmentAddInFlight, wrapping the shared
+    // adapter): the file lands AFTER this guard, so a pin during that async
+    // window — native picker, file paste, doc viewer alike — would still leak it
+    // (codex re-review P1).
+    if (
+      composer.getState().attachments.length > 0 ||
+      attachmentAddInFlight()
+    ) {
+      toast.error(m.chat_pin_has_attachments());
+      return;
+    }
+    const h = handleRef.current;
+    const pinned = holdDictation({
+      targetChatId: optsRef.current.chatId,
+      targetLabel: optsRef.current.chatTitle,
+      text: composer.getState().text,
+      voiceEnabled: voiceInputRef.current,
+      voiceLang: langRef.current,
+      recording: h !== null,
+      ...(h !== null ? { stop: () => h.stop() } : {}),
+    });
+    if (!pinned) return; // another hold exists — never overwrite its draft
+    if (h !== null && activeSessionRef.current?.h === h) {
+      // The session's ownership moved to the store: its natural onEnd must
+      // settle the detached recording state (markHeldEngineEnded). Capture the
+      // generation AFTER holdDictation bumped it, so a later stop-then-resume
+      // from the dock isn't cancelled by this session's stale terminal (P2).
+      activeSessionRef.current.boundToHold = true;
+      activeSessionRef.current.holdGen = currentEngineGen();
+    }
+    // Ownership moved to the store: this component no longer stops the engine
+    // (the WHOLE point of the pin). Local mirrors reset — the held-here view
+    // (store-driven) takes over; a later navigation must not carry A's
+    // recording UI into B (codex P2).
+    handleRef.current = null;
+    setRecording(false);
+    setInterim("");
+    // The inline composer is now replaced by a note everywhere; clear the
+    // (reused) runtime so a later release/abandon never resurfaces this text
+    // — the draft lives in the store + floating panel from here on.
+    composer.setText("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime identity is stable
+  }, [toast]);
+
+  // The composer reads ONE consolidated view: held-here state wins (its
+  // engine belongs to the store but the morph/ghost must render here too).
+  return {
+    recording: recording || (heldHere && heldNow !== null && heldNow.recording),
+    interim: heldHere && heldNow !== null ? heldNow.interim : interim,
+    held: heldHere,
+    // Pin is offered whenever NO pin exists yet (one at a time). Available for
+    // a manual draft too — not gated on an active dictation.
+    canPin: heldNow === null,
+    // A pin EXISTS (this chat's or another's): the inline composer yields to a
+    // small note, and the SOLE composer becomes the floating detached panel.
+    pinned: heldNow !== null,
+    pinnedHere: heldHere,
+    pinnedLabel: heldNow?.targetLabel ?? "",
+    pinnedTargetChatId: heldNow?.targetChatId ?? null,
+    // The detached panel's "send" defers the routed/queued send to THIS
+    // composer (which owns routing) — surfaced so the Composer can perform it.
+    pendingSend: heldHere ? (heldNow?.pendingSend ?? null) : null,
+    // Monotonic id of the pending send: the effect keys off THIS (not the text)
+    // so a retry is distinct from a StrictMode replay (codex re-review P1).
+    pendingSendId: heldHere ? (heldNow?.pendingSendId ?? 0) : 0,
+    // A non-destructive un-pin ("dock back"): THIS composer (the owner) absorbs
+    // the text back into its inline runtime and releases the hold.
+    pendingRestore: heldHere ? (heldNow?.pendingRestore ?? null) : null,
+    start,
+    stop,
+    hold,
+  };
+}
+
+function DictationButton({
+  recording,
+  onStart,
+  onStop,
+}: {
+  recording: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
   // User-defined toggle shortcut (profile-stored; null = none). It must work
   // even while the composer textarea has focus — dictation targets it.
   const me = useQuery(api.me.getMe, { host: APP_HOST });
@@ -3438,44 +3758,7 @@ function DictationButton() {
         // two triggers (no drift between them).
         toggleRef.current = () => el?.click();
       }}
-      onClick={() => {
-        if (recording) {
-          handleRef.current?.stop();
-          handleRef.current = null;
-          setRecording(false);
-          return;
-        }
-        if (!dictationSupported()) {
-          toast.error(m.chat_mic_error_unsupported());
-          return;
-        }
-        const h = startDictation({
-          lang,
-          onText: (t) => {
-            const cur = composer.getState().text;
-            composer.setText(cur ? `${cur.replace(/\s+$/, "")} ${t.trim()}` : t.trim());
-          },
-          onEnd: () => {
-            handleRef.current = null;
-            setRecording(false);
-          },
-          onError: (code) => {
-            handleRef.current = null;
-            setRecording(false);
-            if (code === "not-allowed" || code === "service-not-allowed") {
-              toast.error(m.chat_mic_error_denied());
-            } else if (code !== "no-speech" && code !== "aborted") {
-              toast.error(m.chat_mic_error_generic({ code }));
-            }
-          },
-        });
-        if (h === null) {
-          toast.error(m.chat_mic_error_unsupported());
-          return;
-        }
-        handleRef.current = h;
-        setRecording(true);
-      }}
+      onClick={() => (recording ? onStop() : onStart())}
     >
       <Mic size={18} aria-hidden />
     </button>
@@ -3484,12 +3767,15 @@ function DictationButton() {
 
 function Composer({
   chatId,
+  chatTitle = "",
   showTools,
   onToggleTools,
   unavailable = false,
   subAgentBusy = false,
 }: {
   chatId: ConvexId<"chats">;
+  /** Display label for the held-dictation dock chip. */
+  chatTitle?: string;
   showTools: boolean;
   onToggleTools: () => void;
   /** Bridge down: disable input + send so no un-sendable turn is persisted. */
@@ -3542,6 +3828,99 @@ function Composer({
   const queueSend = useContext(QueueSendContext);
   const composerRuntime = useComposerRuntime();
   const convexClient = useConvex();
+  // DICTATION mode (lifted): the whole composer morphs while recording —
+  // enlarged growth cap, voice-accent ring, live-transcript ghost — and the
+  // full-page focus mode is a user-requested toggle (Escape collapses).
+  const composerRootRef = useRef<HTMLFormElement | null>(null);
+  const composerNavigate = useNavigate();
+  const dictation = useDictationController({
+    chatId,
+    // Dock chip label: the chat title when the caller provides one, else the
+    // composer's target name (agent/brand) — always something human.
+    chatTitle: chatTitle !== "" ? chatTitle : composerName,
+    voiceInput,
+    rootRef: composerRootRef,
+  });
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  // DEFERRED cross-chat send: the detached panel navigated here with a pending
+  // send. Perform the routed/queued send THIS composer owns (the panel can't —
+  // it lives outside any chat's routing), then release the hold. Reads the
+  // text from the store (not the runtime) so it never races the mirror effect.
+  const pendingSendId = dictation.pendingSendId;
+  const pendingSendToast = useToast();
+  // Idempotency key = the MONOTONIC send id (not the text): a StrictMode replay
+  // repeats the same id (skip), while a retry of the same text carries a fresh
+  // id (proceed + unlock) — the content-based token deadlocked the retry (codex
+  // re-review P1).
+  const sentSendRef = useRef<number>(0);
+  useEffect(() => {
+    if (pendingSendId === 0) return;
+    if (sentSendRef.current === pendingSendId) return; // StrictMode replay
+    sentSendRef.current = pendingSendId;
+    // Snapshot the pin this send belongs to: a late resolve must only ever
+    // touch THIS pin, never a replacement one (codex re-review P1).
+    const heldNow = getHeldDictation();
+    const text = heldNow?.pendingSend ?? "";
+    const holdId = heldNow?.holdId ?? -1;
+    clearHeldPendingSend();
+    // The target can't accept a turn (bridge down / read-only): KEEP the
+    // pinned draft — never persist a turn behind the unavailable lock (codex
+    // P1). The text stays safe in the floating panel; the user retries later.
+    if (unavailable) {
+      endHeldSendingById(holdId);
+      pendingSendToast.error(m.chat_composer_unavailable());
+      return;
+    }
+    if (text.trim() === "") {
+      releaseHeldDictationById(holdId);
+      return;
+    }
+    if (queued && queueSend !== null) {
+      // Defer the release until the queue ACCEPTS: a refused enqueue
+      // (QUEUE_FULL / network error — queueSend already toasts the reason)
+      // must keep the pinned draft alive so the user can retry (codex P1).
+      void queueSend(text).then((ok) => {
+        if (ok) {
+          // Release + clear the runtime ONLY if THIS pin is still held: a
+          // discarded + re-typed draft (or a replacement pin) must survive a
+          // late success (codex re-review P1).
+          if (getHeldDictation()?.holdId === holdId) {
+            releaseHeldDictation();
+            composerRuntime.setText("");
+          }
+        } else {
+          endHeldSendingById(holdId);
+        }
+      });
+    } else if (getHeldDictation()?.holdId === holdId) {
+      releaseHeldDictation();
+      composerRuntime.setText(text);
+      composerRuntime.send();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per send id
+  }, [pendingSendId]);
+  // A non-destructive un-pin ("dock back"): the OWNER composer absorbs the text
+  // back into its inline runtime and releases the hold (codex P1 — the release
+  // affordance was unreachable while a note replaced the composer).
+  const pendingRestore = dictation.pendingRestore;
+  useEffect(() => {
+    if (pendingRestore === null) return;
+    composerRuntime.setText(pendingRestore);
+    clearHeldPendingRestore();
+    releaseHeldDictation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per pending
+  }, [pendingRestore]);
+  useEffect(() => {
+    if (!composerExpanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setComposerExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [composerExpanded]);
   // Publish the composer's capabilities to the right-panel document viewer
   // ("use in prompt"): ref-carried so the panel reads the LIVE composer state
   // at click time without re-render coupling.
@@ -3551,14 +3930,19 @@ function Composer({
     promptBridgeRef.current = {
       // QUEUED follow-ups are text-only (their attachments would silently
       // not ride) — the viewer then falls back to the inline block, which
-      // DOES travel with a queued send (codex P1).
-      canAttach: attachmentsSupported && !queued,
+      // DOES travel with a queued send (codex P1). A PINNED composer is also
+      // text-only: an attachment would strand on the hidden runtime and ride
+      // an invisible detached send — same P1, other path (codex re-review).
+      canAttach: attachmentsSupported && !queued && !dictation.pinned,
       // NOT marked as pasted: an edited document is a real user file, and
       // the "pasted" origin would hide it in Settings › Files (codex P2).
       // The paste-attach counter holds SEND while the async size-policy
       // checks run — an immediate Enter must never send without the
       // document it just claimed to include (codex P2).
       attachFile: (file: File) => {
+        // Hard guard (defense in depth): never attach while pinned, whatever
+        // the viewer believes about canAttach.
+        if (dictation.pinned) return Promise.resolve();
         setPasteAttachCount((n) => n + 1);
         return composerRuntime
           .addAttachment(file)
@@ -3586,7 +3970,13 @@ function Composer({
     return () => {
       promptBridgeRef.current = null;
     };
-  }, [promptBridgeRef, attachmentsSupported, queued, composerRuntime]);
+  }, [
+    promptBridgeRef,
+    attachmentsSupported,
+    queued,
+    composerRuntime,
+    dictation.pinned,
+  ]);
   // Large-paste routing: a big pasted text becomes a FILE attachment instead
   // of inlining into the prompt (a single paste could overflow the agent's
   // context before compaction ran — live 2026-07-04). The attachment pipeline
@@ -3744,13 +4134,49 @@ function Composer({
   // border + focus ring (`:focus-within`), so focusing the textarea never shifts
   // layout. (Voice/dictation mic intentionally omitted until the talk.* phase —
   // a non-functional control would mislead.)
-  return (
+  // Focus mode = the SAME composer, portaled to <body>. A portal preserves
+  // React context (the assistant-ui runtime, all providers) while escaping the
+  // chat pane's containing block / overflow — inline `position: fixed` was
+  // clipped to an invisible sliver (the "just a blur" bug). Compact mode stays
+  // inline in the thread.
+  const composerTree = (
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     <>
-    <ReadingBanner />
+    {composerExpanded ? (
+      // Focus-mode backdrop: dims the page and dismisses on click, so the
+      // expanded composer always has an obvious way out even beyond its own
+      // close button.
+      <button
+        type="button"
+        className="oc-composer__backdrop"
+        aria-label={m.chat_composer_collapse()}
+        onClick={() => setComposerExpanded(false)}
+      />
+    ) : null}
     <ComposerPrimitive.Root
-      className={`oc-composer${unavailable ? " oc-composer--disabled" : ""}`}
+      ref={composerRootRef}
+      className={`oc-composer${unavailable ? " oc-composer--disabled" : ""}${
+        dictation.recording ? " oc-composer--dictation" : ""
+      }${composerExpanded ? " oc-composer--expanded" : ""}`}
     >
+      {composerExpanded ? (
+        // Expanded header: a title + an ALWAYS-visible close (the action bar
+        // stays reachable too, but this guarantees an exit at the top).
+        <div className="oc-composer__exphead">
+          <span className="oc-composer__exptitle">
+            {m.chat_composer_expand_title()}
+          </span>
+          <button
+            type="button"
+            className="oc-composer__expclose"
+            title={m.chat_composer_collapse()}
+            onClick={() => setComposerExpanded(false)}
+          >
+            <Minimize2 size={15} aria-hidden />
+            {m.chat_composer_collapse()}
+          </button>
+        </div>
+      ) : null}
       <ComposerPrimitive.Attachments
         components={{ Attachment: ComposerAttachmentChip }}
       />
@@ -3789,6 +4215,14 @@ function Composer({
         data-gramm_editor="false"
         data-enable-grammarly="false"
       />
+      {dictation.recording && dictation.interim !== "" ? (
+        // The engine's in-flight hypothesis — display-only ghost under the
+        // caret area, replaced on every event, cleared when it commits.
+        <div className="oc-composer__interim" aria-hidden>
+          <span className="oc-composer__interim-dot" />
+          {dictation.interim}
+        </div>
+      ) : null}
       {/* No in-composer status. Anything tied to an AI response — processing,
           held-send, sub-agents — is anchored to THAT response in the thread (the
           run status + sub-agent cards), never accumulated in the neutral composer
@@ -3828,7 +4262,70 @@ function Composer({
           <ComposerAgentSelect unavailable={unavailable} />
         </div>
         <div className="oc-composer__group">
-          {voiceInput ? <DictationButton /> : null}
+          {/* PIN / release: detach the composer as a floating panel that
+              survives navigation (dictation OR manual). Persistent slot with a
+              width transition so the mic + send slide smoothly (no jump). */}
+          <span
+            className={`oc-composer__voiceslot${
+              dictation.canPin || dictation.held ? " is-shown" : ""
+            }`}
+            aria-hidden={!dictation.canPin && !dictation.held}
+          >
+            {dictation.held ? (
+              <button
+                type="button"
+                className="oc-composer__heldchip"
+                title={m.chat_dictation_release()}
+                aria-label={m.chat_dictation_release()}
+                onClick={() => releaseHeldDictation()}
+              >
+                <Pin size={12} aria-hidden />
+                {m.chat_dictation_held()}
+                <X size={11} aria-hidden />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="oc-composer__icon oc-composer__hold"
+                title={m.chat_composer_pin()}
+                aria-label={m.chat_composer_pin()}
+                onClick={dictation.hold}
+                disabled={!dictation.canPin || pasteAttaching}
+                tabIndex={!dictation.canPin || pasteAttaching ? -1 : 0}
+              >
+                <Pin size={16} aria-hidden />
+              </button>
+            )}
+          </span>
+          <button
+            type="button"
+            className={`oc-composer__icon${composerExpanded ? " is-on" : ""}`}
+            title={
+              composerExpanded
+                ? m.chat_composer_collapse()
+                : m.chat_composer_expand()
+            }
+            aria-label={
+              composerExpanded
+                ? m.chat_composer_collapse()
+                : m.chat_composer_expand()
+            }
+            aria-pressed={composerExpanded}
+            onClick={() => setComposerExpanded((v) => !v)}
+          >
+            {composerExpanded ? (
+              <Minimize2 size={16} aria-hidden />
+            ) : (
+              <Maximize2 size={16} aria-hidden />
+            )}
+          </button>
+          {voiceInput ? (
+            <DictationButton
+              recording={dictation.recording}
+              onStart={dictation.start}
+              onStop={dictation.stop}
+            />
+          ) : null}
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a
             // turn would only produce an unanswerable message.
@@ -3865,6 +4362,61 @@ function Composer({
         </div>
       </div>
     </ComposerPrimitive.Root>
+    </>
+  );
+  return (
+    <>
+      <ReadingBanner />
+      {dictation.pinned ? (
+        // A composer is PINNED (detached to the floating panel): NO inline
+        // composer anywhere — a small note stands in its place, so the sole
+        // composer is unmistakably the movable floating one. On the owner
+        // chat the note is informational; elsewhere it links back to the
+        // owner conversation.
+        <div className="oc-composer__pinnednote" role="note">
+          <Pin size={14} aria-hidden />
+          {dictation.pinnedHere ? (
+            <>
+              <span>{m.composer_detached_here()}</span>
+              <button
+                type="button"
+                className="oc-composer__pinnedgoto"
+                onClick={() => requestHeldRestore()}
+              >
+                {m.composer_detached_recover()}
+              </button>
+            </>
+          ) : (
+            <>
+              <span>
+                {m.composer_detached_elsewhere({
+                  chat: dictation.pinnedLabel || m.dictation_dock_title(),
+                })}
+              </span>
+              {dictation.pinnedTargetChatId ? (
+                <button
+                  type="button"
+                  className="oc-composer__pinnedgoto"
+                  onClick={() => {
+                    void composerNavigate({
+                      to: "/chat/$chatId",
+                      params: {
+                        chatId: dictation.pinnedTargetChatId as string,
+                      },
+                    });
+                  }}
+                >
+                  {m.composer_detached_goto()}
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : composerExpanded ? (
+        createPortal(composerTree, document.body)
+      ) : (
+        composerTree
+      )}
     </>
   );
 }

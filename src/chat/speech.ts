@@ -137,12 +137,21 @@ export function dictationSupported(): boolean {
 
 export type DictationHandle = { stop: () => void };
 
-/** Start a dictation session. `onText` receives the FINAL transcript pieces as
- *  they settle (interim results are not surfaced — the composer only ever gets
- *  committed text). Returns null when the browser has no engine. */
+/** A long silence between two FINAL transcript segments reads as a spoken
+ *  paragraph break: the next committed piece is flagged so the composer can
+ *  open a new paragraph instead of gluing everything into one block —
+ *  long dictated prompts stay structured hands-free. */
+const DICTATION_PARAGRAPH_PAUSE_MS = 2_500;
+
+/** Start a dictation session. `onText` receives the FINAL transcript pieces
+ *  as they settle (`paragraph` = a long pause preceded this piece).
+ *  `onInterim` (optional) streams the engine's CURRENT in-flight hypothesis —
+ *  display-only ghost text, replaced on every event and cleared ("") when the
+ *  segment finalizes. Returns null when the browser has no engine. */
 export function startDictation(opts: {
   lang: string;
-  onText: (finalText: string) => void;
+  onText: (finalText: string, meta: { paragraph: boolean }) => void;
+  onInterim?: (interimText: string) => void;
   onEnd: () => void;
   onError: (code: string) => void;
 }): DictationHandle | null {
@@ -150,19 +159,42 @@ export function startDictation(opts: {
   if (!Ctor) return null;
   const rec = new Ctor();
   rec.lang = opts.lang;
-  rec.interimResults = false;
+  rec.interimResults = opts.onInterim !== undefined;
   rec.continuous = true;
+  let lastFinalAt = 0;
+  // The SILENT gap ends when the next segment starts SPEAKING — its first
+  // interim hypothesis, not its final (which lands after the whole sentence
+  // and would count speech time as pause; a long sentence is no paragraph).
+  let segmentStartAt: number | null = null;
   rec.onresult = (ev: unknown) => {
     const e = ev as {
       resultIndex: number;
       results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
     };
+    const now = Date.now();
+    let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
-      if (r?.isFinal && r[0]?.transcript) opts.onText(r[0].transcript);
+      if (!r?.[0]?.transcript) continue;
+      if (r.isFinal) {
+        const spokeAt = segmentStartAt ?? now;
+        const paragraph =
+          lastFinalAt !== 0 && spokeAt - lastFinalAt > DICTATION_PARAGRAPH_PAUSE_MS;
+        lastFinalAt = now;
+        segmentStartAt = null;
+        opts.onText(r[0].transcript, { paragraph });
+      } else {
+        interim += r[0].transcript;
+      }
     }
+    if (interim !== "" && segmentStartAt === null) segmentStartAt = now;
+    // Always publish (including "") so a finalized segment clears the ghost.
+    opts.onInterim?.(interim);
   };
-  rec.onend = opts.onEnd;
+  rec.onend = () => {
+    opts.onInterim?.("");
+    opts.onEnd();
+  };
   rec.onerror = (ev: unknown) => {
     const code = String((ev as { error?: string }).error ?? "unknown");
     opts.onError(code);

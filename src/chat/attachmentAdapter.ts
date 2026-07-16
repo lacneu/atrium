@@ -14,6 +14,7 @@ import {
   maxRawInboundBytes,
 } from "../../convex/lib/attachmentLimits";
 import { uploadProgressStore } from "./uploadProgressStore";
+import { beginAttachmentAdd, endAttachmentAdd } from "./attachmentBusy";
 import { m } from "@/paraglide/messages.js";
 
 // Attachment adapter for assistant-ui that uploads files straight into Convex
@@ -123,6 +124,12 @@ export function createConvexAttachmentAdapter(
     accept: "*",
 
     async add({ file }: { file: File }): Promise<PendingAttachment> {
+      // Signal "an attachment is being added" for the whole async operation so a
+      // detached-composer pin is refused while a file is still landing on the
+      // runtime (codex re-review P1) — covers the native picker + file pastes,
+      // not just the text-paste paths a component counter sees.
+      beginAttachmentAdd();
+      try {
       // Reject oversized files UPFRONT (before upload) using the limit DERIVED from
       // the gateway's maxPayload — no hardcoded size. The server reports it via
       // getBridgeAvailability.maxInboundBytes.
@@ -186,6 +193,9 @@ export function createConvexAttachmentAdapter(
         file,
         status: { type: "running", reason: "uploading", progress: 0 },
       };
+      } finally {
+        endAttachmentAdd();
+      }
     },
 
     async send(attachment: PendingAttachment): Promise<CompleteAttachment> {

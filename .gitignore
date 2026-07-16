@@ -57,3 +57,6 @@ openclaw-frame-captures/
 
 # Volatile local Hermes bench (secrets/DB/runtime state — fixtures live in bridge/test/fixtures/hermes)
 bridge/local-hermes/
+
+# Personal Codex/MCP wiring (absolute local paths — must not ship in the shared repo)
+.codex/

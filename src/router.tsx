@@ -20,6 +20,7 @@
 //     /settings/$tab        shared route for the 4 PARAMLESS tabs
 //                           (roles/integrations/instances/theme)
 
+import { HeldDictationDock } from "./chat/HeldDictationDock";
 import {
   lazy,
   Suspense,
@@ -846,6 +847,10 @@ function AuthenticatedChrome({
           <Outlet />
         </main>
       </div>
+      {/* Pinned dictation dock: persistent chrome INSIDE the identity-keyed
+          tree — an impersonation/identity swap remounts it, which stops the
+          engine and purges the held text (codex P1). */}
+      <HeldDictationDock />
     </div>
   );
 }
