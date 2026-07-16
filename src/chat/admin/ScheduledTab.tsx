@@ -51,6 +51,17 @@ import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { cronExprFromSchedule, describeCronExpr } from "../cronDescribe";
 import { getLocale } from "@/paraglide/runtime.js";
+import { FilterBar } from "./filters/FilterBar";
+import { TimezoneCombobox } from "./TimezoneCombobox";
+import { DateTimePicker } from "./DateTimePicker";
+import {
+  cronFilterActive,
+  cronJobMatches,
+  cronResultKind,
+  cronStateKind,
+  EMPTY_CRON_FILTER,
+  type CronFilter,
+} from "./cronView";
 
 // Settings › Scheduled — the user's scheduled gateway jobs (crons), read
 // on-demand through the bridge (api.scheduled.listMyCrons) and now MANAGED
@@ -122,6 +133,24 @@ function errCode(err: unknown): string {
   return (err as { data?: { code?: string } })?.data?.code ?? "unknown";
 }
 
+/** The last-run RESULT badge — SHARED by the table's result column and the run-
+ *  history dialog (one mapping, no drift). Known outcomes are styled; an
+ *  unknown gateway status shows outline with its raw text; never-run = "—". */
+function ResultBadge({ status }: { status: string | null }) {
+  switch (cronResultKind(status)) {
+    case "ok":
+      return <Badge variant="secondary">{m.cron_result_ok()}</Badge>;
+    case "error":
+      return <Badge variant="destructive">{m.cron_result_error()}</Badge>;
+    case "running":
+      return <Badge variant="outline">{m.cron_result_running()}</Badge>;
+    case "other":
+      return <Badge variant="outline">{status}</Badge>;
+    case "none":
+      return <span className="text-muted-foreground">—</span>;
+  }
+}
+
 export function ScheduledTab() {
   const listMyCrons = useAction(api.scheduled.listMyCrons);
   const getDetail = useAction(api.scheduled.getCronDetail);
@@ -146,6 +175,9 @@ export function ScheduledTab() {
   } | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [editSaving, setEditSaving] = useState(false);
+  // Client-side filters (the crons are already fully loaded): text + state +
+  // result, with a Reset — same FilterBar scaffolding as the other tabs.
+  const [filter, setFilter] = useState<CronFilter>(EMPTY_CRON_FILTER);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -431,6 +463,45 @@ export function ScheduledTab() {
         </Button>
       </div>
 
+      {groups !== null && totalJobs > 0 ? (
+        <FilterBar
+          q={filter.q}
+          onQChange={(q) => setFilter((f) => ({ ...f, q }))}
+          searchPlaceholder={m.cron_filter_search()}
+          onReset={() => setFilter(EMPTY_CRON_FILTER)}
+          canReset={cronFilterActive(filter)}
+        >
+          <Select
+            value={filter.state}
+            onValueChange={(v) => setFilter((f) => ({ ...f, state: v }))}
+          >
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{m.cron_filter_state_all()}</SelectItem>
+              <SelectItem value="active">{m.scheduled_active()}</SelectItem>
+              <SelectItem value="paused">{m.scheduled_paused()}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={filter.result}
+            onValueChange={(v) => setFilter((f) => ({ ...f, result: v }))}
+          >
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{m.cron_filter_result_all()}</SelectItem>
+              <SelectItem value="ok">{m.cron_result_ok()}</SelectItem>
+              <SelectItem value="error">{m.cron_result_error()}</SelectItem>
+              <SelectItem value="running">{m.cron_result_running()}</SelectItem>
+              <SelectItem value="none">{m.cron_result_never()}</SelectItem>
+            </SelectContent>
+          </Select>
+        </FilterBar>
+      ) : null}
+
       {groups === null ? (
         <p className="oc-admin__hint" aria-busy={loading}>
           {failed ? m.scheduled_load_error() : m.common_loading()}
@@ -443,7 +514,13 @@ export function ScheduledTab() {
           {groups.length === 0 ? (
             <p className="oc-admin__hint">{m.scheduled_empty()}</p>
           ) : null}
-          {groups.map((g) => (
+          {groups.map((g) => {
+            // Filter WITHIN the group (keep the unsupported/error/empty
+            // messages + the ?job deep-link highlight working).
+            const jobs = g.jobs.filter((j) => cronJobMatches(j, filter));
+            const filteredOut =
+              cronFilterActive(filter) && g.jobs.length > 0 && jobs.length === 0;
+            return (
             <section key={g.instanceName} style={{ marginBottom: 20 }}>
               {groups.length > 1 || g.error || !g.supported ? (
                 <h3
@@ -468,6 +545,8 @@ export function ScheduledTab() {
                 </p>
               ) : g.jobs.length === 0 ? (
                 <p className="oc-admin__hint">{m.scheduled_none_here()}</p>
+              ) : filteredOut ? (
+                <p className="oc-admin__hint">{m.cron_filter_no_match()}</p>
               ) : (
                 <Table>
                   <TableHeader>
@@ -477,11 +556,12 @@ export function ScheduledTab() {
                       <TableHead>{m.scheduled_col_schedule()}</TableHead>
                       <TableHead>{m.scheduled_col_next_run()}</TableHead>
                       <TableHead>{m.scheduled_col_status()}</TableHead>
+                      <TableHead>{m.cron_col_result()}</TableHead>
                       <TableHead>{m.scheduled_col_actions()}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {g.jobs.map((j, i) => {
+                    {jobs.map((j, i) => {
                       const jobKey = `${g.instanceName}:${j.id ?? i}`;
                       const busy = busyJob === jobKey;
                       const canManage = g.manageSupported;
@@ -534,11 +614,11 @@ export function ScheduledTab() {
                             : "—"}
                         </TableCell>
                         <TableCell>
-                          {j.enabled === true ? (
+                          {cronStateKind(j.enabled) === "active" ? (
                             <Badge variant="secondary">
                               {m.scheduled_active()}
                             </Badge>
-                          ) : j.enabled === false ? (
+                          ) : cronStateKind(j.enabled) === "paused" ? (
                             <Badge variant="outline">
                               {m.scheduled_paused()}
                             </Badge>
@@ -546,14 +626,9 @@ export function ScheduledTab() {
                             // Contract drift: state unknown — never claim Active.
                             <span className="text-muted-foreground">—</span>
                           )}
-                          {j.lastRunStatus ? (
-                            <span
-                              className="text-muted-foreground"
-                              style={{ marginLeft: 8, fontSize: "0.8rem" }}
-                            >
-                              {j.lastRunStatus}
-                            </span>
-                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <ResultBadge status={j.lastRunStatus} />
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {j.id === null ? (
@@ -565,7 +640,7 @@ export function ScheduledTab() {
                               aria-hidden
                             />
                           ) : (
-                            <span style={{ display: "inline-flex", gap: 2 }}>
+                            <span className="oc-cronactions">
                               {full ? (
                                 <Button
                                   variant="ghost"
@@ -692,7 +767,8 @@ export function ScheduledTab() {
                 </Table>
               )}
             </section>
-          ))}
+            );
+          })}
           {totalJobs > 0 ? (
             <p className="oc-admin__hint" style={{ marginTop: 4 }}>
               {m.scheduled_hint_manage()}
@@ -766,13 +842,7 @@ export function ScheduledTab() {
               {history.entries.map((r, i) => (
                 <div key={i} className="oc-cronpanel__run">
                   <div className="oc-cronpanel__run-head">
-                    {r.status === "ok" ? (
-                      <Badge variant="secondary">{m.cron_run_ok()}</Badge>
-                    ) : r.status === "error" ? (
-                      <Badge variant="destructive">{m.cron_run_error()}</Badge>
-                    ) : (
-                      <Badge variant="outline">{r.status ?? "—"}</Badge>
-                    )}
+                    <ResultBadge status={r.status} />
                     <span>
                       {typeof (r.runAtMs ?? r.ts) === "number"
                         ? dateFmt.format((r.runAtMs ?? r.ts) as number)
@@ -807,7 +877,7 @@ export function ScheduledTab() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="oc-cronedit">
           <DialogHeader>
             <DialogTitle>{m.cron_edit_title()}</DialogTitle>
             <DialogDescription>{m.cron_edit_desc()}</DialogDescription>
@@ -861,13 +931,9 @@ export function ScheduledTab() {
                       placeholder="30 9 * * *"
                       style={{ fontFamily: "var(--font-mono, monospace)" }}
                     />
-                    <Input
+                    <TimezoneCombobox
                       value={edit.tz}
-                      onChange={(e) =>
-                        setEdit({ ...edit, tz: e.target.value, scheduleDirty: true })
-                      }
-                      placeholder="America/Toronto"
-                      style={{ maxWidth: 180 }}
+                      onChange={(tz) => setEdit({ ...edit, tz, scheduleDirty: true })}
                     />
                   </div>
                 ) : edit.scheduleKind === "every" ? (
@@ -902,12 +968,9 @@ export function ScheduledTab() {
                     </Select>
                   </div>
                 ) : (
-                  <Input
-                    type="datetime-local"
+                  <DateTimePicker
                     value={edit.at}
-                    onChange={(e) =>
-                      setEdit({ ...edit, at: e.target.value, scheduleDirty: true })
-                    }
+                    onChange={(at) => setEdit({ ...edit, at, scheduleDirty: true })}
                   />
                 )}
               </div>

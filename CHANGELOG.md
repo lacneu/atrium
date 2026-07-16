@@ -8,6 +8,33 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.62.2] — Scheduled tab, refined: filters, clearer status, themed pickers
+
+Corrective release for the Scheduled (crons) tab. Pure frontend; no breaking
+changes.
+
+- **Status and result are no longer conflated.** The jobs table now has two
+  separate columns: "Status" carries only the job's state (Active / Paused) and
+  a new "Last result" column carries the last run's outcome — OK, Failed,
+  Running, an unknown gateway status shown as-is, or "—" for a job that has
+  never run. The same result badge is reused in the run-history dialog, so the
+  two never disagree.
+- **Filter the list, then reset it — like the other tabs.** A filter bar over
+  the jobs: search by name or agent, filter by state (active / paused) and by
+  last result, with a Reset button that clears everything. Filtering is
+  in-memory (the jobs are already loaded) and a group that is entirely filtered
+  out says so instead of showing an empty table.
+- **The edit dialog now follows the graphic charter.** Its fields, selects and
+  message box take the chart's borders and focus ring. The time-zone field
+  became a searchable list of IANA zones (type "toronto", "paris"…) instead of
+  free text, and the one-shot date/time field is now a themed calendar +
+  time picker (shadcn-based) replacing the OS-rendered native control — same
+  saved value, so nothing changes on the gateway side. Weekday initials in the
+  calendar follow the interface language.
+- **Action buttons animate on hover.** The run / pause / edit / history / delete
+  icons now have a charter-tinted hover (destructive tint on delete), honoring
+  reduced-motion preferences.
+
 ## [0.62.1] — Talk, tuned: per-gateway activation, voice picker, mic sensitivity
 
 Corrective release for the realtime voice lot. Additive; one operational
