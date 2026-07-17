@@ -28,6 +28,7 @@ import {
 import {
   useAction, useQuery, useMutation, useConvex } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
+import { pathOf } from "../../convex/lib/folderTree";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { APP_HOST } from "@/lib/appHost";
@@ -1549,6 +1550,18 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const meta = useQuery(api.messages.getSessionMeta, {
     chatId: chatId as Id<"chats">,
   });
+  // Folder breadcrumb over the title (clickable path to the folder pages).
+  // listProjects is the sidebar's own subscription — Convex dedupes it, so
+  // this costs nothing new. Live: a folder rename/move updates the crumb.
+  const navigate = useNavigate();
+  const projects = useQuery(api.projects.listProjects, {}) as
+    | { _id: string; name: string; parentId: string | null; sortKey: number }[]
+    | undefined;
+  const crumbs = useMemo(() => {
+    const pid = (meta?.projectId ?? null) as string | null;
+    if (pid === null || projects === undefined) return [];
+    return pathOf(projects, pid);
+  }, [meta?.projectId, projects]);
   const sm = (meta?.sessionMeta ?? null) as SessionMetaView | null;
   const settings = (meta?.sessionSettings ?? null) as SessionSettingsView;
   // The agent identity is NO LONGER a header chip: the composer's per-turn agent
@@ -1655,6 +1668,9 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
     meta?.title ?? "",
+    // The breadcrumb widens the title block — its text must retrigger the
+    // measurement (the title claim stays capped at TITLE_CAP either way).
+    crumbs.map((c) => c.name).join("/"),
     ui.showTools ? "1" : "0",
   ].join("|");
   useLayoutEffect(() => {
@@ -1686,12 +1702,41 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
 
   return (
     <header className="oc-chathead" ref={headRef}>
-      <div
-        className="oc-chathead__title"
-        title={meta?.title ?? undefined}
-        ref={titleRef}
-      >
-        {meta?.title || m.chat_conversation_fallback()}
+      <div className="oc-chathead__titlebox" ref={titleRef}>
+        {crumbs.length > 0 ? (
+          // Clickable folder path ("Client ACME › Devis") — each segment opens
+          // its folder page. Width-capped by the title block (ellipsis), and
+          // part of the measureKey above so it never desyncs the compact mode.
+          <nav
+            className="oc-chathead__crumbs"
+            aria-label={m.chat_breadcrumb_aria()}
+          >
+            {crumbs.map((c, i) => (
+              <span key={c._id} className="oc-chathead__crumb">
+                {i > 0 ? (
+                  <span className="oc-chathead__crumbsep" aria-hidden>
+                    ›
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="oc-chathead__crumblink"
+                  onClick={() =>
+                    void navigate({
+                      to: "/project/$projectId",
+                      params: { projectId: c._id },
+                    })
+                  }
+                >
+                  {c.name}
+                </button>
+              </span>
+            ))}
+          </nav>
+        ) : null}
+        <div className="oc-chathead__title" title={meta?.title ?? undefined}>
+          {meta?.title || m.chat_conversation_fallback()}
+        </div>
       </div>
       <div className="oc-chathead__meta">{renderMeta(compact, false)}</div>
       {/* Hidden measurer: the meta at FULL natural width, mode-independent. */}

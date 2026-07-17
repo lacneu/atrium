@@ -535,6 +535,52 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Title block = optional folder breadcrumb stacked over the title. Carries the
+   flex behavior the bare title used to have (the measurer reads ITS
+   scrollWidth, still capped by TITLE_CAP in the header logic). */
+.oc-chathead__titlebox {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.oc-chathead__crumbs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+}
+.oc-chathead__crumb {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.oc-chathead__crumblink {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.oc-chathead__crumblink:hover,
+.oc-chathead__crumblink:focus-visible {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--highlight) 14%, transparent);
+}
+.oc-chathead__crumbsep {
+  opacity: 0.6;
+  padding: 0 1px;
+}
 .oc-chathead__meta {
   flex: 0 0 auto;
   display: flex;
@@ -729,6 +775,7 @@
    so the actions can never be the element that clips even before the JS runs. The
    ghost shares these caps so the measured width matches the real row. */
 .oc-chathead__title { flex: 0 1 auto; flex-shrink: 100; }
+.oc-chathead__titlebox { flex: 0 1 auto; flex-shrink: 100; }
 .oc-chathead__meta { min-width: 0; flex: 0 1 auto; }
 .oc-chathead__meta .oc-chip,
 .oc-chathead__meta .oc-meter { min-width: 0; }
@@ -4181,6 +4228,18 @@ button.oc-bmk-rail__count:hover {
 .oc-sidebar__group-chev {
   color: color-mix(in srgb, var(--proj-hue) 80%, var(--muted-foreground));
 }
+/* Folder sections: the chevron is a REAL button (dedicated fold toggle — the
+   header click navigates to the folder page). Bare reset + a hover ring so
+   the split affordance is discoverable without stealing width. */
+.oc-sidebar__group-chevbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; padding: 1px; margin: 0;
+  border-radius: 5px; cursor: pointer; color: inherit; flex: none;
+}
+.oc-sidebar__group-chevbtn:hover,
+.oc-sidebar__group-chevbtn:focus-visible {
+  background: color-mix(in srgb, var(--proj-hue, var(--muted-foreground)) 18%, transparent);
+}
 .oc-sidebar__group-del { opacity: 0; color: var(--muted-foreground); cursor: pointer; background: transparent; }
 .oc-sidebar__group-head:hover .oc-sidebar__group-del { opacity: 1; }
 
@@ -4393,7 +4452,20 @@ button.oc-bmk-rail__count:hover {
 .oc-chatitem__label {
   flex: 1; min-width: 0; text-align: left; background: transparent; cursor: pointer;
   padding: 0.375rem 0.25rem; font-size: 0.875rem; color: var(--sidebar-foreground);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden;
+  /* Title + optional domain stack (each line ellipsizes on its own). */
+  display: flex; flex-direction: column; gap: 0;
+}
+.oc-chatitem__title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The chat's SUB-folder ("domain") under the title — situates a deep
+   conversation inside the flattened root section. Tinted toward the folder
+   hue so the eye pairs it with the rail. */
+.oc-chatitem__domain {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 0.68rem; line-height: 1.2;
+  color: color-mix(in srgb, var(--proj-hue, var(--muted-foreground)) 55%, var(--muted-foreground));
 }
 /* Compact relative age (OpenWebUI-style), right-aligned, muted; fades out on row
    hover/focus so the kebab menu reads cleanly in its place. */
@@ -4656,6 +4728,16 @@ button.oc-bmk-rail__count:hover {
 .oc-search-result__snippet {
   font-size: 0.78rem;
   color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Folder path of the hit's chat ("Client ACME › Devis") — situates a result
+   without stealing attention from title/snippet. */
+.oc-search-result__path {
+  font-size: 0.7rem;
+  color: var(--muted-foreground);
+  opacity: 0.85;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

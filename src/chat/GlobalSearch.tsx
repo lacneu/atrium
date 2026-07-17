@@ -207,6 +207,16 @@ export function GlobalSearch() {
                     <span className="oc-search-result__title">
                       {hit.title || m.search_untitled_chat()}
                     </span>
+                    {hit.projectPath && hit.projectPath.length > 0 ? (
+                      // Folder path — situates the hit at a glance
+                      // ("Client ACME › Devis").
+                      <span
+                        className="oc-search-result__path"
+                        aria-label={m.search_result_path_aria()}
+                      >
+                        {hit.projectPath.join(" › ")}
+                      </span>
+                    ) : null}
                     {hit.snippet ? (
                       <span className="oc-search-result__snippet">
                         {hit.snippet}

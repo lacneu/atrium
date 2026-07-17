@@ -1064,6 +1064,22 @@ const chatRoute = createRoute({
   }),
 });
 
+// The folder page (main-area home of a project folder: sub-folder cards +
+// conversations). Lazy — the chunk only loads when a folder is opened.
+// `?c=<chatId>` highlights that conversation on landing ("locate in folder
+// view" from the sidebar) so a deeply-filed chat is spotted at a glance.
+const projectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "project/$projectId",
+  component: lazyRouteComponent(
+    () => import("./chat/ProjectPage"),
+    "ProjectPage",
+  ),
+  validateSearch: (search: Record<string, unknown>): { c?: string } => ({
+    c: typeof search.c === "string" ? search.c : undefined,
+  }),
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "settings",
@@ -1259,6 +1275,7 @@ function RouteNotFound() {
 const routeTree = rootRoute.addChildren([
   indexRoute,
   chatRoute,
+  projectRoute,
   settingsRoute.addChildren([
     settingsIndexRoute,
     tracesRoute,

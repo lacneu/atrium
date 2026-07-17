@@ -19,6 +19,8 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { requireActive } from "./lib/access";
+import { requireOwnedProject } from "./projects";
+import { pathOf, subtreeIds } from "./lib/folderTree";
 import {
   buildSnippet,
   queryTerms,
@@ -32,15 +34,55 @@ const MIN_QUERY_LEN = 2;
 // Bounded reads (Convex guideline: never unbounded). Message hits pulled from
 // the index, and the final result cap the palette renders.
 const MESSAGE_HITS = 40;
+// Folder-scoped searches post-filter the index hits (messages carry no
+// projectId — denormalizing it would rewrite every message on a folder move),
+// so pull a LARGER relevance window to compensate. HONEST RECALL LIMIT: an
+// in-folder message hit ranked beyond this global top-N is missed; titles are
+// exhaustive over the scope either way.
+const SCOPED_MESSAGE_HITS = 100;
 const MAX_RESULTS = 25;
 
 export const searchConversations = query({
-  args: { query: v.string() },
-  handler: async (ctx, { query: rawQuery }): Promise<SearchHit[]> => {
+  args: {
+    query: v.string(),
+    // Scope the search to ONE folder subtree (the folder page's search box).
+    projectId: v.optional(v.id("projects")),
+  },
+  handler: async (ctx, { query: rawQuery, projectId }): Promise<SearchHit[]> => {
     const { userId } = await requireActive(ctx);
     const trimmed = rawQuery.trim();
     if (trimmed.length < MIN_QUERY_LEN) return [];
     const terms = queryTerms(trimmed);
+
+    // The caller's folders — resolves every hit's projectPath, and (when
+    // scoped) the subtree the results must belong to. Owner-bounded read.
+    if (projectId !== undefined) {
+      await requireOwnedProject(ctx, userId, projectId);
+    }
+    const projects = await ctx.db
+      .query("projects")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const projectRows = projects.map((p) => ({
+      _id: p._id as string,
+      parentId: (p.parentId ?? null) as string | null,
+      name: p.name,
+      sortKey: p.sortKey ?? 0,
+    }));
+    const scopeFolders =
+      projectId !== undefined
+        ? new Set(subtreeIds(projectRows, projectId))
+        : null;
+    // Path cache: chats sharing a folder share the computed path.
+    const pathCache = new Map<string, string[]>();
+    const projectPathOf = (pid: string | undefined): string[] | undefined => {
+      if (pid === undefined) return undefined;
+      const cached = pathCache.get(pid);
+      if (cached !== undefined) return cached;
+      const path = pathOf(projectRows, pid).map((n) => n.name);
+      pathCache.set(pid, path);
+      return path.length > 0 ? path : undefined;
+    };
 
     // The caller's chats, loaded once (bounded by sidebar size). Serves BOTH as
     // the title-match source and as the owner-scoped lookup that resolves a
@@ -51,10 +93,17 @@ export const searchConversations = query({
         .query("chats")
         .withIndex("by_user", (q) => q.eq("userId", userId))
         .collect()
-    ).filter((c) => c.kind === undefined); // hidden utility chats (documentary/summarizer) — never in
-    // search (mirrors the sidebar exclusion). Filtering the SET here covers BOTH the
-    // title-match loop AND the message-hit path (its chat lookup uses chatById below,
-    // so a hit in a documentary chat resolves to undefined and is dropped).
+    ).filter(
+      (c) =>
+        c.kind === undefined && // hidden utility chats (documentary/summarizer) — never in
+        // search (mirrors the sidebar exclusion). Filtering the SET here covers BOTH the
+        // title-match loop AND the message-hit path (its chat lookup uses chatById below,
+        // so a hit in a documentary chat resolves to undefined and is dropped).
+        // Folder scope: only chats of the requested subtree survive — this set
+        // gates titles AND message hits, so ONE membership rule covers both.
+        (scopeFolders === null ||
+          (c.projectId !== undefined && scopeFolders.has(c.projectId))),
+    );
     const chatById = new Map(chats.map((c) => [c._id, c]));
 
     const results: SearchHit[] = [];
@@ -74,18 +123,21 @@ export const searchConversations = query({
         snippet: "",
         matchedIn: "title",
         at: chat.updatedAt,
+        projectPath: projectPathOf(chat.projectId),
       });
       if (results.length >= MAX_RESULTS) return results;
     }
 
     // 2) Full-text message hits, in the index's relevance order, SCOPED to the
     // caller via the `userId` filter field. One row per chat (best hit wins).
+    // Folder scope is a POST-filter through chatById (see the recall note on
+    // SCOPED_MESSAGE_HITS above).
     const msgHits = await ctx.db
       .query("messages")
       .withSearchIndex("search_text", (q) =>
         q.search("text", trimmed).eq("userId", userId),
       )
-      .take(MESSAGE_HITS);
+      .take(scopeFolders === null ? MESSAGE_HITS : SCOPED_MESSAGE_HITS);
 
     for (const m of msgHits) {
       const chat = chatById.get(m.chatId);
@@ -107,6 +159,7 @@ export const searchConversations = query({
         matchedIn: "message",
         role: m.role,
         at: m._creationTime,
+        projectPath: projectPathOf(chat.projectId),
       });
       if (results.length >= MAX_RESULTS) break;
     }

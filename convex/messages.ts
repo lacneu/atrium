@@ -887,6 +887,9 @@ export const getSessionMeta = query({
     }
     return {
       title: chat.title ?? null,
+      // Folder membership (null = unfiled) — the header breadcrumb resolves
+      // the path client-side against listProjects (one shared subscription).
+      projectId: chat.projectId ?? null,
       // MULTI-AGENT: has this chat flipped to per-turn routing (a turn was routed to
       // an agent other than the primary)? Gates the per-message agent chip in the
       // thread. Read-only projection of the chat flag the dispatch maintains.
@@ -961,6 +964,10 @@ export const listChats = query({
       if (++scanned > CHAT_RECENT_SCAN_CAP) break;
       if (c.archived) continue;
       if (c.kind !== undefined) continue; // hidden utility chats (documentary/summarizer) — never in the sidebar
+      // WORKING-SET opt-out: the user removed this chat from the sidebar (it
+      // lives on in its folder page / search). Pinned rows come from their own
+      // read below — pinning always wins over the opt-out.
+      if (c.sidebarHidden === true) continue;
       recent.push(c);
       if (recent.length >= CHAT_WINDOW) break;
     }

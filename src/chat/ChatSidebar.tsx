@@ -3,8 +3,10 @@ import { APP_HOST } from "@/lib/appHost";
 import { clearSidebarFlash, useSidebarFlash } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useToast } from "@/components/ui/toast";
 import { formatChatReference } from "../../convex/lib/envLabel";
+import { rootAncestorOf, rootsOf } from "../../convex/lib/folderTree";
 import {
   DndContext,
   DragOverlay,
@@ -35,8 +37,11 @@ import {
   Bookmark,
   ChevronDown,
   ChevronRight,
+  FolderOpen,
+  FolderSearch,
   GripVertical,
   MoreVertical,
+  PanelLeftClose,
   Pin,
   PinOff,
   Pencil,
@@ -55,6 +60,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { EntitySheet } from "./admin/EntitySheet";
+import { FolderTreePicker } from "./FolderTreePicker";
 import { Input } from "@/components/ui/input";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import { api } from "./convexApi";
@@ -62,34 +68,11 @@ import type { Id } from "./convexApi";
 import { relativeAge } from "./relativeAge";
 import { m } from "@/paraglide/messages.js";
 
-// Preset chat colors (token-driven, list display only). Value matches the
-// backend `chatColorValidator`. The dot uses oklch hues that read in both modes.
-const CHAT_COLORS: { value: string; hue: string }[] = [
-  // Each preset reads its charte variable (declared in convexChat.css, per
-  // mode) with the historical oklch as fallback — a charte can re-theme the
-  // whole sidebar palette without touching code.
-  { value: "red", hue: "var(--oc-accent-red, oklch(0.63 0.21 25))" },
-  { value: "orange", hue: "var(--oc-accent-orange, oklch(0.7 0.17 50))" },
-  { value: "amber", hue: "var(--oc-accent-amber, oklch(0.8 0.15 85))" },
-  { value: "green", hue: "var(--oc-accent-green, oklch(0.7 0.16 150))" },
-  { value: "teal", hue: "var(--oc-accent-teal, oklch(0.7 0.12 190))" },
-  { value: "blue", hue: "var(--oc-accent-blue, oklch(0.62 0.19 250))" },
-  { value: "violet", hue: "var(--oc-accent-violet, oklch(0.6 0.2 300))" },
-  { value: "pink", hue: "var(--oc-accent-pink, oklch(0.7 0.2 350))" },
-];
-const colorHue = (c: string | null | undefined) =>
-  CHAT_COLORS.find((x) => x.value === c)?.hue ?? null;
-
-// Stable AUTO hue for a project without a chosen color: hash its id into the
-// preset palette so every folder is distinguishable at a glance without any
-// setup, and keeps ITS hue across sessions. Exported for tests.
-export function autoProjectHue(id: string): string {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return CHAT_COLORS[h % CHAT_COLORS.length]!.hue;
-}
-const projectHue = (p: { _id: string; color?: string | null }): string =>
-  colorHue(p.color) ?? autoProjectHue(p._id);
+// The sidebar tint palette + hue resolution moved to sidebarPalette.ts (shared
+// with ProjectPage + FolderTreePicker without import cycles); re-exported here
+// so existing imports (tests) keep working.
+export { CHAT_COLORS, autoProjectHue, colorHue, projectHue } from "./sidebarPalette";
+import { CHAT_COLORS, colorHue, projectHue } from "./sidebarPalette";
 
 // Droppable id scheme: a chat may be dropped onto a project section
 // ("project:<id>") or the no-project section ("project:none"). Reorder within a
@@ -127,6 +110,9 @@ type Project = {
   collapsed: boolean;
   color: string | null;
   sortKey: number;
+  // Folder nesting (null = root). The sidebar renders ROOT folders only —
+  // sub-folders (and their chats) live on the folder PAGE (/project/$id).
+  parentId: Id<"projects"> | null;
 };
 
 // Skeleton rows shown in place of the chat list while it first loads, so the
@@ -313,6 +299,11 @@ export function ChatSidebar({
       return;
     }
     const proj = (projects ?? []).find((p) => p._id === pid);
+    // A chat inside a SUB-folder has no sidebar row to reveal (only root
+    // folders render sections) — leave everything folded; the root header's
+    // aggregate dot carries the signal and the fork navigation already opened
+    // the chat itself.
+    if (proj && proj.parentId !== null) return;
     if (proj?.collapsed) {
       void setProjectCollapsed({ projectId: pid, collapsed: false });
     }
@@ -364,6 +355,33 @@ export function ChatSidebar({
   const byProject = (pid: string | null) =>
     unpinned.filter((c) => (c.projectId ?? null) === pid);
 
+  // The sidebar stays FLAT: only ROOT folders render as sections; sub-folders
+  // (and their chats) live on the folder page. Chats of sub-folders still ride
+  // listChats, so the root header can aggregate their busy/unread signals.
+  const navigate = useNavigate();
+  const roots = useMemo(() => rootsOf(projects ?? []), [projects]);
+  // folderId -> its root ancestor's id (identity for roots).
+  const rootMap = useMemo(() => {
+    const list = projects ?? [];
+    return new Map(list.map((p) => [p._id, rootAncestorOf(list, p._id)]));
+  }, [projects]);
+  // folderId -> name, for the per-row "domain" label (deep rows name their
+  // sub-folder inside the flattened root section).
+  const projectNames = useMemo(
+    () => new Map((projects ?? []).map((p) => [p._id, p.name])),
+    [projects],
+  );
+  // Every visible-window chat of the ROOT's whole subtree (direct + nested) —
+  // drives the folded-header aggregates. Window-bounded like everything else
+  // here (a sub-folder chat outside listChats' window doesn't signal — same
+  // acceptance as folded folders before nesting existed).
+  const subtreeChats = (rootId: string) =>
+    unpinned.filter(
+      (c) =>
+        c.projectId !== null &&
+        (rootMap.get(c.projectId) ?? c.projectId) === rootId,
+    );
+
   function findChat(id: string) {
     return rows.find((c) => c._id === id);
   }
@@ -381,7 +399,10 @@ export function ChatSidebar({
     // section, or a chat inside one); outside any project it is a no-op.
     if (activeId.startsWith(PROJ_HEAD)) {
       const movedId = activeId.slice(PROJ_HEAD.length) as Id<"projects">;
-      const list = projects ?? [];
+      // Only ROOT folders render (and drag) in the sidebar — the reorder's
+      // prev/next keys must come from the ROOT list, not the full forest
+      // (fractional keys only compare between siblings).
+      const list = roots;
       let targetId: string | null = null;
       if (overId.startsWith(PROJ_HEAD)) targetId = overId.slice(PROJ_HEAD.length);
       else if (overId.startsWith("project:") && overId !== NO_PROJECT)
@@ -617,11 +638,18 @@ export function ChatSidebar({
           ) : null}
 
           <SortableContext
-            items={(projects ?? []).map((p) => projHeadId(p._id))}
+            items={roots.map((p) => projHeadId(p._id))}
             strategy={verticalListSortingStrategy}
           >
-          {(projects ?? []).map((p) => {
-            const ch = byProject(p._id);
+          {roots.map((p) => {
+            // WORKING-SET view: the section lists its WHOLE subtree's chats
+            // (flattened — the server already filtered out the chats the user
+            // removed from the sidebar). Each deep row names its sub-folder
+            // (the "domain") in a muted label. NOTE: manual reorder between
+            // two same-folder rows separated by other sub-folders' rows can
+            // land visually elsewhere (keys only compare between siblings) —
+            // rare, and the folder page is the true organizing surface.
+            const ch = subtreeChats(p._id);
             return (
               <Section
                 key={p._id}
@@ -642,6 +670,12 @@ export function ChatSidebar({
                     collapsed: !p.collapsed,
                   })
                 }
+                onOpen={() =>
+                  void navigate({
+                    to: "/project/$projectId",
+                    params: { projectId: p._id },
+                  })
+                }
               >
                 {p.collapsed ? null : ch.length === 0 ? (
                   <div className="oc-sidebar__empty">{m.sidebar_drop_chat_here()}</div>
@@ -654,7 +688,12 @@ export function ChatSidebar({
                       unread={unreadIds.has(c._id)}
                       busy={busyIds.has(c._id)}
                       bookmarked={bookmarkedIds.has(c._id)}
-                  referenceLabel={referenceLabel}
+                      referenceLabel={referenceLabel}
+                      domainLabel={
+                        c.projectId !== null && c.projectId !== p._id
+                          ? (projectNames.get(c.projectId) ?? null)
+                          : null
+                      }
                       ageTick={minuteTick}
                       suppressClick={suppressClickRef}
                       onSelect={onSelect}
@@ -752,6 +791,7 @@ function Section({
   busy,
   unread,
   onToggle,
+  onOpen,
   children,
 }: {
   label: string;
@@ -770,18 +810,28 @@ function Section({
   busy?: boolean;
   unread?: boolean;
   onToggle?: () => void;
+  // Folder sections only: navigate to the folder PAGE. When set, clicking the
+  // header NAME opens the page and the chevron becomes the dedicated fold
+  // toggle (the static sections keep click-to-fold).
+  onOpen?: () => void;
   children: React.ReactNode;
 }) {
   const deleteProject = useMutation(api.projects.deleteProject);
   const renameProject = useMutation(api.projects.renameProject);
   const setProjectColor = useMutation(api.projects.setProjectColor);
+  const moveProject = useMutation(api.projects.moveProject);
   const confirm = useConfirm();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
-  const count = useQuery(
-    api.projects.projectChatCount,
+  // "Move folder to..." tree picker — nests this folder under another one
+  // (the sidebar shows roots only, so nesting always goes through here).
+  const [moveOpen, setMoveOpen] = useState(false);
+  // Recursive counts (sub-folders + their chats) — the delete confirmation
+  // must announce the WHOLE subtree it is about to remove.
+  const treeCount = useQuery(
+    api.projects.projectTreeCount,
     projectId ? { projectId } : "skip",
-  ) as number | undefined;
+  ) as { folders: number; chats: number } | undefined;
   const { setNodeRef, isOver } = useDroppable({ id: dropId ?? `static:${label}` });
   // Folder reorder: the WHOLE section is the sortable node (so dragging the
   // header moves the folder with its rows), but only the header grip carries
@@ -799,14 +849,18 @@ function Section({
   // The toggle area is a clickable div (role=button) — NOT a <button> — so the
   // project-actions <button> can live inside it without nesting buttons
   // (invalid HTML / hydration error).
+  // With onOpen (folder sections), the header's primary action is OPENING the
+  // folder page; folding moves to the chevron button. Enter/Space follow the
+  // primary action.
+  const headerAction = onOpen ?? onToggle;
   const onKeyToggle = (e: React.KeyboardEvent) => {
     // Only when the HEADER itself is focused: Space/Enter on a nested control
     // (the reorder grip, the actions menu) bubbles here and must not also
     // fold/unfold the folder mid-interaction.
     if (e.target !== e.currentTarget) return;
-    if (collapsible && onToggle && (e.key === "Enter" || e.key === " ")) {
+    if (collapsible && headerAction && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
-      onToggle();
+      headerAction();
     }
   };
   // The folder's tint: chosen preset, else a stable auto hue. Applied as a CSS
@@ -845,10 +899,10 @@ function Section({
           ? {
               role: "button",
               tabIndex: 0,
-              // Post-drag guard: dropping the folder must not also toggle it.
+              // Post-drag guard: dropping the folder must not also act.
               onClick: () => {
                 if (suppressClick?.current) return;
-                onToggle?.();
+                headerAction?.();
               },
               onKeyDown: onKeyToggle,
             }
@@ -857,9 +911,40 @@ function Section({
       >
         {collapsible ? (
           // The chevron doubles as the folder's color carrier (tinted via
-          // --proj-hue) — one glyph instead of chevron + swatch, so the NAME
-          // starts right after it and keeps the row's width.
-          collapsed ? (
+          // --proj-hue). With onOpen it is ALSO the dedicated fold toggle (a
+          // real button, so the header click can navigate to the folder page
+          // while folding stays one click away).
+          onOpen ? (
+            <button
+              type="button"
+              className="oc-sidebar__group-chevbtn"
+              aria-label={collapsed ? m.sidebar_expand() : m.sidebar_collapse()}
+              aria-expanded={!collapsed}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (suppressClick?.current) return;
+                onToggle?.();
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+            >
+              {collapsed ? (
+                <ChevronRight
+                  className={
+                    "size-3.5 shrink-0" +
+                    (project ? " oc-sidebar__group-chev" : "")
+                  }
+                />
+              ) : (
+                <ChevronDown
+                  className={
+                    "size-3.5 shrink-0" +
+                    (project ? " oc-sidebar__group-chev" : "")
+                  }
+                />
+              )}
+            </button>
+          ) : collapsed ? (
             <ChevronRight
               className={
                 "size-3.5 shrink-0" + (project ? " oc-sidebar__group-chev" : "")
@@ -922,6 +1007,11 @@ function Section({
               className="w-48"
               onClick={(e) => e.stopPropagation()}
             >
+              {onOpen ? (
+                <DropdownMenuItem onSelect={() => onOpen()}>
+                  <FolderOpen /> {m.sidebar_open_folder()}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem
                 onSelect={() => {
                   setRenameValue(label);
@@ -929,6 +1019,9 @@ function Section({
                 }}
               >
                 <Pencil /> {m.sidebar_rename()}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setMoveOpen(true)}>
+                <FolderPlus /> {m.sidebar_move_folder_to()}
               </DropdownMenuItem>
               <DropdownMenuLabel>{m.sidebar_color()}</DropdownMenuLabel>
               <div className="oc-colorgrid" onClick={(e) => e.stopPropagation()}>
@@ -962,13 +1055,23 @@ function Section({
                 variant="destructive"
                 onSelect={() => {
                   requestAnimationFrame(async () => {
-                    const n = count ?? 0;
+                    // Announce the WHOLE subtree: nested folders and every
+                    // conversation inside them are deleted too.
+                    const folders = treeCount?.folders ?? 0;
+                    const nChats = treeCount?.chats ?? 0;
                     const ok = await confirm({
                       title: m.sidebar_delete_project_confirm_title({ name: label }),
                       description:
-                        n > 0
-                          ? m.sidebar_delete_project_confirm_desc({ count: n })
-                          : m.sidebar_action_irreversible(),
+                        folders > 0
+                          ? m.sidebar_delete_project_confirm_desc_tree({
+                              folders,
+                              chats: nChats,
+                            })
+                          : nChats > 0
+                            ? m.sidebar_delete_project_confirm_desc({
+                                count: nChats,
+                              })
+                            : m.sidebar_action_irreversible(),
                       confirmWord: m.sidebar_delete(),
                       confirmLabel: m.sidebar_delete_project(),
                       destructive: true,
@@ -1014,6 +1117,16 @@ function Section({
           </div>
         </EntitySheet>
       ) : null}
+      {projectId && moveOpen ? (
+        <FolderTreePicker
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          title={m.folder_picker_title_folder()}
+          movingFolderId={projectId}
+          currentId={project?.parentId ?? null}
+          onPick={(parentId) => void moveProject({ projectId, parentId })}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1029,6 +1142,7 @@ const ChatItem = memo(function ChatItem({
   busy,
   bookmarked,
   referenceLabel,
+  domainLabel,
   suppressClick,
   onSelect,
 }: {
@@ -1044,6 +1158,9 @@ const ChatItem = memo(function ChatItem({
   // Deployment env label for the SYNCHRONOUS reference copy (null = bare id;
   // undefined = still loading, the copy item is disabled meanwhile).
   referenceLabel: string | null | undefined;
+  // The chat's SUB-folder name when it sits deeper than the section's root
+  // (the "domain" hint of the flattened working-set view). null = direct.
+  domainLabel?: string | null;
   // Minute cadence from the parent: memo would otherwise freeze the relative
   // age label (identical props skip the render, Date.now() never re-reads).
   // Not destructured — its only job is to defeat the memo once a minute.
@@ -1076,6 +1193,12 @@ const ChatItem = memo(function ChatItem({
   const deleteChat = useMutation(api.chats.deleteChat);
   const pinChat = useMutation(api.chats.pinChat);
   const setColor = useMutation(api.chats.setChatColor);
+  const moveToProject = useMutation(api.chats.moveChatToProject);
+  const setChatSidebar = useMutation(api.chats.setChatSidebar);
+  const locateNavigate = useNavigate();
+  // "Move to..." tree picker (menu item) — reaches SUB-folders, which the
+  // drag&drop can't (only root sections render in the sidebar).
+  const [moveOpen, setMoveOpen] = useState(false);
   // Compact relative age (OpenWebUI-style), gated by the `showChatAge` UI pref.
   // getMe is deduped by Convex across every item — one shared subscription.
   const showAge =
@@ -1167,7 +1290,14 @@ const ChatItem = memo(function ChatItem({
             onSelect(chat._id);
           }}
         >
-          {chat.title || m.sidebar_untitled()}
+          <span className="oc-chatitem__title">
+            {chat.title || m.sidebar_untitled()}
+          </span>
+          {domainLabel ? (
+            // The chat's sub-folder ("domain") — the flattened working-set
+            // section still situates deep conversations at a glance.
+            <span className="oc-chatitem__domain">{domainLabel}</span>
+          ) : null}
         </button>
         {busy ? (
           <span
@@ -1248,6 +1378,38 @@ const ChatItem = memo(function ChatItem({
             >
               <Link2 /> {m.sidebar_copy_reference()}
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setMoveOpen(true)}>
+              <FolderOpen /> {m.sidebar_move_to_folder()}
+            </DropdownMenuItem>
+            {chat.projectId !== null ? (
+              // Locate this chat in the folder view: opens ITS folder's page
+              // with the row highlighted (?c=) — the fast answer to "where
+              // does this deeply-filed conversation live?".
+              <DropdownMenuItem
+                onSelect={() =>
+                  void locateNavigate({
+                    to: "/project/$projectId",
+                    params: { projectId: chat.projectId as string },
+                    search: { c: chat._id },
+                  })
+                }
+              >
+                <FolderSearch /> {m.sidebar_locate_in_folder()}
+              </DropdownMenuItem>
+            ) : null}
+            {!chat.pinned ? (
+              // WORKING-SET opt-out: the row vanishes from the sidebar but the
+              // chat stays organized in its folder (page/search reach it, and
+              // the folder page's toggle puts it back). Pinned rows always
+              // show, so the item would be a no-op there — hidden.
+              <DropdownMenuItem
+                onSelect={() =>
+                  void setChatSidebar({ chatId: chat._id, hidden: true })
+                }
+              >
+                <PanelLeftClose /> {m.sidebar_remove_from_bar()}
+              </DropdownMenuItem>
+            ) : null}
 
             <DropdownMenuLabel>{m.sidebar_color()}</DropdownMenuLabel>
             <div className="oc-colorgrid" onClick={(e) => e.stopPropagation()}>
@@ -1318,6 +1480,17 @@ const ChatItem = memo(function ChatItem({
           </label>
         </div>
       </EntitySheet>
+      {moveOpen ? (
+        <FolderTreePicker
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          title={m.folder_picker_title_chat()}
+          currentId={chat.projectId}
+          onPick={(folderId) =>
+            void moveToProject({ chatId: chat._id, projectId: folderId })
+          }
+        />
+      ) : null}
     </>
   );
 });

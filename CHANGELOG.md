@@ -8,6 +8,48 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.63.0] — Folder hierarchy: organize conversations like files, keep a clean working set
+
+Feature release: conversations get a real folder hierarchy with a Finder-like
+browsing surface, while the left sidebar becomes a curated working set instead
+of a mirror of the tree. Frontend + Convex only (no gateway involvement);
+additive schema, zero migration — existing folders become roots and every
+existing chat stays visible.
+
+- **Folders now nest — to any depth.** A folder can hold sub-folders and
+  conversations; the only structural rule is that a folder can never be moved
+  into its own subtree (refused with a message). Deleting a folder removes its
+  WHOLE subtree after a typed confirmation that spells out the recursive
+  folder and conversation counts.
+- **Every folder has a page, with three views.** Clicking a folder in the
+  sidebar opens its page: a breadcrumb, "new conversation here" (the chat is
+  born filed), "new sub-folder", and a persisted view toggle — **columns**
+  (Finder-style, the default: one column per level from the root, auto-scrolled
+  to the current level, always-visible scrollbar + edge shadows so horizontal
+  overflow is obvious), **cards** (sub-folder tiles with recursive counts and
+  last activity), and **list** (an indented, collapsible tree of the whole
+  subtree). Folders and conversations carry context menus in all three views
+  (open, rename, new sub-folder, move, color, delete / rename, pin, move,
+  sidebar toggle, delete).
+- **Full drag & drop, Finder conventions.** Drop a conversation or folder
+  ONTO a folder (center band) to nest it; drop BETWEEN two items to choose its
+  position (neighbours part to preview the slot); drop onto a breadcrumb
+  segment to move it up a level; both at once — dragging into another
+  container at a precise position re-parents and places it there.
+- **The sidebar is a working set, not the tree.** A root folder's section
+  lists the conversations of its whole subtree, each deep row naming its
+  sub-folder (the "domain") in a small tinted label. Every conversation can be
+  removed from / returned to the sidebar (it stays filed and searchable;
+  pinned chats always show) — the toggle is always visible on the folder
+  page's rows, so a ten-conversation folder is scannable at a glance.
+- **Find and situate conversations anywhere.** Global search (⌘K) shows each
+  result's folder path ("Client ACME › Devis"); a folder page's search box
+  filters titles instantly AND deep-searches message bodies across the whole
+  subtree (results land on the exact message); the chat header gains a
+  clickable breadcrumb; and a filed conversation's sidebar menu gets "Open in
+  folder view", which opens its folder with the row highlighted — the fast
+  answer to "where does this conversation live?".
+
 ## [0.62.2] — Scheduled tab, refined: filters, clearer status, themed pickers
 
 Corrective release for the Scheduled (crons) tab. Pure frontend; no breaking

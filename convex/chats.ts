@@ -432,6 +432,19 @@ export const pinChat = mutation({
   },
 });
 
+/** WORKING-SET toggle: hidden=true removes the chat from the left sidebar
+ *  (it stays in its folder — the folder page / search still reach it);
+ *  hidden=false puts it back. Stored as `true`/absent so the default (absent)
+ *  keeps every pre-existing chat visible. */
+export const setChatSidebar = mutation({
+  args: { chatId: v.id("chats"), hidden: v.boolean() },
+  handler: async (ctx, { chatId, hidden }) => {
+    const { userId } = await requireActive(ctx);
+    await requireOwnedChat(ctx, userId, chatId);
+    await ctx.db.patch(chatId, { sidebarHidden: hidden ? true : undefined });
+  },
+});
+
 export const setChatColor = mutation({
   args: { chatId: v.id("chats"), color: chatColorValidator },
   handler: async (ctx, { chatId, color }) => {

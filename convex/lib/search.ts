@@ -14,6 +14,10 @@ export type SearchHit = {
   matchedIn: SearchMatchedIn;
   role?: "user" | "assistant" | "system";
   at: number;
+  /** Folder path (root -> leaf names) of the chat's folder, when it has one —
+   *  the palette renders it muted under the result so a hit is situated at a
+   *  glance ("Client ACME › Devis"). */
+  projectPath?: string[];
 };
 
 // Snippet geometry: chars of context kept on each side of the first match, and

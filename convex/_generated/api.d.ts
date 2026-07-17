@@ -76,6 +76,7 @@ import type * as lib_domains from "../lib/domains.js";
 import type * as lib_envLabel from "../lib/envLabel.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
+import type * as lib_folderTree from "../lib/folderTree.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
 import type * as lib_instanceConfig from "../lib/instanceConfig.js";
 import type * as lib_locales from "../lib/locales.js";
@@ -194,6 +195,7 @@ declare const fullApi: ApiFromModules<{
   "lib/envLabel": typeof lib_envLabel;
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
+  "lib/folderTree": typeof lib_folderTree;
   "lib/groupAccess": typeof lib_groupAccess;
   "lib/instanceConfig": typeof lib_instanceConfig;
   "lib/locales": typeof lib_locales;

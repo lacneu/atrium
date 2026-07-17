@@ -196,6 +196,80 @@ describe("search.searchConversations — full-text over messages", () => {
   });
 });
 
+describe("search — folder scope + projectPath", () => {
+  /** A / A1 folder chain + one chat in each + one chat OUTSIDE any folder,
+   *  all matching the same token. */
+  async function seedTree(t: ReturnType<typeof convexTest>) {
+    const { userId, as } = await seedUser(t);
+    const { rootId, subId } = await t.run(async (ctx) => {
+      const rootId = await ctx.db.insert("projects", {
+        userId,
+        name: "Client ACME",
+      });
+      const subId = await ctx.db.insert("projects", {
+        userId,
+        name: "Devis",
+        parentId: rootId,
+      });
+      return { rootId, subId };
+    });
+    const inRoot = await seedChat(t, userId, {
+      title: "Root chat",
+      text: "the shared token lives here",
+    });
+    const inSub = await seedChat(t, userId, {
+      title: "Sub chat",
+      text: "the shared token lives here too",
+    });
+    const outside = await seedChat(t, userId, {
+      title: "Outside chat",
+      text: "the shared token lives elsewhere",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(inRoot, { projectId: rootId });
+      await ctx.db.patch(inSub, { projectId: subId });
+    });
+    return { userId, as, rootId, subId, inRoot, inSub, outside };
+  }
+
+  test("scoped search returns ONLY the subtree (sub-folder included, outside excluded)", async () => {
+    const t = convexTest(schema, modules);
+    const { as, rootId, inRoot, inSub, outside } = await seedTree(t);
+    const hits = await as.query(api.search.searchConversations, {
+      query: "token",
+      projectId: rootId,
+    });
+    const ids = hits.map((h) => h.chatId);
+    expect(ids).toContain(inRoot);
+    expect(ids).toContain(inSub); // sub-folder chats belong to the scope
+    expect(ids).not.toContain(outside);
+  });
+
+  test("every hit carries its folder path (root › leaf); unfiled chats carry none", async () => {
+    const t = convexTest(schema, modules);
+    const { as, inSub, outside } = await seedTree(t);
+    const hits = await as.query(api.search.searchConversations, {
+      query: "token",
+    });
+    const sub = hits.find((h) => h.chatId === inSub);
+    expect(sub?.projectPath).toEqual(["Client ACME", "Devis"]);
+    const out = hits.find((h) => h.chatId === outside);
+    expect(out?.projectPath).toBeUndefined();
+  });
+
+  test("IDOR: scoping to another user's folder is Forbidden", async () => {
+    const t = convexTest(schema, modules);
+    const { rootId } = await seedTree(t);
+    const intruder = await seedUser(t);
+    await expect(
+      intruder.as.query(api.search.searchConversations, {
+        query: "token",
+        projectId: rootId,
+      }),
+    ).rejects.toThrow(/Forbidden/);
+  });
+});
+
 describe("lib/search — pure helpers", () => {
   test("queryTerms lowercases and splits on whitespace", () => {
     expect(queryTerms("  Hello   World ")).toEqual(["hello", "world"]);

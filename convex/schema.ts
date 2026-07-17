@@ -877,10 +877,16 @@ export default defineSchema({
   projects: defineTable({
     userId: v.id("users"),
     name: v.string(),
-    sortKey: v.optional(v.number()), // fractional order key
+    sortKey: v.optional(v.number()), // fractional order key (among siblings)
     color: v.optional(v.string()), // preset token name
     collapsed: v.optional(v.boolean()),
-  }).index("by_user", ["userId"]),
+    // Folder nesting (absent = root). Depth is UNLIMITED; cycles are refused
+    // server-side (lib/folderTree.canNest) — readers stay defensive anyway
+    // (a dangling parent behaves as a root, never loops).
+    parentId: v.optional(v.id("projects")),
+  })
+    .index("by_user", ["userId"])
+    .index("by_parent", ["parentId"]),
 
   // A chat thread owned by exactly one user.
   chats: defineTable({
@@ -1006,6 +1012,11 @@ export default defineSchema({
     sortKey: v.optional(v.number()), // fractional manual order (lower = higher)
     pinned: v.optional(v.boolean()), // pinned chats sort above unpinned
     color: v.optional(v.string()), // preset token name, list display only
+    // WORKING-SET opt-out: true = the user removed this chat from the left
+    // sidebar (it stays organized in its folder, reachable via the folder
+    // page / search). Absent/false = visible (retro-compatible default).
+    // A PINNED chat always shows regardless (pinning is the stronger intent).
+    sidebarHidden: v.optional(v.boolean()),
     // OpenClaw session meta, mirrored from the gateway's self-describing
     // `sessions.describe({ key })` so the chat header can surface the model,
     // reasoning (thinking) level, verbosity, and the context-usage meter without

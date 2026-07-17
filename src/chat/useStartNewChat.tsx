@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -19,7 +19,7 @@ import { AgentPickerDialog, type PickableAgent } from "./AgentPicker";
  *   the caller can navigate to it.
  */
 export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
-  startNewChat: () => Promise<void>;
+  startNewChat: (opts?: { projectId?: Id<"projects"> }) => Promise<void>;
   picker: ReactNode;
 } {
   const createChat = useMutation(api.chats.createChat);
@@ -29,6 +29,10 @@ export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
     | PickableAgent[]
     | undefined;
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Folder the pending creation lands in ("New conversation here" on a folder
+  // page). A ref, not state: the agent-picker path resolves on a later click
+  // and must reuse the projectId of the START call, not a re-render's.
+  const pendingProjectRef = useRef<Id<"projects"> | undefined>(undefined);
 
   const bindAndOpen = useCallback(
     async (instanceName: string, agentId: string) => {
@@ -39,24 +43,29 @@ export function useStartNewChat(onCreated: (id: Id<"chats">) => void): {
       const id = (await createChat({
         instanceName,
         agentId,
+        projectId: pendingProjectRef.current,
       })) as Id<"chats">;
       onCreated(id);
     },
     [createChat, onCreated],
   );
 
-  const startNewChat = useCallback(async () => {
-    const agents = myAgents;
-    // Auto-bind ONLY when the sole agent is usable. A single agent that was
-    // deleted on the gateway falls through to the picker (which disables it) so we
-    // never auto-create a chat bound to a dead agent.
-    if (agents && agents.length === 1 && agents[0].state !== "deleted") {
-      await bindAndOpen(agents[0].instanceName, agents[0].agentId);
-      return;
-    }
-    // 0, >1, sole-deleted, or still loading → let the picker decide.
-    setPickerOpen(true);
-  }, [myAgents, bindAndOpen]);
+  const startNewChat = useCallback(
+    async (opts?: { projectId?: Id<"projects"> }) => {
+      pendingProjectRef.current = opts?.projectId;
+      const agents = myAgents;
+      // Auto-bind ONLY when the sole agent is usable. A single agent that was
+      // deleted on the gateway falls through to the picker (which disables it) so we
+      // never auto-create a chat bound to a dead agent.
+      if (agents && agents.length === 1 && agents[0].state !== "deleted") {
+        await bindAndOpen(agents[0].instanceName, agents[0].agentId);
+        return;
+      }
+      // 0, >1, sole-deleted, or still loading → let the picker decide.
+      setPickerOpen(true);
+    },
+    [myAgents, bindAndOpen],
+  );
 
   const picker = (
     <AgentPickerDialog
