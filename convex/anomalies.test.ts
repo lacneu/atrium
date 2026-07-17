@@ -17,6 +17,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { BUILTIN_ROLES, PERMISSIONS, WILDCARD } from "./lib/rbac";
 
 // Discover function modules for convex-test (required).
 const modules = import.meta.glob("./**/*.ts");
@@ -613,5 +614,27 @@ describe("anomaly detection", () => {
       limit: 1.9,
     });
     expect(one.length).toBe(1);
+  });
+});
+
+describe("anomaly management RBAC contract", () => {
+  test("ONLY admin (wildcard) and agent hold anomalies.report — observer/user/pending never", () => {
+    // The /api/v1/anomalies POST + /api/v1/anomalies/resolve routes gate on
+    // anomalies.report. This pins WHO can manage anomalies: a read-only
+    // observer key must stay 403 on resolve, forever.
+    expect(BUILTIN_ROLES.admin!.permissions).toBe(WILDCARD);
+    expect(BUILTIN_ROLES.agent!.permissions).toContain(
+      PERMISSIONS.ANOMALIES_REPORT,
+    );
+    for (const role of ["observer", "user", "pending"] as const) {
+      const perms = BUILTIN_ROLES[role]!.permissions;
+      expect(perms).not.toBe(WILDCARD);
+      expect(perms).not.toContain(PERMISSIONS.ANOMALIES_REPORT);
+    }
+    // Observer keeps READ access (dashboards), which is the whole point of
+    // the role split.
+    expect(BUILTIN_ROLES.observer!.permissions).toContain(
+      PERMISSIONS.ANOMALIES_READ,
+    );
   });
 });
