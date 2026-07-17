@@ -264,6 +264,8 @@ export default defineSchema({
         v.literal("md"),
         v.literal("lg"),
         v.literal("xl"),
+        v.literal("2xl"),
+        v.literal("3xl"),
       ),
     ),
 
@@ -274,6 +276,11 @@ export default defineSchema({
     // needs a schema migration; a stored value that becomes unsupported narrows
     // to the next fallback tier at read (lib/locales.resolveLocale).
     locale: v.optional(v.string()),
+
+    // The user's preferred IANA time zone (unset = follow the browser).
+    // Plain string, validated at the setter (Intl round-trip) — the zone
+    // database evolves, so membership is a setter concern, not a schema one.
+    timezone: v.optional(v.string()),
 
     // DEPRECATED — superseded by `uiPrefs.showTools`. No longer READ by the
     // resolver (it shadowed the admin default + mislabeled as "default"); kept as

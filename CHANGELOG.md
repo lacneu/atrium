@@ -8,6 +8,43 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.64.0] — Scheduled calendar: your crons on a month or year grid
+
+Feature release for the Scheduled tab and user preferences, plus fixes for
+the 0.62.2 regressions that shipped through 0.63.0. Frontend + Convex
+(additive schema and mutations, zero migration); no breaking changes.
+Self-hosters: this release needs BOTH the image update and `npx convex
+deploy` (new `profiles.timezone` field and text-size values).
+
+- **Scheduled jobs get a calendar view (month + year).** Settings › Scheduled
+  gains a list/calendar toggle (persisted): the month grid shows each cron's
+  occurrences at their time, the year view shows 12 mini-months with per-day
+  density dots (click one to open the month), and clicking an occurrence opens
+  the same edit dialog as the list. Honest by design: recurring occurrences
+  are ESTIMATED from each job's schedule (cron expressions — including
+  tz-suffixed ones —, "every" cadences anchored on the gateway's next run,
+  one-shots); the gateway-reported next run renders as a filled dot and is
+  exact, and a footnote spells the difference out. Paused jobs are never
+  extrapolated. The active filters apply to the calendar too. Built as a
+  source-agnostic surface: future event sources (the user's own calendar,
+  Twenty CRM) can join the crons without reworking the view.
+- **Preferences: your time zone and two larger text sizes.** Settings ›
+  Preferences gains a default time-zone choice (searchable IANA picker, same
+  component as the cron editor; "browser time zone" stays the default) — it
+  prefills schedule editing today and will drive calendar displays later. The
+  text-size control gains two larger steps ("Huge" 137.5%, "Giant" 150%),
+  applied to the whole interface and synced across devices like the existing
+  sizes.
+- **Fixes (Scheduled tab, regressions since 0.62.2).** Landing directly on
+  Settings › Scheduled loaded the tab WITHOUT its stylesheet (lazy-loaded tabs
+  each own their CSS; this one missed the import): the time-zone picker
+  rendered as a raw unbounded list with no search box, its trigger lost its
+  field styling, and the action buttons had no hover treatment. All fixed —
+  the time-zone popover now sizes itself to the available space (pinned
+  search box on top, scrolling list below) and its list actually scrolls
+  inside the edit dialog (the dialog's scroll lock was swallowing wheel
+  events on the portaled popover — same fix applied to the date picker).
+
 ## [0.63.0] — Folder hierarchy: organize conversations like files, keep a clean working set
 
 Feature release: conversations get a real folder hierarchy with a Finder-like

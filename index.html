@@ -26,7 +26,7 @@
       // with the Convex-resolved value right after hydration.
       (function () {
         var s = localStorage.getItem("oc.fontScale");
-        var map = { sm: "87.5%", lg: "112.5%", xl: "125%" };
+        var map = { sm: "87.5%", lg: "112.5%", xl: "125%", "2xl": "137.5%", "3xl": "150%" };
         if (s && map[s]) document.documentElement.style.fontSize = map[s];
       })();
       // Reflect the saved UI locale on <html lang> before first paint (a11y),

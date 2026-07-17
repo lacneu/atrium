@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getLocale } from "@/paraglide/runtime.js";
+import "./confTabs.css";
 import { monthGrid, parseDatetimeLocal, toDatetimeLocal } from "./cronView";
 
 // Monday-first narrow weekday initials for the active locale (2024-01-01 is a
@@ -92,7 +93,9 @@ export function DateTimePicker({
       : m.cron_at_placeholder();
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // modal: same Dialog scroll-lock rationale as TimezoneCombobox — without
+    // it the month-navigation popover ignores wheel/scroll interactions.
+    <Popover modal open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="oc-dtp__trigger" aria-label={m.cron_at_label()}>
           <CalendarDays size={14} aria-hidden className="oc-dtp__icon" />

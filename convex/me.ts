@@ -182,6 +182,8 @@ export const getMe = query({
       // root font-size (useApplyFontScale). Unset resolves to "md" (100%).
       fontScale: profile?.fontScale ?? null,
       resolvedFontScale: profile?.fontScale ?? ("md" as const),
+      // The user's preferred IANA time zone (null = follow the browser).
+      timezone: profile?.timezone ?? null,
       // UI language (mirror of theme): the user's own pref (or null) + the
       // resolved effective locale the client applies via Paraglide + the admin
       // default. The client's useApplyLocale reconciles localStorage to this.
@@ -357,6 +359,8 @@ export const setFontScale = mutation({
       v.literal("md"),
       v.literal("lg"),
       v.literal("xl"),
+      v.literal("2xl"),
+      v.literal("3xl"),
       v.null(),
     ),
   },
@@ -382,6 +386,44 @@ export const setFontScale = mutation({
     if (profile.fontScale === next) return;
     await ctx.db.patch(profile._id, { fontScale: next });
     await auditImpersonated(ctx, actor, "fontScale.set", {
+      resource: "profile",
+      resourceId: userId,
+    });
+  },
+});
+
+// Set the calling user's preferred IANA time zone (null = follow the browser).
+// Same effective-identity + pending-profile + idempotence model as
+// setFontScale. Validation is an Intl round-trip: the zone database is the
+// runtime's, so membership can never drift from what rendering supports.
+export const setTimezone = mutation({
+  args: { timezone: v.union(v.string(), v.null()) },
+  handler: async (ctx, { timezone }) => {
+    if (timezone !== null) {
+      if (timezone.length === 0 || timezone.length > 100) {
+        throw new Error("Invalid time zone");
+      }
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+      } catch {
+        throw new Error(`Invalid time zone: ${timezone}`);
+      }
+    }
+    const actor = await getActor(ctx);
+    const userId = actor.effectiveUserId;
+    const profile = await getProfile(ctx, userId);
+    const next = timezone ?? undefined;
+    if (profile === null) {
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "pending",
+        timezone: next,
+      });
+      return;
+    }
+    if (profile.timezone === next) return;
+    await ctx.db.patch(profile._id, { timezone: next });
+    await auditImpersonated(ctx, actor, "timezone.set", {
       resource: "profile",
       resourceId: userId,
     });

@@ -10,6 +10,7 @@ import { m } from "@/paraglide/messages.js";
 import { type Locale } from "@/paraglide/runtime.js";
 import { FONT_SCALES, type FontScale } from "@/lib/useFontScale";
 import { PreferencesPanel } from "../PreferencesPanel";
+import { TimezoneCombobox } from "./TimezoneCombobox";
 
 // Localized labels for the text-size choices (call-time so they re-localize).
 const FONT_SCALE_LABELS: Record<FontScale, () => string> = {
@@ -17,6 +18,8 @@ const FONT_SCALE_LABELS: Record<FontScale, () => string> = {
   md: () => m.fontsize_md(),
   lg: () => m.fontsize_lg(),
   xl: () => m.fontsize_xl(),
+  "2xl": () => m.fontsize_2xl(),
+  "3xl": () => m.fontsize_3xl(),
 };
 
 // Settings > Preferences (user-scoped, gated on chats.read like Files). Holds the
@@ -33,9 +36,11 @@ export function PreferencesTab() {
         locale: Locale | null;
         name: string | null;
         fontScale: FontScale | null;
+        timezone: string | null;
       }
     | undefined;
   const setLocale = useMutation(api.me.setLocale);
+  const setTimezone = useMutation(api.me.setTimezone);
   // OPTIMISTIC (mirror of UserMenu's setThemeMode): the whole UI resizes the
   // instant a size is clicked — useApplyFontScale reads resolvedFontScale from
   // the local getMe cache, so patching it here skips the server round-trip lag.
@@ -125,6 +130,30 @@ export function PreferencesTab() {
           </Button>
         </div>
         <p className="oc-show__desc">{m.preferences_language_note()}</p>
+      </section>
+
+      <section className="oc-show__section">
+        <div className="oc-show__heading">
+          <h2 className="oc-show__title">{m.preferences_timezone_title()}</h2>
+          <p className="oc-show__desc">{m.preferences_timezone_desc()}</p>
+        </div>
+        <div className="oc-show__row">
+          {/* Same searchable IANA picker as the cron editor (shared component).
+              Empty value = follow the browser; the explicit button clears back
+              to that default. */}
+          <TimezoneCombobox
+            value={me?.timezone ?? ""}
+            onChange={(tz) => void setTimezone({ timezone: tz })}
+          />
+          <Button
+            variant={me?.timezone === null || me?.timezone === undefined ? "default" : "outline"}
+            size="sm"
+            onClick={() => void setTimezone({ timezone: null })}
+          >
+            {m.preferences_timezone_browser()}
+          </Button>
+        </div>
+        <p className="oc-show__desc">{m.preferences_timezone_note()}</p>
       </section>
 
       <section className="oc-show__section">

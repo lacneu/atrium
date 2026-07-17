@@ -317,8 +317,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  width: 100%;
-  max-width: 200px;
+  /* Sized like a sibling Input (h-9) and NEVER shrinking below readability —
+     it sits in a flex row next to the cron-expression field. */
+  flex: 0 1 200px;
+  min-width: 140px;
   height: 2.25rem;
   padding: 0 0.6rem;
   border: 1px solid var(--border);
@@ -337,15 +339,22 @@
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
+/* The popover fits the AVAILABLE workspace (Radix exposes the collision-aware
+   size as CSS vars): search pinned on top, the list scrolls within the rest. */
 .oc-tzcombo__pop {
-  width: 260px;
+  width: min(300px, var(--radix-popover-content-available-width, 300px));
+  max-height: min(340px, var(--radix-popover-content-available-height, 340px));
+  display: flex;
+  flex-direction: column;
 }
 .oc-tzcombo__search {
   margin: 0.4rem;
   width: calc(100% - 0.8rem);
+  flex: 0 0 auto;
 }
 .oc-tzcombo__list {
-  max-height: 240px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 0.25rem 0.35rem;
 }
@@ -484,4 +493,208 @@
 }
 .oc-dtp__timeopts {
   max-height: 220px;
+}
+
+/* ── Scheduled: view toggle + generic calendar surface ───────────────────── */
+.oc-sched__viewtoggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  flex: none;
+}
+.oc-cal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.oc-cal__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.oc-cal__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.oc-cal__title {
+  flex: 1;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-transform: capitalize;
+  min-width: 0;
+}
+.oc-cal__modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+}
+.oc-cal__footnote {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+/* Month grid: 7 columns, weekday header row then 42 day cells. */
+.oc-cal__month {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--border);
+}
+.oc-cal__wd {
+  background: var(--card);
+  padding: 4px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+.oc-cal__day {
+  background: var(--background);
+  min-height: 84px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.oc-cal__day--out {
+  opacity: 0.45;
+}
+.oc-cal__day--today .oc-cal__daynum {
+  background: color-mix(in srgb, var(--voice) 80%, var(--foreground));
+  color: var(--background);
+}
+.oc-cal__daynum {
+  align-self: flex-start;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  border-radius: 999px;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+.oc-cal__event {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: color-mix(in srgb, var(--cal-ev, var(--voice)) 12%, transparent);
+  border-radius: 5px;
+  padding: 1px 4px;
+  font-size: 0.7rem;
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: left;
+}
+.oc-cal__event:hover {
+  background: color-mix(in srgb, var(--cal-ev, var(--voice)) 22%, transparent);
+}
+.oc-cal__event--muted {
+  opacity: 0.55;
+}
+.oc-cal__evdot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  /* Estimated occurrences render as a RING; the gateway-exact next run (and
+     one-shots) render FILLED — the footnote explains the difference. */
+  border: 1.5px solid color-mix(in srgb, var(--cal-ev, var(--voice)) 80%, var(--foreground));
+  background: transparent;
+}
+.oc-cal__event--exact .oc-cal__evdot {
+  background: color-mix(in srgb, var(--cal-ev, var(--voice)) 80%, var(--foreground));
+}
+.oc-cal__evtime {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+.oc-cal__evtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-cal__more {
+  font-size: 0.68rem;
+  color: var(--muted-foreground);
+  padding-left: 4px;
+}
+
+/* Year grid: 12 mini-months with per-day density dots. */
+.oc-cal__year {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.oc-cal__mini {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.oc-cal__mini:hover {
+  border-color: color-mix(in srgb, var(--voice) 35%, var(--border));
+  background: color-mix(in srgb, var(--voice) 6%, var(--card));
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-cal__mini {
+    transition: none;
+  }
+}
+.oc-cal__mininame {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--foreground);
+}
+.oc-cal__minigrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+.oc-cal__minidot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 18%, transparent);
+  justify-self: center;
+}
+.oc-cal__minidot.is-out {
+  background: transparent;
+}
+.oc-cal__minidot.has-one {
+  background: color-mix(in srgb, var(--voice) 55%, transparent);
+}
+.oc-cal__minidot.has-many {
+  background: color-mix(in srgb, var(--voice) 90%, var(--foreground));
+}
+.oc-cal__minidot.is-today {
+  outline: 1.5px solid color-mix(in srgb, var(--voice) 80%, var(--foreground));
+  outline-offset: 1px;
 }

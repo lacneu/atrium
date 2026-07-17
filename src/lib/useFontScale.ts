@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-export type FontScale = "sm" | "md" | "lg" | "xl";
+export type FontScale = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
 
 const CACHE_KEY = "oc.fontScale";
 
@@ -14,9 +14,11 @@ export const FONT_SCALE_CSS: Record<FontScale, string> = {
   md: "", // 16px (browser/stylesheet default)
   lg: "112.5%", // 18px
   xl: "125%", // 20px
+  "2xl": "137.5%", // 22px
+  "3xl": "150%", // 24px
 };
 
-export const FONT_SCALES: FontScale[] = ["sm", "md", "lg", "xl"];
+export const FONT_SCALES: FontScale[] = ["sm", "md", "lg", "xl", "2xl", "3xl"];
 
 export function isFontScale(s: string | null): s is FontScale {
   return s !== null && (FONT_SCALES as string[]).includes(s);

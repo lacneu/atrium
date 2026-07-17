@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAction } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import {
+  CalendarDays,
   History,
+  List,
   LoaderCircle,
   Pause,
   Pencil,
@@ -11,6 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "../convexApi";
+import { APP_HOST } from "@/lib/appHost";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,6 +57,13 @@ import { getLocale } from "@/paraglide/runtime.js";
 import { FilterBar } from "./filters/FilterBar";
 import { TimezoneCombobox } from "./TimezoneCombobox";
 import { DateTimePicker } from "./DateTimePicker";
+import "./confTabs.css";
+import { CalendarView, type CalendarCursor, type CalendarMode } from "./CalendarView";
+import { monthWindow, yearWindow, type CalendarEvent } from "./calendarData";
+import {
+  cronEventsInWindow,
+  type CronCalendarJob,
+} from "./cronCalendarSource";
 import {
   cronFilterActive,
   cronJobMatches,
@@ -159,6 +169,13 @@ export function ScheduledTab() {
   const removeCron = useAction(api.scheduled.removeCron);
   const runNow = useAction(api.scheduled.runCronNow);
   const toastApi = useToast();
+  // The user's preferred time zone (Settings > Preferences) — the cron
+  // editor's tz fallback when a job has none set.
+  const myTimezone = (
+    useQuery(api.me.getMe, { host: APP_HOST }) as
+      | { timezone: string | null }
+      | undefined
+  )?.timezone;
 
   const [groups, setGroups] = useState<CronGroup[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -178,6 +195,59 @@ export function ScheduledTab() {
   // Client-side filters (the crons are already fully loaded): text + state +
   // result, with a Reset — same FilterBar scaffolding as the other tabs.
   const [filter, setFilter] = useState<CronFilter>(EMPTY_CRON_FILTER);
+
+  // LIST vs CALENDAR presentation (persisted per browser). The calendar is
+  // the generic multi-source surface (calendarData.ts) — today it renders
+  // only the cron source; the user's own calendar and Twenty join later.
+  // A `?job=` deep-link (the chat panel's "see in Settings") highlights a
+  // LIST row — landing on the calendar would hide exactly what the user came
+  // for, so the deep-link overrides the persisted preference once.
+  const [schedView, setSchedView] = useState<"list" | "calendar">(() => {
+    if (new URLSearchParams(window.location.search).get("job") !== null) {
+      return "list";
+    }
+    return localStorage.getItem("oc.sched.view") === "calendar"
+      ? "calendar"
+      : "list";
+  });
+  const switchSchedView = (v: "list" | "calendar") => {
+    localStorage.setItem("oc.sched.view", v);
+    setSchedView(v);
+  };
+  const [calMode, setCalMode] = useState<CalendarMode>("month");
+  const [calCursor, setCalCursor] = useState<CalendarCursor>(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+  // Filtered jobs of EVERY instance, flattened for the calendar projection.
+  const calendarJobs = useMemo<CronCalendarJob[]>(() => {
+    const out: CronCalendarJob[] = [];
+    for (const g of groups ?? []) {
+      if (!g.supported || g.error !== null) continue;
+      const canEdit = g.kind === "openclaw" && g.manageSupported;
+      for (const j of g.jobs) {
+        if (!cronJobMatches(j, filter)) continue;
+        out.push({ instanceName: g.instanceName, canEdit, job: j });
+      }
+    }
+    return out;
+  }, [groups, filter]);
+  const calWindow = useMemo(
+    () =>
+      calMode === "year"
+        ? yearWindow(calCursor.year)
+        : monthWindow(calCursor.year, calCursor.month),
+    [calMode, calCursor],
+  );
+  const calendar = useMemo(
+    () => cronEventsInWindow(calendarJobs, calWindow.startMs, calWindow.endMs),
+    [calendarJobs, calWindow],
+  );
+  const onCalendarEventClick = (ev: CalendarEvent) => {
+    const entry = calendar.byItemId.get(ev.itemId);
+    if (entry === undefined || !entry.canEdit || entry.job.id === null) return;
+    void openEdit(entry.instanceName, entry.job);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -451,6 +521,32 @@ export function ScheduledTab() {
         <p className="oc-admin__hint" style={{ flex: 1, margin: 0 }}>
           {m.scheduled_description()}
         </p>
+        <div
+          className="oc-sched__viewtoggle"
+          role="group"
+          aria-label={m.sched_view_toggle_aria()}
+        >
+          <Button
+            variant={schedView === "list" ? "secondary" : "ghost"}
+            size="icon-sm"
+            aria-label={m.sched_view_list()}
+            title={m.sched_view_list()}
+            aria-pressed={schedView === "list"}
+            onClick={() => switchSchedView("list")}
+          >
+            <List />
+          </Button>
+          <Button
+            variant={schedView === "calendar" ? "secondary" : "ghost"}
+            size="icon-sm"
+            aria-label={m.sched_view_calendar()}
+            title={m.sched_view_calendar()}
+            aria-pressed={schedView === "calendar"}
+            onClick={() => switchSchedView("calendar")}
+          >
+            <CalendarDays />
+          </Button>
+        </div>
         <Button
           variant="ghost"
           size="sm"
@@ -506,6 +602,28 @@ export function ScheduledTab() {
         <p className="oc-admin__hint" aria-busy={loading}>
           {failed ? m.scheduled_load_error() : m.common_loading()}
         </p>
+      ) : schedView === "calendar" ? (
+        // CALENDAR presentation: every instance's (filtered) jobs projected
+        // onto one month/year surface. Click = the same edit dialog as the
+        // list (manage-capable OpenClaw instances only).
+        <>
+          {failed ? (
+            <p className="oc-admin__hint">{m.scheduled_load_error()}</p>
+          ) : null}
+          {groups.length === 0 ? (
+            <p className="oc-admin__hint">{m.scheduled_empty()}</p>
+          ) : (
+            <CalendarView
+              events={calendar.events}
+              mode={calMode}
+              cursor={calCursor}
+              onModeChange={setCalMode}
+              onCursorChange={setCalCursor}
+              onEventClick={onCalendarEventClick}
+              footnote={m.cal_estimated_note()}
+            />
+          )}
+        </>
       ) : (
         <>
           {failed ? (
@@ -934,6 +1052,7 @@ export function ScheduledTab() {
                     <TimezoneCombobox
                       value={edit.tz}
                       onChange={(tz) => setEdit({ ...edit, tz, scheduleDirty: true })}
+                      fallbackTz={myTimezone ?? undefined}
                     />
                   </div>
                 ) : edit.scheduleKind === "every" ? (
