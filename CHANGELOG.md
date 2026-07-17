@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.65.1] — Support tooling: resolve anomalies, read feedback threads
+
+Operability release for the observability MCP and its API — follow-up to a
+production triage session. No frontend changes; no breaking changes.
+Self-hosters: `npx convex deploy` activates the feedback-thread field; the
+updated MCP package ships the new tool.
+
+- **Anomalies can be resolved over MCP.** The observability MCP server gains a
+  `resolve_anomaly` tool (close or acknowledge, matching the existing
+  `POST /api/v1/anomalies/resolve` route) — a support agent can now clear an
+  anomaly it has handled instead of leaving it open forever.
+- **Feedback reports expose their reply thread.** `GET /api/v1/feedback-report`
+  now includes the report's conversation thread (author role/label, text,
+  time), so a support agent reads what was already answered before replying —
+  previously the thread length was visible but its content was unreachable
+  over the API.
+
 ## [0.65.0] — Reply to a block: "here is what I am responding to"
 
 Feature release. Frontend + Convex (additive schema, zero migration); no

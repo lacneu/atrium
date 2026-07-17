@@ -885,6 +885,15 @@ export const readForApi = internalQuery({
         snapshot: fb.snapshot,
         chatExists: chat !== null,
         messageExists: message !== null,
+        // The response THREAD (user follow-ups + service/admin replies): the
+        // support agent must read what was already answered before replying —
+        // without it a threadLength>0 report is opaque over the API.
+        thread: (fb.thread ?? []).map((m) => ({
+          authorRole: m.authorRole,
+          authorLabel: m.authorLabel ?? null,
+          text: m.text,
+          at: m.at,
+        })),
       },
     };
   },

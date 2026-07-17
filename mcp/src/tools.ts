@@ -93,6 +93,17 @@ export const queryOpenClawInput = {
     .describe("Free-form passthrough forwarded to the bridge."),
 } as const;
 
+export const resolveAnomalyInput = {
+  anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
+  status: z.enum(["resolved", "acknowledged"]).optional()
+    .describe("Target status (default: resolved)."),
+} as const;
+
+export interface ResolveAnomalyArgs {
+  anomalyId: string;
+  status?: "resolved" | "acknowledged";
+}
+
 export const reportAnomalyInput = {
   kind: z.string().describe("Anomaly kind/type (required)."),
   severity: z.enum(["info", "warn", "critical"])
@@ -720,6 +731,21 @@ export function listAnomalies(
     kind: args.kind,
   });
   return apiFetch(config, `/anomalies${query}`, {}, options);
+}
+
+/** POST /api/v1/anomalies/resolve — close/acknowledge an anomaly. Requires
+ *  `anomalies.report` (the same write permission as reporting one). */
+export function resolveAnomaly(
+  config: Config,
+  args: ResolveAnomalyArgs,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/anomalies/resolve",
+    { method: "POST", body: JSON.stringify(args) },
+    options,
+  );
 }
 
 /**

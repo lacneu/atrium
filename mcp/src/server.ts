@@ -55,6 +55,8 @@ import {
   queryOpenClawInput,
   reportAnomaly,
   reportAnomalyInput,
+  resolveAnomaly,
+  resolveAnomalyInput,
   startDeliveryRecord,
   stopDeliveryRecord,
   getDeliveryReport,
@@ -415,6 +417,18 @@ function main(): void {
       inputSchema: reportAnomalyInput,
     },
     async (args) => run(() => reportAnomaly(config, args)),
+  );
+
+  server.registerTool(
+    "resolve_anomaly",
+    {
+      title: "Resolve an anomaly",
+      description:
+        "Close or acknowledge an anomaly (POST /anomalies/resolve). " +
+        "Key must have anomalies.report. status defaults to 'resolved'.",
+      inputSchema: resolveAnomalyInput,
+    },
+    async (args) => run(() => resolveAnomaly(config, args)),
   );
 
   server.registerTool(
