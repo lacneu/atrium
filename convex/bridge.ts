@@ -35,6 +35,12 @@ import {
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { bridgeDispatchConfig, resolveInstanceConfig } from "./lib/instanceConfig";
+import {
+  effectiveTemplate,
+  fillTemplate,
+  resolveInjection,
+} from "./lib/promptInjections";
+import { composeQuotedText } from "./lib/quoteReply";
 import { classifyAttachment } from "./lib/mediaTransport";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
@@ -406,6 +412,19 @@ export const getChatRouting = internalQuery({
       // re-applies these via sessions.patch before each turn so they survive a
       // session reset. Non-secret labels only.
       sessionSettings: chat.sessionSettings ?? null,
+      // QUOTE-REPLY: the effective per-instance preamble template (registry
+      // entry `quote_reply`, admin-customizable/disable-able). The dispatch
+      // fills {excerpt} when the outbox row carries one — resolved HERE so
+      // dispatch needs no extra read and follows the instance content locale.
+      quoteReplyTemplate: effectiveTemplate(
+        "quote_reply",
+        resolveInjection(
+          "quote_reply",
+          instance?.config?.promptInjections,
+          contentLocale,
+        ),
+        contentLocale,
+      ),
       // Per-instance bridge URL (Model M) + NON-secret config (hot, in-band).
       // Scoped fallback: a bridgeUrl-less instance only inherits env BRIDGE_URL when
       // it is the sole/served instance, never cross-attributed (see bridgeRouting).
@@ -1186,7 +1205,17 @@ export const dispatch = internalAction({
             instanceName: routing.target.instanceName,
             agentId: routing.target.agentId,
             canonical: routing.target.canonical,
-            text: row.text,
+            // QUOTE-REPLY: a turn replying to a block ships the resolved
+            // preamble AHEAD of the user's clean text — plain prompt text, so
+            // OpenClaw and Hermes are covered identically (single send path).
+            text: row.quotedExcerpt
+              ? composeQuotedText(
+                  fillTemplate(routing.quoteReplyTemplate ?? "", {
+                    excerpt: row.quotedExcerpt,
+                  }),
+                  row.text,
+                )
+              : row.text,
             clientMessageId: row.clientMessageId,
             // The user message id for THIS turn — the bridge excludes it when it
             // fetches prior history for session re-hydration (so the current

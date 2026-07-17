@@ -68,6 +68,10 @@ const INJECTION_I18N: Record<
     label: m.injection_file_curation_label,
     help: m.injection_file_curation_help,
   },
+  quote_reply: {
+    label: m.injection_quote_reply_label,
+    help: m.injection_quote_reply_help,
+  },
 };
 
 // Example values for the "Preview" — realistic stand-ins for each placeholder so the admin
@@ -83,6 +87,7 @@ const PLACEHOLDER_EXAMPLES: Record<string, string> = {
   budget_chars: "20000",
   feedback: "Trop de suppressions dans la section des liens, garde-les.",
   content: "# Memory index\n- [Fait 1](fait-1.md) - note du projet",
+  excerpt: "Le classement propose trois dossiers : Clients, Fournisseurs, Interne.",
 };
 
 // What each placeholder corresponds to (shown in a per-placeholder help bubble so an admin
@@ -98,6 +103,7 @@ const PLACEHOLDER_I18N: Record<string, () => string> = {
   budget_chars: m.placeholder_budget_chars,
   feedback: m.placeholder_feedback,
   content: m.placeholder_content,
+  excerpt: m.placeholder_excerpt,
 };
 
 export function PromptInjectionsTab() {

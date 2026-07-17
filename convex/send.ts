@@ -25,6 +25,7 @@ import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
 import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
+import { QUOTE_EXCERPT_CAP } from "./lib/quoteReply";
 
 export const sendMessage = mutation({
   args: {
@@ -59,6 +60,17 @@ export const sendMessage = mutation({
     // trust boundary (resolveTargetForTurn) and stamps it for per-message attribution.
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+    // QUOTE-REPLY: the assistant block this turn replies to ("here is what I am
+    // responding to"). The EXCERPT was captured client-side at click time; the
+    // dispatch prefixes the outgoing text with the resolved quote_reply
+    // injection. blockIndex null = the whole quoted message.
+    quote: v.optional(
+      v.object({
+        messageId: v.id("messages"),
+        blockIndex: v.union(v.number(), v.null()),
+        excerpt: v.string(),
+      }),
     ),
   },
   handler: async (ctx, args) => {
@@ -120,6 +132,36 @@ export const sendMessage = mutation({
       await assertOwnsUpload(ctx, userId, attachment.storageId);
     }
 
+    // 3b. QUOTE-REPLY guards: the quoted message must belong to THIS chat
+    //     (cross-chat/IDOR — same rule as chatBookmarks.toggleBookmark), the
+    //     excerpt is server-bounded, and the block index must be a small
+    //     non-negative integer. A deleted quoted message rejects cleanly (the
+    //     UI cannot offer a quote on a message it no longer renders).
+    let quote: { messageId: Id<"messages">; blockIndex: number | null; excerpt: string } | null =
+      null;
+    if (args.quote !== undefined) {
+      const quoted = await ctx.db.get(args.quote.messageId);
+      if (quoted === null || quoted.chatId !== chat._id) {
+        throw new Error("Invalid: quoted message not in this chat");
+      }
+      // Only an ASSISTANT answer can be quoted (the feature's contract: "here
+      // is the passage of YOUR reply I am responding to") — a direct caller
+      // must not persist a quote of a user/system row (codex P2).
+      if (quoted.role !== "assistant") {
+        throw new Error("Invalid: quoted message is not an assistant reply");
+      }
+      const excerpt = args.quote.excerpt.trim().slice(0, QUOTE_EXCERPT_CAP);
+      if (excerpt.length === 0) throw new Error("Invalid: empty quote excerpt");
+      const blockIndex = args.quote.blockIndex;
+      if (
+        blockIndex !== null &&
+        (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex > 10_000)
+      ) {
+        throw new Error("Invalid: quote block index");
+      }
+      quote = { messageId: args.quote.messageId, blockIndex, excerpt };
+    }
+
     // 4. Optimistic user message (immediately visible & reactive). A QUEUED follow-up
     //    carries a SENTINEL orderTime so it sorts AFTER the in-flight turn (and its
     //    not-yet-created assistant reply) — drainNextQueued re-stamps it to the real
@@ -138,6 +180,17 @@ export const sendMessage = mutation({
         ? {
             routedInstanceName: args.routedAgent.instanceName,
             routedAgentId: args.routedAgent.agentId,
+          }
+        : {}),
+      // Quote-reply anchor + display excerpt (the prompt preamble is composed
+      // at dispatch/rehydration — `text` stays the user's clean instruction).
+      ...(quote
+        ? {
+            quotedMessageId: quote.messageId,
+            ...(quote.blockIndex !== null
+              ? { quotedBlockIndex: quote.blockIndex }
+              : {}),
+            quotedExcerpt: quote.excerpt,
           }
         : {}),
     });
@@ -191,6 +244,9 @@ export const sendMessage = mutation({
       status: busy ? "queued" : "pending",
       // Per-turn routing target, read back by the dispatch.
       ...(args.routedAgent ? { routedAgent: args.routedAgent } : {}),
+      // Quote-reply: the dispatch (and any redo) prefixes the text with the
+      // resolved quote_reply injection filled with this excerpt.
+      ...(quote ? { quotedExcerpt: quote.excerpt } : {}),
     });
 
     // 6. Schedule the dispatch ONLY for an idle chat. A queued row is dispatched

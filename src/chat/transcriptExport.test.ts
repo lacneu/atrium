@@ -47,6 +47,26 @@ describe("transcriptToMarkdown", () => {
     expect(transcriptToMarkdown([], {})).toContain("# Conversation");
     expect(transcriptToMarkdown([], { title: "   " })).toContain("# Conversation");
   });
+
+  it("renders the quote-reply line above a quoted user turn", () => {
+    const md = transcriptToMarkdown(
+      [
+        {
+          role: "user",
+          text: "Corrige ce point",
+          createdAt: T0,
+          quotedExcerpt: "le passage cité",
+        },
+      ],
+      {},
+    );
+    // Without it, "Corrige ce point" is ambiguous in the transcript.
+    expect(md).toContain("> En réponse à : le passage cité");
+    const iQuote = md.indexOf("> En réponse à");
+    const iText = md.indexOf("Corrige ce point");
+    expect(iQuote).toBeGreaterThan(-1);
+    expect(iText).toBeGreaterThan(iQuote);
+  });
 });
 
 describe("transcriptToJson", () => {
@@ -69,6 +89,25 @@ describe("transcriptToJson", () => {
     const json = JSON.parse(transcriptToJson([], {}));
     expect(json.truncated).toBe(false);
     expect(json.exportedAt).toBeNull();
+  });
+
+  it("carries quotedExcerpt on quoted turns only", () => {
+    const json = JSON.parse(
+      transcriptToJson(
+        [
+          {
+            role: "user",
+            text: "Corrige ce point",
+            createdAt: T0,
+            quotedExcerpt: "le passage cité",
+          },
+          { role: "assistant", text: "Fait.", createdAt: T0 + 1 },
+        ],
+        {},
+      ),
+    );
+    expect(json.messages[0].quotedExcerpt).toBe("le passage cité");
+    expect("quotedExcerpt" in json.messages[1]).toBe(false);
   });
 });
 

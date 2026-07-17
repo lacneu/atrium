@@ -195,6 +195,12 @@ export interface ConvexMessageView {
    *  composer defaults to the last-used one. See src/chat/perTurnAgent.ts. */
   routedInstanceName?: string;
   routedAgentId?: string;
+  /** QUOTE-REPLY: the assistant block this user turn replies to. The stored
+   *  excerpt is the display truth (kept even if the quoted message is deleted);
+   *  messageId+blockIndex drive the scroll+flash jump. */
+  quotedMessageId?: string;
+  quotedBlockIndex?: number;
+  quotedExcerpt?: string;
   /** L2: count of ready downloadable document attachments (Sources-chip badge). */
   attachedDocCount?: number;
   /** Dispatch lifecycle (from loadChatView): the outbox row + its status

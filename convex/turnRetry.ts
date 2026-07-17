@@ -276,6 +276,11 @@ export const autoRetryTurn = internalMutation({
       attachments,
       status: "pending",
       ...(routedAgent ? { routedAgent } : {}),
+      // Quote-reply: the auto-retried dispatch must re-carry the excerpt,
+      // or the re-sent instruction loses its targeted passage.
+      ...(lastUser.quotedExcerpt
+        ? { quotedExcerpt: lastUser.quotedExcerpt }
+        : {}),
       autoRetryAttempt: attempt,
     });
     // 3. Ride the regenerate chain: gateway session reset (clears the conflicted

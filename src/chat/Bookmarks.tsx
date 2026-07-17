@@ -27,7 +27,7 @@ import {
 import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "convex/react";
 import { useMessage, useThread } from "@assistant-ui/react";
-import { Bookmark, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { Bookmark, ChevronDown, ChevronUp, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -42,6 +42,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { m } from "@/paraglide/messages.js";
+import { QUOTE_EXCERPT_CLIENT_MAX } from "./pendingQuote";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import {
@@ -84,7 +85,7 @@ export function useBookmarks(): BookmarksApi | null {
  *  while the thread mounts (same budget as the `?m=` deep-link focus). Only
  *  the thread's own viewport scrolls (scrollIntoView would drag every
  *  scrollable ancestor — the sub-agent panel lesson). */
-function focusAnchor(
+export function focusAnchor(
   messageId: string,
   blockIndex: number | null,
   behavior: ScrollBehavior,
@@ -562,11 +563,16 @@ interface HoverState {
  *  bubbles only — user messages bookmark at message level via the action bar. */
 export function BookmarkGutter({
   messageLevelMarkers = true,
+  onReplyToBlock,
 }: {
   /** FALSE on assistant bubbles: their whole-message bookmark is represented
    *  by the header flag next to the agent name — a second margin marker at
    *  the top of the body was redundant (user report). */
   messageLevelMarkers?: boolean;
+  /** Quote-reply (assistant bubbles): a second gutter button under the
+   *  bookmark one — "reply to this block". Receives the hovered block index
+   *  and its RENDERED text excerpt (word-truncated client-side). */
+  onReplyToBlock?: (blockIndex: number, excerpt: string) => void;
 } = {}) {
   const bmApi = useBookmarks();
   const messageId = useMessage((msg) => msg.id);
@@ -686,20 +692,45 @@ export function BookmarkGutter({
       {createPortal(
         <>
           {hover !== null && !streaming ? (
-            <button
-              type="button"
-              className={`oc-bmk-gutter${hoverHasBookmark ? " is-set" : ""}`}
-              style={{ top: hover.top }}
-              title={
-                hoverHasBookmark ? m.bookmark_remove() : m.bookmark_add()
-              }
-              aria-label={
-                hoverHasBookmark ? m.bookmark_remove() : m.bookmark_add()
-              }
-              onClick={() => bmApi.toggle(messageId, hover.blockIndex)}
-            >
-              <Bookmark size={14} />
-            </button>
+            // Both block actions live SIDE BY SIDE on the hovered block's own
+            // line (a stacked second button would land on the NEXT block's
+            // line and read as that block's action — wrong-target trap).
+            <span className="oc-bmk-gutterrow" style={{ top: hover.top }}>
+              {onReplyToBlock ? (
+                // Quote-reply: capture the block's RENDERED text at click time
+                // (the display + prompt truth even if the message later changes).
+                <button
+                  type="button"
+                  className="oc-bmk-gutter oc-bmk-gutter--reply"
+                  title={m.quote_reply_button()}
+                  aria-label={m.quote_reply_button()}
+                  onClick={() => {
+                    const target = anchorElement(body, hover.blockIndex);
+                    const excerpt = previewFromText(
+                      target.textContent ?? "",
+                      QUOTE_EXCERPT_CLIENT_MAX,
+                    );
+                    if (excerpt !== "")
+                      onReplyToBlock(hover.blockIndex, excerpt);
+                  }}
+                >
+                  <Reply size={14} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`oc-bmk-gutter${hoverHasBookmark ? " is-set" : ""}`}
+                title={
+                  hoverHasBookmark ? m.bookmark_remove() : m.bookmark_add()
+                }
+                aria-label={
+                  hoverHasBookmark ? m.bookmark_remove() : m.bookmark_add()
+                }
+                onClick={() => bmApi.toggle(messageId, hover.blockIndex)}
+              >
+                <Bookmark size={14} />
+              </button>
+            </span>
           ) : null}
           {(mine ?? []).map((bm) => {
             const top = markerTops.get(bm.id);

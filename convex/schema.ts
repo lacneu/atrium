@@ -1212,6 +1212,14 @@ export default defineSchema({
     // so the browser streams token-by-token with no frontend change and `text`
     // stays the single searchable/durable copy. OPTIONAL (additive on existing rows).
     liveText: v.optional(v.string()),
+    // QUOTE-REPLY anchor (user messages): the assistant message + block this
+    // turn replies to, with the excerpt captured AT CLICK TIME (the display +
+    // prompt truth even if the quoted message is later edited/deleted). All
+    // additive; blockIndex absent = the whole message. The prompt PREAMBLE is
+    // composed at dispatch/rehydration from these (never stored in `text`).
+    quotedMessageId: v.optional(v.id("messages")),
+    quotedBlockIndex: v.optional(v.number()),
+    quotedExcerpt: v.optional(v.string()),
     error: v.optional(v.string()),
     // The STABLE, curated dispatch error CODE (non-PHI: AGENT_NOT_FOUND,
     // ATTACHMENT_TOO_LARGE, …), stored alongside the user-facing `error` text so a
@@ -1750,6 +1758,10 @@ export default defineSchema({
     // deduped retry can return the original { messageId, outboxId } pair.
     messageId: v.optional(v.id("messages")),
     text: v.string(),
+    // QUOTE-REPLY: the excerpt this turn replies to — carried on the outbox so
+    // the dispatch (and any REDO re-dispatch) prefixes the outgoing text with
+    // the resolved quote_reply injection. Display anchors live on the message.
+    quotedExcerpt: v.optional(v.string()),
     attachmentIds: v.array(v.id("_storage")),
     // Inbound attachments WITH the browser-supplied filename + mimeType (the
     // dispatch needs both to build OpenClaw's chat.send.attachment shape — the

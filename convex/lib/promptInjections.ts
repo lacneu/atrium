@@ -145,6 +145,38 @@ export const PROMPT_INJECTIONS = {
         "[NEW MESSAGES]\n{new_messages}",
     },
   },
+  // Quote-reply preamble: when the user REPLIES TO A BLOCK of a previous
+  // assistant answer ("here is what I am responding to" — the ChatGPT-mobile
+  // reply affordance), this preamble carries the quoted excerpt ahead of the
+  // user's instruction. Composed Convex-side at dispatch AND rehydration, so
+  // it reaches OpenClaw and Hermes identically as plain prompt text.
+  // DISABLING keeps the bare markdown quote (the anchor itself must never be
+  // silently dropped while the UI shows a quote chip).
+  quote_reply: {
+    key: "quote_reply",
+    appliedIn: "convex",
+    togglable: true,
+    placeholders: ["excerpt"],
+    // "a previous assistant answer", NOT "your previous answer": on a
+    // multi-agent chat the quoted passage may come from ANOTHER agent than
+    // the one receiving this turn — the framing must not misattribute it.
+    defaultTemplate: {
+      fr:
+        "[EN RÉPONSE À]\n" +
+        "L'utilisateur répond à ce passage précis d'une réponse précédente " +
+        "de l'assistant :\n" +
+        "> {excerpt}\n" +
+        "Traite sa consigne comme portant spécifiquement sur ce passage.",
+      en:
+        "[IN REPLY TO]\n" +
+        "The user is replying to this specific passage of a previous " +
+        "assistant answer:\n" +
+        "> {excerpt}\n" +
+        "Treat their instruction as targeting that passage specifically.",
+    },
+    // Disabled → the bare markdown quote (anchor preserved, framing removed).
+    disabledTemplate: { fr: "> {excerpt}", en: "> {excerpt}" },
+  },
   // The agent-file CURATION briefing: how the curator specialist rationalizes an
   // over-budget agent file. Per-instance so the admin adapts it to the gateway
   // type (OpenClaw today, Hermes later) and to local conventions; a DEDICATED

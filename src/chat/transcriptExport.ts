@@ -24,6 +24,9 @@ export interface ExportMessage {
   /** epoch ms */
   createdAt: number;
   parts?: ExportPart[];
+  /** Quote-reply: the assistant excerpt this user turn replies to — exported
+   *  so "corrige ceci" stays unambiguous in the transcript. */
+  quotedExcerpt?: string;
 }
 
 export interface ExportOpts {
@@ -77,6 +80,10 @@ export function transcriptToMarkdown(
   for (const msg of messages) {
     lines.push("");
     lines.push(`## ${ROLE_LABEL[msg.role]} · ${formatTs(msg.createdAt)}`);
+    if (msg.quotedExcerpt !== undefined && msg.quotedExcerpt !== "") {
+      lines.push("");
+      lines.push(`> ${m.quote_reply_header()} : ${msg.quotedExcerpt}`);
+    }
     const text = msg.text.trim();
     if (text.length > 0) {
       lines.push("");
@@ -103,6 +110,9 @@ export function transcriptToJson(
       role: m.role,
       createdAt: m.createdAt,
       text: m.text,
+      ...(m.quotedExcerpt !== undefined && m.quotedExcerpt !== ""
+        ? { quotedExcerpt: m.quotedExcerpt }
+        : {}),
       attachments: attachmentNames(m.parts),
     })),
   };

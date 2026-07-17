@@ -224,6 +224,22 @@ export const forkChat = mutation({
         ...(msg.routedAgentId !== undefined
           ? { routedAgentId: msg.routedAgentId }
           : {}),
+        // Quote-reply anchor rides: the collapsed header + the rehydration
+        // preamble both read these. quotedMessageId remaps through idMap
+        // (the quoted assistant turn precedes the quoting user turn, so it
+        // was copied earlier in this chronological loop); a miss keeps the
+        // excerpt without an anchor — same semantics as a deleted quoted
+        // message (header shows, click quietly gives up).
+        ...(msg.quotedExcerpt !== undefined
+          ? { quotedExcerpt: msg.quotedExcerpt }
+          : {}),
+        ...(msg.quotedBlockIndex !== undefined
+          ? { quotedBlockIndex: msg.quotedBlockIndex }
+          : {}),
+        ...(msg.quotedMessageId !== undefined &&
+        idMap.has(msg.quotedMessageId)
+          ? { quotedMessageId: idMap.get(msg.quotedMessageId)! }
+          : {}),
         // Preserve the SOURCE logical order exactly. Safe w.r.t. the windowing
         // invariant: these rows have a fresh _creationTime (inside the newest-N
         // window) and an orderTime strictly in the past (before any future send

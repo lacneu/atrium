@@ -104,6 +104,35 @@ describe("chatExport", () => {
     expect(stripDate(labeled!.markdown)).toBe(stripDate(res!.markdown));
   });
 
+  test("a quoted user turn exports WITH its quote line (quote-reply context)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedChat(t, "alice", 2);
+    const as = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      const quotedId = (await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .collect()).find((m) => m.role === "assistant")!._id;
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "Corrige ce point",
+        quotedMessageId: quotedId,
+        quotedBlockIndex: 0,
+        quotedExcerpt: "le passage cité",
+        updatedAt: 2000,
+      });
+    });
+    const res = await as.query(api.chatExport.exportByReference, {
+      reference: chatId,
+    });
+    // Without the quote line, "Corrige ce point" is ambiguous to the reader.
+    expect(res!.markdown).toContain("> En réponse à : le passage cité");
+    expect(res!.markdown).toContain("Corrige ce point");
+  });
+
   test("resolution is SILENT for foreign chats and malformed ids (no existence leak)", async () => {
     const t = convexTest(schema, modules);
     const owner = await seedChat(t, "alice");

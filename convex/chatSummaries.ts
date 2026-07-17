@@ -42,7 +42,9 @@ import {
   effectiveTemplate,
   fillTemplate,
   resolveInjection,
+  type PromptInjectionConfig,
 } from "./lib/promptInjections";
+import { composeQuotedText, quotePreamble } from "./lib/quoteReply";
 import {
   summarizeSessionNonce,
   CHUNK_MAX_CHARS,
@@ -333,20 +335,45 @@ function usableTurnsDesc(
       (m) =>
         m.status === "complete" &&
         (m.role === "user" || m.role === "assistant") &&
+        // A quoted excerpt IS content (attachment-only quoted turn) — it must
+        // reach the summary or the quote link is lost for good (codex P2).
         (m.text.trim().length > 0 ||
+          m.quotedExcerpt !== undefined ||
           (children.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
         effectiveOrder(m) > watermark,
     )
     .sort((a, b) => effectiveOrder(b) - effectiveOrder(a) || b._creationTime - a._creationTime);
 }
 
-function renderTurn(
+/** A turn's COMPOSED history body: the quote-reply preamble (quoted user
+ *  turns) + the enriched text — what dispatch/rehydration/summarization
+ *  actually carry. Sizing decisions must weigh THIS, not the bare text
+ *  (codex P2: a tail sized on the bare text under-counts quoted turns). */
+export function composedTurnBody(
   m: Doc<"messages">,
   children: ChildResultsIndex,
   locale: Locale,
+  injections: PromptInjectionConfig | undefined,
+): string {
+  const base = enrichedTurnText(m, children);
+  // Quote-reply: a quoted user turn is summarized WITH its preamble (same
+  // composition as dispatch/rehydration) — without it the summarizer reads
+  // "corrige ceci" with nothing to bind "ceci" to, and the link is lost for
+  // good once the turn passes under the watermark.
+  return m.role === "user" && m.quotedExcerpt !== undefined
+    ? composeQuotedText(quotePreamble(m.quotedExcerpt, injections, locale), base)
+    : base;
+}
+
+export function renderTurn(
+  m: Doc<"messages">,
+  children: ChildResultsIndex,
+  locale: Locale,
+  injections: PromptInjectionConfig | undefined,
 ): string {
   const t9n = REHYDRATION_STRINGS[locale];
-  return `${m.role === "user" ? t9n.userLabel : t9n.assistantLabel} : ${enrichedTurnText(m, children)}`;
+  const body = composedTurnBody(m, children, locale, injections);
+  return `${m.role === "user" ? t9n.userLabel : t9n.assistantLabel} : ${body}`;
 }
 
 /** Outcome of one scheduling attempt — returned to the MANUAL caller so the panel
@@ -506,10 +533,18 @@ async function scheduleSummarizeJob(
       .order("desc")
       .take(80);
     const newestUsable = usableTurnsDesc(newestProbe, watermark, children);
-    // The size-based tail must weigh the ENRICHED content (a child digest in the
-    // newest turns is fresh content).
+    // The size-based tail must weigh the COMPOSED content (a child digest or a
+    // quote-reply preamble in the newest turns is fresh content the rebuilt
+    // history actually carries).
     const tailCount = freshTailCount(
-      newestUsable.map((m) => ({ text: enrichedTurnText(m, children) })),
+      newestUsable.map((m) => ({
+        text: composedTurnBody(
+          m,
+          children,
+          contentLocale,
+          instance?.config?.promptInjections,
+        ),
+      })),
     );
     if (newestUsable.length <= tailCount) return "nothing_to_do"; // nothing beyond the fresh tail
     const cutoffOrder = effectiveOrder(newestUsable[tailCount - 1]!);
@@ -546,6 +581,7 @@ async function scheduleSummarizeJob(
       !(
         (m.role === "user" || m.role === "assistant") &&
         (m.text.trim().length > 0 ||
+          m.quotedExcerpt !== undefined ||
           (idx.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
         m.status === "complete" &&
         effectiveOrder(m) > watermark
@@ -577,6 +613,7 @@ async function scheduleSummarizeJob(
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
           (m.text.trim().length > 0 ||
+            m.quotedExcerpt !== undefined ||
             (pageChildren.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
           effectiveOrder(m) > watermark &&
           effectiveOrder(m) < cutoffOrder,
@@ -643,7 +680,9 @@ async function scheduleSummarizeJob(
     let backlogChars = 0;
     for (const m of chunkPoolChrono) {
       if (pageChildren.unsettled.has(m._id as string)) break;
-      backlogChars += renderTurn(m, pageChildren, contentLocale).length + 1;
+      backlogChars +=
+        renderTurn(m, pageChildren, contentLocale, instance?.config?.promptInjections)
+          .length + 1;
     }
     for (const m of chunkPoolChrono) {
       // A turn whose sub-agent is STILL RUNNING is not settled: summarizing it
@@ -651,7 +690,12 @@ async function scheduleSummarizeJob(
       // the chunk (and the watermark) right before it; the child's settle
       // triggers a later job that picks it up complete.
       if (pageChildren.unsettled.has(m._id as string)) break;
-      let line = renderTurn(m, pageChildren, contentLocale);
+      let line = renderTurn(
+        m,
+        pageChildren,
+        contentLocale,
+        instance?.config?.promptInjections,
+      );
       if (chunkMsgs.length > 0 && chunkChars + line.length + 1 > CHUNK_MAX_CHARS)
         break;
       // A SINGLE turn larger than the whole per-job bound would otherwise ride
@@ -1113,6 +1157,7 @@ export const getChatSummary = query({
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
           (m.text.trim().length > 0 ||
+            m.quotedExcerpt !== undefined ||
             (gaugeChildren.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
           effectiveOrder(m) > watermark,
       )
@@ -1121,8 +1166,10 @@ export const getChatSummary = query({
           effectiveOrder(b) - effectiveOrder(a) ||
           b._creationTime - a._creationTime,
       );
+    // Gauge estimate: registry-default preamble + base locale (the instance
+    // config is resolved later; template-length differences are noise here).
     const enriched = usable.map((m) => ({
-      text: enrichedTurnText(m, gaugeChildren),
+      text: composedTurnBody(m, gaugeChildren, BASE_LOCALE, undefined),
     }));
     let pendingChars = 0;
     for (const t of enriched.slice(freshTailCount(enriched))) {

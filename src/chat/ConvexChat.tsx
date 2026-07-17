@@ -43,6 +43,13 @@ import { uploadProgressStore } from "./uploadProgressStore";
 import { attachmentAddInFlight } from "./attachmentBusy";
 import { TalkControl } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
+import {
+  QUOTE_EXCERPT_CLIENT_MAX,
+  clearPendingQuote,
+  setPendingQuote,
+  usePendingQuote,
+} from "./pendingQuote";
+import { previewFromText } from "./bookmarkView";
 import { AtriumMark } from "@/components/AtriumMark";
 import {
   AssistantIdentityContext,
@@ -90,6 +97,7 @@ import {
   Paperclip,
   Pin,
   Plus,
+  Reply,
   Search,
   Server,
   SlidersHorizontal,
@@ -176,6 +184,7 @@ import {
   BookmarkNavRail,
   BookmarksProvider,
   BookmarkToggleButton,
+  focusAnchor,
   useBookmarks,
 } from "./Bookmarks";
 import { ToolActivity } from "./ToolActivity";
@@ -343,6 +352,11 @@ const QueueSendContext = createContext<
 // STOP button context: ends the chat's active turn (optimistic finalize) and
 // best-effort kills the gateway run. Null when no chat is mounted.
 const AbortTurnContext = createContext<(() => Promise<void>) | null>(null);
+
+// QUOTE-REPLY: the current chat id, provided to the message tree so the
+// assistant gutter can stage a per-chat pending quote and the composer can
+// read/clear ITS chat's entry (the store is keyed — no cross-chat leakage).
+const QuoteChatIdContext = createContext<string | null>(null);
 
 
 // MULTI-AGENT per-turn router context: the routing surface from the runtime hook
@@ -650,6 +664,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <ReadAloudContext.Provider value={readAloudState}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
+      <QuoteChatIdContext.Provider value={chatId}>
       <AbortTurnContext.Provider value={abortTurn}>
       <QueuedTurnContext.Provider value={lastUserTurnQueued}>
       <ChatRoutingContext.Provider value={routing}>
@@ -807,6 +822,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </ChatRoutingContext.Provider>
       </QueuedTurnContext.Provider>
       </AbortTurnContext.Provider>
+      </QuoteChatIdContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
       </ReadAloudContext.Provider>
@@ -1807,6 +1823,9 @@ function ExportMenu({
           ? (liveByMsg.get(m._id as string) ?? m.text)
           : m.text,
       createdAt: m.updatedAt ?? m._creationTime,
+      ...(m.quotedExcerpt !== undefined
+        ? { quotedExcerpt: m.quotedExcerpt }
+        : {}),
       parts: m.parts.map((p) => ({
         kind: p.kind,
         filename: "filename" in p ? p.filename : undefined,
@@ -2674,6 +2693,21 @@ function UserMessage() {
       true,
   );
   const messageId = useMessage((msg) => msg.id);
+  // QUOTE-REPLY: this turn replied to a block of a previous answer — show the
+  // collapsed excerpt above the bubble; clicking it scrolls to (and flashes)
+  // the quoted block. A deleted quoted message keeps the stored excerpt (the
+  // click then quietly gives up — focusAnchor's own retry budget).
+  const quoted = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as
+        | {
+            quotedMessageId?: string;
+            quotedBlockIndex?: number | null;
+            quotedExcerpt?: string;
+          }
+        | undefined) ?? undefined,
+  );
+  const quoteJumpToast = useToast();
   return (
     <MessagePrimitive.Root
       className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}${
@@ -2683,6 +2717,26 @@ function UserMessage() {
     >
       <div className="oc-msg__col oc-msg__col--user">
         <BookmarkGutter />
+        {quoted?.quotedExcerpt ? (
+          <button
+            type="button"
+            className="oc-msg__quote"
+            title={m.quote_reply_header()}
+            onClick={
+              quoted.quotedMessageId
+                ? () =>
+                    jumpToQuotedAnchor(
+                      quoted.quotedMessageId!,
+                      quoted.quotedBlockIndex ?? null,
+                      quoteJumpToast,
+                    )
+                : undefined
+            }
+          >
+            <Reply size={12} aria-hidden className="oc-msg__quote-ico" />
+            <span className="oc-msg__quote-text">{quoted.quotedExcerpt}</span>
+          </button>
+        ) : null}
         <div className="oc-msg__bubble">
           {showSource ? (
             <MessageSource />
@@ -2893,6 +2947,62 @@ function AssistantMessage() {
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
+  const quoteChatId = useContext(QuoteChatIdContext);
+  // Whole-message quote source (header ↩ next to the agent name — same two
+  // levels as bookmarks: header = message, gutter = block). The STORED final
+  // text, not the streaming DOM.
+  const quoteRawText = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { rawText?: string } | undefined)?.rawText ?? "",
+  );
+  const quoteRunning = useMessage((msg) => msg.status?.type === "running");
+  // DELEGATED turn (empty text, visible answer = the sub-agent's resultText,
+  // rendered by AssistantEmptyState): the header reply must quote THAT text.
+  // Reuses assistantEmptyState's OWN decision (not a bare find(done)): with a
+  // done child NEXT TO a running/failed one the bubble shows the wait/failure,
+  // and quoting an invisible result would mislead (codex P2). Subscription is
+  // skip-unless-empty; Convex dedupes it with the empty-state's/monitor's.
+  const quoteMetaChatId = useMessage(
+    (m) => (m.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  const quoteMetaMessageId = useMessage(
+    (m) => (m.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
+  const quoteMetaStatus = useMessage(
+    (m) => (m.metadata?.custom as { status?: string } | undefined)?.status,
+  );
+  const quoteHasMedia = useMessage((m) =>
+    (m.content as ReadonlyArray<{ type?: string }>).some(
+      (p) => p?.type === "file",
+    ),
+  );
+  const quoteToolParts = useMessage(
+    (m) =>
+      (m.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
+        ?.toolParts ?? EMPTY_TOOL_PARTS,
+  );
+  const quoteSubAgents = useQuery(
+    api.subAgents.listSubAgents,
+    quoteRawText === "" && quoteMetaChatId
+      ? { chatId: quoteMetaChatId as Id<"chats"> }
+      : "skip",
+  ) as SubAgentRow[] | undefined;
+  const quoteEmptyState =
+    quoteRawText === ""
+      ? assistantEmptyState(
+          { status: quoteMetaStatus, hasText: false, hasMedia: quoteHasMedia },
+          quoteToolParts,
+          quoteSubAgents ?? [],
+          quoteMetaMessageId,
+        )
+      : null;
+  const quoteEffectiveText =
+    quoteRawText !== ""
+      ? quoteRawText
+      : quoteEmptyState?.kind === "done"
+        ? (quoteEmptyState.resultText ?? "")
+        : "";
   // Anchored thread-activity indicator: render under THIS bubble when the
   // live sub-agent work is anchored here (see TurnActivityAnchorContext).
   const anchorCtx = useContext(TurnActivityAnchorContext);
@@ -2977,6 +3087,33 @@ function AssistantMessage() {
               its marker will sit) — quicker than digging into the bottom ⋯
               menu on a long reply (user request). */}
           <BookmarkToggleButton header />
+          {/* Whole-message quote-reply, at the agent-name level (user request):
+              header = reply to the message, gutter = reply to one block. */}
+          {quoteChatId !== null &&
+          !messageId.startsWith("optimistic-") &&
+          !quoteRunning &&
+          quoteEffectiveText !== "" ? (
+            <button
+              type="button"
+              className="oc-bmk-headbtn"
+              title={m.quote_reply_message_button()}
+              aria-label={m.quote_reply_message_button()}
+              onClick={() => {
+                const excerpt = previewFromText(
+                  quoteEffectiveText,
+                  QUOTE_EXCERPT_CLIENT_MAX,
+                );
+                if (excerpt !== "")
+                  setPendingQuote(quoteChatId, {
+                    messageId,
+                    blockIndex: null,
+                    excerpt,
+                  });
+              }}
+            >
+              <Reply size={13} />
+            </button>
+          ) : null}
         </div>
         <div className="oc-msg__body">
           {/* "Outils" ON = the ANALYSIS view: ONE grouped meta block above the answer
@@ -3037,7 +3174,19 @@ function AssistantMessage() {
             <TurnActivityIndicator running={anchoredHere.running} anchored />
           ) : null}
         </div>
-        <BookmarkGutter messageLevelMarkers={false} />
+        <BookmarkGutter
+          messageLevelMarkers={false}
+          onReplyToBlock={
+            quoteChatId !== null && !messageId.startsWith("optimistic-")
+              ? (blockIndex, excerpt) =>
+                  setPendingQuote(quoteChatId, {
+                    messageId,
+                    blockIndex,
+                    excerpt,
+                  })
+              : undefined
+          }
+        />
         {/* Per-message actions, hidden while a turn runs + revealed on hover for
             non-last turns (always shown on the last). Copy + Delete. Deleting an
             assistant turn truncates from here and REGENERATES the last user turn
@@ -3092,6 +3241,62 @@ function SystemMessage() {
 // no upload status, no error surfaced): "the import does nothing, no trace".
 // This chip restores the missing feedback for ALL types (images + documents):
 // an icon, the filename, the live upload status, and a remove button.
+// QUOTE-REPLY jump: scroll+flash the quoted anchor, with an HONEST failure
+// when the target is gone (deleted, or evicted from the message window) —
+// focusAnchor alone retries then gives up silently, leaving a dead-looking
+// button (codex P2). Sync presence check: the thread renders the whole
+// loaded window (no virtualization), so absence == not loaded.
+function jumpToQuotedAnchor(
+  messageId: string,
+  blockIndex: number | null,
+  toast: ReturnType<typeof useToast>,
+): void {
+  const mounted = document.querySelector(
+    `[data-message-id="${CSS.escape(messageId)}"]`,
+  );
+  if (mounted === null) {
+    // NO rows mounted at all = the thread is still loading (a re-opened chat
+    // renders its composer + chip before listByChat lands) — defer to
+    // focusAnchor's own ~6s retry instead of a false "gone" (codex P2). With
+    // rows mounted, absence is real (deleted / evicted from the window).
+    if (document.querySelector("[data-message-id]") !== null) {
+      toast.error(m.quote_reply_target_gone());
+      return;
+    }
+  }
+  focusAnchor(messageId, blockIndex, "smooth");
+}
+
+// QUOTE-REPLY composer chip: the staged "replying to" excerpt, cancellable,
+// clicking the text scrolls back to the quoted block. Reads the per-chat
+// store — a quote staged in another chat never shows here.
+function QuoteChip({ chatId }: { chatId: ConvexId<"chats"> }) {
+  const quote = usePendingQuote(chatId);
+  const toast = useToast();
+  if (quote === null) return null;
+  return (
+    <div className="oc-composer__quote" role="group" aria-label={m.quote_reply_chip_aria()}>
+      <Reply size={13} aria-hidden className="oc-composer__quote-ico" />
+      <button
+        type="button"
+        className="oc-composer__quote-text"
+        title={m.quote_reply_header()}
+        onClick={() => jumpToQuotedAnchor(quote.messageId, quote.blockIndex, toast)}
+      >
+        {quote.excerpt}
+      </button>
+      <button
+        type="button"
+        className="oc-composer__quote-x"
+        aria-label={m.quote_reply_cancel()}
+        onClick={() => clearPendingQuote(chatId)}
+      >
+        <X size={13} aria-hidden />
+      </button>
+    </div>
+  );
+}
+
 function ComposerAttachmentChip() {
   const status = useAttachment((a) => a.status?.type);
   const type = useAttachment((a) => a.type);
@@ -4223,6 +4428,7 @@ function Composer({
           </button>
         </div>
       ) : null}
+      <QuoteChip chatId={chatId} />
       <ComposerPrimitive.Attachments
         components={{ Attachment: ComposerAttachmentChip }}
       />

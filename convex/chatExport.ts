@@ -69,6 +69,7 @@ const FRAMING: Record<
     noText: string;
     inProgress: string;
     msgTruncated: string;
+    inReplyTo: string;
   }
 > = {
   fr: {
@@ -86,6 +87,7 @@ const FRAMING: Record<
     noText: "*(message sans texte — fichiers/media)*",
     inProgress: "*(réponse en cours au moment de l'export)*",
     msgTruncated: "*[… message tronqué]*",
+    inReplyTo: "En réponse à",
   },
   en: {
     title: "Conversation",
@@ -102,6 +104,7 @@ const FRAMING: Record<
     noText: "*(message without text — files/media)*",
     inProgress: "*(reply still streaming at export time)*",
     msgTruncated: "*[… message truncated]*",
+    inReplyTo: "In reply to",
   },
 };
 
@@ -312,6 +315,12 @@ export const exportByReference = query({
       let text = raw.trim().length === 0 ? L.noText : raw;
       if (streamed !== undefined) {
         text += `\n\n${L.inProgress}`;
+      }
+      // Quote-reply context: without it "corrige ceci" is ambiguous to the
+      // reading agent (codex P2). One blockquote line; the excerpt is
+      // single-line by construction (previewFromText, server-capped).
+      if (msg.role === "user" && msg.quotedExcerpt !== undefined) {
+        text = `> ${L.inReplyTo} : ${msg.quotedExcerpt}\n\n${text}`;
       }
       const head = `### ${whoByIndex[i]} — ${new Date(msg.updatedAt).toISOString()}\n\n`;
       const cost = utf8Len(head) + utf8Len(text) + 2;

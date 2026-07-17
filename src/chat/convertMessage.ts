@@ -271,6 +271,13 @@ export function convertConvexMessage(
         // text. The trust guarantee that lets a user verify a word was not
         // silently changed (see docs note in ConvexChat MessageSource).
         rawText: message.text,
+        // QUOTE-REPLY: the block this user turn replies to. The bubble renders
+        // a collapsed clickable header from the stored excerpt (display truth
+        // even if the quoted message is deleted); messageId+blockIndex feed
+        // the scroll+flash jump.
+        quotedMessageId: message.quotedMessageId ?? null,
+        quotedBlockIndex: message.quotedBlockIndex ?? null,
+        quotedExcerpt: message.quotedExcerpt ?? null,
       },
     },
   } satisfies ThreadMessageLike;

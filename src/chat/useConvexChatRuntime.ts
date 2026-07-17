@@ -13,6 +13,11 @@ import {
   attachmentParts,
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
+import {
+  peekPendingQuote,
+  setPendingQuote,
+  takePendingQuote,
+} from "./pendingQuote";
 import { useToast } from "@/components/ui/toast";
 import {
   isFirstTurn,
@@ -113,6 +118,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // undefined on an unrouted send) to match the query's inferred shape.
         routedInstanceName: args.routedAgent?.instanceName,
         routedAgentId: args.routedAgent?.agentId,
+        // Quote-reply echo: the collapsed header renders this frame (keys
+        // always present to match the query's inferred shape).
+        quotedMessageId: args.quote?.messageId,
+        quotedBlockIndex: args.quote?.blockIndex ?? undefined,
+        quotedExcerpt: args.quote?.excerpt,
         // A user echo is never a merged bubble; key present to match the
         // query's inferred shape.
         hasMergedRuns: false,
@@ -556,6 +566,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // normal chat / the very first turn). Authorized + stamped server-side.
         const routedAgent = computeRoutedAgent();
 
+        // QUOTE-REPLY: consume THIS chat's staged quote exactly once — the
+        // per-chat keying means a quote staged in another chat can never ride
+        // this send.
+        const quote = takePendingQuote(chatId);
+
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send
         // gate all engage without waiting on the round-trip. Cleared when the
@@ -573,8 +588,26 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             clientMessageId: crypto.randomUUID(),
             attachments,
             ...(routedAgent ? { routedAgent } : {}),
+            ...(quote
+              ? {
+                  quote: {
+                    messageId: quote.messageId as Id<"messages">,
+                    blockIndex: quote.blockIndex,
+                    excerpt: quote.excerpt,
+                  },
+                }
+              : {}),
           });
         } catch (e) {
+          // Restage the quote so a failed send does not silently drop the
+          // user's "replying to" reference — but never clobber a NEWER quote
+          // staged while this send was in flight, and never restage a quote
+          // the SERVER rejected as invalid (deleted/regenerated target): that
+          // would wedge every retry behind the same rejection (codex P2).
+          const quoteRejected =
+            e instanceof Error && /Invalid:.*quote/i.test(e.message);
+          if (quote && !quoteRejected && peekPendingQuote(chatId) === null)
+            setPendingQuote(chatId, quote);
           // The mutation rejected BEFORE the server accepted the turn (validation,
           // auth, transient client failure). No assistant reply will arrive, so
           // the reactive clear can't fire — release the in-flight gate now instead
@@ -616,15 +649,31 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // MULTI-AGENT: a queued follow-up routes by the SAME rule (the chat already
       // has a turn in flight, so it is never the first turn).
       const routedAgent = computeRoutedAgent();
+      const quote = takePendingQuote(chatId);
       try {
         await sendMessage({
           chatId: chatId as Id<"chats">,
           text,
           clientMessageId: crypto.randomUUID(),
           ...(routedAgent ? { routedAgent } : {}),
+          ...(quote
+            ? {
+                quote: {
+                  messageId: quote.messageId as Id<"messages">,
+                  blockIndex: quote.blockIndex,
+                  excerpt: quote.excerpt,
+                },
+              }
+            : {}),
         });
         return true;
       } catch (e) {
+        // Same restage rules as onNew: never clobber a newer staged quote,
+        // never restage a server-rejected (invalid-target) one.
+        const quoteRejected =
+          e instanceof Error && /Invalid:.*quote/i.test(e.message);
+        if (quote && !quoteRejected && peekPendingQuote(chatId) === null)
+          setPendingQuote(chatId, quote);
         toast.error(
           (e as Error)?.message?.includes("QUEUE_FULL")
             ? m.chat_queue_full()

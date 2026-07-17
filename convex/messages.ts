@@ -328,6 +328,12 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // defaults the composer to the last-used agent.
           routedInstanceName: message.routedInstanceName,
           routedAgentId: message.routedAgentId,
+          // QUOTE-REPLY: the block this user turn replies to (collapsed header
+          // in the bubble). The stored excerpt is the display truth even if the
+          // quoted message is later deleted.
+          quotedMessageId: message.quotedMessageId,
+          quotedBlockIndex: message.quotedBlockIndex,
+          quotedExcerpt: message.quotedExcerpt,
           // The live streaming tokens of a CURRENT-version turn live in the
           // `streamingText` table (read by the cheap getStreamingText), so this heavy
           // view does not re-run per delta — the frontend overlays them by id. The
@@ -1361,6 +1367,11 @@ export const deleteMessage = mutation({
           attachments,
           status: "pending",
           ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
+          // Quote-reply: the regenerated dispatch must re-carry the excerpt,
+          // or the re-sent instruction loses its targeted passage.
+          ...(lastUser.quotedExcerpt
+            ? { quotedExcerpt: lastUser.quotedExcerpt }
+            : {}),
         });
       }
     }

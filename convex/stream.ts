@@ -47,6 +47,7 @@ import {
   composeRehydration,
   rehydrationBudgetChars,
 } from "./lib/rehydration";
+import { composeQuotedText, quotePreamble } from "./lib/quoteReply";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -1782,7 +1783,10 @@ export const rehydrationContext = internalQuery({
         (m) =>
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
+          // A quoted excerpt IS content: an attachment-only quoted turn has an
+          // empty text but its dispatched prompt carried the quote (codex P2).
           (m.text.trim().length > 0 ||
+            m.quotedExcerpt !== undefined ||
             (childResults.byMsg.get(m._id as string)?.length ?? 0) > 0),
       )
       .filter((m) => effectiveOrder(m) > watermark) // summary-covered turns stay summarized
@@ -1802,7 +1806,22 @@ export const rehydrationContext = internalQuery({
         .reverse()
         .map((m) => ({
           role: m.role as "user" | "assistant",
-          text: enrichedTurnText(m, childResults),
+          // QUOTE-REPLY: a user turn that replied to a block re-carries the
+          // same preamble the dispatch sent (resolved for the SAME instance/
+          // locale as the injections above) — the rebuilt history reads like
+          // the original prompt. NOTE: a template edited since the original
+          // send recomposes with the NEW wording (accepted, documented).
+          text:
+            m.role === "user" && m.quotedExcerpt
+              ? composeQuotedText(
+                  quotePreamble(
+                    m.quotedExcerpt,
+                    rehydInstance?.config?.promptInjections,
+                    contentLocale,
+                  ),
+                  enrichedTurnText(m, childResults),
+                )
+              : enrichedTurnText(m, childResults),
         })),
       summary: hasSummary
         ? { text: summaryRow.summary, coveredCount: summaryRow.coveredCount }

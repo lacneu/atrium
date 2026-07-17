@@ -12,7 +12,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { GripVertical, Mic, MicOff, PinOff, Send, X } from "lucide-react";
+import { GripVertical, Mic, MicOff, PinOff, Reply, Send, X } from "lucide-react";
 import * as m from "@/paraglide/messages.js";
 import {
   appendHeldDictation,
@@ -36,6 +36,8 @@ import {
   startDictation,
   type DictationHandle,
 } from "./speech";
+import { clearPendingQuote, usePendingQuote } from "./pendingQuote";
+import { focusAnchor } from "./Bookmarks";
 import { getLocale } from "@/paraglide/runtime.js";
 import { createPortal } from "react-dom";
 import { useToast } from "@/components/ui/toast";
@@ -170,6 +172,12 @@ export function HeldDictationDock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity stable
   }, [toast]);
 
+  // QUOTE-REPLY: the TARGET chat's staged quote must stay visible (and
+  // cancellable) while its composer lives here — it rides the deferred send
+  // (the target composer consumes the keyed store), so hiding it would attach
+  // an invisible quote. Hook before the null return (Rules of Hooks).
+  const pendingQuote = usePendingQuote(held?.targetChatId ?? null);
+
   if (held === null) return null;
 
   const clamped: HeldGeometry = clampGeometry(held.geom, {
@@ -221,12 +229,57 @@ export function HeldDictationDock() {
           title={m.dictation_dock_discard()}
           aria-label={m.dictation_dock_discard()}
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => releaseHeldDictation()}
+          onClick={() => {
+            // DISCARD throws away everything the panel shows — the staged
+            // quote included, or it would silently ride the chat's next,
+            // unrelated send (codex P2). The non-destructive un-pin keeps
+            // it: the inline composer surfaces it again.
+            clearPendingQuote(held.targetChatId);
+            releaseHeldDictation();
+          }}
         >
           <X size={14} aria-hidden />
         </button>
       </div>
 
+      {pendingQuote !== null ? (
+        <div
+          className="oc-detach__quote"
+          role="group"
+          aria-label={m.quote_reply_chip_aria()}
+        >
+          <Reply size={12} aria-hidden className="oc-detach__quote-ico" />
+          <button
+            type="button"
+            className="oc-detach__quote-text"
+            title={m.quote_reply_header()}
+            onClick={() => {
+              // Same affordance as the inline chip: jump to the quoted block.
+              // Navigate to the target chat first — focusAnchor's own ~6s
+              // retry window covers the thread mounting.
+              focusAnchor(
+                pendingQuote.messageId,
+                pendingQuote.blockIndex,
+                "smooth",
+              );
+              void navigate({
+                to: "/chat/$chatId",
+                params: { chatId: held.targetChatId },
+              });
+            }}
+          >
+            {pendingQuote.excerpt}
+          </button>
+          <button
+            type="button"
+            className="oc-detach__quote-x"
+            aria-label={m.quote_reply_cancel()}
+            onClick={() => clearPendingQuote(held.targetChatId)}
+          >
+            <X size={12} aria-hidden />
+          </button>
+        </div>
+      ) : null}
       <textarea
         className="oc-detach__input"
         value={held.text}

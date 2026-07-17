@@ -8,6 +8,35 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.65.0] — Reply to a block: "here is what I am responding to"
+
+Feature release. Frontend + Convex (additive schema, zero migration); no
+breaking changes. Self-hosters: this release needs BOTH the image update and
+`npx convex deploy` (new quote fields on messages and outbox).
+
+- **Reply to a specific block of an answer.** Hovering a paragraph of an
+  assistant answer offers "Reply to this block" beside the bookmark toggle
+  (both on the hovered block's own line), and a header button next to the
+  agent's name replies to the whole message — the same two levels as
+  bookmarks. The chosen excerpt lands in the composer as a cancellable chip,
+  and the sent message shows a collapsed quote header above its bubble;
+  clicking either one scrolls back to (and flashes) the quoted block, with an
+  honest notice when that message is no longer loaded. The agent receives the
+  excerpt framed by a preamble so it treats the instruction as targeting that
+  exact passage — on both providers. The preamble is a new entry in Settings ›
+  Prompt injections ("Reply to a block"): editable per instance, and disabling
+  it keeps just the bare markdown quote (never a silent drop). Your stored
+  message stays clean — the framing only exists on the wire. The pinned
+  (detached) composer carries the staged quote too: visible, cancellable, and
+  sent with the deferred send.
+- **The quote follows the conversation everywhere.** Regenerated and
+  auto-retried turns re-send it; forking a conversation keeps the quote
+  headers anchored to the copied messages; the rebuilt history after a session
+  restart and the long-history summaries re-carry the same framing (so "fix
+  this" keeps its target even months later); and the Markdown/JSON downloads
+  plus cross-conversation reference exports print an "In reply to" line above
+  each quoted turn.
+
 ## [0.64.0] — Scheduled calendar: your crons on a month or year grid
 
 Feature release for the Scheduled tab and user preferences, plus fixes for

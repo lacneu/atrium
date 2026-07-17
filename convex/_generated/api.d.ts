@@ -87,6 +87,7 @@ import type * as lib_openclawThread from "../lib/openclawThread.js";
 import type * as lib_outboxQueue from "../lib/outboxQueue.js";
 import type * as lib_promptInjections from "../lib/promptInjections.js";
 import type * as lib_provenance from "../lib/provenance.js";
+import type * as lib_quoteReply from "../lib/quoteReply.js";
 import type * as lib_rbac from "../lib/rbac.js";
 import type * as lib_rehydrateTrace from "../lib/rehydrateTrace.js";
 import type * as lib_rehydration from "../lib/rehydration.js";
@@ -206,6 +207,7 @@ declare const fullApi: ApiFromModules<{
   "lib/outboxQueue": typeof lib_outboxQueue;
   "lib/promptInjections": typeof lib_promptInjections;
   "lib/provenance": typeof lib_provenance;
+  "lib/quoteReply": typeof lib_quoteReply;
   "lib/rbac": typeof lib_rbac;
   "lib/rehydrateTrace": typeof lib_rehydrateTrace;
   "lib/rehydration": typeof lib_rehydration;

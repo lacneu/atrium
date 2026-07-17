@@ -1519,11 +1519,19 @@
 }
 
 /* ---- Conversation bookmarks (IntelliJ-style) ---- */
-/* Hover gutter toggle: floats in the bubble's left margin at the hovered
-   block's top. Hidden on coarse pointers (no hover) via the media query. */
-.oc-bmk-gutter {
+/* Hover gutter actions: ONE row floating in the bubble's left margin at the
+   hovered block's top — reply + bookmark side by side, both on the block's own
+   line (a vertically stacked button would sit on the NEXT block's line and
+   read as that block's action). Anchored by `right` so the bookmark keeps its
+   historical spot next to the text and the reply extends leftwards. Hidden on
+   coarse pointers (no hover) via the media query. */
+.oc-bmk-gutterrow {
   position: absolute;
-  left: -1.7rem;
+  right: calc(100% + 0.3rem);
+  display: inline-flex;
+  gap: 0.1rem;
+}
+.oc-bmk-gutter {
   width: 1.4rem;
   height: 1.4rem;
   display: inline-flex;
@@ -1569,17 +1577,23 @@
 .oc-bmk-marker:hover {
   background: color-mix(in oklch, var(--bookmark) 15%, transparent);
 }
-/* The hover toggle sits above a coincident marker so the click TOGGLES. */
-.oc-bmk-gutter {
+/* The hover row sits above a coincident marker so the click TOGGLES. */
+.oc-bmk-gutterrow {
   z-index: 2;
 }
 .oc-bmk-marker {
   z-index: 1;
 }
 @media (hover: none) {
-  .oc-bmk-gutter {
+  .oc-bmk-gutterrow {
     display: none;
   }
+}
+/* QUOTE-REPLY gutter trigger: second hover button under the bookmark toggle
+   (same floating-gutter base class provides position/size/hover). Never shows
+   the bookmark's amber "set" state — it is a one-shot action, not a toggle. */
+.oc-bmk-gutter--reply:hover {
+  color: var(--primary);
 }
 /* Rename/delete popover */
 .oc-bmk-pop {
@@ -1806,6 +1820,38 @@ button.oc-bmk-rail__count:hover {
 }
 .oc-msg__col--user .oc-msg__bubble {
   max-width: 100%;
+}
+/* QUOTE-REPLY collapsed header above the user bubble: the excerpt this turn
+   replies to, one quiet ellipsized line; clicking jumps to the quoted block. */
+.oc-msg__quote {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.28rem 0.65rem;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  cursor: pointer;
+  text-align: left;
+}
+.oc-msg__quote:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.oc-msg__quote-ico {
+  flex: none;
+  opacity: 0.7;
+}
+.oc-msg__quote-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .oc-msg__actions--user {
   left: auto;
@@ -3291,6 +3337,111 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.8rem;
 }
 .oc-composer__pinnedgoto:hover { filter: brightness(1.08); }
+/* QUOTE-REPLY composer chip: the staged "replying to" excerpt awaiting the next
+   send — one row inside the composer card, cancellable, text jumps back to the
+   quoted block. */
+.oc-composer__quote {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.9rem;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.oc-composer__quote-ico {
+  flex: none;
+  opacity: 0.7;
+}
+.oc-composer__quote-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.oc-composer__quote-text:hover {
+  color: var(--foreground);
+}
+.oc-composer__quote-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-composer__quote-x:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+/* QUOTE-REPLY chip in the DETACHED composer (HeldDictationDock): the target
+   chat's staged quote stays visible + cancellable while its composer floats. */
+.oc-detach__quote {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.35rem 0.6rem 0;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.6rem;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  flex: none;
+}
+.oc-detach__quote-ico {
+  flex: none;
+  opacity: 0.7;
+}
+.oc-detach__quote-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+.oc-detach__quote-text:hover {
+  color: var(--foreground);
+}
+.oc-detach__quote-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-detach__quote-x:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 10%, transparent);
+}
 /* The card's "active" ring lights ONLY when the TEXTAREA is focused — not when a
    config control (Outils / + / mic / send) inside the card takes focus. Those
    are settings placed in the chat zone, not "being in the chat"; clicking them
