@@ -154,6 +154,58 @@ export const setMyRole = mutation({
   },
 });
 
+// DEV: mint a per-bridge ingest secret for an instance WITHOUT an admin session
+// (assertDev-gated, callable over the admin key), so the live-local ingest
+// isolation proof can stand up two instances + two secrets and curl the auth
+// matrix. Mirrors bridgeAuth.mintBridgeSecret (generate + hash + replace) but
+// skips requireAdmin. NEVER enabled in production (assertDev). Returns the
+// plaintext ONCE, like the real mint.
+export const insertBridgeSecretDev = internalMutation({
+  args: {
+    instanceId: v.id("instances"),
+    hashedSecret: v.string(),
+    prefix: v.string(),
+    lastFour: v.string(),
+  },
+  handler: async (ctx, { instanceId, hashedSecret, prefix, lastFour }) => {
+    assertDev();
+    const existing = await ctx.db
+      .query("bridgeAuth")
+      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
+      .collect();
+    for (const row of existing) await ctx.db.delete(row._id);
+    // createdBy: any user id is fine for a dev row; use the first profile's user.
+    const anyProfile = await ctx.db.query("profiles").first();
+    await ctx.db.insert("bridgeAuth", {
+      instanceId,
+      hashedSecret,
+      prefix,
+      lastFour,
+      createdAt: Date.now(),
+      createdBy: anyProfile?.userId ?? (instanceId as unknown as Id<"users">),
+    });
+  },
+});
+
+export const seedBridgeSecret = action({
+  args: { instanceId: v.id("instances") },
+  handler: async (
+    ctx,
+    { instanceId },
+  ): Promise<{ plaintext: string }> => {
+    assertDev();
+    const generated = generateApiKey(envLabel());
+    const hashedSecret = await hashKey(generated.plaintext);
+    await ctx.runMutation(internal.dev.insertBridgeSecretDev, {
+      instanceId,
+      hashedSecret,
+      prefix: generated.prefix,
+      lastFour: generated.lastFour,
+    });
+    return { plaintext: generated.plaintext };
+  },
+});
+
 // Seed a chat with a realistic user turn + a long assistant turn, so the chat
 // rendering (width, contrast, bubbles) can be exercised without a live bridge.
 // Seeds for the first admin profile (the manual-test account).

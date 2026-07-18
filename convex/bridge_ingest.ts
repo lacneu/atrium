@@ -22,6 +22,8 @@ import { httpAction, ActionCtx, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+import { hashKey } from "./lib/apikeys";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
 import {
   rehydrateTraceMeta,
   shouldReportRehydrateMissed,
@@ -41,6 +43,80 @@ export const storageMeta = internalQuery({
     const meta = await ctx.db.system.get("_storage", storageId);
     if (!meta) return null;
     return { bytes: meta.size, contentType: meta.contentType ?? null };
+  },
+});
+
+/**
+ * INGEST AUTHORIZATION (the cross-gateway write barrier). Given the instance a
+ * per-bridge-authenticated ingest call PROVED it is (boundInstanceName) and the
+ * op's target ids, resolve the target's OWNING instance and decide:
+ *   - "allow"  : the target belongs to the calling instance (or has no instance
+ *                yet — a null-instance/legacy chat can't be another gateway's data).
+ *   - "deny"   : the target EXISTS and belongs to a DIFFERENT instance — the
+ *                cross-gateway write this whole design forbids.
+ *   - "absent" : the target row (or its chat) does not exist — allow; the op's
+ *                mutation handles non-existence, and there is nothing to corrupt.
+ * A messageId resolves through its chat; an interactionId through its chat. This
+ * is the SINGLE place ingest authorization is decided (one gate to audit).
+ */
+export const authorizeIngestTarget = internalQuery({
+  args: {
+    boundInstanceName: v.string(),
+    chatId: v.optional(v.string()),
+    messageId: v.optional(v.string()),
+    interactionId: v.optional(v.string()),
+    // Sub-agent ops (upsertSubAgent / upsertSubAgentToolPart) resolve their row
+    // GLOBALLY by this key — authorization must ALSO follow the EXISTING row's
+    // chat, not just the self-asserted chatId. The mutation re-checks atomically
+    // (TOCTOU), but the boundary rejects the obvious cross-instance case fast.
+    childSessionKey: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    { boundInstanceName, chatId, messageId, interactionId, childSessionKey },
+  ): Promise<{ decision: "allow" | "deny" | "absent" }> => {
+    // Resolve EVERY chat this op touches: the provided chatId, the message's
+    // chat, the interaction's chat, AND (for a sub-agent key) the existing row's
+    // chat. The op is authorized only if the bound instance may write to ALL of
+    // them — so B cannot pass its own chat alongside A's message/key.
+    const chatsToCheck: Id<"chats">[] = [];
+    if (chatId !== undefined) {
+      const cid = ctx.db.normalizeId("chats", chatId);
+      if (cid === null) return { decision: "absent" };
+      chatsToCheck.push(cid);
+    }
+    if (messageId !== undefined) {
+      const mid = ctx.db.normalizeId("messages", messageId);
+      if (mid === null) return { decision: "absent" };
+      const message = await ctx.db.get(mid);
+      if (message === null) return { decision: "absent" };
+      chatsToCheck.push(message.chatId);
+    }
+    if (interactionId !== undefined) {
+      const iid = ctx.db.normalizeId("subAgentInteractions", interactionId);
+      if (iid === null) return { decision: "absent" };
+      const interaction = await ctx.db.get(iid);
+      if (interaction === null) return { decision: "absent" };
+      chatsToCheck.push(interaction.chatId);
+    }
+    if (childSessionKey !== undefined) {
+      const existing = await ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+        .first();
+      if (existing !== null) chatsToCheck.push(existing.chatId);
+    }
+    if (chatsToCheck.length === 0) {
+      // No target id (instance-level op like calibrate/getUploadUrl): authorized
+      // by possession of a valid per-bridge secret alone.
+      return { decision: "allow" };
+    }
+    for (const cid of chatsToCheck) {
+      if (!(await chatAllowsInstance(ctx, cid, boundInstanceName))) {
+        return { decision: "deny" };
+      }
+    }
+    return { decision: "allow" };
   },
 });
 
@@ -363,26 +439,100 @@ type IngestOp =
       errorMessage?: string;
     };
 
+/** The target id(s) an op writes against — what ingest authorization resolves to
+ *  an owning instance. Pure (no ctx); mirrors the switch's per-op id fields. An op
+ *  with no target (calibrate/getUploadUrl/heartbeat-less-ops) returns {} → allowed
+ *  by valid auth alone. `mediaTrace`/`recordSubAgentInteractionReply` etc. are
+ *  covered by their chatId/messageId/interactionId. */
+function ingestTargetIds(op: IngestOp): {
+  chatId?: string;
+  messageId?: string;
+  interactionId?: string;
+  childSessionKey?: string;
+} {
+  const b = op as Record<string, unknown>;
+  const chatId = typeof b.chatId === "string" ? b.chatId : undefined;
+  const messageId = typeof b.messageId === "string" ? b.messageId : undefined;
+  const interactionId =
+    typeof b.interactionId === "string" ? b.interactionId : undefined;
+  // Sub-agent ops resolve their row GLOBALLY by childSessionKey; carry it so
+  // authorization follows the existing row's chat, not the self-asserted chatId.
+  const childSessionKey =
+    (op.op === "upsertSubAgent" || op.op === "upsertSubAgentToolPart") &&
+    typeof b.childSessionKey === "string"
+      ? b.childSessionKey
+      : undefined;
+  // chatId is the most direct owner key; fall back to messageId, then
+  // interactionId (each resolves to a chat server-side). childSessionKey rides
+  // ALONGSIDE chatId for the sub-agent ops (the query prefers the existing row).
+  const base =
+    chatId !== undefined
+      ? { chatId }
+      : messageId !== undefined
+        ? { messageId }
+        : interactionId !== undefined
+          ? { interactionId }
+          : {};
+  return childSessionKey !== undefined ? { ...base, childSessionKey } : base;
+}
+
 export const ingest = httpAction(async (ctx, request) => {
   // Earliest server timestamp (≈ request receipt), captured BEFORE auth/parse so the
   // delivery recorder's `calibrate` op can return a clean clock reference near the
   // round-trip midpoint — not biased by any later server work. See convex/deliveryTiming.ts.
   const receivedAt = Date.now();
-  const secret = process.env.BRIDGE_INGEST_SECRET ?? "";
+  // AUTH (bridge -> Convex). A Bearer token that is EITHER a per-bridge secret
+  // (proves WHICH instance is writing -> its writes are authorized per-target) OR
+  // the legacy shared BRIDGE_INGEST_SECRET (constant-time, no per-instance proof).
+  // The per-bridge path is tried FIRST; the shared path is the transition fallback
+  // and is retired entirely when BRIDGE_INGEST_REQUIRE_PER_BRIDGE=true.
   const header = request.headers.get("authorization") ?? "";
-  const expected = `Bearer ${secret}`;
-  if (!secret || !constantTimeEqual(header, expected)) {
-    // Trace the rejected ingest (no body parsed yet -> no op/ids). NEVER log the
-    // presented secret/header.
-    await traceIngest(ctx, {
-      kind: "openclaw.ingest.denied",
-      status: 401,
-      meta: { reason: secret ? "bad_secret" : "secret_unset" },
-    });
-    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  const requirePerBridge =
+    process.env.BRIDGE_INGEST_REQUIRE_PER_BRIDGE === "true";
+
+  let boundInstanceName: string | null = null;
+  if (token) {
+    // Per-bridge: hash -> the ONE instance this secret authenticates. No timing
+    // oracle worth the surface (238-bit secret; the hash lookup is the compare).
+    const resolved = await ctx.runQuery(
+      internal.bridgeAuth.resolveBridgeInstanceBySecretHash,
+      { hash: await hashKey(token) },
+    );
+    if (resolved !== null) {
+      boundInstanceName = resolved.instanceName;
+      // NOTE: NO per-op lastUsed write here. Ingest is high-frequency (dozens of
+      // ops/turn, many concurrent streams per bridge) — patching one bridgeAuth
+      // doc per op would add write amplification and an OCC-contended hot doc,
+      // and (worse) a failed patch would abort the ingest before its real write
+      // (codex P2). The `/bridge/credentials` fetch already heartbeats lastUsed
+      // periodically; that is the bridge-liveness signal.
+    }
+  }
+
+  if (boundInstanceName === null) {
+    // Legacy shared path (skeleton key — no per-instance authorization). Rejected
+    // outright once every bridge presents a per-bridge secret (the require flag).
+    const shared = process.env.BRIDGE_INGEST_SECRET ?? "";
+    const sharedOk =
+      !requirePerBridge && shared !== "" && constantTimeEqual(token, shared);
+    if (!sharedOk) {
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest.denied",
+        status: 401,
+        meta: {
+          reason: requirePerBridge
+            ? "per_bridge_required"
+            : shared
+              ? "bad_secret"
+              : "secret_unset",
+        },
+      });
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
 
   let body: IngestOp;
@@ -393,6 +543,36 @@ export const ingest = httpAction(async (ctx, request) => {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // AUTHORIZATION (the cross-gateway write barrier). Only when the caller PROVED
+  // its instance (per-bridge auth): every op's target must belong to that
+  // instance. The legacy shared path carries no proven identity, so there is
+  // nothing to authorize against — it stays a skeleton key until retired by the
+  // require flag (traced as such below). This is the SINGLE enforcement point.
+  if (boundInstanceName !== null) {
+    const target = ingestTargetIds(body);
+    const authz = await ctx.runQuery(
+      internal.bridge_ingest.authorizeIngestTarget,
+      { boundInstanceName, ...target },
+    );
+    if (authz.decision === "deny") {
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest.denied",
+        status: 403,
+        meta: {
+          reason: "cross_instance",
+          op: body.op,
+          // Structural only: the calling instance NAME (already all over traces),
+          // never chat data.
+          boundInstance: boundInstanceName,
+        },
+      });
+      return new Response(
+        JSON.stringify({ ok: false, error: "forbidden: cross-instance target" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      );
+    }
   }
 
   switch (body.op) {
@@ -824,12 +1004,21 @@ export const ingest = httpAction(async (ctx, request) => {
       return json(result);
     }
     case "upsertSubAgent": {
+      try {
       await ctx.runMutation(internal.subAgents.upsertSubAgent, {
         chatId: body.chatId as Id<"chats">,
+        // The PROVEN instance (per-bridge auth) WINS over the self-asserted body
+        // field — a bridge can no longer stamp another gateway's name on a
+        // sub-agent row. Falls back to the (legacy shared path's) self-asserted
+        // value only when no instance was proven.
         instanceName:
-          typeof body.instanceName === "string" && body.instanceName !== ""
+          boundInstanceName ??
+          (typeof body.instanceName === "string" && body.instanceName !== ""
             ? body.instanceName
-            : undefined,
+            : undefined),
+        // ATOMIC cross-gateway re-check inside the mutation (global-key TOCTOU +
+        // parentMessageId). Undefined on the legacy shared path (no enforcement).
+        ...(boundInstanceName !== null ? { boundInstanceName } : {}),
         parentMessageId: body.parentMessageId
           ? (body.parentMessageId as Id<"messages">)
           : undefined,
@@ -862,8 +1051,12 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+      } catch (e) {
+        return subAgentForbidden(ctx, e, body.op);
+      }
     }
     case "upsertSubAgentToolPart": {
+      try {
       await ctx.runMutation(internal.subAgents.upsertSubAgentToolPart, {
         chatId: body.chatId as Id<"chats">,
         childSessionKey: body.childSessionKey,
@@ -872,6 +1065,8 @@ export const ingest = httpAction(async (ctx, request) => {
         status: body.status,
         argsText: body.argsText,
         resultText: body.resultText,
+        // ATOMIC cross-gateway re-check (global (childSessionKey, toolCallId) key).
+        ...(boundInstanceName !== null ? { boundInstanceName } : {}),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -888,6 +1083,9 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+      } catch (e) {
+        return subAgentForbidden(ctx, e, body.op);
+      }
     }
     case "recordSubAgentInteractionReply": {
       await ctx.runMutation(
@@ -921,4 +1119,22 @@ function json(value: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Map the sub-agent mutations' ATOMIC cross-gateway barrier throw to a 403 (the
+ *  boundary check covers the non-race cases; this catches the global-key TOCTOU
+ *  window). Any OTHER error re-throws — a real failure must not read as a 403. */
+async function subAgentForbidden(
+  ctx: ActionCtx,
+  e: unknown,
+  op: string,
+): Promise<Response> {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!msg.includes("forbidden: cross-instance")) throw e;
+  await traceIngest(ctx, {
+    kind: "openclaw.ingest.denied",
+    status: 403,
+    meta: { reason: "cross_instance", op, atomic: true },
+  });
+  return json({ ok: false, error: "forbidden: cross-instance target" }, 403);
 }

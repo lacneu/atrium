@@ -61,7 +61,15 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
       : null;
   const writer = new HttpConvexWriter({
     convexHttpActionsUrl: config.convexHttpActionsUrl,
-    ingestSecret: config.convexIngestSecret,
+    // Present the PER-BRIDGE secret (proves WHICH instance is writing → the
+    // ingest endpoint authorizes every write against it). Falls back to the
+    // shared BRIDGE_INGEST_SECRET on the legacy single-instance path and during
+    // the transition window (Convex accepts both until every bridge is per-bridge).
+    ingestSecret: config.bridgeInstanceSecret ?? config.convexIngestSecret,
+    // Deploy-skew fallback: if the per-bridge secret 401s (bridge upgraded before
+    // the Convex dual-accept functions), the writer retries with the shared
+    // secret so ingest keeps flowing. No-op when they are identical.
+    fallbackIngestSecret: config.convexIngestSecret,
     instanceName: config.instanceName,
     deltaFlushMs: config.deltaFlushMs,
     getFetcher: () =>

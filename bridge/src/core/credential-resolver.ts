@@ -138,6 +138,9 @@ export class CredentialResolver {
   async resolveOne(secret: string): Promise<ResolveOneResult> {
     try {
       const data = await this.#fetchInstance(secret);
+      // Carry the resolving secret onto the instance data so the writer presents
+      // it on ingest (per-write instance proof — the ingest isolation foundation).
+      data.bridgeInstanceSecret = secret;
       return { ok: true, data };
     } catch (err) {
       if (err instanceof CredentialFetchError) {
@@ -263,6 +266,7 @@ export class CredentialResolver {
       kind,
       // Explicit validation: only "rest" opts out of the WS default.
       transport: body.gateway?.transport === "rest" ? "rest" : kind === "hermes" ? "ws" : null,
+      // resolveOne stamps the resolving secret (the caller holds it).
     };
   }
 }

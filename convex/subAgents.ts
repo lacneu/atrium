@@ -29,6 +29,7 @@ import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { deliveryChildKey } from "./lib/deliveryRuns";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
@@ -178,6 +179,12 @@ export const upsertSubAgent = internalMutation({
   args: {
     chatId: v.id("chats"),
     instanceName: v.optional(v.string()),
+    // INGEST AUTHORIZATION (per-bridge). When present, the write is ATOMICALLY
+    // authorized here — closing the boundary check's TOCTOU on the global
+    // childSessionKey: the existing row's chat, the target chat, AND the
+    // parentMessageId's chat must ALL be writable by this instance. Absent on
+    // the legacy shared ingest path (no proven identity → no enforcement).
+    boundInstanceName: v.optional(v.string()),
     parentMessageId: v.optional(v.id("messages")),
     anchorExact: v.optional(v.boolean()),
     childSessionKey: v.string(),
@@ -206,6 +213,28 @@ export const upsertSubAgent = internalMutation({
       .query("subAgents")
       .withIndex("by_child", (q) => q.eq("childSessionKey", args.childSessionKey))
       .first();
+
+    // ATOMIC cross-gateway barrier (per-bridge ingest): every chat this upsert
+    // touches must be writable by the proven instance — the provided chat, the
+    // EXISTING row's chat (the global-key TOCTOU the boundary check cannot close
+    // across two transactions), and the parentMessageId's chat (whose text
+    // createSubAgentReport later copies). Throwing here → the ingest httpAction
+    // maps it to 403. Only enforced when an instance was proven (per-bridge auth).
+    if (args.boundInstanceName !== undefined) {
+      const bound = args.boundInstanceName;
+      const guardChats: Id<"chats">[] = [args.chatId];
+      if (existing !== null) guardChats.push(existing.chatId);
+      if (args.parentMessageId !== undefined) {
+        const parent = await ctx.db.get(args.parentMessageId);
+        // A parent that doesn't exist can't leak; a present one must be in-scope.
+        if (parent !== null) guardChats.push(parent.chatId);
+      }
+      for (const cid of guardChats) {
+        if (!(await chatAllowsInstance(ctx, cid, bound))) {
+          throw new Error("forbidden: cross-instance sub-agent target");
+        }
+      }
+    }
 
     if (existing === null) {
       // Ignore an upsert for a chat that no longer exists (deleted mid-flight): a child frame
@@ -793,6 +822,10 @@ export const upsertSubAgentToolPart = internalMutation({
     childSessionKey: v.string(),
     toolCallId: v.string(),
     name: v.string(),
+    // Same ATOMIC per-bridge barrier as upsertSubAgent — the existing row is
+    // resolved by a GLOBAL (childSessionKey, toolCallId) key, so the ownership
+    // check must run in THIS transaction (boundary TOCTOU). Absent = legacy path.
+    boundInstanceName: v.optional(v.string()),
     status: v.union(
       v.literal("running"),
       v.literal("done"),
@@ -811,6 +844,18 @@ export const upsertSubAgentToolPart = internalMutation({
           .eq("toolCallId", args.toolCallId),
       )
       .first();
+
+    // ATOMIC cross-gateway barrier: the provided chat AND the existing row's chat
+    // must both be writable by the proven instance (403 via a thrown error).
+    if (args.boundInstanceName !== undefined) {
+      const guardChats: Id<"chats">[] = [args.chatId];
+      if (existing !== null) guardChats.push(existing.chatId);
+      for (const cid of guardChats) {
+        if (!(await chatAllowsInstance(ctx, cid, args.boundInstanceName))) {
+          throw new Error("forbidden: cross-instance sub-agent tool target");
+        }
+      }
+    }
 
     if (existing === null) {
       // Don't recreate detail for a chat purged mid-flight (mirrors upsertSubAgent).

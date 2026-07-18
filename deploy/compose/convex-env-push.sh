@@ -62,4 +62,9 @@ for v in \
   OPIK_API_KEY OPIK_WORKSPACE OPIK_BASE_URL OPIK_PROJECT_NAME OPIK_OPENCLAW_PROJECT ; do
   push "$v"
 done
+# Boolean flag: push with a `false` DEFAULT so a blank/removed value in .env
+# actively DISABLES it (set_env skips blanks, which would otherwise leave a
+# previously-pushed `true` stuck on a rollback — codex P2).
+_reqpb="$(dotenv_get BRIDGE_INGEST_REQUIRE_PER_BRIDGE)"
+set_env BRIDGE_INGEST_REQUIRE_PER_BRIDGE "${_reqpb:-false}"
 echo "✅ Convex deployment env reconciled. (\`npx convex deploy\` handles the code separately.)"

@@ -481,7 +481,12 @@ export interface InstanceData {
   gatewayHttpUrl: string | null;
   kind: "openclaw" | "hermes";
   transport?: "ws" | "rest" | null; // Hermes only; absent/null → default ("ws")
-
+  /** The per-bridge secret that RESOLVED this instance — carried through so the
+   *  writer can present it on `/bridge/ingest`, proving WHICH instance is writing
+   *  (the same secret that authenticates `/bridge/credentials`). Absent/null on the
+   *  legacy single-instance path (loadConfig), where the writer falls back to the
+   *  shared BRIDGE_INGEST_SECRET. */
+  bridgeInstanceSecret?: string | null;
 }
 
 /** Parse the comma/space-separated per-bridge secrets list (BRIDGE_INSTANCE_SECRETS),
@@ -569,7 +574,10 @@ export function buildInstanceConfig(
     kind: inst.kind,
     transport: inst.transport ?? undefined,
     deviceIdentity: inst.deviceIdentity,
-    bridgeInstanceSecret: null, // the secret is a shared-config anchor, not per-config
+    // The per-bridge secret that resolved THIS instance rides through so the
+    // writer presents it on ingest (proving the writing instance). Null on the
+    // legacy single-instance path → writer falls back to the shared secret.
+    bridgeInstanceSecret: inst.bridgeInstanceSecret ?? null,
     instanceName: inst.instanceName,
     gatewayVersionFallback: version,
     mediaOutboundDir: outboundDir,

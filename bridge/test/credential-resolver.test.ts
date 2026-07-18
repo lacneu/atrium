@@ -109,6 +109,35 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
     expect(o.openclawToken).not.toBe("tok-j");
   });
 
+  it("carries the resolving PER-BRIDGE secret onto the config (writer presents it on ingest)", async () => {
+    // The ingest isolation foundation: the secret that unlocked an instance must
+    // ride onto its BridgeConfig so the writer authenticates ingest AS that
+    // instance (proving WHICH gateway is writing). Two instances → each keeps
+    // its OWN secret, never the other's.
+    const r = new CredentialResolver(
+      deps({
+        bridgeInstanceSecrets: ["sec-olivier", "sec-jerome"],
+        fetchImpl: routedFetch({
+          "sec-olivier": {
+            instanceName: "olivier",
+            gateway: { url: "wss://olivier.gw/ws" },
+            credentials: { token: "tok-o", deviceIdentity: DEV_JSON },
+          },
+          "sec-jerome": {
+            instanceName: "jerome",
+            gateway: { url: "wss://jerome.gw/ws" },
+            credentials: { token: "tok-j", deviceIdentity: DEV_JSON },
+          },
+        }),
+      }),
+    );
+    const { served } = await r.resolveAll();
+    expect(served.get("olivier")!.bridgeInstanceSecret).toBe("sec-olivier");
+    expect(served.get("jerome")!.bridgeInstanceSecret).toBe("sec-jerome");
+    // Cross-check: olivier never carries jerome's secret.
+    expect(served.get("olivier")!.bridgeInstanceSecret).not.toBe("sec-jerome");
+  });
+
   it("a non-secret httpUrl override is used for gatewayHttpBase", async () => {
     const r = new CredentialResolver(
       deps({

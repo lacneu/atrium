@@ -8,6 +8,43 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.66.0] — Per-bridge ingest isolation: one gateway can never write another's data
+
+Security release (phase 1 of 2 — the widen step: fully backward-compatible,
+no behavior change for existing deployments). Convex + bridge; additive
+schema, zero data migration required. Self-hosters: update BOTH the bridge
+image and `npx convex deploy`, in either order (the bridge self-heals across
+the version skew).
+
+- **Every bridge now proves WHICH gateway it writes for.** The ingest endpoint
+  (bridge → Convex writes: streaming text, parts, sub-agent rows, session
+  meta) accepts the per-bridge secret that already authenticates the
+  credentials endpoint — resolving it to exactly one instance — and
+  authorizes EVERY write against that instance: a chat, message or sub-agent
+  row belonging to another gateway is refused (403), in both directions,
+  including per-turn multi-agent routing (an instance a turn was routed to
+  may keep writing even after a later turn routes elsewhere) and sub-agent
+  rows resolved by global keys (checked atomically inside the mutation). The
+  legacy shared `BRIDGE_INGEST_SECRET` is still accepted during the
+  transition, so existing bridges keep working unchanged.
+- **Deploy-order resilience.** A new bridge presenting its per-bridge secret
+  to a not-yet-updated backend retries once with the shared secret — ingest
+  keeps flowing whichever of the image or `npx convex deploy` ships first.
+- **Opt-in hardened mode, for phase 2.** `BRIDGE_INGEST_REQUIRE_PER_BRIDGE`
+  (Convex env; exposed as `bridge.ingestRequirePerBridge` in Helm and in the
+  compose env scripts, default false and explicitly reconciled so a rollback
+  actually disables it) retires the shared secret entirely: per-bridge only,
+  and a chat with no instance binding is no longer writable by anyone. Leave
+  it OFF until every bridge presents a per-bridge secret and the migration
+  below reports zero unbound chats.
+- **One-time migration for legacy chats.** `npx convex run
+  migrations:stampNullInstanceChats` stamps chats created before instance
+  binding with exactly the instance dispatch would rebind them to
+  (behavior-preserving; unresolvable chats are left untouched — they cannot
+  be dispatched, so nothing writes to them), and `npx convex run
+  migrations:countNullInstanceChats` verifies the result. Run both before
+  ever enabling the hardened mode.
+
 ## [0.65.1] — Support tooling: resolve anomalies, read feedback threads
 
 Operability release for the observability MCP and its API — follow-up to a

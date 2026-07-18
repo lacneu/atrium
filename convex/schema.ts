@@ -1244,6 +1244,11 @@ export default defineSchema({
     // streaming message keeps the runtime `isRunning`). The reconciler ranges
     // exactly the streaming set ordered by updatedAt and flips the stale ones.
     .index("by_status_updated", ["status", "updatedAt"])
+    // INGEST AUTHORIZATION: "was a turn in this chat routed to instance X?" —
+    // the per-bridge cross-gateway write barrier's per-turn allow check. Indexed
+    // (chatId, routedInstanceName) so it is an O(log n) point lookup, never a
+    // by_chat scan that could exceed Convex read limits on a long chat (codex P1).
+    .index("by_chat_routed_instance", ["chatId", "routedInstanceName"])
     // Full-text search over message bodies for the global conversation search
     // (topbar palette). `userId` is a filter field so a single index serves the
     // owner-scoped query directly: q.search("text", term).eq("userId", userId).

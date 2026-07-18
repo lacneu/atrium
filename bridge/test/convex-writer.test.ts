@@ -55,6 +55,87 @@ function writerWith(fetchImpl: typeof fetch, deltaFlushMs = 5) {
   });
 }
 
+describe("ingest auth: the writer presents its configured secret as the Bearer", () => {
+  test("the per-bridge secret is sent verbatim on every ingest POST (the instance proof)", async () => {
+    // buildBundle wires the writer's ingestSecret to the instance's per-bridge
+    // secret (config.bridgeInstanceSecret ?? shared). Whatever it is, the writer
+    // must present it UNCHANGED as `Authorization: Bearer <secret>` so Convex can
+    // resolve WHICH instance is writing — the ingest isolation contract.
+    const seenAuth: Array<string | undefined> = [];
+    const fetchImpl = (async (
+      _url: unknown,
+      init: { headers?: Record<string, string> },
+    ) => {
+      seenAuth.push(init.headers?.["Authorization"]);
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "oc_live_per-bridge-alpha",
+      deltaFlushMs: 5,
+      fetchImpl,
+    });
+    await w.setSnapshot("m1", "hello");
+    await tick(15);
+    expect(seenAuth.length).toBeGreaterThan(0);
+    for (const auth of seenAuth) {
+      expect(auth).toBe("Bearer oc_live_per-bridge-alpha");
+    }
+  });
+
+  test("a 401 on the per-bridge secret retries ONCE with the shared fallback (deploy skew)", async () => {
+    // The backend has not yet deployed the dual-accept functions: the per-bridge
+    // secret 401s, and the writer must fall back to the shared secret so ingest
+    // keeps flowing until the deploy lands. Self-heals in either deploy order.
+    const seenAuth: string[] = [];
+    const fetchImpl = (async (
+      _url: unknown,
+      init: { headers?: Record<string, string> },
+    ) => {
+      const auth = init.headers?.["Authorization"] ?? "";
+      seenAuth.push(auth);
+      // Old backend: reject the per-bridge secret, accept the shared one.
+      if (auth === "Bearer per-bridge") {
+        return { ok: false, status: 401, text: async () => "unauthorized" } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "per-bridge",
+      fallbackIngestSecret: "shared",
+      deltaFlushMs: 5,
+      fetchImpl,
+    });
+    await w.setSnapshot("m1", "hello");
+    await tick(15);
+    // First the per-bridge secret (401), then the shared fallback (accepted).
+    expect(seenAuth).toContain("Bearer per-bridge");
+    expect(seenAuth).toContain("Bearer shared");
+  });
+
+  test("NO fallback when the two secrets are identical (legacy single-instance path)", async () => {
+    const seenAuth: string[] = [];
+    const fetchImpl = (async (
+      _url: unknown,
+      init: { headers?: Record<string, string> },
+    ) => {
+      seenAuth.push(init.headers?.["Authorization"] ?? "");
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "same",
+      fallbackIngestSecret: "same", // identical → no distinct fallback kept
+      deltaFlushMs: 5,
+      fetchImpl,
+    });
+    await w.setSnapshot("m1", "hello");
+    await tick(15);
+    for (const auth of seenAuth) expect(auth).toBe("Bearer same");
+  });
+});
+
 describe("delta coalescing under backpressure (the prod fix)", () => {
   test("deltas arriving WHILE a POST is in flight all leave in ONE follow-up POST", async () => {
     const { fetchImpl, sent, release } = controlledFetch();

@@ -146,6 +146,14 @@ bridge:
   #    no longer takes an instance name in env — it resolves each served instance from
   #    Convex via the per-bridge secret(s) in BRIDGE_INSTANCE_SECRETS.
   instanceName: "primary"
+  # -- Retire the shared BRIDGE_INGEST_SECRET: when true, the Convex ingest
+  #    endpoint ONLY accepts per-bridge secrets (each bridge proves WHICH instance
+  #    it is, and every write is authorized against that instance — no cross-gateway
+  #    writes possible). Pushed into the Convex deployment env as
+  #    BRIDGE_INGEST_REQUIRE_PER_BRIDGE by the bootstrap Job. Flip to true ONLY once
+  #    every bridge presents a per-bridge secret (visible in the ingest traces),
+  #    else in-flight bridges on the shared secret 401. Leave false during rollout.
+  ingestRequirePerBridge: false
   # NOTE: media MODE (gateway-http | shared-fs | off), the per-file size CAP, the
   # agent-visible mount PATHS and session rehydration are PER-INSTANCE settings
   # configured in Atrium -> Settings -> Agents -> Bridge (applied hot, no restart) —
