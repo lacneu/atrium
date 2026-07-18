@@ -8,9 +8,14 @@
 // `op` per normalized event to `POST /bridge/ingest`.
 //
 // SECURITY (load-bearing):
-//   - `Authorization: Bearer <BRIDGE_INGEST_SECRET>` — the secret is read from
-//     DEPLOYMENT ENV (`npx convex env set BRIDGE_INGEST_SECRET ...`), NEVER from
-//     a table or the browser. Constant-time compared.
+//   - `Authorization: Bearer <per-bridge secret>` — resolved by SHA-256 hash to
+//     exactly ONE instance (bridgeAuth.by_hash): the writing bridge's identity
+//     is PROVEN, never self-asserted, and every write below is authorized
+//     against it (cross-gateway targets → 403). PER-BRIDGE ONLY: there is no
+//     shared-secret fallback and no mode — isolation is not configurable.
+//   - The boundary check is the fast 403; the AIRTIGHT enforcement is atomic
+//     inside each write mutation (chatAllowsInstance re-checked in the same
+//     transaction as the write — no authorize→write TOCTOU).
 //   - The route is registered in http.ts. Served at the deployment's `.site`
 //     origin (NOT the `.cloud` query origin).
 //
@@ -63,7 +68,6 @@ export const authorizeIngestTarget = internalQuery({
   args: {
     boundInstanceName: v.string(),
     chatId: v.optional(v.string()),
-    messageId: v.optional(v.string()),
     interactionId: v.optional(v.string()),
     // Sub-agent ops (upsertSubAgent / upsertSubAgentToolPart) resolve their row
     // GLOBALLY by this key — authorization must ALSO follow the EXISTING row's
@@ -73,24 +77,17 @@ export const authorizeIngestTarget = internalQuery({
   },
   handler: async (
     ctx,
-    { boundInstanceName, chatId, messageId, interactionId, childSessionKey },
+    { boundInstanceName, chatId, interactionId, childSessionKey },
   ): Promise<{ decision: "allow" | "deny" | "absent" }> => {
-    // Resolve EVERY chat this op touches: the provided chatId, the message's
-    // chat, the interaction's chat, AND (for a sub-agent key) the existing row's
-    // chat. The op is authorized only if the bound instance may write to ALL of
-    // them — so B cannot pass its own chat alongside A's message/key.
+    // Resolve EVERY chat this op touches: the provided chatId, the
+    // interaction's chat, AND (for a sub-agent key) the existing row's chat.
+    // The op is authorized only if the bound instance may write to ALL of them
+    // — so B cannot pass its own chat alongside A's key.
     const chatsToCheck: Id<"chats">[] = [];
     if (chatId !== undefined) {
       const cid = ctx.db.normalizeId("chats", chatId);
       if (cid === null) return { decision: "absent" };
       chatsToCheck.push(cid);
-    }
-    if (messageId !== undefined) {
-      const mid = ctx.db.normalizeId("messages", messageId);
-      if (mid === null) return { decision: "absent" };
-      const message = await ctx.db.get(mid);
-      if (message === null) return { decision: "absent" };
-      chatsToCheck.push(message.chatId);
     }
     if (interactionId !== undefined) {
       const iid = ctx.db.normalizeId("subAgentInteractions", interactionId);
@@ -160,21 +157,7 @@ async function traceIngest(
 
 // NOTE: this file exports the ingest httpAction plus the `storageMeta`
 // internalQuery (above). httpActions run in the DEFAULT Convex runtime (fetch +
-// ctx.storage are available; Node built-ins are NOT). The secret compare is
-// therefore a pure-JS constant-time comparison over UTF-8 bytes — deliberately
-// NOT node:crypto.timingSafeEqual.
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = new TextEncoder().encode(a);
-  const bb = new TextEncoder().encode(b);
-  // Compare against a fixed-length accumulator so the loop count does not vary
-  // with where the first mismatch is. A length difference is folded into diff.
-  const len = Math.max(ab.length, bb.length);
-  let diff = ab.length ^ bb.length;
-  for (let i = 0; i < len; i++) {
-    diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
-  }
-  return diff === 0;
-}
+// ctx.storage are available; Node built-ins are NOT).
 
 // Mirror of bridge/src/convex-writer.ts IngestOp (kept in sync by hand; the
 // bridge owns the canonical shape).
@@ -446,33 +429,36 @@ type IngestOp =
  *  covered by their chatId/messageId/interactionId. */
 function ingestTargetIds(op: IngestOp): {
   chatId?: string;
-  messageId?: string;
   interactionId?: string;
   childSessionKey?: string;
 } {
   const b = op as Record<string, unknown>;
+  // MESSAGE-scoped ops (appendDelta/setSnapshot/setPhase/heartbeat/finalize/
+  // addPart/addMediaPart/advancePlan/updateRunId) are deliberately NOT checked
+  // at the boundary: their write mutations enforce the barrier ATOMICALLY
+  // against the streamingText row's boundInstance stamp (zero extra reads) or
+  // the message's chat — a boundary re-check would re-run the per-turn grants
+  // resolution ON EVERY DELTA FLUSH (codex P1: per-token getEffectiveGrants).
+  // Their cross-instance 403 comes from the mutation throw (the catch below).
+  // mediaTrace with only a messageId writes a content-free trace (no data) —
+  // covered when it carries a chatId.
   const chatId = typeof b.chatId === "string" ? b.chatId : undefined;
-  const messageId = typeof b.messageId === "string" ? b.messageId : undefined;
   const interactionId =
     typeof b.interactionId === "string" ? b.interactionId : undefined;
   // Sub-agent ops resolve their row GLOBALLY by childSessionKey; carry it so
-  // authorization follows the existing row's chat, not the self-asserted chatId.
+  // authorization follows the existing row's chat, not the self-asserted chatId
+  // (the mutation re-checks atomically as well — this is the fast 403).
   const childSessionKey =
     (op.op === "upsertSubAgent" || op.op === "upsertSubAgentToolPart") &&
     typeof b.childSessionKey === "string"
       ? b.childSessionKey
       : undefined;
-  // chatId is the most direct owner key; fall back to messageId, then
-  // interactionId (each resolves to a chat server-side). childSessionKey rides
-  // ALONGSIDE chatId for the sub-agent ops (the query prefers the existing row).
   const base =
     chatId !== undefined
       ? { chatId }
-      : messageId !== undefined
-        ? { messageId }
-        : interactionId !== undefined
-          ? { interactionId }
-          : {};
+      : interactionId !== undefined
+        ? { interactionId }
+        : {};
   return childSessionKey !== undefined ? { ...base, childSessionKey } : base;
 }
 
@@ -481,20 +467,20 @@ export const ingest = httpAction(async (ctx, request) => {
   // delivery recorder's `calibrate` op can return a clean clock reference near the
   // round-trip midpoint — not biased by any later server work. See convex/deliveryTiming.ts.
   const receivedAt = Date.now();
-  // AUTH (bridge -> Convex). A Bearer token that is EITHER a per-bridge secret
-  // (proves WHICH instance is writing -> its writes are authorized per-target) OR
-  // the legacy shared BRIDGE_INGEST_SECRET (constant-time, no per-instance proof).
-  // The per-bridge path is tried FIRST; the shared path is the transition fallback
-  // and is retired entirely when BRIDGE_INGEST_REQUIRE_PER_BRIDGE=true.
+  // AUTH (bridge -> Convex): PER-BRIDGE ONLY. The Bearer token must be a
+  // per-bridge secret that resolves (by hash) to exactly ONE instance — the
+  // proven identity every write below is authorized against. There is NO shared
+  // fallback and NO mode: cross-gateway isolation is not configurable (the
+  // legacy BRIDGE_INGEST_SECRET path was removed in the narrow phase; a bridge
+  // still presenting it gets 401 and must be updated + given its per-bridge
+  // secret, minted in Settings → Instances).
   const header = request.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  const requirePerBridge =
-    process.env.BRIDGE_INGEST_REQUIRE_PER_BRIDGE === "true";
 
   let boundInstanceName: string | null = null;
   if (token) {
-    // Per-bridge: hash -> the ONE instance this secret authenticates. No timing
-    // oracle worth the surface (238-bit secret; the hash lookup is the compare).
+    // hash -> the ONE instance this secret authenticates. No timing oracle
+    // worth the surface (238-bit secret; the hash lookup is the compare).
     const resolved = await ctx.runQuery(
       internal.bridgeAuth.resolveBridgeInstanceBySecretHash,
       { hash: await hashKey(token) },
@@ -511,28 +497,15 @@ export const ingest = httpAction(async (ctx, request) => {
   }
 
   if (boundInstanceName === null) {
-    // Legacy shared path (skeleton key — no per-instance authorization). Rejected
-    // outright once every bridge presents a per-bridge secret (the require flag).
-    const shared = process.env.BRIDGE_INGEST_SECRET ?? "";
-    const sharedOk =
-      !requirePerBridge && shared !== "" && constantTimeEqual(token, shared);
-    if (!sharedOk) {
-      await traceIngest(ctx, {
-        kind: "openclaw.ingest.denied",
-        status: 401,
-        meta: {
-          reason: requirePerBridge
-            ? "per_bridge_required"
-            : shared
-              ? "bad_secret"
-              : "secret_unset",
-        },
-      });
-      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+    await traceIngest(ctx, {
+      kind: "openclaw.ingest.denied",
+      status: 401,
+      meta: { reason: token ? "unknown_secret" : "no_token" },
+    });
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   let body: IngestOp;
@@ -545,36 +518,24 @@ export const ingest = httpAction(async (ctx, request) => {
     });
   }
 
-  // AUTHORIZATION (the cross-gateway write barrier). Only when the caller PROVED
-  // its instance (per-bridge auth): every op's target must belong to that
-  // instance. The legacy shared path carries no proven identity, so there is
-  // nothing to authorize against — it stays a skeleton key until retired by the
-  // require flag (traced as such below). This is the SINGLE enforcement point.
-  if (boundInstanceName !== null) {
+  // BOUNDARY AUTHORIZATION (fast 403, clear error). Every op's target must
+  // belong to the proven instance. This runs in its OWN transaction, so it is
+  // the FAST-PATH rejection only — the airtight enforcement is ATOMIC inside
+  // each write mutation (they re-check chatAllowsInstance in the SAME
+  // transaction as the write, closing the authorize→write TOCTOU when a
+  // concurrent rebind moves the chat between the two).
+  {
     const target = ingestTargetIds(body);
     const authz = await ctx.runQuery(
       internal.bridge_ingest.authorizeIngestTarget,
       { boundInstanceName, ...target },
     );
     if (authz.decision === "deny") {
-      await traceIngest(ctx, {
-        kind: "openclaw.ingest.denied",
-        status: 403,
-        meta: {
-          reason: "cross_instance",
-          op: body.op,
-          // Structural only: the calling instance NAME (already all over traces),
-          // never chat data.
-          boundInstance: boundInstanceName,
-        },
-      });
-      return new Response(
-        JSON.stringify({ ok: false, error: "forbidden: cross-instance target" }),
-        { status: 403, headers: { "Content-Type": "application/json" } },
-      );
+      return await forbiddenResponse(ctx, body.op, boundInstanceName, false);
     }
   }
 
+  try {
   switch (body.op) {
     case "calibrate":
       // Lightweight clock reference for the delivery recorder (NO writes): serverNow is
@@ -589,6 +550,7 @@ export const ingest = httpAction(async (ctx, request) => {
         chatId: body.chatId as Id<"chats">,
         runId: body.runId ?? undefined,
         turnSessionKey: body.sessionKey ?? undefined,
+        boundInstanceName,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
       // whether this turn is recorded + under which session. When OFF the bridge sends
@@ -619,6 +581,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.appendDelta, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,
@@ -632,6 +595,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,
@@ -647,6 +611,7 @@ export const ingest = httpAction(async (ctx, request) => {
         // The bridge only sends tool/reasoning parts through `addPart`; media
         // goes through `addMedia` (needs a storage round-trip).
         part: body.part as never,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       await traceIngest(ctx, {
@@ -669,6 +634,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.subAgents.settleAnnouncedChild, {
         chatId: body.chatId as Id<"chats">,
         childSessionKey: body.childSessionKey,
+        boundInstanceName,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -686,6 +652,7 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         count: Number(body.count ?? 0),
         settleIfIdle: body.settleIfIdle === true,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       await traceIngest(ctx, {
@@ -718,6 +685,7 @@ export const ingest = httpAction(async (ctx, request) => {
           filename: body.filename,
           mimeType,
         },
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       // Read the stored object's size/type for the trace (best-effort, non-PII):
@@ -886,6 +854,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setPhase, {
         messageId: body.messageId as Id<"messages">,
         phase: body.phase,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       return json({ ok: true });
@@ -897,6 +866,7 @@ export const ingest = httpAction(async (ctx, request) => {
         text: body.text,
         error: body.error ?? undefined,
         errorKind: body.errorKind ?? undefined,
+        boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       await traceIngest(ctx, {
@@ -922,6 +892,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.bridge.bindProviderChat, {
         chatId: body.chatId as Id<"chats">,
         providerChatId: body.providerChatId,
+        boundInstanceName,
         ...(typeof body.resetCount === "number"
           ? { resetCount: body.resetCount }
           : {}),
@@ -931,6 +902,7 @@ export const ingest = httpAction(async (ctx, request) => {
     case "clearProviderChat": {
       await ctx.runMutation(internal.bridge.clearProviderChat, {
         chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
       });
       return json({ ok: true });
     }
@@ -938,12 +910,14 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.bridge.updateMessageRunId, {
         messageId: body.messageId as Id<"messages">,
         runId: body.runId,
+        boundInstanceName,
       });
       return json({ ok: true });
     }
     case "heartbeat": {
       await ctx.runMutation(internal.stream.heartbeatStream, {
         messageId: body.messageId as Id<"messages">,
+        boundInstanceName,
       });
       return json({ ok: true });
     }
@@ -951,6 +925,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSessionActiveTokens, {
         chatId: body.chatId as Id<"chats">,
         activeTokens: body.activeTokens as number,
+        boundInstanceName,
         observedAt:
           typeof body.observedAt === "number" ? body.observedAt : undefined,
       });
@@ -960,6 +935,7 @@ export const ingest = httpAction(async (ctx, request) => {
       await ctx.runMutation(internal.stream.setSessionMeta, {
         chatId: body.chatId as Id<"chats">,
         meta: body.meta,
+        boundInstanceName,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -984,6 +960,7 @@ export const ingest = httpAction(async (ctx, request) => {
     case "getRehydrationContext": {
       const result = await ctx.runQuery(internal.stream.rehydrationContext, {
         chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
         excludeMessageId: body.excludeMessageId
           ? (body.excludeMessageId as Id<"messages">)
           : undefined,
@@ -1004,21 +981,17 @@ export const ingest = httpAction(async (ctx, request) => {
       return json(result);
     }
     case "upsertSubAgent": {
-      try {
       await ctx.runMutation(internal.subAgents.upsertSubAgent, {
         chatId: body.chatId as Id<"chats">,
         // The PROVEN instance (per-bridge auth) WINS over the self-asserted body
         // field — a bridge can no longer stamp another gateway's name on a
         // sub-agent row. Falls back to the (legacy shared path's) self-asserted
         // value only when no instance was proven.
-        instanceName:
-          boundInstanceName ??
-          (typeof body.instanceName === "string" && body.instanceName !== ""
-            ? body.instanceName
-            : undefined),
+        // The PROVEN instance — the self-asserted body field is ignored.
+        instanceName: boundInstanceName,
         // ATOMIC cross-gateway re-check inside the mutation (global-key TOCTOU +
-        // parentMessageId). Undefined on the legacy shared path (no enforcement).
-        ...(boundInstanceName !== null ? { boundInstanceName } : {}),
+        // parentMessageId).
+        boundInstanceName,
         parentMessageId: body.parentMessageId
           ? (body.parentMessageId as Id<"messages">)
           : undefined,
@@ -1051,12 +1024,8 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
-      } catch (e) {
-        return subAgentForbidden(ctx, e, body.op);
-      }
     }
     case "upsertSubAgentToolPart": {
-      try {
       await ctx.runMutation(internal.subAgents.upsertSubAgentToolPart, {
         chatId: body.chatId as Id<"chats">,
         childSessionKey: body.childSessionKey,
@@ -1066,7 +1035,7 @@ export const ingest = httpAction(async (ctx, request) => {
         argsText: body.argsText,
         resultText: body.resultText,
         // ATOMIC cross-gateway re-check (global (childSessionKey, toolCallId) key).
-        ...(boundInstanceName !== null ? { boundInstanceName } : {}),
+        boundInstanceName,
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -1083,9 +1052,6 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
-      } catch (e) {
-        return subAgentForbidden(ctx, e, body.op);
-      }
     }
     case "recordSubAgentInteractionReply": {
       await ctx.runMutation(
@@ -1095,6 +1061,7 @@ export const ingest = httpAction(async (ctx, request) => {
           status: body.status,
           replyText: body.replyText,
           errorMessage: body.errorMessage,
+          boundInstanceName,
         },
       );
       await traceIngest(ctx, {
@@ -1112,6 +1079,14 @@ export const ingest = httpAction(async (ctx, request) => {
     default:
       return json({ ok: false, error: "unknown op" }, 400);
   }
+  } catch (e) {
+    // ATOMIC barrier throw from ANY write mutation (the in-transaction
+    // chatAllowsInstance re-check) → 403. Any other error re-throws — a real
+    // failure must never read as a cross-instance denial.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes("forbidden: cross-instance")) throw e;
+    return await forbiddenResponse(ctx, body.op, boundInstanceName, true);
+  }
 });
 
 function json(value: unknown, status = 200): Response {
@@ -1121,20 +1096,19 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-/** Map the sub-agent mutations' ATOMIC cross-gateway barrier throw to a 403 (the
- *  boundary check covers the non-race cases; this catches the global-key TOCTOU
- *  window). Any OTHER error re-throws — a real failure must not read as a 403. */
-async function subAgentForbidden(
+/** The cross-instance 403: traced (structural meta only — the calling instance
+ *  NAME, never chat data) + a stable error body. `atomic` distinguishes the
+ *  in-mutation barrier (the TOCTOU catch) from the boundary fast-path. */
+async function forbiddenResponse(
   ctx: ActionCtx,
-  e: unknown,
   op: string,
+  boundInstance: string,
+  atomic: boolean,
 ): Promise<Response> {
-  const msg = e instanceof Error ? e.message : String(e);
-  if (!msg.includes("forbidden: cross-instance")) throw e;
   await traceIngest(ctx, {
     kind: "openclaw.ingest.denied",
     status: 403,
-    meta: { reason: "cross_instance", op, atomic: true },
+    meta: { reason: "cross_instance", op, boundInstance, atomic },
   });
   return json({ ok: false, error: "forbidden: cross-instance target" }, 403);
 }

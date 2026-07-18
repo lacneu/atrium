@@ -26,6 +26,8 @@ import { recordFileForPart } from "./lib/files";
 import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import { QUOTE_EXCERPT_CAP } from "./lib/quoteReply";
+import { requireAgentMembership } from "./chats";
+import { resolveTargetForTurn } from "./routing";
 
 export const sendMessage = mutation({
   args: {
@@ -108,6 +110,36 @@ export const sendMessage = mutation({
 
     const now = Date.now();
     const attachments = args.attachments ?? [];
+
+    // 2c. PER-TURN ROUTE VALIDATION AT THE SOURCE. The routedInstanceName this
+    //     mutation stamps on the user message is what the ingest authorization's
+    //     per-turn branch TRUSTS (chatAllowsInstance) — so it must never hold
+    //     raw client input. Validate against the user's effective agent set NOW
+    //     (the same gate createChat applies to a chat binding); a forged/revoked
+    //     routedAgent fails the send immediately instead of stamping a route the
+    //     dispatch would only reject later (codex P1).
+    if (args.routedAgent !== undefined) {
+      await requireAgentMembership(
+        ctx,
+        userId,
+        args.routedAgent.instanceName,
+        args.routedAgent.agentId,
+      );
+      // AND the route must be DISPATCHABLE right now — the same resolution the
+      // dispatch applies. A granted-but-gone agent (deleted on the gateway,
+      // userAgents row lingering) would stamp a provenance the dispatch then
+      // rejects as no_agent, leaving a valid-looking route that never ran
+      // (codex P1). Refuse at the source instead.
+      const resolved = await resolveTargetForTurn(
+        ctx,
+        chat,
+        userId,
+        args.routedAgent,
+      );
+      if (resolved.target === null) {
+        throw new Error("Forbidden: routed agent is not dispatchable");
+      }
+    }
 
     // 2b. Mid-turn serialization (Phase 1: QUEUE). If the chat already has a turn
     //     IN FLIGHT, this send is parked as a `queued` outbox row and the drainer

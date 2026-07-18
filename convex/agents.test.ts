@@ -12,7 +12,11 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { resolveDocumentaryTarget } from "./agents";
+import {
+  resolveDocumentaryTarget,
+  getEffectiveGrants,
+  userMayAccessInstance,
+} from "./agents";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -1258,5 +1262,100 @@ describe("opt-in enablement gate (a disabled agent is unusable everywhere)", () 
     // Legacy (undefined) grandfathered to enabled; fresh (false) stays opt-in.
     expect(after.find((a) => a.agentId === "legacy")?.enabled).toBe(true);
     expect(after.find((a) => a.agentId === "fresh")?.enabled).toBe(false);
+  });
+});
+
+describe("userMayAccessInstance — no drift from getEffectiveGrants membership", () => {
+  // The bounded membership test MUST agree with the full cascade on every
+  // regime: direct-only, in-group narrowing (a direct grant OUTSIDE the pool
+  // is dropped), all-pool fallback, and the enablement gate. This is the
+  // discriminating cross-check: if either side's cascade changes, this fails.
+  test("direct / group-narrowed / all-pool / disabled regimes all agree", async () => {
+    const t = convexTest(schema, modules);
+    const { u1, u2, u3, u4 } = await t.run(async (ctx) => {
+      const mkUser = async (canonical: string) => {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", {
+          userId: uid,
+          role: "user" as const,
+          canonical,
+        });
+        return uid;
+      };
+      const mkAgent = (instanceName: string, agentId: string, enabled: boolean) =>
+        ctx.db.insert("agents", {
+          instanceName,
+          agentId,
+          source: "discovered" as const,
+          presentInLastOk: true,
+          enabled,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      // alpha: one ENABLED agent; bravo: one DISABLED agent (present).
+      await mkAgent("alpha", "alice", true);
+      await mkAgent("bravo", "bob", false);
+
+      // u1: groupless, direct grant on alpha.
+      const u1 = await mkUser("u1");
+      await ctx.db.insert("userAgents", {
+        userId: u1,
+        instanceName: "alpha",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      // u2: IN-GROUP (pool = alpha only) with a stale direct grant on bravo
+      // (outside the pool — the cascade drops it).
+      const u2 = await mkUser("u2");
+      const groupId = await ctx.db.insert("groups", {
+        key: "g",
+        name: "G",
+        createdBy: u1,
+        createdAt: 1,
+      });
+      await ctx.db.insert("groupMembers", { groupId, userId: u2, joinedAt: 1 });
+      await ctx.db.insert("groupAgents", {
+        groupId,
+        instanceName: "alpha",
+        agentId: "alice",
+        createdAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: u2,
+        instanceName: "bravo",
+        agentId: "bob",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      // u3: groupless, grantless (all-pool regime).
+      const u3 = await mkUser("u3");
+      // u4: in-group with a direct grant INSIDE the pool.
+      const u4 = await mkUser("u4");
+      await ctx.db.insert("groupMembers", { groupId, userId: u4, joinedAt: 1 });
+      await ctx.db.insert("userAgents", {
+        userId: u4,
+        instanceName: "alpha",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      return { u1, u2, u3, u4 };
+    });
+
+    for (const [label, userId] of Object.entries({ u1, u2, u3, u4 })) {
+      for (const instanceName of ["alpha", "bravo", "ghost"]) {
+        const { fast, full } = await t.run(async (ctx) => ({
+          fast: await userMayAccessInstance(ctx, userId, instanceName),
+          full: (await getEffectiveGrants(ctx, userId)).some(
+            (g) => g.instanceName === instanceName,
+          ),
+        }));
+        expect(fast, `${label} × ${instanceName}`).toBe(full);
+      }
+    }
   });
 });

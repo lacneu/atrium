@@ -773,8 +773,22 @@ export const turnActivity = query({
  * path has no finalize).
  */
 export const settleAnnouncedChild = internalMutation({
-  args: { chatId: v.id("chats"), childSessionKey: v.string() },
-  handler: async (ctx, { chatId, childSessionKey }) => {
+  args: {
+    chatId: v.id("chats"),
+    childSessionKey: v.string(),
+    boundInstanceName: v.optional(v.string()),
+  },
+  handler: async (ctx, { chatId, childSessionKey, boundInstanceName }) => {
+    // Deleted chat = no-op (pre-existing contract), never a 403.
+    if ((await ctx.db.get(chatId)) === null) return;
+    // ATOMIC cross-gateway barrier (the row lookup below is chat-scoped, so
+    // authorizing the chat covers the write).
+    if (
+      boundInstanceName !== undefined &&
+      !(await chatAllowsInstance(ctx, chatId, boundInstanceName))
+    ) {
+      throw new Error("forbidden: cross-instance sub-agent target");
+    }
     const row = await ctx.db
       .query("subAgents")
       .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))

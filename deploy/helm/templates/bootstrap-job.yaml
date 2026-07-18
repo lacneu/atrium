@@ -168,8 +168,7 @@ spec:
                 ATRIUM_SECRET_KEY ATRIUM_ENV_LABEL \
                 BRIDGE_SHARED_SECRET BRIDGE_INGEST_SECRET \
                 LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_HOST \
-                OPIK_API_KEY OPIK_WORKSPACE OPIK_BASE_URL \
-                BRIDGE_INGEST_REQUIRE_PER_BRIDGE ; do
+                OPIK_API_KEY OPIK_WORKSPACE OPIK_BASE_URL ; do
                 # Quote inside the eval so multiline PEM (JWT_PRIVATE_KEY) and
                 # JSON (JWKS) values are not field-split / re-parsed by ash.
                 eval "val=\"\${$v:-}\""
@@ -186,10 +185,6 @@ spec:
               value: {{ include "atrium.bridgeInClusterUrl" . | quote }}
             - name: BRIDGE_INSTANCE_NAME
               value: {{ .Values.bridge.instanceName | quote }}
-            # Per-bridge INGEST enforcement (retires the shared BRIDGE_INGEST_SECRET
-            # once every bridge presents a per-bridge secret). Non-secret boolean.
-            - name: BRIDGE_INGEST_REQUIRE_PER_BRIDGE
-              value: {{ .Values.bridge.ingestRequirePerBridge | default false | quote }}
             # --- the auth gate + OAuth + auth keys + trace keys, from the Secret ---
             - name: AUTH_ALLOWED_EMAIL_DOMAINS
               valueFrom:

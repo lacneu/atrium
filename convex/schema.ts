@@ -532,7 +532,15 @@ export default defineSchema({
     // Bounded scan of the no-group all-pool: only DISCOVERED (assignable) +
     // PRESENT (not gateway-deleted) rows, capped, on the listChats/getChatAgent hot
     // paths (see loadAllAgentsPool) -- so deleted/manual rows never consume the cap.
-    .index("by_source_present", ["source", "presentInLastOk"]),
+    .index("by_source_present", ["source", "presentInLastOk"])
+    // Point lookup "does this instance still have a PRESENT discovered agent"
+    // (ingestAuthz all-pool re-validation) — indexed on all three eq fields so
+    // deleted/manual rows of a large instance never inflate the read.
+    .index("by_instance_source_present", [
+      "instanceName",
+      "source",
+      "presentInLastOk",
+    ]),
 
   // The M:N join: which agents a user may use. user↔instance is DERIVED from this
   // (no second grant table). INVARIANT: exactly one isDefault === true WHENEVER
@@ -1180,6 +1188,14 @@ export default defineSchema({
     // against THAT run's parts, not `runId` (which a newer merge may have
     // rotated to a different announce). Set/cleared with the window.
     announceReplayRun: v.optional(v.string()), // OpenClaw runId for assistant turns
+    // INGEST AUTHORIZATION stamp (durable twin of streamingText.boundInstance):
+    // the instance whose bridge STARTED this assistant turn, validated
+    // atomically at startAssistant/announce-reopen. Message-scoped ingest
+    // writes (addPart/advancePlan/finalize/updateRunId) compare against it —
+    // so per-turn ownership SURVIVES finalize (the live row is deleted then,
+    // and the chat-level check alone would let another routed instance write
+    // into the terminal message). Absent = pre-isolation message → chat check.
+    boundInstance: v.optional(v.string()),
     // MULTI-AGENT per-turn routing: which agent THIS turn was routed to — the user
     // message the user addressed to a specialist, and the assistant reply that answered
     // it. One visible thread can route different turns to different agents; these record
@@ -1513,6 +1529,13 @@ export default defineSchema({
     // message was reopened by an announce merge) drops instead of corrupting
     // the new stream. Absent = written by an older bridge → not enforced.
     generation: v.optional(v.union(v.string(), v.null())),
+    // INGEST AUTHORIZATION stamp: the instance whose bridge STARTED this turn
+    // (proven per-bridge identity, validated atomically at startAssistant).
+    // Hot-path delta/snapshot/phase writes compare against it on the row they
+    // already read — the atomic cross-gateway barrier at ZERO extra reads. A
+    // rebind mid-turn cannot retarget it (the stamp is generational, like
+    // `generation`). Absent = row created by a pre-isolation writer.
+    boundInstance: v.optional(v.string()),
     text: v.string(),
     updatedAt: v.number(),
     // Live PROCESSING PHASE of the in-flight turn (processing_history /

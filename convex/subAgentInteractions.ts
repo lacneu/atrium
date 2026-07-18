@@ -12,6 +12,7 @@
 // the upload-storageId IDOR lesson). The reply/mutations are internal (bridge-only).
 
 import { v } from "convex/values";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { action, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
@@ -166,10 +167,22 @@ export const recordInteractionReply = internalMutation({
     replyText: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
     status: v.union(v.literal("done"), v.literal("error")),
+    boundInstanceName: v.optional(v.string()),
   },
-  handler: async (ctx, { interactionId, replyText, errorMessage, status }) => {
+  handler: async (
+    ctx,
+    { interactionId, replyText, errorMessage, status, boundInstanceName },
+  ) => {
     const row = await ctx.db.get(interactionId);
     if (row === null) return null;
+    // ATOMIC cross-gateway barrier: the interaction's chat must allow the
+    // proven instance (the row read is already paid).
+    if (
+      boundInstanceName !== undefined &&
+      !(await chatAllowsInstance(ctx, row.chatId, boundInstanceName))
+    ) {
+      throw new Error("forbidden: cross-instance interaction target");
+    }
     await ctx.db.patch(interactionId, {
       replyText,
       errorMessage,

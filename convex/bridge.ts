@@ -13,6 +13,7 @@
 //     `fetch` here only runs server-side on Convex.
 
 import { v } from "convex/values";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
 import {
   action,
   internalAction,
@@ -669,26 +670,68 @@ export const openclawThreadForChat = internalQuery({
  *  message is still streaming and has no run id yet, so it never clobbers a
  *  finalized turn. Enables abort-by-run-id targeting. */
 export const updateMessageRunId = internalMutation({
-  args: { messageId: v.id("messages"), runId: v.string() },
-  handler: async (ctx, { messageId, runId }) => {
+  args: {
+    messageId: v.id("messages"),
+    runId: v.string(),
+    boundInstanceName: v.optional(v.string()),
+  },
+  handler: async (ctx, { messageId, runId, boundInstanceName }) => {
     const msg = await ctx.db.get(messageId);
     if (msg === null) return;
+    // Durable message stamp wins (survives finalize); legacy → chat check.
+    if (
+      boundInstanceName !== undefined &&
+      msg.boundInstance !== undefined &&
+      msg.boundInstance !== boundInstanceName
+    ) {
+      throw new Error("forbidden: cross-instance bridge target");
+    }
+    if (msg.boundInstance === undefined) {
+      await assertIngestChatBound(ctx, msg.chatId, boundInstanceName);
+    }
     if (msg.status !== "streaming") return;
     if (msg.runId) return;
+    // Read the live row FIRST: its boundInstance stamp is STRICTER than chat
+    // membership (per-TURN owner). A routed-but-not-owning instance rewriting
+    // the runId would corrupt the generation guard and lock the legitimate
+    // writer out of its own stream (codex P1 — the Hermes late-runId path).
+    const row = await ctx.db
+      .query("streamingText")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .first();
+    if (
+      boundInstanceName !== undefined &&
+      row !== null &&
+      row.boundInstance !== undefined &&
+      row.boundInstance !== boundInstanceName
+    ) {
+      throw new Error("forbidden: cross-instance bridge target");
+    }
     await ctx.db.patch(messageId, { runId });
     // Keep the live row's GENERATION in lockstep (Hermes reveals its run id
     // AFTER startAssistant seeded generation=null): the bridge tags the
     // subsequent stream writes with the new run id, and the generation guard
     // would otherwise reject them all against the stale null.
-    const row = await ctx.db
-      .query("streamingText")
-      .withIndex("by_message", (q) => q.eq("messageId", messageId))
-      .first();
     if (row !== null && (row.generation === null || row.generation === undefined)) {
       await ctx.db.patch(row._id, { generation: runId });
     }
   },
 });
+
+/** ATOMIC ingest authorization for the bridge-facing mutations below: when the
+ *  ingest passes the caller's PROVEN instance, the target chat must allow it —
+ *  in THIS transaction (no authorize→write TOCTOU). Undefined = trusted
+ *  internal caller. */
+async function assertIngestChatBound(
+  ctx: { db: { get: (id: Id<"chats">) => Promise<unknown> } } & Parameters<typeof chatAllowsInstance>[0],
+  chatId: Id<"chats">,
+  bound: string | undefined,
+): Promise<void> {
+  if (bound === undefined) return;
+  if (!(await chatAllowsInstance(ctx, chatId, bound))) {
+    throw new Error("forbidden: cross-instance bridge target");
+  }
+}
 
 export const bindProviderChat = internalMutation({
   args: {
@@ -701,8 +744,12 @@ export const bindProviderChat = internalMutation({
     // catch the null->null case of a reset on a not-yet-bound chat). Absent
     // (old bridge) = unguarded, the pre-existing behavior.
     resetCount: v.optional(v.number()),
+    boundInstanceName: v.optional(v.string()),
   },
-  handler: async (ctx, { chatId, providerChatId, resetCount }) => {
+  handler: async (ctx, { chatId, providerChatId, resetCount, boundInstanceName }) => {
+    // Deleted chat = no-op (pre-existing contract), never a 403.
+    if ((await ctx.db.get(chatId)) === null) return;
+    await assertIngestChatBound(ctx, chatId, boundInstanceName);
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
     if (resetCount !== undefined && (chat.providerResetCount ?? 0) !== resetCount) {
@@ -734,10 +781,11 @@ export const bindProviderChat = internalMutation({
  *  id (a Hermes session), never an OpenClaw routing segment that happens to sit
  *  in the same slot (codex P1). */
 export const clearProviderChat = internalMutation({
-  args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }) => {
+  args: { chatId: v.id("chats"), boundInstanceName: v.optional(v.string()) },
+  handler: async (ctx, { chatId, boundInstanceName }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
+    await assertIngestChatBound(ctx, chatId, boundInstanceName);
     const cur = chat.openclawChatId;
     // The reset EPOCH bumps even when the slot is empty (nothing to clear):
     // an in-flight turn's late bind must see the mismatch and stand down —

@@ -32,6 +32,62 @@ import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { maybeScheduleTurnRetry } from "./turnRetry";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
+
+// ── ATOMIC ingest authorization (cross-gateway barrier) ──────────────────────
+// Runs INSIDE the write transaction (no authorize→write TOCTOU): when the
+// ingest passes the caller's proven instance (per-bridge auth), the write's
+// target chat must allow it — else throw; the ingest httpAction maps the
+// throw to 403. `bound === undefined` = a trusted INTERNAL caller (watchdog,
+// dispatch failure path, tests) — no enforcement.
+const CROSS_INSTANCE = "forbidden: cross-instance stream target";
+
+async function assertChatBound(
+  ctx: MutationCtx | Parameters<typeof chatAllowsInstance>[0],
+  chatId: Id<"chats">,
+  bound: string | undefined,
+): Promise<void> {
+  if (bound === undefined) return;
+  if (!(await chatAllowsInstance(ctx, chatId, bound))) {
+    throw new Error(CROSS_INSTANCE);
+  }
+}
+
+/** Hot-path variant: authorize against the streamingText row ALREADY READ.
+ *  The `boundInstance` stamp (validated atomically at startAssistant) is the
+ *  zero-extra-reads compare; a legacy row without the stamp falls back to the
+ *  chat check. */
+async function assertRowBound(
+  ctx: MutationCtx,
+  row: { boundInstance?: string; chatId: Id<"chats"> },
+  bound: string | undefined,
+): Promise<void> {
+  if (bound === undefined) return;
+  if (row.boundInstance !== undefined) {
+    if (row.boundInstance !== bound) throw new Error(CROSS_INSTANCE);
+    return;
+  }
+  await assertChatBound(ctx, row.chatId, bound);
+}
+
+/** Message-scoped variant: the DURABLE owner stamp on the message doc wins
+ *  (survives finalize — the live row is deleted then); an unstamped legacy
+ *  message falls back to the chat check. */
+async function assertMessageBound(
+  ctx: MutationCtx,
+  message: { boundInstance?: string; chatId: Id<"chats"> },
+  bound: string | undefined,
+): Promise<void> {
+  if (bound === undefined) return;
+  if (message.boundInstance !== undefined) {
+    if (message.boundInstance !== bound) throw new Error(CROSS_INSTANCE);
+    return;
+  }
+  await assertChatBound(ctx, message.chatId, bound);
+}
+
+/** The optional proven-instance arg every ingest-reachable mutation takes. */
+const boundArg = { boundInstanceName: v.optional(v.string()) };
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
@@ -137,12 +193,18 @@ export const startAssistant = internalMutation({
     // matches the summarize job's openclawChatId nonce inside it instead of
     // racing on message creation times.
     turnSessionKey: v.optional(v.string()),
+    ...boundArg,
   },
-  handler: async (ctx, { chatId, runId, turnSessionKey }) => {
+  handler: async (ctx, { chatId, runId, turnSessionKey, boundInstanceName }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       throw new Error("startAssistant: chat not found");
     }
+    // ATOMIC cross-gateway barrier: the STARTING instance must be allowed to
+    // write this chat — checked in THIS transaction, before any write, and
+    // stamped onto the live row below so every subsequent hot-path write
+    // compares at zero extra reads.
+    await assertChatBound(ctx, chatId, boundInstanceName);
     const now = Date.now();
     // SUB-AGENT ANNOUNCE MERGE: a gateway announce-run delivers the result of
     // a sub-agent whose PARENT turn already finished — as a separate run. The
@@ -194,7 +256,13 @@ export const startAssistant = internalMutation({
           });
         }
       }
-      const merge = await reopenParentForAnnounce(ctx, chatId, runId, now);
+      const merge = await reopenParentForAnnounce(
+        ctx,
+        chatId,
+        runId,
+        now,
+        boundInstanceName,
+      );
       if (merge !== null) {
         if (merge.reopened) {
           await ctx.db.patch(chatId, { updatedAt: now });
@@ -218,6 +286,11 @@ export const startAssistant = internalMutation({
       role: "assistant",
       runId,
       status: "streaming",
+      // Durable owner stamp (message-scoped writes compare against it, and it
+      // SURVIVES finalize — see the schema note).
+      ...(boundInstanceName !== undefined
+        ? { boundInstance: boundInstanceName }
+        : {}),
       text: "",
       updatedAt: now,
     });
@@ -231,6 +304,11 @@ export const startAssistant = internalMutation({
       chatId,
       userId: chat.userId,
       generation: runId ?? null,
+      // The proven starting instance (see the barrier above): the hot-path
+      // writes' zero-read authorization compare. Absent for internal callers.
+      ...(boundInstanceName !== undefined
+        ? { boundInstance: boundInstanceName }
+        : {}),
       text: "",
       updatedAt: now,
     });
@@ -321,6 +399,12 @@ async function reopenParentForAnnounce(
   chatId: Id<"chats">,
   announceRunId: string,
   now: number,
+  // The PROVEN starting instance (per-bridge ingest) — stamped onto the
+  // recreated/re-owned live row so the merge generation keeps the same
+  // zero-read hot-path authorization as a normal turn (codex P1: the reopen
+  // path previously produced an UNSTAMPED row that fell back to the weaker
+  // chat-membership check).
+  boundInstanceName?: string,
 ): Promise<{ messageId: Id<"messages">; reopened: boolean } | null> {
   const childSessionKey = deliveryChildKey(announceRunId);
   if (childSessionKey === null) return null;
@@ -487,12 +571,29 @@ async function reopenParentForAnnounce(
       .take(MESSAGE_WINDOW);
     if (!recent.some((m2) => m2._id === parentId)) return null;
   }
+  // The durable ownership stamp GATES the re-own: an instance that is merely
+  // another valid per-turn route of the chat must not seize a parent finalized
+  // by a DIFFERENT instance via a forged sub-agent anchor + announce (codex
+  // P1) — announces come, by construction, from the gateway that spawned the
+  // child, i.e. the parent's owner. A pre-R2 parent has no stamp — the re-own
+  // below stamps it.
+  if (
+    boundInstanceName !== undefined &&
+    parent.boundInstance !== undefined &&
+    parent.boundInstance !== boundInstanceName
+  ) {
+    throw new Error(CROSS_INSTANCE);
+  }
   // RESUME reuses the ORIGINAL prefix preserved by the failed finalize —
   // parent.text at this point is `original + partial announce`, and
   // re-prefixing with THAT would duplicate the partial fragment.
   const prefix = resuming ? (parent.announcePrefix ?? "") : parent.text;
   await ctx.db.patch(parentId, {
     status: "streaming",
+    // Re-own the message for the announce generation (durable stamp).
+    ...(boundInstanceName !== undefined
+      ? { boundInstance: boundInstanceName }
+      : {}),
     // A resume must not carry the failed attempt's error metadata into the
     // (hopefully) successful generation — convertMessage would keep exposing
     // it on a completed message otherwise.
@@ -564,15 +665,22 @@ async function reopenParentForAnnounce(
       chatId,
       userId: parent.userId,
       generation: announceRunId,
+      ...(boundInstanceName !== undefined
+        ? { boundInstance: boundInstanceName }
+        : {}),
       text: seedText,
       updatedAt: now,
       ...(lastChunk !== null || seedText !== "" ? { chunkSeq: nextSeq } : {}),
     });
   } else {
     // A stray leftover row: re-own it for the announce generation, or the
-    // merge's own deltas would fail the generation guard and drop.
+    // merge's own deltas would fail the generation guard and drop. The stamp
+    // re-owns with it (same generational semantics).
     await ctx.db.patch(existing._id, {
       generation: announceRunId,
+      ...(boundInstanceName !== undefined
+        ? { boundInstance: boundInstanceName }
+        : {}),
       updatedAt: now,
     });
   }
@@ -631,8 +739,9 @@ export const setPhase = internalMutation({
     // that no longer owns this message must not touch (nor heartbeat) the
     // reopened stream.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
-  handler: async (ctx, { messageId, phase, expectedRunId }) => {
+  handler: async (ctx, { messageId, phase, expectedRunId, boundInstanceName }) => {
     if (!TURN_PHASES.has(phase)) return; // unknown value: ignore, never throw
     const row = await streamingRow(ctx, messageId);
     // No live row (turn not open yet, or already finished): drop — the phase is
@@ -645,6 +754,8 @@ export const setPhase = internalMutation({
     ) {
       return;
     }
+    // ATOMIC cross-gateway barrier (row stamp — zero extra reads).
+    await assertRowBound(ctx, row, boundInstanceName);
     // Heartbeat (updatedAt) ONLY for phases that prove REAL gateway activity.
     // querying_gateway is the bridge's own doubt about a silent turn — bumping
     // the watchdog there would let a bridge death during the recovery leave the
@@ -664,10 +775,12 @@ export const setPhase = internalMutation({
  *  gateway emits these frames, so a dead bridge (the case the watchdog guards)
  *  produces no heartbeat and still times out. No phase change — purely liveness. */
 export const heartbeatStream = internalMutation({
-  args: { messageId: v.id("messages") },
-  handler: async (ctx, { messageId }) => {
+  args: { messageId: v.id("messages"), ...boundArg },
+  handler: async (ctx, { messageId, boundInstanceName }) => {
     const row = await streamingRow(ctx, messageId);
     if (row === null) return;
+    // ATOMIC cross-gateway barrier (row stamp — zero extra reads).
+    await assertRowBound(ctx, row, boundInstanceName);
     await ctx.db.patch(row._id, { updatedAt: Date.now() });
   },
 });
@@ -680,6 +793,7 @@ export const appendDelta = internalMutation({
     // Generation guard (see finalize): a late/retried delta from a run that
     // no longer owns this message drops silently.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
   handler: async (
     ctx,
@@ -692,6 +806,7 @@ export const appendDelta = internalMutation({
       bridgeSkew,
       sizeBytes,
       expectedRunId,
+      boundInstanceName,
     },
   ) => {
     const now = Date.now(); // t2: Convex received
@@ -709,6 +824,10 @@ export const appendDelta = internalMutation({
     ) {
       return;
     }
+    // ATOMIC cross-gateway barrier (hot path): compare against the live row's
+    // startAssistant-validated stamp — zero extra reads (legacy rows without a
+    // stamp fall back to the chat check inside assertRowBound).
+    if (row !== null) await assertRowBound(ctx, row, boundInstanceName);
     let streamRowId: Id<"streamingText">;
     let chatId: Id<"chats">;
     let seq: number;
@@ -726,6 +845,8 @@ export const appendDelta = internalMutation({
       // it and a no-text finalize would lose everything streamed before the deploy.
       const message = await ctx.db.get(messageId);
       if (message === null) throw new Error("appendDelta: message not found");
+      // ATOMIC barrier on the defensive re-create path (durable message stamp).
+      await assertMessageBound(ctx, message, boundInstanceName);
       // A late delta for an ALREADY-FINISHED turn (finalize/watchdog deleted the row
       // and set a terminal status) must NOT recreate a row: no finalize will run
       // again to delete it, so it would leak a phantom live row that getStreamingText
@@ -750,6 +871,9 @@ export const appendDelta = internalMutation({
         chatId: message.chatId,
         userId: message.userId,
         generation: message.runId ?? null,
+        ...(boundInstanceName !== undefined
+          ? { boundInstance: boundInstanceName }
+          : {}),
         text: full,
         updatedAt: now,
         chunkSeq: 2,
@@ -821,6 +945,7 @@ export const setSnapshot = internalMutation({
     ...recArgs,
     // Generation guard (see appendDelta).
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
   handler: async (
     ctx,
@@ -833,6 +958,7 @@ export const setSnapshot = internalMutation({
       bridgeSkew,
       sizeBytes,
       expectedRunId,
+      boundInstanceName,
     },
   ) => {
     const now = Date.now(); // t2: Convex received
@@ -843,6 +969,10 @@ export const setSnapshot = internalMutation({
     // re-prefix it. One point-read per snapshot (never per delta).
     const message = await ctx.db.get(messageId);
     if (message === null) throw new Error("setSnapshot: message not found");
+    // ATOMIC cross-gateway barrier: the row's stamp when present (zero extra
+    // reads), else the message's chat (the point-read above is already paid).
+    if (row !== null) await assertRowBound(ctx, row, boundInstanceName);
+    else await assertMessageBound(ctx, message, boundInstanceName);
     // Generation guard (see appendDelta): a snapshot from a run that no
     // longer owns this message drops silently.
     if (
@@ -868,6 +998,9 @@ export const setSnapshot = internalMutation({
         chatId: message.chatId,
         userId: message.userId,
         generation: message.runId ?? null,
+        ...(boundInstanceName !== undefined
+          ? { boundInstance: boundInstanceName }
+          : {}),
         text,
         updatedAt: now,
         chunkSeq: 2,
@@ -933,12 +1066,17 @@ export const addPart = internalMutation({
     // owns this message (an announce merge reopened it) drops silently —
     // it would otherwise pollute the merged result and its provenance.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
-  handler: async (ctx, { messageId, part, expectedRunId }) => {
+  handler: async (ctx, { messageId, part, expectedRunId, boundInstanceName }) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("addPart: message not found");
     }
+    // ATOMIC cross-gateway barrier: the message's DURABLE owner stamp (it
+    // survives finalize — the chat check alone would reopen terminal messages
+    // to any routed instance).
+    await assertMessageBound(ctx, message, boundInstanceName);
     if (
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId
@@ -963,7 +1101,11 @@ export const addPart = internalMutation({
     // INSERT below (the parts changed) regardless, so no extra per-text-delta churn.
     if (message.status === "streaming") {
       const liveRow = await streamingRow(ctx, messageId);
+      // Row stamp is stricter than chat membership (per-TURN owner) — an
+      // instance routed in the chat but not owning THIS stream must not
+      // inject parts into it (codex P1).
       if (liveRow !== null) {
+        await assertRowBound(ctx, liveRow, boundInstanceName);
         await ctx.db.patch(liveRow._id, { updatedAt: Date.now() });
       } else {
         await ctx.db.insert("streamingText", {
@@ -971,6 +1113,9 @@ export const addPart = internalMutation({
           chatId: message.chatId,
           userId: message.userId,
           generation: message.runId ?? null,
+          ...(boundInstanceName !== undefined
+            ? { boundInstance: boundInstanceName }
+            : {}),
           text: message.liveText ?? "",
           updatedAt: Date.now(),
         });
@@ -1085,11 +1230,17 @@ export const advancePlanPart = internalMutation({
     // Generation guard (see addPart): a stale run must not advance a plan on
     // a message another run has since re-owned.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
-  handler: async (ctx, { messageId, count, settleIfIdle, expectedRunId }) => {
+  handler: async (
+    ctx,
+    { messageId, count, settleIfIdle, expectedRunId, boundInstanceName },
+  ) => {
     if (count <= 0) return;
     const message = await ctx.db.get(messageId);
     if (message === null) return;
+    // ATOMIC cross-gateway barrier (durable message stamp — see addPart).
+    await assertMessageBound(ctx, message, boundInstanceName);
     if (
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId &&
@@ -1301,15 +1452,18 @@ export const finalize = internalMutation({
     // owns the bubble — skip instead of killing the newer stream. `null`
     // means "the targeted turn had NO runId" (legacy) — still enforced.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    ...boundArg,
   },
   handler: async (
     ctx,
-    { messageId, status, text, error, errorKind, expectedRunId },
+    { messageId, status, text, error, errorKind, expectedRunId, boundInstanceName },
   ) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("finalize: message not found");
     }
+    // ATOMIC cross-gateway barrier (durable message stamp — see addPart).
+    await assertMessageBound(ctx, message, boundInstanceName);
     if (
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId
@@ -1340,6 +1494,10 @@ export const finalize = internalMutation({
     // The live text now lives in the streamingText row; `message.liveText` is only
     // a fallback for a message that was mid-stream across a deploy to this version.
     const stRow = await streamingRow(ctx, messageId);
+    // The live row's stamp is STRICTER than chat membership (per-TURN owner):
+    // an instance routed in this chat but not owning THIS stream must not
+    // terminate it (codex P1 — a bound C finalizing B's active stream).
+    if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
     const streamedText = stRow?.text ?? message.liveText ?? message.text;
     // Announce merge: the run's final frame carries ONLY the announce text —
     // recompose behind the parked parent reply (the streamed row is already
@@ -1547,6 +1705,7 @@ export const finalize = internalMutation({
 export const setSessionMeta = internalMutation({
   args: {
     chatId: v.id("chats"),
+    ...boundArg,
     meta: v.object({
       model: v.optional(v.string()),
       modelProvider: v.optional(v.string()),
@@ -1566,7 +1725,12 @@ export const setSessionMeta = internalMutation({
       observedAt: v.optional(v.number()),
     }),
   },
-  handler: async (ctx, { chatId, meta }) => {
+  handler: async (ctx, { chatId, meta, boundInstanceName }) => {
+    // A chat deleted between the gateway event and this POST stays a NO-OP
+    // (the pre-existing contract) — never a 403 (codex P2).
+    if ((await ctx.db.get(chatId)) === null) return;
+    // ATOMIC cross-gateway barrier.
+    await assertChatBound(ctx, chatId, boundInstanceName);
     const chat = await ctx.db.get(chatId);
     if (chat === null) return; // chat gone (e.g. deleted mid-turn) — nothing to do
     // Preserve the bridge's per-turn activeTokens stamp across sessions.get
@@ -1635,14 +1799,17 @@ export const setSessionMeta = internalMutation({
 export const setSessionActiveTokens = internalMutation({
   args: {
     chatId: v.id("chats"),
+    ...boundArg,
     activeTokens: v.number(),
     // Bridge observation time: fire-and-forget POSTs of two rapid turns can
     // land out of order — the stale one must lose (codex P2).
     observedAt: v.optional(v.number()),
   },
-  handler: async (ctx, { chatId, activeTokens, observedAt }) => {
+  handler: async (ctx, { chatId, activeTokens, observedAt, boundInstanceName }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
+    // ATOMIC cross-gateway barrier.
+    await assertChatBound(ctx, chatId, boundInstanceName);
     const prevAt = chat.sessionMeta?.activeTokensAt;
     if (observedAt !== undefined && prevAt !== undefined && observedAt <= prevAt) {
       return; // an older observation arriving late must not overwrite
@@ -1677,10 +1844,11 @@ export const rehydrationContext = internalQuery({
   args: {
     chatId: v.id("chats"),
     excludeMessageId: v.optional(v.id("messages")),
+    ...boundArg,
   },
   handler: async (
     ctx,
-    { chatId, excludeMessageId },
+    { chatId, excludeMessageId, boundInstanceName },
   ): Promise<{
     history: string | null;
     turnCount: number;
@@ -1689,6 +1857,13 @@ export const rehydrationContext = internalQuery({
     summaryUsed: boolean;
     summaryChars: number;
   }> => {
+    // Cross-gateway READ barrier: the rebuilt history is chat CONTENT — only
+    // an instance allowed to write this chat may read it for rehydration.
+    if (boundInstanceName !== undefined) {
+      if (!(await chatAllowsInstance(ctx, chatId, boundInstanceName))) {
+        throw new Error(CROSS_INSTANCE);
+      }
+    }
     const empty = {
       history: null,
       turnCount: 0,

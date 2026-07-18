@@ -42,6 +42,11 @@ export const stampNullInstanceChats = internalMutation({
       await ctx.db.patch(chat._id, {
         instanceName: resolution.target.instanceName,
         agentId: resolution.target.agentId,
+        // Behavior-preserving REQUIRES dropping the pre-binding provider
+        // session too: without the migration, the next dispatch would rebind
+        // via bindChatTarget, which clears it (a session minted before binding
+        // may belong to a different agent than the resolved target).
+        openclawChatId: undefined,
       });
       stamped++;
     }

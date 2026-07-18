@@ -618,13 +618,10 @@ export interface HttpConvexWriterOptions {
    *  Auto-stamped on sub-agent/task rows so the task reconcile probes the
    *  registry the work actually runs on — never a guess from chat state. */
   instanceName?: string | null;
-  /** Bearer secret presented to the ingest endpoint (the per-bridge secret in the
-   *  multi-instance boot; the shared secret on the legacy single-instance path). */
+  /** Bearer secret presented to the ingest endpoint: the PER-BRIDGE secret
+   *  (the ingest endpoint is per-bridge only — it proves WHICH instance this
+   *  writer writes for; the legacy shared-secret path no longer exists). */
   ingestSecret: string;
-  /** Shared BRIDGE_INGEST_SECRET, presented on a 401 as a deploy-skew fallback
-   *  (new bridge before the Convex dual-accept functions). Ignored when equal to
-   *  `ingestSecret` (legacy path) or absent. */
-  fallbackIngestSecret?: string | null;
   /** Coalesce window for deltas in ms (one mutation per flush, not per token). */
   deltaFlushMs?: number;
   /** Injected fetch (defaults to global fetch); lets tests stub the network. */
@@ -744,14 +741,6 @@ const STALE_MENTION_GRACE_MS = 120_000;
 export class HttpConvexWriter implements ConvexWriter {
   private readonly url: string;
   private readonly ingestSecret: string;
-  // Transition fallback: the SHARED BRIDGE_INGEST_SECRET, presented on a 401 when
-  // the primary (per-bridge) secret is not yet accepted — i.e. the bridge image
-  // upgraded BEFORE the Convex dual-accept functions deployed (the deploy-skew
-  // this project has hit). Self-heals in EITHER deploy order: once the backend
-  // accepts per-bridge, no 401 → no fallback; a hardened backend (require-flag)
-  // rejects both → the error surfaces. Null when there is nothing distinct to
-  // fall back to (legacy single-instance path already presents the shared secret).
-  private readonly fallbackIngestSecret: string | null;
   private readonly instanceName: string | null;
   private readonly deltaFlushMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -812,12 +801,6 @@ export class HttpConvexWriter implements ConvexWriter {
   constructor(opts: HttpConvexWriterOptions) {
     this.url = opts.convexHttpActionsUrl.replace(/\/$/, "") + INGEST_PATH;
     this.ingestSecret = opts.ingestSecret;
-    // Only keep a fallback when it is DISTINCT from the primary (a per-bridge
-    // secret with a shared secret behind it). Identical/absent → no fallback.
-    this.fallbackIngestSecret =
-      opts.fallbackIngestSecret && opts.fallbackIngestSecret !== opts.ingestSecret
-        ? opts.fallbackIngestSecret
-        : null;
     this.instanceName = opts.instanceName ?? null;
     this.deltaFlushMs = opts.deltaFlushMs ?? 50;
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -920,14 +903,6 @@ export class HttpConvexWriter implements ConvexWriter {
     let response: Response;
     try {
       response = await send(this.ingestSecret);
-      // Deploy-skew fallback: a 401 with a per-bridge secret means the backend
-      // does not (yet) accept it — retry ONCE with the shared secret so ingest
-      // keeps flowing until the Convex dual-accept functions are deployed. Only
-      // the primary path presents the per-bridge secret, so a legacy shared-only
-      // writer never reaches here (fallback is null).
-      if (response.status === 401 && this.fallbackIngestSecret !== null) {
-        response = await send(this.fallbackIngestSecret);
-      }
     } catch (err) {
       if (controller.signal.aborted) {
         throw new Error(`Convex ingest ${body.op} timed out after ${WRITE_TIMEOUT_MS}ms`);

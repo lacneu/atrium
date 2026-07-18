@@ -1232,6 +1232,78 @@ export async function getEffectiveGrants(
   return (await getEffectiveGrantsWithPool(ctx, userId)).grants;
 }
 
+/** May USER access INSTANCE at all — i.e. does getEffectiveGrants contain a
+ *  grant on it? The BOUNDED equivalent of
+ *  `getEffectiveGrants(...).some(g => g.instanceName === X)` for authorization
+ *  hot paths (the per-bridge ingest re-validation), where the full resolution's
+ *  groupless-user fallback would collect the ENTIRE present-agent pool on every
+ *  call. Follows the exact cascade of getEffectiveGrantsWithPool on the SAME
+ *  primitives (resolveGroupPool restriction, agentUsable enablement,
+ *  strictness), but reads only the user's own rows + the candidate instance's
+ *  rows. Default election is irrelevant to membership and skipped. */
+export async function userMayAccessInstance(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  instanceName: string,
+): Promise<boolean> {
+  const strict = await agentEnablementStrict(ctx);
+  const usableByPointRead = async (agentId: string): Promise<boolean> => {
+    const agent = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .first();
+    return agentUsable(agent, strict);
+  };
+  const direct = await ctx.db
+    .query("userAgents")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const { existingGroups, pool: groupPool } = await resolveGroupPool(
+    ctx,
+    userId,
+  );
+  const inGroup = existingGroups > 0;
+  // RESTRICTION mode mirrors getEffectiveGrantsWithPool: the direct grants
+  // (narrowed to the group pool for an in-group user) — when ANY survive, they
+  // are the WHOLE effective set (enablement-gated), never widened to the pool.
+  const restricted = inGroup
+    ? direct.filter((r) =>
+        groupPool.some(
+          (p) => p.instanceName === r.instanceName && p.agentId === r.agentId,
+        ),
+      )
+    : direct;
+  if (restricted.length > 0) {
+    for (const r of restricted) {
+      if (r.instanceName !== instanceName) continue;
+      if (await usableByPointRead(r.agentId)) return true;
+    }
+    return false;
+  }
+  // POOL mode: the group pool (bounded), or — groupless — the all-pool, where
+  // membership only needs "does the instance have a USABLE present discovered
+  // agent": a point-range on the dedicated index, never the full collect.
+  if (inGroup) {
+    for (const p of groupPool) {
+      if (p.instanceName !== instanceName) continue;
+      if (await usableByPointRead(p.agentId)) return true;
+    }
+    return false;
+  }
+  const present = await ctx.db
+    .query("agents")
+    .withIndex("by_instance_source_present", (q) =>
+      q
+        .eq("instanceName", instanceName)
+        .eq("source", "discovered")
+        .eq("presentInLastOk", true),
+    )
+    .collect();
+  return present.some((a) => agentUsable(a, strict));
+}
+
 /**
  * Effective agent SET per user, batched for the admin users list (the Agents
  * column). Mirrors getEffectiveGrants' cascade SET -- NOT its default election (the

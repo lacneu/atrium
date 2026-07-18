@@ -11,24 +11,20 @@
 // part-free `mediaTrace` diagnostic.
 
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 
 const modules = import.meta.glob("./**/*.ts");
 
-const SECRET = "test-ingest-secret";
 const URL = "/bridge/ingest";
 
-let prevSecret: string | undefined;
-beforeEach(() => {
-  prevSecret = process.env.BRIDGE_INGEST_SECRET;
-  process.env.BRIDGE_INGEST_SECRET = SECRET;
-});
-afterEach(() => {
-  if (prevSecret === undefined) delete process.env.BRIDGE_INGEST_SECRET;
-  else process.env.BRIDGE_INGEST_SECRET = prevSecret;
-});
+// The per-bridge secret of the fixture instance ("prod"), minted by
+// seedAssistantMessage for EACH test's own convexTest world. Ingest is
+// per-bridge ONLY — there is no shared-secret fallback to configure. Module
+// variable is safe: tests in a file run sequentially.
+let SECRET = "";
 
 // Type WITH the schema (not the bare `ReturnType<typeof convexTest>`, which erases
 // it to a generic DataModel where `ctx.db.query("messageParts").withIndex(...)`
@@ -36,9 +32,17 @@ afterEach(() => {
 // included — so this must typecheck, not just run under vitest's esbuild.
 type T = TestConvex<typeof schema>;
 
-/** A chat + a streaming assistant message to attach parts to. */
+/** A chat + a streaming assistant message to attach parts to — plus the "prod"
+ *  instance and ITS per-bridge secret (stored into the module `SECRET`), since
+ *  the ingest endpoint authenticates per-bridge only. */
 async function seedAssistantMessage(t: T) {
-  return await t.run(async (ctx) => {
+  const seeded = await t.run(async (ctx) => {
+    const admin = await ctx.db.insert("users", {});
+    await ctx.db.insert("profiles", { userId: admin, role: "admin" as const });
+    const instanceId = await ctx.db.insert("instances", {
+      name: "prod",
+      gatewayUrl: "ws://prod",
+    });
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", {
       userId,
@@ -58,8 +62,31 @@ async function seedAssistantMessage(t: T) {
       text: "",
       updatedAt: 1,
     });
-    return { userId, chatId, messageId };
+    return { admin, instanceId, userId, chatId, messageId };
   });
+  const minted = await t
+    .withIdentity({ subject: `${seeded.admin}|session` })
+    .action(api.bridgeAuth.mintBridgeSecret, { instanceId: seeded.instanceId });
+  SECRET = minted.plaintext;
+  return seeded;
+}
+
+/** Mint ONLY the per-bridge auth (admin + "prod" instance + secret into the
+ *  module SECRET) — for tests that build their own chat fixtures. */
+async function seedAuthOnly(t: T) {
+  const seeded = await t.run(async (ctx) => {
+    const admin = await ctx.db.insert("users", {});
+    await ctx.db.insert("profiles", { userId: admin, role: "admin" as const });
+    const instanceId = await ctx.db.insert("instances", {
+      name: "prod",
+      gatewayUrl: "ws://prod",
+    });
+    return { admin, instanceId };
+  });
+  const minted = await t
+    .withIdentity({ subject: `${seeded.admin}|session` })
+    .action(api.bridgeAuth.mintBridgeSecret, { instanceId: seeded.instanceId });
+  SECRET = minted.plaintext;
 }
 
 async function storedBlob(t: T, bytes: string) {
@@ -198,6 +225,7 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
 
   test("streaming lifecycle: startAssistant creates the live-text row; deltas update it WITHOUT churning the message doc; finalize sets message.text + deletes the row", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const chatId = await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
       await ctx.db.insert("profiles", {
@@ -255,6 +283,7 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
   // if NOTHING loadChatView reads changes, the reactive query cannot fire.
   test("text deltas leave loadChatView's read-set (messages doc + messageParts) byte-identical — listByChat is delta-stable", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const chatId = await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
       await ctx.db.insert("profiles", {
@@ -308,6 +337,7 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
 
   test("finalize with EMPTY final text recovers the streamingText row's accumulated text", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const chatId = await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
       await ctx.db.insert("profiles", {
@@ -371,7 +401,7 @@ describe("bridge_ingest httpAction: Bearer gate (every reject reason)", () => {
     const denied = await tracesByKind(t, "openclaw.ingest.denied");
     expect(denied).toHaveLength(1);
     expect(denied[0].status).toBe(401);
-    expect(JSON.parse(denied[0].meta ?? "{}").reason).toBe("bad_secret");
+    expect(JSON.parse(denied[0].meta ?? "{}").reason).toBe("no_token");
   });
 
   test("wrong secret -> 401, writes NO part", async () => {
@@ -388,13 +418,14 @@ describe("bridge_ingest httpAction: Bearer gate (every reject reason)", () => {
     expect(await partsOf(t, messageId)).toHaveLength(0);
   });
 
-  test("secret UNSET on the deployment -> 401 reason secret_unset (fails closed)", async () => {
-    delete process.env.BRIDGE_INGEST_SECRET;
+  test("a secret resolving to NO instance -> 401 reason unknown_secret (fails closed)", async () => {
+    // Per-bridge only: there is no deployment-env shared secret at all — an
+    // unknown Bearer fails closed regardless of any env state.
     const t = convexTest(schema, modules);
     const res = await post(t, { op: "getUploadUrl" }, "Bearer anything");
     expect(res.status).toBe(401);
     const denied = await tracesByKind(t, "openclaw.ingest.denied");
-    expect(JSON.parse(denied[0].meta ?? "{}").reason).toBe("secret_unset");
+    expect(JSON.parse(denied[0].meta ?? "{}").reason).toBe("unknown_secret");
   });
 });
 
@@ -429,6 +460,7 @@ describe("bridge_ingest httpAction: mediaTrace diagnostic + malformed input", ()
 
   test("invalid JSON body -> 400", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const res = await t.fetch(URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json" },
@@ -439,6 +471,7 @@ describe("bridge_ingest httpAction: mediaTrace diagnostic + malformed input", ()
 
   test("unknown op -> 400", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const res = await post(t, { op: "noSuchOp" });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false, error: "unknown op" });
@@ -532,6 +565,7 @@ describe("streamingText split — migration & heartbeat edge cases", () => {
 describe("bridge_ingest httpAction: calibrate (delivery recorder clock)", () => {
   test("authed calibrate -> 200 with a numeric serverNow", async () => {
     const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
     const res = await post(t, { op: "calibrate" });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { serverNow?: unknown };

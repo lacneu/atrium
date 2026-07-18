@@ -115,13 +115,6 @@ for v in \
   push "$v"
 done
 
-# BRIDGE_INGEST_REQUIRE_PER_BRIDGE is a BOOLEAN that must be RECONCILABLE both
-# ways: `set_env` skips blanks, so pushing it through the loop would leave a
-# previously-set `true` stuck when the operator blanks it in .env to roll back.
-# Push it EXPLICITLY with a `false` DEFAULT so a blank/removed value actively
-# DISABLES it (never a silent stuck-hardened state).
-_reqpb="$(dotenv_get BRIDGE_INGEST_REQUIRE_PER_BRIDGE)"
-set_env BRIDGE_INGEST_REQUIRE_PER_BRIDGE "${_reqpb:-false}"
 
 echo "▶ Convex deployment env reconciled."
 

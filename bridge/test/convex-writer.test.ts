@@ -83,56 +83,34 @@ describe("ingest auth: the writer presents its configured secret as the Bearer",
     }
   });
 
-  test("a 401 on the per-bridge secret retries ONCE with the shared fallback (deploy skew)", async () => {
-    // The backend has not yet deployed the dual-accept functions: the per-bridge
-    // secret 401s, and the writer must fall back to the shared secret so ingest
-    // keeps flowing until the deploy lands. Self-heals in either deploy order.
-    const seenAuth: string[] = [];
-    const fetchImpl = (async (
-      _url: unknown,
-      init: { headers?: Record<string, string> },
-    ) => {
-      const auth = init.headers?.["Authorization"] ?? "";
-      seenAuth.push(auth);
-      // Old backend: reject the per-bridge secret, accept the shared one.
-      if (auth === "Bearer per-bridge") {
-        return { ok: false, status: 401, text: async () => "unauthorized" } as unknown as Response;
-      }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
-    }) as unknown as typeof fetch;
-    const w = new HttpConvexWriter({
-      convexHttpActionsUrl: "http://test.invalid",
-      ingestSecret: "per-bridge",
-      fallbackIngestSecret: "shared",
-      deltaFlushMs: 5,
-      fetchImpl,
-    });
-    await w.setSnapshot("m1", "hello");
-    await tick(15);
-    // First the per-bridge secret (401), then the shared fallback (accepted).
-    expect(seenAuth).toContain("Bearer per-bridge");
-    expect(seenAuth).toContain("Bearer shared");
-  });
-
-  test("NO fallback when the two secrets are identical (legacy single-instance path)", async () => {
+  test("per-bridge ONLY: no fallback secret exists — a 401 surfaces as an error", async () => {
+    // The narrow phase removed the shared-secret fallback entirely: whatever
+    // the backend answers, the writer only ever presents ITS per-bridge secret.
+    // A 401 (unknown/revoked secret) must surface as a failed write — never a
+    // silent retry with some other credential.
     const seenAuth: string[] = [];
     const fetchImpl = (async (
       _url: unknown,
       init: { headers?: Record<string, string> },
     ) => {
       seenAuth.push(init.headers?.["Authorization"] ?? "");
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return {
+        ok: false,
+        status: 401,
+        text: async () => "unauthorized",
+      } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = new HttpConvexWriter({
       convexHttpActionsUrl: "http://test.invalid",
-      ingestSecret: "same",
-      fallbackIngestSecret: "same", // identical → no distinct fallback kept
+      ingestSecret: "per-bridge-only",
       deltaFlushMs: 5,
       fetchImpl,
     });
-    await w.setSnapshot("m1", "hello");
-    await tick(15);
-    for (const auth of seenAuth) expect(auth).toBe("Bearer same");
+    // The 401 SURFACES (no silent second credential to retry with).
+    await expect(w.setSnapshot("m1", "hello")).rejects.toThrow(/401/);
+    // Every attempt presented the SAME per-bridge secret — no second credential.
+    expect(seenAuth.length).toBeGreaterThan(0);
+    for (const auth of seenAuth) expect(auth).toBe("Bearer per-bridge-only");
   });
 });
 

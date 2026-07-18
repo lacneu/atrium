@@ -14,6 +14,8 @@
 
 import type { QueryCtx, MutationCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
+import { userMayAccessInstance } from "../agents";
+import { resolveTargetForChat } from "../routing";
 
 type Ctx = QueryCtx | MutationCtx;
 
@@ -21,9 +23,12 @@ type Ctx = QueryCtx | MutationCtx;
  * May the bound instance write to this chat? PROVENANCE rule:
  *   (a) primary binding matches, OR
  *   (b) perTurnRouting AND a turn here was routed to the bound instance
- *       (indexed point lookup — never a full-chat scan), OR
- *   (c) a genuinely UNROUTED, null-primary chat (legacy) — allowed during the
- *       transition (a hardened REQUIRE_PER_BRIDGE deploy stamps every chat).
+ *       (indexed point lookup — never a full-chat scan), re-validated against
+ *       the owner's CURRENT entitlements via targeted reads, OR
+ *   (c) a null-primary chat (legacy, missed by the widen-phase migration):
+ *       allowed IFF the bound instance IS what dispatch would resolve for the
+ *       chat; queries decide without writing, mutations SELF-HEAL (stamp the
+ *       binding + drop the stale provider session, bindChatTarget semantics).
  * Everything else (a different instance's single-agent chat) is denied.
  */
 export async function chatAllowsInstance(
@@ -42,18 +47,40 @@ export async function chatAllowsInstance(
         q.eq("chatId", chatId).eq("routedInstanceName", boundInstanceName),
       )
       .first();
-    return routedHere !== null;
+    if (routedHere === null) return false;
+    // RE-VALIDATE against the owner's CURRENT entitlements: a stamp persisted
+    // before route validation existed (or forged via a direct pre-R2
+    // sendMessage), and a route whose grant was since REVOKED, are not proof
+    // (codex P1). userMayAccessInstance IS the effective-grants cascade as a
+    // BOUNDED membership test — same group-scope narrowing and enablement gate
+    // as getEffectiveGrants (a hand-rolled decomposition here diverged on
+    // both, codex P1×2), without the groupless-user all-pool collect per
+    // authorization (codex P2).
+    return await userMayAccessInstance(ctx, chat.userId, boundInstanceName);
   }
-  // A per-turn chat is never a free-for-all even with a null primary (handled
-  // above). A non-routed, null-primary chat (legacy / created before an agent
-  // was chosen — `chats.instanceName` is OPTIONAL) gets the transition pass
-  // ONLY while the shared secret is still accepted. Once the operator commits
-  // to per-bridge isolation (BRIDGE_INGEST_REQUIRE_PER_BRIDGE=true), an
-  // unstamped chat is NOT a free-for-all: deny it, so the "no cross-gateway
-  // write" guarantee cannot be defeated through a null-primary chat. Such chats
-  // must be stamped/backfilled before the flag is flipped.
-  if (primary === null) {
-    return process.env.BRIDGE_INGEST_REQUIRE_PER_BRIDGE !== "true";
+  // A null-primary chat is NEVER a free-for-all — but an operator may have
+  // skipped the widen-phase migration (migrations:stampNullInstanceChats), and
+  // a legacy chat's late announce/delivery can reach here without a fresh
+  // dispatch to rebind it (codex P1). Resolve the chat exactly as dispatch and
+  // the migration would; the bound instance is allowed IFF it IS that
+  // resolution. Queries (the ingest BOUNDARY, rehydrationContext) decide
+  // WITHOUT writing — a deny there would 403 the very mutation that could heal
+  // the chat (codex P1). Mutations SELF-HEAL: stamp the binding AND drop the
+  // stale provider session id — it belonged to whichever agent served the chat
+  // before binding existed, exactly what bindChatTarget clears on rebind
+  // (codex P1: keeping it would resume the wrong thread on the next dispatch).
+  const resolution = await resolveTargetForChat(ctx, chat, chat.userId);
+  if (
+    resolution.target === null ||
+    resolution.target.instanceName !== boundInstanceName
+  )
+    return false;
+  if ("patch" in ctx.db) {
+    await (ctx as MutationCtx).db.patch(chatId, {
+      instanceName: resolution.target.instanceName,
+      agentId: resolution.target.agentId,
+      openclawChatId: undefined,
+    });
   }
-  return false;
+  return true;
 }

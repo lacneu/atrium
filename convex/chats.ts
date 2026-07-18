@@ -68,7 +68,11 @@ const chatColorValidator = v.union(
 // dispatch (resolveTargetForChat) and the picker (listMyAgents) use — so any agent
 // the user can SEE in the picker (direct grant, group-shared, or — for a groupless
 // user — every agent via the all-pool) can be bound; an out-of-set agent throws.
-async function requireAgentMembership(
+// Exported: send.ts applies the SAME gate to a per-turn routedAgent BEFORE
+// stamping routedInstanceName on the user message — that stamp is what the
+// ingest authorization's per-turn branch trusts (chatAllowsInstance), so it
+// must only ever hold a VALIDATED route, never raw client input (codex P1).
+export async function requireAgentMembership(
   ctx: MutationCtx,
   userId: Id<"users">,
   instanceName: string,

@@ -66,6 +66,10 @@ describe("stampNullInstanceChats", () => {
       const boundChat = await ctx.db.insert("chats", {
         userId: bound,
         updatedAt: 1,
+        // A provider session minted BEFORE binding existed: the stamp must
+        // drop it (bindChatTarget's rebind semantics — it may belong to a
+        // different agent than the resolved target).
+        openclawChatId: "stale-pre-binding-session",
       }); // null instanceName
       const already = await ctx.db.insert("chats", {
         userId: bound,
@@ -84,9 +88,11 @@ describe("stampNullInstanceChats", () => {
       bound: await ctx.db.get(boundChat),
       already: await ctx.db.get(already),
     }));
-    // Resolvable → stamped to EXACTLY the instance dispatch would rebind to.
+    // Resolvable → stamped to EXACTLY the instance dispatch would rebind to,
+    // and the pre-binding provider session is dropped (as the rebind would).
     expect(rows.bound?.instanceName).toBe("prod");
     expect(rows.bound?.agentId).toBe("main");
+    expect(rows.bound?.openclawChatId ?? null).toBe(null);
     // Already bound → untouched (idempotent).
     expect(rows.already?.instanceName).toBe("prod");
   });

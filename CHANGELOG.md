@@ -8,6 +8,47 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.67.0] — Per-bridge ingest isolation is now the only mode
+
+Security release (phase 2 of 2 — the narrow step). Cross-gateway write
+isolation is no longer configurable: it is simply how Atrium works.
+**Breaking for self-hosters still on the shared ingest secret** — see the
+deployment note below before updating.
+
+- **Per-bridge authentication only.** The ingest endpoint (bridge → Convex
+  writes) now accepts exclusively a per-bridge secret, resolved to exactly one
+  proven instance. The legacy shared `BRIDGE_INGEST_SECRET` path and the
+  `BRIDGE_INGEST_REQUIRE_PER_BRIDGE` flag are gone from the backend, the
+  bridge (which no longer falls back to the shared secret on 401), Helm and
+  the compose scripts — an unknown or shared secret is a permanent 401.
+- **Write authorization is enforced atomically, over the whole streaming
+  surface.** Every message carries a durable ownership stamp (set when its
+  stream starts, surviving finalization) checked inside each mutation — not
+  just at the HTTP boundary — so a concurrent rebind can never let a stale
+  frame from one gateway land in another gateway's chat. This closes the
+  remaining races: late finalize/append/run-id writes, and a forged sub-agent
+  anchor + announce can no longer seize a message another instance produced.
+- **Turn routing is validated at the source.** A turn's routed agent is
+  checked against the sender's effective grants (and the agent's
+  dispatchability) before it is persisted, so a forged route never becomes
+  ingest authorization; historical routes are re-validated against the
+  owner's CURRENT grants on every write — revoking access (directly, via
+  group scope, or by disabling an instance's agents) revokes the bridge's
+  write access with it, via bounded indexed reads that stay cheap on large
+  agent catalogues.
+- **Legacy chats self-heal.** A chat created before instance binding is
+  writable only by the instance dispatch would resolve it to; the first write
+  from that instance stamps the binding and drops the pre-binding provider
+  session (exactly what a rebind does), so the next turn never resumes
+  another agent's thread. The `stampNullInstanceChats` migration now drops
+  that stale session too.
+
+**Deployment note (self-hosters):** deploy 0.67.0 ONLY after 0.66.0 is
+confirmed live — the `migrations:stampNullInstanceChats` backfill has run
+(`migrations:countNullInstanceChats` reports zero derivable chats left) AND
+every bridge presents a per-bridge secret. After this update a bridge still on
+the shared secret gets hard 401s: there is no fallback and no flag.
+
 ## [0.66.0] — Per-bridge ingest isolation: one gateway can never write another's data
 
 Security release (phase 1 of 2 — the widen step: fully backward-compatible,
