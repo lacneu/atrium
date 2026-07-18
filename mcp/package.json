@@ -1,6 +1,6 @@
 {
   "name": "@lacneu/atrium-mcp",
-  "version": "0.66.0",
+  "version": "0.67.0",
   "type": "module",
   "description": "Thin MCP server + CLI that proxy the atrium /api/v1 observability surface using an oc_live_ Bearer key. Talks HTTP only — no Convex imports.",
   "license": "MIT",
