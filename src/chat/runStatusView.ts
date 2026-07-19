@@ -35,9 +35,11 @@ const LABEL: Record<RunStatusKind, () => string> = {
   aborted: m.runstatus_aborted,
 };
 
-// Live processing-phase labels (Tools-ON placeholder detail): what the turn is
-// ACTUALLY doing while silent, instead of the generic "thinking". Unknown wire
-// values fall back to the generic label (forward-compat with newer bridges).
+// Live processing-phase labels: what the turn is ACTUALLY doing while silent,
+// instead of the generic "thinking". Unknown wire values fall back to the
+// generic label (forward-compat with newer bridges). Since the ChatGPT-style
+// run representation, these are ALWAYS shown (no Tools gate) — the working
+// label is conversation-level info, not tool telemetry.
 const PHASE_LABEL: Record<string, () => string> = {
   processing_history: m.runstatus_phase_processing_history,
   compacting: m.runstatus_phase_compacting,
@@ -45,17 +47,86 @@ const PHASE_LABEL: Record<string, () => string> = {
   awaiting_subagents: m.runstatus_phase_awaiting_subagents,
 };
 
+/** Coarse tool families for the working label (and the lot-C flow summaries):
+ *  a stable, provider-agnostic bucketing of tool NAMES. */
+export type ToolFamily = "read" | "exec" | "search" | "fetch" | "write" | "other";
+
+const FAMILY_RE: Array<[ToolFamily, RegExp]> = [
+  ["read", /^(read|read_file|cat|open|view|notebook_read)$/i],
+  ["exec", /^(exec|bash|shell|run|command|terminal)$/i],
+  ["search", /^(web_search|search|grep|find|glob|rg)$/i],
+  ["fetch", /^(web_fetch|fetch|browser|http_get)$/i],
+  ["write", /^(write|write_file|apply_patch|edit|str_replace|notebook_edit)$/i],
+];
+
+export function toolFamily(toolName: string): ToolFamily {
+  for (const [family, re] of FAMILY_RE) if (re.test(toolName)) return family;
+  return "other";
+}
+
+const TOOL_FAMILY_LABEL: Record<ToolFamily, (name: string) => string> = {
+  read: () => m.runstatus_tool_read(),
+  exec: () => m.runstatus_tool_exec(),
+  search: () => m.runstatus_tool_search(),
+  fetch: () => m.runstatus_tool_fetch(),
+  write: () => m.runstatus_tool_write(),
+  other: (name) => m.runstatus_tool_other({ tool: name }),
+};
+
+export interface ActiveTool {
+  name: string;
+  family: ToolFamily;
+}
+
+/** The tool currently RUNNING in this turn, from the message's tool parts —
+ *  or null when none is live. Today's wire appends start and completed as
+ *  SEPARATE parts (no upsert yet), so a "started" part is live only while no
+ *  LATER terminal part of the same tool name exists. Providers that never emit
+ *  starts (OpenClaw pre-lot-B) simply yield null — honest degradation. */
+export function activeToolFromParts(
+  parts: ReadonlyArray<{ toolName: string; phase?: string }> | undefined,
+): ActiveTool | null {
+  if (!parts || parts.length === 0) return null;
+  const terminalSeen = new Set<string>();
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]!;
+    const ph = p.phase ?? "completed";
+    if (ph === "completed" || ph === "error") {
+      terminalSeen.add(p.toolName);
+      continue;
+    }
+    if (
+      (ph === "started" || ph === "running") &&
+      !terminalSeen.has(p.toolName)
+    ) {
+      return { name: p.toolName, family: toolFamily(p.toolName) };
+    }
+  }
+  return null;
+}
+
 export function runStatusView(
   status: string | undefined,
   hasText: boolean,
-  /** Live phase of the in-flight turn — only honored on the thinking state
-   *  (callers gate it on the Tools toggle). */
+  /** Live phase of the in-flight turn (always honored — no Tools gate). */
   phase?: string | null,
+  /** The tool currently running, if any — beats the phase (it is the more
+   *  specific "what is happening now"), on thinking AND generating. */
+  activeTool?: ActiveTool | null,
 ): RunStatusView | null {
   const kind = runStatusKind(status, hasText);
   if (kind === null) return null;
-  if (kind === "thinking" && phase && PHASE_LABEL[phase]) {
-    return { kind, label: PHASE_LABEL[phase](), phased: true };
+  if (kind === "thinking" || kind === "generating") {
+    if (activeTool) {
+      return {
+        kind,
+        label: TOOL_FAMILY_LABEL[activeTool.family](activeTool.name),
+        phased: true,
+      };
+    }
+    if (phase && PHASE_LABEL[phase]) {
+      return { kind, label: PHASE_LABEL[phase](), phased: true };
+    }
   }
   return { kind, label: LABEL[kind]() };
 }

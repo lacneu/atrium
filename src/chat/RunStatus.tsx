@@ -7,9 +7,10 @@ import {
   runStatusOutageLabel,
   errorDetailView,
   messageHasText,
+  activeToolFromParts,
+  toolFamily,
 } from "./runStatusView";
 import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
-import { useUiPrefs } from "./ConvexChat";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 
 
@@ -30,6 +31,7 @@ interface RunMeta {
   error?: string | null;
   errorCode?: string | null;
   phase?: string | null;
+  toolParts?: Array<{ toolName: string; phase?: string }>;
 }
 
 export function RunStatus() {
@@ -50,10 +52,23 @@ export function RunStatus() {
   const phase = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.phase,
   );
+  // The RUNNING tool (from the live tool parts): the most specific "what is
+  // happening now" — beats the coarse phase. Selected as a SCALAR (name or
+  // null) so token deltas don't re-render this chip on a fresh object.
+  const activeToolName = useMessage(
+    (m) =>
+      activeToolFromParts((m.metadata?.custom as RunMeta | undefined)?.toolParts)
+        ?.name ?? null,
+  );
+  const activeTool =
+    activeToolName !== null
+      ? { name: activeToolName, family: toolFamily(activeToolName) }
+      : null;
   const gatewayDegraded = useContext(GatewayDegradedContext);
-  // The live phase detail is an ANALYSIS-view affordance: only when Tools is ON.
-  const { showTools } = useUiPrefs();
-  const view = runStatusView(status, hasText, showTools ? phase : null);
+  // ChatGPT-style: the working label (tool/phase) is ALWAYS shown — it is
+  // conversation-level info, not tool telemetry (the Tools toggle keeps gating
+  // the detailed meta block only).
+  const view = runStatusView(status, hasText, phase, activeTool);
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
   // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.
@@ -121,7 +136,13 @@ export function RunStatus() {
       ) : (
         <Square size={13} aria-hidden />
       )}
-      <span className="oc-run-status__label">
+      <span
+        className={
+          view.phased && !gatewayDegraded
+            ? "oc-run-status__label oc-shimmer-text"
+            : "oc-run-status__label"
+        }
+      >
         {/* HONEST outage label first: while THIS chat's gateway is unreachable an
             in-flight turn is not "processing" — it is waiting on a dead gateway
             (it will most likely time out). Beats the long-wait reassurance, which

@@ -7,6 +7,8 @@ import {
   runStatusOutageLabel,
   errorDetailView,
   messageHasText,
+  activeToolFromParts,
+  toolFamily,
 } from "./runStatusView";
 
 describe("runStatusView", () => {
@@ -166,7 +168,7 @@ describe("errorDetailView (actionable error classification)", () => {
   });
 });
 
-describe("live phase detail (Tools-ON placeholder)", () => {
+describe("live working label (phase/tool — always on, ChatGPT-style)", () => {
   it("thinking + a known phase -> the phase label (not the generic thinking)", () => {
     const v = runStatusView("streaming", false, "awaiting_subagents");
     expect(v?.kind).toBe("thinking");
@@ -176,20 +178,97 @@ describe("live phase detail (Tools-ON placeholder)", () => {
     const v = runStatusView("streaming", false, "some_future_phase");
     expect(v?.label).toBe(runStatusView("streaming", false)?.label);
   });
-  it("a phase NEVER overrides the generating state (text already streams)", () => {
+  it("a phase NOW shows on generating too (the working label is not thinking-only)", () => {
     const v = runStatusView("streaming", true, "compacting");
     expect(v?.kind).toBe("generating");
-    expect(v?.label).toBe(runStatusView("streaming", true)?.label);
+    expect(v?.label).not.toBe(runStatusView("streaming", true)?.label);
+    expect(v?.phased).toBe(true);
   });
   it("a phase label is flagged `phased` so the long-wait fallback never replaces it", () => {
     expect(runStatusView("streaming", false, "compacting")?.phased).toBe(true);
     expect(runStatusView("streaming", false)?.phased).toBeUndefined();
     expect(runStatusView("streaming", false, "unknown_phase")?.phased).toBeUndefined();
   });
-  it("null phase (Tools OFF gating) -> generic label", () => {
-    expect(runStatusView("streaming", false, null)?.label).toBe(
-      runStatusView("streaming", false)?.label,
+  it("the ACTIVE TOOL beats the phase, on thinking AND generating", () => {
+    const tool = { name: "web_search", family: "search" as const };
+    const thinking = runStatusView("streaming", false, "compacting", tool);
+    const generating = runStatusView("streaming", true, "compacting", tool);
+    expect(thinking?.phased).toBe(true);
+    expect(generating?.phased).toBe(true);
+    expect(thinking?.label).toBe(generating?.label);
+    expect(thinking?.label).not.toBe(
+      runStatusView("streaming", false, "compacting")?.label,
     );
+  });
+  it("an 'other'-family tool shows its own name in the label", () => {
+    const v = runStatusView("streaming", false, null, {
+      name: "sessions_spawn",
+      family: "other",
+    });
+    expect(v?.label).toContain("sessions_spawn");
+  });
+  it("a settled turn ignores tool/phase entirely (no chip)", () => {
+    expect(
+      runStatusView("complete", true, "compacting", {
+        name: "exec",
+        family: "exec",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("activeToolFromParts (today's append-only wire, pre-upsert)", () => {
+  it("a started part with no later terminal of the same tool is LIVE", () => {
+    expect(
+      activeToolFromParts([{ toolName: "exec", phase: "started" }]),
+    ).toEqual({ name: "exec", family: "exec" });
+  });
+  it("a started part FOLLOWED by its completed twin is no longer live (Hermes appends both)", () => {
+    expect(
+      activeToolFromParts([
+        { toolName: "exec", phase: "started" },
+        { toolName: "exec", phase: "completed" },
+      ]),
+    ).toBeNull();
+  });
+  it("the MOST RECENT live tool wins when two are open", () => {
+    expect(
+      activeToolFromParts([
+        { toolName: "read", phase: "started" },
+        { toolName: "web_search", phase: "started" },
+      ]),
+    ).toEqual({ name: "web_search", family: "search" });
+  });
+  it("an error terminal also closes its tool", () => {
+    expect(
+      activeToolFromParts([
+        { toolName: "exec", phase: "started" },
+        { toolName: "exec", phase: "error" },
+      ]),
+    ).toBeNull();
+  });
+  it("coalesced completed-only parts (OpenClaw today) yield null — honest degradation", () => {
+    expect(
+      activeToolFromParts([
+        { toolName: "exec", phase: "completed" },
+        { toolName: "web_search", phase: "completed" },
+      ]),
+    ).toBeNull();
+  });
+  it("no parts / undefined -> null", () => {
+    expect(activeToolFromParts(undefined)).toBeNull();
+    expect(activeToolFromParts([])).toBeNull();
+  });
+});
+
+describe("toolFamily bucketing", () => {
+  it("maps the canonical names of each family", () => {
+    expect(toolFamily("read")).toBe("read");
+    expect(toolFamily("exec")).toBe("exec");
+    expect(toolFamily("web_search")).toBe("search");
+    expect(toolFamily("web_fetch")).toBe("fetch");
+    expect(toolFamily("apply_patch")).toBe("write");
+    expect(toolFamily("sessions_spawn")).toBe("other");
   });
 });
 

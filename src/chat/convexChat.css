@@ -2075,6 +2075,42 @@ button.oc-bmk-rail__count:hover {
   margin-right: 0.4em;
 }
 
+/* ── Live turn clock (ChatGPT-style "Working for 5 min 21 s"): a quiet dated
+   rule at the top of the in-flight bubble, delimiting the active turn. ─────── */
+.oc-turn-clock {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+}
+/* Tabular digits so the ticking seconds don't make the label jitter. */
+.oc-turn-clock__label { font-variant-numeric: tabular-nums; }
+
+/* ── Shimmer working label: a soft left-to-right sheen on the "what the agent
+   is doing now" text (tool/phase), ChatGPT-style. Charter variables only; the
+   static fallback (reduced motion) is the plain muted label. ──────────────── */
+.oc-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: oc-shimmer-slide 2.2s linear infinite;
+}
+@keyframes oc-shimmer-slide {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
 /* ── Run status (calm state chips, CHAT_UX_DESIGN Part 3 "streaming/processing")
    thinking = animated dots (the typing indicator while no text has arrived);
    generating = a soft pulse + "Génération…"; error/aborted = Lucide icon +
@@ -6014,6 +6050,14 @@ button.oc-bmk-rail__count:hover {
   .oc-tool__status--spin,
   .oc-actrow__spin {
     animation: none;
+  }
+  /* Shimmer label degrades to the plain muted text (no clipped gradient). */
+  .oc-shimmer-text {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--muted-foreground);
   }
 }
 

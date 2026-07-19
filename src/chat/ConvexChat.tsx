@@ -177,6 +177,7 @@ import {
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
+import { TurnClock } from "./TurnClock";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import {
@@ -3116,6 +3117,11 @@ function AssistantMessage() {
           ) : null}
         </div>
         <div className="oc-msg__body">
+          {/* Live turn clock (ChatGPT-style "Working for 5 min 21 s"): renders
+              only while THIS message streams; the final duration stays in the
+              ⋯ menu. Above the meta blocks so the in-flight turn reads as a
+              dated, delimited section of the thread. */}
+          <TurnClock />
           {/* "Outils" ON = the ANALYSIS view: ONE grouped meta block above the answer
               (a single subtly-ruled container so it reads as this turn's metadata, as
               one block) holding — in order — the sub-agent monitor (the child run(s)
