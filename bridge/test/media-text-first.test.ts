@@ -30,7 +30,7 @@ class OrderingWriter implements ConvexWriter {
   async startAssistant(): Promise<string> {
     return "msg_1";
   }
-  async appendDelta(): Promise<void> {}
+  async appendDelta(_messageId: string, _text: string): Promise<void> {}
   async setSnapshot(_messageId: string, text: string): Promise<void> {
     this.order.push(`snapshot:${text}`);
   }
