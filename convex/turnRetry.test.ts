@@ -47,6 +47,35 @@ describe("retryDecision (pure gate/bound logic)", () => {
     expect(retryDecision({ ...base, lastAttempt: MAX_TURN_RETRIES })).toBeNull();
   });
 
+  test("empty_response_silent (zero-work clean close) is retryable; worked empty_response is NOT", () => {
+    // The Fabien class (prod 2026-07-19 ×3): the gateway closes the run
+    // cleanly with nothing — zero content AND zero work, so an automatic
+    // re-dispatch bills nothing and usually succeeds (his manual re-send did).
+    expect(
+      retryDecision({ ...base, errorKind: "empty_response_silent" }),
+    ).toEqual({ attempt: 1, delayMs: RETRY_DELAY_MS[0] });
+    // TIGHTER bound than the conflict class: a silent close already billed a
+    // completion, so exactly ONE automatic re-dispatch (the user's own manual
+    // re-send equivalent) — never two.
+    expect(
+      retryDecision({
+        ...base,
+        errorKind: "empty_response_silent",
+        lastAttempt: 1,
+      }),
+    ).toBeNull();
+    expect(
+      retryDecision({
+        ...base,
+        errorKind: "empty_response_silent",
+        finalTextLen: 5,
+      }),
+    ).toBeNull();
+    // The WORKED empty class must never auto-rerun (a billed media generation
+    // whose delivery dropped would be duplicated — codex P1).
+    expect(retryDecision({ ...base, errorKind: "empty_response" })).toBeNull();
+  });
+
   test("every disqualifying gate stands down", () => {
     expect(retryDecision({ ...base, status: "complete" })).toBeNull();
     expect(retryDecision({ ...base, errorKind: "context_length" })).toBeNull();

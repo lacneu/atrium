@@ -203,6 +203,10 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "childSessions",
       // 2026.7.1 session-config metadata (bench capture 2026-07-11, beta.2)
       "effectiveResponseUsage",
+      // spawn/agent-identity statics (live ataraxis 2026-07-19, prod badge)
+      "spawnedCwd",
+      "label",
+      "displayName",
     ])
       manifest.add(f);
     expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());

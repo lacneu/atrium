@@ -763,6 +763,36 @@ describe("addPart tool upsert (interleaved-run anchors)", () => {
   });
 });
 
+describe("finalize discardStreamText (NO_REPLY sentinel purge, atomic)", () => {
+  test("a live row holding the sentinel is NOT resurrected by the fallback", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "NO_REPLY",
+        boundInstance: "prod",
+        updatedAt: Date.now(),
+      });
+    });
+    const res = await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "",
+      error: "The agent ended the turn without producing any response.",
+      errorKind: "empty_response_silent",
+      discardStreamText: true,
+    });
+    expect(res.status).toBe(200);
+    const msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("error");
+    expect(msg?.text).toBe(""); // the sentinel never becomes the bubble text
+    expect(msg?.errorCode).toBe("empty_response_silent");
+  });
+});
+
 describe("sweepStreams (bridge boot-time orphan sweep)", () => {
   test("a STALE stream of the calling instance is closed; fresh and foreign ones survive", async () => {
     const t = convexTest(schema, modules);

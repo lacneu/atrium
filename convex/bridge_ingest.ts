@@ -293,6 +293,11 @@ type IngestOp =
       error: string | null;
       errorKind?: string | null;
       runId?: string | null;
+      /** TRUE = the streamed text is protocol NOISE (a NO_REPLY sentinel that
+       *  reached the live row): the finalize must NOT fall back to it. Carried
+       *  ON the finalize so the discard is atomic with it — a separate purge
+       *  write could fail and resurrect the sentinel (codex P2). */
+      discardStreamText?: boolean;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -880,6 +885,7 @@ export const ingest = httpAction(async (ctx, request) => {
         errorKind: body.errorKind ?? undefined,
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
+        ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",

@@ -237,6 +237,67 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     );
   });
 
+  it("a ZERO-WORK clean-close (silent NO_REPLY / end-of-run grace, no tools at all) -> empty_response error", async () => {
+    // The Fabien signature (live prod 2026-07-19 ×3, reproduced live
+    // 2026-07-20 via the NO_REPLY sentinel): the gateway ends the run CLEANLY
+    // with no content and no activity — before this fix the bubble settled
+    // COMPLETE and empty, indistinguishable from "nothing to say".
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_zw", writer);
+    await sink.beginTurn("run-zw");
+    await sink.apply([
+      { type: "message.final", text: "" }, // clean, empty final — zero work
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response_silent");
+    expect(writer.order[writer.order.length - 1]).toBe(
+      "finalize:error:empty_response_silent",
+    );
+  });
+
+  it("a top-level reply of EXACTLY the NO_REPLY sentinel is silence, not content (codex P2)", async () => {
+    const writer = new OrderingWriter();
+    const deltas: string[] = [];
+    writer.appendDelta = async (_m: string, t: string) => {
+      deltas.push(t);
+    };
+    const sink = new TurnSink("chat_nr", writer);
+    await sink.beginTurn("run-nr");
+    await sink.apply([
+      // Split across deltas like a real stream — the live gate must hold it.
+      { type: "message.delta", text: "NO_" },
+      { type: "message.delta", text: "REPLY" },
+      { type: "message.final", text: "NO_REPLY" },
+      { type: "run.status", status: "final" },
+    ]);
+    // The sentinel never reached the live stream (no flash in the bubble).
+    expect(deltas).toEqual([]);
+    // Classified as the retryable silent class — never a bubble that shows
+    // the literal sentinel.
+    expect(writer.lastFinalizeKind).toBe("empty_response_silent");
+    expect(writer.order[writer.order.length - 1]).toBe(
+      "finalize:error:empty_response_silent",
+    );
+  });
+
+  it("text that merely STARTS like the sentinel flushes intact once it diverges", async () => {
+    const writer = new OrderingWriter();
+    const deltas: string[] = [];
+    writer.appendDelta = async (_m: string, t: string) => {
+      deltas.push(t);
+    };
+    const sink = new TurnSink("chat_nrd", writer);
+    await sink.beginTurn("run-nrd");
+    await sink.apply([
+      { type: "message.delta", text: "NO" },
+      { type: "message.delta", text: "N, je préfère répondre." },
+      { type: "message.final", text: "NON, je préfère répondre." },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(deltas.join("")).toBe("NON, je préfère répondre.");
+    expect(writer.order[writer.order.length - 1]).toBe("finalize:complete");
+  });
+
   it("a COMPLETE turn with a media that DROPPED (not attached) + no text -> empty_response", async () => {
     const writer = new OrderingWriter();
     writer.release();

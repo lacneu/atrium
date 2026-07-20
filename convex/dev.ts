@@ -816,6 +816,78 @@ export const testSend = mutation({
  * not a product path.
  *   npx convex run dev:testSendRouted '{"chatId":"<id>","text":"oui","instanceName":"primary","agentId":"bob"}'
  */
+/**
+ * REPRO SEED (dev-gated): a chat with a LONG completed history and NO gateway
+ * session — the next dispatch rehydrates it all ("fresh session -> prepended N
+ * prior turns"), replicating a conversation BRANCH's first turn (the parallel-
+ * branches empty-reply investigation, 2026-07-19). Returns the chatId.
+ *
+ *   npx convex run dev:seedLongHistory '{"ownerEmail":"a@example.com","pairs":24,"charsPerMessage":12000}'
+ */
+export const seedLongHistory = mutation({
+  args: {
+    ownerEmail: v.string(),
+    pairs: v.number(),
+    charsPerMessage: v.number(),
+    instanceName: v.optional(v.string()),
+    agentId: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    { ownerEmail, pairs, charsPerMessage, instanceName, agentId },
+  ) => {
+    assertDev();
+    const existing = await ctx.db
+      .query("profiles")
+      .withIndex("by_email", (q) => q.eq("email", ownerEmail))
+      .first();
+    let ownerUserId = existing?.userId;
+    if (!ownerUserId) {
+      ownerUserId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: ownerUserId,
+        role: "user",
+        email: ownerEmail,
+        canonical: "u-repro",
+      });
+    }
+    const now = Date.now();
+    const chatId = await ctx.db.insert("chats", {
+      userId: ownerUserId,
+      title: "repro-long-history",
+      archived: false,
+      sortKey: -1000,
+      updatedAt: now,
+      ...(instanceName ? { instanceName } : {}),
+      ...(agentId ? { agentId } : {}),
+    });
+    const filler = (seed: string, n: number) =>
+      (seed + " lorem analyse dossier synthèse contexte détail rapport. ")
+        .repeat(Math.ceil(n / 60))
+        .slice(0, n);
+    const cap = Math.min(Math.max(pairs, 1), 60);
+    for (let i = 0; i < cap; i++) {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId: ownerUserId,
+        role: "user",
+        status: "complete",
+        text: filler(`Question ${i}:`, Math.min(charsPerMessage, 20000) / 4),
+        updatedAt: now + i * 2,
+      });
+      await ctx.db.insert("messages", {
+        chatId,
+        userId: ownerUserId,
+        role: "assistant",
+        status: "complete",
+        text: filler(`Réponse ${i}:`, Math.min(charsPerMessage, 20000)),
+        updatedAt: now + i * 2 + 1,
+      });
+    }
+    return { ok: true as const, chatId };
+  },
+});
+
 export const testSendRouted = mutation({
   args: {
     text: v.string(),

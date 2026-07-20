@@ -8,27 +8,74 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
-## [0.67.1] — Hardened, auditable frontend container runtime
+## [0.68.0] — Send while it works: queued prompts, live turn activity, calm delegated turns
 
-Supply-chain and runtime-hardening release for self-hosted deployments. There
-is no application-level breaking change and the bridge remains compatible with
-0.67.0.
+Feature and reliability release. Frontend + bridge + Convex (additive schema,
+zero migration); no breaking changes. Self-hosters: this release needs BOTH
+the image update and `npx convex deploy` (new tool-anchor fields on message
+parts and a new streaming-text index).
 
-- **Minimal immutable runtime.** The frontend image now runs from an exact
-  Alpine digest with a source-built, pinned Caddy binary and CA certificates
-  only. Build images and the Dockerfile frontend are digest-pinned as well;
-  the runtime no longer carries `curl`, `wget`, package managers, compilers or
-  other unnecessary troubleshooting tools.
-- **Container policy is enforced before merge.** Positive and negative policy
-  tests reject floating base images, unpinned Caddy versions, runtime package
-  installation and broad filesystem copies. CI also builds the production
-  image, emits a 90-day SBOM artifact and rejects HIGH or CRITICAL findings.
-- **Frontend dependency remediation.** Convex is pinned to 1.42.3, removing the
-  vulnerable transitive WebSocket dependency while retaining reproducible
-  installs with the supported Node 24 toolchain.
-- **Least-privilege ready.** Runtime state is isolated under explicit XDG paths
-  so orchestrators can combine a read-only root filesystem, dropped Linux
-  capabilities and a bounded writable temporary filesystem.
+- **Messages sent mid-turn are visible, editable cards.** A message sent
+  while the assistant is still working now stacks as a translucent card just
+  above the composer (with follow-ups nesting under it) instead of vanishing
+  into a silent queue: each card can be deleted, or edited — its text returns
+  to the composer, sending again re-queues it — until the agent picks it up.
+  Queued turns dispatch strictly one at a time, in order; the end of the
+  in-flight reply stays visible above the stack, and the jump-to-latest pill
+  floats above the cards.
+- **The in-flight reply shows the work as it happens.** The streaming bubble
+  carries an elapsed-time clock ("Working for 1 min 12 s"), a shimmering
+  label naming the active tool or phase, and collapsed activity summaries
+  ("Read a file, ran 2 commands and searched…") interleaved at their true
+  position inside the narrative — expandable to the full tool cards, on both
+  providers. Historical messages render exactly as before, and the plan
+  block now follows the Tools toggle, so the clean view stays message-only.
+- **Parallel prompts no longer corrupt the running turn.** The queue drain
+  now waits for the gateway to release its session lock, re-checks the chat
+  right before dispatch (a sub-agent report arriving mid-drain re-parks the
+  message instead of killing the delivery run), and a preempted delivery is
+  closed cleanly with its partial text. This fixes the bubble frozen on
+  "Generating…" until the 12-minute watchdog, the follow-up stuck behind it,
+  and the finished reply that re-typed itself token by token after a reload.
+- **Delegated turns read calmly.** While a sub-agent works the bubble keeps a
+  designed waiting pill (animated dashed ring, orbiting accent); when the
+  sub-agent finishes, "the agent is writing up the reply…" holds until the
+  merged answer arrives, and the final report then appears in ONE step — the
+  raw draft no longer streams in and rewrites itself mid-read. If the merged
+  reply never comes, the sub-agent's own result still surfaces after a grace
+  window, and a failed delegation shows immediately.
+- **Bridge restarts clean up after themselves.** On boot each bridge sweeps
+  its own orphaned streams — turns cut by the restart finalize with their
+  partial text preserved instead of spinning forever — releases the job
+  locks of service chats (document fetch / summarize / curate / convert),
+  and drains any queue held behind them. Bounded work per boot, with the
+  12-minute watchdog unchanged as the safety net.
+- **A silently empty reply now retries itself.** When the gateway closes a
+  run cleanly with no content and no activity at all (seen in production:
+  three long reasoning runs of one agent all settling to blank bubbles), the
+  turn no longer renders an empty "complete" bubble indistinguishable from
+  "nothing to say": it is classified as an actionable error and automatically
+  re-dispatched — bounded, zero-content turns only, same mechanism as the
+  session-conflict retry. The reply usually lands on the retry; when it
+  cannot, a clear error card explains instead of silence.
+- **Crash fix, present since 0.65.** Draining a queued message could crash
+  the whole thread view (seen as "the page reloads" with bubbles gone)
+  through the bookmark gutter; the gutter is now isolated so the thread
+  never remounts.
+- **The subscription gauge reads one way.** The gauge now fills with the
+  REMAINING quota and says so ("57% left") — previously the bar showed usage
+  while the label showed the remainder, inviting the exact opposite reading.
+- **Smoother thread motion.** Auto-follow scrolling and the queued-card
+  stack ease into place instead of snapping on every event (and both respect
+  reduced-motion).
+- **Protocol drift is now diagnosable from the observability API.** The
+  compat payload (and the MCP `get_compat` tool) carries the bridge's
+  protocol-contract block: vendored contract version, coverage counts, and
+  the live drift — the unknown payload field names behind the Settings
+  "N unknown field(s)" badge (names only, never values). The three fields a
+  2026.7.1 gateway flattens onto agent events (`spawnedCwd`, `label`,
+  `displayName`) are now part of the known surface, so a current install
+  reports zero drift again.
 
 ## [0.67.0] — Per-bridge ingest isolation is now the only mode
 

@@ -87,6 +87,13 @@ export type CompatSummary = {
     withinSupport: boolean;
     versionBeyondValidated: boolean;
   }>;
+  /** Protocol-contract section: the bridge's vendored schema surface + the LIVE
+   *  drift (payload field names the gateway emits that this bridge build does
+   *  not know, with occurrence counts). Field NAMES only — never values, never
+   *  conversation content (SOC2). Null on a legacy bridge that reports none.
+   *  Exposed so the observer API / MCP can diagnose "N unknown field(s)"
+   *  without UI access. */
+  protocol: BridgeProtocolInfo | null;
 };
 
 const str = (x: unknown): string | null => (typeof x === "string" ? x : null);
@@ -481,6 +488,7 @@ export function summarizeCompat(
     reachable?: boolean;
     lastError?: string | null;
     fetchedAt?: number;
+    protocol?: unknown;
   } | null,
 ): CompatSummary {
   if (doc === null) {
@@ -494,6 +502,7 @@ export function summarizeCompat(
       lastError: null,
       fetchedAt: null,
       instances: [],
+      protocol: null,
     };
   }
   return {
@@ -515,6 +524,9 @@ export function summarizeCompat(
       ),
       versionBeyondValidated: t.versionBeyondValidated,
     })),
+    // Re-bound on the way out (the doc field is v.any()): a hand-edited or
+    // legacy doc can never leak an unbounded/foreign shape to the API.
+    protocol: boundProtocolInfo(doc.protocol),
   };
 }
 

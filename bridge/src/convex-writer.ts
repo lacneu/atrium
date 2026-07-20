@@ -288,6 +288,9 @@ export interface ConvexWriter {
     /** Stable gateway failure class (refusal|timeout|rate_limit|context_length)
      *  — persisted as the message's errorCode; null on clean turns. */
     errorKind?: string | null,
+    /** discardStreamText: the live row's text is protocol noise (NO_REPLY) —
+     *  the finalize must not fall back to it (atomic discard). */
+    opts?: { discardStreamText?: boolean },
   ): Promise<void>;
   /**
    * Session re-hydration: a bounded block of this chat's prior turns (excluding
@@ -552,6 +555,9 @@ type IngestOp =
       error: string | null;
       errorKind?: string | null;
       runId?: string | null;
+      /** The streamed live text is protocol noise (NO_REPLY sentinel) — the
+       *  finalize must not fall back to it. Atomic with the finalize. */
+      discardStreamText?: boolean;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -1527,6 +1533,7 @@ export class HttpConvexWriter implements ConvexWriter {
     text: string,
     error: string | null,
     errorKind: string | null = null,
+    opts?: { discardStreamText?: boolean },
   ): Promise<void> {
     try {
       await this.flushDelta(messageId); // never strand buffered deltas behind final
@@ -1538,6 +1545,7 @@ export class HttpConvexWriter implements ConvexWriter {
         text,
         error,
         errorKind,
+        ...(opts?.discardStreamText === true ? { discardStreamText: true } : {}),
         ...this.genTag(messageId),
       });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its

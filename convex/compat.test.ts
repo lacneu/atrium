@@ -335,6 +335,43 @@ describe("normalizeCapabilitiesBody — Convex attributes the served instance", 
 });
 
 describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () => {
+  test("summary exposes the protocol-contract block (bounded) — the MCP 'unknown fields' view", () => {
+    const summary = summarizeCompat({
+      bridgeVersion: "1.4.0",
+      protocolVersion: 2,
+      compat: MANIFEST,
+      targets: [],
+      protocol: {
+        vendoredVersion: "2026.6.11",
+        coverage: { handled: 41, ignored: 50, gaps: 0, gapList: [] },
+        drift: [
+          { shape: "agent.spawnedCwd", count: 617 },
+          { shape: "agent.label", count: 270 },
+          { junk: true },
+        ],
+        foreign: "dropped",
+      },
+    });
+    expect(summary.protocol).toEqual({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 41, ignored: 50, gaps: 0, gapList: [] },
+      drift: [
+        { shape: "agent.spawnedCwd", count: 617 },
+        { shape: "agent.label", count: 270 },
+      ],
+    });
+    // Absent/malformed stays null — a legacy bridge never breaks the payload.
+    expect(
+      summarizeCompat({
+        bridgeVersion: "1.0.0",
+        protocolVersion: 1,
+        compat: null,
+        targets: [],
+      }).protocol,
+    ).toBeNull();
+    expect(summarizeCompat(null).protocol).toBeNull();
+  });
+
   test("reads the openclaw window; hermes degrades to no range", () => {
     expect(providerSupport(MANIFEST, "openclaw")).toEqual({
       range: { min: "2026.5.19", maxValidated: "2026.6.5" },

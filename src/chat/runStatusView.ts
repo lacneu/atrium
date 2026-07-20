@@ -188,6 +188,10 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   compaction_timeout: m.runstatus_error_compaction_timeout,
   // The turn finished but delivered nothing usable (no text, failed file).
   empty_response: m.runstatus_error_empty_response,
+  // Zero-work clean close (silent NO_REPLY / end-of-run grace): auto-retried
+  // by the backend; this label shows when the bounded retries also came back
+  // empty.
+  empty_response_silent: m.runstatus_error_empty_silent,
   // The gateway's transient session-init OCC conflict — Convex auto-retries the
   // turn (turnRetry.ts); this card shows during the short backoff window and, if
   // the bounded retries exhaust, stays as the honest final state.

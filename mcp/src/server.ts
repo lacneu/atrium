@@ -139,7 +139,11 @@ function main(): void {
       description:
         "Bridge version + per-instance gateway versions/capabilities (GET /compat). " +
         "Requires bridge.read. Diagnoses 'version gateway inconnue': empty targets " +
-        "or a null gatewayVersion gates AgentFiles/ChatDefaults off.",
+        "or a null gatewayVersion gates AgentFiles/ChatDefaults off. Also carries " +
+        "`protocol`: the vendored contract version, coverage counts, and the LIVE " +
+        "drift — payload field names the gateway emits that this bridge build does " +
+        "not know, with counts (the Settings 'N unknown field(s)' badge, e.g. " +
+        "agent.spawnedCwd on a newer gateway). Names only, never values.",
       inputSchema: {},
     },
     async () => run(() => getCompat(config)),

@@ -39,9 +39,37 @@ import { compareOrder } from "./lib/messageOrder";
 /** The stable error code the bridge classifier mints for the gateway's
  *  session-init OCC conflict (normalizer SESSION_INIT_CONFLICT_RE). */
 export const SESSION_INIT_CONFLICT_CODE = "session_init_conflict";
+/** A run the gateway CLOSED CLEANLY with zero content and ZERO WORK (silent
+ *  NO_REPLY on a top-level turn, or an end-of-run grace with nothing) — the
+ *  bridge's empty-result guard classifies it (live prod 2026-07-19 ×3:
+ *  7-8 min thinking runs settling empty; reproduced live 2026-07-20 via the
+ *  NO_REPLY sentinel). Zero content AND zero work → re-dispatching bills
+ *  nothing and is safe. The sibling `empty_response` (the turn WORKED but
+ *  delivered nothing — e.g. a billed media generation whose delivery dropped)
+ *  is deliberately NOT retryable: re-running would duplicate paid work
+ *  (codex P1); its error card surfaces the delivery failure instead. */
+export const EMPTY_RESPONSE_RETRY_CODE = "empty_response_silent";
+
+/** The errorKinds a finalize may auto-retry (both are zero-content classes). */
+const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
+  SESSION_INIT_CONFLICT_CODE,
+  EMPTY_RESPONSE_RETRY_CODE,
+]);
 
 /** Bounded chain: at most this many automatic re-dispatches per turn. */
 export const MAX_TURN_RETRIES = 2;
+
+/** Per-kind attempt bound. COST ARBITRATION (codex P1, decided): a silent
+ *  close DID bill a model completion (the Fabien runs reasoned ~7 min before
+ *  closing empty), so its automatic re-dispatch re-bills one — exactly what
+ *  the user's own manual re-send would do (and did, successfully). ONE
+ *  bounded attempt keeps that convenience while capping the degenerate case
+ *  (an agent that always answers silence) at a single extra completion; the
+ *  init-conflict class keeps 2 (it fails BEFORE any generation — retries are
+ *  free). */
+export function maxRetriesForKind(kind: string): number {
+  return kind === EMPTY_RESPONSE_RETRY_CODE ? 1 : MAX_TURN_RETRIES;
+}
 
 /** Backoff before attempt N+1 (indexed by the FAILED attempt number). Aligned
  *  with upstream's own retry curve (Telegram: base 5s ×2^n, cap 60s); the live
@@ -65,7 +93,7 @@ export function retryDecision(input: {
   lastAttempt: number; // newest sent/pending outbox row's autoRetryAttempt
 }): { attempt: number; delayMs: number } | null {
   if (input.status !== "error") return null;
-  if (input.errorKind !== SESSION_INIT_CONFLICT_CODE) return null;
+  if (input.errorKind === null || !RETRYABLE_KINDS.has(input.errorKind)) return null;
   // ZERO-CONTENT only: anything visible means the turn did real work — deleting
   // it would lose user-facing content, so the honest error card stays.
   // Reviewed edge (codex, rejected): "a private ack could inflate finalTextLen
@@ -75,7 +103,7 @@ export function retryDecision(input: {
   // Were it ever wrong, the failure mode is the honest error card (fail-safe).
   if (input.finalTextLen > 0 || input.partCount > 0) return null;
   if (input.chatBusy) return null;
-  if (input.lastAttempt >= MAX_TURN_RETRIES) return null;
+  if (input.lastAttempt >= maxRetriesForKind(input.errorKind)) return null;
   return {
     attempt: input.lastAttempt + 1,
     delayMs: RETRY_DELAY_MS[input.lastAttempt] ?? RETRY_DELAY_MS[RETRY_DELAY_MS.length - 1]!,
@@ -91,7 +119,7 @@ export async function maybeScheduleTurnRetry(
   errorKind: string | undefined,
   finalTextLen: number,
 ): Promise<void> {
-  if (errorKind !== SESSION_INIT_CONFLICT_CODE) return;
+  if (errorKind === undefined || !RETRYABLE_KINDS.has(errorKind)) return;
   // REGULAR chats only: the utility kinds (documentary/summarizer/curator) have
   // their OWN failure handling, and finalize runs their correlation side effects
   // right after this hook — an auto-retry racing those (e.g. a documentary
@@ -190,7 +218,7 @@ export const autoRetryTurn = internalMutation({
       message === null ||
       message.role !== "assistant" ||
       message.status !== "error" ||
-      message.errorCode !== SESSION_INIT_CONFLICT_CODE ||
+      !RETRYABLE_KINDS.has(message.errorCode ?? "") ||
       (message.text ?? "") !== ""
     ) {
       return;

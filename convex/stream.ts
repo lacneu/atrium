@@ -1487,11 +1487,23 @@ export const finalize = internalMutation({
     // owns the bubble — skip instead of killing the newer stream. `null`
     // means "the targeted turn had NO runId" (legacy) — still enforced.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    // The streamed text is protocol NOISE (a NO_REPLY sentinel reached the
+    // live row): never fall back to it. Atomic with the finalize by design.
+    discardStreamText: v.optional(v.boolean()),
     ...boundArg,
   },
   handler: async (
     ctx,
-    { messageId, status, text, error, errorKind, expectedRunId, boundInstanceName },
+    {
+      messageId,
+      status,
+      text,
+      error,
+      errorKind,
+      expectedRunId,
+      boundInstanceName,
+      discardStreamText,
+    },
   ) => {
     const message = await ctx.db.get(messageId);
     if (message === null) {
@@ -1533,7 +1545,9 @@ export const finalize = internalMutation({
     // an instance routed in this chat but not owning THIS stream must not
     // terminate it (codex P1 — a bound C finalizing B's active stream).
     if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
-    const streamedText = stRow?.text ?? message.liveText ?? message.text;
+    const streamedText = discardStreamText
+      ? "" // sentinel noise — never resurrect it as the reply (codex P2)
+      : (stRow?.text ?? message.liveText ?? message.text);
     const prefix = message.announcePrefix ?? "";
     // Announce merge: the run's final frame carries ONLY the announce text —
     // recompose behind the parked parent reply. The FALLBACK path (no final

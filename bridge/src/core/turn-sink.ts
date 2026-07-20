@@ -61,6 +61,14 @@ const AUTO_CLOSE_CAUSES = new Set([
 ]);
 const EMPTY_RESPONSE_TEXT =
   "The agent finished without a usable response (no text, and any file delivery failed).";
+// ZERO-WORK clean close (silent NO_REPLY on a top-level turn / end-of-run
+// grace with nothing at all): distinct from EMPTY_RESPONSE_CODE because ONLY
+// this class is auto-retryable — a worked-but-undelivered turn (e.g. a billed
+// native media generation whose delivery dropped) must surface its failure,
+// never silently re-run (codex P1).
+const SILENT_RESPONSE_CODE = "empty_response_silent";
+const SILENT_RESPONSE_TEXT =
+  "The agent ended the turn without producing any response.";
 
 const TERMINAL_STATUS: Record<string, FinalizeStatus> = {
   final: "complete",
@@ -143,6 +151,12 @@ export class TurnSink {
    *  EMISSION time is stable forever (the stored offset never moves) and
    *  consistent across live view and reload. */
   private visibleLineStart = 0;
+  /** SENTINEL GATE: the first few streamed chars of the turn are HELD while
+   *  they are still a prefix of the NO_REPLY protocol sentinel, so a silent
+   *  reply never flashes "NO_REPLY" in the live bubble (codex P2). Diverging
+   *  text flushes the held prefix; a turn that ends on the pure sentinel
+   *  simply never wrote it. Null = gate resolved (text diverged / flushed). */
+  private sentinelGate: string | null = "";
   // The turn generated media natively but delivered none (no MEDIA:/outbound) —
   // read from the final event so the empty-result guard sees it (codex P2).
   private pendingMediaGeneratedUndelivered = false;
@@ -375,6 +389,7 @@ export class TurnSink {
     this.sawVisibleText = false;
     this.visibleTextLen = 0;
     this.visibleLineStart = 0;
+    this.sentinelGate = "";
     this.pendingMediaGeneratedUndelivered = false;
     this.pendingObservedChildKeys = [];
     this.spawnedChildKeysThisTurn = new Set();
@@ -613,7 +628,19 @@ export class TurnSink {
     {
       switch (event.type) {
         case "message.delta": {
-          const text = asString(event.text);
+          let text = asString(event.text);
+          if (text && this.sentinelGate !== null) {
+            // Hold the turn's opening chars while they can still be the
+            // NO_REPLY sentinel — never flash it live (codex P2). Divergence
+            // flushes the whole held prefix through the normal path below.
+            const candidate = this.sentinelGate + text;
+            if ("NO_REPLY".startsWith(candidate.trimStart())) {
+              this.sentinelGate = candidate;
+              break;
+            }
+            this.sentinelGate = null;
+            text = candidate;
+          }
           if (text) {
             // Only NON-whitespace makes the reply "visible" — a whitespace-only
             // delta before an empty final is still a blank bubble (codex P2).
@@ -626,7 +653,11 @@ export class TurnSink {
           break;
         }
         case "message.snapshot": {
-          const snap = asString(event.text);
+          let snap = asString(event.text);
+          // A snapshot of exactly the sentinel is silence — write the purge,
+          // never the literal (codex P2). Any other snapshot resolves the gate.
+          if (snap.trim() === "NO_REPLY") snap = "";
+          this.sentinelGate = null;
           // A snapshot REPLACES the whole reply text, so visibility must track the
           // new content: an empty/whitespace snapshot (e.g. the "" emitted to clear
           // an invalidated prefix on compaction) RESETS visibility to false, so a
@@ -1125,7 +1156,28 @@ export class TurnSink {
     // error already buffered). The `hostedThisTurn` check is AFTER the media
     // chain, so a media that DROPPED not_found downstream correctly counts as
     // "nothing delivered" (report ms7b5j…).
-    const replyText = this.hasPendingFinal ? this.pendingFinalText : "";
+    // A held gate remnant that never diverged NOR matched the full sentinel
+    // (e.g. an abort after 3 chars): it is part of the streamed reply — flush
+    // it so the fallback text is complete. A full-sentinel hold stays unwritten.
+    if (
+      this.sentinelGate !== null &&
+      this.sentinelGate.trim() !== "" &&
+      this.sentinelGate.trim() !== "NO_REPLY"
+    ) {
+      try {
+        await this.writer.appendDelta(messageId, this.sentinelGate);
+      } catch {
+        /* best-effort — the final text below still carries the full reply */
+      }
+    }
+    this.sentinelGate = null;
+    let replyText = this.hasPendingFinal ? this.pendingFinalText : "";
+    // The NO_REPLY protocol sentinel is SILENCE, not content: a top-level
+    // model reply of exactly the sentinel must neither render nor count as
+    // visible work — it falls through to the zero-work guard below instead of
+    // settling a bubble that literally shows "NO_REPLY" (codex P2).
+    const sentinelOnly = replyText.trim() === "NO_REPLY";
+    if (sentinelOnly) replyText = "";
     let effectiveStatus = status;
     let effectiveError = this.pendingFinalError;
     let effectiveErrorKind = this.pendingFinalErrorKind;
@@ -1154,7 +1206,7 @@ export class TurnSink {
       !isDeliveryRunId(this.turnRunId) &&
       effectiveErrorKind === null &&
       replyText.trim().length === 0 &&
-      !this.sawVisibleText &&
+      (!this.sawVisibleText || sentinelOnly) &&
       // An EXPLICIT hand-off (sessions_yield): the parent deliberately answers
       // nothing — the child announces later. Unambiguous, and it catches the
       // ASYNC case the child-key intersection below cannot (the child ran after
@@ -1182,15 +1234,33 @@ export class TurnSink {
           this.spawnedChildKeysThisTurn.size === 0 &&
           this.pendingObservedChildKeys.length > 0)
       ) &&
-      this.hostedThisTurn.size === 0 &&
-      (this.toolCallCount > 0 ||
-        this.hasPendingMedia ||
-        scanCandidates > 0 ||
-        this.pendingMediaGeneratedUndelivered)
+      this.hostedThisTurn.size === 0
+      // No "the agent WORKED" requirement anymore: a top-level turn the
+      // gateway closes CLEANLY with zero content and zero activity (a silent
+      // NO_REPLY reply, an end-of-run grace with nothing) rendered as a
+      // SILENT empty complete bubble — the user cannot tell a failure from
+      // "nothing to say" (live prod 2026-07-19 ×3: 7-8 min thinking runs all
+      // settled empty; reproduced live 2026-07-20 with the NO_REPLY
+      // sentinel). Every legitimate silent class is already exempted above
+      // (delivery/announce runs, yield hand-off, async task start, observed
+      // children, private ack, media in flight).
     ) {
       effectiveStatus = "error";
-      effectiveError = EMPTY_RESPONSE_TEXT;
-      effectiveErrorKind = EMPTY_RESPONSE_CODE;
+      const zeroWork =
+        this.toolCallCount === 0 &&
+        !this.hasPendingMedia &&
+        scanCandidates === 0 &&
+        !this.pendingMediaGeneratedUndelivered;
+      if (zeroWork) {
+        // Clean close with nothing at all (the Fabien signature, prod
+        // 2026-07-19 ×3; reproduced live 2026-07-20 via NO_REPLY) — the ONLY
+        // auto-retryable empty class (zero work = re-running bills nothing).
+        effectiveError = SILENT_RESPONSE_TEXT;
+        effectiveErrorKind = SILENT_RESPONSE_CODE;
+      } else {
+        effectiveError = EMPTY_RESPONSE_TEXT;
+        effectiveErrorKind = EMPTY_RESPONSE_CODE;
+      }
     }
     if (this.planAdvancesThisTurn > 0) {
       // Apply the delivery turn's plan movement now that the chain outcome is
@@ -1226,6 +1296,14 @@ export class TurnSink {
       replyText,
       effectiveError,
       effectiveErrorKind,
+      // Discard the live-stream fallback whenever the reply was the SENTINEL
+      // (even on a turn that worked — yield/tool then NO_REPLY, codex P2) or
+      // the turn classed SILENT (its stream holds only noise/whitespace, which
+      // would also block the auto-retry via finalTextLen>0). Atomic with the
+      // finalize — a separate purge write could fail while the finalize lands.
+      sentinelOnly || effectiveErrorKind === SILENT_RESPONSE_CODE
+        ? { discardStreamText: true }
+        : undefined,
     );
     // A visible task-delivery run also settles its engagement here (the
     // Convex-side settle on startAssistant covers the merge path; this one is

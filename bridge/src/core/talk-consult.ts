@@ -40,9 +40,13 @@ export function observeFinalize(
           text: string,
           error: string | null,
           errorKind?: string | null,
+          // Relay EVERY trailing option (discardStreamText…) — a fixed-arity
+          // facade silently dropped the sentinel purge on voice-consult turns
+          // (codex P2).
+          opts?: { discardStreamText?: boolean },
         ) => {
           onFinal(status, text, error);
-          return target.finalize(messageId, status, text, error, errorKind);
+          return target.finalize(messageId, status, text, error, errorKind, opts);
         };
       }
       const value = Reflect.get(target, prop, receiver) as unknown;

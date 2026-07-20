@@ -114,6 +114,13 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   // agent events like thinkingLevel/fastMode. Config vocabulary, not content;
   // consumed nowhere. The ONLY new protocol field 2026.6.11 → 2026.7.1.
   "effectiveResponseUsage",
+  // Spawn/agent-identity statics flattened onto agent events (live ataraxis
+  // 2026-07-19 — the prod "3 unknown field(s)" badge: spawnedCwd ×617,
+  // label/displayName ×270). Same family as spawnedWorkspaceDir/goal: config
+  // vocabulary, not content; consumed nowhere.
+  "spawnedCwd",
+  "label",
+  "displayName",
 ]);
 
 /**
