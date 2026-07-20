@@ -8,6 +8,19 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.68.1] — Maintenance re-cut: green CI end to end
+
+Corrective release. No functional changes — the shipped images are
+byte-equivalent in behavior to 0.68.0.
+
+- **Re-cut on a fully green commit.** The 0.68.0 tag pointed at a commit whose
+  main-branch CI failed on a type error in a bridge test file (test-only code,
+  excluded from the images). The fix landed right after the tag; this release
+  re-cuts from that commit so the published tag, the CI, and the images all
+  agree. Self-hosters coming from 0.67.x: apply the 0.68.0 deployment note
+  (image update AND `npx convex deploy`); coming from 0.68.0, updating the
+  image tag is enough.
+
 ## [0.68.0] — Send while it works: queued prompts, live turn activity, calm delegated turns
 
 Feature and reliability release. Frontend + bridge + Convex (additive schema,
