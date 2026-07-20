@@ -8,6 +8,28 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.67.1] — Hardened, auditable frontend container runtime
+
+Supply-chain and runtime-hardening release for self-hosted deployments. There
+is no application-level breaking change and the bridge remains compatible with
+0.67.0.
+
+- **Minimal immutable runtime.** The frontend image now runs from an exact
+  Alpine digest with a source-built, pinned Caddy binary and CA certificates
+  only. Build images and the Dockerfile frontend are digest-pinned as well;
+  the runtime no longer carries `curl`, `wget`, package managers, compilers or
+  other unnecessary troubleshooting tools.
+- **Container policy is enforced before merge.** Positive and negative policy
+  tests reject floating base images, unpinned Caddy versions, runtime package
+  installation and broad filesystem copies. CI also builds the production
+  image, emits a 90-day SBOM artifact and rejects HIGH or CRITICAL findings.
+- **Frontend dependency remediation.** Convex is pinned to 1.42.3, removing the
+  vulnerable transitive WebSocket dependency while retaining reproducible
+  installs with the supported Node 24 toolchain.
+- **Least-privilege ready.** Runtime state is isolated under explicit XDG paths
+  so orchestrators can combine a read-only root filesystem, dropped Linux
+  capabilities and a bounded writable temporary filesystem.
+
 ## [0.67.0] — Per-bridge ingest isolation is now the only mode
 
 Security release (phase 2 of 2 — the narrow step). Cross-gateway write
