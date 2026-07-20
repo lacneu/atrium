@@ -99,6 +99,19 @@ export async function isChatBusy(
     )
     .first();
   if (pending !== null) return true;
+  return await chatHasActivityBlockers(ctx, chatId);
+}
+
+/**
+ * The NON-outbox busy blockers: a streaming assistant message OR a live
+ * sub-agent. Shared by `isChatBusy` and the paced-dispatch re-check
+ * (bridge.reparkIfBusy) — the latter's OWN outbox row is `pending`, so it
+ * must check exactly these two without the pending clause.
+ */
+export async function chatHasActivityBlockers(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+): Promise<boolean> {
   const streaming = await ctx.db
     .query("messages")
     .withIndex("by_chat_status", (q) =>
@@ -155,6 +168,10 @@ export async function countQueued(
  * idempotent and safe to call from EVERY turn-end path (finalize, a failed
  * dispatch, the stuck-stream reconcilers) so the queue can never stall.
  */
+/** Delay between a turn's finalize and the queued follow-up's dispatch —
+ *  long enough for the embedded gateway to release its session prompt lock. */
+export const QUEUE_DRAIN_DELAY_MS = 2_500;
+
 export async function drainNextQueued(
   ctx: MutationCtx,
   chatId: Id<"chats">,
@@ -194,7 +211,14 @@ export async function drainNextQueued(
       orderTime: Math.max(Date.now(), maxDispatched + 1),
     });
   }
-  await ctx.scheduler.runAfter(0, internal.bridge.dispatch, {
+  // PACED dispatch (not immediate): Convex finalizes on the reply's final
+  // frame, but the embedded gateway runtime holds its per-session prompt lock
+  // slightly longer (until its lifecycle end/cleanup). Dispatching the queued
+  // follow-up in that window trips "session file changed while embedded
+  // prompt lock was released" — the run crashes (observed live, 2026-07-19).
+  // A short fixed delay lets the lock settle; the bounded auto-retry remains
+  // the net for the residual race.
+  await ctx.scheduler.runAfter(QUEUE_DRAIN_DELAY_MS, internal.bridge.dispatch, {
     outboxId: next._id,
   });
 }

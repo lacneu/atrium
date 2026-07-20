@@ -266,7 +266,18 @@ describe("turn-sink integration: cron tool frames emit ONE cron part", () => {
       }),
       (now += 1),
     );
-    expect(writer.toolParts.filter((t) => t.name === "cron")).toHaveLength(2);
+    // Each cron call now emits start + completed (same toolCallId — Convex's
+    // upsert collapses the pair into one card): 2 calls -> 4 raw parts.
+    const cronParts = writer.toolParts.filter((t) => t.name === "cron");
+    expect(cronParts).toHaveLength(4);
+    expect(cronParts.map((t) => t.phase)).toEqual([
+      "start",
+      "completed",
+      "start",
+      "completed",
+    ]);
+    expect(cronParts[0]!.toolCallId).toBe(cronParts[1]!.toolCallId);
+    expect(cronParts[2]!.toolCallId).toBe(cronParts[3]!.toolCallId);
     expect(writer.cronParts).toHaveLength(1);
     expect(writer.cronParts[0]).toMatchObject({
       kind: "cron",

@@ -188,6 +188,9 @@ async function main(): Promise<void> {
     console.log(
       `bridge: instance "${data.instanceName}" now serving (${served.size} total)`,
     );
+    // Close this instance's orphaned streams from a previous bridge life —
+    // seconds instead of the 12-min watchdog window (fake "En cours" chrono).
+    void registry.getBundle(data.instanceName)?.writer.sweepStreams?.();
     return "registered";
   };
 

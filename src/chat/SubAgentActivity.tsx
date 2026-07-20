@@ -158,11 +158,16 @@ export function MessageSubAgents() {
   const chatId = useMessage(
     (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
   );
-  const toolParts = useMessage(
-    (msg) =>
-      (msg.metadata?.custom as { toolParts?: EmptyStateToolPart[] } | undefined)
-        ?.toolParts ?? EMPTY_TOOL_PARTS,
-  );
+  const toolParts = useMessage((msg) => {
+    // The COMPLETE list (anchored inline + legacy grouped): the spawn/task
+    // gate must see every call — `toolParts` alone lost the anchored ones
+    // when the interleaved flow split the lists (codex P1). Fallback keeps
+    // pre-split conversions working.
+    const meta = msg.metadata?.custom as
+      | { toolParts?: EmptyStateToolPart[]; allToolParts?: EmptyStateToolPart[] }
+      | undefined;
+    return meta?.allToolParts ?? meta?.toolParts ?? EMPTY_TOOL_PARTS;
+  });
   // The childSessionKeys the spawn output carried — a FALLBACK correlation key
   // (the gateway usually omits it, so this is often empty).
   const keys = useMemo(() => extractSpawnedChildKeys(toolParts), [toolParts]);

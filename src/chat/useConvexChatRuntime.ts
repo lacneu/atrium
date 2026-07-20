@@ -431,6 +431,18 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       if (msg.status !== "streaming") return msg;
       const id = msg._id as string;
       const reactive = liveByMsg.get(id);
+      // ANNOUNCE MERGE in progress (the bubble was reopened by a sub-agent
+      // delivery): the raw announce stream is a DRAFT — the parent model
+      // deliberates, duplicates and recomposes its text mid-run (live
+      // 2026-07-19: a finished-looking report rewrote itself twice). Never
+      // stream that draft: keep the parked message text stable and let the
+      // finalize reveal the definitive report in ONE step (finalize patches
+      // text + status in one mutation, so the reveal is atomic). The phase
+      // overlay still applies — the placeholder needs it.
+      if (typeof msg.runId === "string" && msg.runId.startsWith("announce:v1:")) {
+        const phase = reactive?.phase;
+        return phase !== undefined ? { ...msg, phase } : msg;
+      }
       // SSE transport: when active for THIS message, the SSE text drives the display —
       // BUT only once it has CAUGHT UP to the reactive frontier seq. A fresh connection
       // after a mid-stream reload replays from cursor 0, so its lastSeq trails the frontier
@@ -466,8 +478,31 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       return msg;
     });
   }, [messages, streamingRows, sse, sseMessageId]);
-  const lastRole = list.length > 0 ? list[list.length - 1].role : null;
-  const anyStreaming = list.some((m) => m.status === "streaming");
+  // ── Codex-style queue dock: a turn parked in the outbox QUEUE is NOT part
+  // of the conversation yet — it renders as a card ABOVE the composer (where
+  // the user can still cancel/edit it), never as a thread bubble. The echo of
+  // a queue-send (no outbox yet) is matched via the client ids queueSend
+  // recorded, so the card appears instantly without a bubble flash.
+  const queuedEchoIds = useRef<Set<string>>(new Set());
+  const isQueuedTurn = (m: ConvexMessageView): boolean =>
+    m.role === "user" &&
+    (m.outbox?.status === "queued" ||
+      queuedEchoIds.current.has(String(m._id)));
+  const queuedTurns = list.filter(isQueuedTurn).map((m) => ({
+    messageId: String(m._id),
+    text: m.text,
+    // The optimistic echo has no server row yet — its card shows but its
+    // actions arm only once the real id lands (no `optimistic-` prefix).
+    pending: String(m._id).startsWith("optimistic-"),
+  }));
+  const visibleList = useMemo(
+    () => list.filter((m) => !isQueuedTurn(m)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isQueuedTurn reads a ref
+    [list],
+  );
+  const lastRole =
+    visibleList.length > 0 ? visibleList[visibleList.length - 1].role : null;
+  const anyStreaming = visibleList.some((m) => m.status === "streaming");
 
   // "A turn I sent this session is awaiting its first assistant message."
   // This — NOT "the last message is a user message" — is what drives the gap
@@ -516,13 +551,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // streams) — misleadingly "processing". RunStatus reads this to label that
   // placeholder "En attente" instead. Only the LAST user turn can be the queued one
   // the placeholder follows.
-  let lastUserTurnQueued = false;
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i].role === "user") {
-      lastUserTurnQueued = list[i].outbox?.status === "queued";
-      break;
-    }
-  }
+  // With queued turns extracted to the dock, no thread bubble is queued any
+  // more — the placeholder-label special case only applies while a queued turn
+  // exists (dock non-empty) and nothing streams.
+  const lastUserTurnQueued = queuedTurns.length > 0 && !anyStreaming;
 
   // Memoized SEPARATELY from the adapter: assistant-ui clears its per-message
   // conversion cache whenever convertMessage's identity changes, so an inline
@@ -536,7 +568,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
 
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {
     return {
-      messages: list,
+      messages: visibleList,
       isRunning,
       convertMessage: convertWithAgents,
 
@@ -642,6 +674,22 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // (e.g. QUEUE_FULL) so the caller can keep the text for a retry.
   const abortTurnMutation = useMutation(api.messages.abortTurn);
 
+  const cancelQueuedMutation = useMutation(api.send.cancelQueuedMessage);
+  const cancelQueued = useCallback(
+    async (messageId: string): Promise<boolean> => {
+      try {
+        await cancelQueuedMutation({ messageId: messageId as Id<"messages"> });
+        return true;
+      } catch {
+        // Promoted in the meantime: the turn is in flight — the dock row
+        // disappears reactively; nothing actionable.
+        toast.error(m.chat_queue_too_late());
+        return false;
+      }
+    },
+    [cancelQueuedMutation, toast],
+  );
+
   const queueSend = useCallback(
     async (text: string): Promise<boolean> => {
       const trimmed = text.trim();
@@ -650,11 +698,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // has a turn in flight, so it is never the first turn).
       const routedAgent = computeRoutedAgent();
       const quote = takePendingQuote(chatId);
+      const clientMessageId = crypto.randomUUID();
+      // Route the optimistic echo to the QUEUE DOCK (not the thread): the echo
+      // id is deterministic (optimistic-<clientMessageId>).
+      queuedEchoIds.current.add(`optimistic-${clientMessageId}`);
       try {
         await sendMessage({
           chatId: chatId as Id<"chats">,
           text,
-          clientMessageId: crypto.randomUUID(),
+          clientMessageId,
           ...(routedAgent ? { routedAgent } : {}),
           ...(quote
             ? {
@@ -744,6 +796,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     abortTurn,
     routing,
     lastUserTurnQueued,
+    // The queue dock's data + actions (cards above the composer).
+    queuedTurns,
+    cancelQueued,
     // TRUE until listByChat first responds for this chat: drives the loading
     // skeleton (without it a content-heavy chat looks EMPTY for the 2-3s the
     // payload takes to arrive, reading as "is anything happening?").

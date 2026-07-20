@@ -332,6 +332,33 @@ export class RunManager {
         ...this.spontaneousReplayCopy,
         ...this.pendingAnnounce,
       ].slice(0, MAX_PENDING_ANNOUNCE_FRAMES);
+    } else if (
+      this.currentSpontaneousRun !== null &&
+      turnContext?.spontaneous !== true &&
+      this.sink.active
+    ) {
+      // OPEN announce turn preempted by a real dispatch (the queued follow-up
+      // was already in flight when the announce reopened the parent bubble —
+      // rare: bridge.reparkIfBusy re-parks a paced dispatch that wakes into
+      // this state). The gateway kills the announce run when the new chat.send
+      // lands, so its final will NEVER come: left alone the reopened bubble
+      // strands `streaming`, the busy gate stalls the queue drain, and the
+      // 12-min watchdog errors it as stream_orphaned (live 2026-07-19,
+      // "Génération…" stuck + last queued card never dispatched). Close it
+      // COMPLETE now with the streamed partial text; no replay is attempted —
+      // the run is dead, nothing would answer it. Best-effort — the real turn
+      // must start regardless.
+      try {
+        console.log(
+          `[announce] open announce turn preempted by real dispatch — closing run=${this.currentSpontaneousRun.slice(0, 60)}`,
+        );
+        await this.sink.preemptOpenTurn();
+      } catch (e) {
+        console.error(
+          "[announce] preempt close failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
     }
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun =

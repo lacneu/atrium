@@ -72,6 +72,10 @@ type ClientPart =
       kind: "tool";
       name: string;
       phase: string;
+      /** Provider tool-call id (upsert key) — stable across start->completed. */
+      toolCallId?: string;
+      /** Narrative anchor (UTF-16 offset at emission) — interleaved rendering. */
+      textOffset?: number;
       input?: unknown;
       inputOmitted?: boolean;
       inputBytes?: number;
@@ -243,6 +247,12 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
                 kind: "tool",
                 name: part.name,
                 phase: part.phase,
+                ...(part.toolCallId !== undefined
+                  ? { toolCallId: part.toolCallId }
+                  : {}),
+                ...(part.textOffset !== undefined
+                  ? { textOffset: part.textOffset }
+                  : {}),
                 ...(inBytes > PART_FIELD_CAP
                   ? { inputOmitted: true, inputBytes: inBytes }
                   : { input: part.input }),

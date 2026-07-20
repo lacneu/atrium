@@ -11,7 +11,7 @@
 //   { type: "message.snapshot", text }
 //   { type: "message.final",    text, error? }
 //   { type: "run.status",       status, runId }
-//   { type: "tool.status",      name, phase, runId }
+//   { type: "tool.status",      name, phase, runId, toolCallId?, input?, output? }
 //   { type: "media",            items: [{ filename, path }], runId }
 //   { type: "openclaw.frame",   frame }   // deprecated raw passthrough
 
@@ -20,7 +20,7 @@ export const EVENT_MESSAGE_DELTA = "message.delta"; // append `text` to the stre
 export const EVENT_MESSAGE_SNAPSHOT = "message.snapshot"; // replace the streaming reply with `text`
 export const EVENT_MESSAGE_FINAL = "message.final"; // the turn's authoritative final `text`
 export const EVENT_RUN_STATUS = "run.status"; // {status, runId}
-export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId}
+export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId, toolCallId?, input?, output?}
 export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
 // {runId} — the agent GENERATED media (e.g. a codex `imageGeneration` item) but the
 // turn delivered NO media (no MEDIA:/mediaUrls/outbound path) → nothing for the bridge

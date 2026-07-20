@@ -43,6 +43,11 @@ export type ConvexMessagePartView =
       kind: "tool";
       name: string;
       phase: ToolPhase | string;
+      /** Provider tool-call id (upsert key) — stable across start->completed. */
+      toolCallId?: string;
+      /** Anchor into the message text (UTF-16 offset at emission) — drives the
+       *  interleaved narrative rendering; absent = legacy grouped block. */
+      textOffset?: number;
       // input/output are ELIDED from the window read when oversized (loadChatView,
       // PART_FIELD_CAP) — `*Omitted` + `*Bytes` let the card show a size note.
       input?: unknown;

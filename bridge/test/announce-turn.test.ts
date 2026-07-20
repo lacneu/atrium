@@ -499,6 +499,85 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     expect(finals[1]?.[3]).toContain("ANNOUNCE_TOKEN_99");
   });
 
+  it("a real send preempting an OPEN announce turn closes it COMPLETE (the reopened bubble never strands streaming)", async () => {
+    class PreemptWriter extends FakeWriter {
+      startCount = 0;
+      finalKinds: (string | null | undefined)[] = [];
+      override async startAssistant(
+        chatId: string,
+        runId: string | null,
+      ): Promise<string> {
+        this.calls.push(["startAssistant", chatId, runId]);
+        this.startCount++;
+        return ["msg_open_announce", "msg_real_turn", "msg_announce_resumed"][
+          this.startCount - 1
+        ] ?? "msg_extra";
+      }
+      override async finalize(
+        messageId: string,
+        status: FinalizeStatus,
+        text: string,
+        _error?: string | null,
+        errorKind?: string | null,
+      ): Promise<void> {
+        this.calls.push(["finalize", messageId, status, text]);
+        this.finalKinds.push(errorKind);
+      }
+    }
+    const writer = new PreemptWriter();
+    const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
+    let now = 1000;
+    // The announce opens and STREAMS (visible message created) but its final
+    // has not arrived yet — the live 2026-07-19 shape: the queued follow-up's
+    // dispatch was already scheduled when the announce reopened the bubble.
+    for (const frame of ANNOUNCE_FRAMES.slice(0, -1)) {
+      await manager.feed(frame, (now += 1));
+    }
+    expect(
+      writer.calls.filter((c) => c[0] === "startAssistant"),
+    ).toHaveLength(1);
+    expect(writer.calls.filter((c) => c[0] === "finalize")).toHaveLength(0);
+    // A real user dispatch preempts the open announce turn. The open message
+    // must be CLOSED before the real turn takes the sink — without it the
+    // bubble strands `streaming` until the 12-min watchdog (busy chat ->
+    // stalled queue drain). Closed COMPLETE: the gateway kills the announce
+    // run when the chat.send lands, so nothing will ever finalize it.
+    await manager.beginTurn((now += 1), "webchat-preempt-open");
+    const preemptFinals = writer.calls.filter((c) => c[0] === "finalize");
+    expect(preemptFinals).toHaveLength(1);
+    expect(preemptFinals[0]?.[1]).toBe("msg_open_announce");
+    expect(preemptFinals[0]?.[2]).toBe("complete");
+    expect(writer.finalKinds[0] ?? null).toBeNull();
+    // The real turn streams + finalizes normally on ITS message.
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "webchat-preempt-open",
+          sessionKey: SESSION_KEY,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "réponse utilisateur" }],
+          },
+        },
+      },
+      (now += 1),
+    );
+    // A late RETRANSMIT of the killed run's final (should never happen — the
+    // gateway killed it — but a stale redelivery must stay inert): dropped,
+    // nothing reopens, the real turn's message is untouched.
+    await manager.feed(ANNOUNCE_FRAMES[ANNOUNCE_FRAMES.length - 1], (now += 1));
+    const finals = writer.calls.filter((c) => c[0] === "finalize");
+    expect(finals).toHaveLength(2);
+    expect(finals[1]?.[1]).toBe("msg_real_turn");
+    expect(finals[1]?.[3]).toContain("réponse utilisateur");
+    expect(
+      writer.calls.filter((c) => c[0] === "startAssistant"),
+    ).toHaveLength(2);
+  });
+
   it("a real turn preempting an IN-FLIGHT deferred open is never corrupted by the stale closure (epoch)", async () => {
     class SlowWriter extends FakeWriter {
       resolveStart: (() => void) | null = null;
@@ -859,12 +938,22 @@ describe("realtime-voice AGENT-CONSULT run -> spontaneous turn (talk- family)", 
       },
       (now += 1),
     );
-    // The REAL normalizer coalesced start+result into one completed card.
-    expect(writer.toolParts).toHaveLength(1);
+    // The REAL normalizer now emits the start (live "running" card) AND the
+    // completed — both carrying the SAME toolCallId, Convex's upsert key that
+    // collapses them into one card server-side.
+    expect(writer.toolParts).toHaveLength(2);
     expect(writer.toolParts[0]).toMatchObject({
       kind: "tool",
       name: "web_search",
+      phase: "start",
+      toolCallId: "t1",
+      input: { q: "météo" },
+    });
+    expect(writer.toolParts[1]).toMatchObject({
+      kind: "tool",
+      name: "web_search",
       phase: "completed",
+      toolCallId: "t1",
       input: { q: "météo" },
       output: { hits: 3 },
     });

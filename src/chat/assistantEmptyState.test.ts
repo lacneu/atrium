@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ANNOUNCE_COMPOSE_GRACE_MS,
   assistantEmptyState,
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
@@ -331,5 +332,69 @@ describe("toolPartsHaveSpawn (gate on the spawn tool NAME, not its result)", () 
   it("false for an ordinary tool part and for none", () => {
     expect(toolPartsHaveSpawn([{ toolName: "exec", result: {} }])).toBe(false);
     expect(toolPartsHaveSpawn([])).toBe(false);
+  });
+});
+
+describe("composing grace (announce merge expected)", () => {
+  it("a FRESH done child holds a composing note — the merge will rewrite the bubble", () => {
+    const doneAt = 5_000_000;
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [
+        row({
+          parentMessageId: "msg-1",
+          status: "done",
+          resultText: "résultat brut du child",
+          taskName: "News",
+          updatedAt: doneAt,
+        }),
+      ],
+      "msg-1",
+      doneAt + 10_000,
+    );
+    expect(state).toEqual({
+      kind: "composing",
+      taskName: "News",
+      recheckAt: doneAt + ANNOUNCE_COMPOSE_GRACE_MS,
+    });
+  });
+
+  it("past the grace window the child's raw result becomes the answer (fallback)", () => {
+    const doneAt = 5_000_000;
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [
+        row({
+          parentMessageId: "msg-1",
+          status: "done",
+          resultText: "résultat brut du child",
+          updatedAt: doneAt,
+        }),
+      ],
+      "msg-1",
+      doneAt + ANNOUNCE_COMPOSE_GRACE_MS,
+    );
+    expect(state).toEqual({
+      kind: "done",
+      taskName: undefined,
+      resultText: "résultat brut du child",
+    });
+  });
+
+  it("a failed sibling still wins over composing (failure is never masked)", () => {
+    const doneAt = 5_000_000;
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [{ toolName: "sessions_spawn" }],
+      [
+        row({ _id: "a", parentMessageId: "msg-1", status: "done", resultText: "x", updatedAt: doneAt }),
+        row({ _id: "b", parentMessageId: "msg-1", status: "error", errorMessage: "boom", updatedAt: doneAt }),
+      ],
+      "msg-1",
+      doneAt + 10_000,
+    );
+    expect(state.kind).toBe("failed");
   });
 });

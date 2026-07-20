@@ -43,7 +43,7 @@ import {
 } from "./lib/promptInjections";
 import { composeQuotedText } from "./lib/quoteReply";
 import { classifyAttachment } from "./lib/mediaTransport";
-import { drainNextQueued } from "./lib/outboxQueue";
+import { chatHasActivityBlockers, drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 
@@ -962,6 +962,30 @@ export const consumeForkRehydration = internalMutation({
   },
 });
 
+/**
+ * PACED-DISPATCH RE-CHECK (called at the top of `dispatch`): between the
+ * drain's queued→pending flip and the delayed wake-up (QUEUE_DRAIN_DELAY_MS),
+ * a sub-agent ANNOUNCE may have reopened an assistant bubble — the chat is
+ * streaming again. A chat.send now would make the gateway KILL that announce
+ * run mid-report (one run per session; live 2026-07-19: the report froze on
+ * "Génération…" and the rest never arrived). Re-park the row as `queued`
+ * instead; the announce's own finalize re-drains the queue FIFO.
+ */
+export const reparkIfBusy = internalMutation({
+  args: { outboxId: v.id("outbox") },
+  handler: async (ctx, { outboxId }): Promise<boolean> => {
+    const row = await ctx.db.get(outboxId);
+    if (row === null || row.status !== "pending") return false;
+    // The FULL activity predicate (streaming message OR live sub-agent) — a
+    // `subagent.start` observed during the dispatch delay must hold too, or
+    // the follow-up would be routed into / kill the child session (codex P1).
+    // Only the `pending` clause of isChatBusy is skipped: this row IS pending.
+    if (!(await chatHasActivityBlockers(ctx, row.chatId))) return false;
+    await ctx.db.patch(outboxId, { status: "queued" });
+    return true;
+  },
+});
+
 export const dispatch = internalAction({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }) => {
@@ -971,6 +995,12 @@ export const dispatch = internalAction({
     }
     if (row.status !== "pending") {
       return; // already handled (guards duplicate schedules)
+    }
+    if (await ctx.runMutation(internal.bridge.reparkIfBusy, { outboxId })) {
+      console.log(
+        "bridge.dispatch: chat busy again (announce reopened a bubble) — re-parked",
+      );
+      return;
     }
 
     // The shared secret is deployment-wide env (Convex→bridge auth, shared across

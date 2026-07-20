@@ -971,14 +971,14 @@ export const inspectRouting = query({
  *   npx convex run dev:inspectChat '{"chatId":"<id>"}'
  */
 export const inspectChat = query({
-  args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }) => {
+  args: { chatId: v.id("chats"), take: v.optional(v.number()) },
+  handler: async (ctx, { chatId, take }) => {
     assertDev();
     const msgs = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
-      .take(6);
+      .take(Math.min(Math.max(take ?? 6, 1), 40));
     const out = [];
     for (const m of msgs) {
       const parts = await ctx.db
@@ -986,8 +986,11 @@ export const inspectChat = query({
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .collect();
       out.push({
+        id: m._id,
+        created: m._creationTime,
         role: m.role,
         status: m.status,
+        error: m.error ? m.error.slice(0, 140) : undefined,
         textLen: m.text.length,
         liveTextLen: (m.liveText ?? "").length,
         textPreview: m.text.slice(0, 80),
@@ -1000,7 +1003,50 @@ export const inspectChat = query({
         })),
       });
     }
+    // NB: the live-bench harness consumes this as a BARE ARRAY — keep the
+    // shape; per-message fields are additive only. Stream/outbox forensics
+    // live in inspectFlow below.
     return out.reverse();
+  },
+});
+
+/**
+ * TURN-FLOW FORENSICS (dev-gated, read-only): the chat's open stream rows +
+ * latest outbox entries. An open stream row explains a bubble stuck "in
+ * progress"; a queued outbox row explains a dock card that never drains.
+ *
+ *   npx convex run dev:inspectFlow '{"chatId":"<id>"}'
+ */
+export const inspectFlow = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const streams = await ctx.db
+      .query("streamingText")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .collect();
+    const outbox = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .take(15);
+    return {
+      streams: streams.map((s) => ({
+        messageId: s.messageId,
+        updatedAt: s.updatedAt,
+        ageMs: Date.now() - s.updatedAt,
+        textLen: s.text.length,
+        phase: s.phase,
+        generation: s.generation ?? null,
+      })),
+      outbox: outbox.map((o) => ({
+        status: o.status,
+        created: o._creationTime,
+        messageId: o.messageId,
+        autoRetryAttempt: o.autoRetryAttempt,
+        textPreview: o.text.slice(0, 60),
+      })),
+    };
   },
 });
 

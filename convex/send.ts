@@ -19,6 +19,7 @@ import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { deleteFilesByMessage } from "./lib/files";
 import { auditImpersonated } from "./lib/audit";
 import { assertOwnsUpload } from "./uploads";
 import { writeTraceEvent } from "./observability";
@@ -352,3 +353,67 @@ async function traceSend(
     // Best-effort: never break the primary send flow on a trace error.
   }
 }
+
+// ── Queued-turn management (the Codex-style queue dock above the composer) ──
+// A message parked in the outbox QUEUE (sent mid-turn) is not yet part of the
+// conversation: until the drain promotes it, the user may still remove or
+// rewrite it. Both mutations guard ATOMICALLY on the outbox row still being
+// `queued` — drainNextQueued promotes queued→pending inside its own
+// transaction, so a row observed queued here cannot concurrently dispatch.
+
+export const cancelQueuedMessage = mutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const { userId } = await requireActive(ctx);
+    const message = await ctx.db.get(messageId);
+    if (message === null) return; // already gone (double-click)
+    await requireOwnedChat(ctx, userId, message.chatId);
+    const queued = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", message.chatId).eq("status", "queued"),
+      )
+      .collect();
+    const row = queued.find((r) => r.messageId === messageId);
+    if (row === undefined) {
+      // Promoted (or never queued): too late to cancel — the turn is in flight.
+      throw new Error("QUEUE_ALREADY_DISPATCHED");
+    }
+    await ctx.db.delete(row._id);
+    // The composer disables attachments in queue mode, but the PUBLIC mutation
+    // accepts them — drop any parts AND their mirrored `files` rows (the
+    // file-mirror invariant: a files row must never outlive its message).
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .collect();
+    for (const p of parts) await ctx.db.delete(p._id);
+    await deleteFilesByMessage(ctx, messageId);
+    await ctx.db.delete(messageId);
+    await ctx.db.patch(message.chatId, { updatedAt: Date.now() });
+  },
+});
+
+export const updateQueuedMessage = mutation({
+  args: { messageId: v.id("messages"), text: v.string() },
+  handler: async (ctx, { messageId, text }) => {
+    const { userId } = await requireActive(ctx);
+    const trimmed = text.trim();
+    if (trimmed === "") throw new Error("EMPTY_TEXT");
+    const message = await ctx.db.get(messageId);
+    if (message === null) throw new Error("QUEUE_ALREADY_DISPATCHED");
+    await requireOwnedChat(ctx, userId, message.chatId);
+    const queued = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", message.chatId).eq("status", "queued"),
+      )
+      .collect();
+    const row = queued.find((r) => r.messageId === messageId);
+    if (row === undefined) throw new Error("QUEUE_ALREADY_DISPATCHED");
+    // Both surfaces: the DISPLAY text (message) and the DISPATCH text (outbox —
+    // what the drain actually sends to the gateway).
+    await ctx.db.patch(row._id, { text: trimmed });
+    await ctx.db.patch(messageId, { text: trimmed, updatedAt: Date.now() });
+  },
+});

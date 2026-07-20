@@ -14,11 +14,19 @@ import type { PlanPartView } from "./convexTypes";
 
 const NO_PARTS: PlanPartView[] = [];
 
-function StepIcon({ status }: { status: PlanPartView["steps"][number]["status"] }) {
+function StepIcon({
+  status,
+  settled,
+}: {
+  status: PlanPartView["steps"][number]["status"];
+  /** TRUE once the turn is terminal: an in_progress step must not keep a
+   *  spinner running on a dead turn (crashed run, user report 2026-07-19). */
+  settled: boolean;
+}) {
   if (status === "completed") {
     return <Check size={13} className="oc-planact__icon oc-planact__icon--done" aria-hidden />;
   }
-  if (status === "in_progress") {
+  if (status === "in_progress" && !settled) {
     return (
       <LoaderCircle
         size={13}
@@ -35,6 +43,11 @@ export function PlanActivity() {
     (msg) =>
       (msg.metadata?.custom as { planParts?: PlanPartView[] } | undefined)
         ?.planParts ?? NO_PARTS,
+  );
+  const settled = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { status?: string } | undefined)?.status !==
+      "streaming",
   );
   // Expanded by default while work is in flight; the finished plan folds to
   // its one-line summary so a settled reply stays compact.
@@ -87,7 +100,7 @@ export function PlanActivity() {
               key={i}
               className={`oc-planact__step oc-planact__step--${s.status}`}
             >
-              <StepIcon status={s.status} />
+              <StepIcon status={s.status} settled={settled} />
               <span className="oc-planact__step-text">{s.step}</span>
             </li>
           ))}

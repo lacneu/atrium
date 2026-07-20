@@ -15,6 +15,7 @@
 // blocks; a vanished block index falls back to the top of its message.
 
 import {
+  Component,
   createContext,
   useCallback,
   useContext,
@@ -561,7 +562,44 @@ interface HoverState {
  *  a rename/delete popover. Rendered as a PORTAL into the bubble's body (the
  *  component itself mounts in the message chrome, after the body). Assistant
  *  bubbles only — user messages bookmark at message level via the action bar. */
-export function BookmarkGutter({
+/** SILENT local error boundary for the DECORATIVE gutter/toggle chrome.
+ *  assistant-ui's message client resolves messages BY INDEX through
+ *  useSyncExternalStore; when the thread list shrinks for a frame (the
+ *  mid-turn queue draining: optimistic echo + placeholder reconciliation),
+ *  the store notifies before React unmounts and the index lookup throws
+ *  ("useClientLookup: Index N out of bounds") INSIDE the hook — before any
+ *  selector runs, so it cannot be guarded from a selector. Uncaught, it
+ *  bubbled to the ROUTE boundary: the whole thread remounted (the user-visible
+ *  "page reloaded and my bubbles vanished" bug). The gutter is pure chrome —
+ *  confining the crash here and rendering nothing is strictly better. */
+class GutterBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    // Silent by design: decorative chrome, torn store — nothing actionable.
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+export function BookmarkGutter(props: {
+  messageLevelMarkers?: boolean;
+  onReplyToBlock?: (blockIndex: number, excerpt: string) => void;
+} = {}) {
+  return (
+    <GutterBoundary>
+      <BookmarkGutterInner {...props} />
+    </GutterBoundary>
+  );
+}
+
+function BookmarkGutterInner({
   messageLevelMarkers = true,
   onReplyToBlock,
 }: {
@@ -837,7 +875,15 @@ function BookmarkMarker({
 
 /** Message-level bookmark toggle for the USER message action bar (user
  *  bubbles are short: no per-block gutter, one anchor for the whole turn). */
-export function BookmarkToggleButton({ header = false }: { header?: boolean }) {
+export function BookmarkToggleButton(props: { header?: boolean }) {
+  return (
+    <GutterBoundary>
+      <BookmarkToggleButtonInner {...props} />
+    </GutterBoundary>
+  );
+}
+
+function BookmarkToggleButtonInner({ header = false }: { header?: boolean }) {
   const bmApi = useBookmarks();
   const messageId = useMessage((msg) => msg.id);
   const existing =

@@ -329,3 +329,135 @@ export const reconcileStuckStreams = internalMutation({
     return { reconciled: reaped };
   },
 });
+
+// Boot-time sweep (per-bridge): when a bridge (re)starts, NO run of its
+// instances is in flight by definition — every live-text row bound to one of
+// its instances is an orphan of a previous bridge life (the restart killed the
+// WS subscriptions). Sweeping them at boot closes those turns in ~1-2 minutes
+// instead of parking the user on a fake "En cours depuis X" chrono until the
+// 12-minute watchdog. The age gate must EXCEED the longest legitimate silence
+// of a LIVE turn served by an overlapping sibling bridge (rolling restart):
+// a Hermes turn's reasoning heartbeats are throttled to one per minute, and an
+// OpenClaw turn can be legitimately event-silent for up to ~240s (the recv
+// silence-recovery budget) — anything shorter could terminalize a valid
+// in-flight reply and discard its eventual output (codex P1 ×2). 300s covers
+// the worst case with margin, and still closes an orphan ~2.4× sooner than
+// the 12-minute watchdog.
+export const SWEEP_MIN_AGE_MS = 300 * 1000;
+export const SWEEP_ERROR_CODE = "connection_lost";
+
+export const sweepInstanceStreams = internalMutation({
+  args: {
+    instanceName: v.string(),
+    // TRUE on the single deferred re-run (see below) — never re-schedules.
+    rerun: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { instanceName, rerun }) => {
+    const now = Date.now();
+    const cutoff = now - SWEEP_MIN_AGE_MS;
+    // Bounded per-instance reads (codex P2 — a full collect scales with every
+    // instance's in-flight turns): the stamped rows via the dedicated index,
+    // plus the legacy un-stamped rows (pre-R2) whose ownership resolves via
+    // the chat binding.
+    // BOUNDED page (codex P2): an unbounded collect across many in-flight/
+    // legacy rows could blow the transaction (per-row reads+writes+traces+
+    // drains) and roll back the WHOLE sweep. 128 is ~10x any real instance's
+    // in-flight set; anything beyond falls back to the 12-min watchdog — the
+    // pre-sweep safety net — and is logged (no silent cap).
+    const SWEEP_PAGE = 128;
+    const stamped = await ctx.db
+      .query("streamingText")
+      .withIndex("by_bound_instance", (q) =>
+        q.eq("boundInstance", instanceName),
+      )
+      .take(SWEEP_PAGE);
+    const legacy = await ctx.db
+      .query("streamingText")
+      .withIndex("by_bound_instance", (q) => q.eq("boundInstance", undefined))
+      .take(SWEEP_PAGE);
+    if (stamped.length === SWEEP_PAGE || legacy.length === SWEEP_PAGE) {
+      console.warn(
+        `[sweep] page cap hit (${SWEEP_PAGE}) for ${instanceName} — remaining orphans fall back to the 12-min watchdog`,
+      );
+    }
+    let swept = 0;
+    let skippedFresh = 0;
+    for (const row of [...stamped, ...legacy]) {
+      // Ownership: the R2 per-turn stamp when present, else the chat binding.
+      let owner = row.boundInstance ?? null;
+      if (owner === null) {
+        const chat = await ctx.db.get(row.chatId);
+        owner = chat?.instanceName ?? null;
+      }
+      if (owner !== instanceName) continue;
+      if (row.updatedAt >= cutoff) {
+        // Too fresh: either a rolling-restart overlap (a live sibling bridge
+        // still heartbeats it — must survive) or an orphan whose last frame
+        // landed just before the restart. The deferred RE-RUN below separates
+        // the two: a live turn keeps heartbeating past the grace, an orphan
+        // does not (codex P2 — without it this row waited for the 12-min
+        // watchdog, the exact window this sweep exists to close).
+        skippedFresh++;
+        continue;
+      }
+      const msg = await ctx.db.get(row.messageId);
+      if (msg === null || msg.status !== "streaming") {
+        await ctx.db.delete(row._id); // stale row without a live turn
+        continue;
+      }
+      const preserved = (row.text ?? "") || (msg.liveText ?? "");
+      await ctx.db.patch(msg._id, {
+        status: "error",
+        error: SWEEP_ERROR_CODE,
+        ...(preserved ? { text: preserved } : {}),
+      });
+      await ctx.db.delete(row._id);
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        beforeSeq: row.chunkSeq ?? 1,
+        messageId: msg._id,
+      });
+      await writeTraceEvent(ctx, {
+        kind: "assistant.reconcile",
+        direction: "internal",
+        principalType: "service",
+        principalId: "bridge-boot-sweep",
+        chatId: msg.chatId,
+        runId: msg.runId ?? undefined,
+        correlationId: msg.runId ? `${msg.chatId}:${msg.runId}` : msg.chatId,
+        meta: JSON.stringify({
+          reason: "bridge_boot_sweep",
+          messageId: msg._id,
+          instanceName,
+          ageSeconds: Math.round((now - row.updatedAt) / 1000),
+          hadText: preserved.length > 0,
+        }),
+      });
+      // SPECIALIZED service chats (documentary/summarizer/curator/converter)
+      // hold job locks tied to the in-flight turn: releasing the stream here
+      // deletes the very row the watchdog would later act on, so the locks
+      // must be released NOW, exactly like the watchdog path (codex P1 —
+      // a boot sweep otherwise left pendingFetch/-Summarize/-Curate/-Convert
+      // stuck forever).
+      const sweptChat = await ctx.db.get(msg.chatId);
+      await releaseStuckDocumentaryFetch(ctx, sweptChat);
+      await releaseStuckSummarize(ctx, sweptChat);
+      await releaseStuckCurate(ctx, sweptChat);
+      await releaseStuckConvert(ctx, sweptChat);
+      // A finished turn may have queued follow-ups parked behind it: the
+      // stream we just closed was the queue's blocker, so drain — every other
+      // terminal path (finalize, watchdog) does the same (codex P1: without
+      // this the first queued message sat forever).
+      await drainNextQueued(ctx, msg.chatId);
+      swept++;
+    }
+    if (skippedFresh > 0 && rerun !== true) {
+      // ONE deferred pass once the grace has elapsed for the freshest skips.
+      await ctx.scheduler.runAfter(
+        SWEEP_MIN_AGE_MS + 5_000,
+        internal.stuckStreams.sweepInstanceStreams,
+        { instanceName, rerun: true },
+      );
+    }
+    return { swept };
+  },
+});

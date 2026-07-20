@@ -52,9 +52,20 @@ export type EmptyStateMessage = {
 export type AssistantEmptyState =
   | { kind: "none" }
   | { kind: "waiting"; taskName?: string }
+  /** The child finished but the parent's ANNOUNCE merge is still expected:
+   *  showing the child's raw result now would get REWRITTEN by the merged
+   *  reply moments later (live 2026-07-19 — the "block rewrote itself"
+   *  report). Hold a composing note until `recheckAt`, then fall back. */
+  | { kind: "composing"; taskName?: string; recheckAt: number }
   | { kind: "done"; taskName?: string; resultText?: string }
   | { kind: "failed"; taskName?: string; reason: string }
   | { kind: "generic" };
+
+/** How long after the child completes we still EXPECT the announce merge to
+ *  deliver the parent's own reply (it can be delayed behind queued turns —
+ *  the stash flushes between turns). Past this, the child's raw result is
+ *  surfaced as the answer (the pre-merge fallback, gateways without announce). */
+export const ANNOUNCE_COMPOSE_GRACE_MS = 180_000;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -150,6 +161,7 @@ export function assistantEmptyState(
   toolParts: readonly EmptyStateToolPart[],
   subAgents: readonly SubAgentRow[],
   messageId?: string,
+  now: number = Date.now(),
 ): AssistantEmptyState {
   if (message.hasText || message.hasMedia) return { kind: "none" };
   if (message.status !== "complete") return { kind: "none" };
@@ -187,11 +199,23 @@ export function assistantEmptyState(
     };
   }
 
-  // A child that FINISHED with a result: the parent delegated and never relayed the
-  // answer, so the sub-agent's OWN result IS this turn's answer — surfaced as a
-  // distinct "done" state (never the blank "generic" bubble for a real delegation).
+  // A child that FINISHED with a result. On modern gateways the parent's
+  // ANNOUNCE merge follows and writes the REAL reply into this bubble —
+  // surfacing the child's raw result immediately would show one text and then
+  // rewrite it (the double-reveal report, live 2026-07-19). Hold a
+  // "composing" note during the grace window; past it (announce lost / old
+  // gateway) the child's OWN result IS this turn's answer — the pre-merge
+  // fallback, never a blank bubble for a real delegation.
   const done = settled.find((s) => s.status === "done");
   if (done) {
+    const recheckAt = done.updatedAt + ANNOUNCE_COMPOSE_GRACE_MS;
+    if (now < recheckAt) {
+      return {
+        kind: "composing",
+        taskName: cleanTaskName(done.taskName),
+        recheckAt,
+      };
+    }
     return {
       kind: "done",
       taskName: cleanTaskName(done.taskName),

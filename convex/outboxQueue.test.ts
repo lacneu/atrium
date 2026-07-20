@@ -7,7 +7,7 @@
 // is written to FAIL if the serialization regresses (e.g. a queued send slips
 // straight to `pending`, or the queue stalls after a turn ends).
 
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -185,6 +185,109 @@ describe("drainNextQueued", () => {
         .first(),
     );
     expect(pending).toBeNull();
+  });
+});
+
+describe("reparkIfBusy (paced-dispatch re-check)", () => {
+  // Between the drain's queued→pending flip and the delayed dispatch wake-up,
+  // an ANNOUNCE can reopen an assistant bubble (streaming again). Dispatching
+  // then would make the gateway kill the announce run mid-report (live
+  // 2026-07-19) — the wake-up must re-park the row; the announce's finalize
+  // re-drains it.
+  test("pending row + a streaming message → re-parked queued", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const outboxId = await insertOutbox(t, chatId, userId, "pending", "c1");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      });
+    });
+    const reparked = await t.mutation(internal.bridge.reparkIfBusy, {
+      outboxId,
+    });
+    expect(reparked).toBe(true);
+    const row = await t.run((ctx) => ctx.db.get(outboxId));
+    expect(row?.status).toBe("queued");
+  });
+
+  test("pending row + idle chat → untouched (dispatch proceeds)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const outboxId = await insertOutbox(t, chatId, userId, "pending", "c1");
+    const reparked = await t.mutation(internal.bridge.reparkIfBusy, {
+      outboxId,
+    });
+    expect(reparked).toBe(false);
+    const row = await t.run((ctx) => ctx.db.get(outboxId));
+    expect(row?.status).toBe("pending");
+  });
+
+  test("pending row + a RUNNING sub-agent → re-parked (full busy predicate, codex P1)", async () => {
+    // A `subagent.start` can be observed during the dispatch delay: dispatching
+    // then would route the follow-up into (or kill) the child session.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const outboxId = await insertOutbox(t, chatId, userId, "pending", "c1");
+    await insertSubAgent(t, chatId, "agent:main:subagent:c-1", "running");
+    expect(
+      await t.mutation(internal.bridge.reparkIfBusy, { outboxId }),
+    ).toBe(true);
+    const row = await t.run((ctx) => ctx.db.get(outboxId));
+    expect(row?.status).toBe("queued");
+  });
+
+  test("already-sent row is never touched (duplicate wake-up)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const outboxId = await insertOutbox(t, chatId, userId, "sent", "c1");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      });
+    });
+    const reparked = await t.mutation(internal.bridge.reparkIfBusy, {
+      outboxId,
+    });
+    expect(reparked).toBe(false);
+    const row = await t.run((ctx) => ctx.db.get(outboxId));
+    expect(row?.status).toBe("sent");
+  });
+
+  test("re-parked row re-drains on the streaming message's finalize (no stall)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedUserChat(t);
+    const outboxId = await insertOutbox(t, chatId, userId, "pending", "c1");
+    const messageId = await t.run(async (ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      }),
+    );
+    expect(
+      await t.mutation(internal.bridge.reparkIfBusy, { outboxId }),
+    ).toBe(true);
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "complete",
+      text: "rapport complet",
+    });
+    const row = await t.run((ctx) => ctx.db.get(outboxId));
+    expect(row?.status).toBe("pending"); // re-promoted by the finalize's drain
   });
 });
 
@@ -928,5 +1031,116 @@ describe("sub-agent dispatch hold (A/B fix)", () => {
     ]);
     expect(s1).toBe("pending");
     expect(s2).toBe("queued");
+  });
+});
+
+describe("queue dock management (cancel / edit while queued)", () => {
+  async function seedQueued(t: TestConvex<typeof schema>) {
+    const { userId, chatId } = await seedUserChat(t);
+    const asUser = t.withIdentity({ subject: `${userId}|session` });
+    await asUser.mutation(api.send.sendMessage, {
+      chatId,
+      text: "first",
+      clientMessageId: "c1",
+    });
+    await asUser.mutation(api.send.sendMessage, {
+      chatId,
+      text: "second (queued)",
+      clientMessageId: "c2",
+    });
+    const queuedRow = await t.run((ctx) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_client_message", (q) =>
+          q.eq("userId", userId).eq("clientMessageId", "c2"),
+        )
+        .unique(),
+    );
+    return { userId, chatId, asUser, queuedRow: queuedRow! };
+  }
+
+  test("cancelQueuedMessage removes BOTH the outbox row and the message", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, asUser, queuedRow } = await seedQueued(t);
+    await asUser.mutation(api.send.cancelQueuedMessage, {
+      messageId: queuedRow.messageId!,
+    });
+    const rows = await t.run(async (ctx) => ({
+      outbox: await ctx.db.get(queuedRow._id),
+      message: await ctx.db.get(queuedRow.messageId!),
+      remaining: (
+        await ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .collect()
+      ).filter((m) => m.role === "user").length,
+    }));
+    expect(rows.outbox).toBeNull();
+    expect(rows.message).toBeNull();
+    expect(rows.remaining).toBe(1); // the in-flight turn is untouched
+  });
+
+  test("updateQueuedMessage rewrites BOTH the display text and the dispatch text", async () => {
+    const t = convexTest(schema, modules);
+    const { asUser, queuedRow } = await seedQueued(t);
+    await asUser.mutation(api.send.updateQueuedMessage, {
+      messageId: queuedRow.messageId!,
+      text: "  rewritten before dispatch  ",
+    });
+    const rows = await t.run(async (ctx) => ({
+      outbox: await ctx.db.get(queuedRow._id),
+      message: await ctx.db.get(queuedRow.messageId!),
+    }));
+    expect(rows.outbox?.text).toBe("rewritten before dispatch");
+    expect(rows.message?.text).toBe("rewritten before dispatch");
+  });
+
+  test("a PROMOTED (no longer queued) turn refuses cancel AND edit (atomic guard)", async () => {
+    const t = convexTest(schema, modules);
+    const { asUser, queuedRow } = await seedQueued(t);
+    // Simulate the drain: queued -> pending.
+    await t.run((ctx) => ctx.db.patch(queuedRow._id, { status: "pending" }));
+    await expect(
+      asUser.mutation(api.send.cancelQueuedMessage, {
+        messageId: queuedRow.messageId!,
+      }),
+    ).rejects.toThrow(/ALREADY_DISPATCHED/);
+    await expect(
+      asUser.mutation(api.send.updateQueuedMessage, {
+        messageId: queuedRow.messageId!,
+        text: "too late",
+      }),
+    ).rejects.toThrow(/ALREADY_DISPATCHED/);
+  });
+
+  test("ANOTHER user cannot cancel someone else's queued turn", async () => {
+    const t = convexTest(schema, modules);
+    const { queuedRow } = await seedQueued(t);
+    const intruder = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "user" as const,
+        canonical: "intruder",
+      });
+      return uid;
+    });
+    const asIntruder = t.withIdentity({ subject: `${intruder}|session` });
+    await expect(
+      asIntruder.mutation(api.send.cancelQueuedMessage, {
+        messageId: queuedRow.messageId!,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("an EMPTY rewrite is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { asUser, queuedRow } = await seedQueued(t);
+    await expect(
+      asUser.mutation(api.send.updateQueuedMessage, {
+        messageId: queuedRow.messageId!,
+        text: "   ",
+      }),
+    ).rejects.toThrow(/EMPTY_TEXT/);
   });
 });

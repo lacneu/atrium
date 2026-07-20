@@ -23,6 +23,12 @@ export interface ToolPart {
   phase: string;
   input?: unknown;
   output?: unknown;
+  /** Provider tool-call id — Convex addPart's upsert key (start->completed
+   *  collapse into one part). */
+  toolCallId?: string;
+  /** UTF-16 offset into the turn's visible text when the sink emitted this
+   *  part (narrative anchor). Omitted on delivery/announce runs. */
+  textOffset?: number;
 }
 
 /** Mirrors convex/schema.ts messagePart `reasoning` variant. */
@@ -243,7 +249,9 @@ export interface ConvexWriter {
   /** Live processing-phase hint for the Tools-ON placeholder (fire-and-forget;
    *  also touches streamingText.updatedAt = a watchdog heartbeat while the agent
    *  works silently). OPTIONAL: fakes/tests may omit it. */
-  setPhase?(messageId: string, phase: string): void;
+  setPhase?(messageId: string, phase: string): void | Promise<void>;
+  /** Boot-time orphan sweep for this writer's instance (best-effort). */
+  sweepStreams?(): Promise<void>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
   addProvenancePart(
     messageId: string,
@@ -435,6 +443,7 @@ type IngestOp =
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
+  | { op: "sweepStreams" }
   | ({
       op: "appendDelta";
       messageId: string;
@@ -1271,15 +1280,35 @@ export class HttpConvexWriter implements ConvexWriter {
     await this.doPost({ op: "gatewayPressure", chatId, messageId, ...data });
   }
 
-  setPhase(messageId: string, phase: string): void {
-    void this.doPost({
+  /** BOOT-time orphan sweep (best-effort): tells Convex to close every stale
+   *  live-text row bound to THIS writer's instance — no run of ours is in
+   *  flight right after a (re)start, so those rows are orphans of a previous
+   *  bridge life. Failure is non-fatal (the 12-min watchdog remains the net). */
+  sweepStreams(): Promise<void> {
+    return this.doPost({ op: "sweepStreams" })
+      .then(() => undefined)
+      .catch((e) => {
+        console.warn(
+          "[sweep] boot stream sweep failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      });
+  }
+
+  setPhase(messageId: string, phase: string): Promise<void> {
+    // Best-effort hint — but RETURN the promise so an ORDER-sensitive caller
+    // (Hermes ws-turn's awaiting_subagents/generating pair) can serialize the
+    // actual HTTP writes; fire-and-forget callers just ignore it (codex P2).
+    return this.doPost({
       op: "setPhase",
       messageId,
       phase,
       ...this.genTag(messageId),
-    }).catch(() => {
-      // Best-effort hint: losing it never affects the turn.
-    });
+    })
+      .then(() => undefined)
+      .catch(() => {
+        // Losing the hint never affects the turn.
+      });
   }
 
   async addProvenancePart(

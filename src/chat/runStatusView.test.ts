@@ -223,6 +223,11 @@ describe("activeToolFromParts (today's append-only wire, pre-upsert)", () => {
       activeToolFromParts([{ toolName: "exec", phase: "started" }]),
     ).toEqual({ name: "exec", family: "exec" });
   });
+  it("the REAL wire phase 'start' (both normalizers) is live too", () => {
+    expect(
+      activeToolFromParts([{ toolName: "web_search", phase: "start" }]),
+    ).toEqual({ name: "web_search", family: "search" });
+  });
   it("a started part FOLLOWED by its completed twin is no longer live (Hermes appends both)", () => {
     expect(
       activeToolFromParts([
@@ -238,6 +243,14 @@ describe("activeToolFromParts (today's append-only wire, pre-upsert)", () => {
         { toolName: "web_search", phase: "started" },
       ]),
     ).toEqual({ name: "web_search", family: "search" });
+  });
+  it("CONCURRENT same-name calls: the second finishing must not mask the first (id-keyed)", () => {
+    expect(
+      activeToolFromParts([
+        { toolName: "exec", phase: "start", toolCallId: "A" },
+        { toolName: "exec", phase: "completed", toolCallId: "B" },
+      ]),
+    ).toEqual({ name: "exec", family: "exec" });
   });
   it("an error terminal also closes its tool", () => {
     expect(

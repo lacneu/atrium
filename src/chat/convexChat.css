@@ -487,7 +487,16 @@
 .oc-thread__viewport {
   flex: 1;
   overflow-y: auto;
-  padding: 1.5rem 1rem 2rem;
+  /* Queue drains / merges / new bubbles land in bursts: an instant jump per
+     event reads as juddering (user report). Smooth-scroll the follow, and
+     ease the dock reserve so the thread glides instead of snapping. */
+  scroll-behavior: smooth;
+  transition: padding-bottom 200ms ease;
+  /* --oc-dock-pad: set by QueuedDock (its measured height) so the queued
+     cards never mask the end of the in-flight reply — auto-scroll keeps the
+     bottom visible ABOVE the frosted cards; manual scroll still slides the
+     text behind them (the blur effect). */
+  padding: 1.5rem 1rem calc(2rem + var(--oc-dock-pad, 0px));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -855,10 +864,16 @@
   height: 0;
   align-self: center;
 }
+/* The queue dock floats -3.25rem above the composer block (over the thread
+   bottom): the jump-down pill must sit ABOVE it, never on the cards. */
+.oc-thread:has(.oc-queue-dock) .oc-scrolldown {
+  bottom: 3.9rem;
+}
 .oc-scrolldown {
   position: absolute;
   left: 50%;
   bottom: 0.6rem;
+  /* lifted above the queue dock via .oc-thread:has(.oc-queue-dock) below */
   transform: translateX(-50%);
   white-space: nowrap;
   z-index: 5;
@@ -2111,6 +2126,93 @@ button.oc-bmk-rail__count:hover {
   to { background-position: -200% 0; }
 }
 
+/* ── Queue dock (Codex-style, above the composer): each mid-turn message is
+   an editable/cancellable CARD until the drain promotes it into the thread.
+   SAME footprint as the composer (width/max-width/centering) so the stack
+   reads as ONE group, exactly like the reference UI. */
+.oc-queue-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  align-self: center;
+  /* INSET from the composer (which is 100% - 2rem): the cards sit slightly
+     NARROWER, tucked inside its silhouette — the reference stack. */
+  width: calc(100% - 3.8rem);
+  max-width: calc(var(--oc-thread-w) - 1.8rem);
+  /* Codex stack: FLOATS over the end of the thread (negative top margin — the
+     scrolled text passes behind and shows through the frosted cards) and the
+     LAST card tucks behind the composer (painted after in DOM order). */
+  margin: -3.25rem auto -0.85rem;
+  position: relative;
+  z-index: 2;
+}
+.oc-queue-card {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 1rem;
+  /* Frosted glass (the reference's soft translucent blur): the thread text
+     behind stays faintly visible, blurred. Fallback below for engines
+     without backdrop-filter. */
+  background: color-mix(in srgb, var(--card) 58%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+  color: var(--foreground);
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .oc-queue-card { background: var(--card); }
+}
+/* NESTED stack: every card reserves tuck room at its bottom, and each
+   following card (painted after — DOM order) slides OVER that edge; the last
+   one tucks behind the composer the same way. One imbricated pile. */
+.oc-queue-card { padding-bottom: 1.5rem; }
+.oc-queue-card + .oc-queue-card { margin-top: -0.95rem; }
+.oc-queue-card__icon { flex-shrink: 0; color: var(--muted-foreground); }
+.oc-queue-card__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-queue-card__btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-queue-card__btn:hover:not(:disabled) {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-queue-card__btn--danger:hover:not(:disabled) { color: var(--destructive); }
+.oc-queue-card__btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Inline turn-activity group (interleaved flow, ChatGPT-style): a quiet
+   collapsed row between narrative paragraphs; expand = the ToolCards. Carries
+   oc-msg__meta (anchor-block exclusion) with tightened spacing for inline use. */
+.oc-flowact {
+  margin: 0.5rem 0;
+  width: fit-content;
+  max-width: 100%;
+}
+.oc-flowact__count {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Run status (calm state chips, CHAT_UX_DESIGN Part 3 "streaming/processing")
    thinking = animated dots (the typing indicator while no text has arrived);
    generating = a soft pulse + "Génération…"; error/aborted = Lucide icon +
@@ -2987,15 +3089,19 @@ button.oc-bmk-rail__count:hover {
    active charte in both modes. */
 .oc-empty-answer {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.5rem;
   margin-top: 0.15rem;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid var(--border);
-  border-left-width: 3px;
-  border-radius: var(--radius-md, 0.5rem);
-  background: color-mix(in srgb, var(--muted) 35%, var(--card));
-  font-size: 0.84rem;
+  padding: 0.35rem 0.8rem;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px dashed var(--border);
+  /* BLOCK shape (the sidebar drop-zone look) — a 999px capsule read as a
+     stretched blob on multi-line content (user feedback). */
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
   line-height: 1.4;
 }
 .oc-empty-answer__icon,
@@ -3022,14 +3128,65 @@ button.oc-bmk-rail__count:hover {
 }
 /* Waiting: a child run is still in flight -> primary, with the spinner. */
 .oc-empty-answer--waiting {
-  border-left-color: var(--primary);
+  /* The static dashed border is replaced by the animated SVG ring below —
+     the dots ORBIT the pill while the delegated work runs (user request). */
+  border-color: transparent;
+  position: relative;
+}
+.oc-empty-answer__ants {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.oc-empty-answer__ants rect {
+  x: 0.5px;
+  y: 0.5px;
+  width: calc(100% - 1px);
+  height: calc(100% - 1px);
+  rx: var(--radius-md);
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.2;
+  /* Crisp 3/3 px dashes = the native `1px dashed` look of the sidebar
+     drop-zone, whatever the pill's size (absolute px, never stretched). */
+  stroke-dasharray: 3 3;
+}
+/* The ACCENT: a short block of 3 bold dashes that ORBITS the pill clockwise
+   over the static dotted ring. Its dash pattern, duration and step timing are
+   measured per-pill by the AntsRing component (inline style) — the loop wraps
+   on the REAL perimeter, so the orbit never jumps. */
+.oc-empty-answer__ants rect.oc-ants-accent {
+  stroke: var(--primary);
+  stroke-width: 1.6;
+  animation: oc-ants-orbit 3.5s linear infinite;
+}
+@keyframes oc-ants-orbit {
+  to {
+    stroke-dashoffset: calc(-1 * var(--oc-ants-p, 600px));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-thread__viewport {
+    scroll-behavior: auto;
+    transition: none;
+  }
+  .oc-empty-answer__ants rect.oc-ants-accent {
+    /* static accent at the pill's start — the pre-animation look (the old
+       primary-colored left edge). */
+    animation: none;
+  }
 }
 .oc-empty-answer--waiting .oc-empty-answer__spin {
   color: var(--primary);
 }
 /* Failed: a child run errored / timed out -> destructive, read as an alert. */
 .oc-empty-answer--failed {
-  border-left-color: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+  border-style: solid;
+  color: var(--foreground);
   background: color-mix(in srgb, var(--destructive) 7%, var(--card));
 }
 .oc-empty-answer--failed .oc-empty-answer__icon {
@@ -3327,6 +3484,9 @@ button.oc-bmk-rail__count:hover {
   width: calc(100% - 2rem);
   max-width: var(--oc-thread-w);
   margin: 0 auto 1rem;
+  /* Above the queue-dock cards (they tuck BEHIND the composer, never over). */
+  position: relative;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;

@@ -141,6 +141,14 @@ const CONTEXT_OVERFLOW_TEXT_RE =
 // a stable code lets Convex auto-retry the turn (turnRetry.ts) and the UI show
 // an honest "transient, retrying" card instead of a generic error.
 const SESSION_INIT_CONFLICT_RE = /reply session initialization conflicted/i;
+// Same transient-session-conflict family, embedded/PI runtime flavor: the
+// gateway's per-session prompt lock detects a concurrent writer ("session file
+// changed while embedded prompt lock was released") — observed live when a
+// queued follow-up dispatches right as the previous run releases. A re-run
+// succeeds; classify it to the SAME stable code so Convex's bounded auto-retry
+// (zero-content turns only) absorbs it instead of surfacing a raw error card.
+const EMBEDDED_LOCK_CONFLICT_RE =
+  /session file changed while embedded prompt lock/i;
 
 // Terminal stopReason values we persist into the (metadata-only) pressure
 // trace. The schema types stopReason as a FREE string — anything outside this
@@ -1129,13 +1137,26 @@ export class Normalizer {
         }
       }
     } else {
-      // Real tools (web_search, web_fetch, …): coalesce start(args)+result(result)
-      // into ONE `completed`/`error` event carrying input+output, so the thread
-      // renders a single clean card per tool. (Live v2026.5.19 emits these as
-      // `agent` `stream:"tool"` with phase start|result — see OPENCLAW fixtures.)
+      // Real tools (web_search, web_fetch, …): the start(args) and the
+      // result(result) share the provider toolCallId, which is Convex's addPart
+      // UPSERT key — so emitting the start yields a LIVE "running" card that the
+      // completed then patches in place (still one card per tool; the historical
+      // coalescing survives as the defensive path when the frame carries no id).
+      // The start also anchors the card's textOffset at its true position in
+      // the narrative flow (the completed would anchor too late).
       if (phase === "start") {
-        if (toolCallId) this.toolArgs.set(toolCallId, data.args);
-        // Do not emit yet — the card is emitted once on the result.
+        if (toolCallId) {
+          this.toolArgs.set(toolCallId, data.args);
+          events.push({
+            type: EVENT_TOOL_STATUS,
+            name: name ?? null,
+            phase: "start",
+            toolCallId,
+            input: data.args ?? undefined,
+            runId: this.currentRunId,
+          });
+        }
+        // No toolCallId: keep the coalesced single-card behavior (no orphan).
       } else {
         const input =
           toolCallId && this.toolArgs.has(toolCallId)
@@ -1153,6 +1174,7 @@ export class Normalizer {
           type: EVENT_TOOL_STATUS,
           name: name ?? null,
           phase: errored ? "error" : "completed",
+          ...(toolCallId ? { toolCallId } : {}),
           input: input ?? undefined,
           output: data.result ?? undefined,
           runId: this.currentRunId,
@@ -1441,7 +1463,8 @@ export class Normalizer {
       // auto-retry keys on (only ever fired for a ZERO-content turn there).
       errorKind = CONTEXT_OVERFLOW_TEXT_RE.test(error)
         ? "context_length"
-        : SESSION_INIT_CONFLICT_RE.test(error)
+        : SESSION_INIT_CONFLICT_RE.test(error) ||
+            EMBEDDED_LOCK_CONFLICT_RE.test(error)
           ? "session_init_conflict"
           : null;
     }

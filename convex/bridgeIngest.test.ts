@@ -11,7 +11,7 @@
 // part-free `mediaTrace` diagnostic.
 
 import { convexTest, type TestConvex } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test , vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -663,5 +663,263 @@ describe("bridge_ingest httpAction: upsertSubAgent dispatch", () => {
     );
     expect(res.status).toBe(401);
     expect(await subAgentsOf(t, chatId)).toHaveLength(0);
+  });
+});
+
+describe("addPart tool upsert (interleaved-run anchors)", () => {
+  // Lot B: a start and its completed share the provider toolCallId — ONE part
+  // row, phase/input/output fused, and the START's textOffset (the narrative
+  // anchor) preserved against the completed's later offset.
+  test("start then completed with the same toolCallId collapse into ONE row, anchor preserved", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    const r1 = await post(t, {
+      op: "addPart",
+      messageId,
+      part: {
+        kind: "tool",
+        name: "web_search",
+        phase: "start",
+        toolCallId: "t1",
+        textOffset: 10,
+        input: { q: "x" },
+      },
+    });
+    expect(r1.status).toBe(200);
+    const r2 = await post(t, {
+      op: "addPart",
+      messageId,
+      part: {
+        kind: "tool",
+        name: "web_search",
+        phase: "completed",
+        toolCallId: "t1",
+        textOffset: 50,
+        input: { q: "x" },
+        output: { hits: 3 },
+      },
+    });
+    expect(r2.status).toBe(200);
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    const part = rows[0]!.part;
+    expect(part).toMatchObject({
+      kind: "tool",
+      name: "web_search",
+      phase: "completed",
+      toolCallId: "t1",
+      textOffset: 10, // the START's anchor wins — the card never moves
+      output: { hits: 3 },
+    });
+  });
+
+  test("parts WITHOUT a toolCallId keep the append-only path (two rows)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    for (const phase of ["start", "completed"]) {
+      await post(t, {
+        op: "addPart",
+        messageId,
+        part: { kind: "tool", name: "message", phase },
+      });
+    }
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  test("distinct toolCallIds never fuse (two concurrent tools, two cards)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    for (const id of ["t1", "t2"]) {
+      await post(t, {
+        op: "addPart",
+        messageId,
+        part: {
+          kind: "tool",
+          name: "exec",
+          phase: "start",
+          toolCallId: id,
+          textOffset: 0,
+        },
+      });
+    }
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe("sweepStreams (bridge boot-time orphan sweep)", () => {
+  test("a STALE stream of the calling instance is closed; fresh and foreign ones survive", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      // Stale row of THIS instance (bound stamp) — must be swept.
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial answer",
+        boundInstance: "prod",
+        updatedAt: now - 400_000,
+      });
+    });
+    const res = await post(t, { op: "sweepStreams" });
+    expect(res.status).toBe(200);
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(messageId),
+      rows: await ctx.db.query("streamingText").collect(),
+    }));
+    expect(after.msg?.status).toBe("error");
+    expect(after.msg?.error).toBe("connection_lost");
+    expect(after.msg?.text).toBe("partial answer"); // preserved
+    expect(after.rows).toHaveLength(0);
+  });
+
+  test("sweeping a DOCUMENTARY chat's stream releases its pendingFetch lock (codex P1)", async () => {
+    // The sweep deletes the stream row — the watchdog can never see it later,
+    // so the specialized-chat job locks must be released HERE, like the
+    // watchdog path does.
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(chatId, {
+        kind: "documentary" as const,
+        pendingFetch: { sourceMessageId: messageId, createdAt: now - 500_000 },
+      });
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "",
+        boundInstance: "prod",
+        updatedAt: now - 400_000,
+      });
+    });
+    const res = await post(t, { op: "sweepStreams" });
+    expect(res.status).toBe(200);
+    const chat = await t.run((ctx) => ctx.db.get(chatId));
+    expect(chat?.pendingFetch).toBeUndefined(); // lock released, not stranded
+  });
+
+  test("sweeping a blocker DRAINS the queued follow-up behind it", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId, userId } = await seedAssistantMessage(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial",
+        boundInstance: "prod",
+        updatedAt: now - 400_000,
+      });
+      // A queued follow-up parked behind the (orphaned) in-flight turn.
+      await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "q1",
+        text: "queued follow-up",
+        attachmentIds: [],
+        status: "queued" as const,
+      });
+    });
+    await post(t, { op: "sweepStreams" });
+    const outbox = await t.run((ctx) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chatId).eq("status", "queued"),
+        )
+        .collect(),
+    );
+    expect(outbox).toHaveLength(0); // promoted by the drain, not stuck
+  });
+
+  test("a FRESH skip schedules ONE deferred re-run (orphan closed after the grace)", async () => {
+    // Fake timers from the START: convex-test arms its scheduler with real
+    // setTimeout otherwise, and a later vi.useFakeTimers cannot see it.
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "fresh orphan",
+        boundInstance: "prod",
+        updatedAt: Date.now() - 5_000, // within the grace at sweep time
+      });
+    });
+    await post(t, { op: "sweepStreams" });
+    // Still streaming right after the boot sweep (grace)…
+    let msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("streaming");
+    // …then the grace elapses (age the row instead of faking timers) and the
+    // deferred re-run closes it.
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .first();
+      if (row) await ctx.db.patch(row._id, { updatedAt: Date.now() - 400_000 });
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
+    msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("error");
+    expect(msg?.error).toBe("connection_lost");
+  });
+
+  test("a FRESH row (rolling-restart overlap) is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "live",
+        boundInstance: "prod",
+        updatedAt: Date.now(), // fresh
+      });
+    });
+    await post(t, { op: "sweepStreams" });
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(messageId),
+      rows: await ctx.db.query("streamingText").collect(),
+    }));
+    expect(after.msg?.status).toBe("streaming");
+    expect(after.rows).toHaveLength(1);
+  });
+
+  test("ANOTHER instance's stale stream is untouched (per-bridge scope)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "other's turn",
+        boundInstance: "someone-else",
+        updatedAt: Date.now() - 400_000,
+      });
+    });
+    await post(t, { op: "sweepStreams" });
+    const after = await t.run((ctx) => ctx.db.get(messageId));
+    expect(after?.status).toBe("streaming"); // not ours to sweep
   });
 });

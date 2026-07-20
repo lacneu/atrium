@@ -153,6 +153,33 @@ export class HermesNormalizer {
   private text = "";
   // Real tools already surfaced from tool.progress deltas (one start per tool).
   private seenProgressTools = new Set<string>();
+  // Synthetic tool-call ids (Hermes frames carry none): per-name FIFO of open
+  // ids so a started and its completed pair up — Convex's addPart upserts on
+  // the id, collapsing the pair into ONE card (previously two stacked parts).
+  // `fromProgress` marks an id minted by a tool.progress frame: a follow-up
+  // tool.started for the same name CONFIRMS that call (reuse, no double
+  // start), while a second tool.started is a CONCURRENT same-name call and
+  // mints its own id (codex P2 — reusing would fuse two calls into one card).
+  private openTools = new Map<
+    string,
+    Array<{ id: string; fromProgress: boolean }>
+  >();
+  private toolSeq = 0;
+
+  private openToolId(name: string, fromProgress: boolean): string {
+    const id = `h:${name}:${this.toolSeq++}`;
+    const queue = this.openTools.get(name) ?? [];
+    queue.push({ id, fromProgress });
+    this.openTools.set(name, queue);
+    return id;
+  }
+
+  private closeToolId(name: string): string | undefined {
+    const queue = this.openTools.get(name);
+    const entry = queue?.shift();
+    if (queue !== undefined && queue.length === 0) this.openTools.delete(name);
+    return entry?.id;
+  }
   private finalized = false;
   constructor(ackRunId: string | null = null) {
     this.runId = ackRunId;
@@ -230,26 +257,57 @@ export class HermesNormalizer {
       if (!name || name.startsWith("_")) return [];
       if (this.seenProgressTools.has(name)) return [];
       this.seenProgressTools.add(name);
-      return [
-        { type: EVENT_TOOL_STATUS, name, phase: "start", runId: this.runId },
-      ];
-    }
-    if (nameIn(HERMES_EVENT_NAMES.toolStarted, ev)) {
+      // Anti double-start: a started frame may follow for the same tool — only
+      // mint an id here when none is open for this name yet.
+      if (this.openTools.has(name)) return [];
       return [
         {
           type: EVENT_TOOL_STATUS,
-          name: toolName(data),
+          name,
           phase: "start",
+          toolCallId: this.openToolId(name, true),
+          runId: this.runId,
+        },
+      ];
+    }
+    if (nameIn(HERMES_EVENT_NAMES.toolStarted, ev)) {
+      const name = toolName(data);
+      let toolCallId: string | undefined;
+      if (name !== null) {
+        // A progress frame may have opened this call already: CONFIRM that id
+        // (reuse once). Any other started of the same name is a CONCURRENT
+        // call and mints its own id — the FIFO pairs completions in order.
+        const pending = this.openTools
+          .get(name)
+          ?.find((e) => e.fromProgress);
+        if (pending !== undefined) {
+          pending.fromProgress = false;
+          toolCallId = pending.id;
+        } else {
+          toolCallId = this.openToolId(name, false);
+        }
+      }
+      return [
+        {
+          type: EVENT_TOOL_STATUS,
+          name,
+          phase: "start",
+          ...(toolCallId !== undefined ? { toolCallId } : {}),
           runId: this.runId,
         },
       ];
     }
     if (nameIn(HERMES_EVENT_NAMES.toolCompleted, ev)) {
+      const name = toolName(data);
+      const id = name !== null ? this.closeToolId(name) : undefined;
       return [
         {
           type: EVENT_TOOL_STATUS,
-          name: toolName(data),
+          name,
           phase: "completed",
+          // No open start for this name (completed-only wire): omit the id —
+          // the append-only legacy path renders it as before.
+          ...(id !== undefined ? { toolCallId: id } : {}),
           runId: this.runId,
         },
       ];

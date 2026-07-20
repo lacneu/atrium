@@ -190,18 +190,52 @@ export function runHermesWsTurn(
     let moaAggregatorKey: string | null = null;
     // Tools whose start was seen but no complete yet — settled turns flush
     // them to "completed" so a lost completion event can never leave an
-    // eternal spinner in the UI.
-    const openTools = new Set<string>();
+    // eternal spinner in the UI. Synthetic per-name FIFO ids (same contract as
+    // HermesNormalizer) so a start and its complete carry the SAME toolCallId
+    // — Convex's addPart upsert collapses the pair into ONE card (codex P2:
+    // this transport bypasses the normalizer and was still stacking pairs).
+    const openTools = new Map<string, string[]>();
+    let toolSeq = 0;
+    // Live WS frames carry a NATIVE tool_id on both tool.generating and
+    // tool.complete (ws-tools capture): use it as the stable pair key —
+    // concurrent same-name calls completing out of start order still pair
+    // correctly (codex P2). The per-name FIFO is the fallback for frames
+    // without one (and feeds the settled-turn flush).
+    const openToolId = (name: string, nativeId?: string): string => {
+      const id = nativeId ? `hws:${nativeId}` : `hws:${name}:${toolSeq++}`;
+      const queue = openTools.get(name) ?? [];
+      queue.push(id);
+      openTools.set(name, queue);
+      return id;
+    };
+    const closeToolId = (name: string, nativeId?: string): string | undefined => {
+      const queue = openTools.get(name);
+      let id: string | undefined;
+      if (nativeId) {
+        const want = `hws:${nativeId}`;
+        const i = queue?.indexOf(want) ?? -1;
+        // Even an UNSEEN native id (lost start) pairs stably — the upsert
+        // just inserts a single completed card under that id.
+        id = i >= 0 ? queue!.splice(i, 1)[0] : want;
+      } else {
+        id = queue?.shift();
+      }
+      if (queue !== undefined && queue.length === 0) openTools.delete(name);
+      return id;
+    };
     const closeOpenTools = (): void => {
-      for (const name of openTools) {
-        apply([
-          {
-            type: EVENT_TOOL_STATUS,
-            name,
-            phase: "completed",
-            runId: runtimeSid,
-          },
-        ]);
+      for (const [name, ids] of openTools) {
+        for (const id of ids) {
+          apply([
+            {
+              type: EVENT_TOOL_STATUS,
+              name,
+              phase: "completed",
+              toolCallId: id,
+              runId: runtimeSid,
+            },
+          ]);
+        }
       }
       openTools.clear();
     };
@@ -246,6 +280,22 @@ export function runHermesWsTurn(
       settle();
     };
 
+    // Open Hermes sub-agents of THIS turn: the parent phase must stay
+    // awaiting_subagents until the LAST child settles (codex P2 — Hermes emits
+    // a per-child complete, and clearing on the first would drop the chip
+    // while siblings still run).
+    const openChildren = new Set<string>();
+    // setPhase is fire-and-forget on the writer (doPost, OUTSIDE the per-message
+    // op chain): two quick calls could reorder on the wire and apply the
+    // clearing "generating" BEFORE the "awaiting_subagents" it must erase,
+    // wedging the chip (codex P2). Serialize them through a local chain.
+    let phaseChain: Promise<unknown> = Promise.resolve();
+    const setPhaseOrdered = (mid: string, phase: string): void => {
+      // setPhase RETURNS its HTTP promise (writer contract) — awaiting it in
+      // the chain is what actually orders the wire writes.
+      const call = () => Promise.resolve(opts.writer.setPhase?.(mid, phase));
+      phaseChain = phaseChain.then(call, call);
+    };
     const onEvent = (type: string, payload: Record<string, unknown>): void => {
       // Monitoring events (delegation / MoA) OUTLIVE the parent turn: a child
       // often completes AFTER the parent's message.complete (live-observed
@@ -363,11 +413,15 @@ export function runHermesWsTurn(
           void opts.writer
             .upsertSubAgent?.(record)
             ?.catch(() => {/* monitor is best-effort */});
-          // Parent phase: awaiting while children work, generating on complete.
+          // Parent phase: awaiting while ANY child works; the resume signal
+          // ("generating" — Convex clears the stored phase) only when the LAST
+          // open child settles.
+          if (type === "subagent.complete") openChildren.delete(child);
+          else openChildren.add(child);
           if (mid) {
-            opts.writer.setPhase?.(
+            setPhaseOrdered(
               mid,
-              type === "subagent.complete" ? "generating" : "awaiting_subagents",
+              openChildren.size === 0 ? "generating" : "awaiting_subagents",
             );
           }
           return;
@@ -412,6 +466,7 @@ export function runHermesWsTurn(
               type: EVENT_TOOL_STATUS,
               name: "mixture_of_agents",
               phase: "start",
+              toolCallId: openToolId("mixture_of_agents"),
               runId: runtimeSid,
             },
           ]);
@@ -437,20 +492,26 @@ export function runHermesWsTurn(
           // args/result stay gateway-side — same content-hygiene rule as the
           // OpenClaw tool feed).
           const name = str(payload.name) || "tool";
-          openTools.add(name);
           apply([
-            { type: EVENT_TOOL_STATUS, name, phase: "start", runId: runtimeSid },
+            {
+              type: EVENT_TOOL_STATUS,
+              name,
+              phase: "start",
+              toolCallId: openToolId(name, str(payload.tool_id) || undefined),
+              runId: runtimeSid,
+            },
           ]);
           return;
         }
         case "tool.complete": {
           const name = str(payload.name) || "tool";
-          openTools.delete(name);
+          const id = closeToolId(name, str(payload.tool_id) || undefined);
           apply([
             {
               type: EVENT_TOOL_STATUS,
               name,
               phase: "completed",
+              ...(id !== undefined ? { toolCallId: id } : {}),
               runId: runtimeSid,
             },
           ]);
@@ -482,11 +543,13 @@ export function runHermesWsTurn(
           finalized = true;
           // The MoA aggregator (if any) finished with the reply it produced.
           if (moaAggregatorKey) {
+            const moaId = closeToolId("mixture_of_agents");
             apply([
               {
                 type: EVENT_TOOL_STATUS,
                 name: "mixture_of_agents",
                 phase: "completed",
+                ...(moaId !== undefined ? { toolCallId: moaId } : {}),
                 runId: runtimeSid,
               },
             ]);

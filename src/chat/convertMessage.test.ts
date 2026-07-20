@@ -192,3 +192,100 @@ describe("displayFilename (strip the gateway media-id suffix)", () => {
     expect(displayFilename("")).toBe("");
   });
 });
+
+describe("convertConvexMessage interleaved flow (anchored tool parts, lot C)", () => {
+  const TEXT = "Premier paragraphe.\n\nSecond paragraphe.";
+
+  it("anchored parts interleave __turn_flow__ groups at their snapped position", () => {
+    const message = makeMessage({
+      text: TEXT,
+      parts: [
+        toolPart("exec", {
+          phase: "completed",
+          toolCallId: "t1",
+          textOffset: 21, // the paragraph boundary (exact-cut model)
+        }),
+      ],
+    });
+    const converted = convertConvexMessage(message);
+    const content = converted.content as ReadonlyArray<{
+      type: string;
+      text?: string;
+      toolName?: string;
+      args?: { parts?: ToolActivityPart[] };
+    }>;
+    expect(content.map((c) => c.type)).toEqual(["text", "tool-call", "text"]);
+    expect(content[0]!.text).toBe("Premier paragraphe.\n\n");
+    expect(content[1]!.toolName).toBe("__turn_flow__");
+    expect(content[1]!.args?.parts?.[0]).toMatchObject({
+      toolName: "exec",
+      toolCallId: "t1", // the PROVIDER id survives (stable across the upsert)
+    });
+    expect(content[2]!.text).toBe("Second paragraphe.");
+    // Anchored parts are NOT in the legacy grouped metadata (no double render).
+    expect(customMeta(message).toolParts).toEqual([]);
+  });
+
+  it("UN-anchored parts keep the legacy grouped path (history unchanged)", () => {
+    const message = makeMessage({
+      text: TEXT,
+      parts: [toolPart("exec", { phase: "completed" })],
+    });
+    expect(contentTypes(message)).toEqual(["text"]);
+    const meta = customMeta(message);
+    expect((meta.toolParts as ToolActivityPart[])).toHaveLength(1);
+  });
+
+  it("MIXED anchored + legacy parts: each takes its own path", () => {
+    const message = makeMessage({
+      text: TEXT,
+      parts: [
+        toolPart("exec", { phase: "completed" }), // legacy
+        toolPart("read", {
+          phase: "completed",
+          toolCallId: "t2",
+          textOffset: 0,
+        }), // anchored, before any text
+      ],
+    });
+    const converted = convertConvexMessage(message);
+    const types = (converted.content as ReadonlyArray<{ type: string }>).map(
+      (c) => c.type,
+    );
+    expect(types).toEqual(["tool-call", "text"]);
+    expect(
+      (customMeta(message).toolParts as ToolActivityPart[]).map(
+        (t) => t.toolName,
+      ),
+    ).toEqual(["exec"]);
+  });
+
+  it("activeToolName sees BOTH lists (a live anchored tool drives the chip)", () => {
+    const message = makeMessage({
+      status: "streaming",
+      text: TEXT,
+      parts: [
+        toolPart("web_search", {
+          phase: "start",
+          toolCallId: "t3",
+          textOffset: 0,
+        }),
+      ],
+    });
+    expect(customMeta(message).activeToolName).toBe("web_search");
+  });
+
+  it("a settled turn has a null activeToolName", () => {
+    const message = makeMessage({
+      text: TEXT,
+      parts: [
+        toolPart("web_search", {
+          phase: "completed",
+          toolCallId: "t3",
+          textOffset: 0,
+        }),
+      ],
+    });
+    expect(customMeta(message).activeToolName).toBeNull();
+  });
+});

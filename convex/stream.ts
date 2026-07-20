@@ -742,7 +742,12 @@ export const setPhase = internalMutation({
     ...boundArg,
   },
   handler: async (ctx, { messageId, phase, expectedRunId, boundInstanceName }) => {
-    if (!TURN_PHASES.has(phase)) return; // unknown value: ignore, never throw
+    // "generating" is Hermes' RESUME signal (sub-agents settled, the model is
+    // producing again) — it is not a phase but the END of one: CLEAR the stored
+    // phase, else "awaiting_subagents" sticks on the chip after the children
+    // return (it was silently dropped before, leaving the stale label).
+    const clearing = phase === "generating";
+    if (!clearing && !TURN_PHASES.has(phase)) return; // unknown: ignore, never throw
     const row = await streamingRow(ctx, messageId);
     // No live row (turn not open yet, or already finished): drop — the phase is
     // a live-only hint, never worth resurrecting a row the finalize GC'd.
@@ -760,7 +765,10 @@ export const setPhase = internalMutation({
     // querying_gateway is the bridge's own doubt about a silent turn — bumping
     // the watchdog there would let a bridge death during the recovery leave the
     // stream stuck ~12 extra minutes (codex P2).
-    if (phase === "querying_gateway") {
+    if (clearing) {
+      // Resume signal: real gateway activity — clear the phase AND heartbeat.
+      await ctx.db.patch(row._id, { phase: undefined, updatedAt: Date.now() });
+    } else if (phase === "querying_gateway") {
       await ctx.db.patch(row._id, { phase });
     } else {
       await ctx.db.patch(row._id, { phase, updatedAt: Date.now() });
@@ -1178,12 +1186,39 @@ export const addPart = internalMutation({
         return;
       }
     }
-    const order = existing.length;
     const announceRun = replayArmed
       ? (message.announceReplayRun ?? message.runId)
       : message.runId !== undefined && deliveryChildKey(message.runId) !== null
         ? message.runId
         : undefined;
+    // TOOL-PART UPSERT: a start and its completed/error share the provider's
+    // toolCallId — patch the existing row (fusing phase/input/output) instead
+    // of stacking a second card. The ORIGINAL textOffset is preserved: the
+    // start's position anchors the card in the narrative flow; the completed
+    // (arriving after more text streamed) must not move it. Provenance-scoped
+    // (same announceRun stamp) so an announce replay can never fuse into a
+    // prior generation's part. Parts without a toolCallId (legacy bridges,
+    // the `message` pseudo-tool) keep the append-only path.
+    if (part.kind === "tool" && part.toolCallId !== undefined) {
+      const row = existing.find(
+        (e) =>
+          e.part.kind === "tool" &&
+          e.part.toolCallId === part.toolCallId &&
+          (e.announceRun ?? null) === (announceRun ?? null),
+      );
+      if (row !== undefined && row.part.kind === "tool") {
+        await ctx.db.patch(row._id, {
+          part: {
+            ...row.part,
+            ...part,
+            textOffset: row.part.textOffset ?? part.textOffset,
+          },
+        });
+        await ctx.db.patch(messageId, { updatedAt: Date.now() });
+        return;
+      }
+    }
+    const order = existing.length;
     await ctx.db.insert("messageParts", {
       messageId,
       order,
@@ -1499,15 +1534,24 @@ export const finalize = internalMutation({
     // terminate it (codex P1 — a bound C finalizing B's active stream).
     if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
     const streamedText = stRow?.text ?? message.liveText ?? message.text;
+    const prefix = message.announcePrefix ?? "";
     // Announce merge: the run's final frame carries ONLY the announce text —
-    // recompose behind the parked parent reply (the streamed row is already
-    // prefixed, so the fallback needs no recomposition).
+    // recompose behind the parked parent reply. The FALLBACK path (no final
+    // text: a preempted or swept merge) must honor the parked prefix too: the
+    // reopen seeds the stream row with it, but a SNAPSHOT frame replaces the
+    // row text — closing with the bare snapshot would overwrite the already
+    // delivered reply (live 2026-07-19: a replayed announce, preempted
+    // mid-stream, shrank a full report to its replayed head).
     const finalText =
       text !== undefined && text !== ""
-        ? message.announcePrefix !== undefined && message.announcePrefix !== ""
-          ? message.announcePrefix + ANNOUNCE_SEP + text
+        ? prefix !== ""
+          ? prefix + ANNOUNCE_SEP + text
           : text
-        : streamedText;
+        : prefix === "" || streamedText.startsWith(prefix)
+          ? streamedText // no merge, or the row still carries the seeded prefix
+          : streamedText === "" || prefix.startsWith(streamedText)
+            ? prefix // replayed head of the parked reply (nothing new): keep the reply
+            : prefix + ANNOUNCE_SEP + streamedText; // genuinely new partial content
     await ctx.db.patch(messageId, {
       status,
       text: finalText,

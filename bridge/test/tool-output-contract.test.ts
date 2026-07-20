@@ -56,14 +56,24 @@ describe("tool-output transport contract (per OpenClaw version)", () => {
   for (const version of versions) {
     it(`${version}: bash result is the envelope ONLY (no stdout transported)`, () => {
       const events = feedAll(FIXTURE.versions[version]!);
-      const tool = events.find(
+      const bashEvents = events.filter(
         (e) =>
           e.type === "tool.status" &&
           (e as { name?: unknown }).name === "bash",
-      ) as { name: string; phase: string; output?: unknown } | undefined;
-      expect(tool, "a bash tool.status event must be emitted").toBeDefined();
-      // start(args) + result(result) coalesce into ONE completed event.
-      expect(tool!.phase).toBe("completed");
+      ) as unknown as Array<{
+        name: string;
+        phase: string;
+        toolCallId?: string;
+        output?: unknown;
+      }>;
+      // start + completed now both surface (same toolCallId, Convex upserts
+      // them into one card); the OUTPUT contract lives on the completed.
+      const tool = bashEvents.find((e) => e.phase === "completed");
+      expect(tool, "a bash completed tool.status must be emitted").toBeDefined();
+      const start = bashEvents.find((e) => e.phase === "start");
+      if (start !== undefined) {
+        expect(start.toolCallId).toBe(tool!.toolCallId);
+      }
 
       const output = tool!.output as Record<string, unknown>;
       // The exact envelope the gateway sends -- and nothing more.

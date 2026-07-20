@@ -32,6 +32,7 @@ interface RunMeta {
   errorCode?: string | null;
   phase?: string | null;
   toolParts?: Array<{ toolName: string; phase?: string }>;
+  activeToolName?: string | null;
 }
 
 export function RunStatus() {
@@ -52,14 +53,18 @@ export function RunStatus() {
   const phase = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.phase,
   );
-  // The RUNNING tool (from the live tool parts): the most specific "what is
-  // happening now" — beats the coarse phase. Selected as a SCALAR (name or
-  // null) so token deltas don't re-render this chip on a fresh object.
-  const activeToolName = useMessage(
-    (m) =>
-      activeToolFromParts((m.metadata?.custom as RunMeta | undefined)?.toolParts)
-        ?.name ?? null,
-  );
+  // The RUNNING tool: convertMessage pre-computes it across ALL tool parts
+  // (anchored inline + legacy grouped — neither list alone sees every part
+  // since the lot-C split). Fallback to the legacy toolParts derivation for a
+  // conversion predating the field. Scalar selector: no re-render per delta.
+  const activeToolName = useMessage((m) => {
+    const meta = m.metadata?.custom as RunMeta | undefined;
+    return (
+      meta?.activeToolName ??
+      activeToolFromParts(meta?.toolParts)?.name ??
+      null
+    );
+  });
   const activeTool =
     activeToolName !== null
       ? { name: activeToolName, family: toolFamily(activeToolName) }

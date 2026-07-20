@@ -171,6 +171,7 @@ type IngestOp =
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
   | { op: "calibrate" }
+  | { op: "sweepStreams" }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -537,6 +538,17 @@ export const ingest = httpAction(async (ctx, request) => {
 
   try {
   switch (body.op) {
+    case "sweepStreams": {
+      // BOOT-TIME orphan sweep: the calling bridge just (re)started, so no run
+      // of ITS instance is in flight — close every stale live row bound to it
+      // (see stuckStreams.sweepInstanceStreams). Scoped to the PROVEN identity;
+      // no self-asserted target, so no boundary check beyond auth.
+      const res = await ctx.runMutation(
+        internal.stuckStreams.sweepInstanceStreams,
+        { instanceName: boundInstanceName },
+      );
+      return json({ ok: true, swept: res.swept });
+    }
     case "calibrate":
       // Lightweight clock reference for the delivery recorder (NO writes): serverNow is
       // the entry timestamp, so the bridge's measured round-trip excludes server work

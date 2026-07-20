@@ -815,6 +815,61 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     expect(denied.status).toBe(403);
   });
 
+  test("the tool-upsert PATCH path enforces the per-bridge barrier (cross-instance completed refused)", async () => {
+    // A starts its tool part (own message, ok); B — another instance — replays
+    // the SAME toolCallId completed at the boundary-passing chat level: the
+    // ATOMIC message stamp must refuse before the patch fuses B's output into
+    // A's card.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "bravo");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(a.messageId, { boundInstance: "alpha" });
+    });
+    const ok = await post(
+      t,
+      {
+        op: "addPart",
+        messageId: a.messageId,
+        part: {
+          kind: "tool",
+          name: "exec",
+          phase: "start",
+          toolCallId: "t1",
+          textOffset: 0,
+        },
+      },
+      a.secret,
+    );
+    expect(ok.status).toBe(200);
+    const denied = await post(
+      t,
+      {
+        op: "addPart",
+        messageId: a.messageId,
+        part: {
+          kind: "tool",
+          name: "exec",
+          phase: "completed",
+          toolCallId: "t1",
+          output: { hijacked: true },
+        },
+      },
+      b.secret,
+    );
+    expect(denied.status).toBe(403);
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", a.messageId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    const part = rows[0]!.part;
+    expect(part.kind === "tool" && part.phase).toBe("start"); // untouched
+  });
+
   test("per-turn re-validation (all-pool): an instance whose only present agent is DISABLED is not proof", async () => {
     // Groupless, grantless owner (all-pool semantics). Bravo's ONLY present
     // discovered agent is explicitly disabled — getEffectiveGrants excludes it,

@@ -137,7 +137,15 @@ describe("Hermes normalizer — SUCCESS path (live capture 2026-07-06, fixture)"
     const n = new HermesNormalizer("r");
     const a = n.feed({ event: "tool.progress", data: '{"tool_name":"terminal","delta":"ls"}' });
     const b = n.feed({ event: "tool.progress", data: '{"tool_name":"terminal","delta":" -la"}' });
-    expect(a).toEqual([{ type: "tool.status", name: "terminal", phase: "start", runId: "r" }]);
+    expect(a).toEqual([
+      {
+        type: "tool.status",
+        name: "terminal",
+        phase: "start",
+        toolCallId: "h:terminal:0",
+        runId: "r",
+      },
+    ]);
     expect(b).toEqual([]);
   });
 });
@@ -182,8 +190,52 @@ describe("Hermes normalizer — success path (structure; names pruned live)", ()
     const n = new HermesNormalizer("r");
     const started = n.feed({ event: "tool.started", data: '{"tool":"terminal"}' });
     const done = n.feed({ event: "tool.completed", data: '{"tool":"terminal"}' });
-    expect(started).toEqual([{ type: "tool.status", name: "terminal", phase: "start", runId: "r" }]);
-    expect(done).toEqual([{ type: "tool.status", name: "terminal", phase: "completed", runId: "r" }]);
+    // Synthetic ids pair the started with its completed — Convex's addPart
+    // upsert key, collapsing the pair into ONE card (was two stacked parts).
+    expect(started).toEqual([
+      {
+        type: "tool.status",
+        name: "terminal",
+        phase: "start",
+        toolCallId: "h:terminal:0",
+        runId: "r",
+      },
+    ]);
+    expect(done).toEqual([
+      {
+        type: "tool.status",
+        name: "terminal",
+        phase: "completed",
+        toolCallId: "h:terminal:0",
+        runId: "r",
+      },
+    ]);
+  });
+
+  it("CONCURRENT same-name tools get DISTINCT ids; completions pair FIFO (codex P2)", () => {
+    const n = new HermesNormalizer("r");
+    const s1 = n.feed({ event: "tool.started", data: '{"tool":"terminal"}' });
+    const s2 = n.feed({ event: "tool.started", data: '{"tool":"terminal"}' });
+    const c1 = n.feed({ event: "tool.completed", data: '{"tool":"terminal"}' });
+    const c2 = n.feed({ event: "tool.completed", data: '{"tool":"terminal"}' });
+    const id = (e: unknown[]) =>
+      (e[0] as { toolCallId?: string } | undefined)?.toolCallId;
+    expect(id(s1)).toBe("h:terminal:0");
+    expect(id(s2)).toBe("h:terminal:1"); // NOT fused into the first call
+    expect(id(c1)).toBe("h:terminal:0"); // FIFO pairing
+    expect(id(c2)).toBe("h:terminal:1");
+  });
+
+  it("a started CONFIRMING a progress-opened call reuses its id (no double start)", () => {
+    const n = new HermesNormalizer("r");
+    const p1 = n.feed({ event: "tool.progress", data: '{"tool_name":"terminal","delta":"x"}' });
+    const s1 = n.feed({ event: "tool.started", data: '{"tool":"terminal"}' });
+    const c1 = n.feed({ event: "tool.completed", data: '{"tool":"terminal"}' });
+    const id = (e: unknown[]) =>
+      (e[0] as { toolCallId?: string } | undefined)?.toolCallId;
+    expect(id(p1)).toBe("h:terminal:0");
+    expect(id(s1)).toBe("h:terminal:0"); // confirmation, same call
+    expect(id(c1)).toBe("h:terminal:0");
   });
 
   it("an UNKNOWN frame name is ignored, never a terminal (forward-compat)", () => {

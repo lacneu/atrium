@@ -39,6 +39,15 @@ export const messagePart = v.union(
     phase: v.string(),
     input: v.optional(v.any()),
     output: v.optional(v.any()),
+    // Provider tool-call id (OpenClaw native; Hermes synthetic) — the addPart
+    // UPSERT key, so a start and its completed collapse into ONE part. Absent
+    // on legacy parts and the `message` pseudo-tool (append-only path).
+    toolCallId: v.optional(v.string()),
+    // UTF-16 offset into the message's visible text at the moment the sink
+    // emitted this part — anchors the tool inside the narrative flow (the
+    // ChatGPT-style interleaved rendering). Absent = un-anchored (legacy /
+    // delivery runs) -> grouped-block rendering.
+    textOffset: v.optional(v.number()),
   }),
   v.object({
     kind: v.literal("media"),
@@ -1561,7 +1570,10 @@ export default defineSchema({
     .index("by_user", ["userId"])
     // The stuck-stream watchdog ranges by heartbeat (updatedAt < cutoff) — every
     // row here is by definition a streaming message, so no status column is needed.
-    .index("by_updated", ["updatedAt"]),
+    .index("by_updated", ["updatedAt"])
+    // Boot-time sweep: bounded per-instance scan (legacy rows without the
+    // stamp are read via eq(undefined) — never a full-table collect).
+    .index("by_bound_instance", ["boundInstance"]),
 
   // Append-only per-message log of streamed text chunks, for the SSE / streamable-HTTP
   // transport (openclaw-notes/docs/atrium/convex-http-streaming-transport.md). One row per stream

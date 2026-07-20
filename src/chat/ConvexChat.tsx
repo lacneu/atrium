@@ -178,6 +178,8 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { TurnClock } from "./TurnClock";
+import { InlineTurnActivity } from "./InlineTurnActivity";
+import { QueuedDock } from "./QueuedDock";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import {
@@ -350,6 +352,19 @@ const QueueSendContext = createContext<
   ((text: string) => Promise<boolean>) | null
 >(null);
 
+// Codex-style QUEUE DOCK: the mid-turn messages parked in the outbox, surfaced
+// as editable/cancellable cards above the composer (QueuedDock.tsx consumes).
+export interface QueuedTurnView {
+  messageId: string;
+  text: string;
+  pending: boolean;
+}
+export interface QueueDockValue {
+  queuedTurns: QueuedTurnView[];
+  cancelQueued: (messageId: string) => Promise<boolean>;
+}
+export const QueueDockContext = createContext<QueueDockValue | null>(null);
+
 // STOP button context: ends the chat's active turn (optimistic finalize) and
 // best-effort kills the gateway run. Null when no chat is mounted.
 const AbortTurnContext = createContext<(() => Promise<void>) | null>(null);
@@ -408,6 +423,8 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     abortTurn,
     routing,
     lastUserTurnQueued,
+    queuedTurns,
+    cancelQueued,
     initialLoading,
   } =
     useConvexChatRuntime({
@@ -665,6 +682,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <ReadAloudContext.Provider value={readAloudState}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
+      <QueueDockContext.Provider value={{ queuedTurns, cancelQueued }}>
       <QuoteChatIdContext.Provider value={chatId}>
       <AbortTurnContext.Provider value={abortTurn}>
       <QueuedTurnContext.Provider value={lastUserTurnQueued}>
@@ -824,6 +842,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </QueuedTurnContext.Provider>
       </AbortTurnContext.Provider>
       </QuoteChatIdContext.Provider>
+      </QueueDockContext.Provider>
       </QueueSendContext.Provider>
       </TurnGateContext.Provider>
       </ReadAloudContext.Provider>
@@ -1300,6 +1319,10 @@ function ChatThread({
       ) : gatewayDegradedNext ? (
         <GatewayDegradedBanner />
       ) : null}
+      {/* Codex-style queue dock: the mid-turn messages parked in the outbox,
+          as editable/cancellable cards right above the composer (renders null
+          when nothing is queued). */}
+      <QueuedDock />
       <Composer
         chatId={chatId}
         chatTitle={chatTitleForDock}
@@ -1500,9 +1523,12 @@ function UsageBadge({ chatId }: { chatId: ConvexId<"chats"> }) {
       title={m.chat_usage_tooltip({ detail })}
     >
       <span className="oc-meter__track">
+        {/* Fill = REMAINING credit (ChatGPT's own reading), matching the
+            "{pct}% left" label — filling with usage while labeling remaining
+            made users read the bar as the opposite number. */}
         <span
           className="oc-meter__fill"
-          style={{ width: `${100 - view.percentLeft}%` }}
+          style={{ width: `${view.percentLeft}%` }}
         />
       </span>
       <span className="oc-meter__label">
@@ -2462,11 +2488,12 @@ function IconCheck() {
 
 // Component overrides for MessagePrimitive.Parts (assistant-ui 0.14):
 //   - file parts (media + attachments) -> MediaPart
-// Tool calls no longer flow through content (convertMessage diverts them to
-// metadata.custom.toolParts, rendered by ToolActivity above the body), so no
-// tools.Fallback mapping is needed. Typed loosely at this seam: our MediaPart
-// accepts the structural props assistant-ui passes; the exact exported
-// component types shifted in 0.14.
+//   - __turn_flow__ tool-call parts -> InlineTurnActivity (the interleaved
+//     activity groups convertMessage anchors between the narrative paragraphs;
+//     legacy un-anchored tool parts stay in metadata.custom.toolParts, rendered
+//     by the grouped ToolActivity above the body). Typed loosely at this seam:
+//     our components accept the structural props assistant-ui passes; the
+//     exact exported component types shifted in 0.14.
 //
 // Assistant turns ALSO override Text -> MarkdownText (GFM rendering). User and
 // system turns intentionally do NOT: a user's literal input must not be
@@ -2478,6 +2505,13 @@ const plainComponents = {
 const assistantComponents = {
   ...plainComponents,
   Text: MarkdownText,
+  // DESIGN DECISION (user, 2026-07-19 — revises the earlier always-visible
+  // plan): the Tools toggle gates the inline activity rows TOO. OFF = the
+  // clean view, narrative only (the working label under the bubble keeps the
+  // in-progress signal); ON = the ChatGPT-style interleaved activity.
+  tools: {
+    by_name: { __turn_flow__: InlineTurnActivity as never },
+  },
 };
 
 // User turn: a subtle, low-contrast bubble aligned right (Open WebUI style).
@@ -2602,8 +2636,14 @@ function MessageSource() {
   );
   const toolParts = useMessage(
     (m) =>
+      (
+        m.metadata?.custom as
+          | { allToolParts?: ToolActivityPart[]; toolParts?: ToolActivityPart[] }
+          | undefined
+      )?.allToolParts ??
       (m.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
-        ?.toolParts ?? EMPTY_TOOL_PARTS,
+        ?.toolParts ??
+      EMPTY_TOOL_PARTS,
   );
   const subAgents = useQuery(
     api.subAgents.listSubAgents,
@@ -2819,6 +2859,60 @@ function MessageAgentChip({
 // (which would defeat useMessage's memoization and churn re-renders).
 const EMPTY_TOOL_PARTS: ToolActivityPart[] = [];
 
+// Animated dashed ring of the waiting/composing pill: a STATIC ring of small
+// px-sized dots (the original dashed-border look) + a short accent block of 3
+// bold dashes that orbits it clockwise. Dash sizes are ABSOLUTE pixels —
+// pathLength units stretched the dots on a wide pill (user report) — so the
+// accent's dash pattern and travel distance come from the MEASURED perimeter:
+// the orbit loop wraps exactly on it (no jump), re-measured on resize.
+function AntsRing() {
+  const baseRef = useRef<SVGRectElement | null>(null);
+  const [perimeter, setPerimeter] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = baseRef.current;
+    if (!el) return;
+    const measure = () => {
+      let p = 0;
+      try {
+        p = el.getTotalLength();
+      } catch {
+        p = 0;
+      }
+      if (!p) {
+        const r = el.getBoundingClientRect();
+        p = 2 * (r.width + r.height);
+      }
+      if (p > 0) setPerimeter(Math.round(p));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el.ownerSVGElement ?? el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <svg className="oc-empty-answer__ants" aria-hidden>
+      <rect ref={baseRef} />
+      {perimeter !== null ? (
+        <rect
+          className="oc-ants-accent"
+          style={
+            {
+              // 3 dashes of the base cadence (3px dash / 3px gap), then one
+              // big gap covering the rest of the path.
+              strokeDasharray: `3 3 3 3 3 ${Math.max(perimeter - 15, 6)}`,
+              // Constant orbital SPEED whatever the pill size (~4ms per px),
+              // stepping one base period (6px) at a time — the chaser look.
+              animationDuration: `${Math.max(perimeter * 4, 800)}ms`,
+              animationTimingFunction: `steps(${Math.max(Math.round(perimeter / 6), 8)}, end)`,
+              "--oc-ants-p": `${perimeter}px`,
+            } as React.CSSProperties
+          }
+        />
+      ) : null}
+    </svg>
+  );
+}
+
 // The "empty bubble" guard (the headline sub-agent fix): when a SETTLED assistant
 // turn has NO visible answer — the delegated-and-waiting case where the parent
 // finalizes complete with empty text — render a clear, designed inline note RIGHT
@@ -2858,8 +2952,14 @@ function AssistantEmptyState({ show }: { show: boolean }) {
   );
   const toolParts = useMessage(
     (msg) =>
+      (
+        msg.metadata?.custom as
+          | { allToolParts?: ToolActivityPart[]; toolParts?: ToolActivityPart[] }
+          | undefined
+      )?.allToolParts ??
       (msg.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
-        ?.toolParts ?? EMPTY_TOOL_PARTS,
+        ?.toolParts ??
+      EMPTY_TOOL_PARTS,
   );
   // Owner-scoped + reactive. Convex dedupes this with the sub-agent monitor's
   // identical subscription, so every assistant row shares ONE network query; it
@@ -2875,13 +2975,44 @@ function AssistantEmptyState({ show }: { show: boolean }) {
       (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
   );
 
+  // Re-evaluate when a "composing" grace window elapses: the pure decision is
+  // time-dependent there (child done -> announce still expected) and nothing
+  // else re-renders this component at the deadline.
+  const [, bumpClock] = useState(0);
   const state = assistantEmptyState(
     { status, hasText, hasMedia },
     toolParts,
     subAgents ?? [],
     messageId,
   );
+  const recheckAt = state.kind === "composing" ? state.recheckAt : null;
+  useEffect(() => {
+    if (recheckAt === null) return;
+    const t = window.setTimeout(
+      () => bumpClock((n) => n + 1),
+      Math.max(recheckAt - Date.now(), 0) + 250,
+    );
+    return () => window.clearTimeout(t);
+  }, [recheckAt]);
   if (state.kind === "none") return null;
+
+  if (state.kind === "composing") {
+    // The child finished; the parent's merged reply is on its way. Same pill
+    // chrome as "waiting" — the orbiting ring signals live work — with a
+    // dedicated wording. Shown in BOTH views (the analysis card has no
+    // composing notion).
+    return (
+      <div className="oc-empty-answer oc-empty-answer--waiting" role="status">
+        <AntsRing />
+        <LoaderCircle size={15} className="oc-empty-answer__spin" aria-hidden />
+        <span className="oc-empty-answer__text">
+          {state.taskName
+            ? m.assistant_empty_composing_named({ task: state.taskName })
+            : m.assistant_empty_composing()}
+        </span>
+      </div>
+    );
+  }
 
   if (state.kind === "failed") {
     // In the ANALYSIS view the in-context sub-agent CARD owns the failure (its
@@ -2912,6 +3043,10 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     if (show) return null;
     return (
       <div className="oc-empty-answer oc-empty-answer--waiting" role="status">
+        {/* Animated dashed ring: the dots orbit the pill while the delegated
+            work runs. pathLength normalizes the perimeter so the dash pattern
+            marches seamlessly whatever the pill's size. */}
+        <AntsRing />
         <LoaderCircle size={15} className="oc-empty-answer__spin" aria-hidden />
         <span className="oc-empty-answer__text">
           {state.taskName
@@ -2980,8 +3115,14 @@ function AssistantMessage() {
   );
   const quoteToolParts = useMessage(
     (m) =>
+      (
+        m.metadata?.custom as
+          | { allToolParts?: ToolActivityPart[]; toolParts?: ToolActivityPart[] }
+          | undefined
+      )?.allToolParts ??
       (m.metadata?.custom as { toolParts?: ToolActivityPart[] } | undefined)
-        ?.toolParts ?? EMPTY_TOOL_PARTS,
+        ?.toolParts ??
+      EMPTY_TOOL_PARTS,
   );
   const quoteSubAgents = useQuery(
     api.subAgents.listSubAgents,
@@ -3138,13 +3279,15 @@ function AssistantMessage() {
           {/* Cron mutations are ALWAYS visible (like the compaction marker):
               the user must notice their prompt produced/changed scheduled
               jobs even in the clean view — that's conversation-level info,
-              not tool-call detail. */}
+              not tool-call detail. The PLAN block, however, is treatment
+              detail: Tools OFF = message-focused view (user decision,
+              2026-07-19 — revises the always-visible 0.55.0 choice). */}
           <div className="oc-msg__meta oc-msg__meta--cron">
-            <PlanActivity />
             <CronActivity />
           </div>
           {ui.showTools ? (
             <div className="oc-msg__meta">
+              <PlanActivity />
               <MessageSubAgents />
               <ToolActivity />
               <SourcesActivity />

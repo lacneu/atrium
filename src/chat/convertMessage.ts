@@ -14,6 +14,8 @@ import {
   type PlanPartView,
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
+import { buildTurnFlow, type AnchoredActivity } from "./turnFlowView";
+import { activeToolFromParts } from "./runStatusView";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
 import { m } from "@/paraglide/messages.js";
 
@@ -36,7 +38,11 @@ function omittedNote(bytes: number | undefined): string {
 //   - { type: "text", text }                         (assistant/user/system body)
 //   - { type: "file", mimeType, data: <url> }        (media + file parts)
 //
-// TOOL parts intentionally do NOT become content: they are extracted into
+// TOOL parts split on their ANCHOR: a part carrying `textOffset` (lot B
+// bridges) becomes an INLINE activity group content part (`tool-call`
+// __turn_flow__, rendered by InlineTurnActivity at its true position in the
+// narrative — the ChatGPT-style interleaved flow); a part WITHOUT an offset
+// (history, delivery/announce merges) keeps the legacy path: extracted into
 // `metadata.custom.toolParts` and rendered by the grouped ToolActivity block
 // at the top of the assistant message (summary line + collapsible ToolCards).
 //
@@ -65,7 +71,9 @@ function toolPartToActivity(
   part: Extract<ConvexMessagePartView, { kind: "tool" }>,
 ): ToolActivityPart {
   return {
-    toolCallId: toolCallId(message, order),
+    // Prefer the PROVIDER id (stable across the start->completed upsert patch);
+    // legacy parts keep the synthetic message+run+order key.
+    toolCallId: part.toolCallId ?? toolCallId(message, order),
     toolName: part.name,
     // Same structural fields ToolCard consumed when assistant-ui routed
     // tool-call content parts to it: `args` (parsed input), `result` (output).
@@ -131,6 +139,10 @@ export function convertConvexMessage(
 ): ThreadMessageLike {
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
+  const anchored: AnchoredActivity[] = [];
+  // COMPLETE activity list in TRUE part order (a mixed anchored/legacy message
+  // must not reorder — activeToolFromParts walks it backwards, codex P2).
+  const allToolParts: ToolActivityPart[] = [];
   const provenanceParts: ProvenancePartView[] = [];
   const cronParts: CronPartView[] = [];
   const planParts: PlanPartView[] = [];
@@ -153,7 +165,13 @@ export function convertConvexMessage(
         text: p.textOmitted ? omittedNote(p.textBytes) : (p.text ?? ""),
       } as ContentPart);
     } else if (isToolPart(p)) {
-      toolParts.push(toolPartToActivity(message, index, p));
+      const activity = toolPartToActivity(message, index, p);
+      allToolParts.push(activity);
+      if (p.textOffset !== undefined) {
+        anchored.push({ offset: p.textOffset, activity });
+      } else {
+        toolParts.push(activity);
+      }
     } else if (p.kind === "provenance") {
       provenanceParts.push(p);
     } else if (isCronPart(p)) {
@@ -165,9 +183,33 @@ export function convertConvexMessage(
     }
   });
 
-  // 2) Primary text body. `message.text` is the live-streamed/normalized text
-  //    (message.delta appends, message.snapshot replaces, message.final fixes).
-  if (message.text && message.text.length > 0) {
+  // 2) Primary body. Un-anchored history renders the plain text; anchored tool
+  //    parts interleave activity groups at their true position (buildTurnFlow
+  //    snaps cuts to paragraph boundaries — block indexes for bookmarks and
+  //    quote-reply stay stable). The group rides a `tool-call` content part
+  //    (the pre-metadata mechanism, re-purposed) rendered by InlineTurnActivity
+  //    via the __turn_flow__ tools mapping. Chronological order is preserved by
+  //    construction, so streaming still APPENDS at the bottom (the auto-scroll
+  //    invariant that motivated the old grouped block).
+  if (anchored.length > 0) {
+    buildTurnFlow(message.text ?? "", anchored, {
+      settled: message.status !== "streaming",
+    }).forEach((seg) => {
+      if (seg.kind === "text") {
+        content.push({ type: "text", text: seg.text });
+      } else {
+        content.push({
+          type: "tool-call",
+          // STABLE id: keyed by the group's FIXED cut (an index-based id
+          // changed as segments shifted mid-stream — the useClientLookup
+          // crash: assistant-ui lost the part it was tracking).
+          toolCallId: `flow:${message._id}:${seg.cut}`,
+          toolName: "__turn_flow__",
+          args: { parts: seg.parts },
+        } as ContentPart);
+      }
+    });
+  } else if (message.text && message.text.length > 0) {
     content.push({ type: "text", text: message.text });
   }
 
@@ -186,11 +228,33 @@ export function convertConvexMessage(
   if (content.length === 0) {
     content.push({ type: "text", text: "" });
   }
+  // EXPLICIT assistant status: without it, assistant-ui's getAutoStatus marks
+  // the LAST message "running" whenever the thread isRunning (isLast &&
+  // isRunning) — so a stale/mid-thread streaming turn (orphaned run, live
+  // announce) made the last COMPLETE bubble re-typewriter on every page load
+  // and re-render (user report: token-by-token replay after refresh).
+  const assistantStatus =
+    message.role !== "assistant"
+      ? undefined
+      : message.status === "streaming"
+        ? ({ type: "running" } as const)
+        : message.status === "complete"
+          ? ({ type: "complete", reason: "stop" } as const)
+          : message.status === "error"
+            ? ({
+                type: "incomplete",
+                reason: "error",
+                error: message.error ?? message.errorCode ?? "error",
+              } as const)
+            : message.status === "aborted"
+              ? ({ type: "incomplete", reason: "cancelled" } as const)
+              : undefined;
 
   return {
     id: message._id,
     role: message.role,
     createdAt: new Date(message.updatedAt ?? message._creationTime),
+    ...(assistantStatus !== undefined ? { status: assistantStatus } : {}),
     content,
     // Surface error text on the message so the Thread can style failed turns;
     // assistant-ui reads custom `metadata` for renderers that opt in.
@@ -234,12 +298,18 @@ export function convertConvexMessage(
         // Live processing phase (in-flight turns only) — thinking-placeholder
         // detail when Tools is ON.
         phase: message.phase ?? null,
-        // Tool invocations for this turn, in part order. Re-emitted on every
-        // conversion (useExternalStoreRuntime reconverts whenever the reactive
-        // listByChat result changes), so the ToolActivity summary counter and
-        // the expanded ToolCards stream live as the bridge appends/patches
-        // tool parts.
+        // UN-ANCHORED tool invocations (history / delivery merges), in part
+        // order — the legacy grouped ToolActivity block. Anchored parts render
+        // INLINE (content) and are excluded here (no double display).
         toolParts,
+        // The COMPLETE list (anchored + legacy) in TRUE part order — for
+        // consumers that DETECT rather than display (MessageSubAgents' spawn
+        // gate; activeToolFromParts' backwards walk).
+        allToolParts,
+        // The running tool across ALL of this turn's tool parts (anchored +
+        // legacy) — RunStatus's working label reads THIS, since the split
+        // above means neither list alone sees every part.
+        activeToolName: activeToolFromParts(allToolParts)?.name ?? null,
         // Provenance reports (what the gateway plugins fed the LLM this turn),
         // in part order — rendered by SourcesActivity as the "Sources" line.
         provenanceParts,

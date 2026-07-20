@@ -155,6 +155,47 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(row?.text).toBe("La tâche est lancée.\n\nRésultat (révision complète).");
   });
 
+  test("PREEMPTED merge (finalize with no text): the parked reply is never lost to a bare replayed head", async () => {
+    // The bridge closes a preempted announce turn with finalize(no text). The
+    // fallback normally reads the seeded/prefixed stream row — but a row
+    // rewritten WITHOUT the prefix (legacy writer / lost seed) must still
+    // honor the parked reply: a replayed HEAD of it keeps the reply alone,
+    // genuinely new partial content recomposes behind it.
+    for (const [rowText, expected] of [
+      // Replayed head of the parked reply -> keep the full parked reply.
+      ["La tâche est", "La tâche est lancée."],
+      // New partial content -> recompose behind the parked reply.
+      ["Résultat partiel inédit", "La tâche est lancée.\n\nRésultat partiel inédit"],
+      // Row still carries the seeded prefix -> unchanged fallback.
+      ["La tâche est lancée.\n\nDébut du rapport", "La tâche est lancée.\n\nDébut du rapport"],
+    ] as const) {
+      const t = convexTest(schema, modules);
+      const { parentId } = await seedDelegatedTurn(t);
+      await t.mutation(internal.stream.startAssistant, {
+        chatId: (await t.run((ctx) => ctx.db.get(parentId)))!.chatId,
+        runId: ANNOUNCE_RUN,
+      });
+      await t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", parentId))
+          .first();
+        await ctx.db.patch(row!._id, { text: rowText });
+      });
+      await t.mutation(internal.stream.finalize, {
+        messageId: parentId,
+        status: "error",
+        error: "announce interrupted by a queued dispatch — replaying",
+        errorKind: "announce_preempted",
+      });
+      const doc = await t.run((ctx) => ctx.db.get(parentId));
+      expect(doc?.text, `row=${JSON.stringify(rowText)}`).toBe(expected);
+      // Error close PARKS the prefix — the replayed announce can resume.
+      expect(doc?.announcePrefix).toBe("La tâche est lancée.");
+      expect(doc?.errorCode).toBe("announce_preempted");
+    }
+  });
+
   test("an ANCHORED delivery merges into its parent even after the conversation moved on (order fix)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);

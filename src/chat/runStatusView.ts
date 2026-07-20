@@ -84,20 +84,29 @@ export interface ActiveTool {
  *  LATER terminal part of the same tool name exists. Providers that never emit
  *  starts (OpenClaw pre-lot-B) simply yield null — honest degradation. */
 export function activeToolFromParts(
-  parts: ReadonlyArray<{ toolName: string; phase?: string }> | undefined,
+  parts:
+    | ReadonlyArray<{ toolName: string; phase?: string; toolCallId?: string }>
+    | undefined,
 ): ActiveTool | null {
   if (!parts || parts.length === 0) return null;
+  // Terminal matching keys on the CALL id when present (two concurrent calls
+  // of the same tool: the second finishing must not mask the first, still-live
+  // one — codex P2); parts without an id (legacy wire) fall back to the name.
+  const key = (p: { toolName: string; toolCallId?: string }) =>
+    p.toolCallId ?? p.toolName;
   const terminalSeen = new Set<string>();
   for (let i = parts.length - 1; i >= 0; i--) {
     const p = parts[i]!;
     const ph = p.phase ?? "completed";
     if (ph === "completed" || ph === "error") {
-      terminalSeen.add(p.toolName);
+      terminalSeen.add(key(p));
       continue;
     }
+    // The wire writes "start" (OpenClaw + Hermes normalizers); "started"/
+    // "running" are the client-side ToolPhase aliases — accept all three.
     if (
-      (ph === "started" || ph === "running") &&
-      !terminalSeen.has(p.toolName)
+      (ph === "start" || ph === "started" || ph === "running") &&
+      !terminalSeen.has(key(p))
     ) {
       return { name: p.toolName, family: toolFamily(p.toolName) };
     }

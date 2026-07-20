@@ -130,6 +130,19 @@ export class TurnSink {
   // a snapshot), even if message.final is later empty — Convex keeps the streamed
   // text as the fallback, so the empty-result guard must NOT fire (codex P2).
   private sawVisibleText = false;
+  // Running UTF-16 length of the turn's visible text (deltas applied, snapshots
+  // replace) — the textOffset stamped on tool parts so the client can anchor
+  // each card inside the narrative flow. FIFO ordering with the writer's
+  // flushDelta guarantees the server-side text length matches at addPart time.
+  private visibleTextLen = 0;
+  /** Offset just after the LAST newline of the visible text — the start of
+   *  the line currently being written. Tool anchors stamp THIS instead of the
+   *  raw length: an anchor landing mid-line would make the client cut the
+   *  narrative inside a Markdown construct ("**bold" / a link / a table row),
+   *  rendering two broken fragments (codex P2). Snapping to the line start at
+   *  EMISSION time is stable forever (the stored offset never moves) and
+   *  consistent across live view and reload. */
+  private visibleLineStart = 0;
   // The turn generated media natively but delivered none (no MEDIA:/outbound) —
   // read from the final event so the empty-result guard sees it (codex P2).
   private pendingMediaGeneratedUndelivered = false;
@@ -294,6 +307,20 @@ export class TurnSink {
     this.userAbortThisTurn = true;
   }
 
+  /** A real dispatch is preempting an OPEN spontaneous (announce) turn whose
+   *  final never arrived: the gateway KILLS the announce run the moment the
+   *  new chat.send lands (one run per session — measured live 2026-07-19), so
+   *  no further frame of it will ever come. Finalize it COMPLETE now with the
+   *  streamed text (writer.finalize falls back to the stream row's text when
+   *  the buffer is empty). Without this the reopened bubble strands in
+   *  `streaming` forever — busy chat, stalled queue drain, then the 12-min
+   *  watchdog errors it as stream_orphaned. The dispatch-side busy re-check
+   *  (bridge.reparkIfBusy) makes this window rare; this is the belt. No-op
+   *  when the turn is inactive or the message was never created. */
+  async preemptOpenTurn(): Promise<void> {
+    await this.flushFinal("complete");
+  }
+
   /** True while a deferred (spontaneous) turn is active but its assistant
    *  message has not been created yet — the preemption-sensitive window. */
   get deferredUnopened(): boolean {
@@ -346,6 +373,8 @@ export class TurnSink {
     this.mediaChain = Promise.resolve();
     this.hasPendingMedia = false;
     this.sawVisibleText = false;
+    this.visibleTextLen = 0;
+    this.visibleLineStart = 0;
     this.pendingMediaGeneratedUndelivered = false;
     this.pendingObservedChildKeys = [];
     this.spawnedChildKeysThisTurn = new Set();
@@ -589,6 +618,9 @@ export class TurnSink {
             // Only NON-whitespace makes the reply "visible" — a whitespace-only
             // delta before an empty final is still a blank bubble (codex P2).
             if (text.trim().length > 0) this.sawVisibleText = true;
+            const nl = text.lastIndexOf("\n");
+            if (nl !== -1) this.visibleLineStart = this.visibleTextLen + nl + 1;
+            this.visibleTextLen += text.length;
             await this.writer.appendDelta(messageId, text);
           }
           break;
@@ -600,6 +632,8 @@ export class TurnSink {
           // an invalidated prefix on compaction) RESETS visibility to false, so a
           // replay that then ends empty still trips the empty-result guard (codex P2).
           this.sawVisibleText = snap.trim().length > 0;
+          this.visibleTextLen = snap.length;
+          this.visibleLineStart = snap.lastIndexOf("\n") + 1;
           await this.writer.setSnapshot(messageId, snap);
           break;
         }
@@ -657,10 +691,32 @@ export class TurnSink {
           // shared dir would list ANOTHER conversation's fresh files and
           // turn a listing into false ownership (codex P1).
           this.noteTurnArtifacts(event.input);
+          // Delivery/announce runs render as MERGED bubbles whose server-side
+          // text is not provably aligned with this sink's accumulator — omit
+          // the anchor there (legacy grouped rendering, zero replay-dedup
+          // interaction). Normal turns stamp the offset at emission time.
+          // KNOWN RESIDUAL (accepted): a REPLACING snapshot (compaction clear +
+          // replay, private-ack replace) invalidates the offsets of parts
+          // ALREADY persisted — the sink cannot rebase them without keeping the
+          // full old/new texts. The client clamps stale offsets into range
+          // (buildTurnFlow), and the dominant case (compaction "" + refill of
+          // near-identical text) re-aligns naturally; a rare divergent replace
+          // may shift a card toward the end of the reply — display-only.
+          const anchorable =
+            taskDeliveryRunFromRunId(this.turnRunId) === null &&
+            !(this.turnRunId ?? "").startsWith("announce:v1:") &&
+            // The `message` pseudo-tool IS the visible reply (OpenClaw's
+            // delivery mechanism), not user-facing activity: anchoring it
+            // would render the reply's own text as an inline tool card
+            // (codex P2). It stays on the legacy metadata path.
+            asString(event.name) !== "message";
+          const toolCallId = asString(event.toolCallId);
           const part: ToolPart = {
             kind: "tool",
             name: asString(event.name),
             phase: asString(event.phase),
+            ...(toolCallId ? { toolCallId } : {}),
+            ...(anchorable ? { textOffset: this.visibleLineStart } : {}),
             ...(event.input !== undefined ? { input: event.input } : {}),
             ...(event.output !== undefined ? { output: event.output } : {}),
           };
@@ -1278,6 +1334,11 @@ function eventIsVisible(event: NormalizedEvent): boolean {
       );
     }
     case "tool.status":
+      // A tool START alone must not open a spontaneous bubble: a NO_REPLY
+      // delivery run may do invisible work and end bubble-less (its start is
+      // buffered and replayed if a visible event opens the bubble later). The
+      // completed/error card keeps the historic open-on-activity behavior.
+      return asString((event as { phase?: unknown }).phase) !== "start";
     case "media":
       return true;
     default:
