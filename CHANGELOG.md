@@ -8,6 +8,23 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.68.2] — The elapsed clock stays on delegated turns
+
+Corrective release, frontend-only. Self-hosters: updating the FRONTEND image
+is the whole upgrade — no `npx convex deploy` (no backend function changed)
+and no bridge change.
+
+- **"Working for…" no longer vanishes while a delegated turn is still being
+  treated.** The elapsed clock used to show only on a streaming message; a
+  turn that delegated to a sub-agent settles its own message while the work
+  continues (the waiting/"writing up the reply…" pill), so the clock
+  disappeared from a block the user rightly reads as in progress. It now
+  stays through the WHOLE treatment — streaming, sub-agent wait, reply
+  composition — and disappears exactly when the merged reply lands. Same
+  clock, same anchor (no jump across the transitions), and the probe reuses
+  the sub-agent subscription already open for the pill (no added network
+  cost).
+
 ## [0.68.1] — Maintenance re-cut: green CI end to end
 
 Corrective release. No functional changes — the shipped images are
