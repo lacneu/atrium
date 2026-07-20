@@ -923,6 +923,86 @@ http.route({
   }),
 });
 
+// Sanctioned lossless-claw doctor (key-authed): dispatch ONE allowlisted
+// maintenance command (status / doctor / safe rollover repair) to an
+// instance's gateway via its bridge. Sensitive WRITE (the repair mutates the
+// plugin's db, with its own automatic backup) -> requires `selfheal`, the
+// watcher agent's control permission. Audited.
+http.route({
+  path: "/api/v1/lossless",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number) =>
+      ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/lossless",
+        method: "POST",
+        status,
+        latencyMs: Date.now() - startedAt,
+      });
+    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+      await trace(403);
+      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+    }
+    let body: { instanceName?: unknown; action?: unknown; agentId?: unknown };
+    try {
+      const parsed: unknown = await request.json();
+      // `null`/arrays are valid JSON but not a body (codex P2: reading a
+      // field off null threw a 500 where a 400 belongs).
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        await trace(400);
+        return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+      }
+      body = parsed as typeof body;
+    } catch {
+      // Audited like every other rejection on this route (codex P2): a
+      // malformed request from a selfheal key still belongs in the trail.
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const instanceName =
+      typeof body.instanceName === "string" ? body.instanceName : "";
+    const action = typeof body.action === "string" ? body.action : "";
+    if (
+      !instanceName ||
+      !["status", "doctor", "repair_rollover_splits"].includes(action)
+    ) {
+      await trace(400);
+      return apiJson(
+        {
+          ok: false,
+          error:
+            "requires instanceName and action in {status, doctor, repair_rollover_splits}",
+        },
+        400,
+      );
+    }
+    const result = await ctx.runAction(internal.openclaw.losslessDoctor, {
+      instanceName,
+      action: action as "status" | "doctor" | "repair_rollover_splits",
+      ...(typeof body.agentId === "string" && body.agentId
+        ? { agentId: body.agentId }
+        : {}),
+    });
+    // The top-level `ok` follows the BRIDGE outcome (codex P1): a failed
+    // repair must never read as success to a caller honoring the API's ok
+    // contract (the MCP wrapper does). 502 for a bridge/gateway failure.
+    const bridgeOk = (result as { ok?: unknown }).ok === true;
+    await trace(bridgeOk ? 200 : 502);
+    return apiJson({ ok: bridgeOk, result }, bridgeOk ? 200 : 502);
+  }),
+});
+
 // Attachments of ONE anomaly (key-authed): the agent-authored documents shipped
 // with report_anomaly (e.g. a Guetteur proposal markdown). list_anomalies shows
 // only their metadata — this serves the CONTENT so the obs MCP can read a

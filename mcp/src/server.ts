@@ -49,6 +49,8 @@ import {
   listAnomalies,
   getAnomalyAttachments,
   anomalyAttachmentsInput,
+  losslessDoctor,
+  losslessDoctorInput,
   listAnomaliesInput,
   listSchemas,
   listTraces,
@@ -409,6 +411,33 @@ function main(): void {
       inputSchema: listAnomaliesInput,
     },
     async (args) => run(() => listAnomalies(config, args)),
+  );
+
+  server.registerTool(
+    "lossless_doctor",
+    {
+      title: "Lossless-claw doctor (status / diagnosis / safe repair)",
+      description:
+        "Run ONE allowlisted lossless-claw maintenance command on an OpenClaw " +
+        "instance's gateway via its bridge (POST /lossless). Requires selfheal. " +
+        "Actions: status (plugin health + rollover-split scan), doctor " +
+        "(read-only diagnosis), repair_rollover_splits (the SAFE repair only — " +
+        "the plugin's doctor takes an automatic backup and never touches " +
+        "needs-review lanes; those must be escalated to a human via " +
+        "report_anomaly). Returns a METADATA-ONLY summary (counters + flags: " +
+        "safeLanes, needsReviewLanes, repairedLanes, integrityOk, " +
+        "backupCreated, errorMentioned) — never the raw reply text, which can " +
+        "embed conversation-derived excerpts. For the full report a human " +
+        "runs /lossless in the gateway console.",
+      inputSchema: losslessDoctorInput,
+    },
+    async (args) =>
+      run(() =>
+        losslessDoctor(
+          config,
+          args as { instanceName: string; action: string; agentId?: string },
+        ),
+      ),
   );
 
   server.registerTool(

@@ -8,6 +8,32 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.68.4] — Watcher agents can heal the context engine, within strict bounds
+
+Corrective release, closing the production incident behind 0.68.3: the
+lossless-claw context engine's fragmented internal state was silently
+defeating compaction, and only a human could run the repair. Bridge image +
+`npx convex deploy`; no schema change, no breaking changes. Operators using
+the observability MCP must reconnect it to pick up the new tool.
+
+- **Watcher agents can heal the lossless-claw context engine, within strict
+  bounds.** A new key-authed `POST /api/v1/lossless` (and MCP tool
+  `lossless_doctor`, permission `selfheal`) dispatches ONE of exactly three
+  allowlisted maintenance commands to an instance's gateway — plugin status,
+  read-only diagnosis, or the SAFE rollover-split repair (the plugin's own
+  doctor takes an automatic backup and never touches needs-review lanes;
+  those are escalated to a human as anomalies). Arbitrary command dispatch
+  is impossible by construction: the allowlist is enforced server-side at
+  both the API and the bridge, down to prototype-inherited property names.
+- **The repair channel is metadata-only.** The plugin's raw report can quote
+  conversation-derived lane excerpts, and an agent key holds `selfheal`
+  without any chat-content read permission — so the raw text never leaves
+  the bridge. Callers get a structured summary (lane counts, needs-review /
+  repaired flags, integrity verdict, affirmative-only backup evidence);
+  the full report stays a human affair via `/lossless` in the gateway
+  console. Malformed requests on the new route are audited like every
+  other rejection.
+
 ## [0.68.3] — Visible resilience: transient provider failures retry themselves
 
 Corrective release. Frontend + bridge + Convex (additive schema, zero

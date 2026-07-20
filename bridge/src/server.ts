@@ -44,7 +44,12 @@ import {
   type InboundReference,
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
-import { buildSessionKey } from "./providers/openclaw/session-keys.js";
+import { buildSessionKey, safeSessionPart } from "./providers/openclaw/session-keys.js";
+import {
+  transcriptEntryCount,
+  extractLatestAssistantReply,
+} from "./providers/openclaw/history-recovery.js";
+import { summarizeLosslessReply } from "./core/lossless-summary.js";
 import {
   HermesTurnRegistry,
   performHermesSend,
@@ -2183,6 +2188,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Realtime voice: relay the voice model's agent-consult tool call to a
       // REAL agent run (talk.client.toolCall) and wait (bounded) for its final.
       "/talk-toolcall",
+      // Sanctioned lossless-claw doctor dispatch (allowlisted commands only).
+      "/lossless",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -2410,6 +2417,160 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compaction-history failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/lossless") {
+      // SANCTIONED lossless-claw doctor dispatch (the watcher agent's bounded
+      // self-repair channel, 2026-07-20). The /lossless family is RUNTIME
+      // slash-command only (no CLI — verified on 2026.7.1), and the gateway's
+      // command layer DOES process commands arriving via chat.send (verified
+      // live) — so this route sends ONE ALLOWLISTED command on a dedicated
+      // maintenance session over a short operator connection, then polls the
+      // session transcript for the command's reply. STRICT server-side
+      // allowlist: the three read/safe-repair commands only (the doctor takes
+      // its own backup before a repair and never touches needs-review lanes);
+      // arbitrary command dispatch is deliberately impossible here.
+      let lcmBody: {
+        instanceName?: unknown;
+        action?: unknown;
+        agentId?: unknown;
+      } = {};
+      try {
+        const parsed: unknown = JSON.parse(raw || "{}");
+        // `null`/arrays are valid JSON but not a body (codex P2).
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          sendJson(res, 400, { ok: false, error: "invalid body" });
+          return;
+        }
+        lcmBody = parsed as typeof lcmBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const LCM_COMMANDS: Record<string, string> = {
+        status: "/lossless status",
+        doctor: "/lossless doctor",
+        repair_rollover_splits: "/lossless doctor apply rollover-splits confirm",
+      };
+      const lcmInstance =
+        typeof lcmBody.instanceName === "string" ? lcmBody.instanceName : null;
+      const lcmAction =
+        typeof lcmBody.action === "string" ? lcmBody.action : null;
+      // Own-property check: a bare index would resolve inherited names like
+      // "constructor" to prototype members and slip past the allowlist (codex).
+      const lcmCommand =
+        lcmAction !== null &&
+        Object.prototype.hasOwnProperty.call(LCM_COMMANDS, lcmAction)
+          ? LCM_COMMANDS[lcmAction]
+          : undefined;
+      const lcmBundle = lcmInstance ? served.get(lcmInstance) : undefined;
+      if (!lcmInstance || !lcmBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (lcmCommand === undefined) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "action must be one of: status | doctor | repair_rollover_splits",
+        });
+        return;
+      }
+      if (lcmBundle.config.kind === "hermes") {
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "openclaw_only" },
+        });
+        return;
+      }
+      // Sanitized like every other session-key segment (safeSessionPart —
+      // codex P2: a raw "team/foo" would target a malformed key).
+      const lcmAgent = safeSessionPart(
+        typeof lcmBody.agentId === "string" && lcmBody.agentId
+          ? lcmBody.agentId
+          : "meta",
+      );
+      // Dedicated maintenance session, UNIQUE PER INVOCATION (never an Atrium
+      // chat's session): each command gets a fresh transcript holding exactly
+      // one exchange, so concurrent calls can never read each other's reply
+      // and no serialization is needed (codex P1). The gateway's idle-session
+      // reaping collects these (a handful per day at the heartbeat cadence).
+      const lcmSessionKey = `agent:${lcmAgent}:lossless:doctor-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        const result = await withOperatorConnection(
+          lcmBundle.config,
+          async (conn) => {
+            // EXPLICIT budget so the whole route's worst case stays WELL
+            // under the Convex caller's 150s timeout (codex P1): handshake
+            // ≤30s + initial get ≤8s + send ≤15s + 6 polls ×(1.5s+8s) ≈110s.
+            const countEntries = async (): Promise<number> => {
+              try {
+                const rawT = await conn.request(
+                  "sessions.get",
+                  { key: lcmSessionKey },
+                  8_000,
+                );
+                const payload =
+                  rawT && typeof rawT === "object" && "payload" in rawT
+                    ? (rawT as { payload: unknown }).payload
+                    : rawT;
+                return transcriptEntryCount(payload);
+              } catch {
+                return 0; // fresh session — no transcript yet
+              }
+            };
+            const before = await countEntries();
+            await conn.request(
+              "chat.send",
+              {
+                sessionKey: lcmSessionKey,
+                message: lcmCommand,
+                idempotencyKey: `lcm-${Date.now()}`,
+              },
+              15_000,
+            );
+            // The command layer answers synchronously gateway-side; poll the
+            // transcript until the reply lands (bounded ~12s).
+            for (let i = 0; i < 6; i++) {
+              await new Promise((r) => setTimeout(r, 1_500));
+              const rawT = await conn.request(
+                "sessions.get",
+                { key: lcmSessionKey },
+                8_000,
+              );
+              const payload =
+                rawT && typeof rawT === "object" && "payload" in rawT
+                  ? (rawT as { payload: unknown }).payload
+                  : rawT;
+              if (transcriptEntryCount(payload) > before) {
+                const reply = extractLatestAssistantReply(payload);
+                if (reply) return reply;
+              }
+            }
+            return null;
+          },
+          noteHandshakeFor(lcmInstance),
+        );
+        if (result === null) {
+          sendJson(res, 504, { ok: false, error: { code: "reply_timeout" } });
+          return;
+        }
+        // METADATA-ONLY out (codex P1): the raw reply can carry lane/session
+        // excerpts (conversation-derived text) and the consuming API/MCP keys
+        // hold selfheal without chat-content read — project to counters+flags.
+        sendJson(res, 200, {
+          ok: true,
+          action: lcmAction,
+          summary: summarizeLosslessReply(result),
+        });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /lossless failed [${code}]:`,
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });

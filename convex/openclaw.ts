@@ -26,6 +26,7 @@
 
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
+import { internal } from "./_generated/api";
 
 // Bounded timeout so a hung bridge cannot stall the action indefinitely.
 const QUERY_TIMEOUT_MS = 15_000;
@@ -40,6 +41,70 @@ type QueryResult =
  * any misconfiguration or transport/HTTP error returns a graceful
  * `{ ok: false, reason }` — it NEVER throws (see file header).
  */
+/** Sanctioned lossless-claw doctor dispatch (the watcher agent's bounded
+ *  self-repair channel): forwards ONE allowlisted action to the instance's
+ *  bridge /lossless route (which re-validates the allowlist — defense in
+ *  depth). Degrades gracefully (never throws): { ok:false, reason } when the
+ *  bridge is unset/unreachable. */
+export const losslessDoctor = internalAction({
+  args: {
+    instanceName: v.string(),
+    action: v.union(
+      v.literal("status"),
+      v.literal("doctor"),
+      v.literal("repair_rollover_splits"),
+    ),
+    agentId: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    { instanceName, action, agentId },
+  ): Promise<Record<string, unknown>> => {
+    // Per-instance URL first; single-bridge deployments configure only the
+    // BRIDGE_URL env (instances.bridgeUrl empty) — same fallback the other
+    // bridge-calling actions use (codex P1).
+    const perInstance = await ctx.runQuery(
+      internal.agentFiles.bridgeUrlForInstance,
+      { instanceName },
+    );
+    const bridgeUrl = perInstance ?? process.env.BRIDGE_URL ?? null;
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    if (!bridgeUrl || !sharedSecret) {
+      return { ok: false, reason: "bridge_not_configured" };
+    }
+    try {
+      // Bounded ABOVE the bridge's full worst-case budget (codex P1): the
+      // bridge route's explicit ceilings sum to ~110s (handshake ≤30s +
+      // initial get ≤8s + send ≤15s + 6 polls ×9.5s) — 150s guarantees a
+      // timeout here can only mean the bridge truly hung, never a repair
+      // still legitimately in flight. Belt: a RETRY of the repair is also
+      // idempotent by plugin semantics (the doctor re-scans and repairs only
+      // lanes that still exist, taking a fresh backup — an already-repaired
+      // db is a clean no-op).
+      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/lossless`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: sharedSecret,
+        },
+        body: JSON.stringify({
+          instanceName,
+          action,
+          ...(agentId ? { agentId } : {}),
+        }),
+        signal: AbortSignal.timeout(150_000),
+      });
+      const data: unknown = await response.json().catch(() => null);
+      if (typeof data === "object" && data !== null) {
+        return data as Record<string, unknown>;
+      }
+      return { ok: false, reason: `bridge_http_${response.status}` };
+    } catch (e) {
+      return { ok: false, reason: (e as Error)?.message ?? "bridge_unreachable" };
+    }
+  },
+});
+
 export const queryOpenClaw = internalAction({
   args: {
     question: v.optional(v.string()),

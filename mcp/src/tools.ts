@@ -93,6 +93,23 @@ export const queryOpenClawInput = {
     .describe("Free-form passthrough forwarded to the bridge."),
 } as const;
 
+export const losslessDoctorInput = {
+  instanceName: z
+    .string()
+    .describe("The OpenClaw instance whose gateway runs lossless-claw."),
+  action: z
+    .enum(["status", "doctor", "repair_rollover_splits"])
+    .describe(
+      "status = /lossless status; doctor = /lossless doctor (diagnosis, " +
+        "read-only); repair_rollover_splits = the SAFE repair only (the " +
+        "doctor takes its own backup and never touches needs-review lanes).",
+    ),
+  agentId: z
+    .string()
+    .optional()
+    .describe("Agent whose maintenance session carries the command (default: meta)."),
+};
+
 export const anomalyAttachmentsInput = {
   anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
 };
@@ -735,6 +752,21 @@ export function listAnomalies(
     kind: args.kind,
   });
   return apiFetch(config, `/anomalies${query}`, {}, options);
+}
+
+/** POST /api/v1/lossless — sanctioned lossless-claw doctor dispatch (status /
+ *  diagnosis / SAFE rollover repair only). Requires `selfheal`. */
+export function losslessDoctor(
+  config: Config,
+  args: { instanceName: string; action: string; agentId?: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(
+    config,
+    "/lossless",
+    { method: "POST", body: JSON.stringify(args) },
+    options,
+  );
 }
 
 /** GET /api/v1/anomaly-attachments — the agent-authored documents shipped with
