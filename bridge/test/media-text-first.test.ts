@@ -526,3 +526,39 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     expect(writer.lastFinalizeKind).toBeNull();
   });
 });
+
+describe("provider_internal x undelivered media (codex P1: never re-bill a generation)", () => {
+  it("a provider error on a turn that GENERATED media without delivering reclasses non-retryable", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_mg", writer);
+    await sink.beginTurn("run-mg");
+    await sink.apply([
+      {
+        type: "message.final",
+        text: "",
+        error: "read ECONNRESET",
+        errorKind: "provider_internal",
+        mediaGeneratedUndelivered: true,
+      },
+      { type: "run.status", status: "error" },
+    ]);
+    // WORKED-but-undelivered class: honest delivery-failure card, no retry.
+    expect(writer.lastFinalizeKind).toBe("empty_response");
+  });
+
+  it("the same provider error WITHOUT media stays retryable", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_mg2", writer);
+    await sink.beginTurn("run-mg2");
+    await sink.apply([
+      {
+        type: "message.final",
+        text: "",
+        error: "read ECONNRESET",
+        errorKind: "provider_internal",
+      },
+      { type: "run.status", status: "error" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("provider_internal");
+  });
+});

@@ -685,6 +685,23 @@ export const getAnomalyAttachments = query({
   },
 });
 
+/** Internal attachments read for the key-authed GET /api/v1/anomaly-attachments
+ *  route (permission checked by the httpAction — no-db context there). The
+ *  content is agent-authored, PII-free by contract (report_anomaly's rule). */
+export const attachmentsInternal = internalQuery({
+  args: { anomalyId: v.id("anomalies") },
+  handler: async (
+    ctx,
+    { anomalyId },
+  ): Promise<{ name: string; content: string }[]> => {
+    const rows = await ctx.db
+      .query("anomalyAttachments")
+      .withIndex("by_anomaly", (q) => q.eq("anomalyId", anomalyId))
+      .collect();
+    return rows.map((r) => ({ name: r.name, content: r.content }));
+  },
+});
+
 /**
  * Internal anomaly listing for the key-authed GET /api/v1/anomalies route. The
  * httpAction verifies the principal's `anomalies.read` permission BEFORE calling

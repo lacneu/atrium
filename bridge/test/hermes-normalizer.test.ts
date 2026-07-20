@@ -265,3 +265,75 @@ describe("Hermes normalizer — success path (structure; names pruned live)", ()
     expect(final?.error).toBeUndefined();
   });
 });
+
+describe("Hermes normalizer — transient provider classification (provider_internal)", () => {
+  const errFeed = (message: string) => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "run.started", data: '{"run_id":"rE"}' });
+    return n.feed({ event: "error", data: JSON.stringify({ message }) });
+  };
+  it("transport/provider transient markers classify to provider_internal", () => {
+    for (const msg of [
+      "HTTP 502 Bad Gateway",
+      "internal server error from upstream",
+      "fetch failed",
+      "read ECONNRESET",
+      "service unavailable",
+    ]) {
+      const final = errFeed(msg).find((e) => e.type === "message.final");
+      expect(final?.errorKind, msg).toBe("provider_internal");
+    }
+  });
+  it("auth/quota/rate-limit/context never classify (no retry on those)", () => {
+    for (const msg of [
+      "HTTP 401 Unauthorized",
+      "rate limit exceeded",
+      "invalid api key",
+      "context length exceeded",
+      "Hermes run failed.",
+    ]) {
+      const final = errFeed(msg).find((e) => e.type === "message.final");
+      expect(final?.errorKind ?? null, msg).toBeNull();
+    }
+  });
+});
+
+describe("Hermes runtime-failure prose promotion (text -> error detail)", () => {
+  it("a terminal error whose TEXT is the runtime failure prose promotes + classifies", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "run.started", data: '{"run_id":"rP"}' });
+    n.feed({
+      event: "assistant.delta",
+      data: JSON.stringify({ delta: "API call failed after 3 retries: Connection error" }),
+    });
+    const out = n.feed({ event: "error", data: "{}" });
+    const final = out.find((e) => e.type === "message.final");
+    expect(final?.text).toBe(""); // prose is NOT content
+    expect(final?.error).toContain("API call failed after 3 retries");
+    expect(final?.errorKind).toBe("provider_internal");
+  });
+  it("a short reply STARTING with 'Connection error' is NOT promoted (strict runtime format only, codex P1)", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "run.started", data: '{"run_id":"rR"}' });
+    n.feed({
+      event: "assistant.delta",
+      data: JSON.stringify({ delta: "Connection error : voici comment le diagnostiquer chez toi." }),
+    });
+    const out = n.feed({ event: "error", data: "{}" });
+    const final = out.find((e) => e.type === "message.final");
+    expect(final?.text).toContain("diagnostiquer"); // legit content preserved
+  });
+
+  it("a GENUINE reply mentioning a connection error is NOT promoted (starts differently)", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "run.started", data: '{"run_id":"rQ"}' });
+    n.feed({
+      event: "assistant.delta",
+      data: JSON.stringify({ delta: "Voici pourquoi tu vois parfois « connection error » dans tes logs." }),
+    });
+    const out = n.feed({ event: "error", data: "{}" });
+    const final = out.find((e) => e.type === "message.final");
+    expect(final?.text).toContain("Voici pourquoi"); // content preserved
+    expect(final?.errorKind ?? null).toBeNull();
+  });
+});

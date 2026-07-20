@@ -47,6 +47,8 @@ import {
   getSchemaInput,
   health,
   listAnomalies,
+  getAnomalyAttachments,
+  anomalyAttachmentsInput,
   listAnomaliesInput,
   listSchemas,
   listTraces,
@@ -407,6 +409,21 @@ function main(): void {
       inputSchema: listAnomaliesInput,
     },
     async (args) => run(() => listAnomalies(config, args)),
+  );
+
+  server.registerTool(
+    "get_anomaly_attachments",
+    {
+      title: "Read an anomaly's attached documents",
+      description:
+        "The agent-authored documents shipped with ONE anomaly (e.g. a watcher " +
+        "agent's full proposal markdown) — list_anomalies shows only their " +
+        "name/size (GET /anomaly-attachments). Requires anomalies.read. Use the " +
+        "anomaly _id from list_anomalies.",
+      inputSchema: anomalyAttachmentsInput,
+    },
+    async (args) =>
+      run(() => getAnomalyAttachments(config, args as { anomalyId: string })),
   );
 
   server.registerTool(

@@ -202,6 +202,9 @@ export class TurnSink {
   // Stable gateway failure class (refusal|timeout|rate_limit|context_length)
   // from message.final — persisted as the message's errorCode at finalize.
   private pendingFinalErrorKind: string | null = null;
+  /** The provider marked the streamed live text as NOISE (promoted failure
+   *  prose / sentinel): the finalize must not fall back to it. */
+  private pendingDiscardStream = false;
   // Trace-only error class: set even when the turn finalizes COMPLETE (a
   // post-reply gateway failure keeps the delivered answer but its class must
   // still reach the gateway_pressure trace). Never sent to writer.finalize —
@@ -368,6 +371,7 @@ export class TurnSink {
     this.pendingFinalText = "";
     this.pendingFinalError = null;
     this.pendingFinalErrorKind = null;
+    this.pendingDiscardStream = false;
     this.pendingDiagErrorKind = null;
     this.pendingDiagStopReason = null;
     this.pendingDiagFinalizeCause = null;
@@ -903,6 +907,8 @@ export class TurnSink {
             typeof event.errorKind === "string" && event.errorKind
               ? event.errorKind
               : null;
+          this.pendingDiscardStream =
+            (event as { discardStreamText?: unknown }).discardStreamText === true;
           this.pendingDiagErrorKind =
             typeof event.diagnosticErrorKind === "string" &&
             event.diagnosticErrorKind
@@ -1181,6 +1187,18 @@ export class TurnSink {
     let effectiveStatus = status;
     let effectiveError = this.pendingFinalError;
     let effectiveErrorKind = this.pendingFinalErrorKind;
+    // A RETRYABLE provider failure on a turn that already GENERATED media it
+    // never delivered (native imageGeneration billed, delivery lost): the
+    // auto-retry would re-bill that generation (codex P1 — the undelivered
+    // signal is trace-only, invisible to the Convex gates). Reclass to the
+    // WORKED-but-undelivered class (non-retryable, honest delivery-failure
+    // card); the provider error text stays as the detail.
+    if (
+      effectiveErrorKind === "provider_internal" &&
+      this.pendingMediaGeneratedUndelivered
+    ) {
+      effectiveErrorKind = EMPTY_RESPONSE_CODE;
+    }
     // A DELIVERY run's terminal `aborted` with nothing streamed is the gateway
     // closing a TOOL-ONLY continuation turn (measured live 2026.7.1: an
     // announce turn that only ran update_plan/sessions_spawn ends
@@ -1297,11 +1315,15 @@ export class TurnSink {
       effectiveError,
       effectiveErrorKind,
       // Discard the live-stream fallback whenever the reply was the SENTINEL
-      // (even on a turn that worked — yield/tool then NO_REPLY, codex P2) or
-      // the turn classed SILENT (its stream holds only noise/whitespace, which
-      // would also block the auto-retry via finalTextLen>0). Atomic with the
-      // finalize — a separate purge write could fail while the finalize lands.
-      sentinelOnly || effectiveErrorKind === SILENT_RESPONSE_CODE
+      // (even on a turn that worked — yield/tool then NO_REPLY, codex P2), the
+      // turn classed SILENT (its stream holds only noise/whitespace, which
+      // would also block the auto-retry via finalTextLen>0), or the PROVIDER
+      // marked the streamed text as noise (promoted Hermes failure prose —
+      // codex P1: without the flag the prose survives as the reply via the
+      // stream fallback and blocks the retry). Atomic with the finalize.
+      sentinelOnly ||
+        effectiveErrorKind === SILENT_RESPONSE_CODE ||
+        this.pendingDiscardStream
         ? { discardStreamText: true }
         : undefined,
     );

@@ -1228,6 +1228,14 @@ export default defineSchema({
     // never rewritten by re-finalize/late part writes) — the stable end of the
     // generation window for the reply-duration UI. OPTIONAL (additive).
     finalizedAt: v.optional(v.number()),
+    // VISIBLE auto-retry state (the Claude-Code-style "retrying (N/2)…"
+    // countdown): stamped by turnRetry when a bounded re-dispatch of this
+    // errored zero-content turn is SCHEDULED; cleared when it fires (the
+    // message is deleted on redispatch, patched clear on stand-down). The
+    // error card renders the attempt + countdown from it.
+    autoRetry: v.optional(
+      v.object({ attempt: v.number(), maxAttempts: v.number(), firesAt: v.number() }),
+    ),
     text: v.string(),
     // A2 streaming (decision A2): during a turn, token deltas are patched into
     // this UN-INDEXED live field — NOT into `text` — so each ~50ms flush does NOT
@@ -1448,7 +1456,11 @@ export default defineSchema({
     // reaper ranges the (status="running", updatedAt < cutoff) slice and terminalizes
     // those rows. Mirrors messages.by_status_updated: a live child has a fresh
     // updatedAt → outside the range → never read (no full scan).
-    .index("by_status_updated", ["status", "updatedAt"]),
+    .index("by_status_updated", ["status", "updatedAt"])
+    // (parentMessageId): the auto-retry gate + cascade read ONLY this turn's
+    // children (an unbounded by_chat walk on long chats could exceed the
+    // finalize transaction — codex P2).
+    .index("by_parent_message", ["parentMessageId"]),
 
   // In-app DETAIL for a sub-agent's tool calls (args + result), kept OFF the
   // `subAgents` doc on purpose: a 67-tool child would O(n^2)-re-push the whole

@@ -35,6 +35,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { compareOrder } from "./lib/messageOrder";
+import { writeTraceEvent } from "./observability";
 
 /** The stable error code the bridge classifier mints for the gateway's
  *  session-init OCC conflict (normalizer SESSION_INIT_CONFLICT_RE). */
@@ -49,11 +50,19 @@ export const SESSION_INIT_CONFLICT_CODE = "session_init_conflict";
  *  is deliberately NOT retryable: re-running would duplicate paid work
  *  (codex P1); its error card surfaces the delivery failure instead. */
 export const EMPTY_RESPONSE_RETRY_CODE = "empty_response_silent";
+/** TRANSIENT upstream failure (provider 5xx / overload / network cut — e.g.
+ *  a VPN flip severing the gateway's provider connection): classified by the
+ *  bridge normalizers from STRICT transient markers with never-transient
+ *  exclusions (auth/quota/invalid/rate-limit never match). Zero-content gates
+ *  below make the re-dispatch equivalent to the user's own re-send (live prod
+ *  2026-07-20: OpenAI internal error, manual re-send succeeded). */
+export const PROVIDER_INTERNAL_CODE = "provider_internal";
 
-/** The errorKinds a finalize may auto-retry (both are zero-content classes). */
-const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
+/** The errorKinds a finalize may auto-retry (all zero-content classes). */
+export const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
   SESSION_INIT_CONFLICT_CODE,
   EMPTY_RESPONSE_RETRY_CODE,
+  PROVIDER_INTERNAL_CODE,
 ]);
 
 /** Bounded chain: at most this many automatic re-dispatches per turn. */
@@ -68,6 +77,9 @@ export const MAX_TURN_RETRIES = 2;
  *  init-conflict class keeps 2 (it fails BEFORE any generation — retries are
  *  free). */
 export function maxRetriesForKind(kind: string): number {
+  // provider_internal keeps 2: the failure happens AT the provider call and
+  // the zero-content gate proves nothing was generated — a retry bills
+  // nothing extra (the 5s/15s curve rides out blips and VPN flips).
   return kind === EMPTY_RESPONSE_RETRY_CODE ? 1 : MAX_TURN_RETRIES;
 }
 
@@ -127,12 +139,7 @@ export async function maybeScheduleTurnRetry(
   // result (codex P2). Their existing error paths stay authoritative.
   const chat = await ctx.db.get(message.chatId);
   if (chat === null || chat.kind != null) return;
-  const partCount = (
-    await ctx.db
-      .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", message._id))
-      .take(1)
-  ).length;
+  const partCount = await countBlockingParts(ctx, message._id);
   // Schedule-time busy = a QUEUED follow-up only (see retryDecision.chatBusy for
   // why pending must NOT block here).
   const queuedRow = await ctx.db
@@ -159,15 +166,44 @@ export async function maybeScheduleTurnRetry(
   const newest = rows
     .filter((r) => r !== null)
     .sort((a, b) => b!._creationTime - a!._creationTime)[0];
+  const lastAttempt = newest?.autoRetryAttempt ?? 0;
   const decision = retryDecision({
     status: message.status === "error" ? "error" : String(message.status),
     errorKind: errorKind ?? null,
     finalTextLen,
     partCount,
     chatBusy: queuedRow !== null,
-    lastAttempt: newest?.autoRetryAttempt ?? 0,
+    lastAttempt,
   });
-  if (decision === null) return;
+  if (decision === null) {
+    // EXHAUSTED is the chain's honest terminal ("the retry did NOT fix it"):
+    // trace it so /traces tells the full story; the other null reasons
+    // (content landed / chat busy) are the world moving on — silent.
+    if (lastAttempt >= maxRetriesForKind(errorKind)) {
+      try {
+        await writeTraceEvent(ctx, {
+        kind: "chat.auto_retry",
+        direction: "internal",
+        principalType: "system",
+        principalId: "turn-retry",
+        chatId: message.chatId,
+        correlationId: `${message.chatId}:${message._id}`,
+        meta: JSON.stringify({
+          phase: "exhausted",
+          errorKind,
+          attempts: lastAttempt,
+          messageId: message._id,
+        }),
+        });
+      } catch (e) {
+        console.error(
+          "[turnRetry] trace failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
+    }
+    return;
+  }
   await ctx.scheduler.runAfter(
     decision.delayMs,
     internal.turnRetry.autoRetryTurn,
@@ -177,9 +213,115 @@ export async function maybeScheduleTurnRetry(
       attempt: decision.attempt,
     },
   );
+  // VISIBLE resilience (the Claude-Code-style countdown): the error card reads
+  // this to show "retrying (N/M) in Xs…" instead of a dead-end error.
+  const maxAttempts = maxRetriesForKind(errorKind);
+  await ctx.db.patch(message._id, {
+    autoRetry: {
+      attempt: decision.attempt,
+      maxAttempts,
+      firesAt: Date.now() + decision.delayMs,
+    },
+  });
+  // TRACE the whole chain (schedule -> fire outcome; the retried turn's own
+  // dispatch/finalize traces follow) so /api/v1/traces tells BOTH the nature
+  // of the failure (errorKind) and whether the retry resolved it. BEST-EFFORT
+  // (codex P2): telemetry must never break the finalize it rides in.
+  try {
+    await writeTraceEvent(ctx, {
+    kind: "chat.auto_retry",
+    direction: "internal",
+    principalType: "system",
+    principalId: "turn-retry",
+    chatId: message.chatId,
+    correlationId: `${message.chatId}:${message._id}`,
+    meta: JSON.stringify({
+      phase: "scheduled",
+      errorKind,
+      attempt: decision.attempt,
+      maxAttempts,
+      delayMs: decision.delayMs,
+      messageId: message._id,
+    }),
+    });
+  } catch (e) {
+    console.error("[turnRetry] trace failed (non-fatal):", (e as Error)?.message ?? e);
+  }
   console.log(
-    `[turnRetry] scheduled attempt ${decision.attempt}/${MAX_TURN_RETRIES} in ${decision.delayMs}ms for chat ${message.chatId}`,
+    `[turnRetry] scheduled attempt ${decision.attempt}/${maxAttempts} (${errorKind}) in ${decision.delayMs}ms for chat ${message.chatId}`,
   );
+}
+
+/** Parts that BLOCK a retry = user-visible content or real (billed) work.
+ *  `provenance` parts NEVER block: they report the prompt's injected context
+ *  (knowledge/hindsight) and are attached to every turn on instrumented
+ *  gateways — counting them would disable the retry exactly where it matters
+ *  (live prod 2026-07-20: every errored ataraxis turn carried 2-3 provenance
+ *  parts). The bridge-synthesized Hermes mixture-of-agents STRUCTURE marker is
+ *  conditionally exempt — see countBlockingParts (codex P1: aggregation may
+ *  have started real reference work). */
+function isBlockingPart(part: { kind: string; name?: string }): boolean {
+  if (part.kind === "provenance") return false;
+  return true;
+}
+
+async function countBlockingParts(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+): Promise<number> {
+  const parts = await ctx.db
+    .query("messageParts")
+    .withIndex("by_message", (q) => q.eq("messageId", messageId))
+    .collect();
+  let blocking = 0;
+  let moaMarkers = 0;
+  for (const d of parts) {
+    const part = d.part as { kind: string; name?: string };
+    if (part.kind === "tool" && part.name === "mixture_of_agents") {
+      moaMarkers++;
+      continue; // judged below against the children's actual outcome
+    }
+    if (isBlockingPart(part)) blocking++;
+  }
+  if (moaMarkers > 0) {
+    // The MoA marker is emitted when aggregation STARTS — reference agents
+    // may have completed real (billed) work even though the parent errored
+    // empty (codex P1). It stays non-blocking ONLY when every child row of
+    // this message is terminal error/aborted with no delivered result (the
+    // everything-failed-at-connect shape, live 2026-07-20); any running or
+    // productive child blocks the retry.
+    // TARGETED read (codex P2 — an unbounded by_chat walk on a long chat
+    // could blow the finalize transaction): only THIS turn's children.
+    const children = await ctx.db
+      .query("subAgents")
+      .withIndex("by_parent_message", (q) =>
+        q.eq("parentMessageId", messageId),
+      )
+      .collect();
+    // NO observed children = NO EVIDENCE (the observer's upsert is async and
+    // may not have landed — codex P1): the marker blocks. Exemption requires
+    // POSITIVE proof that every child died fruitless — terminal failure, no
+    // result, AND no tool activity (a child that RAN a tool did real work
+    // with possible external effects even if it then failed — codex P1).
+    let allDeadFruitless = children.length > 0;
+    for (const c of children) {
+      if (!allDeadFruitless) break;
+      const dead = c.status === "error" || c.status === "aborted";
+      const fruitless = !(
+        typeof c.resultText === "string" && c.resultText.trim() !== ""
+      );
+      const ranTool =
+        (await ctx.db
+          .query("subAgentToolParts")
+          .withIndex("by_child", (q) =>
+            q.eq("childSessionKey", c.childSessionKey),
+          )
+          .take(1)).length > 0;
+      if (!dead || !fruitless || ranTool) allDeadFruitless = false;
+    }
+    if (!allDeadFruitless) blocking += moaMarkers;
+  }
+  return blocking;
 }
 
 async function hasActiveOutbox(
@@ -208,10 +350,54 @@ export const autoRetryTurn = internalMutation({
     attempt: v.number(),
   },
   handler: async (ctx, { chatId, messageId, attempt }) => {
+    // OUTCOME trace (fire side of the schedule trace): stand-downs carry their
+    // reason, so /traces explains a retry that did NOT run; the redispatch
+    // trace closes the chain (the re-run's own dispatch/finalize follow).
+    const traceOutcome = async (outcome: string, reason?: string) => {
+      try {
+        await writeTraceEvent(ctx, {
+        kind: "chat.auto_retry",
+        direction: "internal",
+        principalType: "system",
+        principalId: "turn-retry",
+        chatId,
+        correlationId: `${chatId}:${messageId}`,
+        meta: JSON.stringify({
+          phase: "fired",
+          outcome,
+          ...(reason ? { reason } : {}),
+          attempt,
+          messageId,
+        }),
+        });
+      } catch (e) {
+        console.error(
+          "[turnRetry] trace failed (non-fatal):",
+          (e as Error)?.message ?? e,
+        );
+      }
+    };
+    // Stand-down helper: clear the visible countdown stamp (the card must not
+    // keep promising a retry that will never come) + trace the reason.
+    const standDown = async (reason: string, clearStamp = true) => {
+      if (clearStamp) {
+        const m = await ctx.db.get(messageId);
+        if (m !== null && m.autoRetry !== undefined) {
+          await ctx.db.patch(messageId, { autoRetry: undefined });
+        }
+      }
+      await traceOutcome("stand_down", reason);
+    };
     const chat = await ctx.db.get(chatId);
-    if (chat === null) return; // chat deleted meanwhile
+    if (chat === null) {
+      await traceOutcome("stand_down", "chat_deleted");
+      return;
+    }
     // Regular chats only (mirrors the schedule-time gate — defense in depth).
-    if (chat.kind != null) return;
+    if (chat.kind != null) {
+      await standDown("utility_chat");
+      return;
+    }
     const message = await ctx.db.get(messageId);
     // Gone (user deleted / manually regenerated) or repainted — stand down.
     if (
@@ -221,16 +407,19 @@ export const autoRetryTurn = internalMutation({
       !RETRYABLE_KINDS.has(message.errorCode ?? "") ||
       (message.text ?? "") !== ""
     ) {
+      await standDown("message_changed", message !== null);
       return;
     }
-    const parts = await ctx.db
-      .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", messageId))
-      .take(1);
-    if (parts.length > 0) return; // something visible landed after all
+    if ((await countBlockingParts(ctx, messageId)) > 0) {
+      await standDown("visible_parts_landed");
+      return;
+    }
     // The chat must still be idle: a pending/queued row means a newer send is in
     // flight (or held) — retrying the old turn would re-order the conversation.
-    if (await hasActiveOutbox(ctx, chatId)) return;
+    if (await hasActiveOutbox(ctx, chatId)) {
+      await standDown("chat_busy");
+      return;
+    }
     // No OTHER turn streaming (defense in depth; the errored turn's own
     // streamingText row was deleted by its finalize).
     const streaming = await ctx.db
@@ -239,7 +428,10 @@ export const autoRetryTurn = internalMutation({
         q.eq("chatId", chatId).eq("status", "streaming"),
       )
       .first();
-    if (streaming !== null) return;
+    if (streaming !== null) {
+      await standDown("another_turn_streaming");
+      return;
+    }
     // The errored card must still be the LOGICALLY-LAST message, immediately
     // preceded by the user turn we are about to re-run (same ordering the
     // regenerate path uses — lib/messageOrder.compareOrder).
@@ -249,9 +441,15 @@ export const autoRetryTurn = internalMutation({
       .collect();
     const ordered = [...chatMessages].sort(compareOrder);
     const last = ordered[ordered.length - 1];
-    if (!last || last._id !== messageId) return;
+    if (!last || last._id !== messageId) {
+      await standDown("not_last_message");
+      return;
+    }
     const lastUser = ordered[ordered.length - 2];
-    if (!lastUser || lastUser.role !== "user") return;
+    if (!lastUser || lastUser.role !== "user") {
+      await standDown("no_preceding_user_turn");
+      return;
+    }
 
     // --- All guards passed: this is a pure re-run. -------------------------
     // 1. Drop the empty error card (nothing visible is lost — guarded above).
@@ -263,6 +461,43 @@ export const autoRetryTurn = internalMutation({
       chatId,
       new Set([messageId]),
     );
+    // Cascade the card's parts (provenance rows on instrumented gateways —
+    // codex P2: deleting only the message orphaned them, accumulating
+    // inaccessible payloads across retries). Mirrors messages.deleteMessage.
+    const cardParts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .collect();
+    for (const d of cardParts) {
+      await ctx.db.delete(d._id);
+    }
+    // Cascade the card's sub-agent rows + their detail too (an allowed MoA
+    // retry has dead-fruitless children — codex P2: leaving them would show
+    // stale activity against the replacement turn). Same walk as
+    // messages.deleteMessage.
+    const cardSubAgents = await ctx.db
+      .query("subAgents")
+      .withIndex("by_parent_message", (q) =>
+        q.eq("parentMessageId", messageId),
+      )
+      .collect();
+    for (const sa of cardSubAgents) {
+      const saParts = await ctx.db
+        .query("subAgentToolParts")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", sa.childSessionKey),
+        )
+        .collect();
+      for (const d of saParts) await ctx.db.delete(d._id);
+      const saThreads = await ctx.db
+        .query("subAgentInteractions")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", sa.childSessionKey),
+        )
+        .collect();
+      for (const d of saThreads) await ctx.db.delete(d._id);
+      await ctx.db.delete(sa._id);
+    }
     await ctx.db.delete(messageId);
     // 2. Rebuild the outbox row from the user turn — same shape as the manual
     //    regenerate (messages.deleteMessage), incl. file attachments + per-turn
@@ -322,20 +557,9 @@ export const autoRetryTurn = internalMutation({
       ...(routedAgent ? { routedAgent } : {}),
     });
     await ctx.db.patch(chatId, { updatedAt: Date.now() });
-    // Observability: a content-free marker so the trace timeline shows the
-    // automatic recovery (kind mirrors openclaw.reset's metadata discipline).
-    try {
-      await ctx.scheduler.runAfter(0, internal.observability.recordEvent, {
-        kind: "chat.auto_retry",
-        direction: "internal",
-        principalType: "system",
-        principalId: "convex",
-        chatId,
-        correlationId: `${chatId}:autoretry`,
-        meta: JSON.stringify({ attempt, max: MAX_TURN_RETRIES }),
-      });
-    } catch (e) {
-      console.error("[turnRetry] trace failed (non-fatal):", (e as Error)?.message ?? e);
-    }
+    // Observability: the REDISPATCH outcome closes the schedule->fire chain
+    // (same correlationId as the schedule trace); the re-run's own dispatch +
+    // finalize traces then show whether the retry RESOLVED the failure.
+    await traceOutcome("redispatch", message.errorCode ?? undefined);
   },
 });

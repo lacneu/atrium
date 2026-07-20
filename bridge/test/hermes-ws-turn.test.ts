@@ -58,8 +58,15 @@ function spyWriter() {
     setPhase: (_id: string, phase: string) => {
       calls.push(["setPhase", phase]);
     },
-    finalize: async (_id: string, status: string) => {
+    finalize: async (
+      _id: string,
+      status: string,
+      text?: string,
+      error?: string | null,
+      errorKind?: string | null,
+    ) => {
       calls.push(["finalize", status]);
+      calls.push(["finalizeDetail", { status, text, error, errorKind }]);
     },
     reportSessionMeta: async (_chatId: string, meta: unknown) => {
       calls.push(["reportSessionMeta", meta]);
@@ -520,4 +527,37 @@ describe("Hermes WS turn (live capture replay)", () => {
     expect(phases).toContain("web_search:completed");
   });
 
+});
+
+describe("WS failure-prose promotion + transient classification (codex P2)", () => {
+  it("failure prose streamed as deltas then a bare `error` event: promoted, classified, zero text", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "cerr",
+        sessionKey: "hermes:hermes-agent:chat:u:cerr",
+        providerChatId: null,
+        text: "ping",
+        onBoundSession: async () => {},
+      },
+      (_sid, cb) => {
+        onEvent = cb;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    onEvent("message.delta", { text: "API call failed after 3 retries: Connection error" });
+    onEvent("error", {});
+    await run.done;
+    const fin = calls.find(([n]) => n === "finalizeDetail");
+    expect(fin).toBeDefined();
+    const d = (fin as [string, Record<string, unknown>])[1];
+    expect(d.status).toBe("error");
+    expect(d.text).toBe(""); // prose never persisted as the reply
+    expect(String(d.error)).toContain("API call failed after 3 retries");
+    expect(d.errorKind).toBe("provider_internal");
+  });
 });

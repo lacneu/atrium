@@ -150,6 +150,40 @@ const SESSION_INIT_CONFLICT_RE = /reply session initialization conflicted/i;
 const EMBEDDED_LOCK_CONFLICT_RE =
   /session file changed while embedded prompt lock/i;
 
+// TRANSIENT provider-internal failure (upstream 5xx / overload / malformed
+// stream / network cut): the classes where an automatic re-dispatch is what
+// the user would do by hand.
+//
+// COST/SIDE-EFFECT ARBITRATION for the NETWORK markers (codex P1, decided by
+// the user 2026-07-20 — the "VPN flip" resilience he explicitly wants, same
+// as Claude Code's own visible retries): a connection cut AFTER the provider
+// accepted the call can mask a billed completion whose response never
+// arrived. Re-dispatching then re-bills at most ONE completion — exactly the
+// user's manual re-send. It can NEVER duplicate side effects: gateway tools
+// only execute from RECEIVED responses, and any received tool/media/text
+// leaves parts or text that the zero-content gates catch (the retry stands
+// down). Bounded 2 attempts; classification stays marker-strict — live prod 2026-07-20 (fabien): OpenAI internal error killed a
+// zero-content turn, the manual re-send succeeded. Classification is by
+// TRANSIENT MARKER, never by envelope ("All models failed (…)" wraps the
+// per-model causes — only their content proves transience), against the
+// gateway's own vendored error surface (dist assistant-error-format, read
+// 2026-07-20):
+//   "The AI service returned an (internal) error. Please try again (in a moment)."
+//   "The AI service is temporarily overloaded/unavailable (HTTP 5xx). …"
+//   "The provider returned an HTML error page … (e.g. Cloudflare) blocked …"
+//   "LLM streaming response contained a malformed fragment. Please try again."
+//   raw OpenAI generic: "An error occurred while processing your request"
+//   bare transport statuses: HTTP 5xx / 5xx status words.
+const PROVIDER_INTERNAL_TEXT_RE =
+  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
+// NEVER-transient guards, checked FIRST: an auth/entitlement/config failure
+// matching a loose 5xx-ish marker must not auto-retry (a wrong key retried is
+// wasted quota and a misleading label; a refusal must stay a refusal). The
+// rate-limit family is also excluded — its correct handling is a LONGER
+// backoff than the 5/15s retry curve, and real gateways classify it upstream.
+const PROVIDER_INTERNAL_EXCLUDE_RE =
+  /rate[- ]?limit|too many requests|http\s*4\d\d\b|unauthorized|forbidden|invalid[_ ](?:api[_ ]?key|request|model)|api[_ ]?key|authentication|billing|quota|insufficient|not[_ ]found|unsupported|refus|content[_ ]policy|context overflow|prompt too large/i;
+
 // Terminal stopReason values we persist into the (metadata-only) pressure
 // trace. The schema types stopReason as a FREE string — anything outside this
 // allowlist buckets to "other" so a raw network string never reaches traces
@@ -1466,7 +1500,10 @@ export class Normalizer {
         : SESSION_INIT_CONFLICT_RE.test(error) ||
             EMBEDDED_LOCK_CONFLICT_RE.test(error)
           ? "session_init_conflict"
-          : null;
+          : PROVIDER_INTERNAL_TEXT_RE.test(error) &&
+              !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
+            ? "provider_internal"
+            : null;
     }
     if (errorKind) {
       // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:

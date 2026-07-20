@@ -8,6 +8,39 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.68.3] — Visible resilience: transient provider failures retry themselves
+
+Corrective release. Frontend + bridge + Convex (additive schema, zero
+migration); no breaking changes. Self-hosters: BOTH image updates and
+`npx convex deploy` (new auto-retry field on messages, new API route).
+
+- **A turn killed by a transient provider failure now retries itself,
+  visibly.** When the model provider fails before any content exists — an
+  internal error or overload (the production incident: OpenAI 5xx killing
+  zero-content turns), or a dropped connection such as a VPN flip severing
+  the gateway's upstream — the turn is re-dispatched automatically instead
+  of dying as an error card: bounded (2 attempts, 5 s / 15 s backoff), and
+  the card shows a live "Retrying automatically (1/2) in 4 s…" countdown
+  while it waits, Claude-Code-style. Classification is strict and
+  marker-based against the gateway's own error surface, with never-transient
+  exclusions (auth, quota, invalid request, rate-limit never retry) — and
+  only provably zero-content turns qualify, so a partial answer or billed
+  work (a generated file, a real tool run, productive sub-agents) is never
+  silently re-run. Both providers are covered, including failure prose the
+  Hermes runtime streams as reply text (now honestly shown as the error
+  instead).
+- **The whole retry chain is traceable.** Every decision lands in the
+  observability traces (`chat.auto_retry`): the failure's nature
+  (errorKind), each scheduled and fired attempt, stand-down reasons when the
+  world moved on, and the honest "exhausted" terminal — so an operator can
+  read end-to-end whether the retry resolved an incident.
+- **Anomaly attachments are readable through the observability API.** Watcher
+  agents ship full proposal documents with their anomalies; the anomalies
+  list only carried their name and size. A key-authed
+  `GET /api/v1/anomaly-attachments` (and the matching MCP tool
+  `get_anomaly_attachments`) now serves the content, so an operator's tooling
+  can read a proposal without UI access.
+
 ## [0.68.2] — The elapsed clock stays on delegated turns
 
 Corrective release, frontend-only. Self-hosters: updating the FRONTEND image

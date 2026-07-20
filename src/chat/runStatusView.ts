@@ -192,6 +192,9 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   // by the backend; this label shows when the bounded retries also came back
   // empty.
   empty_response_silent: m.runstatus_error_empty_silent,
+  // Transient upstream failure (provider 5xx / overload / network cut) —
+  // auto-retried (turnRetry); the card shows the countdown while scheduled.
+  provider_internal: m.runstatus_error_provider_internal,
   // The gateway's transient session-init OCC conflict — Convex auto-retries the
   // turn (turnRetry.ts); this card shows during the short backoff window and, if
   // the bounded retries exhaust, stays as the honest final state.

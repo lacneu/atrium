@@ -93,6 +93,10 @@ export const queryOpenClawInput = {
     .describe("Free-form passthrough forwarded to the bridge."),
 } as const;
 
+export const anomalyAttachmentsInput = {
+  anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
+};
+
 export const resolveAnomalyInput = {
   anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
   status: z.enum(["resolved", "acknowledged"]).optional()
@@ -731,6 +735,18 @@ export function listAnomalies(
     kind: args.kind,
   });
   return apiFetch(config, `/anomalies${query}`, {}, options);
+}
+
+/** GET /api/v1/anomaly-attachments — the agent-authored documents shipped with
+ *  ONE anomaly (list_anomalies shows only their metadata). Requires
+ *  `anomalies.read`. */
+export function getAnomalyAttachments(
+  config: Config,
+  args: { anomalyId: string },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  const query = qs({ anomalyId: args.anomalyId });
+  return apiFetch(config, `/anomaly-attachments${query}`, {}, options);
 }
 
 /** POST /api/v1/anomalies/resolve — close/acknowledge an anomaly. Requires

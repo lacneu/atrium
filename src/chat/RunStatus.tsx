@@ -1,6 +1,7 @@
 import { useContext, useEffect, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
-import { CircleAlert, Square } from "lucide-react";
+import { CircleAlert, RotateCw, Square } from "lucide-react";
+import { m } from "@/paraglide/messages.js";
 import type { MessageStatus } from "./convexTypes";
 import {
   runStatusView,
@@ -33,6 +34,41 @@ interface RunMeta {
   phase?: string | null;
   toolParts?: Array<{ toolName: string; phase?: string }>;
   activeToolName?: string | null;
+  autoRetry?: { attempt: number; maxAttempts: number; firesAt: number } | null;
+}
+
+// Claude-Code-style VISIBLE resilience: while a bounded automatic re-dispatch
+// of this errored turn is scheduled (turnRetry stamp), the error card shows a
+// live "retrying (N/M) in Xs…" line instead of reading as a dead end. The
+// stamp is cleared server-side when the retry fires (redispatch deletes the
+// card; a stand-down clears it) — the line can never outlive the truth by
+// more than the fire's own latency, and a small local grace covers it.
+function RetryCountdown({
+  retry,
+}: {
+  retry: { attempt: number; maxAttempts: number; firesAt: number };
+}) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const secondsLeft = Math.max(0, Math.ceil((retry.firesAt - Date.now()) / 1000));
+  return (
+    <span className="oc-error-card__retry" role="status">
+      <RotateCw size={13} className="oc-error-card__retry-spin" aria-hidden />
+      {secondsLeft > 0
+        ? m.runstatus_retry_countdown({
+            attempt: String(retry.attempt),
+            max: String(retry.maxAttempts),
+            seconds: String(secondsLeft),
+          })
+        : m.runstatus_retry_now({
+            attempt: String(retry.attempt),
+            max: String(retry.maxAttempts),
+          })}
+    </span>
+  );
 }
 
 export function RunStatus() {
@@ -42,6 +78,9 @@ export function RunStatus() {
   const error = useMessage((m) => (m.metadata?.custom as RunMeta | undefined)?.error);
   const errorCode = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.errorCode,
+  );
+  const autoRetry = useMessage(
+    (m) => (m.metadata?.custom as RunMeta | undefined)?.autoRetry ?? null,
   );
   // Boolean selector -> this only re-renders on the empty<->non-empty crossing,
   // not on every streamed token. Drives the thinking (no text) vs generating
@@ -119,6 +158,7 @@ export function RunStatus() {
               {detail}
             </span>
           ) : null}
+          {autoRetry ? <RetryCountdown retry={autoRetry} /> : null}
         </div>
       </div>
     );

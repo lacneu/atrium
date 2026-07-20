@@ -359,6 +359,8 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               : message.text,
           error: message.error,
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
+          // Visible auto-retry countdown (turnRetry stamp): attempt/max/firesAt.
+          autoRetry: message.autoRetry,
           // L2: ready downloadable-attachment count (subtle Sources-chip badge).
           attachedDocCount: message.attachedDocCount,
           // Dispatch lifecycle (queued | pending | sent | failed); null when no outbox

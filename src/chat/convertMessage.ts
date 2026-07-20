@@ -295,6 +295,8 @@ export function convertConvexMessage(
         // Stable failure class (gateway errorKind or dispatch code) — drives
         // the actionable localized headline on the error card.
         errorCode: message.errorCode ?? null,
+        // Visible auto-retry countdown (turnRetry stamp on a retryable error).
+        autoRetry: message.autoRetry ?? null,
         // Live processing phase (in-flight turns only) — thinking-placeholder
         // detail when Tools is ON.
         phase: message.phase ?? null,

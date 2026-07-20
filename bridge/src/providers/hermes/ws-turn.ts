@@ -26,6 +26,7 @@ import {
   EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
+import { classifyProviderInternal, isHermesRuntimeFailureText } from "./normalizer.js";
 import type {
   ConvexWriter,
   SessionMetaReport,
@@ -629,9 +630,34 @@ export function runHermesWsTurn(
             runId: runtimeSid,
           };
           if (status === "error") {
-            const msg = str(payload.error) || "Hermes run failed.";
+            // Prefer ANY detail the runtime attached (live 2026-07-20: an
+            // APIConnectionError run carried its cause outside `error`) — the
+            // detail both informs the user and feeds the transient classifier.
+            let msg =
+              str(payload.error) ||
+              str(payload.message) ||
+              str(payload.detail) ||
+              str(payload.summary) ||
+              "Hermes run failed.";
+            // Failure prose streamed as the reply body (live 2026-07-20:
+            // "API call failed after 3 retries: Connection error" WAS the
+            // text while `error` fell back): promote it — it is not content,
+            // and leaving it blocks the zero-content auto-retry.
+            if (
+              msg === "Hermes run failed." &&
+              typeof finalEv.text === "string" &&
+              isHermesRuntimeFailureText(finalEv.text)
+            ) {
+              msg = finalEv.text.trim();
+              finalEv.text = "";
+              // The prose also STREAMED live: the finalize must not resurrect
+              // it from the stream row (codex P1 — atomic discard).
+              (finalEv as { discardStreamText?: boolean }).discardStreamText = true;
+            }
             finalEv.error = msg;
             statusEv.message = msg;
+            const kind = classifyProviderInternal(msg);
+            if (kind) finalEv.errorKind = kind;
           }
           apply([finalEv, statusEv]);
           settle();
@@ -641,9 +667,34 @@ export function runHermesWsTurn(
           finalized = true;
           closeOpenTools();
           closeMoaAggregator("error");
-          const msg = str(payload.message) || str(payload.text) || "Hermes run failed.";
+          let msg =
+            str(payload.message) ||
+            str(payload.text) ||
+            str(payload.error) ||
+            str(payload.detail) ||
+            "Hermes run failed.";
+          // Same failure-prose promotion as the terminal-status branch: the
+          // runtime can stream its failure text as DELTAS then send a bare
+          // `error` event (codex P2) — that prose is not content, and leaving
+          // it would render a fake reply AND block the zero-content retry.
+          let errText = replyText;
+          let promoted = false;
+          if (isHermesRuntimeFailureText(errText)) {
+            if (msg === "Hermes run failed.") msg = errText.trim();
+            errText = "";
+            promoted = true;
+          }
+          const errKind = classifyProviderInternal(msg);
           apply([
-            { type: EVENT_MESSAGE_FINAL, text: replyText, error: msg },
+            {
+              type: EVENT_MESSAGE_FINAL,
+              text: errText,
+              error: msg,
+              ...(errKind ? { errorKind: errKind } : {}),
+              // The prose streamed live — discard the stream fallback too
+              // (codex P1).
+              ...(promoted ? { discardStreamText: true } : {}),
+            },
             { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
           ]);
           settle();
@@ -706,8 +757,14 @@ export function runHermesWsTurn(
         // add a SECOND error bubble for the same send (codex P2).
         finalized = true;
         const msg = (err as Error)?.message ?? String(err);
+        const sendKind = classifyProviderInternal(msg);
         apply([
-          { type: EVENT_MESSAGE_FINAL, text: "", error: msg },
+          {
+            type: EVENT_MESSAGE_FINAL,
+            text: "",
+            error: msg,
+            ...(sendKind ? { errorKind: sendKind } : {}),
+          },
           { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
         ]);
         await chain.catch(() => {});

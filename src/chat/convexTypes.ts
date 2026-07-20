@@ -190,6 +190,9 @@ export interface ConvexMessageView {
   /** Stable failure class: gateway errorKind (context_length|rate_limit|timeout|
    *  refusal) or a curated dispatch code — maps to a localized headline. */
   errorCode?: string;
+  /** Visible auto-retry state (turnRetry stamp): a bounded automatic
+   *  re-dispatch of this errored turn is scheduled. */
+  autoRetry?: { attempt: number; maxAttempts: number; firesAt: number };
   /** Live processing phase of an IN-FLIGHT turn (processing_history/compacting/
    *  querying_gateway/awaiting_subagents) — merged from the streaming row; shown
    *  by the thinking placeholder when Tools is ON. Absent once text streams. */

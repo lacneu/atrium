@@ -923,6 +923,59 @@ http.route({
   }),
 });
 
+// Attachments of ONE anomaly (key-authed): the agent-authored documents shipped
+// with report_anomaly (e.g. a Guetteur proposal markdown). list_anomalies shows
+// only their metadata — this serves the CONTENT so the obs MCP can read a
+// proposal without UI access (diagnostic-gap fill, 2026-07-20).
+http.route({
+  path: "/api/v1/anomaly-attachments",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number) =>
+      ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/anomaly-attachments",
+        method: "GET",
+        status,
+        latencyMs: Date.now() - startedAt,
+      });
+    if (!principalHasPermission(principal, PERMISSIONS.ANOMALIES_READ)) {
+      await trace(403);
+      return apiJson(
+        { ok: false, error: "missing permission: anomalies.read" },
+        403,
+      );
+    }
+    const id = url.searchParams.get("anomalyId");
+    if (!id) {
+      await trace(400);
+      return apiJson({ ok: false, error: "missing anomalyId" }, 400);
+    }
+    let attachments: { name: string; content: string }[];
+    try {
+      attachments = await ctx.runQuery(internal.anomalies.attachmentsInternal, {
+        anomalyId: id as Id<"anomalies">,
+      });
+    } catch {
+      await trace(404);
+      return apiJson({ ok: false, error: "unknown anomalyId" }, 404);
+    }
+    await trace(200);
+    return apiJson({ ok: true, attachments });
+  }),
+});
+
 // Report an anomaly OR a self-repair action taken (key-authed). Mirrors the
 // /api/v1/traces spine: authenticate -> require anomalies.report -> validate
 // body -> record an `api.call` trace -> insert the source:"agent" anomaly.

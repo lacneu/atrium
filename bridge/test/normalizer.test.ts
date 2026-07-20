@@ -1028,6 +1028,78 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     }
   });
 
+  it("TRANSIENT provider failures (gateway wraps, raw 5xx, network cuts) classify to provider_internal", () => {
+    // The gateway's own vendored wraps (dist assistant-error-format, read
+    // 2026-07-20) + raw transport markers (the VPN-flip family).
+    const transient = [
+      "The AI service returned an internal error. Please try again in a moment.",
+      "The AI service returned an error. Please try again.",
+      "The AI service is temporarily overloaded. Please try again in a moment.",
+      "The AI service is temporarily unavailable (HTTP 522). Please try again in a moment.",
+      "LLM streaming response contained a malformed fragment. Please try again.",
+      "HTTP 500: An error occurred while processing your request.",
+      "All models failed (1): openai/gpt-5.6-sol: 502 Bad Gateway",
+      "fetch failed",
+      "read ECONNRESET",
+      "socket hang up",
+    ];
+    for (const error of transient) {
+      const n = newNormalizer();
+      const c = new Clock();
+      n.beginTurn(c.now);
+      n.noteRunStarted(OWN_RUN, c.now);
+      const events = n.feed(
+        chatFrame({ state: "error", errorMessage: error }),
+        c.tick(),
+      );
+      const final = events.find((e) => e.type === "message.final");
+      expect(final?.errorKind, error).toBe("provider_internal");
+    }
+  });
+
+  it("NEVER-transient failures are NOT classified provider_internal (no retry on auth/quota/4xx/rate-limit)", () => {
+    const nonTransient = [
+      "The AI service is temporarily rate-limited. Please try again in a moment.",
+      "HTTP 401: Unauthorized",
+      "HTTP 429: Too Many Requests",
+      "invalid_api_key: Incorrect API key provided",
+      "HTTP 404: model not found",
+      "insufficient_quota: You exceeded your current quota",
+      "All models failed (1): openai/gpt-5.5: 403 Forbidden",
+    ];
+    for (const error of nonTransient) {
+      const n = newNormalizer();
+      const c = new Clock();
+      n.beginTurn(c.now);
+      n.noteRunStarted(OWN_RUN, c.now);
+      const events = n.feed(
+        chatFrame({ state: "error", errorMessage: error }),
+        c.tick(),
+      );
+      const final = events.find((e) => e.type === "message.final");
+      expect(final?.errorKind ?? null, error).toBeNull();
+    }
+  });
+
+  it("the SPECIFIC classes keep priority over provider_internal (overflow, conflict)", () => {
+    // "Context overflow … try again" must stay context_length even though it
+    // contains no transient marker; a session conflict stays its own class.
+    const n = newNormalizer();
+    const c = new Clock();
+    n.beginTurn(c.now);
+    n.noteRunStarted(OWN_RUN, c.now);
+    const events = n.feed(
+      chatFrame({
+        state: "error",
+        errorMessage:
+          "Context overflow: prompt too large for the model. Try /reset (or /new).",
+      }),
+      c.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBe("context_length");
+  });
+
   it("the gateway session-init OCC conflict (no errorKind) classifies to session_init_conflict", () => {
     // The exact live-incident message (2026-07-09): the gateway's
     // commitReplySessionInitialization threw after its one internal retry.

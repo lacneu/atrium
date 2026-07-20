@@ -29,7 +29,41 @@ import type { SseFrame } from "./sse.js";
  *  stream is: run.started → message.started → assistant.delta×N →
  *  [tool.progress (thinking noise)] → assistant.completed{content} →
  *  run.completed{messages,usage} → done. */
-export const HERMES_EVENT_NAMES = {
+export // TRANSIENT provider-internal failure markers (upstream 5xx / overload /
+// internal error) vs NEVER-transient exclusions (auth/quota/invalid/rate-limit)
+// — mirror of the OpenClaw normalizer's fallback (one stable code:
+// `provider_internal`, consumed by Convex's bounded zero-content auto-retry).
+// Hermes has no vendored error-wrap table, so only generic transport/provider
+// markers are claimed; anything ambiguous stays unclassified (fail-safe: an
+// honest error card, no retry).
+const PROVIDER_INTERNAL_TEXT_RE =
+  /http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|internal error|server_error|overloaded|service unavailable|\bupstream (?:error|connect)|fetch failed|socket hang ?up|network error|connection error|apiconnectionerror|econnreset|econnrefused|etimedout|enotfound|eai_again/i;
+const PROVIDER_INTERNAL_EXCLUDE_RE =
+  /rate[- ]?limit|too many requests|http\s*4\d\d\b|unauthorized|forbidden|invalid[_ ](?:api[_ ]?key|request|model)|api[_ ]?key|authentication|billing|quota|insufficient|not[_ ]found|unsupported|refus|content[_ ]policy|context|token/i;
+
+/** The Hermes runtime's OWN failure prose, streamed as assistant TEXT on some
+ *  WS-transport failures (live 2026-07-20: "API call failed after 3 retries:
+ *  Connection error" arrived as the reply body while `error` fell back to
+ *  "Hermes run failed."). A terminal-ERROR turn whose whole short text starts
+ *  with one of these prefixes is failure prose, not content — promote it to
+ *  the error detail so the zero-content retry gate sees the truth. Prefixes
+ *  are the exact conversation_loop formats read from the runtime's logs. */
+export const HERMES_RUNTIME_FAILURE_PREFIX_RE =
+  /^(?:api call failed after \d+ retr(?:y|ies)\s*[:.]|streaming failed before delivery\s*:)/i;
+
+export function isHermesRuntimeFailureText(text: string): boolean {
+  const t = text.trim();
+  return t.length > 0 && t.length <= 300 && HERMES_RUNTIME_FAILURE_PREFIX_RE.test(t);
+}
+
+export function classifyProviderInternal(error: string): string | null {
+  return PROVIDER_INTERNAL_TEXT_RE.test(error) &&
+    !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
+    ? "provider_internal"
+    : null;
+}
+
+const HERMES_EVENT_NAMES = {
   // Turn started. message.started = the assistant message opening — no
   // NormalizedEvent needed (the sink opened the row on beginTurn).
   started: new Set(["run.started"]),
@@ -350,8 +384,28 @@ export class HermesNormalizer {
       runId: this.runId,
     };
     if (error) {
+      // Runtime failure prose streamed as the reply body: promote it to the
+      // error detail (the text is not content — leaving it would both mislead
+      // and block the zero-content auto-retry).
+      if (
+        (error === "Hermes run failed." || !error) &&
+        typeof finalEvent.text === "string" &&
+        isHermesRuntimeFailureText(finalEvent.text)
+      ) {
+        error = finalEvent.text.trim();
+        finalEvent.text = "";
+        // The prose streamed live — discard the stream fallback (codex P1).
+        (finalEvent as { discardStreamText?: boolean }).discardStreamText = true;
+      }
       finalEvent.error = error;
       statusEvent.message = error;
+      // TRANSIENT upstream failure classification (same stable code as the
+      // OpenClaw side): rides message.final -> persisted as the message's
+      // errorCode -> keys Convex's bounded zero-content auto-retry. Marker-
+      // based with never-transient exclusions checked first (see
+      // classifyProviderInternal).
+      const kind = classifyProviderInternal(error);
+      if (kind) finalEvent.errorKind = kind;
     }
     return [finalEvent, statusEvent];
   }

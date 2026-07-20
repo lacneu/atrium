@@ -5611,6 +5611,21 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.76rem;
   color: var(--muted-foreground);
 }
+.oc-error-card__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.oc-error-card__retry-spin {
+  animation: oc-spin 1.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-error-card__retry-spin { animation: none; }
+}
 
 /* Bridge tab — health dot on the tab label + detailed health view. */
 .oc-bridge-dot {
