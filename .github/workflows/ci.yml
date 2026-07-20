@@ -9,6 +9,40 @@ on:
     paths-ignore: ["**.md", "docs/**", "deploy/**"]
 
 jobs:
+  frontend-image:
+    name: frontend image supply chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Enforce minimal container policy
+        run: ./scripts/test-container-policy.sh
+      - name: Build the exact review candidate
+        run: |
+          docker build \
+            --build-arg ATRIUM_VERSION=ci \
+            --build-arg ATRIUM_REVISION="$GITHUB_SHA" \
+            --file docker/Dockerfile \
+            --tag local/atrium:ci \
+            .
+      - name: Generate frontend SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: local/atrium:ci
+          format: spdx-json
+          artifact-name: atrium-frontend-sbom.spdx.json
+          syft-version: v1.48.0
+          upload-artifact-retention: 90
+      - name: Reject high and critical vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: local/atrium:ci
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          output-format: table
+          grype-version: v0.116.0
+
   app:
     name: app (front + Convex)
     runs-on: ubuntu-latest

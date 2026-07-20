@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # Origin-agnostic static frontend image for atrium.
 #
 # The Convex URL is injected at RUNTIME via /config.json (written by the
@@ -6,7 +6,7 @@
 # therefore serves ANY deployment. See src/lib/runtimeConfig.ts.
 
 # --- Build stage --------------------------------------------------------------
-FROM node:24-alpine AS build
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -23,11 +23,21 @@ ARG ATRIUM_REVISION=unknown
 RUN node -p "JSON.stringify({ version: require('./package.json').version, revision: process.env.ATRIUM_REVISION })" > dist/version.json
 
 # --- Serve stage (Caddy — tiny, SPA-aware, no nginx) --------------------------
-FROM caddy:2-alpine AS serve
+# The official Caddy Alpine runtime intentionally installs curl and its current
+# binary was compiled with a Go release carrying known high-severity issues.
+# Build the exact Caddy release with a fixed Go toolchain, then copy only the
+# static binary and CA bundle into a pinned, package-manager-free runtime.
+FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS caddy-builder
+RUN CGO_ENABLED=0 GOBIN=/out go install github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.4
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
+COPY --from=caddy-builder /out/caddy /usr/bin/caddy
+COPY --from=caddy-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /app/dist /srv
 COPY docker/Caddyfile /etc/caddy/Caddyfile
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENV XDG_CONFIG_HOME=/config
+ENV XDG_DATA_HOME=/data
 # Also surface the version as an env var for a `docker exec <c> env | grep ATRIUM_VERSION`
 # check. CI passes the lockstep version; defaults to "dev" for local builds.
 ARG ATRIUM_VERSION=dev
