@@ -24,6 +24,7 @@
 import { ApiError, resolveConfig, type Config } from "./config.js";
 import {
   bridgeStatus,
+  getActivity,
   getCompat,
   getKpi,
   getSchema,
@@ -86,6 +87,7 @@ Commands:
   schemas                             GET  /schemas           (public)
   schema --id NAME                    GET  /schemas/:id       (public)
   sync --instance NAME                POST /instances/sync    (selfheal)
+  activity                            GET  /activity          (traces.read)
   traces [--limit N] [--q TEXT] [--from T] [--to T] [--kind K] [--status CODE]
          [--status-class 2xx|4xx|5xx] [--direction D] [--principal-type T]
          [--role-key K] [--correlation-id ID]
@@ -136,6 +138,8 @@ async function dispatch(
       }
       return syncInstance(config, { instance });
     }
+    case "activity":
+      return getActivity(config);
     case "traces": {
       const statusClass = str(flags["status-class"]);
       if (

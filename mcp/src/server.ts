@@ -18,6 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ApiError, resolveConfig } from "./config.js";
 import {
+  getActivity,
   getChatState,
   getChatStateInput,
   getFeedbackReport,
@@ -366,6 +367,24 @@ function main(): void {
       inputSchema: syncInstanceInput,
     },
     async (args) => run(() => syncInstance(config, args)),
+  );
+
+  server.registerTool(
+    "get_activity",
+    {
+      title: "Platform activity (deploy go/no-go)",
+      description:
+        "Live platform-activity snapshot (GET /activity). Requires traces.read. " +
+        "Returns activeStreams (count + max age), runningSubAgents (running " +
+        "delegations/tasks), outbox queued/pending backlog, distinct active users " +
+        "over 5/15/60-min windows, lastChatSendAgeSeconds, and a deployReadiness " +
+        "verdict: 'idle' (nothing in flight + no user send in the last 15 min — " +
+        "safe to redeploy bridge/Convex) or 'active' with the blocking reasons. " +
+        "CALL THIS BEFORE A DEPLOY. Counts/ages only — never content, chat ids " +
+        "or emails.",
+      inputSchema: {},
+    },
+    async () => run(() => getActivity(config)),
   );
 
   server.registerTool(

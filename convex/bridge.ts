@@ -1034,10 +1034,13 @@ export const consumeForkRehydration = internalMutation({
  * PACED-DISPATCH RE-CHECK (called at the top of `dispatch`): between the
  * drain's queued→pending flip and the delayed wake-up (QUEUE_DRAIN_DELAY_MS),
  * a sub-agent ANNOUNCE may have reopened an assistant bubble — the chat is
- * streaming again. A chat.send now would make the gateway KILL that announce
- * run mid-report (one run per session; live 2026-07-19: the report froze on
- * "Génération…" and the rest never arrived). Re-park the row as `queued`
- * instead; the announce's own finalize re-drains the queue FIFO.
+ * streaming again. A chat.send now can kill that announce run mid-report —
+ * not by gateway policy ("one run per session" is NOT an upstream invariant;
+ * v2026.7.1 steers/queues by design) but by the emergent session-file
+ * takeover, timing-dependent (live 2026-07-19: the report froze on
+ * "Génération…" and the rest never arrived; see
+ * docs/design/upstream-interpretation-comparison.md §2). Re-park the row as
+ * `queued` instead; the announce's own finalize re-drains the queue FIFO.
  */
 export const reparkIfBusy = internalMutation({
   args: { outboxId: v.id("outbox") },

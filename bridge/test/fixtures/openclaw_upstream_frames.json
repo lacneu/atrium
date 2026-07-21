@@ -1,0 +1,56 @@
+{
+  "_about": "Wire frames extracted VERBATIM from the upstream OpenClaw unit tests at tag v2026.7.1 (github.com/openclaw/openclaw), adapted only for sessionKey/runId namespacing. Each scenario pins one interpretation contract documented in docs/design/upstream-interpretation-comparison.md — the shapes the gateway's own test suite guarantees on the wire. Source test file:line is cited per scenario. Replayed by test/upstream-frames.test.ts; do not edit shapes without re-checking the upstream tag.",
+  "upstream_tag": "v2026.7.1",
+  "session_key": "agent:main:atrium:chat:u-testuser01:own-chat",
+  "run_id": "run-own",
+  "scenarios": {
+    "aborted-user-stop-partial-text": {
+      "description": "src/gateway/chat-abort.test.ts:335-346 — a killed run broadcasts state:aborted with a free-form stopReason ('user' is a caller value, NOT in any enum) and the partial text snapshot. The turn must finalize aborted on state alone; stopReason must never reclassify it.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "delta", "deltaText": "  Partial reply  "}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 3, "state": "aborted", "stopReason": "user", "message": {"role": "assistant", "content": [{"type": "text", "text": "  Partial reply  "}], "timestamp": 1767323045000}}}
+      ]
+    },
+    "aborted-tool-validation-errormessage": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:2954-2961 — self-abort on tool-validation failure: state:aborted carries stopReason:'aborted' plus errorMessage (the ONLY errorMessage the gateway ever puts on an aborted frame, filtered by readToolValidationErrorSummary). Atrium finalizes aborted and deliberately does not persist that errorMessage as a message error.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "aborted", "stopReason": "aborted", "errorMessage": "edit tool validation failed: edits: must be an array"}}
+      ]
+    },
+    "error-timeout-stopreason-precedence": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:3023-3043 — a timed-out abort (lifecycle end aborted:true stopReason:'timeout') is emitted as state:ERROR, not aborted: the gateway consumes stopReason BEFORE emission and `state` carries the decision. The bridge must classify on state alone (error), never re-derive from stopReason.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "error", "stopReason": "timeout", "errorMessage": "agent provider timeout"}}
+      ]
+    },
+    "error-errorkind-rate-limit": {
+      "description": "src/gateway/server-chat.agent-events.test.ts:3829-3865 — a 429 lifecycle error reaches the wire as state:error with errorKind:'rate_limit' (detectErrorKind regex on the gateway side). The allowlisted wire kind must survive as the message's stable errorCode.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "error", "errorKind": "rate_limit", "errorMessage": "Provider call failed: 429 Too many requests", "message": {"role": "assistant", "content": [{"type": "text", "text": "Error: Provider call failed: 429 Too many requests"}], "timestamp": 1767323045000}}}
+      ]
+    },
+    "embedded-takeover-after-content": {
+      "description": "src/agents/embedded-agent-runner/run/attempt.session-lock.ts:1147-1152 (message thrown verbatim in failover-error.test.ts:1267-1273) — the session-file takeover error after real streamed content. Upstream refuses any retry once there is send evidence (subagent-announce-delivery.ts:383-397); the bridge's homologue is the hasRealContent() downgrade: close COMPLETE, class on the trace-only channel.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 1, "state": "delta", "deltaText": "Voici le rapport complet demandé."}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "error", "errorMessage": "session file changed while embedded prompt lock was released: /tmp/openclaw/session.jsonl"}}
+      ]
+    },
+    "init-conflict-zero-content": {
+      "description": "src/auto-reply/reply/session.ts (message verbatim in extensions/telegram/src/polling-session.test.ts:2610) — the pre-generation OCC init conflict. Upstream channels retry it with backoff; the bridge classifies it to the stable session_init_conflict code that Convex's bounded auto-retry keys on. Zero content is possible here (the error is thrown before any model call).",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 1, "state": "error", "errorMessage": "reply session initialization conflicted for agent:main:atrium:chat:u-testuser01:own-chat"}}
+      ]
+    },
+    "compaction-explicit-stream-signals": {
+      "description": "src/infra/agent-events.test.ts:460-464 + src/plugins/wired-hooks-compaction.test.ts:217-222 — the EXPLICIT mid-turn compaction signal: {stream:'compaction', phase:'start'} then {phase:'end', willRetry:true, completed:true}, with NO lifecycle end (the run pauses and continues on the same runId). The bridge CONSUMES these as the primary mid-turn compaction signal (one persisted 'midturn' marker, widened silence budget until content resumes) and must NEVER reset the accumulated text; the follow-on deltas append and the turn completes intact.",
+      "frames": [
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 1, "state": "delta", "deltaText": "part1"}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "compaction", "data": {"phase": "start"}}},
+        {"event": "agent", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "stream": "compaction", "data": {"phase": "end", "willRetry": true, "completed": true}}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 2, "state": "delta", "deltaText": " part2"}},
+        {"event": "chat", "payload": {"sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat", "runId": "run-own", "seq": 3, "state": "final"}}
+      ]
+    }
+  }
+}

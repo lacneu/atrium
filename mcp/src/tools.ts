@@ -679,6 +679,20 @@ export function deleteDeliverySessions(
   );
 }
 
+/**
+ * GET /api/v1/activity — the platform-activity snapshot for deploy go/no-go:
+ * activeStreams (count + max age), runningSubAgents, outbox queued/pending,
+ * distinct active users over 5/15/60-min windows, and a deployReadiness
+ * verdict ("idle" | "active" + the blocking reasons). Requires `traces.read`.
+ * SOC2: counts/ages/timestamps only — never a chatId, email or content.
+ */
+export function getActivity(
+  config: Config,
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  return apiFetch(config, "/activity", {}, options);
+}
+
 /** GET /api/v1/traces — recent trace events. Requires `traces.read`. */
 export function listTraces(
   config: Config,

@@ -259,6 +259,58 @@ http.route({
   }),
 });
 
+// Platform-activity snapshot — the deploy go/no-go read ("can I redeploy
+// bridge/Convex without cutting a live turn?"). Mirrors /api/v1/traces EXACTLY:
+// authenticate -> require traces.read -> record an `api.call` trace -> return.
+// SOC2: counts/ages/timestamps only — never a chatId, email or content.
+http.route({
+  path: "/api/v1/activity",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+
+    if (!principalHasPermission(principal, PERMISSIONS.TRACES_READ)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/activity",
+        method: "GET",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
+    }
+
+    const activity = await ctx.runQuery(internal.activity.activityInternal, {});
+
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/activity",
+      method: "GET",
+      status: 200,
+      latencyMs: Date.now() - startedAt,
+    });
+
+    return apiJson({ ok: true, activity });
+  }),
+});
+
 // Recent KPI rollups for a key-authed principal (increment 4). Mirrors the
 // /api/v1/traces route exactly: authenticate -> require kpi.read -> record an
 // `api.call` trace -> return recent rollups. 401 on a bad/disabled/expired key,

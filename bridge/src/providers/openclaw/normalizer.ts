@@ -462,6 +462,15 @@ export class Normalizer {
   private expectedSessionId: string | null = null;
   private suppressNextRotation = false;
   private compactionSignaled = false;
+  // EXPLICIT gateway compaction signals ({stream:"compaction"} agent events,
+  // upstream embedded-agent-subscribe.handlers.compaction.ts, v2026.7.1): the
+  // authoritative mid-turn signal. "active" between phase:start and phase:end,
+  // "ended" once an end was seen this turn. When present it is PREFERRED over
+  // the livenessState:"abandoned" heuristic — upstream, "abandoned" is ANY
+  // replayInvalid terminal without visible text (e.g. an interrupted tool
+  // chain), NOT compaction. The heuristic stays as the multi-version fallback
+  // (2026.5.19+ gateways emit no compaction stream; Hermes never does).
+  private explicitCompaction: "none" | "active" | "ended" = "none";
   private recoveryAttempted = false;
   // Diagnostic captures for the per-turn pressure trace (never classification):
   // the terminal frame's optional stopReason, and the REAL post-turn usage the
@@ -535,6 +544,7 @@ export class Normalizer {
     this.recoveryAttempted = false;
     this.suppressNextRotation = false;
     this.compactionSignaled = false;
+    this.explicitCompaction = "none";
     this.toolArgs.clear();
     // A fresh turn invalidates the previous run ids: frames arriving before the
     // new ack are admitted on sessionKey alone (ownRunIds empty), then the ack
@@ -882,13 +892,22 @@ export class Normalizer {
     // reply — do NOT let it fall through to applyVisible.
     if (state === "error" || state === "aborted") {
       if (state === "aborted") {
-        // An abort while a COMPACTION is pending is the gateway abandoning the
-        // run to compact (it resumes after the replay) — terminalizing it here
-        // froze real turns as "Interrompu" (live report 2026-07-04). Let the
-        // widened compaction grace keep the turn open instead. Its stopReason
-        // belongs to the ABANDONED attempt — never captured (codex P2: it
-        // would pollute the successful replay's trace).
-        if (this.compactionPending) {
+        // HEURISTIC path only: an abort while the abandoned-derived compaction
+        // is pending is the gateway abandoning the run to compact (it resumes
+        // after the replay) — terminalizing it here froze real turns as
+        // "Interrompu" (live report 2026-07-04). Let the widened compaction
+        // grace keep the turn open instead. Its stopReason belongs to the
+        // ABANDONED attempt — never captured (codex P2: it would pollute the
+        // successful replay's trace).
+        // EXPLICIT path: that rationale does NOT transfer. Upstream (v2026.7.1)
+        // never aborts a run to compact mid-turn — overflow PAUSES the run (no
+        // abort), threshold runs between requests, and manual aborts BEFORE
+        // any compaction event is emitted. A chat:aborted while an explicit
+        // compaction is active OR its overflow replay is still pending content
+        // is therefore a REAL abort (user Stop / operator / timeout):
+        // swallowing it would hold the turn on "compacting" until the 900s
+        // compaction_timeout backstop. Terminalize it normally.
+        if (this.compactionPending && this.explicitCompaction === "none") {
           return;
         }
       }
@@ -1044,6 +1063,10 @@ export class Normalizer {
         // Legacy 5.7 incremental: append verbatim (spaces are load-bearing).
         this.applyVisible(delta, false, false, now, events);
       }
+      return;
+    }
+    if (stream === "compaction") {
+      this.handleCompaction(data, now, events);
       return;
     }
     if (stream === "tool") {
@@ -1233,6 +1256,59 @@ export class Normalizer {
     }
   }
 
+  // -- explicit gateway compaction stream ({stream:"compaction"}) ------------
+
+  /**
+   * EXPLICIT compaction agent events (v2026.7.1
+   * embedded-agent-subscribe.handlers.compaction.ts): {phase:"start"} then
+   * {phase:"end", willRetry, completed}. The mid-turn OVERFLOW compaction
+   * emits NO lifecycle end at all — the run pauses and continues on the SAME
+   * runId — so the accumulated text stays valid and is NEVER reset here
+   * (unlike the abandoned-replay heuristic, whose restart invalidates it;
+   * pinned by the upstream fixture scenario compaction-explicit-stream-signals).
+   * `willRetry:true` = the failed LLM request is being replayed inside the
+   * same run (the Control UI's "retrying" state): keep the widened silence
+   * budget until content resumes (applyVisible clears it — there is no
+   * lifecycle start on this path). One persisted marker per turn
+   * (compactionSignaled guard, shared with the heuristic and the rotation
+   * detector).
+   */
+  private handleCompaction(data: JsonObject, now: number, events: BridgeEvent[]): void {
+    if (this.finalized) {
+      // Between-turns (threshold) compaction: nothing to guard here — the next
+      // turn's preflight rotation detector reports it on its own message.
+      return;
+    }
+    const phase = data.phase;
+    if (phase === "start") {
+      this.explicitCompaction = "active";
+      this.compactionPending = true; // widened recv budget while the gateway summarizes
+      this.armRecv(now);
+      events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
+      if (!this.compactionSignaled) {
+        this.compactionSignaled = true;
+        events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "midturn" });
+      }
+      // A session-id rotation following this compaction (truncateAfterCompaction)
+      // is THIS same compaction — never a second signal.
+      this.suppressNextRotation = true;
+      return;
+    }
+    if (phase === "end") {
+      this.explicitCompaction = "ended";
+      if (data.willRetry === true) {
+        // Overflow replay in flight on the same run: stay in the widened
+        // budget; resumed content restores the normal one.
+        this.armRecv(now);
+      } else {
+        // Compaction settled with no replay (threshold/manual): the run
+        // resumes its normal cadence.
+        this.compactionPending = false;
+        this.armRecv(now);
+      }
+    }
+  }
+
   private handleLifecycle(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
     const phase = data.phase;
     if (phase === "error") {
@@ -1255,11 +1331,32 @@ export class Normalizer {
       return;
     }
     if (phase === "end") {
-      // ONLY livenessState == "abandoned" signals an imminent compaction
-      // restart. A plain replayInvalid with livenessState == "working" is a
-      // normal terminal end (cache invalidated, no restart) and must NOT reset
-      // buffers.
+      // livenessState == "abandoned" is the multi-version compaction FALLBACK
+      // heuristic (2026.5.19+ gateways emit no explicit signal). A plain
+      // replayInvalid with livenessState == "working" is a normal terminal end
+      // (cache invalidated, no restart) and must NOT reset buffers.
       if (data.livenessState === "abandoned") {
+        // The EXPLICIT {stream:"compaction"} signal, when present this turn,
+        // is preferred over the heuristic: upstream (v2026.7.1) "abandoned"
+        // means ANY replayInvalid terminal without visible text — NOT
+        // compaction — and the true mid-turn compaction emits no lifecycle
+        // end at all.
+        if (this.explicitCompaction === "active") {
+          // Mid-compaction lifecycle end: the compaction machinery governs.
+          // The widened wait is already armed; the compaction end (or resumed
+          // content) resolves the turn — never a buffer reset on a signal
+          // upstream does not tie to compaction.
+          return;
+        }
+        if (this.explicitCompaction === "ended") {
+          // This gateway proved it emits explicit compaction signals, and no
+          // compaction is active: this abandoned end is a plain terminal
+          // (e.g. an interrupted tool chain). Normal end handling — a short
+          // follow-on grace, no reset, no 900s compaction wait.
+          this.arm("lifecycle_end", now + LIFECYCLE_END_GRACE);
+          events.push({ type: EVENT_RUN_STATUS, status: "working", runId: this.currentRunId });
+          return;
+        }
         this.resetForCompaction(now);
         // The abandoned run's deltas/snapshot are ALREADY persisted in Convex;
         // resetForCompaction only clears the normalizer's internal buffers. Emit
@@ -1339,6 +1436,13 @@ export class Normalizer {
     this.pendingAckText = "";
     this.clearWait("empty_final");
     this.clearWait("private_ack");
+    if (this.compactionPending) {
+      // Real content resumed ⇒ the compaction (incl. an overflow replay on the
+      // same run, which has no lifecycle start to clear this) is over: restore
+      // the normal silence budget.
+      this.compactionPending = false;
+      this.armRecv(now);
+    }
     events.push({ type: eventType, text: this.safeSanitizeText(emitted) });
     // A MEDIA: directive (or a bare outbound path) in the VISIBLE reply is a real
     // attachment — emit a media event so it renders as a downloadable part. We
@@ -1513,18 +1617,23 @@ export class Normalizer {
       EMBEDDED_LOCK_CONFLICT_RE.test(error) &&
       this.hasRealContent()
     ) {
-      // The EMBEDDED-LOCK flavor ONLY (structural discriminant, codex P1): its
-      // own message proves the generation had ENDED — "…while embedded prompt
-      // lock was RELEASED" is thrown when the runtime re-takes the lock to
-      // persist the finished run, i.e. after the reply streamed (live prod
-      // 2026-07-21: an announce delivery streamed its full report, then the
-      // follow-up turn the gateway had preempted tripped the lock — the
-      // complete reply wore an error badge). A persistence conflict on an
-      // intact reply: close COMPLETE; a retry could only duplicate it. The
-      // class survives on the trace-only channel. The INIT flavor ("reply
-      // session initialization conflicted") carries no such proof — with
-      // content it keeps the honest error card, and with zero content the
-      // bounded auto-retry handles it (unchanged).
+      // The EMBEDDED-LOCK flavor ONLY (structural discriminant, codex P1).
+      // What licenses the downgrade is the hasRealContent() gate, NOT a
+      // post-generation guarantee: upstream (v2026.7.1) throws this at the
+      // canonical post-stream reacquire, but ALSO mid-turn on transcript
+      // writes between steps of a multi-tool turn (withSessionWriteLock) —
+      // possibly with truncated streamed text. Either way, once content has
+      // streamed, upstream itself refuses any retry (the announce path's
+      // "send evidence" criterion — a retry could only duplicate the
+      // delivery), so content-present + this error ⇒ close COMPLETE (live
+      // prod 2026-07-21: an announce delivery streamed its full report, then
+      // the follow-up turn tripped the lock — the complete reply wore an
+      // error badge; see docs/design/upstream-interpretation-comparison.md
+      // §3). The class survives on the trace-only channel. The INIT flavor
+      // ("reply session initialization conflicted") is thrown PRE-generation
+      // — with content it keeps the honest error card (the content cannot be
+      // this turn's), and with zero content the bounded auto-retry handles
+      // it (unchanged).
       console.log(
         "[normalizer] session-conflict at finalize with streamed content — closing complete (persistence conflict, see gateway_pressure trace)",
       );

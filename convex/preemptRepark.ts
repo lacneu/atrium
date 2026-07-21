@@ -4,11 +4,18 @@
 // that wakes into an announce-reopened bubble is re-parked BEFORE it reaches
 // the gateway. Here the dispatch WON the race — the follow-up was already
 // running gateway-side when the sub-agent's delivery (announce) claimed the
-// session, and the gateway aborted the REAL turn (live prod 2026-07-21, report
-// ms746b01…: chat.send 09:03:46, gateway_abort 09:04:05, announce 09:04:09 —
-// the user's message was silently consumed and had to be re-sent by hand after
-// three session resets). Queueing a message mid-turn is a SUPPORTED feature:
-// the system, not the user, owns the recovery.
+// session, and the REAL turn died (live prod 2026-07-21, report ms746b01…:
+// chat.send 09:03:46, gateway_abort 09:04:05, announce 09:04:09 — the user's
+// message was silently consumed and had to be re-sent by hand after three
+// session resets). NOT a gateway arbitration policy: upstream (v2026.7.1)
+// resolves announce×send contention by steering/followup-queue/admission and
+// never kills either side by design — the kill is the EMERGENT session-file
+// takeover (EmbeddedAttemptSessionTakeoverError: whichever run detects the
+// other's session-file write on prompt-lock reacquire dies, so the loser is
+// timing-dependent — both directions occur; see
+// docs/design/upstream-interpretation-comparison.md §2). Queueing a message
+// mid-turn is a SUPPORTED feature: the system, not the user, owns the
+// recovery.
 //
 // MECHANISM — ride the battle-tested queue, never a bespoke dispatch:
 //   finalize (stream.ts, gatewayPreempted flag minted by the bridge sink for a

@@ -348,14 +348,17 @@ export class RunManager {
       // OPEN announce turn preempted by a real dispatch (the queued follow-up
       // was already in flight when the announce reopened the parent bubble —
       // rare: bridge.reparkIfBusy re-parks a paced dispatch that wakes into
-      // this state). The gateway kills the announce run when the new chat.send
-      // lands, so its final will NEVER come: left alone the reopened bubble
-      // strands `streaming`, the busy gate stalls the queue drain, and the
-      // 12-min watchdog errors it as stream_orphaned (live 2026-07-19,
-      // "Génération…" stuck + last queued card never dispatched). Close it
-      // COMPLETE now with the streamed partial text; no replay is attempted —
-      // the run is dead, nothing would answer it. Best-effort — the real turn
-      // must start regardless.
+      // this state). The announce run dies to the new chat.send not by gateway
+      // policy (upstream steers/queues by design) but by the emergent
+      // session-file takeover — the announce run trips the prompt-lock fence
+      // on the dispatch's session write and its final NEVER comes (see
+      // docs/design/upstream-interpretation-comparison.md §2): left alone the
+      // reopened bubble strands `streaming`, the busy gate stalls the queue
+      // drain, and the 12-min watchdog errors it as stream_orphaned (live
+      // 2026-07-19, "Génération…" stuck + last queued card never dispatched).
+      // Close it COMPLETE now with the streamed partial text; no replay is
+      // attempted — the run is dead, nothing would answer it. Best-effort —
+      // the real turn must start regardless.
       try {
         console.log(
           `[announce] open announce turn preempted by real dispatch — closing run=${this.currentSpontaneousRun.slice(0, 60)}`,

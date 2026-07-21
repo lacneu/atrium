@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.68.7] — Deploy-aware activity view, compaction on the gateway's own signals
+
+Operability and reliability release. No breaking changes; schema untouched.
+Deploy `npx convex deploy` plus the bridge image, then reconnect the
+observability MCP servers to pick up the new tool.
+
+- **Operators can check platform activity before deploying.** A new
+  `GET /api/v1/activity` (key-authed, `traces.read`) — with MCP tool
+  `get_activity` and CLI command `activity` — answers "can I deploy right
+  now?" in one call: active reply streams (with the oldest's age), running
+  sub-agents/background tasks, queued and pending sends, and distinct active
+  users over 5/15/60-minute windows (opaque identifiers only — no content,
+  no emails, no chat ids), plus a derived `deployReadiness: idle | active`
+  verdict that names each blocking signal. Every read is bounded with a
+  `capped` flag — a saturated read reports "active", never a false "idle".
+- **Compaction handling now follows the gateway's own explicit signals.**
+  2026.7.x gateways announce mid-turn compaction as first-class events
+  (`{stream:"compaction"}` start/end); the bridge now consumes them as the
+  primary signal: the turn shows an accurate "compacting" state, the widened
+  silence budget applies exactly while the gateway summarizes, and the
+  streamed text is preserved (the run pauses and resumes on the same run —
+  nothing is replayed). A user Stop during an explicit compaction now
+  terminates the turn honestly instead of freezing it until the 15-minute
+  backstop. The previous heuristic (deriving compaction from abandoned-run
+  liveness) remains solely as the fallback for older gateways and Hermes,
+  and stands down whenever explicit signals are present.
+- **The 0.68.5 recovery chain is now validated against the upstream
+  source.** A systematic comparison of the official Control UI and gateway
+  source at the supported version (documented in
+  `docs/design/upstream-interpretation-comparison.md`) confirmed the
+  send-idempotency handling (the re-dispatch's fresh key is provably
+  *necessary*: an aborted run poisons the original key for ~an hour
+  gateway-side), re-grounded the "complete reply after a session-lock
+  conflict" rule on its content gate, and corrected the attribution of
+  announce×send kills (an emergent, timing-dependent session takeover — not
+  a gateway policy — so the recovery covers both directions). Real upstream
+  protocol fixtures are now vendored and replayed in the bridge test suite,
+  pinning these behaviors against future gateway versions.
+
 ## [0.68.6] — Harden the bridge runtime supply chain
 
 - Remove the unused npm CLI and its dependency tree from the final bridge image,

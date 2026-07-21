@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import {
+  getActivity,
   getKpi,
   getKpiInput,
   getSchema,
@@ -68,6 +69,16 @@ describe("schema registry tools wire format", () => {
     const schema = z.object(getSchemaInput);
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ id: "provenance.v1" }).success).toBe(true);
+  });
+});
+
+describe("getActivity wire format", () => {
+  it("GETs /activity with no query params (a pure snapshot read)", async () => {
+    const { impl, calls } = fakeFetch();
+    await getActivity(CONFIG, { fetchImpl: impl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("http://127.0.0.1:3213/api/v1/activity");
+    expect(calls[0]!.init?.method).not.toBe("POST");
   });
 });
 

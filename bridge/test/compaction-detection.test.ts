@@ -6,12 +6,22 @@
 // ROTATION (pre-send describe sessionId "9629dc55…" vs run frames' payload
 // .sessionId "f2591abe…", confirmed by the checkpoint's pre/postCompaction ids).
 // A MID-TURN compaction surfaces as lifecycle end with livenessState "abandoned"
-// (the pre-existing resetForCompaction path).
+// (the resetForCompaction path) — kept as the MULTI-VERSION FALLBACK heuristic.
+//
+// Since v2026.7.1 the gateway also emits EXPLICIT {stream:"compaction"} agent
+// events ({phase:"start"} / {phase:"end", willRetry, completed} — upstream
+// embedded-agent-subscribe.handlers.compaction.ts): the authoritative mid-turn
+// signal, PREFERRED over the heuristic when present (upstream "abandoned" is
+// any replayInvalid terminal without visible text, NOT compaction). The
+// explicit overflow path never resets accumulated text (the run continues on
+// the same runId with no lifecycle end).
 
 import { describe, expect, it } from "vitest";
 import {
   Normalizer,
+  BASE_RECV_TIMEOUT,
   COMPACTION_RECV_TIMEOUT,
+  LIFECYCLE_END_GRACE,
 } from "../src/providers/openclaw/normalizer.js";
 import type { BridgeEvent } from "../src/core/events.js";
 import { TurnSink } from "../src/core/turn-sink.js";
@@ -166,6 +176,277 @@ describe("mid-turn compaction (livenessState abandoned)", () => {
     expect(compactionEvents(ev)).toHaveLength(0);
   });
 });
+
+// --- Explicit {stream:"compaction"} signals (gateway v2026.7.1+) -------------
+
+/** An explicit compaction agent event as the gateway emits it. */
+function compactionStreamFrame(
+  sessionId: string,
+  data: Record<string, unknown>,
+): unknown {
+  return {
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: RUN,
+      sessionKey: SESSION_KEY,
+      sessionId,
+      stream: "compaction",
+      data,
+    },
+  };
+}
+
+describe("explicit compaction stream (primary mid-turn signal)", () => {
+  it("start -> ONE midturn marker, accumulated text NEVER reset", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev: BridgeEvent[] = [
+      ...n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1),
+      ...n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2),
+      ...n.feed(
+        compactionStreamFrame(PRE_SESSION_ID, {
+          phase: "end",
+          willRetry: true,
+          completed: true,
+        }),
+        3,
+      ),
+    ];
+    const comp = compactionEvents(ev);
+    expect(comp).toHaveLength(1);
+    expect(comp[0]?.phase).toBe("midturn");
+    // Unlike the abandoned heuristic, the explicit path never blanks the
+    // buffer: no empty snapshot is emitted, the streamed prefix stays valid.
+    expect(
+      ev.some((e) => e.type === "message.snapshot" && e.text === ""),
+    ).toBe(false);
+  });
+
+  it("widened budget from start; willRetry:true keeps it; resumed content restores the normal one", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    expect(n.compactionPending).toBe(true);
+    expect(n.nextTimeout(2)).toBe(COMPACTION_RECV_TIMEOUT);
+    // Overflow replay announced (no lifecycle end will ever come): the widened
+    // budget survives the compaction end.
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        willRetry: true,
+        completed: true,
+      }),
+      3,
+    );
+    expect(n.compactionPending).toBe(true);
+    expect(n.nextTimeout(3)).toBe(COMPACTION_RECV_TIMEOUT);
+    // Content resumes on the SAME run — compaction over, normal budget back.
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1 part2"), 4);
+    expect(n.compactionPending).toBe(false);
+    expect(n.nextTimeout(4)).toBe(BASE_RECV_TIMEOUT);
+  });
+
+  it("end without retry (threshold settled) restores the normal budget immediately", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        willRetry: false,
+        completed: true,
+      }),
+      3,
+    );
+    expect(n.compactionPending).toBe(false);
+    expect(n.nextTimeout(3)).toBe(BASE_RECV_TIMEOUT);
+  });
+
+  it("explicit signal present -> the abandoned heuristic stands down (no reset, no 900s wait)", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev: BridgeEvent[] = [
+      ...n.feed(assistantFrame(PRE_SESSION_ID, "the answer"), 1),
+      ...n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2),
+      ...n.feed(
+        compactionStreamFrame(PRE_SESSION_ID, {
+          phase: "end",
+          willRetry: false,
+          completed: true,
+        }),
+        3,
+      ),
+      ...n.feed(assistantFrame(PRE_SESSION_ID, "the answer, complete"), 4),
+      // Upstream v2026.7.1: abandoned = ANY replayInvalid terminal without
+      // visible text — NOT compaction. With explicit signals seen this turn,
+      // it is a plain terminal end.
+      ...n.feed(
+        lifecycleFrame(PRE_SESSION_ID, {
+          phase: "end",
+          livenessState: "abandoned",
+          replayInvalid: true,
+        }),
+        5,
+      ),
+    ];
+    // No second marker, and CRUCIALLY no buffer reset (no empty snapshot).
+    expect(compactionEvents(ev)).toHaveLength(1);
+    expect(
+      ev.some((e) => e.type === "message.snapshot" && e.text === ""),
+    ).toBe(false);
+    // Normal follow-on grace, not the 900s compaction wait.
+    expect(n.nextTimeout(5)).toBe(LIFECYCLE_END_GRACE);
+    // The grace elapses -> the turn closes FINAL with the streamed text intact.
+    const done = n.tick(5 + LIFECYCLE_END_GRACE + 1);
+    const final = done.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final?.text).toBe("the answer, complete");
+  });
+
+  it("abandoned end DURING an active explicit compaction window is absorbed", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev: BridgeEvent[] = [
+      ...n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1),
+      ...n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2),
+      ...n.feed(
+        lifecycleFrame(PRE_SESSION_ID, {
+          phase: "end",
+          livenessState: "abandoned",
+          replayInvalid: true,
+        }),
+        3,
+      ),
+    ];
+    // The explicit signal governs: one marker, no reset, widened wait armed.
+    expect(compactionEvents(ev)).toHaveLength(1);
+    expect(
+      ev.some((e) => e.type === "message.snapshot" && e.text === ""),
+    ).toBe(false);
+    expect(n.compactionPending).toBe(true);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("silence for the full widened budget after an explicit start -> compaction_timeout (deadlock parity)", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    const ev = n.tick(2 + COMPACTION_RECV_TIMEOUT + 1);
+    const final = ev.find((e) => e.type === "message.final") as
+      | { errorKind?: string }
+      | undefined;
+    expect(final?.errorKind).toBe("compaction_timeout");
+  });
+
+  it("a rotation following an explicit compaction is the SAME compaction (no second signal)", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev: BridgeEvent[] = [
+      ...n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1),
+      ...n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2),
+      ...n.feed(
+        compactionStreamFrame(PRE_SESSION_ID, {
+          phase: "end",
+          willRetry: true,
+          completed: true,
+        }),
+        3,
+      ),
+      // The replay resumes on the ROTATED transcript id (truncateAfterCompaction).
+      ...n.feed(assistantFrame(POST_SESSION_ID, "part1 part2"), 4),
+    ];
+    const comp = compactionEvents(ev);
+    expect(comp).toHaveLength(1);
+    expect(comp[0]?.phase).toBe("midturn");
+  });
+
+  it("a compaction between turns (already finalized) is ignored", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "done"), 1);
+    n.endTurn(2);
+    const ev = [
+      ...n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 3),
+      ...n.feed(
+        compactionStreamFrame(PRE_SESSION_ID, {
+          phase: "end",
+          willRetry: false,
+          completed: true,
+        }),
+        4,
+      ),
+    ];
+    expect(compactionEvents(ev)).toHaveLength(0);
+    expect(n.compactionPending).toBe(false);
+  });
+
+  it("a chat:aborted DURING an active explicit window is a REAL abort (terminalizes, not swallowed)", () => {
+    // Upstream never aborts a run to compact mid-turn (overflow pauses,
+    // threshold runs between requests, manual aborts BEFORE the compaction
+    // events) — so an abort here is a user Stop/operator/timeout and must not
+    // hold the turn on "compacting" until the 900s backstop.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    const ev = n.feed(chatAbortedFrame(3), 3);
+    expect(
+      ev.some((e) => e.type === "run.status" && e.status === "aborted"),
+    ).toBe(true);
+    expect(n.finalized).toBe(true);
+  });
+
+  it("a chat:aborted during the overflow REPLAY (end willRetry:true, content pending) also terminalizes", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        willRetry: true,
+        completed: true,
+      }),
+      3,
+    );
+    expect(n.compactionPending).toBe(true); // replay in flight, no content yet
+    const ev = n.feed(chatAbortedFrame(4), 4);
+    expect(
+      ev.some((e) => e.type === "run.status" && e.status === "aborted"),
+    ).toBe(true);
+    expect(n.finalized).toBe(true);
+  });
+
+  it("HEURISTIC path unchanged: a chat:aborted while the abandoned-derived compaction is pending is still swallowed", () => {
+    // The abandoned heuristic's abort IS the gateway abandoning the run to
+    // compact (the replay follows) — live report 2026-07-04. No explicit
+    // signals seen this turn ⇒ the swallow rationale still holds.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(assistantFrame(PRE_SESSION_ID, "part1"), 1);
+    n.feed(
+      lifecycleFrame(PRE_SESSION_ID, {
+        phase: "end",
+        livenessState: "abandoned",
+        replayInvalid: true,
+      }),
+      2,
+    );
+    expect(n.compactionPending).toBe(true);
+    const ev = n.feed(chatAbortedFrame(3), 3);
+    expect(ev.some((e) => e.type === "run.status")).toBe(false);
+    expect(n.finalized).toBe(false);
+  });
+});
+
+/** A chat state:aborted broadcast as the gateway emits it (chat-abort.ts). */
+function chatAbortedFrame(seq: number): unknown {
+  return {
+    type: "event",
+    event: "chat",
+    payload: {
+      runId: RUN,
+      sessionKey: SESSION_KEY,
+      seq,
+      state: "aborted",
+      stopReason: "rpc",
+    },
+  };
+}
 
 // --- TurnSink: the signal becomes ONE persisted part + the pressure trace ----
 
