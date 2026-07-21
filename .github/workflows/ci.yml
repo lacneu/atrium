@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Enforce minimal container policy
-        run: ./scripts/test-container-policy.sh
+        run: |
+          ./scripts/test-container-policy.sh
+          ./scripts/test-bridge-container-policy.sh
       - name: Build the exact review candidate
         run: |
           docker build \

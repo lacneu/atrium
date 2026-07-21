@@ -148,6 +148,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Enforce minimal bridge container policy
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test-bridge-container-policy.sh
       - uses: docker/login-action@v4
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: meta
