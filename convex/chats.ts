@@ -14,6 +14,7 @@ import { requireActive, requireOwnedChat } from "./lib/access";
 import { getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
+import { isChatBusy } from "./lib/outboxQueue";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 import { purgeSummaryForChat } from "./chatSummaries";
 
@@ -270,6 +271,14 @@ export const resetSession = mutation({
   handler: async (ctx, { chatId }) => {
     const { userId, actor } = await requireActive(ctx);
     await requireOwnedChat(ctx, userId, chatId);
+    // A reset DURING an active turn resets the very session the run is
+    // writing — the run dies or trips the session-lock conflict (the family
+    // behind prod report ms746b01…). The UI disables the action while the
+    // chat is busy; this guard makes it impossible rather than advised
+    // against. Stop the turn first, then reset.
+    if (await isChatBusy(ctx, chatId)) {
+      return { ok: false as const, reason: "busy" as const };
+    }
     await ctx.scheduler.runAfter(0, internal.bridge.dispatchReset, {
       chatId,
       userId,
@@ -278,6 +287,7 @@ export const resetSession = mutation({
       resource: "chat",
       resourceId: chatId,
     });
+    return { ok: true as const };
   },
 });
 

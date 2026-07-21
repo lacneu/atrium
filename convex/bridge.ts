@@ -43,7 +43,11 @@ import {
 } from "./lib/promptInjections";
 import { composeQuotedText } from "./lib/quoteReply";
 import { classifyAttachment } from "./lib/mediaTransport";
-import { chatHasActivityBlockers, drainNextQueued } from "./lib/outboxQueue";
+import {
+  chatHasActivityBlockers,
+  drainNextQueued,
+  isChatBusy,
+} from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 
@@ -157,11 +161,47 @@ export const markOutbox = internalMutation({
   args: {
     outboxId: v.id("outbox"),
     status: v.union(v.literal("sent"), v.literal("failed")),
+    // GENERATION binding (codex P1, pass 9): the EFFECTIVE dispatch key
+    // (dispatchKey ?? clientMessageId) the acking dispatch READ when it
+    // started. The preempt re-park mints a fresh dispatchKey at its flip — a
+    // first dispatch's ack arriving after the flip (>10s network straggler)
+    // must not touch the re-queued row: it would flip it `sent` and the
+    // scheduled re-dispatch would bail on the status guard, losing the
+    // user's turn with its card already deleted. Optional: legacy/other
+    // callers keep the unbound behavior.
+    expectedClientMessageId: v.optional(v.string()),
   },
-  handler: async (ctx, { outboxId, status }) => {
+  handler: async (ctx, { outboxId, status, expectedClientMessageId }) => {
     const row = await ctx.db.get(outboxId);
     if (row === null) {
       return; // row gone; nothing to do
+    }
+    if (
+      expectedClientMessageId !== undefined &&
+      (row.dispatchKey ?? row.clientMessageId) !== expectedClientMessageId
+    ) {
+      console.log(
+        "bridge.markOutbox: stale ack for a re-keyed row — dropped",
+      );
+      return;
+    }
+    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P1): when the gateway kill
+    // was ingested BEFORE this ack landed, the flagged finalize already took
+    // over the row — stamped it and re-held it `pending` so window sends stay
+    // parked behind it. This late `sent` flip would release that hold AND
+    // drain a window send ahead of the held turn (FIFO inversion, a fresh
+    // collision with the delivery). The dispatch this ack reports was
+    // consumed by the kill: drop the flip; the scheduled reparkAfterPreempt
+    // owns the row's next transition. Keyed on the TRANSIENT `preemptHold`
+    // (cleared at the flip), NEVER the permanent bound stamp — the row's own
+    // RE-dispatch later re-enters `pending` with the stamp still set, and its
+    // ack must land or the chat blocks forever (codex P1, pass 4). A `failed`
+    // write is dropped too (mirrors failDispatch, codex P2 pass 11): the hold
+    // PROVES the send reached the gateway — a run started and was killed by
+    // the delivery — so a transport "failure" is a lost response, and failing
+    // the row would cancel the recovery.
+    if (row.preemptHold === true && row.status === "pending") {
+      return;
     }
     await ctx.db.patch(outboxId, { status });
     // Drain the next queued send on BOTH terminal statuses. `drainNextQueued` is
@@ -206,11 +246,39 @@ export const failDispatch = internalMutation({
     // The curated non-PHI gateway code (when known) — lets us pick a finer,
     // attachment-scoped user message than the generic reason.
     errorCode: v.optional(v.string()),
+    // GENERATION binding (mirrors markOutbox — codex P1, pass 14): the
+    // effective dispatch key (dispatchKey ?? clientMessageId) the failing
+    // dispatch READ when it started. A late failure of the KILLED dispatch
+    // (lost/slow HTTP response outliving the 10s hold) must not fail the
+    // re-parked row the flip just re-queued — that would cancel the recovery
+    // and paint a spurious error card on a turn whose card is already gone.
+    expectedClientMessageId: v.optional(v.string()),
   },
-  handler: async (ctx, { outboxId, reason, errorCode }) => {
+  handler: async (ctx, { outboxId, reason, errorCode, expectedClientMessageId }) => {
     const row = await ctx.db.get(outboxId);
     if (row === null || row.status !== "pending") {
       return; // already terminal (or gone) — never double-fire
+    }
+    if (
+      expectedClientMessageId !== undefined &&
+      (row.dispatchKey ?? row.clientMessageId) !== expectedClientMessageId
+    ) {
+      console.log(
+        "bridge.failDispatch: stale failure for a re-keyed row — dropped",
+      );
+      return;
+    }
+    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P2): the hold existing
+    // PROVES the send reached the gateway — a run started and was killed by
+    // the delivery (that kill is what installed the hold). This "failure" is
+    // the POST's response getting lost on the way back, not a failed send:
+    // failing the row would cancel the recovery and paint a spurious error
+    // card. The scheduled reparkAfterPreempt owns the row's next transition.
+    if (row.preemptHold === true) {
+      console.log(
+        "bridge.failDispatch: row is preempt-held (send provably reached the gateway) — failure dropped",
+      );
+      return;
     }
     await ctx.db.patch(outboxId, { status: "failed" });
 
@@ -1294,7 +1362,11 @@ export const dispatch = internalAction({
                   row.text,
                 )
               : row.text,
-            clientMessageId: row.clientMessageId,
+            // The GATEWAY idempotency source: the re-park flip mints a fresh
+            // `dispatchKey` alias (the killed dispatch consumed the original
+            // key) while the browser's own clientMessageId stays intact for
+            // send.sendMessage's retry dedup (preemptRepark.ts).
+            clientMessageId: row.dispatchKey ?? row.clientMessageId,
             // The user message id for THIS turn — the bridge excludes it when it
             // fetches prior history for session re-hydration (so the current
             // message is not duplicated into the injected context).
@@ -1336,6 +1408,10 @@ export const dispatch = internalAction({
       await ctx.runMutation(internal.bridge.markOutbox, {
         outboxId,
         status: "sent",
+        // Bind the ack to THIS dispatch's generation: a preempt re-park mints
+        // a fresh dispatchKey at its flip, so a straggler ack from the killed
+        // dispatch can never flip the re-queued row (codex P1).
+        expectedClientMessageId: row.dispatchKey ?? row.clientMessageId,
       });
       // CONFIRM the WHOLE routing tuple {segment, lastRoutedAgent*} ONLY now that the
       // gateway accepted the send — so a FAILED routed dispatch advances NOTHING and a
@@ -1374,6 +1450,12 @@ export const dispatch = internalAction({
         outboxId,
         reason: "send_failed",
         errorCode,
+        // Generation-bound (codex P1, pass 14): a lost-response failure of the
+        // KILLED dispatch outliving the hold must not fail the re-keyed row
+        // (the only failDispatch site that can be slow — it sits behind the
+        // network call; every earlier site fails in milliseconds, before a
+        // hold can exist).
+        expectedClientMessageId: row.dispatchKey ?? row.clientMessageId,
       });
     }
     await traceDispatch(ctx, {
@@ -1607,6 +1689,14 @@ export const dispatchAbort = internalAction({
   },
 });
 
+/** Full busy predicate as a query — dispatchReset re-validates idleness at
+ *  EXECUTION time (the resetSession check ran at schedule time; codex P1). */
+export const chatBusyProbe = internalQuery({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<boolean> =>
+    isChatBusy(ctx, chatId),
+});
+
 export const dispatchReset = internalAction({
   args: {
     chatId: v.id("chats"),
@@ -1620,6 +1710,43 @@ export const dispatchReset = internalAction({
     ),
   },
   handler: async (ctx, { chatId, userId, regenerateOutboxId, routedAgent }) => {
+    // PANEL reset only (a regenerate reset runs while its OWN pending row
+    // holds the chat — the check would veto every legitimate regenerate):
+    // re-validate idleness at EXECUTION time. chats.resetSession checked at
+    // SCHEDULE time; a send created in between would have its freshly started
+    // turn killed by this very /reset (codex P1 — the exact interruption the
+    // guard exists to prevent). Abandoning is the lesser evil: the user
+    // re-clicks once the turn ends, nothing is interrupted. Traced.
+    // DELIBERATE trade-off (codex P2, accepted): the panel already showed
+    // "request sent" — honest for the request, optimistic for the outcome.
+    // The window is milliseconds wide (schedule→execute on an idle-checked
+    // chat), and the alternative — a deferred reset firing after the
+    // intervening turn ends — would wipe a session the user just watched
+    // answer, a worse surprise than one dead click.
+    if (regenerateOutboxId === undefined) {
+      const busy = await ctx.runQuery(internal.bridge.chatBusyProbe, {
+        chatId,
+      });
+      if (busy) {
+        console.log(
+          "bridge.dispatchReset: chat became busy since schedule — reset abandoned",
+        );
+        try {
+          await ctx.runMutation(internal.observability.recordEvent, {
+            kind: "openclaw.reset",
+            direction: "outbound",
+            principalType: "user",
+            principalId: userId,
+            chatId,
+            correlationId: `${chatId}:reset`,
+            meta: JSON.stringify({ resetStatus: "abandoned_busy" }),
+          });
+        } catch {
+          // best-effort
+        }
+        return;
+      }
+    }
     // A regenerate (assistant-delete) builds a pending outbox row that ONLY this
     // action can drive. Every path that does NOT chain its dispatch must mark that
     // row terminal + surface the cause, else it stays pending and the user sees
@@ -1671,6 +1798,7 @@ export const dispatchReset = internalAction({
     }
 
     let ok = false;
+    let refusedTurnActive = false;
     try {
       const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/reset`, {
         method: "POST",
@@ -1684,10 +1812,31 @@ export const dispatchReset = internalAction({
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
           canonical: routing.target.canonical,
+          // PANEL resets only: the bridge refuses (409 turn_active) when a
+          // turn is LIVE at execution time — the atomic close of the
+          // schedule→execute race (codex P1, pass 8). Regenerate resets never
+          // set it: their turn is terminal by construction, and the flag
+          // would veto legitimate regenerates mid-announce. An older bridge
+          // ignores the field (graceful).
+          ...(regenerateOutboxId === undefined ? { refuseIfActive: true } : {}),
         }),
       });
       ok = response.ok;
-      if (!ok) console.error(`bridge POST /reset -> HTTP ${response.status}`);
+      if (!ok) {
+        // 409 is ALSO instance_not_served — only the explicit turn_active
+        // code may read as "a turn was live" in the traces (codex P2).
+        if (response.status === 409) {
+          try {
+            const body = (await response.json()) as {
+              error?: { code?: string };
+            };
+            refusedTurnActive = body?.error?.code === "turn_active";
+          } catch {
+            // unparseable 409 body — keep the generic failed classification
+          }
+        }
+        console.error(`bridge POST /reset -> HTTP ${response.status}`);
+      }
     } catch (err) {
       console.error("bridge POST /reset failed:", err);
       ok = false;
@@ -1715,7 +1864,11 @@ export const dispatchReset = internalAction({
         chatId,
         correlationId: `${chatId}:reset`,
         meta: JSON.stringify({
-          resetStatus: ok ? "sent" : "failed",
+          resetStatus: ok
+            ? "sent"
+            : refusedTurnActive
+              ? "refused_turn_active"
+              : "failed",
           regenerated: Boolean(regenerateOutboxId) && ok,
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,

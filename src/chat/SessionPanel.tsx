@@ -61,12 +61,18 @@ function ActionRow({
   label,
   state,
   destructive,
+  disabled,
+  disabledHint,
   onClick,
   onRetry,
 }: {
   label: string;
   state: ActionState;
   destructive?: boolean;
+  /** Grey the action out (with an optional hint) — e.g. a session reset while
+   *  a turn is streaming would kill the very session the run writes. */
+  disabled?: boolean;
+  disabledHint?: string;
   onClick: () => void;
   onRetry: () => void;
 }) {
@@ -75,7 +81,7 @@ function ActionRow({
       <Button
         variant={destructive ? "destructive" : "outline"}
         size="sm"
-        disabled={state === "pending"}
+        disabled={state === "pending" || disabled === true}
         onClick={onClick}
       >
         {state === "pending" ? (
@@ -95,6 +101,9 @@ function ActionRow({
             {m.conf_retry()}
           </button>
         </p>
+      ) : null}
+      {disabled === true && disabledHint ? (
+        <p className="oc-spanel__hint">{disabledHint}</p>
       ) : null}
     </div>
   );
@@ -123,6 +132,15 @@ export function SessionPanel({
     api.agents.getChatAgent,
     open ? { chatId: chatId as Id<"chats"> } : "skip",
   );
+  // A turn is streaming: a session reset now would kill the very session the
+  // run writes (session-lock conflict family) — the server refuses it and the
+  // button greys out instead of relying on user advice. Same subscription as
+  // the chat view (Convex dedupes it).
+  const liveRows = useQuery(
+    api.messages.getStreamingText,
+    open ? { chatId: chatId as string } : "skip",
+  ) as unknown[] | undefined;
+  const turnActive = (liveRows?.length ?? 0) > 0;
   const sm = (meta?.sessionMeta ?? null) as SessionMetaView | null;
   const settings = (meta?.sessionSettings ?? null) as SessionSettingsView;
   // Capability gate (VCOMPAT-C): "Compacter" is HIDDEN when the chat's
@@ -140,6 +158,10 @@ export function SessionPanel({
   // The manual trigger's OUTCOME (why nothing was dispatched, or confirmation) —
   // shown as a hint under the action row.
   const [summarizeNotice, setSummarizeNotice] = useState<string | null>(null);
+  // The reset action's refusal notice (server said busy while the button was
+  // clickable — pending dispatch / live sub-agent, invisible to the streaming
+  // query). Cleared on the next attempt.
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
   // Summary viewer states: copy feedback, expanded reading, inline edit buffer.
   const [summaryCopied, setSummaryCopied] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
@@ -158,6 +180,10 @@ export function SessionPanel({
     setSummaryCopied(false);
     setSummarizeNotice(null);
     setSummarizeState("idle");
+    // A refusal notice belongs to the chat that was busy — chat B must not
+    // wear chat A's "unavailable" hint (codex P2). Same for the action state.
+    setResetNotice(null);
+    setResetState("idle");
   }, [chatId]);
   async function copySummary(): Promise<void> {
     if (!summaryInfo?.summary) return;
@@ -230,8 +256,18 @@ export function SessionPanel({
   }
   async function runReset(): Promise<void> {
     setResetState("pending");
+    setResetNotice(null);
     try {
-      await resetMutation({ chatId: chatId as Id<"chats"> });
+      const res = await resetMutation({ chatId: chatId as Id<"chats"> });
+      if (res !== undefined && res.ok === false) {
+        // The server refused: the chat is busy in a way the streaming query
+        // cannot see (a pending dispatch, a live sub-agent) so the button was
+        // still clickable. SAY so — a silent no-op reads as a dead button
+        // (codex P2). Not an error state: the action is just unavailable now.
+        setResetState("idle");
+        setResetNotice(m.spanel_reset_busy());
+        return;
+      }
       setResetState("done");
     } catch {
       setResetState("error");
@@ -651,9 +687,14 @@ export function SessionPanel({
             label={m.spanel_reset()}
             state={resetState}
             destructive
+            disabled={turnActive}
+            disabledHint={m.spanel_reset_busy()}
             onClick={() => void onReset()}
             onRetry={() => void runReset()}
           />
+          {!turnActive && resetNotice !== null ? (
+            <p className="oc-spanel__hint">{resetNotice}</p>
+          ) : null}
         </SheetFooter>
       </SheetContent>
     </Sheet>

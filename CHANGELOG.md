@@ -8,6 +8,50 @@ version shared by the frontend and bridge images.
 > Per-change detail belongs in the PR description / commit messages; a release
 > aggregates them here.
 
+## [0.68.5] — Queued messages survive being preempted by a delivery
+
+Corrective release, closing the 2026-07-21 production report: when a queued
+follow-up dispatched right as a sub-agent's delivery claimed the same session,
+the gateway killed the follow-up (silently consuming the user's message) and
+the delivery's complete reply then wore an error badge. Queueing a message
+mid-turn is a supported feature — the system now owns the whole recovery.
+`npx convex deploy` first, then the bridge image (each side degrades
+gracefully next to the other's previous version); schema changes are additive
+only, no breaking changes.
+
+- **A complete reply no longer wears an error badge after a session-lock
+  conflict.** The gateway's embedded prompt-lock error ("session file changed
+  while embedded prompt lock was released") is thrown when persisting an
+  already-finished run — by its own wording the reply had fully streamed. With
+  real content the turn now closes *complete*; the failure class survives on
+  the diagnostics trace. Restricted to that exact flavor: the init-time
+  conflict keeps its honest error card and bounded auto-retry, and a turn with
+  no content is untouched.
+- **A message the gateway killed to run a delivery now re-sends itself.** The
+  bridge flags the exact kill signature (gateway abort, zero content, no user
+  Stop), and Convex — only when a child of the chat had *provably* just
+  finished (its queued delivery is what claimed the session) — drops the empty
+  "Interrupted" card and re-parks the original send behind the incoming
+  delivery, re-dispatching it through the normal queue once the delivery
+  settles. Bounded to one automatic attempt; ordering is preserved (window
+  sends park behind the held turn); a fresh gateway idempotency key is minted
+  so the re-send is never deduplicated into the killed run, while the
+  browser's own retry key stays intact; straggler acks/failures from the
+  killed dispatch are generation-bound and can no longer cancel the recovery.
+  An operator-side stop (same wire shape, no delivery to blame) keeps its
+  honest aborted card — a deliberately stopped turn is never replayed. The
+  whole chain is traced (`chat.preempt_redispatch`).
+- **Resetting the session while a reply is running is now impossible, at
+  three levels.** The panel greys the action out during a live stream (with
+  an explanation), the server refuses when the chat is busy in ways the
+  stream query cannot see (pending dispatch, live sub-agent — the refusal is
+  shown, never a dead click), and the bridge itself — the only place that
+  knows atomically — rejects a panel reset (409) when a turn is active *or a
+  dispatch is in its pre-ack window*, across OpenClaw and both Hermes
+  transports. Regenerate-driven resets are exempt by design (their turn is
+  already terminal). Rationale: an action that is unsafe at a given moment
+  must be impossible at that moment, not advised against.
+
 ## [0.68.4] — Watcher agents can heal the context engine, within strict bounds
 
 Corrective release, closing the production incident behind 0.68.3: the

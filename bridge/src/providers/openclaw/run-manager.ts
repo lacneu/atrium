@@ -216,6 +216,14 @@ export class RunManager {
     return this.sink.active;
   }
 
+  /** True in the chat.send→ack window (pre-ack buffer armed): a dispatch has
+   *  been POSTed but no turn is active YET. The /reset execution-time guard
+   *  must treat this as live too — resetting here would wipe the session of
+   *  the turn the gateway is about to start (codex P1, pass 13). */
+  get dispatchInFlight(): boolean {
+    return this.replayArmed;
+  }
+
   /** Whether this parent-lane frame belongs to the ACTIVE turn's run. Gates
    *  handing currentMessageId to the sub-agent observer: a STASHED announce
    *  frame arriving mid-turn must not anchor its spawns to the active turn's

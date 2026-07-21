@@ -1523,6 +1523,7 @@
 	"spanel_reset_confirm_title": "Reset the session?",
 	"spanel_reset_confirm_desc": "The agent session starts fresh and re-hydrates from the conversation on the next message. No message is deleted.",
 	"spanel_reset_confirm_cta": "Reset",
+	"spanel_reset_busy": "Unavailable while a reply is in progress — the session is in use.",
 	"spanel_action_done": "Request sent to the agent.",
 	"spanel_action_error": "Action failed.",
 	"afiles_tab_label": "Agent files",

@@ -202,6 +202,11 @@ interface PatchBody extends BodyRouting {
 interface ResetBody extends BodyRouting {
   chatId: string;
   openclawChatId: string | null;
+  /** PANEL resets only (never a regenerate's chained reset): refuse with 409
+   *  turn_active when a turn is LIVE on this chat at execution time — the
+   *  bridge is the only place that knows atomically; the Convex-side busy
+   *  checks are schedule-time and race the send path (codex P1, pass 8). */
+  refuseIfActive: boolean;
 }
 
 /** Constant-time string compare that does not leak length via early return. */
@@ -464,6 +469,7 @@ export function parseResetBody(raw: string): ResetBody | null {
     chatId: obj.chatId,
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    refuseIfActive: obj.refuseIfActive === true,
   };
 }
 
@@ -2252,6 +2258,28 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
         return;
       }
+      // PANEL reset execution-time guard: the Convex busy checks (resetSession
+      // + dispatchReset's probe) are schedule-time — a send racing them can
+      // start a turn this /reset would kill. THIS is the atomic point: the
+      // bridge holds the live per-chat turn state. Refuse; the panel's greyed
+      // button + server refusal already cover the visible states, this closes
+      // the last millisecond window. Regenerate resets never set the flag
+      // (their turn is already terminal by construction). Hermes turns live in
+      // hermesTurns (both transports), never in the SessionRegistry — check
+      // all three surfaces (codex P1, pass 9).
+      if (reset.refuseIfActive) {
+        const live = registry.peekByChat(reset.chatId);
+        if (
+          (live !== undefined &&
+            (live.runManager.turnActive ||
+              live.runManager.dispatchInFlight)) ||
+          hermesTurns.peek(reset.chatId) !== undefined ||
+          hermesTurns.peekWsTurn(reset.chatId) !== undefined
+        ) {
+          sendJson(res, 409, { ok: false, error: { code: "turn_active" } });
+          return;
+        }
+      }
       if (resetBundle.config.kind === "hermes") {
         // Hermes: cancel any in-flight turn + forget the persisted session so
         // the next turn mints a fresh Hermes conversation. No operator socket.
@@ -2276,6 +2304,19 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       try {
         const session = await registry.acquire(toRouting(reset, resetInstance));
+        // RE-CHECK after the acquire (codex P1, pass 12): a /send handled
+        // concurrently can start a turn during the `await` above — the
+        // pre-acquire peek missed it. From here to performReset there is no
+        // further await before the abort flag, so this check is event-loop
+        // atomic with the refusal decision.
+        if (
+          reset.refuseIfActive &&
+          (session.runManager.turnActive ||
+            session.runManager.dispatchInFlight)
+        ) {
+          sendJson(res, 409, { ok: false, error: { code: "turn_active" } });
+          return;
+        }
         // A reset mid-delivery aborts the run too: flag it as USER-initiated
         // so the sink's delivery-run fold never repaints the interruption as
         // a completed merge (same contract as /abort — codex P2).

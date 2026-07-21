@@ -1134,6 +1134,81 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(final2?.errorKind ?? null).toBeNull();
   });
 
+  it("the embedded prompt-lock conflict AFTER a streamed reply closes COMPLETE (live 2026-07-21)", () => {
+    // The gateway preempted a queued follow-up turn to run an announce
+    // delivery; the announce streamed its FULL report, then the lock check
+    // found the (aborted) follow-up's session write and errored the run.
+    // The reply is intact — an error badge on it misread as a failed turn
+    // (prod report ms746b01…). The class survives on the trace-only channel.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    normalizer.feed(
+      chatFrame({ state: "delta", deltaText: "Le rapport complet livré." }),
+      clock.tick(),
+    );
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        errorMessage:
+          "session file changed while embedded prompt lock was released: /home/node/.openclaw/agents/fabien/sessions/0c32.jsonl",
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("complete");
+    expect(final?.text).toContain("Le rapport complet livré.");
+    expect(final?.error ?? null).toBeNull();
+    expect(final?.errorKind ?? null).toBeNull();
+    expect(final?.diagnosticErrorKind).toBe("session_init_conflict");
+  });
+
+  it("the embedded prompt-lock conflict with NO content keeps the error card (auto-retry path)", () => {
+    // Zero content = the init flavor's territory: the honest error card stays
+    // and carries the stable code Convex's bounded auto-retry keys on.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        errorMessage:
+          "session file changed while embedded prompt lock was released: /tmp/x.jsonl",
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("error");
+    expect(final?.errorKind).toBe("session_init_conflict");
+  });
+
+  it("the session-init OCC conflict WITH streamed content keeps the error card (no structural proof)", () => {
+    // Codex P1: only the embedded-lock flavor proves the generation ended
+    // ("…lock was RELEASED"). The init flavor with content is anomalous —
+    // keep the honest error card rather than bless possibly-truncated text.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    normalizer.feed(
+      chatFrame({ state: "delta", deltaText: "Réponse peut-être tronquée" }),
+      clock.tick(),
+    );
+    const events = normalizer.feed(
+      chatFrame({
+        state: "error",
+        errorMessage:
+          "Error: reply session initialization conflicted for agent:jerome:atrium:chat:jnl:mh7abc",
+      }),
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(events.find((e) => e.type === "run.status")?.status).toBe("error");
+    expect(final?.errorKind).toBe("session_init_conflict");
+  });
+
   it("chat error with errorKind context_length finalizes the turn as a classified error", () => {
     const normalizer = newNormalizer();
     const clock = new Clock();

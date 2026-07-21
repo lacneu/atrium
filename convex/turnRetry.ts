@@ -324,6 +324,51 @@ async function countBlockingParts(
   return blocking;
 }
 
+/** Delete a zero-content assistant card WITH its dependent rows — bookmarks
+ *  (placeable mid-stream via the message menu; these paths bypass
+ *  messages.deleteMessage's cleanup), parts (provenance rows on instrumented
+ *  gateways — deleting only the message orphaned them), and sub-agent rows +
+ *  their detail (stale activity must not show against the replacement turn).
+ *  Shared by the auto-retry (autoRetryTurn) and the preempt re-park
+ *  (preemptRepark.ts) — both re-run the turn, so the dead card must go. */
+export async function deleteTurnCardCascade(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  chatId: Id<"chats">,
+  messageId: Id<"messages">,
+): Promise<void> {
+  await purgeBookmarksForMessages(ctx, userId, chatId, new Set([messageId]));
+  const cardParts = await ctx.db
+    .query("messageParts")
+    .withIndex("by_message", (q) => q.eq("messageId", messageId))
+    .collect();
+  for (const d of cardParts) {
+    await ctx.db.delete(d._id);
+  }
+  const cardSubAgents = await ctx.db
+    .query("subAgents")
+    .withIndex("by_parent_message", (q) => q.eq("parentMessageId", messageId))
+    .collect();
+  for (const sa of cardSubAgents) {
+    const saParts = await ctx.db
+      .query("subAgentToolParts")
+      .withIndex("by_child", (q) =>
+        q.eq("childSessionKey", sa.childSessionKey),
+      )
+      .collect();
+    for (const d of saParts) await ctx.db.delete(d._id);
+    const saThreads = await ctx.db
+      .query("subAgentInteractions")
+      .withIndex("by_child", (q) =>
+        q.eq("childSessionKey", sa.childSessionKey),
+      )
+      .collect();
+    for (const d of saThreads) await ctx.db.delete(d._id);
+    await ctx.db.delete(sa._id);
+  }
+  await ctx.db.delete(messageId);
+}
+
 async function hasActiveOutbox(
   ctx: MutationCtx,
   chatId: Id<"chats">,
@@ -453,52 +498,7 @@ export const autoRetryTurn = internalMutation({
 
     // --- All guards passed: this is a pure re-run. -------------------------
     // 1. Drop the empty error card (nothing visible is lost — guarded above).
-    //    Purge any bookmark anchored to it first (placeable mid-stream via the
-    //    message menu) — this path bypasses messages.deleteMessage's cleanup.
-    await purgeBookmarksForMessages(
-      ctx,
-      last.userId,
-      chatId,
-      new Set([messageId]),
-    );
-    // Cascade the card's parts (provenance rows on instrumented gateways —
-    // codex P2: deleting only the message orphaned them, accumulating
-    // inaccessible payloads across retries). Mirrors messages.deleteMessage.
-    const cardParts = await ctx.db
-      .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", messageId))
-      .collect();
-    for (const d of cardParts) {
-      await ctx.db.delete(d._id);
-    }
-    // Cascade the card's sub-agent rows + their detail too (an allowed MoA
-    // retry has dead-fruitless children — codex P2: leaving them would show
-    // stale activity against the replacement turn). Same walk as
-    // messages.deleteMessage.
-    const cardSubAgents = await ctx.db
-      .query("subAgents")
-      .withIndex("by_parent_message", (q) =>
-        q.eq("parentMessageId", messageId),
-      )
-      .collect();
-    for (const sa of cardSubAgents) {
-      const saParts = await ctx.db
-        .query("subAgentToolParts")
-        .withIndex("by_child", (q) =>
-          q.eq("childSessionKey", sa.childSessionKey),
-        )
-        .collect();
-      for (const d of saParts) await ctx.db.delete(d._id);
-      const saThreads = await ctx.db
-        .query("subAgentInteractions")
-        .withIndex("by_child", (q) =>
-          q.eq("childSessionKey", sa.childSessionKey),
-        )
-        .collect();
-      for (const d of saThreads) await ctx.db.delete(d._id);
-      await ctx.db.delete(sa._id);
-    }
-    await ctx.db.delete(messageId);
+    await deleteTurnCardCascade(ctx, last.userId, chatId, messageId);
     // 2. Rebuild the outbox row from the user turn — same shape as the manual
     //    regenerate (messages.deleteMessage), incl. file attachments + per-turn
     //    routing, PLUS the attempt stamp that bounds the chain.

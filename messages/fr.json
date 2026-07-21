@@ -1523,6 +1523,7 @@
 	"spanel_reset_confirm_title": "Réinitialiser la session ?",
 	"spanel_reset_confirm_desc": "La session de l’agent repart à zéro et se réhydrate depuis la conversation au prochain message. Aucun message n’est supprimé.",
 	"spanel_reset_confirm_cta": "Réinitialiser",
+	"spanel_reset_busy": "Indisponible pendant qu'une réponse est en cours — la session est en cours d'utilisation.",
 	"spanel_action_done": "Demande envoyée à l’agent.",
 	"spanel_action_error": "Échec de l’action.",
 	"afiles_tab_label": "Fichiers d’agent",

@@ -931,7 +931,10 @@ export class Normalizer {
             ? payload.errorKind
             : CONTEXT_OVERFLOW_TEXT_RE.test(reason ?? "")
               ? "context_length"
-              : null;
+              : SESSION_INIT_CONFLICT_RE.test(reason ?? "") ||
+                  EMBEDDED_LOCK_CONFLICT_RE.test(reason ?? "")
+                ? "session_init_conflict"
+                : null;
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
@@ -1504,6 +1507,34 @@ export class Normalizer {
               !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
             ? "provider_internal"
             : null;
+    }
+    if (
+      error !== null &&
+      EMBEDDED_LOCK_CONFLICT_RE.test(error) &&
+      this.hasRealContent()
+    ) {
+      // The EMBEDDED-LOCK flavor ONLY (structural discriminant, codex P1): its
+      // own message proves the generation had ENDED — "…while embedded prompt
+      // lock was RELEASED" is thrown when the runtime re-takes the lock to
+      // persist the finished run, i.e. after the reply streamed (live prod
+      // 2026-07-21: an announce delivery streamed its full report, then the
+      // follow-up turn the gateway had preempted tripped the lock — the
+      // complete reply wore an error badge). A persistence conflict on an
+      // intact reply: close COMPLETE; a retry could only duplicate it. The
+      // class survives on the trace-only channel. The INIT flavor ("reply
+      // session initialization conflicted") carries no such proof — with
+      // content it keeps the honest error card, and with zero content the
+      // bounded auto-retry handles it (unchanged).
+      console.log(
+        "[normalizer] session-conflict at finalize with streamed content — closing complete (persistence conflict, see gateway_pressure trace)",
+      );
+      statusEvent.status = "complete";
+      delete statusEvent.message;
+      delete finalEvent.error;
+      (finalEvent as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
+        "session_init_conflict";
+      error = null;
+      errorKind = null;
     }
     if (errorKind) {
       // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:

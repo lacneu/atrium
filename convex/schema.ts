@@ -1840,6 +1840,24 @@ export default defineSchema({
     // finalize reads it to bound the retry chain (MAX_TURN_RETRIES); absent = a
     // normal user send (attempt 0).
     autoRetryAttempt: v.optional(v.number()),
+    // PREEMPT-REPARK (preemptRepark.ts): the gateway killed this row's dispatched
+    // turn to run a delivery on the same session (announce×queue race, inverse
+    // direction) and the row was re-parked for ONE automatic re-dispatch. The
+    // stamp is PERMANENT and bounds the chain: a second kill of the same row
+    // keeps the honest aborted card instead of looping.
+    preemptRedispatched: v.optional(v.boolean()),
+    // The TRANSIENT hold companion: true only while the row is parked `pending`
+    // awaiting the delayed flip. Distinguishes the hold from the re-dispatch's
+    // own later `pending` (whose markOutbox ack must land normally — without
+    // this, the ack guard would eat it and block the chat forever). Cleared by
+    // the flip and by every stand-down.
+    preemptHold: v.optional(v.boolean()),
+    // GATEWAY idempotency alias, minted by the re-park flip: the killed
+    // dispatch consumed the gateway key derived from clientMessageId, so the
+    // re-dispatch sends THIS key instead — while `clientMessageId` itself
+    // stays untouched (it is the BROWSER retry dedup key in send.sendMessage;
+    // rewriting it would let a network-retried send duplicate the message).
+    dispatchKey: v.optional(v.string()),
     status: v.union(
       // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an
       // in-flight turn, held here until that turn ends. The drainer (lib/

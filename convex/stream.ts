@@ -32,6 +32,7 @@ import { writeTraceEvent } from "./observability";
 import { isFilePart, recordFileForPart } from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { maybeScheduleTurnRetry } from "./turnRetry";
+import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 
 // ── ATOMIC ingest authorization (cross-gateway barrier) ──────────────────────
@@ -1490,6 +1491,12 @@ export const finalize = internalMutation({
     // The streamed text is protocol NOISE (a NO_REPLY sentinel reached the
     // live row): never fall back to it. Atomic with the finalize by design.
     discardStreamText: v.optional(v.boolean()),
+    // The gateway killed this REAL zero-content turn to run a delivery on the
+    // same session (announce×queue race, inverse direction — never a user
+    // Stop; the bridge sink mints the flag). The turn's send was consumed but
+    // never processed: re-park its outbox row for ONE automatic re-dispatch
+    // once the delivery settles (preemptRepark.ts).
+    gatewayPreempted: v.optional(v.boolean()),
     ...boundArg,
   },
   handler: async (
@@ -1503,6 +1510,7 @@ export const finalize = internalMutation({
       expectedRunId,
       boundInstanceName,
       discardStreamText,
+      gatewayPreempted,
     },
   ) => {
     const message = await ctx.db.get(messageId);
@@ -1628,6 +1636,17 @@ export const finalize = internalMutation({
       streamStatus: status,
       textLen: finalLen,
     });
+    // GATEWAY-PREEMPTED turn (the delivery claimed the session and the gateway
+    // killed this zero-content real turn): re-park the outbox row for one
+    // automatic re-dispatch. BEFORE drainNextQueued so the (deleted) card and
+    // the stamped row are settled when the drain reads the world; the row
+    // itself stays `sent` until the delayed flip, out of this drain's reach.
+    if (status === "aborted" && gatewayPreempted === true) {
+      const fresh = await ctx.db.get(messageId);
+      if (fresh !== null) {
+        await maybeReparkPreemptedTurn(ctx, fresh, finalLen);
+      }
+    }
     // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
     // any) — the engine of mid-turn message serialization (Phase 1).
     await drainNextQueued(ctx, message.chatId);

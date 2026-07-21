@@ -170,6 +170,68 @@ describe("chats.resetSession", () => {
     ).toBeUndefined();
   });
 
+  test("a BUSY chat (streaming turn) refuses the reset — no dispatchReset scheduled", async () => {
+    // A reset during an active turn resets the very session the run writes
+    // (session-lock conflict family, prod report ms746b01…): the server must
+    // refuse rather than rely on the user knowing not to.
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      });
+    });
+
+    const res = await as.mutation(api.chats.resetSession, { chatId });
+    expect(res).toEqual({ ok: false, reason: "busy" });
+
+    const jobs = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(jobs.filter((j) => j.name.includes("dispatchReset")).length).toBe(0);
+  });
+
+  test("a chat that becomes busy AFTER scheduling abandons the reset at execution (codex P1)", async () => {
+    // The resetSession busy check runs at SCHEDULE time; a send landing before
+    // the scheduled dispatchReset executes would have its fresh turn killed by
+    // the /reset — the action must re-validate and abandon (traced).
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const res = await as.mutation(api.chats.resetSession, { chatId });
+    expect(res).toEqual({ ok: true });
+    // A turn starts inside the schedule→execution window.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        updatedAt: 1,
+      });
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const traces = await t.run(async (ctx) =>
+      ctx.db
+        .query("traceEvents")
+        .filter((q) => q.eq(q.field("kind"), "openclaw.reset"))
+        .collect(),
+    );
+    expect(traces).toHaveLength(1);
+    expect(JSON.parse(traces[0]!.meta ?? "{}").resetStatus).toBe(
+      "abandoned_busy",
+    );
+    vi.useRealTimers();
+  });
+
   test("a non-owner cannot reset another user's session", async () => {
     const t = convexTest(schema, modules);
     const owner = await seedUser(t);

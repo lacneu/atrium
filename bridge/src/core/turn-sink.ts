@@ -1215,6 +1215,25 @@ export class TurnSink {
     ) {
       effectiveStatus = "complete";
     }
+    // A GATEWAY-initiated kill of a REAL turn that produced NOTHING (never a
+    // user Stop — that sets userAbortThisTurn): the gateway preempted the
+    // dispatched turn to run a delivery on the same session (announce×queue
+    // race, inverse direction of reparkIfBusy — live prod 2026-07-21: the
+    // queued follow-up dispatched, the sub-agent's announce killed it 19s in,
+    // and the user's message was silently consumed). The send is a supported
+    // feature — flag the finalize so Convex re-parks the outbox row and
+    // re-dispatches it once the delivery settles, instead of leaving the user
+    // to re-send by hand. Zero-content only: streamed text or tool work keeps
+    // the honest "Interrompu" card (a re-run could duplicate it).
+    const gatewayPreempted =
+      status === "aborted" &&
+      !isDeliveryRunId(this.turnRunId) &&
+      !this.userAbortThisTurn &&
+      this.pendingDiagFinalizeCause === "gateway_abort" &&
+      !this.sawVisibleText &&
+      replyText.trim().length === 0 &&
+      this.toolCallCount === 0 &&
+      this.hostedThisTurn.size === 0;
     if (
       status === "complete" &&
       // DELIVERY runs are exempt: their tool-only turns legitimately end with
@@ -1323,8 +1342,16 @@ export class TurnSink {
       // stream fallback and blocks the retry). Atomic with the finalize.
       sentinelOnly ||
         effectiveErrorKind === SILENT_RESPONSE_CODE ||
-        this.pendingDiscardStream
-        ? { discardStreamText: true }
+        this.pendingDiscardStream ||
+        gatewayPreempted
+        ? {
+            ...(sentinelOnly ||
+            effectiveErrorKind === SILENT_RESPONSE_CODE ||
+            this.pendingDiscardStream
+              ? { discardStreamText: true }
+              : {}),
+            ...(gatewayPreempted ? { gatewayPreempted: true } : {}),
+          }
         : undefined,
     );
     // A visible task-delivery run also settles its engagement here (the

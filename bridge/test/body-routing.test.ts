@@ -71,6 +71,24 @@ describe("parseResetBody routing", () => {
       canonical: "alice",
     });
   });
+
+  it("parses the PANEL refuseIfActive flag (strict true; absent/other = false)", () => {
+    // The execution-time reset guard: only an explicit true arms the 409
+    // turn_active refusal — a regenerate body (no flag) must never be refused.
+    expect(
+      parseResetBody(
+        JSON.stringify({ chatId: "c1", refuseIfActive: true, ...R }),
+      )?.refuseIfActive,
+    ).toBe(true);
+    expect(
+      parseResetBody(JSON.stringify({ chatId: "c1", ...R }))?.refuseIfActive,
+    ).toBe(false);
+    expect(
+      parseResetBody(
+        JSON.stringify({ chatId: "c1", refuseIfActive: "yes", ...R }),
+      )?.refuseIfActive,
+    ).toBe(false);
+  });
 });
 
 describe("isInstanceMismatch (M2 guard, opt-in)", () => {

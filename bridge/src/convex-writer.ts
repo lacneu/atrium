@@ -289,8 +289,11 @@ export interface ConvexWriter {
      *  — persisted as the message's errorCode; null on clean turns. */
     errorKind?: string | null,
     /** discardStreamText: the live row's text is protocol noise (NO_REPLY) —
-     *  the finalize must not fall back to it (atomic discard). */
-    opts?: { discardStreamText?: boolean },
+     *  the finalize must not fall back to it (atomic discard).
+     *  gatewayPreempted: the gateway killed this REAL zero-content turn to run
+     *  a delivery (never a user Stop) — Convex re-parks the outbox row for an
+     *  automatic re-dispatch once the delivery settles (preemptRepark.ts). */
+    opts?: { discardStreamText?: boolean; gatewayPreempted?: boolean },
   ): Promise<void>;
   /**
    * Session re-hydration: a bounded block of this chat's prior turns (excluding
@@ -1533,7 +1536,7 @@ export class HttpConvexWriter implements ConvexWriter {
     text: string,
     error: string | null,
     errorKind: string | null = null,
-    opts?: { discardStreamText?: boolean },
+    opts?: { discardStreamText?: boolean; gatewayPreempted?: boolean },
   ): Promise<void> {
     try {
       await this.flushDelta(messageId); // never strand buffered deltas behind final
@@ -1546,6 +1549,7 @@ export class HttpConvexWriter implements ConvexWriter {
         error,
         errorKind,
         ...(opts?.discardStreamText === true ? { discardStreamText: true } : {}),
+        ...(opts?.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
         ...this.genTag(messageId),
       });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its

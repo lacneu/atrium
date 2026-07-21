@@ -2277,3 +2277,67 @@ export const testSubAgentInteraction = action({
       : { ok: false, reason: `http_${httpRes.status}` };
   },
 });
+
+/**
+ * REPRO (dev-gated): the announce×queue race, INVERSE direction (live prod
+ * 2026-07-21, report ms746b01…) — a dispatched turn the GATEWAY kills with
+ * zero content to run a delivery. Seeds the exact mid-kill state on an
+ * EXISTING chat (user message + `sent` outbox row + streaming assistant card)
+ * then fires the flagged finalize; everything after that is the REAL recovery
+ * chain (preemptRepark delay → queued → drain → real dispatch → real gateway
+ * reply). Returns the seeded ids so the observer can watch them.
+ *
+ *   npx convex run dev:simulatePreemptKill '{"chatId":"<id>","text":"Quelle heure est-il ?"}'
+ */
+export const simulatePreemptKill = mutation({
+  args: { chatId: v.id("chats"), text: v.string() },
+  handler: async (ctx, { chatId, text }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) throw new Error("chat not found");
+    const now = Date.now();
+    const userMsgId = await ctx.db.insert("messages", {
+      chatId,
+      userId: chat.userId,
+      role: "user",
+      status: "complete",
+      text,
+      updatedAt: now,
+    });
+    const outboxId = await ctx.db.insert("outbox", {
+      chatId,
+      userId: chat.userId,
+      clientMessageId: `preempt-sim-${now}`,
+      messageId: userMsgId,
+      text,
+      attachmentIds: [],
+      status: "sent",
+    });
+    const assistantId = await ctx.db.insert("messages", {
+      chatId,
+      userId: chat.userId,
+      role: "assistant",
+      status: "streaming",
+      text: "",
+      runId: `webchat-preempt-sim-${now}`,
+      updatedAt: now,
+    });
+    // The PREEMPTION PROOF the recovery requires (preemptRepark.ts): the
+    // child whose queued delivery is what kills the turn, freshly terminal.
+    await ctx.db.insert("subAgents", {
+      chatId,
+      childSessionKey: `agent:sim:subagent:preempt-proof-${now}`,
+      kind: "subagent",
+      status: "done",
+      createdAt: now,
+      updatedAt: now,
+    });
+    // The gateway's kill arrives as the flagged zero-content aborted finalize.
+    await ctx.scheduler.runAfter(0, internal.stream.finalize, {
+      messageId: assistantId,
+      status: "aborted",
+      gatewayPreempted: true,
+    });
+    return { userMsgId, outboxId, assistantId };
+  },
+});

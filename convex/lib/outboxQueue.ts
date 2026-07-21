@@ -21,7 +21,7 @@
 
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import type { MutationCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 
 /** Most a single chat may hold queued behind the in-flight turn (anti-runaway). */
@@ -88,8 +88,11 @@ export const SUBAGENT_STALE_TTL_MS = 20 * 60 * 1000; // 20 min = 15-min observer
  * filter mirrors listSubAgents' existing `by_chat` collect (sub-agent cardinality
  * per chat is small); a `by_chat_status` index is deliberately NOT added.
  */
+// READ-ONLY (QueryCtx): callable from queries too — bridge.chatBusyProbe
+// re-validates idleness at dispatchReset execution time (mutations pass
+// unchanged, MutationCtx is assignable to QueryCtx).
 export async function isChatBusy(
-  ctx: MutationCtx,
+  ctx: QueryCtx,
   chatId: Id<"chats">,
 ): Promise<boolean> {
   const pending = await ctx.db
@@ -109,7 +112,7 @@ export async function isChatBusy(
  * must check exactly these two without the pending clause.
  */
 export async function chatHasActivityBlockers(
-  ctx: MutationCtx,
+  ctx: QueryCtx,
   chatId: Id<"chats">,
 ): Promise<boolean> {
   const streaming = await ctx.db

@@ -298,6 +298,11 @@ type IngestOp =
        *  ON the finalize so the discard is atomic with it — a separate purge
        *  write could fail and resurrect the sentinel (codex P2). */
       discardStreamText?: boolean;
+      /** TRUE = the gateway killed this REAL zero-content turn to run a
+       *  delivery (announce×queue race, inverse direction — never a user
+       *  Stop): stream.finalize re-parks the outbox row for one automatic
+       *  re-dispatch (preemptRepark.ts). */
+      gatewayPreempted?: boolean;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -886,6 +891,7 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
+        ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
@@ -895,6 +901,7 @@ export const ingest = httpAction(async (ctx, request) => {
           messageId: body.messageId,
           // String lifecycle status lives in meta (the `status` column is numeric).
           finalizeStatus: body.status,
+          ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
           textLen: body.text.length,
           // Whether an error was surfaced (boolean only — never the error text).
           hasError: body.error != null,
