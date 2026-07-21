@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.68.6] — Harden the bridge runtime supply chain
+
+- Remove the unused npm CLI and its dependency tree from the final bridge image,
+  eliminating build tooling from the production attack surface.
+- Pin the Dockerfile frontend and both Node base stages by immutable digest.
+- Add a release-blocking container policy test so npm cannot be reintroduced into
+  the bridge runtime unnoticed.
+
 All notable, user-facing changes are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com); versions follow the lockstep repo
 version shared by the frontend and bridge images.
