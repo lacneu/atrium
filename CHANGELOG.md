@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.68.8] — The chat list shows delegated work in progress
+## [0.68.9] — The chat list shows delegated work in progress
 
 Corrective release, closing a 2026-07-22 production report. No breaking
 changes; schema additions are additive (two new indexes are built during
