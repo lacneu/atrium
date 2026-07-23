@@ -1323,6 +1323,12 @@ export default defineSchema({
   // the bridge before they land here.
   subAgents: defineTable({
     chatId: v.id("chats"),
+    // Chat owner — lets the sidebar's busy signal (chatReads.myBusyChats) read
+    // ONE per-user index range instead of probing every owned chat (the same
+    // idiom as streamingText.userId). Stamped from the chat at insert; a legacy
+    // row lacking it is backfilled fill-only on the next observer patch and
+    // simply doesn't pulse until then.
+    userId: v.optional(v.id("users")),
     // The served instance the child/task runs on (stamped by the per-instance
     // bridge writer). The task reconcile probes THIS registry — chat-level
     // state cannot answer it on multi-agent per-turn chats.
@@ -1449,6 +1455,10 @@ export default defineSchema({
     // Busy-check point lookups: "does a RUNNING row of THIS kind exist?"
     // (kind=undefined covers legacy sub-agent rows written before the field).
     .index("by_chat_status_kind", ["chatId", "status", "kind"])
+    // Sidebar busy signal (chatReads.myBusyChats): the caller's (user, "running")
+    // slice in ONE bounded range — never a probe-per-owned-chat on the listChats
+    // path. Mirrors streamingText.by_user.
+    .index("by_user_status", ["userId", "status"])
     // Bounded scan for the stale-sub-agent reaper (subAgents.reapStaleSubAgents):
     // a `running` row is a best-effort observer write, and since a running row gates
     // isChatBusy, a dead observer (dropped terminal / bridge restart / connection-
@@ -1879,6 +1889,10 @@ export default defineSchema({
     // unique because clientMessageId is a client-generated UUID; scoping by
     // userId keeps one user's id space from colliding with another's.
     .index("by_client_message", ["userId", "clientMessageId"])
+    // Sidebar busy signal (chatReads.myBusyChats): the caller's (user, "pending")
+    // and (user, "queued") slices — the dispatch→ack window and the parked
+    // follow-ups, both transient and tiny. Bounded per-user range, never a scan.
+    .index("by_user_status", ["userId", "status"])
     // Reverse lookup message -> outbox row, used by forensic feedback to capture
     // the dispatched payload best-effort (the row is transient, may be gone).
     .index("by_message", ["messageId"]),

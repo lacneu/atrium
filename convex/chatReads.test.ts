@@ -212,4 +212,140 @@ describe("chatReads.myBusyChats", () => {
     });
     expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
   });
+
+  // Prod report 2026-07-22: the parent turn finalizes after sessions_spawn +
+  // yield, so NOTHING streams while the child works — the page showed the
+  // running sub-agent card but the sidebar (streamingText-only back then)
+  // showed idle. The pulse must ride the subAgents lifecycle end to end.
+  test("a RUNNING sub-agent pulses (no streaming turn); its terminal upsert silences", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    // Real ingest path (also locks the userId stamping at insert).
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "agent:main:subagent:child-1",
+      kind: "subagent",
+      status: "running",
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "agent:main:subagent:child-1",
+      status: "done",
+      resultText: "fini",
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+  });
+
+  test("a RUNNING background task (kind:'task') pulses too — page parity (spinning card)", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "task:img-42",
+      kind: "task",
+      status: "running",
+      taskName: "image_generate",
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "task:img-42",
+      status: "done",
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+  });
+
+  test("another user's running sub-agent never pulses MY sidebar", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const other = await seedChatWithStreaming(t);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: other.chatId,
+      childSessionKey: "agent:main:subagent:foreign",
+      kind: "subagent",
+      status: "running",
+    });
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+  });
+
+  test("legacy running row without userId: silent, then BACKFILLED on its next observer frame", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    // A pre-deploy row (no userId): invisible to the per-user index — no pulse.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subAgents", {
+        chatId: mine.chatId,
+        childSessionKey: "agent:main:subagent:legacy",
+        kind: "subagent",
+        status: "running",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+    // The next observer heartbeat backfills userId fill-only → the pulse appears.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "agent:main:subagent:legacy",
+      status: "running",
+      phase: "working",
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+  });
+
+  test("a pending or queued outbox row pulses; sent/failed do not", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    const outboxId = await t.run(async (ctx) =>
+      ctx.db.insert("outbox", {
+        chatId: mine.chatId,
+        userId: mine.userId,
+        clientMessageId: "cm-1",
+        text: "salut",
+        attachmentIds: [],
+        status: "pending" as const,
+      }),
+    );
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(outboxId, { status: "queued" as const });
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(outboxId, { status: "sent" as const });
+    });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([]);
+  });
+
+  test("one chat with several live signals reports ONCE (dedup)", async () => {
+    const t = convexTest(schema, modules);
+    const mine = await seedChatWithStreaming(t);
+    await stream(t, mine);
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId: mine.chatId,
+      childSessionKey: "agent:main:subagent:dup",
+      kind: "subagent",
+      status: "running",
+    });
+    const asMine = t.withIdentity({ subject: `${mine.userId}|s` });
+    expect(await asMine.query(api.chatReads.myBusyChats, {})).toEqual([
+      mine.chatId,
+    ]);
+  });
 });

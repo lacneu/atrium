@@ -697,6 +697,7 @@ async function reopenParentForAnnounce(
     if (row === null) {
       await ctx.db.insert("subAgents", {
         chatId,
+        userId: parent.userId,
         parentMessageId: parentId,
         anchorExact: true, // validated by the chain gates just above
         childSessionKey: chainTaskKeyToAnchor,

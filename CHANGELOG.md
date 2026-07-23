@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.68.8] — The chat list shows delegated work in progress
+
+Corrective release, closing a 2026-07-22 production report. No breaking
+changes; schema additions are additive (two new indexes are built during
+`npx convex deploy`), then deploy the bridge image.
+
+- **The chat list's "working" pulse now covers everything the chat page
+  shows as activity.** It previously lit only while a reply was streaming —
+  a chat whose turn had handed off to a sub-agent (or a background task, or
+  a send still in flight/queued) showed activity on its own page but nothing
+  in the sidebar. The busy signal now unions all of it: streaming replies,
+  running sub-agents and background tasks, and dispatched/queued sends, so
+  the list and the page always agree. Implemented as per-user indexed reads
+  (bounded, a handful of rows per refresh — never a probe per chat), with
+  older delegation rows joining the signal automatically on their next
+  heartbeat, no migration. Caps are sized so one busy chat with many
+  parallel tasks or queued sends can never crowd other busy chats out of
+  the pulse.
+- **The Settings protocol badge no longer flags `agent.endedAt`.** 2026.7.x
+  gateways stamp the run's closing timestamp onto agent events; it is benign
+  run metadata (the same family as the fields integrated in 0.68.0) and is
+  now part of the vendored contract, locked by the drift test. The
+  "1 unknown field(s)" badge turns off.
+
 ## [0.68.7] — Deploy-aware activity view, compaction on the gateway's own signals
 
 Operability and reliability release. No breaking changes; schema untouched.

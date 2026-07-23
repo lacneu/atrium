@@ -241,7 +241,8 @@ export const upsertSubAgent = internalMutation({
       // arriving after the chat was purged must NOT recreate an orphaned row holding chat
       // content (codex P1). A patch path can't reach here for a purged chat — the cascade
       // deletes its rows, so `existing` is null and this guard catches the re-insert.
-      if ((await ctx.db.get(args.chatId)) === null) return null;
+      const chat = await ctx.db.get(args.chatId);
+      if (chat === null) return null;
       // Denormalize the inherited anchor AT BIRTH: a row born inside a
       // delivery/announce run (bornOfRun, no direct anchor) copies the
       // anchor of that run's own row. Because every row gets this treatment
@@ -271,6 +272,7 @@ export const upsertSubAgent = internalMutation({
       }
       const insertedId = await ctx.db.insert("subAgents", {
         chatId: args.chatId,
+        userId: chat.userId,
         instanceName: args.instanceName,
         parentMessageId,
         anchorExact,
@@ -313,11 +315,19 @@ export const upsertSubAgent = internalMutation({
       kind?: "subagent" | "task";
       instanceName?: string;
       bornOfRun?: string;
+      userId?: Id<"users">;
       updatedAt: number;
     } = { updatedAt: now };
     // Fill-only metadata (never rewritten once set).
     if (args.kind !== undefined && existing.kind === undefined) {
       patch.kind = args.kind;
+    }
+    // Legacy-row backfill: a row written before `userId` existed converges on
+    // its next observer frame, so the sidebar busy signal (myBusyChats
+    // by_user_status) picks it up without a migration. Point read, guarded.
+    if (existing.userId === undefined) {
+      const owner = await ctx.db.get(existing.chatId);
+      if (owner !== null) patch.userId = owner.userId;
     }
     if (args.instanceName !== undefined && existing.instanceName === undefined) {
       patch.instanceName = args.instanceName;
@@ -1077,14 +1087,23 @@ export const adoptDiscoveredTask = internalMutation({
       // Known row: a live registry sighting is a freshness signal (same as
       // refreshTaskEngagement — keeps the stale reaper honest).
       if (existing.status === "running") {
-        await ctx.db.patch(existing._id, { updatedAt: now });
+        // Same legacy userId backfill as refreshTaskEngagement (codex P2):
+        // discovered tasks refresh through here, never through the observer
+        // upsert — without it a pre-userId row never joins the sidebar pulse.
+        let ownerFill: { userId: Id<"users"> } | Record<string, never> = {};
+        if (existing.userId === undefined) {
+          const owner = await ctx.db.get(existing.chatId);
+          if (owner !== null) ownerFill = { userId: owner.userId };
+        }
+        await ctx.db.patch(existing._id, { updatedAt: now, ...ownerFill });
       }
       return "refreshed" as const;
     }
     // Deleted-chat race (same guard as upsertSubAgent): the reconcile's
     // network call may outlive the chat's cascade delete — never recreate an
     // orphaned row for a purged chat.
-    if ((await ctx.db.get(chatId)) === null) return null;
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
     let parentMessageId: Id<"messages"> | undefined;
     if (toolName !== undefined) {
       const recent = await ctx.db
@@ -1123,6 +1142,7 @@ export const adoptDiscoveredTask = internalMutation({
     }
     await ctx.db.insert("subAgents", {
       chatId,
+      userId: chat.userId,
       instanceName,
       parentMessageId,
       // Anchor validated at the task's BIRTH (chain rule) -> correlated.
@@ -1149,7 +1169,16 @@ export const refreshTaskEngagement = internalMutation({
       .filter((q) => q.eq(q.field("chatId"), chatId))
       .first();
     if (row === null || row.status !== "running") return null;
-    await ctx.db.patch(row._id, { updatedAt: Date.now() });
+    // Legacy-row backfill (mirrors upsertSubAgent's patch path — codex P2):
+    // background tasks refresh through HERE, never through the observer
+    // upsert, so a pre-userId task row would otherwise stay invisible to the
+    // sidebar busy signal (myBusyChats by_user_status) for its whole run.
+    let ownerFill: { userId: Id<"users"> } | Record<string, never> = {};
+    if (row.userId === undefined) {
+      const owner = await ctx.db.get(row.chatId);
+      if (owner !== null) ownerFill = { userId: owner.userId };
+    }
+    await ctx.db.patch(row._id, { updatedAt: Date.now(), ...ownerFill });
     return null;
   },
 });

@@ -166,9 +166,10 @@ export function ChatSidebar({
     for (const r of reads ?? []) map.set(r.chatId, r.lastSeenAt);
     return map;
   }, [reads]);
-  // Chats with a turn IN FLIGHT right now (streamingText-backed, reactive from
-  // "thinking" to the last token) — powers the per-row pulse and the folded-
-  // folder aggregate.
+  // Chats where the agent is WORKING right now — a streaming turn, a running
+  // sub-agent/background task, or an in-flight/queued send (the server unions
+  // them; see chatReads.myBusyChats). Powers the per-row pulse and the folded-
+  // folder aggregate, and matches what the chat page itself shows as activity.
   const busyList = useQuery(api.chatReads.myBusyChats, {}) as
     | Id<"chats">[]
     | undefined;

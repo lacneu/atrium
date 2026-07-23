@@ -121,6 +121,13 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "spawnedCwd",
   "label",
   "displayName",
+  // Run-registry terminal timestamp flattened onto agent events (live
+  // ataraxis 2026-07-22 — the prod "1 unknown field(s)" badge, ×5). Upstream
+  // stamps it at run close (run.endedAt, Date.now()) and derives durationMs
+  // from it (acp-spawn). Same session/run-metadata family as updatedAt:
+  // an epoch number, not content; consumed nowhere (our per-turn timing
+  // comes from the pressure trace + finalizedAt).
+  "endedAt",
 ]);
 
 /**

@@ -207,6 +207,8 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "spawnedCwd",
       "label",
       "displayName",
+      // run-registry terminal timestamp (live ataraxis 2026-07-22, prod badge)
+      "endedAt",
     ])
       manifest.add(f);
     expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());
