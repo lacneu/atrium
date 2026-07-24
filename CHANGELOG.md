@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.68.12] — Tool cards stop lying, and a failed compaction says so
+
+First lot of the 1.0.0 stabilization work: the gateway's own frame vocabulary,
+read correctly. Both defects below were established against the upstream sources
+at the supported gateway version and reproduced by execution, then verified on a
+live local gateway. `npx convex deploy` plus the bridge and frontend images; no
+schema change, no breaking change.
+
+- **A tool card no longer reports "done" while the tool is still running.** Any
+  frame that was not a `start` was treated as the tool's completion — so a
+  mid-execution progress frame closed the card *and* consumed the arguments
+  captured at start, leaving the real completion with nothing to show. The
+  gateway emits exactly four phases on its tool stream (start, result, update
+  and — never handled until now — chunk), and the completion also travels on a
+  separate stream that Atrium already consumes. Progress frames now keep the
+  card live, keep the arguments, and refresh the turn's activity; only a real
+  completion closes it. An unrecognized phase carrying a result still closes the
+  card, so no card can hang. Side effect repaired: the turn's tool count and the
+  delegation gates that depend on it are no longer inflated by progress frames.
+- **A compaction the gateway could not finish is now named as such.** The
+  gateway reports whether its summarization actually produced a result; that
+  verdict was ignored, so a failed compaction was indistinguishable from a
+  successful one — the note under the reply claimed the conversation had been
+  optimized when it had not, and the next turn hit the context limit with no
+  prior signal. The failure now replaces that announcement in place (one marker
+  per turn, never two contradictory ones) with an honest explanation: the
+  conversation stays at full size, nothing was lost or altered. A failure never
+  overwrites the note of a compaction that *did* complete earlier in the same
+  turn — that one records a real reduction, and erasing it would be just as
+  wrong in the other direction.
+
 ## [0.68.11] — A clean frontend image again (Caddy dependencies patched)
 
 Supply-chain corrective release. No application change: the frontend image is

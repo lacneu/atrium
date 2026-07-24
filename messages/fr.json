@@ -1787,6 +1787,8 @@
 	"compaction_label": "Contexte optimisé par la passerelle",
 	"compaction_detail_preflight": "Avant de répondre, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés.",
 	"compaction_detail_midturn": "Pendant cette réponse, la passerelle a résumé le début de la conversation pour rester dans la limite du modèle, puis a repris. Les échanges récents sont conservés intégralement ; les plus anciens sont désormais condensés.",
+	"compaction_label_failed": "Optimisation du contexte impossible",
+	"compaction_detail_failed": "La passerelle a tenté de résumer le début de la conversation pour rester dans la limite du modèle, mais n'a pas réussi. La conversation reste donc à sa taille complète : une réponse longue peut atteindre la limite. Rien n'a été perdu ni modifié.",
 	"lightbox_fit": "Ajuster à l'écran",
 	"lightbox_actual_size": "Taille réelle",
 	"lightbox_fullscreen": "Plein écran",

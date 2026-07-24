@@ -2341,3 +2341,56 @@ export const simulatePreemptKill = mutation({
     return { userMsgId, outboxId, assistantId };
   },
 });
+
+/**
+ * DEV probe: the tool parts of a chat's LAST assistant message, with their
+ * phases — the live instrument for the `stream:"tool"` phase contract (a
+ * progress frame must never close a card). Metadata only: names, phases and
+ * whether an input/output is present, never their content.
+ *
+ *   npx convex run dev:peekToolPhases '{"chatId":"<id>"}'
+ */
+export const peekToolPhases = query({
+  args: { chatId: v.string() },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return { ok: false as const, reason: "bad chatId" };
+    const msgs = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", id))
+      .order("desc")
+      .take(20);
+    const last = msgs.find((m) => m.role === "assistant");
+    if (!last) return { ok: false as const, reason: "no assistant message" };
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", last._id))
+      .collect();
+    return {
+      ok: true as const,
+      messageStatus: last.status,
+      tools: parts
+        .filter((p) => p.part.kind === "tool")
+        .map((p) => {
+          const t = p.part as {
+            name?: string;
+            phase?: string;
+            toolCallId?: string;
+            input?: unknown;
+            output?: unknown;
+          };
+          return {
+            name: t.name ?? null,
+            phase: t.phase ?? null,
+            hasToolCallId: t.toolCallId !== undefined,
+            hasInput: t.input !== undefined,
+            hasOutput: t.output !== undefined,
+          };
+        }),
+      compactions: parts
+        .filter((p) => p.part.kind === "compaction")
+        .map((p) => (p.part as { phase: string }).phase),
+    };
+  },
+});

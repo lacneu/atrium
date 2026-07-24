@@ -552,6 +552,50 @@ describe("TurnSink compaction part + pressure trace", () => {
     });
   });
 
+  it("a FAILED verdict upgrades the `midturn` announcement in place (one part, the truth)", async () => {
+    // The explicit flow announces `midturn` when the gateway starts summarizing
+    // and only learns at its `end` whether it worked. The verdict must replace
+    // the announcement — a second part would leave two contradictory notices.
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_c3", writer);
+    await sink.beginTurn(RUN, { totalTokens: 260000, contextTokens: 272000 });
+    await sink.apply([
+      { type: "context.compaction", phase: "midturn" },
+      { type: "context.compaction", phase: "failed" },
+      { type: "message.final", text: "ok" },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    const parts = writer.calls.filter((c) => c[0] === "addCompactionPart");
+    expect(parts.map((p) => p[2])).toEqual(["midturn", "failed"]);
+    const traces = writer.calls.filter((c) => c[0] === "recordGatewayPressure");
+    expect((traces[0]?.[3] as { compaction: string }).compaction).toBe("failed");
+  });
+
+  it("a FAILED verdict NEVER overwrites a `preflight` marker (a compaction that DID complete)", async () => {
+    // `preflight` records a DIFFERENT compaction, detected by session-id
+    // rotation, which actually completed before the prompt. A later explicit
+    // compaction failing must not rewrite that marker into "the conversation
+    // stayed at full size" — that would be a false statement to the user
+    // (codex P2). The display keeps the truth it has.
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_c4", writer);
+    await sink.beginTurn(RUN, { totalTokens: 260000, contextTokens: 272000 });
+    await sink.apply([
+      { type: "context.compaction", phase: "preflight" },
+      { type: "context.compaction", phase: "failed" },
+      { type: "message.final", text: "ok" },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    const parts = writer.calls.filter((c) => c[0] === "addCompactionPart");
+    expect(parts.map((p) => p[2])).toEqual(["preflight"]);
+    const traces = writer.calls.filter((c) => c[0] === "recordGatewayPressure");
+    expect((traces[0]?.[3] as { compaction: string }).compaction).toBe(
+      "preflight",
+    );
+  });
+
   it("no compaction -> no part; the trace still records the fill counters", async () => {
     const writer = new SinkFakeWriter();
     const sink = new TurnSink("chat_c2", writer);

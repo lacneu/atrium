@@ -41,8 +41,14 @@ export function CompactionNotice() {
   // "midturn" = the gateway had to pause THIS reply to compact; "preflight"
   // (default) = it compacted before starting. The user-facing sentence differs
   // only in tense — both explain the same event honestly.
-  const detail =
-    compaction.phase === "midturn"
+  // "failed" = the gateway TRIED and could not (its own `completed:false`
+  // verdict). It must NOT fall through to the preflight copy, which would claim
+  // the conversation was summarized when nothing was: the session is still at
+  // full size, which is exactly why the next turn may hit the context wall.
+  const failed = compaction.phase === "failed";
+  const detail = failed
+    ? m.compaction_detail_failed()
+    : compaction.phase === "midturn"
       ? m.compaction_detail_midturn()
       : m.compaction_detail_preflight();
   // An INSTANT tooltip (shadcn, 150ms — matching BridgeStatusBadge), replacing
@@ -52,11 +58,15 @@ export function CompactionNotice() {
     <TooltipProvider delayDuration={150}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="oc-compaction" role="note" aria-label={detail}>
+          <div
+            className={`oc-compaction${failed ? " oc-compaction--failed" : ""}`}
+            role="note"
+            aria-label={detail}
+          >
             <span className="oc-compaction__rule" aria-hidden />
             <span className="oc-compaction__label">
               <FoldVertical size={12} aria-hidden />
-              {m.compaction_label()}
+              {failed ? m.compaction_label_failed() : m.compaction_label()}
             </span>
             <span className="oc-compaction__rule" aria-hidden />
           </div>

@@ -209,6 +209,30 @@ const CHAT_ERROR_KINDS = new Set([
   "context_length",
 ]);
 
+/**
+ * PROGRESS phases on `stream:"tool"` — a tool is still RUNNING. Enumerated from
+ * every upstream emission site at v2026.7.1 (`stream: "tool"` → `phase:` is one
+ * of start ×62, result ×28, update ×3, chunk ×1), so `result` is the only
+ * completion on this stream; the tool's terminal ALSO rides the `item` stream as
+ * `phase:"end"` (handlers.tools.ts emitTrackedItemEvent), consumed separately.
+ *
+ * The list is an ALLOWLIST of non-terminals rather than of terminals on purpose
+ * (multi-version safety, supported range 2026.5.19+): an UNKNOWN phase carrying
+ * a result payload must still be able to close the card — a stuck spinner is a
+ * worse failure than a card closed by an unrecognized name. `delta` is included
+ * defensively: it is emitted on sibling streams by the same handler file and
+ * would mean progress here too.
+ */
+const TOOL_PROGRESS_PHASES: ReadonlySet<string> = new Set([
+  "update",
+  "chunk",
+  "delta",
+]);
+
+function isToolProgressPhase(phase: unknown): boolean {
+  return isString(phase) && TOOL_PROGRESS_PHASES.has(phase);
+}
+
 const PRIVATE_ACK_RE =
   /^\s*(?:envoy[éè]+|message\s+envoy[éè]+|r[éè]ponse\s+envoy[éè]+|done|ok|fait)(?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$/iu;
 
@@ -1217,6 +1241,29 @@ export class Normalizer {
           });
         }
         // No toolCallId: keep the coalesced single-card behavior (no orphan).
+      } else if (isToolProgressPhase(phase)) {
+        // PROGRESS, not completion. The pre-1.0 code treated EVERY non-start
+        // phase as terminal, so a mid-execution `update` closed the card as
+        // "completed" AND consumed the buffered args — the real `result` then
+        // landed without its input, and the turn's tool count was inflated
+        // (which in turn defeated the spawn/yield gates in turn-sink). Proved by
+        // execution against this normalizer. Upstream v2026.7.1 emits exactly
+        // four phases on `stream:"tool"` (enumerated from every emission site:
+        // start ×62, result ×28, update ×3, chunk ×1) and the completion ALSO
+        // rides the `item` stream as `phase:"end"`, which we consume separately.
+        // Keep the card LIVE and the args buffered; a progress frame is a
+        // keep-alive, so refresh the silence budget like any other activity.
+        this.armRecv(now);
+        if (toolCallId) {
+          events.push({
+            type: EVENT_TOOL_STATUS,
+            name: name ?? null,
+            phase: "start", // the card stays in its running state
+            toolCallId,
+            input: this.toolArgs.get(toolCallId) ?? data.args ?? undefined,
+            runId: this.currentRunId,
+          });
+        }
       } else {
         const input =
           toolCallId && this.toolArgs.has(toolCallId)
@@ -1296,6 +1343,17 @@ export class Normalizer {
     }
     if (phase === "end") {
       this.explicitCompaction = "ended";
+      // `completed` is the gateway's own verdict on whether the compaction
+      // actually produced a result (upstream: `completed: hasResult &&
+      // !wasAborted`). It was ignored, so a FAILED compaction was indistinguishable
+      // from a successful one — the run went back to its normal silence budget with
+      // a session that had not shrunk, and the next turn hit the context wall with
+      // no prior signal (the recurring production symptom). A failure that will NOT
+      // be retried is the actionable one: name it.
+      const failedForGood = data.completed === false && data.willRetry !== true;
+      if (failedForGood) {
+        events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "failed" });
+      }
       if (data.willRetry === true) {
         // Overflow replay in flight on the same run: stay in the widened
         // budget; resumed content restores the normal one.

@@ -1220,6 +1220,27 @@ export const addPart = internalMutation({
         return;
       }
     }
+    // COMPACTION-PART UPSERT (same shape as the tool upsert above): a turn
+    // carries at most ONE compaction marker by design, but its phase is only
+    // FINAL at the gateway's `end` verdict — the explicit-compaction flow
+    // announces `midturn` when it starts and only then learns whether the
+    // gateway actually compacted (`completed:false` = it did not). Patch in
+    // place so the verdict REPLACES the announcement; appending would stack a
+    // second, contradictory notice on the same turn. Provenance-scoped like
+    // tools. No effect on the historic flow: the bridge writes a single
+    // compaction part per turn, so this path only ever fires for the verdict.
+    if (part.kind === "compaction") {
+      const row = existing.find(
+        (e) =>
+          e.part.kind === "compaction" &&
+          (e.announceRun ?? null) === (announceRun ?? null),
+      );
+      if (row !== undefined) {
+        await ctx.db.patch(row._id, { part });
+        await ctx.db.patch(messageId, { updatedAt: Date.now() });
+        return;
+      }
+    }
     const order = existing.length;
     await ctx.db.insert("messageParts", {
       messageId,

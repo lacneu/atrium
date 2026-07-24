@@ -1779,3 +1779,118 @@ describe("finalizeCause diagnostic (report ms7b5j — which close fired)", () =>
     expect(String(final?.diagnosticFinalizeCause)).toMatch(/gateway/);
   });
 });
+
+// The `agent.data` vocabulary the gateway actually emits — enumerated from every
+// upstream emission site at v2026.7.1, not guessed. Each case below reproduces a
+// real misreading of that vocabulary (the pre-1.0 code treated ANY non-start tool
+// phase as a completion, and ignored the gateway's own compaction verdict).
+describe("agent.data vocabulary: tool progress vs completion, compaction verdict", () => {
+  const SK = SESSION_KEY;
+  function toolFrame(data: Record<string, unknown>): unknown {
+    return {
+      type: "event",
+      event: "agent",
+      payload: { runId: OWN_RUN, sessionKey: SK, seq: 1, stream: "tool", ts: 0, data },
+    };
+  }
+  function compactionFrame(data: Record<string, unknown>): unknown {
+    return {
+      type: "event",
+      event: "agent",
+      payload: { runId: OWN_RUN, sessionKey: SK, seq: 1, stream: "compaction", ts: 0, data },
+    };
+  }
+  function driveTool(
+    phases: Record<string, unknown>[],
+  ): { events: BridgeEvent[]; normalizer: Normalizer } {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events: BridgeEvent[] = [];
+    for (const data of phases) {
+      events.push(...normalizer.feed(toolFrame(data), clock.tick()));
+    }
+    return { events, normalizer };
+  }
+
+  it("an `update` mid-execution does NOT complete the card and does NOT consume the args", () => {
+    // The defect: `update` was read as terminal, so the card showed "completed"
+    // while the tool was still running AND the buffered args were dropped — the
+    // real `result` then landed with no `input` to render.
+    const { events } = driveTool([
+      { phase: "start", name: "exec", toolCallId: "tc1", args: { command: "ls -la /tmp" } },
+      { phase: "update", name: "exec", toolCallId: "tc1", partialResult: { aggregated: "partial…" } },
+      { phase: "result", name: "exec", toolCallId: "tc1", isError: false, result: { aggregated: "done" } },
+    ]);
+    const statuses = events.filter((e) => e.type === "tool.status");
+    // Exactly ONE completion, and it is the LAST event — never on the update.
+    const completions = statuses.filter((e) => e.phase === "completed");
+    expect(completions).toHaveLength(1);
+    expect(statuses[statuses.length - 1]?.phase).toBe("completed");
+    // The completion still carries the args captured at `start`.
+    expect(completions[0]?.input).toEqual({ command: "ls -la /tmp" });
+  });
+
+  it("`chunk` — the fourth phase the gateway emits on stream:\"tool\" — is progress too", () => {
+    // `chunk` appears at one upstream emission site and was NEVER named in any
+    // Atrium code path: it fell into the terminal branch like `update`.
+    const { events } = driveTool([
+      { phase: "start", name: "read", toolCallId: "tc2", args: { path: "/a" } },
+      { phase: "chunk", name: "read", toolCallId: "tc2" },
+    ]);
+    const statuses = events.filter((e) => e.type === "tool.status");
+    expect(statuses.some((e) => e.phase === "completed")).toBe(false);
+    expect(statuses.some((e) => e.phase === "error")).toBe(false);
+  });
+
+  it("an UNKNOWN phase carrying a result still closes the card (no eternal spinner)", () => {
+    // Multi-version safety (supported range starts at 2026.5.19): the allowlist
+    // names the PROGRESS phases, so a phase we do not recognize keeps its
+    // terminal behavior — a stuck card is worse than an unrecognized name.
+    const { events } = driveTool([
+      { phase: "start", name: "exec", toolCallId: "tc3", args: { command: "x" } },
+      { phase: "finished_someday", name: "exec", toolCallId: "tc3", result: { aggregated: "ok" } },
+    ]);
+    const statuses = events.filter((e) => e.type === "tool.status");
+    expect(statuses.some((e) => e.phase === "completed")).toBe(true);
+  });
+
+  it("a compaction the gateway could NOT complete emits a `failed` marker", () => {
+    // Upstream sends `completed: hasResult && !wasAborted`; it was ignored, so a
+    // failed compaction looked identical to a successful one and the next turn
+    // hit the context wall with no prior signal.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    normalizer.feed(compactionFrame({ phase: "start" }), clock.tick());
+    const events = normalizer.feed(
+      compactionFrame({ phase: "end", willRetry: false, completed: false }),
+      clock.tick(),
+    );
+    const marks = events.filter((e) => e.type === "context.compaction");
+    expect(marks.map((e) => e.phase)).toContain("failed");
+  });
+
+  it("a SUCCESSFUL compaction, and one that will be retried, emit no failure marker", () => {
+    for (const data of [
+      { phase: "end", willRetry: false, completed: true },
+      // willRetry:true = the overflow replay is still in flight on this run:
+      // the verdict is not final yet, so it must not be announced as a failure.
+      { phase: "end", willRetry: true, completed: false },
+    ]) {
+      const normalizer = newNormalizer();
+      const clock = new Clock();
+      normalizer.beginTurn(clock.now);
+      normalizer.noteRunStarted(OWN_RUN, clock.now);
+      normalizer.feed(compactionFrame({ phase: "start" }), clock.tick());
+      const events = normalizer.feed(compactionFrame(data), clock.tick());
+      expect(
+        events
+          .filter((e) => e.type === "context.compaction")
+          .map((e) => e.phase),
+      ).not.toContain("failed");
+    }
+  });
+});

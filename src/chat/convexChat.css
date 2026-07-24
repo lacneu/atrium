@@ -7617,6 +7617,11 @@ button.oc-bmk-rail__count:hover {
   color: var(--muted-foreground);
   white-space: nowrap;
 }
+/* A compaction the gateway attempted and could NOT complete: the session did
+   not shrink, so this is a warning, not the neutral "context optimized" note. */
+.oc-compaction--failed .oc-compaction__label {
+  color: var(--warning-foreground, #92400e);
+}
 
 
 /* Bridge tab — protocol-contract section: compact mono lists for drift/gaps. */

@@ -973,13 +973,35 @@ export class TurnSink {
           // stays in the thread as the honest "context was optimized" note.
           // Content-free: phase + timestamp only, never the summary.
           const phase = asString(event.phase) || "preflight";
-          if (this.compactionPhase === null) {
+          // ONE marker per turn — but the VERDICT wins over the announcement
+          // (codex P1). The explicit-compaction flow emits `midturn` at
+          // `phase:"start"` and only learns at `phase:"end"` whether the gateway
+          // actually compacted; a first-wins rule would drop the `failed`
+          // verdict and leave the neutral "context was optimized" note on a
+          // session that never shrank. Convex upserts the compaction part on
+          // (message, kind, announceRun) — see stream.addPart — so the upgrade
+          // REPLACES the marker instead of stacking a contradictory second one.
+          // A verdict may upgrade an ANNOUNCEMENT of the same compaction
+          // (`midturn`) — never a `preflight` marker (codex P2): that one records
+          // a DIFFERENT compaction which actually COMPLETED before the prompt
+          // (detected by session-id rotation), so replacing it with a failure
+          // would tell the user the conversation was never compacted when it
+          // was. In that case the display keeps the truth it already has and the
+          // dropped verdict goes to the operator log (never silent — the richer
+          // signal rides the context lot that reworks the pressure trace).
+          const canUpgrade =
+            phase === "failed" && this.compactionPhase === "midturn";
+          if (this.compactionPhase === null || canUpgrade) {
             this.compactionPhase = phase;
             await this.writer.addCompactionPart(messageId, {
               kind: "compaction",
               phase,
               at: Date.now(),
             });
+          } else if (phase === "failed") {
+            console.log(
+              `[sink] compaction verdict FAILED not shown: a "${this.compactionPhase}" marker already records a completed compaction on this turn`,
+            );
           }
           break;
         }

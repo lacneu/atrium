@@ -1787,6 +1787,8 @@
 	"compaction_label": "Context optimized by the gateway",
 	"compaction_detail_preflight": "Before answering, the gateway summarized the beginning of the conversation to stay within the model limit. Recent exchanges are kept verbatim; older ones are now condensed.",
 	"compaction_detail_midturn": "During this reply, the gateway summarized the beginning of the conversation to stay within the model limit, then resumed. Recent exchanges are kept verbatim; older ones are now condensed.",
+	"compaction_label_failed": "Context optimization failed",
+	"compaction_detail_failed": "The gateway tried to summarize the earlier part of the conversation to stay within the model's limit, but could not. The conversation therefore stays at full size, so a long reply may reach the limit. Nothing was lost or altered.",
 	"lightbox_fit": "Fit to screen",
 	"lightbox_actual_size": "Actual size",
 	"lightbox_fullscreen": "Fullscreen",

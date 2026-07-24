@@ -1431,3 +1431,55 @@ describe("sub-agent announce CHAIN (bornOfRun = announce run)", () => {
     expect(parent?.status).toBe("complete"); // untouched
   });
 });
+
+// The compaction marker is a VERDICT, not an announcement: the explicit-compaction
+// flow posts `midturn` when the gateway starts summarizing and only learns at the
+// gateway's `end` whether it succeeded. The part must be UPGRADED in place — a
+// second, contradictory notice on the same turn would tell the user the context
+// was optimized when it was not (the production symptom this closes).
+describe("stream.addPart — compaction marker upsert", () => {
+  test("a `failed` verdict REPLACES the `midturn` announcement (one part, not two)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    await t.mutation(internal.stream.addPart, {
+      messageId: parentId,
+      part: { kind: "compaction" as const, phase: "midturn", at: 1000 },
+    });
+    await t.mutation(internal.stream.addPart, {
+      messageId: parentId,
+      part: { kind: "compaction" as const, phase: "failed", at: 2000 },
+    });
+    const parts = await t.run(async (ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", parentId))
+        .collect(),
+    );
+    const compactions = parts.filter((p) => p.part.kind === "compaction");
+    expect(compactions).toHaveLength(1);
+    expect(
+      (compactions[0]!.part as { phase: string }).phase,
+    ).toBe("failed");
+    expect(chatId).toBeDefined();
+  });
+
+  test("a NON-compaction part is never fused into the compaction marker", async () => {
+    const t = convexTest(schema, modules);
+    const { parentId } = await seedDelegatedTurn(t);
+    await t.mutation(internal.stream.addPart, {
+      messageId: parentId,
+      part: { kind: "compaction" as const, phase: "midturn", at: 1000 },
+    });
+    await t.mutation(internal.stream.addPart, {
+      messageId: parentId,
+      part: { kind: "tool" as const, name: "exec", phase: "completed" as const },
+    });
+    const parts = await t.run(async (ctx) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", parentId))
+        .collect(),
+    );
+    expect(parts).toHaveLength(2);
+  });
+});
