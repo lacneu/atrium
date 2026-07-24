@@ -28,7 +28,30 @@ RUN node -p "JSON.stringify({ version: require('./package.json').version, revisi
 # Build the exact Caddy release with a fixed Go toolchain, then copy only the
 # static binary and CA bundle into a pinned, package-manager-free runtime.
 FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS caddy-builder
-RUN CGO_ENABLED=0 GOBIN=/out go install github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.4
+# Caddy v2.11.4 (its LATEST release — there is no newer tag to move to) pins two
+# INDIRECT modules that now carry high-severity advisories, which the image scan
+# gate rejects: golang.org/x/text v0.37.0 (GO-2026-5970, fixed in 0.39.0) and
+# google.golang.org/grpc v1.81.0 (GHSA-hrxh-6v49-42gf, fixed in 1.82.1).
+# `go install pkg@version` builds in module-free mode and CANNOT override a
+# dependency, so build the same Caddy release from a throwaway module where both
+# are force-upgraded — the xcaddy pattern, and the same reasoning as the Go
+# toolchain pin above (build it ourselves rather than inherit a vulnerable
+# binary). Both bumps are semver-compatible (same major), so Caddy's own code is
+# unchanged. When a Caddy release ships these fixes, drop the two `go get` lines
+# and return to `go install`.
+# ORDER MATTERS: the entrypoint must exist BEFORE resolving the graph, or
+# `go mod tidy` cannot see Caddy's standard-module imports and go.sum stays
+# incomplete. Pin the Caddy release with `go mod edit -require` (so tidy resolves
+# THAT version, not latest), tidy, THEN force-upgrade the two flagged modules —
+# MVS selects the higher requirement, which is exactly the bump we want.
+WORKDIR /caddybuild
+RUN go mod init atrium/caddy-dist \
+ && printf 'package main\n\nimport (\n\tcaddycmd "github.com/caddyserver/caddy/v2/cmd"\n\t_ "github.com/caddyserver/caddy/v2/modules/standard"\n)\n\nfunc main() { caddycmd.Main() }\n' > main.go \
+ && go mod edit -require=github.com/caddyserver/caddy/v2@v2.11.4 \
+ && go mod tidy \
+ && go get golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 \
+ && CGO_ENABLED=0 go build -trimpath -o /out/caddy . \
+ && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc'
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
 COPY --from=caddy-builder /out/caddy /usr/bin/caddy
 COPY --from=caddy-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.68.11] — A clean frontend image again (Caddy dependencies patched)
+
+Supply-chain corrective release. No application change: the frontend image is
+rebuilt with two patched Go modules, so the published artifact carries no
+high-severity finding. Deploy the frontend image; Convex and the bridge are
+untouched.
+
+- **The frontend image no longer ships two high-severity vulnerabilities.**
+  Caddy's own latest release (v2.11.4 — there is no newer tag) pins two
+  *indirect* modules that now carry advisories: `golang.org/x/text` v0.37.0
+  (fixed in 0.39.0) and `google.golang.org/grpc` v1.81.0 (fixed in 1.82.1).
+  Since `go install pkg@version` cannot override a dependency, the image now
+  builds the same pinned Caddy release from a throwaway module where both are
+  force-upgraded, and the build itself prints the resolved versions as proof.
+  Caddy's own code is unchanged (both bumps are semver-compatible), and the
+  image scan gate goes from rejecting the build to clean.
+- **The container policy now tests the intent instead of one spelling.** It
+  required the literal `go install …@v` line, which would have rejected any
+  build form able to patch a transitive dependency. It now requires an
+  explicitly pinned Caddy version (a floating `@latest` is still rejected) and
+  additionally forbids inheriting a prebuilt `caddy:` image — the point of
+  building it ourselves. Three new negative/positive cases cover it.
+
 ## [0.68.10] — The elapsed clock runs on delegated work
 
 Corrective release, closing a 2026-07-23 report — the timing companion to

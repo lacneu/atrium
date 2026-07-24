@@ -29,8 +29,20 @@ if grep -Eq '^[[:space:]]*RUN[[:space:]].*(apk|apt-get|dnf|yum)[[:space:]].*(cur
   exit 1
 fi
 
-if ! grep -Fq 'go install github.com/caddyserver/caddy/v2/cmd/caddy@v' "$dockerfile"; then
-  echo "The Caddy source release must be pinned" >&2
+# Caddy must be built from an EXPLICITLY PINNED source release. The assertion is
+# on the INTENT, not on one build form: `go install pkg@vX.Y.Z` and the
+# throwaway-module form (`go mod edit -require=pkg@vX.Y.Z`, the only way to
+# override a vulnerable INDIRECT dependency of the Caddy release) both qualify.
+# A floating reference (`@latest`, a branch, no version) does not match.
+if ! grep -Eq 'github\.com/caddyserver/caddy/v2(/cmd/caddy)?@v[0-9]+\.[0-9]+\.[0-9]+' "$dockerfile"; then
+  echo "The Caddy source release must be pinned to an explicit version" >&2
+  exit 1
+fi
+
+# …and it must be BUILT, never inherited as a prebuilt image (the whole point of
+# the caddy-builder stage: we control the Go toolchain and the dependency set).
+if grep -Eq '^FROM caddy:' "$dockerfile"; then
+  echo "The frontend image must build Caddy from source, not pull a prebuilt image" >&2
   exit 1
 fi
 
