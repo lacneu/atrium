@@ -2258,6 +2258,13 @@ button.oc-bmk-rail__count:hover {
   color: var(--muted-foreground);
   font-size: 0.85rem;
 }
+/* Elapsed clock for the delegated treatment — same muted voice as the label,
+   slightly receded; tabular digits so the ticking never jitters the row. */
+.oc-turn-activity__clock {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* Anchored variant: rendered INSIDE the working bubble's body (under the
    sub-agent card / reply text), so it inherits the bubble width — drop the
    thread-level centering + gutter. */

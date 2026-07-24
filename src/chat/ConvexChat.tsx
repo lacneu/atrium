@@ -178,6 +178,11 @@ import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { TurnClock } from "./TurnClock";
+import {
+  turnBaselineMs,
+  turnElapsedMs,
+  turnClockLabel,
+} from "./turnClockView";
 import { InlineTurnActivity } from "./InlineTurnActivity";
 import { QueuedDock } from "./QueuedDock";
 import { QueuedTurnContext } from "./queuedTurnContext";
@@ -343,6 +348,7 @@ const TurnGateContext = createContext<TurnGate | null>(null);
 const TurnActivityAnchorContext = createContext<{
   messageId: string;
   running: boolean;
+  workingSince: number | null;
 } | null>(null);
 
 // Mid-turn QUEUE (Phase 1): the composer reads this to send a follow-up WHILE a
@@ -1181,6 +1187,7 @@ function ChatThread({
         running: boolean;
         runningTtlRemainingMs: number | null;
         deliveringSince: number | null;
+        workingSince: number | null;
         anchorMessageId: string | null;
       }
     | undefined;
@@ -1269,7 +1276,11 @@ function ChatThread({
   }, [showTurnActivity, anchorId]);
   const anchoredActivity =
     showTurnActivity && anchorId !== null && anchorMounted
-      ? { messageId: anchorId, running: runningLive }
+      ? {
+          messageId: anchorId,
+          running: runningLive,
+          workingSince: turnActivity?.workingSince ?? null,
+        }
       : null;
   useFocusMessage(chatId, focusMessageId);
   return (
@@ -1295,7 +1306,10 @@ function ChatThread({
           }}
         />
         {showTurnActivity && anchoredActivity === null ? (
-          <TurnActivityIndicator running={runningLive} />
+          <TurnActivityIndicator
+            running={runningLive}
+            since={turnActivity?.workingSince ?? null}
+          />
         ) : null}
       </ThreadPrimitive.Viewport>
       <BookmarkNavRail />
@@ -1341,27 +1355,71 @@ function ChatThread({
 // Thread-level activity chip: a settled reply whose TURN is still working
 // (sub-agent running, or its result being composed into the follow-up
 // delivery). Same visual language as the in-bubble thinking dots; shown in
-// BOTH the clean and the analysis views.
+// BOTH the clean and the analysis views. Carries the elapsed clock for the
+// delegated treatment (prod report 2026-07-22: a bubble WITH text + a running
+// sub-agent had no timer — TurnClock only covers streaming and settled-EMPTY
+// delegated turns). `since` is a SERVER timestamp: anchored locally on first
+// observation (the turnClockView pattern), never live-subtracted (skew).
 function TurnActivityIndicator({
   running,
+  since = null,
   anchored = false,
 }: {
   running: boolean;
+  since?: number | null;
   anchored?: boolean;
 }) {
+  const anchor = useRef<{
+    key: number;
+    baselineMs: number;
+    firstLocalMs: number;
+  } | null>(null);
+  if (since !== null && anchor.current?.key !== since) {
+    const now = Date.now();
+    anchor.current = {
+      key: since,
+      baselineMs: turnBaselineMs(since, now),
+      firstLocalMs: now,
+    };
+  }
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (since === null) return;
+    const t = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [since]);
+  const clock =
+    since !== null && anchor.current !== null && anchor.current.key === since
+      ? turnClockLabel(
+          turnElapsedMs(
+            anchor.current.baselineMs,
+            anchor.current.firstLocalMs,
+            Date.now(),
+          ),
+        )
+      : null;
   return (
     <div
       className={`oc-turn-activity${anchored ? " oc-turn-activity--anchored" : ""}`}
-      role="status"
     >
       <span className="oc-dots" aria-hidden>
         <span />
         <span />
         <span />
       </span>
-      <span>
+      {/* The LIVE region is the LABEL alone (codex P2, a11y): the ticking
+          clock must not live inside role="status" — its every-second update
+          would make screen readers re-announce the whole status. role="timer"
+          is implicitly aria-live=off, so the clock stays readable on demand
+          without chattering. */}
+      <span role="status">
         {running ? m.turn_subagent_working() : m.turn_result_incoming()}
       </span>
+      {clock !== null ? (
+        <span className="oc-turn-activity__clock" role="timer">
+          {clock}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -3320,7 +3378,11 @@ function AssistantMessage() {
             <RunStatus />
           </AssistantIdentityContext.Provider>
           {anchoredHere !== null ? (
-            <TurnActivityIndicator running={anchoredHere.running} anchored />
+            <TurnActivityIndicator
+              running={anchoredHere.running}
+              since={anchoredHere.workingSince}
+              anchored
+            />
           ) : null}
         </div>
         <BookmarkGutter

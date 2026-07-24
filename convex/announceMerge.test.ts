@@ -1012,7 +1012,7 @@ describe("subAgents.turnActivity", () => {
     // Child RUNNING → running:true, anchored to its parent bubble (the
     // indicator renders UNDER the working turn, not at the thread bottom
     // where a queued follow-up would claim it — user report).
-    await t.run(async (ctx) => {
+    const childCreatedAt = await t.run(async (ctx) => {
       const sub = await ctx.db.query("subAgents").first();
       // updatedAt fresh, as the real upsert stamps on every status change —
       // the staleness gate must not hide a live transition.
@@ -1021,10 +1021,14 @@ describe("subAgents.turnActivity", () => {
         updatedAt: Date.now(),
       });
       await ctx.db.patch(chatId, { lastAssistantAt: 1000 });
+      return sub!.createdAt;
     });
     let a = await asUser.query(api.subAgents.turnActivity, { chatId });
     expect(a.running).toBe(true);
     expect(a.anchorMessageId).toBe(parentId);
+    // The elapsed-clock baseline: the delegated treatment starts at the
+    // child's birth (prod report 2026-07-22: no timer on a delegated turn).
+    expect(a.workingSince).toBe(childCreatedAt);
 
     // Child DONE after the last settle → delivering (announce being composed).
     await t.run(async (ctx) => {
@@ -1036,6 +1040,9 @@ describe("subAgents.turnActivity", () => {
     expect(a.deliveringSince).toBe(5000);
     // The delivery being composed anchors to the finished child's bubble.
     expect(a.anchorMessageId).toBe(parentId);
+    // The clock keeps its birth baseline through the delivery window — the
+    // user perceives one continuous treatment, never a timer reset.
+    expect(a.workingSince).toBe(childCreatedAt);
 
     // The merge settles (finalize re-stamps lastAssistantAt) → quiet.
     await t.mutation(internal.stream.startAssistant, {
@@ -1050,6 +1057,7 @@ describe("subAgents.turnActivity", () => {
     a = await asUser.query(api.subAgents.turnActivity, { chatId });
     expect(a.running).toBe(false);
     expect(a.deliveringSince).toBeNull();
+    expect(a.workingSince).toBeNull(); // quiet → no clock
   });
 
   test("a merge whose parent scrolled beyond the recent-message window stays quiet", async () => {

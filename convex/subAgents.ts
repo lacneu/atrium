@@ -585,6 +585,14 @@ export const turnActivity = query({
     // Null when running is false or held by a task row (no display TTL).
     runningTtlRemainingMs: number | null;
     deliveringSince: number | null;
+    // When the delegated work STARTED (the live child's createdAt; during a
+    // pure delivery window, the delivered child's createdAt) — the baseline
+    // for the elapsed clock on the thread's activity indicator (prod report
+    // 2026-07-22: a bubble with text + a running sub-agent showed no timer).
+    // A SERVER timestamp: the client anchors it locally on first observation
+    // (the turnClockView pattern) — never subtracted live from the browser
+    // clock (skew). Null when nothing is working.
+    workingSince: number | null;
     // Where the signal should RENDER: the message the live row is anchored
     // to (its bubble already carries the sub-agent card), so the thread can
     // place the indicator UNDER the working turn instead of at the bottom —
@@ -686,6 +694,7 @@ export const turnActivity = query({
     }
     let deliveringSince: number | null = null;
     let deliveringAnchor: Id<"messages"> | null = null;
+    let deliveringWorkStart: number | null = null;
     for (const r of rows) {
       // A background-task row's "delivery" is the run that settled it: when
       // it merged, mergedRuns above already covers it; when it was silent
@@ -743,6 +752,7 @@ export const turnActivity = query({
       }
       if (deliveringSince === null || r.updatedAt > deliveringSince) {
         deliveringAnchor = r.parentMessageId ?? null;
+        deliveringWorkStart = r.createdAt;
       }
       deliveringSince = Math.max(deliveringSince ?? 0, r.updatedAt);
     }
@@ -769,7 +779,18 @@ export const turnActivity = query({
       running && runningRow !== null && runningRow.kind !== "task" && !coexistingTask
         ? Math.max(0, SUBAGENT_STALE_TTL_MS - (runningAge ?? 0))
         : null;
-    return { running, runningTtlRemainingMs, deliveringSince, anchorMessageId };
+    // The elapsed-clock baseline: the WHOLE delegated treatment as the user
+    // perceives it — from the child's birth, through its run, into the
+    // delivery window (the same child's createdAt during a pure delivery).
+    const workingSince =
+      runningRow !== null ? runningRow.createdAt : deliveringWorkStart;
+    return {
+      running,
+      runningTtlRemainingMs,
+      deliveringSince,
+      workingSince,
+      anchorMessageId,
+    };
   },
 });
 

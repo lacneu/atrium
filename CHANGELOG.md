@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.68.10] — The elapsed clock runs on delegated work
+
+Corrective release, closing a 2026-07-23 report — the timing companion to
+0.68.9's sidebar fix (the same blind spot, seen from inside the chat). No
+breaking changes, no schema change; `npx convex deploy` plus the frontend
+image — the bridge is untouched.
+
+- **The "working…" line under a reply now carries the elapsed time.** When a
+  turn had already streamed its text and handed off to a sub-agent, the
+  activity line showed no timer (the clock only covered streaming turns and
+  delegated turns whose bubble settled empty — a gap opened by 0.68.0's
+  interleaved turns, where the parent settles earlier). The indicator now
+  shows the elapsed time of the whole delegated treatment — from the
+  sub-agent's start through the delivery of its result, one continuous
+  timer, with the same clock-skew-safe local anchoring as the existing
+  per-message clock. Screen readers are spared the ticking: the live status
+  region announces only state changes, never the seconds.
+
 ## [0.68.9] — The chat list shows delegated work in progress
 
 Corrective release, closing a 2026-07-22 production report. No breaking
