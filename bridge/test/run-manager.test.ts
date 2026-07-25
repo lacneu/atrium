@@ -709,3 +709,176 @@ describe("a hung media upload never holds a written reply (G-31)", () => {
     expect(writer.calls.some((c) => c[0] === "finalize")).toBe(true); // …and lost the race
   });
 });
+
+describe("single ordered application path (G-29)", () => {
+  it("keeps STRICT arrival order when a live frame races the pre-ack replay", async () => {
+    // The two producers do not share a call stack: the consume loop drives `feed`
+    // while `beginTurn` — in the /send HTTP handler — replays the frames that raced
+    // the ack. Both await inside `sink.apply`, so before the chain a live frame
+    // could be applied BETWEEN a replayed frame's produce and its apply: the start
+    // of a reply landing after its middle.
+    const writer = new FakeWriter();
+    // Slow the write so the interleaving window is wide and deterministic.
+    const realSnapshot = writer.setSnapshot.bind(writer);
+    writer.setSnapshot = (async (messageId: string, text: string) => {
+      await new Promise((r) => setTimeout(r, 5));
+      return realSnapshot(messageId, text);
+    }) as never;
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+
+    const chatFrame = (text: string, seq: number) => ({
+      event: "chat",
+      payload: {
+        sessionKey: SESSION_KEY,
+        runId: OWN_RUN,
+        seq,
+        state: "delta",
+        message: { role: "assistant", content: [{ type: "text", text }] },
+      },
+    });
+
+    // The send arms the pre-ack buffer (performSend does this right before
+    // `chat.send`), so frames racing the ack are captured instead of dropped.
+    manager.armReplayBuffer();
+    // THREE frames arrive before the ack: they are buffered, not applied.
+    for (const [i, text] of ["one", "two", "three"].entries()) {
+      await manager.feed(chatFrame(text, i + 1), clock.tick());
+    }
+    // The ack lands and the replay starts. The live frame is injected once the sink
+    // is OPEN and the replay is mid-flight — before, it would simply be buffered too
+    // and there would be no race to speak of.
+    const opening = manager.beginTurn(clock.tick(), OWN_RUN);
+    await new Promise((r) => setTimeout(r, 7)); // startAssistant done, replay running
+    const live = manager.feed(chatFrame("four", 4), clock.tick());
+    await Promise.all([opening, live]);
+
+    const snapshots = writer.calls
+      .filter((c) => c[0] === "setSnapshot")
+      .map((c) => String(c[2]));
+    // Each frame carries a full message, so each one REPLACES the reply: the writer
+    // must see them in exactly the order they arrived, replay first and the live
+    // frame last. Any interleaving shows up here as a permutation.
+    expect(snapshots).toEqual(["one", "two", "three", "four"]);
+  });
+
+  it("a failed replay does not keep writing the frames behind it", async () => {
+    // The sequential loop stopped at the first failure; enqueueing the batch must not
+    // turn that into "the rest keep writing into a turn /send is about to fail".
+    const writer = new FakeWriter();
+    let snapshots = 0;
+    writer.setSnapshot = (async () => {
+      snapshots += 1;
+      if (snapshots === 1) throw new Error("convex hiccup");
+    }) as never;
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    const chatFrame = (text: string, seq: number) => ({
+      event: "chat",
+      payload: {
+        sessionKey: SESSION_KEY,
+        runId: OWN_RUN,
+        seq,
+        state: "delta",
+        message: { role: "assistant", content: [{ type: "text", text }] },
+      },
+    });
+    manager.armReplayBuffer();
+    for (const [i, text] of ["one", "two", "three"].entries()) {
+      await manager.feed(chatFrame(text, i + 1), clock.tick());
+    }
+    await expect(manager.beginTurn(clock.tick(), OWN_RUN)).rejects.toThrow(
+      /convex hiccup/,
+    );
+    // Only the failing one was attempted — the queued remainder stood down.
+    expect(snapshots).toBe(1);
+  });
+
+  it("a recovery QUEUED behind a slow chain still refuses a turn that moved on", async () => {
+    // The guard has to live inside the queued unit: checked before enqueueing, the
+    // unit can wait behind a slow apply while a new turn begins — and then write the
+    // previous turn's answer into it (and finalize it).
+    const writer = new FakeWriter();
+    const realSnapshot = writer.setSnapshot.bind(writer);
+    writer.setSnapshot = (async (messageId: string, text: string) => {
+      await new Promise((r) => setTimeout(r, 15));
+      return realSnapshot(messageId, text);
+    }) as never;
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    const recoveredEpoch = manager.turnEpoch;
+    // Something slow occupies the chain…
+    const slow = manager.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 1,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "x" }] },
+        },
+      },
+      clock.tick(),
+    );
+    // …the recovery queues behind it (its epoch is still valid AT THIS POINT)…
+    const recovering = manager.recoverVisibleText(
+      "turn N's answer",
+      clock.tick(),
+      recoveredEpoch,
+    );
+    // …and a new turn starts before the queued unit runs. NOT awaited: awaiting would
+    // drain the chain first, which is precisely the race this test must avoid
+    // simulating away — `beginTurn` bumps the epoch synchronously.
+    const opening = manager.beginTurn(clock.tick(), "run-next");
+    const applied = await recovering;
+    await Promise.all([slow, opening]);
+
+    expect(applied).toBe(false);
+    // The new turn was neither written into nor finalized by the old answer.
+    const texts = writer.calls
+      .filter((c) => c[0] === "setSnapshot")
+      .map((c) => String(c[2]));
+    expect(texts).not.toContain("turn N's answer");
+  });
+
+  it("a close racing an in-flight frame cannot finalize before it lands", async () => {
+    // `endTurn` comes from the SESSION (a socket close, a send error) while the
+    // consume loop is mid-`feed`: two producers, two call stacks. Without one chain
+    // the close produces and applies while the frame's apply is still awaiting, and
+    // the turn finalizes BEFORE its last content — the reply loses its tail.
+    const writer = new FakeWriter();
+    const realSnapshot = writer.setSnapshot.bind(writer);
+    writer.setSnapshot = (async (messageId: string, text: string) => {
+      await new Promise((r) => setTimeout(r, 10));
+      return realSnapshot(messageId, text);
+    }) as never;
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+
+    const framed = manager.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 1,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "tail" }] },
+        },
+      },
+      clock.tick(),
+    );
+    // The close lands while that apply is still in flight.
+    const closing = manager.endTurn(clock.tick(), "error", "connection_lost");
+    await Promise.all([framed, closing]);
+
+    const order = writer.calls
+      .filter((c) => c[0] === "setSnapshot" || c[0] === "finalize")
+      .map((c) => c[0]);
+    // The content must be written BEFORE the turn is closed.
+    expect(order).toEqual(["setSnapshot", "finalize"]);
+  });
+});

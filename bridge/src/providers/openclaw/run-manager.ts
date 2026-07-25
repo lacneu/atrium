@@ -18,6 +18,7 @@ import {
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
 import type { ConvexWriter } from "../../convex-writer.js";
+import type { BridgeEvent } from "../../core/events.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   parseProvenanceFrame,
@@ -375,7 +376,12 @@ export class RunManager {
         console.log(
           `[announce] open announce turn preempted by real dispatch — closing run=${this.currentSpontaneousRun.slice(0, 60)}`,
         );
-        await this.sink.preemptOpenTurn();
+        // Through the SAME chain (codex P2): a preemption is a turn transition, and
+        // closing the announce while one of its frames is still being applied would
+        // finalize it before its own tail — then the normalizer reset would discard
+        // that frame. The partial reply the preemption exists to preserve would lose
+        // exactly the part it was preserving.
+        await this.runOrdered(() => this.sink.preemptOpenTurn());
       } catch (e) {
         console.error(
           "[announce] preempt close failed (non-fatal):",
@@ -411,7 +417,7 @@ export class RunManager {
       : [];
     this.pendingProvenance = [];
     if (matched.length > 0) {
-      await this.sink.apply(
+      await this.applyOrdered(() =>
         matched.map((p) => ({ type: "provenance", part: p.part })),
       );
     }
@@ -421,10 +427,27 @@ export class RunManager {
     // normalizer's runId guard; the buffer is drained either way.
     const raced = this.pendingFrames;
     this.pendingFrames = [];
-    for (const { frame, now: frameNow } of raced) {
+    // ENQUEUE ALL OF THEM SYNCHRONOUSLY, then await. Awaiting inside the loop would
+    // yield between two replayed frames, and a live frame arriving in that gap would
+    // take the next slot in the chain — the reply's middle landing before its start
+    // (measured: `one, four, two, three`). The chain orders what is enqueued; this
+    // loop is what decides the enqueue order, so it must not pause halfway.
+    // …and STOP at the first failure, as the sequential loop did (codex P2): when an
+    // apply fails, `beginTurn` rejects and /send treats the whole send as failed —
+    // letting the queued remainder keep writing into a turn the caller is about to
+    // fail would be a new behavior, not a preserved one. The flag is set by the
+    // rejection of the unit before the next one produces (they run in chain order).
+    let replayFailed = false;
+    const replayed = raced.map(({ frame, now: frameNow }) => {
       this.tallyFrame(frame);
-      await this.sink.apply(this.normalizer.feed(frame, frameNow));
-    }
+      return this.applyOrdered(() =>
+        replayFailed ? [] : this.normalizer.feed(frame, frameNow),
+      ).catch((err) => {
+        replayFailed = true;
+        throw err;
+      });
+    });
+    await Promise.all(replayed);
     if (raced.length > 0) {
       this.dumpTallyOnce();
     }
@@ -517,7 +540,7 @@ export class RunManager {
         });
         this.noteSpontaneousFrame(frame, now);
         this.tallyFrame(frame);
-        await this.sink.apply(this.normalizer.feed(frame, now));
+        await this.applyOrdered(() => this.normalizer.feed(frame, now));
         // Earlier frames of this run stashed from a send/turn overlap replay
         // through the now-active pipeline (other runs' frames re-stash via the
         // active branch).
@@ -540,7 +563,7 @@ export class RunManager {
           // The flush opened a spontaneous turn — feed the current frame through
           // the ACTIVE pipeline instead of the inactive branches.
           this.tallyFrame(frame);
-          await this.sink.apply(this.normalizer.feed(frame, now));
+          await this.applyOrdered(() => this.normalizer.feed(frame, now));
           return;
         }
       }
@@ -618,7 +641,7 @@ export class RunManager {
       }
     }
     this.tallyFrame(frame);
-    await this.sink.apply(this.normalizer.feed(frame, now));
+    await this.applyOrdered(() => this.normalizer.feed(frame, now));
     this.dumpTallyOnce();
     // If that frame FINALIZED the turn, deliver any announce stashed during it
     // RIGHT NOW: the consume loop may go idle (nextTimeout null) with no later
@@ -637,7 +660,7 @@ export class RunManager {
       await this.flushPendingAnnounce(now);
       return;
     }
-    await this.sink.apply(this.normalizer.tick(now));
+    await this.applyOrdered(() => this.normalizer.tick(now));
     // A deadline-driven finalize must also deliver stashed announces (same
     // no-later-tick-guaranteed rationale as feed()).
     if (!this.sink.active) {
@@ -736,6 +759,63 @@ export class RunManager {
   }
 
   /**
+   * SINGLE ORDERED APPLICATION PATH (G-29).
+   *
+   * The sink has more than one producer, and they do not share a call stack: the
+   * consume loop drives `feed`/`tick`, while `beginTurn` runs in the /send HTTP
+   * handler — including its replay of frames that raced the ack. Both `await`
+   * inside `sink.apply`, so a live frame could be applied BETWEEN the produce and
+   * the apply of a replayed one: the normalizer's state and the writer's order both
+   * stop reflecting arrival order, and the start of a reply can land after its
+   * middle.
+   *
+   * Everything therefore goes through this one chain, and the unit is deliberately
+   * SMALL — produce the events from the normalizer AND apply them, nothing else.
+   * The producing call must be INSIDE the unit (the normalizer mutates as it
+   * produces), and nothing that itself enqueues may run within one: `feed` recurses
+   * and `beginTurn` enqueues, so both stay outside the unit they schedule.
+   *
+   * The chain does not change the nominal order — it guarantees it. Every existing
+   * ordering test must therefore still pass unmodified.
+   */
+  private applyChain: Promise<void> = Promise.resolve();
+
+  private runOrdered(task: () => Promise<void> | void): Promise<void> {
+    // BOUND to the turn that enqueued it (codex P2). The chain orders the writes, but
+    // `beginTurn` resets the normalizer and the sink OUTSIDE it — a unit still queued
+    // when that happens would produce against the NEW turn's state, dropping the old
+    // turn's tail or applying it to the wrong reply. Serializing `beginTurn` itself
+    // is not an option: it enqueues its own units (the pre-ack replay), so it would
+    // wait on a chain containing itself.
+    // NOTE on coverage: this binding and the serialized preemption above are
+    // belt-and-braces. In the test harness the normalizer's own admission rules
+    // (a reset turn no longer owns the dead run's id) already discard such a unit's
+    // events, so neither could be given a test that fails without it. They are kept
+    // because those rules protect FRAME producers only — `tick`, `endTurn` and the
+    // provenance flush produce without re-checking the run id.
+    const epoch = this.turnEpoch;
+    const run = this.applyChain.then(async () => {
+      if (this.turnEpoch !== epoch) {
+        console.log(
+          `[apply] unit dropped: its turn ended while queued (epoch=${epoch} current=${this.turnEpoch})`,
+        );
+        return;
+      }
+      await task();
+    });
+    // The tail swallows rejections so one failed unit cannot poison the next; the
+    // caller still sees its own error through the returned promise.
+    this.applyChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private applyOrdered(produce: () => BridgeEvent[]): Promise<void> {
+    return this.runOrdered(async () => {
+      await this.sink.apply(produce());
+    });
+  }
+
+  /**
    * Apply transcript-recovered text as the answer (finalizes the turn).
    *
    * `expectedEpoch` is the turn the CALLER set out to recover. It matters because
@@ -762,16 +842,26 @@ export class RunManager {
     if (!this.sink.active) {
       return false;
     }
-    if (this.turnEpoch !== expectedEpoch) {
-      // Never silent: a dropped recovery is a lost reply for the turn it belonged
-      // to, and the operator needs to know it happened rather than wonder why the
-      // transcript held an answer nobody delivered.
-      console.log(
-        `[recovery] dropped: turn moved on (expectedEpoch=${expectedEpoch} current=${this.turnEpoch})`,
-      );
-      return false;
-    }
-    await this.sink.apply(this.normalizer.recoverVisibleText(text, now));
+    // The epoch is checked INSIDE the queued unit, not before enqueueing (codex P1):
+    // the unit can wait behind a slow chain, and a new turn may begin — with a reset
+    // normalizer — while it waits. Checking early would let the previous turn's
+    // answer be written into, and finalize, the new one: exactly the corruption the
+    // guard exists to prevent.
+    let applied = false;
+    await this.applyOrdered(() => {
+      if (this.turnEpoch !== expectedEpoch || !this.sink.active) {
+        // Never silent: a dropped recovery is a lost reply for the turn it belonged
+        // to, and the operator needs to know it happened rather than wonder why the
+        // transcript held an answer nobody delivered.
+        console.log(
+          `[recovery] dropped: turn moved on (expectedEpoch=${expectedEpoch} current=${this.turnEpoch})`,
+        );
+        return [];
+      }
+      applied = true;
+      return this.normalizer.recoverVisibleText(text, now);
+    });
+    if (!applied) return false;
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
@@ -796,7 +886,7 @@ export class RunManager {
     if (!this.sink.active) {
       return;
     }
-    await this.sink.apply(
+    await this.applyOrdered(() =>
       this.normalizer.endTurn(now, status, error, cause, errorKind),
     );
     if (!this.sink.active) {
