@@ -1108,6 +1108,82 @@ http.route({
   }),
 });
 
+// The append-only OCCURRENCE history of an anomaly (key-authed). The anomalies
+// list gives the CURRENT state and its counters; this answers "when, and how many
+// times" — the question a single patched row could never answer. Accepts either an
+// `anomalyId` or a `kind` (a cause's history across successive open rows).
+http.route({
+  path: "/api/v1/anomaly-occurrences",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number) =>
+      ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/anomaly-occurrences",
+        method: "GET",
+        status,
+        latencyMs: Date.now() - startedAt,
+      });
+    if (!principalHasPermission(principal, PERMISSIONS.ANOMALIES_READ)) {
+      await trace(403);
+      return apiJson(
+        { ok: false, error: "missing permission: anomalies.read" },
+        403,
+      );
+    }
+    const anomalyId = url.searchParams.get("anomalyId");
+    const kind = url.searchParams.get("kind");
+    if (!anomalyId && !kind) {
+      await trace(400);
+      return apiJson({ ok: false, error: "missing anomalyId or kind" }, 400);
+    }
+    if (anomalyId && kind) {
+      await trace(400);
+      return apiJson(
+        { ok: false, error: "provide exactly one of anomalyId or kind" },
+        400,
+      );
+    }
+    const limitRaw = url.searchParams.get("limit");
+    const limit = limitRaw !== null ? Number(limitRaw) : undefined;
+    let history;
+    try {
+      history = await ctx.runQuery(
+        internal.anomalies.occurrencesInternal,
+        {
+          ...(anomalyId ? { anomalyId: anomalyId as Id<"anomalies"> } : {}),
+          ...(kind ? { kind } : {}),
+          ...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
+        },
+      );
+    } catch {
+      await trace(404);
+      return apiJson({ ok: false, error: "unknown anomalyId" }, 404);
+    }
+    if (!history.found) {
+      // A well-formed id that matches nothing is an ABSENT resource — reporting an
+      // empty history as if the anomaly existed would mislead the caller.
+      await trace(404);
+      return apiJson({ ok: false, error: "unknown anomalyId" }, 404);
+    }
+    await trace(200);
+    // `historyComplete: false` = the row predates this history (opened before the
+    // table existed), so its own first-seen is older than anything listed here.
+    return apiJson({ ok: true, ...history });
+  }),
+});
+
 // Report an anomaly OR a self-repair action taken (key-authed). Mirrors the
 // /api/v1/traces spine: authenticate -> require anomalies.report -> validate
 // body -> record an `api.call` trace -> insert the source:"agent" anomaly.

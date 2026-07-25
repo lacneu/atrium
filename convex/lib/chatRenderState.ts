@@ -69,6 +69,13 @@ export const KNOWN_ERROR_CODES = [
   // The gateway ANNOUNCED its restart before closing (`event:"shutdown"`) — a
   // known maintenance window rather than an unexplained drop.
   "gateway_restarting",
+  // The bridge's own normalized transient classes — curated codes the finalize path
+  // persists as `errorCode` (turnRetry keys its bounded auto-retry on them). They
+  // were missing here, so the trace filter dropped them and their lost turns could
+  // never raise a named cause (codex P1).
+  "provider_internal",
+  "session_init_conflict",
+  "empty_response_silent",
   // The dispatch never reported back and the reconciler settled the row to unlock
   // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose
   // only its response), which is what its message says.

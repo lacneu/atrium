@@ -50,6 +50,10 @@ type AnomalyView = {
   source: "detector" | "agent" | "user";
   correlationId: string | null;
   evidence: string | null;
+  // How many observations this row aggregates, and when the first one was: the
+  // difference between a blip and a pattern, which is what an admin decides on.
+  occurrenceCount: number | null;
+  firstAt: number | null;
   // Attachment metadata only (name + size); the full text is fetched on demand
   // by the viewer dialog via api.anomalies.getAnomalyAttachments.
   attachments: { name: string; chars: number }[] | null;
@@ -319,6 +323,27 @@ export function AnomaliesTab() {
             header: m.anomalies_type(),
             cell: (r) => <code className="oc-traces__mono">{r.kind}</code>,
             sort: (r) => r.kind,
+          },
+          {
+            // "4× since Tuesday" — the question the old single patched row could
+            // not answer at all.
+            header: m.anomalies_col_seen(),
+            cell: (r) =>
+              r.occurrenceCount !== null && r.occurrenceCount > 1 ? (
+                <span
+                  className="oc-traces__time"
+                  title={
+                    r.firstAt !== null
+                      ? m.anomalies_seen_since({ when: formatDateTime(r.firstAt) })
+                      : undefined
+                  }
+                >
+                  {m.anomalies_seen_count({ count: String(r.occurrenceCount) })}
+                </span>
+              ) : (
+                <span className="oc-traces__time">—</span>
+              ),
+            sort: (r) => r.occurrenceCount ?? 0,
           },
           {
             header: m.anomalies_severity(),

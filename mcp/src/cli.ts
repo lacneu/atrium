@@ -14,6 +14,7 @@
  *   atrium anomalies [--limit N] [--since ISO] [--q TEXT] [--from T]
  *       [--to T] [--status S] [--severity S] [--source S] [--kind K]
  *   atrium query-openclaw [--question TEXT]
+ *   atrium anomaly-occurrences [--anomaly-id ID] [--kind K] [--limit N]
  *   atrium report-anomaly --kind K --severity S --message M [--correlation-id ID]
  *   atrium bridge-status
  *   atrium sync --instance NAME
@@ -30,6 +31,7 @@ import {
   getSchema,
   health,
   listAnomalies,
+  getAnomalyOccurrences,
   listSchemas,
   listTraces,
   queryOpenClaw,
@@ -98,6 +100,8 @@ Commands:
             [--status S] [--severity S] [--source S] [--kind K]
                                       GET  /anomalies         (anomalies.read)
   query-openclaw [--question TEXT]    POST /openclaw/query    (openclaw.query)
+  anomaly-occurrences [--anomaly-id ID] [--kind K] [--limit N]
+                                      GET  /anomaly-occurrences (anomalies.read)
   report-anomaly --kind K --severity info|warn|critical --message M [--correlation-id ID]
                                       POST /anomalies         (anomalies.report)
 
@@ -182,6 +186,12 @@ async function dispatch(
         severity: str(flags.severity),
         source: str(flags.source),
         kind: str(flags.kind),
+      });
+    case "anomaly-occurrences":
+      return getAnomalyOccurrences(config, {
+        anomalyId: str(flags["anomaly-id"]),
+        kind: str(flags.kind),
+        limit: num(flags.limit),
       });
     case "query-openclaw":
       return queryOpenClaw(config, {

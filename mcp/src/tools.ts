@@ -114,6 +114,17 @@ export const anomalyAttachmentsInput = {
   anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
 };
 
+export const anomalyOccurrencesInput = {
+  anomalyId: z.string().optional()
+    .describe("The anomaly _id (from list_anomalies) — its own history."),
+  kind: z.string().optional()
+    .describe(
+      "Or a CAUSE key (e.g. assistant.cause.context_length) — its history across " +
+        "successive open rows. One of anomalyId or kind is required.",
+    ),
+  limit: z.number().optional().describe("Max observations (1-200, default 50)."),
+};
+
 export const resolveAnomalyInput = {
   anomalyId: z.string().describe("The anomaly _id (from list_anomalies)."),
   status: z.enum(["resolved", "acknowledged"]).optional()
@@ -793,6 +804,24 @@ export function getAnomalyAttachments(
 ): Promise<unknown> {
   const query = qs({ anomalyId: args.anomalyId });
   return apiFetch(config, `/anomaly-attachments${query}`, {}, options);
+}
+
+/** GET /api/v1/anomaly-occurrences — the APPEND-ONLY observation history of one
+ *  anomaly (or of a whole cause, across successive rows). `list_anomalies` gives the
+ *  current state and its counters; this answers "when, and how many times" — the
+ *  question a single overwritten row could never answer. Requires
+ *  `anomalies.read`. */
+export function getAnomalyOccurrences(
+  config: Config,
+  args: { anomalyId?: string; kind?: string; limit?: number },
+  options?: ApiFetchOptions,
+): Promise<unknown> {
+  const query = qs({
+    anomalyId: args.anomalyId,
+    kind: args.kind,
+    limit: args.limit,
+  });
+  return apiFetch(config, `/anomaly-occurrences${query}`, {}, options);
 }
 
 /** POST /api/v1/anomalies/resolve — close/acknowledge an anomaly. Requires

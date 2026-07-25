@@ -49,7 +49,9 @@ import {
   health,
   listAnomalies,
   getAnomalyAttachments,
+  getAnomalyOccurrences,
   anomalyAttachmentsInput,
+  anomalyOccurrencesInput,
   losslessDoctor,
   losslessDoctorInput,
   listAnomaliesInput,
@@ -472,6 +474,28 @@ function main(): void {
     },
     async (args) =>
       run(() => getAnomalyAttachments(config, args as { anomalyId: string })),
+  );
+
+  server.registerTool(
+    "get_anomaly_occurrences",
+    {
+      title: "Read an anomaly's occurrence history",
+      description:
+        "The APPEND-ONLY observation history of one anomaly, or of a whole CAUSE " +
+        "across successive rows (GET /anomaly-occurrences). list_anomalies gives " +
+        "the current state plus occurrenceCount/firstAt; this answers 'when, and " +
+        "how many times' — pass `anomalyId` for one row's history or `kind` for a " +
+        "cause's. `historyComplete:false` means the row predates this history. " +
+        "Requires anomalies.read.",
+      inputSchema: anomalyOccurrencesInput,
+    },
+    async (args) =>
+      run(() =>
+        getAnomalyOccurrences(
+          config,
+          args as { anomalyId?: string; kind?: string; limit?: number },
+        ),
+      ),
   );
 
   server.registerTool(

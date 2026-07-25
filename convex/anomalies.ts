@@ -107,7 +107,72 @@ export const ANOMALY_KINDS = {
   STREAM_ERRORS: "assistant.stream_errors",
   INGEST_DENIED: "openclaw.ingest_denied",
   ACCESS_SCAN: "api.access_scan",
+  // A burst of user STOPS. Split out from `STREAM_ERRORS` (codex P2): the combined
+  // threshold can trip on aborts alone, and a user pressing Stop is a choice, not a
+  // lost turn — classing it as turn-costing would leave an alert open forever for
+  // something that clears by itself.
+  STOP_BURSTS: "assistant.stop_bursts",
 } as const;
+
+/**
+ * PER-CAUSE anomaly classes for a failed turn.
+ *
+ * The old channel had one kind for every failure — "Assistant stream errors: 2
+ * over 15m" — which named a COUNT, not a cause. Prod showed the consequence: the
+ * row that fired during the 2026-07-20 context overflow was indistinguishable from
+ * two unrelated blips, so the real diagnosis came from a human report instead.
+ * A cause is only actionable when it is named, so each curated `errorCode` the
+ * bridge already persists gets its own class.
+ *
+ * The map is FIXED (auto-resolution iterates it), and anything not listed keeps
+ * falling into the generic class below — an unknown cause must still be surfaced,
+ * never dropped for lacking an entry.
+ */
+export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
+  context_length: "assistant.cause.context_length",
+  compaction_timeout: "assistant.cause.compaction_timeout",
+  connection_lost: "assistant.cause.connection_lost",
+  gateway_restarting: "assistant.cause.gateway_restarting",
+  connection_saturated: "assistant.cause.connection_saturated",
+  response_timeout: "assistant.cause.response_timeout",
+  stream_orphaned: "assistant.cause.stream_orphaned",
+  session_init_conflict: "assistant.cause.session_init_conflict",
+  empty_response_silent: "assistant.cause.empty_response_silent",
+  provider_internal: "assistant.cause.provider_internal",
+  empty_response: "assistant.cause.empty_response",
+  DISPATCH_STALLED: "assistant.cause.dispatch_stalled",
+  // The gateway's own normalized hard-failure classes (codex P2): allowlisted
+  // upstream and real lost turns, so they get named classes like the rest.
+  rate_limit: "assistant.cause.rate_limit",
+  timeout: "assistant.cause.timeout",
+  refusal: "assistant.cause.refusal",
+  gateway_timeout: "assistant.cause.gateway_timeout",
+  gateway_error: "assistant.cause.gateway_error",
+};
+
+/**
+ * Classes that COST A USER A TURN — never auto-resolved (see
+ * `autoResolveClearedDetectors`). Every per-cause class qualifies by construction:
+ * each one exists because a turn failed. The generic stream-error class qualifies
+ * too, since it is the same failure with an unrecognized cause. Rate/ratio classes
+ * (API error ratio, ingest denied, access scan) are conditions rather than lost
+ * work, so they keep clearing on their own.
+ */
+export function isTurnCostingKind(kind: string): boolean {
+  return (
+    kind === ANOMALY_KINDS.STREAM_ERRORS ||
+    kind === ANOMALY_KINDS.DISPATCH_FAILURES ||
+    Object.values(CAUSE_ANOMALY_KINDS).includes(kind)
+  );
+}
+
+/** Every detector-owned kind: the fixed base set plus the per-cause classes. */
+export function allDetectorKinds(): string[] {
+  return [
+    ...Object.values(ANOMALY_KINDS),
+    ...Object.values(CAUSE_ANOMALY_KINDS),
+  ];
+}
 
 /** The terminal class of an `assistant.stream` finalize row: a REAL "error",
  *  a user "aborted" (Stop), or null (not a terminal / not a stream row). The
@@ -124,6 +189,24 @@ function streamFinalizeClass(
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The curated failure CLASS of an `assistant.stream` finalize row (meta.errorCode,
+ * written by stream.ts through the platform's non-PHI allowlist). Absent on rows
+ * written before this shipped, and on failures whose code is not allowlisted —
+ * those keep falling into the generic class, never dropped.
+ */
+function streamFailureCode(row: Doc<"traceEvents">): string | undefined {
+  if (row.meta === undefined) return undefined;
+  try {
+    const m = JSON.parse(row.meta) as { errorCode?: unknown };
+    return typeof m.errorCode === "string" && m.errorCode.length > 0
+      ? m.errorCode
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -182,6 +265,38 @@ type WindowAgg = {
   streamErrors: number;
   streamAborts: number;
   streamSampleCorrelation?: string;
+  // Failed turns BY CAUSE (curated code -> count) plus the most recent
+  // correlationId per cause: what turns "2 errors" into "2 context overflows".
+  streamCauses: Record<string, number>;
+  streamCauseCorrelation: Record<string, string>;
+  // NEWEST contributing trace per detector — the watermark that tells a genuinely
+  // new observation from the same one re-read on the next cron tick.
+  /** IDENTITY of the newest contributing trace per detector (its row id), paired
+   *  with `latestAt` — same-millisecond failures need it to be counted. */
+  latestKey: {
+    api?: string;
+    dispatch?: string;
+    streamError?: string;
+    streamAbort?: string;
+    ingest?: string;
+    cause: Record<string, string>;
+    accessByPrincipal: Map<string, string>;
+  };
+  latestAt: {
+    api?: number;
+    dispatch?: number;
+    /** Newest real ERROR finalize — the only thing that is a new observation for
+     *  the turn-costing class. A user Stop must not advance it (codex P2). */
+    streamError?: number;
+    /** Newest user STOP — what makes a new observation for the burst class. */
+    streamAbort?: number;
+    ingest?: number;
+    cause: Record<string, number>;
+    /** principalId -> newest CHAT-READ by that principal. The access-scan class is
+     *  about one principal's distinct reads, so an unrelated API call (or another
+     *  principal's) must not advance its watermark (codex P2). */
+    accessByPrincipal: Map<string, number>;
+  };
   ingestDenied: number;
   // principalId -> set of DISTINCT chatIds it read via the diagnostic API in the
   // window (access-scan detector). Non-PHI: a service-account id + chat ids.
@@ -226,6 +341,19 @@ async function upsertDetectorAnomaly(
     severity: Severity;
     message: string;
     evidence: Record<string, unknown>;
+    /** Optional link to the span chain that produced THIS observation. */
+    correlationId?: string;
+    /** Timestamp of the NEWEST trace behind this detection. The occurrence history
+     *  is appended only when this advances: the detection window (15 min) is wider
+     *  than the cron period (5 min), so the same failing turn is re-detected on
+     *  every tick. Counting ticks would turn one lost turn into fifteen
+     *  "occurrences" and make the history — the whole point of this table — a lie
+     *  (codex P1). */
+    latestEventAt?: number;
+    /** IDENTITY of that trace. Same-millisecond failures are real and must each
+     *  count, so the timestamp alone cannot decide (codex P2); a different newest
+     *  row at the same instant is a different failure. */
+    latestEventKey?: string;
   },
 ): Promise<void> {
   const existing = await findOpenDetectorRow(ctx, args.kind);
@@ -240,6 +368,22 @@ async function upsertDetectorAnomaly(
       message: args.message,
       source: "detector",
       evidence,
+      occurrenceCount: 1,
+      firstAt: now,
+      ...(args.latestEventAt !== undefined
+        ? { lastEventAt: args.latestEventAt }
+        : {}),
+      ...(args.latestEventKey !== undefined
+        ? { lastEventKey: args.latestEventKey }
+        : {}),
+    });
+    await appendOccurrence(ctx, {
+      anomalyId: id,
+      kind: args.kind,
+      at: now,
+      severity: args.severity,
+      evidence,
+      correlationId: args.correlationId,
     });
     // Notify admins on the OPEN transition only (fresh insert) — never on the
     // upsert/refresh path below, so a re-observed anomaly doesn't spam per cron
@@ -256,11 +400,84 @@ async function upsertDetectorAnomaly(
     return;
   }
   // Refresh the still-open row in place (last-seen bump) — never a duplicate.
+  // The patched `evidence` is the CURRENT observation; the one it replaces is not
+  // lost, because every observation is also appended below. That append is what
+  // turns this channel from "something is wrong now" into a record an operator can
+  // reason about.
+  // Is this a NEW observation, or the same failure still inside the window? Only a
+  // newer contributing trace counts (see `latestEventAt`); with no timestamps at all
+  // we cannot tell, and inventing occurrences is worse than missing one.
+  const isNewObservation =
+    args.latestEventAt !== undefined &&
+    existing.lastEventAt !== undefined &&
+    (args.latestEventAt > existing.lastEventAt ||
+      // Same instant, DIFFERENT trace: a second real failure in that millisecond.
+      // The timestamp must still not go backwards (the window slides, so an older
+      // row can become the newest one — that is not a new event).
+      (args.latestEventAt === existing.lastEventAt &&
+        args.latestEventKey !== undefined &&
+        args.latestEventKey !== existing.lastEventKey));
+  // MIGRATION: a row opened before these fields existed has no watermark and no
+  // occurrence history. Counting this tick as a second occurrence would show "2×"
+  // over a history containing one entry (codex P2). Adopt the watermark and record
+  // THIS observation as the row's first — the aggregate then matches the table.
+  const isFirstEverObservation =
+    args.latestEventAt !== undefined && existing.lastEventAt === undefined;
   await ctx.db.patch(existing._id, {
     at: now,
     severity: args.severity,
     message: args.message,
     evidence,
+    ...(isNewObservation
+      ? {
+          occurrenceCount: (existing.occurrenceCount ?? 1) + 1,
+          lastEventAt: args.latestEventAt,
+          lastEventKey: args.latestEventKey,
+        }
+      : isFirstEverObservation
+        ? {
+            occurrenceCount: 1,
+            lastEventAt: args.latestEventAt,
+            lastEventKey: args.latestEventKey,
+          }
+        : {}),
+    firstAt: existing.firstAt ?? existing.at,
+  });
+  if (!isNewObservation && !isFirstEverObservation) return;
+  await appendOccurrence(ctx, {
+    anomalyId: existing._id,
+    kind: args.kind,
+    at: now,
+    severity: args.severity,
+    evidence,
+    correlationId: args.correlationId,
+  });
+}
+
+/**
+ * Append ONE immutable observation. Never patched, never deleted by the detector:
+ * this table IS the history the single open row cannot hold.
+ */
+async function appendOccurrence(
+  ctx: MutationCtx,
+  args: {
+    anomalyId: Id<"anomalies">;
+    kind: string;
+    at: number;
+    severity: Severity;
+    evidence?: string;
+    correlationId?: string;
+  },
+): Promise<void> {
+  await ctx.db.insert("anomalyOccurrences", {
+    anomalyId: args.anomalyId,
+    kind: args.kind,
+    at: args.at,
+    severity: args.severity,
+    ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
+    ...(args.correlationId !== undefined
+      ? { correlationId: args.correlationId }
+      : {}),
   });
 }
 
@@ -278,8 +495,51 @@ async function autoResolveClearedDetectors(
 ): Promise<string[]> {
   const resolved: string[] = [];
   const detectedSet = new Set(detected);
-  for (const kind of Object.values(ANOMALY_KINDS)) {
+  for (const kind of allDetectorKinds()) {
     if (detectedSet.has(kind)) continue;
+    // A class that COST A USER A TURN is never auto-resolved. The condition
+    // leaving the 15-minute window does not undo the turn that failed, and prod
+    // showed what auto-resolution costs: over 14 days every detector row was
+    // closed by `detector:auto` five minutes after opening — including the one
+    // that fired during the 2026-07-20 context-overflow incident, which then had
+    // to be re-reported by hand. These rows stay open until a human closes them;
+    // that is the whole point of raising them.
+    if (isTurnCostingKind(kind)) {
+      // …with ONE migration exception. The old detector raised
+      // `assistant.stream_errors` for an abort-only burst (its combined threshold);
+      // that row is now a CONDITION by our own rule, and treating it as lost work
+      // would pin a stale critical alert in the heartbeat forever (codex P2). Its
+      // own evidence says which it was, so read it rather than guess.
+      const open = await findOpenDetectorRow(ctx, kind);
+      if (open === undefined) continue;
+      if (kind !== ANOMALY_KINDS.STREAM_ERRORS) continue;
+      // TWO conditions, both necessary (codex P1):
+      //  - the row predates this change (no observation watermark), so it cannot be
+      //    one the current rule just opened — the mixed-burst rule legitimately
+      //    raises rows whose evidence shows a single error, and those cost a turn;
+      //  - and its evidence shows ZERO errors, i.e. it really was a pure stop burst.
+      //    With even one error it stays open: a lost turn is a lost turn.
+      let inheritedBurst = false;
+      if (open.lastEventAt === undefined && open.occurrenceCount === undefined) {
+        try {
+          const ev = JSON.parse(open.evidence ?? "{}") as {
+            streamErrors?: unknown;
+          };
+          inheritedBurst =
+            typeof ev.streamErrors === "number" && ev.streamErrors === 0;
+        } catch {
+          inheritedBurst = false;
+        }
+      }
+      if (!inheritedBurst) continue;
+      await resolveAnomalyDoc(ctx, {
+        anomalyId: open._id,
+        status: "resolved",
+        resolvedBy: "detector:auto",
+      });
+      resolved.push(kind);
+      continue;
+    }
     const open = await findOpenDetectorRow(ctx, kind);
     if (open === undefined) continue;
     await resolveAnomalyDoc(ctx, {
@@ -316,6 +576,10 @@ export const detectAnomalies = internalMutation({
       dispatchFailures: 0,
       dispatchCodes: {},
       streamErrors: 0,
+      streamCauses: {},
+      streamCauseCorrelation: {},
+      latestAt: { cause: {}, accessByPrincipal: new Map() },
+      latestKey: { cause: {}, accessByPrincipal: new Map() },
       streamAborts: 0,
       ingestDenied: 0,
       accessByPrincipal: new Map(),
@@ -324,12 +588,29 @@ export const detectAnomalies = internalMutation({
       switch (row.kind) {
         case "api.call": {
           agg.apiCalls += 1;
-          if (row.status !== undefined && row.status >= 400) agg.apiErrors += 1;
+          if (row.status !== undefined && row.status >= 400) {
+            agg.apiErrors += 1;
+            // Only a FAILING call is a new observation for the ratio class (codex
+            // P2): every 2xx also advances the ratio's denominator, so watermarking
+            // on any call let ordinary successful traffic manufacture occurrences —
+            // polling the diagnostic API would have inflated its own history.
+            agg.latestAt.api = row.at;
+            agg.latestKey.api = row._id;
+          }
           // Track distinct chats a key read (only chat reads carry a chatId).
           if (row.chatId && row.principalId) {
             const set = agg.accessByPrincipal.get(row.principalId) ?? new Set();
+            const before = set.size;
             set.add(row.chatId);
             agg.accessByPrincipal.set(row.principalId, set);
+            // The condition is DISTINCT chats, so only a new chat is a new
+            // observation (codex P2): re-reading the same chat does not widen the
+            // scan, and watermarking on it would let polling one chat inflate the
+            // history of an alert about breadth.
+            if (set.size > before) {
+              agg.latestAt.accessByPrincipal.set(row.principalId, row.at);
+              agg.latestKey.accessByPrincipal.set(row.principalId, row._id);
+            }
           }
           break;
         }
@@ -341,6 +622,8 @@ export const detectAnomalies = internalMutation({
             // rows are scanned oldest -> newest, so the last write wins = the most
             // recent failed turn (the one an admin most likely wants to inspect).
             if (row.correlationId) agg.dispatchSampleCorrelation = row.correlationId;
+            agg.latestAt.dispatch = row.at;
+            agg.latestKey.dispatch = row._id;
           }
           break;
         }
@@ -351,13 +634,27 @@ export const detectAnomalies = internalMutation({
             // oldest -> newest scan: last write wins = most recent failed turn.
             if (row.correlationId)
               agg.streamSampleCorrelation = row.correlationId;
+            agg.latestAt.streamError = row.at;
+            agg.latestKey.streamError = row._id;
+            const cause = streamFailureCode(row);
+            if (cause !== undefined) {
+              agg.streamCauses[cause] = (agg.streamCauses[cause] ?? 0) + 1;
+              if (row.correlationId)
+                agg.streamCauseCorrelation[cause] = row.correlationId;
+              agg.latestAt.cause[cause] = row.at;
+              agg.latestKey.cause[cause] = row._id;
+            }
           } else if (cls === "aborted") {
             agg.streamAborts += 1;
+            agg.latestAt.streamAbort = row.at;
+            agg.latestKey.streamAbort = row._id;
           }
           break;
         }
         case "openclaw.ingest.denied": {
           agg.ingestDenied += 1;
+          agg.latestAt.ingest = row.at;
+          agg.latestKey.ingest = row._id;
           break;
         }
         default:
@@ -389,7 +686,9 @@ export const detectAnomalies = internalMutation({
             warnThreshold: API_ERROR_RATIO_WARN,
             criticalThreshold: API_ERROR_RATIO_CRITICAL,
           },
-        });
+          latestEventAt: agg.latestAt.api,
+        latestEventKey: agg.latestKey.api,
+      });
         detected.push(ANOMALY_KINDS.API_ERROR_RATIO);
       }
     }
@@ -417,6 +716,8 @@ export const detectAnomalies = internalMutation({
           warnThreshold: DISPATCH_FAIL_WARN,
           criticalThreshold: DISPATCH_FAIL_CRITICAL,
         },
+        latestEventAt: agg.latestAt.dispatch,
+        latestEventKey: agg.latestKey.dispatch,
       });
       detected.push(ANOMALY_KINDS.DISPATCH_FAILURES);
     }
@@ -426,17 +727,25 @@ export const detectAnomalies = internalMutation({
     //    a mass combined burst still reaches CRITICAL (users interrupting
     //    everywhere = replies bad/slow, worth an alert even with zero errors).
     const streamCombined = agg.streamErrors + agg.streamAborts;
-    const streamSeverity: Severity | null =
-      agg.streamErrors >= STREAM_ERROR_CRITICAL ||
-      streamCombined >= STREAM_ERROR_CRITICAL
-        ? "critical"
-        : agg.streamErrors >= STREAM_ERROR_WARN
-          ? "warn"
-          : null;
-    if (streamSeverity !== null) {
+    // A burst containing ANY real error still raises the turn-costing class, even
+    // below the WARN threshold (codex P2): one lost turn among nine user stops is
+    // still a lost turn, and routing it to the self-clearing burst class would make
+    // its alert disappear after 15 minutes — a regression on the old combined rule.
+    if (
+      agg.streamErrors >= STREAM_ERROR_WARN ||
+      (agg.streamErrors > 0 && streamCombined >= STREAM_ERROR_CRITICAL)
+    ) {
       await upsertDetectorAnomaly(ctx, {
         kind: ANOMALY_KINDS.STREAM_ERRORS,
-        severity: streamSeverity,
+        // The COMBINED escalation is kept here (codex P1): 2 errors alongside 8
+        // stops is a critical situation, and splitting the burst class out must not
+        // downgrade it to a warning — the two classes answer different questions,
+        // they do not divide the severity between them.
+        severity:
+          agg.streamErrors >= STREAM_ERROR_CRITICAL ||
+          streamCombined >= STREAM_ERROR_CRITICAL
+            ? "critical"
+            : "warn",
         message:
           agg.streamAborts > 0
             ? `Assistant stream errors: ${agg.streamErrors} (+${agg.streamAborts} user abort(s)) over ${windowMin}m`
@@ -449,8 +758,58 @@ export const detectAnomalies = internalMutation({
           warnThreshold: STREAM_ERROR_WARN,
           criticalThreshold: STREAM_ERROR_CRITICAL,
         },
+        latestEventAt: agg.latestAt.streamError,
+        latestEventKey: agg.latestKey.streamError,
       });
       detected.push(ANOMALY_KINDS.STREAM_ERRORS);
+    }
+    if (streamCombined >= STREAM_ERROR_CRITICAL && agg.streamErrors === 0) {
+      // Users interrupting EVERYWHERE with no real errors: replies are bad or slow,
+      // worth an alert — but a Stop is a choice, not a lost turn, so this is its own
+      // CONDITION class and clears by itself (codex P2). Folding it into the
+      // turn-costing class would have left an alert open forever for a burst of
+      // people changing their minds.
+      await upsertDetectorAnomaly(ctx, {
+        kind: ANOMALY_KINDS.STOP_BURSTS,
+        severity: "critical",
+        message: `User stops: ${agg.streamAborts} over ${windowMin}m (no errors)`,
+        evidence: {
+          streamErrors: agg.streamErrors,
+          streamAborts: agg.streamAborts,
+          sampleCorrelationId: agg.streamSampleCorrelation,
+          windowMs: DETECT_WINDOW_MS,
+          criticalThreshold: STREAM_ERROR_CRITICAL,
+        },
+        latestEventAt: agg.latestAt.streamAbort,
+        latestEventKey: agg.latestKey.streamAbort,
+      });
+      detected.push(ANOMALY_KINDS.STOP_BURSTS);
+    }
+
+    // 3b) PER-CAUSE classes. The count above says how many turns failed; these say
+    //     WHY, which is the only form an operator can act on — a context overflow
+    //     needs a budget change, a saturated connection needs bridge headroom, and
+    //     the old channel called both "2 stream errors". One occurrence is enough
+    //     to raise a named cause: a lost turn is not a threshold question, and the
+    //     append-only history is what distinguishes a blip from a pattern.
+    for (const [cause, count] of Object.entries(agg.streamCauses)) {
+      const kind = CAUSE_ANOMALY_KINDS[cause];
+      if (kind === undefined) continue; // unknown cause: the generic class has it
+      await upsertDetectorAnomaly(ctx, {
+        kind,
+        severity: count >= STREAM_ERROR_WARN ? "critical" : "warn",
+        message: `Failed turns — cause ${cause}: ${count} over ${windowMin}m`,
+        evidence: {
+          cause,
+          count,
+          sampleCorrelationId: agg.streamCauseCorrelation[cause],
+          windowMs: DETECT_WINDOW_MS,
+        },
+        correlationId: agg.streamCauseCorrelation[cause],
+        latestEventAt: agg.latestAt.cause[cause],
+        latestEventKey: agg.latestKey.cause[cause],
+      });
+      detected.push(kind);
     }
 
     // 4) Ingest auth-denied spikes (possible misconfig or abuse).
@@ -467,6 +826,8 @@ export const detectAnomalies = internalMutation({
           warnThreshold: INGEST_DENIED_WARN,
           criticalThreshold: INGEST_DENIED_CRITICAL,
         },
+        latestEventAt: agg.latestAt.ingest,
+        latestEventKey: agg.latestKey.ingest,
       });
       detected.push(ANOMALY_KINDS.INGEST_DENIED);
     }
@@ -498,6 +859,10 @@ export const detectAnomalies = internalMutation({
           warnThreshold: ACCESS_SCAN_DISTINCT_WARN,
           criticalThreshold: ACCESS_SCAN_DISTINCT_CRITICAL,
         },
+        // The RETAINED principal's own newest chat read — not "any API call since"
+        // (codex P2): an unrelated call must not manufacture an occurrence.
+        latestEventAt: agg.latestAt.accessByPrincipal.get(scanPrincipal),
+        latestEventKey: agg.latestKey.accessByPrincipal.get(scanPrincipal),
       });
       detected.push(ANOMALY_KINDS.ACCESS_SCAN);
     }
@@ -523,6 +888,12 @@ type AnomalyView = {
   source: "detector" | "agent" | "user";
   correlationId: string | null;
   evidence: string | null;
+  // AGGREGATE of the append-only history: how many observations this row has had
+  // and when the first one was. The whole point of the change is that an operator
+  // can answer "how many times since Tuesday?" — which needs these on the wire,
+  // not just in the table (codex P2).
+  occurrenceCount: number | null;
+  firstAt: number | null;
   // Attachment METADATA only (name + size). List payloads must stay light —
   // an anomaly can carry up to ~4×48k chars of proposal text; the full content
   // is served on demand by `getAnomalyAttachments`.
@@ -542,6 +913,8 @@ function toView(r: Doc<"anomalies">): AnomalyView {
     source: r.source,
     correlationId: r.correlationId ?? null,
     evidence: r.evidence ?? null,
+    occurrenceCount: r.occurrenceCount ?? null,
+    firstAt: r.firstAt ?? null,
     // Already metadata-only on the row (the content lives in anomalyAttachments).
     attachments:
       r.attachments && r.attachments.length > 0 ? r.attachments : null,
@@ -699,6 +1072,109 @@ export const attachmentsInternal = internalQuery({
       .withIndex("by_anomaly", (q) => q.eq("anomalyId", anomalyId))
       .collect();
     return rows.map((r) => ({ name: r.name, content: r.content }));
+  },
+});
+
+/** How many observations one read returns (recent-first, bounded). */
+const OCCURRENCE_PAGE = 200;
+
+/**
+ * The append-only OCCURRENCE history of one anomaly — recent first.
+ *
+ * This is the read the old channel could not serve: with one patched row per kind,
+ * "how often did this happen?" had no answer. Non-PHI by construction (the same
+ * counters/codes the parent's evidence carries).
+ */
+export const occurrencesInternal = internalQuery({
+  args: {
+    anomalyId: v.optional(v.id("anomalies")),
+    /** Or the whole history of a CAUSE, across successive open rows. */
+    kind: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    { anomalyId, kind, limit },
+  ): Promise<{
+    occurrences: {
+      at: number;
+      kind: string;
+      severity: Severity;
+      evidence: string | null;
+      correlationId: string | null;
+    }[];
+    /** FALSE when the parent row was first seen before its history begins — i.e.
+     *  it was opened before this table existed. Reported rather than papered over:
+     *  the row's own first-seen is a real observation and must not be rewritten to
+     *  match a partial history, but a reader comparing the two deserves to know
+     *  which is which (codex P2). */
+    historyComplete: boolean;
+    /** FALSE when the requested `anomalyId` matches no row: a well-formed id that
+     *  does not exist is an absent resource, not an empty history (codex P2). */
+    found: boolean;
+  }> => {
+    // EXACTLY ONE selector. Given both, silently preferring the id would return a
+    // history that may not match the `kind` the caller asked about — a wrong answer
+    // dressed as a success (codex P2).
+    if ((anomalyId === undefined) === (kind === undefined)) {
+      throw new Error("provide exactly one of anomalyId or kind");
+    }
+    // FLOORED, not merely finite: `.take()` demands a non-negative integer, and a
+    // caller passing `limit=1.5` deserves a page — not an error the route would
+    // then report as an unknown id (codex P2).
+    const take = Math.min(
+      Math.max(Math.floor(limit ?? 50), 1),
+      OCCURRENCE_PAGE,
+    );
+    const rows =
+      anomalyId !== undefined
+        ? await ctx.db
+            .query("anomalyOccurrences")
+            .withIndex("by_anomaly", (q) => q.eq("anomalyId", anomalyId))
+            .order("desc")
+            .take(take)
+        : kind !== undefined
+          ? await ctx.db
+              .query("anomalyOccurrences")
+              .withIndex("by_kind_at", (q) => q.eq("kind", kind))
+              .order("desc")
+              .take(take)
+          : [];
+    const occurrences = rows.map((r) => ({
+      at: r.at,
+      kind: r.kind,
+      severity: r.severity,
+      evidence: r.evidence ?? null,
+      correlationId: r.correlationId ?? null,
+    }));
+    // Coverage check against the parent's own first-seen (only meaningful for the
+    // per-anomaly read; a per-KIND history spans successive rows by design).
+    //
+    // Compared against the OLDEST occurrence overall, not the oldest on this page
+    // (codex P2): the page holds the most recent entries, so a complete history that
+    // simply does not fit would otherwise be reported as a migration gap.
+    let historyComplete = true;
+    let found = true;
+    if (anomalyId !== undefined) {
+      // Evaluated even with an EMPTY result (codex P2): the common legacy case is a
+      // row opened before this table existed and therefore with NO occurrences at
+      // all — claiming a complete empty history is exactly the wrong answer.
+      const parent = await ctx.db.get(anomalyId);
+      const oldest = await ctx.db
+        .query("anomalyOccurrences")
+        .withIndex("by_anomaly", (q) => q.eq("anomalyId", anomalyId))
+        .order("asc")
+        .first();
+      if (parent === null) found = false;
+      const parentFirst = parent?.firstAt ?? parent?.at;
+      if (
+        parentFirst !== undefined &&
+        (oldest === null || parentFirst < oldest.at)
+      ) {
+        historyComplete = false;
+      }
+    }
+    return { occurrences, historyComplete, found };
   },
 });
 

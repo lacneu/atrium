@@ -2474,6 +2474,22 @@ export default defineSchema({
   // (counts/ratios/thresholds/window) — never message text, tokens, or paths.
   anomalies: defineTable({
     at: v.number(), // first-seen (insert) / last-seen (patch) timestamp
+    // AGGREGATE of the append-only `anomalyOccurrences` history: how many times
+    // this open row has been observed, and when it was FIRST seen (its `at` is
+    // the LAST). Without these the row said "it is happening" and never "it has
+    // happened four times since Tuesday" — the difference between a blip and a
+    // pattern, which is what an operator decides on.
+    occurrenceCount: v.optional(v.number()),
+    firstAt: v.optional(v.number()),
+    // Timestamp of the NEWEST trace behind the latest observation. The detection
+    // window is wider than the cron period, so the same failure is re-detected on
+    // every tick: this is what tells a genuinely new observation from a re-read of
+    // the same one, and keeps `occurrenceCount` honest.
+    lastEventAt: v.optional(v.number()),
+    // IDENTITY of that newest trace (its row id). Two failures can share a
+    // millisecond — `writeTraceEvent` stamps `Date.now()` — so a timestamp alone
+    // cannot tell a second real failure from a re-read of the first.
+    lastEventKey: v.optional(v.string()),
     kind: v.string(), // stable detector key, e.g. "api.error_ratio"
     severity: v.union(
       v.literal("info"),
@@ -2517,6 +2533,38 @@ export default defineSchema({
     // so de-dupe (upsertDetectorAnomaly) + auto-resolve are correct regardless
     // of how large the open set grows (no .take(500) truncation hazard).
     .index("by_status_kind", ["status", "kind"]),
+
+  // APPEND-ONLY history of detector observations — one row per OCCURRENCE.
+  //
+  // WHY a second table: `anomalies` holds ONE open row per kind and its
+  // `evidence` is patched on every refresh, so the second occurrence overwrote
+  // the first and the table could not answer "how often did this happen?".
+  // Prod proved the cost: over 14 days every detector row was auto-resolved
+  // 5 minutes after opening, and the 2026-07-20 context-overflow incident
+  // survived only because an AGENT re-reported it by hand — the machine channel
+  // had erased its own signal. Occurrences are never patched and never deleted
+  // by the detector, so the history is the record and the parent row is just the
+  // current state.
+  anomalyOccurrences: defineTable({
+    /** The anomaly row this occurrence belongs to (the current aggregate). */
+    anomalyId: v.id("anomalies"),
+    /** Denormalized so a per-cause history reads without loading parents. */
+    kind: v.string(),
+    at: v.number(),
+    severity: v.union(
+      v.literal("info"),
+      v.literal("warn"),
+      v.literal("critical"),
+    ),
+    /** JSON-encoded non-PHI signals for THIS observation (counters, codes). */
+    evidence: v.optional(v.string()),
+    /** Optional link to the span chain that produced this observation. */
+    correlationId: v.optional(v.string()),
+  })
+    .index("by_anomaly", ["anomalyId"])
+    // (kind, at): "this cause, over time" — the question the old channel could
+    // not answer. Ordered so the recent history of one cause is a bounded read.
+    .index("by_kind_at", ["kind", "at"]),
 
   // The CONTENT of agent-attached proposal documents — one row per attachment,
   // keyed by anomaly. Kept OUT of `anomalies` on purpose: the anomaly list

@@ -1452,6 +1452,41 @@ export const enqueueAttachmentTurn = internalMutation({
  *   npx convex run dev:outboxStatus '{"outboxId":"<id>"}'
  */
 /**
+ * DEV-ONLY: plant a FAILED-TURN trace with a chosen cause, so the anomaly detector
+ * can be exercised against a REAL deployment. The condition is otherwise not
+ * reproducible on demand — it needs a gateway to fail a turn in a specific way —
+ * which is exactly why the per-cause signal went unverified for so long.
+ *
+ *   npx convex run dev:seedFailedTurnTrace '{"errorCode":"context_length"}'
+ *   npx convex run anomalies:detectAnomalies '{}'
+ */
+export const seedFailedTurnTrace = mutation({
+  args: { errorCode: v.string(), count: v.optional(v.number()) },
+  handler: async (ctx, { errorCode, count }) => {
+    assertDev();
+    const n = Math.min(Math.max(Math.floor(count ?? 2), 1), 20);
+    const now = Date.now();
+    for (let i = 0; i < n; i++) {
+      await ctx.db.insert("traceEvents", {
+        at: now - i * 1000,
+        kind: "assistant.stream",
+        direction: "inbound",
+        principalType: "system",
+        principalId: "bridge",
+        redacted: true,
+        correlationId: `dev-probe:${now}-${i}`,
+        meta: JSON.stringify({
+          phase: "finalize",
+          streamStatus: "error",
+          errorCode,
+        }),
+      });
+    }
+    return { ok: true as const, seeded: n, errorCode };
+  },
+});
+
+/**
  * DEV-ONLY: plant a STALLED dispatch — a `pending` outbox row whose window opened
  * long ago — so the reconciliation cron can be exercised against a REAL deployment
  * instead of only in unit tests. Without it the lock this feature exists to break

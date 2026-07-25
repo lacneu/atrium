@@ -18,6 +18,7 @@
 
 import { v } from "convex/values";
 import { contentLocaleForInstance } from "./lib/serverLocale";
+import { KNOWN_ERROR_CODES } from "./lib/chatRenderState";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { MESSAGE_WINDOW } from "./messages";
@@ -156,6 +157,11 @@ async function traceStream(
     messageId: Id<"messages">;
     streamStatus: "streaming" | "complete" | "error" | "aborted";
     textLen?: number;
+    /** The CURATED failure class (`errorCode`) — a stable non-PHI code, never the
+     *  gateway's text. Without it the anomaly detector could only count errors:
+     *  a context overflow and two unrelated blips looked identical, so the signal
+     *  named a number instead of a cause (C-01). */
+    errorCode?: string;
   },
 ): Promise<void> {
   try {
@@ -173,6 +179,7 @@ async function traceStream(
         // String lifecycle status lives in meta (the `status` column is numeric).
         streamStatus: args.streamStatus,
         ...(args.textLen !== undefined ? { textLen: args.textLen } : {}),
+        ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
       }),
     });
   } catch {
@@ -1685,6 +1692,18 @@ export const finalize = internalMutation({
       messageId,
       streamStatus: status,
       textLen: finalLen,
+      // The class this turn failed with — filtered through the platform's non-PHI
+      // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
+      // trace must never contain content: an unrecognized value is dropped, and the
+      // generic class still surfaces the failure. `errorKind` is curated but goes
+      // through the same gate, so one contract governs both.
+      ...(() => {
+        const code = errorKind ?? error ?? null;
+        return code !== null &&
+          (KNOWN_ERROR_CODES as readonly string[]).includes(code)
+          ? { errorCode: code }
+          : {};
+      })(),
     });
     // GATEWAY-PREEMPTED turn (the delivery claimed the session and the gateway
     // killed this zero-content real turn): re-park the outbox row for one
