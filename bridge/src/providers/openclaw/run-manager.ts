@@ -735,15 +735,50 @@ export class RunManager {
     return true;
   }
 
-  /** Apply transcript-recovered text as the answer (finalizes the turn). */
-  async recoverVisibleText(text: string, now: number): Promise<void> {
+  /**
+   * Apply transcript-recovered text as the answer (finalizes the turn).
+   *
+   * `expectedEpoch` is the turn the CALLER set out to recover. It matters because
+   * every caller fetches the transcript over an RPC that can take seconds, and the
+   * turn it belongs to can end meanwhile (the private-ack grace finalizes on its
+   * own) — with a NEW turn opening right after. `sink.active` cannot tell those
+   * apart: it is true again for that new turn. So without this check the recovered
+   * answer of turn N is written into turn N+1 AND finalizes it: the user sees the
+   * previous question's answer replace the one they are waiting for.
+   *
+   * The pattern is not new — `scheduleOrphanRecovery` already binds its epoch
+   * (session.ts) — this closes the two paths that did not.
+   *
+   * REQUIRED on purpose: with two callers today and more possible tomorrow, a
+   * forgotten epoch is the whole defect. Making it mandatory moves the guarantee
+   * from "a test samples the callers" to "the compiler refuses a caller that has
+   * not decided which turn it is recovering".
+   */
+  async recoverVisibleText(
+    text: string,
+    now: number,
+    expectedEpoch: number,
+  ): Promise<boolean> {
     if (!this.sink.active) {
-      return;
+      return false;
+    }
+    if (this.turnEpoch !== expectedEpoch) {
+      // Never silent: a dropped recovery is a lost reply for the turn it belonged
+      // to, and the operator needs to know it happened rather than wonder why the
+      // transcript held an answer nobody delivered.
+      console.log(
+        `[recovery] dropped: turn moved on (expectedEpoch=${expectedEpoch} current=${this.turnEpoch})`,
+      );
+      return false;
     }
     await this.sink.apply(this.normalizer.recoverVisibleText(text, now));
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
+    // TRUE only when the text actually landed: the caller announces the outcome, and
+    // two contradictory lines ("dropped" then "recovered") would hide a real
+    // delivery failure from whoever reads the log (codex P3).
+    return true;
   }
 
   /**

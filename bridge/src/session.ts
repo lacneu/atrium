@@ -991,7 +991,9 @@ class Session implements BridgeSession {
           console.log(
             `[session] transcript recovery SUCCESS chat=${chatId} (${text.length} chars after ${polls} polls)`,
           );
-          await rm.recoverVisibleText(text, clock());
+          // The tick checks the epoch above, but this write happens after another
+          // await: pass the bound epoch so the guard holds at the write itself.
+          await rm.recoverVisibleText(text, clock(), boundEpoch);
           if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
           return;
         }
@@ -1007,6 +1009,10 @@ class Session implements BridgeSession {
   }
 
   private async recoverDeliveredReply(): Promise<void> {
+    // Bind the turn we are recovering BEFORE the RPC below: it is allowed 10 s, the
+    // private-ack grace can finalize this turn in 5, and a queued send can open the
+    // next one immediately after. Captured here, checked at the write.
+    const boundEpoch = this.runManager.turnEpoch;
     try {
       const raw = await this.connection.request(
         "sessions.get",
@@ -1019,9 +1025,15 @@ class Session implements BridgeSession {
           : raw;
       const text = extractMessageToolReplies(payload);
       if (text) {
-        await this.runManager.recoverVisibleText(text, this.clock());
+        const applied = await this.runManager.recoverVisibleText(
+          text,
+          this.clock(),
+          boundEpoch,
+        );
         console.log(
-          `[recovery] message-tool reply recovered (${text.length} chars) chat=${this.chatId}`,
+          applied
+            ? `[recovery] message-tool reply recovered (${text.length} chars) chat=${this.chatId}`
+            : `[recovery] message-tool reply found but NOT delivered — the turn had already moved on chat=${this.chatId}`,
         );
       } else {
         console.log(

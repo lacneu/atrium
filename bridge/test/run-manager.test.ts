@@ -541,3 +541,62 @@ describe("toolCalls + costUsd in the pressure trace (causal overflow reading)", 
     });
   });
 });
+
+describe("recovery epoch guard (Q9 / G-28)", () => {
+  it("refuses to write a recovered reply into a turn it did not open", async () => {
+    // The transcript fetch is allowed 10 s and the private-ack grace finalizes in 5,
+    // so the turn being recovered can end — and the NEXT one open — before the answer
+    // comes back. `sink.active` is true again for that new turn, so without the epoch
+    // the previous question's answer replaced the one the user was waiting for, AND
+    // finalized it.
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    const recoveredEpoch = manager.turnEpoch;
+    // Turn N ends and turn N+1 opens while the recovery RPC is in flight.
+    await manager.endTurn(clock.tick(), "error", "connection_lost");
+    await manager.beginTurn(clock.tick(), "run-next");
+    expect(manager.turnEpoch).not.toBe(recoveredEpoch);
+    const before = writer.calls.length;
+
+    const applied = await manager.recoverVisibleText(
+      "turn N's answer",
+      clock.tick(),
+      recoveredEpoch,
+    );
+
+    // Reported as NOT delivered, so the caller cannot log a success (codex P3).
+    expect(applied).toBe(false);
+    // Nothing written, and the new turn is still live (it was NOT finalized).
+    expect(writer.calls.length).toBe(before);
+    expect(manager.isFinalized).toBe(false);
+  });
+
+  it("still applies a recovery for the turn that asked for it", async () => {
+    // The guard must not break the feature it protects.
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    const applied = await manager.recoverVisibleText(
+      "the recovered answer",
+      clock.tick(),
+      manager.turnEpoch,
+    );
+    expect(applied).toBe(true);
+    const finalize = writer.calls.find((c) => c[0] === "finalize");
+    expect(finalize).toBeDefined();
+    expect(String(finalize?.[3] ?? finalize?.[2] ?? "")).toContain(
+      "the recovered answer",
+    );
+  });
+
+  it("the epoch is REQUIRED — the compiler is the guard for future callers", () => {
+    // A forgotten epoch is the entire defect, so it cannot be optional: this pins
+    // that the signature takes it (a caller that omits it does not compile, which no
+    // runtime test could guarantee for code not yet written).
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
+    expect(manager.recoverVisibleText.length).toBe(3);
+  });
+});
