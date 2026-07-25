@@ -795,6 +795,9 @@ class Session implements BridgeSession {
       case "gateway_restarting":
         return GATEWAY_RESTARTING_CODE;
       case "slow_consumer":
+      // OUR side of the same fact: frames were dropped because one end could not
+      // keep up. The reader's message is identical, so the cause is too.
+      case "inbound_overflow":
         return CONNECTION_SATURATED_CODE;
       default:
         return CONNECTION_LOST_CODE;

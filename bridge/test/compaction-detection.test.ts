@@ -462,7 +462,14 @@ type SinkCall =
         compaction: string | null;
       },
     ]
-  | ["finalize", string, FinalizeStatus];
+  | [
+      "finalize",
+      string,
+      FinalizeStatus,
+      string,
+      string | null,
+      string | null,
+    ];
 
 class SinkFakeWriter implements ConvexWriter {
   readonly calls: SinkCall[] = [];
@@ -494,8 +501,23 @@ class SinkFakeWriter implements ConvexWriter {
     return true;
   }
   async noteMediaUndelivered(): Promise<void> {}
-  async finalize(messageId: string, status: FinalizeStatus): Promise<void> {
-    this.calls.push(["finalize", messageId, status]);
+  async finalize(
+    messageId: string,
+    status: FinalizeStatus,
+    text?: string,
+    error?: string | null,
+    // Recorded because a turn's CAUSE is a fact tests need to assert; without it a
+    // test reading this slot silently compared undefined against undefined.
+    errorKind?: string | null,
+  ): Promise<void> {
+    this.calls.push([
+      "finalize",
+      messageId,
+      status,
+      text ?? "",
+      error ?? null,
+      errorKind ?? null,
+    ]);
   }
   async getRehydrationContext(): Promise<{
     history: string | null;
@@ -675,5 +697,68 @@ describe("lifecycle error carries a structured errorKind", () => {
       | { errorKind?: string }
       | undefined;
     expect(final?.errorKind).toBe("context_length");
+  });
+});
+
+describe("a TRUNCATED child-key set never decides a turn is empty", () => {
+  /** Feed a turn that spawns a child, sees it work, and ends SILENT. */
+  async function silentParentWithChild(opts: {
+    spawnResultKey: string | null;
+    observedKey: string;
+    truncated: boolean;
+  }) {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_trunc", writer);
+    await sink.beginTurn(RUN);
+    await sink.apply([
+      // The turn called sessions_spawn; its result may or may not name the child.
+      {
+        type: "tool.status",
+        name: "sessions_spawn",
+        phase: "completed",
+        runId: RUN,
+        output: opts.spawnResultKey === null ? {} : { sessionKey: opts.spawnResultKey },
+      },
+      // A child was observed working…
+      {
+        type: "agent.activity",
+        childSessionKey: opts.observedKey,
+        status: "running",
+      },
+      // …and the parent ends with nothing to say.
+      {
+        type: "message.final",
+        text: "",
+        observedChildKeys: [opts.observedKey],
+        observedChildKeysTruncated: opts.truncated,
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    const finalize = writer.calls.find((c) => c[0] === "finalize");
+    return String(finalize?.[5] ?? "");
+  }
+
+  it("an INCOMPLETE observed list makes the verdict inconclusive, not 'empty'", async () => {
+    // Past the cap the active child's key is simply absent, so the strict
+    // intersection fails and a parent that legitimately delegated a silent reply
+    // was finalized as an error. A cap must bound memory, never decide a turn.
+    const kind = await silentParentWithChild({
+      spawnResultKey: "agent:main:subagent:other",
+      observedKey: "agent:main:subagent:active",
+      truncated: true,
+    });
+    expect(kind).not.toBe("empty_response");
+  });
+
+  it("a COMPLETE list with no matching child still reads as empty", async () => {
+    // The exemption is for uncertainty only: with complete records and no child of
+    // this turn working, "empty" remains the honest verdict.
+    const kind = await silentParentWithChild({
+      spawnResultKey: "agent:main:subagent:other",
+      observedKey: "agent:main:subagent:active",
+      truncated: false,
+    });
+    expect(kind).toBe("empty_response");
   });
 });

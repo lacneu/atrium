@@ -843,6 +843,44 @@ describe("single ordered application path (G-29)", () => {
     expect(texts).not.toContain("turn N's answer");
   });
 
+  it("a stashed announce replays with its ARRIVAL clock, not the flush clock", async () => {
+    // A frame stashed minutes ago and replayed now would arm the normalizer's
+    // deadlines from the wrong instant and read as freshly arrived (G-35).
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const seen: number[] = [];
+    const realFeed = manager.feed.bind(manager);
+    manager.feed = (async (frame: unknown, now: number) => {
+      seen.push(now);
+      return realFeed(frame, now);
+    }) as never;
+    const clock = new Clock();
+    // A real turn is streaming, so an announce frame is stashed rather than fed.
+    await manager.beginTurn(clock.now, OWN_RUN);
+    const arrivalAt = clock.tick();
+    await manager.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: "announce:v1:child:run",
+          seq: 1,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "late" }] },
+        },
+      },
+      arrivalAt,
+    );
+    // The turn ends much later; the flush replays the stash.
+    await manager.endTurn(clock.tick(), "final");
+    const flushAt = arrivalAt + 300;
+    await manager.tick(flushAt);
+    // The replay used the arrival time, not the (much later) flush time.
+    const replayClocks = seen.slice(1);
+    expect(replayClocks.length).toBeGreaterThan(0);
+    for (const t of replayClocks) expect(t).toBeLessThanOrEqual(arrivalAt);
+  });
+
   it("a close racing an in-flight frame cannot finalize before it lands", async () => {
     // `endTurn` comes from the SESSION (a socket close, a send error) while the
     // consume loop is mid-`feed`: two producers, two call stacks. Without one chain

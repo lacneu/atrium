@@ -85,9 +85,17 @@ export class RunManager {
   // inactive again (feed()/tick() flush on the next frame — gateway health/tick
   // frames arrive every ~30s, bounding the delay).
   private pendingAnnounce: { frame: unknown; now: number }[] = [];
-  // Announce runs ALREADY turned into a spontaneous turn: a gateway retransmit
-  // of the same run's chat:final after finalize must not open a SECOND turn and
-  // duplicate the report (codex P2). Bounded FIFO.
+  // Announce runs ALREADY turned into a spontaneous turn: a gateway retransmit of
+  // the same run's chat:final after finalize should not open a SECOND turn.
+  //
+  // HONEST SCOPE (G-15b): this is a BEST-EFFORT recent-window guard — a bounded
+  // FIFO of 100 runs, so a retransmit arriving after 100 other announce runs finds
+  // nothing here. It is not the guarantee. What durably prevents a duplicate BUBBLE
+  // is Convex: the announce merge reopens the parent message and dedupes the replay
+  // (`stream.addPart`'s armed-window dedup, keyed by announceRun). This set exists
+  // to spare the common case a round trip, not to be the invariant — the comment
+  // used to claim otherwise, which is the kind of belief that survives until an
+  // incident disproves it.
   private readonly handledAnnounceRuns = new Set<string>();
   private readonly handledAnnounceOrder: string[] = [];
   // The announce run whose SPONTANEOUS turn is currently driving the sink
@@ -688,7 +696,11 @@ export class RunManager {
     this.pendingAnnounce = [];
     for (const entry of stashed) {
       if (entry.frame === null) continue; // overflow marker, not a frame
-      await this.feed(entry.frame, now);
+      // ARRIVAL clock, not flush clock (G-35): a frame stashed minutes ago and
+      // replayed now would arm the normalizer's deadlines from the wrong instant and
+      // read as freshly arrived. Bounded by `now` so a clock oddity can never place
+      // an arrival in the future.
+      await this.feed(entry.frame, Math.min(entry.now, now));
     }
   }
 
@@ -734,8 +746,8 @@ export class RunManager {
     if (idx >= 0) this.handledAnnounceOrder.splice(idx, 1);
   }
 
-  /** Record an announce run as handled (bounded FIFO — a retransmitted terminal
-   *  frame for the same run must never open a duplicate spontaneous turn). */
+  /** Record an announce run as handled (bounded FIFO of 100 — see the field's note:
+   *  a recent-window guard, NOT the anti-duplicate guarantee, which is Convex's). */
   private noteAnnounceHandled(runId: string): void {
     this.handledAnnounceRuns.add(runId);
     this.handledAnnounceOrder.push(runId);

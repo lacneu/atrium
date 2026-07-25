@@ -274,3 +274,147 @@ describe("connection end over a real socket", () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 });
+
+describe("the inbound queue is bounded (G-27)", () => {
+  it("closes rather than grow without bound, and NAMES why", async () => {
+    // Unbounded, this queue is our own version of the gateway's slow-consumer
+    // problem: a consumer that falls behind grows it until the process dies, taking
+    // every session with it. Closing is the safe failure — reconnect + transcript
+    // recovery already exist; an out-of-memory kill loses everything in flight.
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    let live: WsSocket | null = null;
+    wss.on("connection", (socket) => {
+      live = socket;
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "n", ts: 1 },
+        }),
+      );
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (frame.method === "connect") {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 4,
+                server: { version: "2026.7.1", connId: "c" },
+                policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
+              },
+            }),
+          );
+        }
+      });
+    });
+    const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+    const conn = await OpenClawConnection.connect(url, "tok", deviceIdentity());
+    // Nobody consumes: every frame piles up in the queue.
+    for (let i = 0; i < 10_050; i++) {
+      live!.send(JSON.stringify({ type: "event", event: "tick", seq: i + 1 }));
+    }
+    // Wait for the connection to give up on its own.
+    for (let i = 0; i < 200 && conn.connectionEnd === null; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(conn.connectionEnd?.kind).toBe("inbound_overflow");
+    // The queue is EMPTIED on the way out: `frames()` shifts from it before it
+    // checks `closed`, so leaving it full would keep the consumer normalizing and
+    // writing for a long time instead of ending the turn and letting transcript
+    // recovery take over.
+    expect(conn.inboundQueueLen).toBe(0);
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+});
+
+describe("the byte ceiling measures the BACKLOG, not the traffic", () => {
+  it("consumed frames stop counting, so a healthy connection never trips", async () => {
+    // Tracking a running total that never comes back down would close a perfectly
+    // healthy long-lived connection after 128 MiB of ordinary traffic (codex P1).
+    gateway = startFakeGateway();
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    // Send FIRST, with nobody waiting, so the frames really sit in the queue — a
+    // consumer already blocked on `next()` receives them directly and the queue is
+    // never involved (an earlier version of this test measured nothing).
+    for (let i = 0; i < 5; i++) {
+      gateway.socket!.send(
+        JSON.stringify({ type: "event", event: "tick", seq: i, pad: "x".repeat(50_000) }),
+      );
+    }
+    for (let i = 0; i < 100 && conn.inboundQueueLen < 5; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(conn.inboundQueueBytes).toBeGreaterThan(200_000);
+    // …then drain them.
+    const frames = conn.frames();
+    for (let i = 0; i < 5; i++) await frames.next();
+    // Traffic flowed; the BACKLOG is empty, so nothing counts against the ceiling.
+    expect(conn.inboundQueueLen).toBe(0);
+    expect(conn.inboundQueueBytes).toBe(0);
+    expect(conn.connectionEnd).toBeNull();
+    conn.close(); // let the fixture's server shut down
+  });
+});
+
+describe("the inbound queue is bounded in BYTES too", () => {
+  it("closes on a few large frames, long before the frame count", async () => {
+    // A frame cap is not a memory bound: the gateway admits frames up to its
+    // maxPayload, so ten thousand large ones are gigabytes of retained JSON — an
+    // out-of-memory kill in exactly the scenario the guard exists for.
+    const wss = new WebSocketServer({
+      port: 0,
+      host: "127.0.0.1",
+      maxPayload: 64 * 1024 * 1024,
+    });
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    let live: WsSocket | null = null;
+    wss.on("connection", (socket) => {
+      live = socket;
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "n", ts: 1 },
+        }),
+      );
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (frame.method === "connect") {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 4,
+                server: { version: "2026.7.1", connId: "c" },
+                policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
+              },
+            }),
+          );
+        }
+      });
+    });
+    const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+    const conn = await OpenClawConnection.connect(url, "tok", deviceIdentity());
+    // ~10 MiB per frame, nobody consuming: far under the 10 000-frame ceiling.
+    const big = "x".repeat(10 * 1024 * 1024);
+    for (let i = 0; i < 15 && conn.connectionEnd === null; i++) {
+      live!.send(JSON.stringify({ type: "event", event: "tick", seq: i, big }));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    for (let i = 0; i < 200 && conn.connectionEnd === null; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(conn.connectionEnd?.kind).toBe("inbound_overflow");
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  }, 30_000);
+});

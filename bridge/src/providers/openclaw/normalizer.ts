@@ -475,6 +475,11 @@ export class Normalizer {
   // intersect with the keys the turn's OWN sessions_spawn calls returned —
   // a stale child from a PREVIOUS turn never exempts the current one.
   observedChildKeys: Set<string>;
+  /** TRUE once the per-turn cap dropped observed child keys: the set is then
+   *  INCOMPLETE, and an absence in it proves nothing. The sink's empty-response
+   *  guard reads that absence as "no child of this turn is working", so a parent
+   *  legitimately delegating a silent reply would be finalized as an error. */
+  observedChildKeysTruncated: boolean;
   // --- Gateway COMPACTION detection (pinned on live capture 2026-07-03) ------
   // A PREFLIGHT compaction (before the model call) leaves NO trace in the frame
   // stream: no phase, no notice — the ONLY observable signal is the session id
@@ -518,6 +523,28 @@ export class Normalizer {
   // coalesce into ONE `completed` tool.status carrying input+output, so the UI
   // shows a single clean card per tool instead of a start card + a result card.
   private readonly toolArgs = new Map<string, unknown>();
+  /** Per-turn collection caps. A turn is bounded work; these are not. A runaway
+   *  agent (a tool loop, a path-spraying prose reply, a spawn storm) grew them for
+   *  the whole turn, and the memory it cost was invisible. Overflow is LOUD and
+   *  logged ONCE per episode — the pattern `stashAnnounceFrame` already sets in the
+   *  run-manager — because a silent truncation reads as "nothing was dropped". */
+  private static readonly MAX_TOOL_ARGS = 2_000;
+  private static readonly MAX_MEDIA_PATHS = 2_000;
+  private static readonly MAX_OBSERVED_CHILDREN = 1_000;
+  private overflowLogged = new Set<string>();
+
+  /** TRUE when the cap is reached (caller skips the write); logs once. */
+  private capReached(label: string, size: number, cap: number): boolean {
+    if (size < cap) return false;
+    if (!this.overflowLogged.has(label)) {
+      this.overflowLogged.add(label);
+      console.error(
+        `[normalizer] ${label} cap reached (${cap}) — further entries are DROPPED for this turn`,
+      );
+    }
+    return true;
+  }
+
 
   // Absolute deadlines: name -> time. "recv" is the silence budget; the others
   // are wall-clock graces armed from a specific event.
@@ -539,6 +566,7 @@ export class Normalizer {
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
     this.observedChildKeys = new Set();
+    this.observedChildKeysTruncated = false;
     this.deadlines = new Map();
   }
 
@@ -566,11 +594,16 @@ export class Normalizer {
     this.sawMessageToolItem = false;
     this.sawMediaGeneration = false;
     this.observedChildKeys = new Set();
+    // …and its completeness flag: left set, ONE capped turn would make every later
+    // turn declare an incomplete list, quietly disabling the empty-response guard
+    // for the rest of the session (codex P2).
+    this.observedChildKeysTruncated = false;
     this.recoveryAttempted = false;
     this.suppressNextRotation = false;
     this.compactionSignaled = false;
     this.explicitCompaction = "none";
     this.toolArgs.clear();
+    this.overflowLogged.clear();
     // A fresh turn invalidates the previous run ids: frames arriving before the
     // new ack are admitted on sessionKey alone (ownRunIds empty), then the ack
     // seeds the new run id for foreign-run filtering.
@@ -750,7 +783,24 @@ export class Normalizer {
       payload.sessionKey !== this.sessionKey
     ) {
       if (isString(payload.sessionKey)) {
-        this.observedChildKeys.add(payload.sessionKey);
+        // A key ALREADY recorded costs nothing and rejects nothing — at exactly the
+        // cap, re-seeing a known child would otherwise mark the list incomplete and
+        // disable the empty-response guard for a turn that lost nothing (codex P2).
+        if (!this.observedChildKeys.has(payload.sessionKey)) {
+          if (
+            this.capReached(
+              "observedChildKeys",
+              this.observedChildKeys.size,
+              Normalizer.MAX_OBSERVED_CHILDREN,
+            )
+          ) {
+            // A NEW key was dropped: the sink must not read an absence from this
+            // list as "no child of this turn is working".
+            this.observedChildKeysTruncated = true;
+          } else {
+            this.observedChildKeys.add(payload.sessionKey);
+          }
+        }
       }
       return this.handleSubAgent(
         eventType,
@@ -1266,7 +1316,15 @@ export class Normalizer {
       // the narrative flow (the completed would anchor too late).
       if (phase === "start") {
         if (toolCallId) {
-          this.toolArgs.set(toolCallId, data.args);
+          if (
+            !this.capReached(
+              "toolArgs",
+              this.toolArgs.size,
+              Normalizer.MAX_TOOL_ARGS,
+            )
+          ) {
+            this.toolArgs.set(toolCallId, data.args);
+          }
           events.push({
             type: EVENT_TOOL_STATUS,
             name: name ?? null,
@@ -1586,6 +1644,15 @@ export class Normalizer {
         }
         return;
       }
+      if (
+        this.capReached(
+          "mediaPaths",
+          this.mediaPaths.size,
+          Normalizer.MAX_MEDIA_PATHS,
+        )
+      ) {
+        return;
+      }
       this.mediaPaths.set(path, explicit);
       items.push({ filename: posixBasename(path), path, explicit });
     };
@@ -1679,6 +1746,9 @@ export class Normalizer {
       mediaGeneratedUndelivered:
         this.sawMediaGeneration && this.mediaPaths.size === 0,
       observedChildKeys: [...this.observedChildKeys],
+      // …and whether that list is COMPLETE: the sink's empty-response guard makes a
+      // negative decision from it, which an incomplete list cannot support.
+      observedChildKeysTruncated: this.observedChildKeysTruncated,
     };
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,

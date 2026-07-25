@@ -37,6 +37,10 @@ export type ConnectionEndKind =
   | "unauthorized"
   /** `1008` for some other policy reason (kept distinct: still a REFUSAL, not a blip). */
   | "policy_violation"
+  /** OUR inbound queue passed its ceiling: the bridge could not consume as fast as
+   *  the gateway sent, so we closed rather than grow without bound. Named on our
+   *  side (the gateway's own version of this is `slow_consumer`). */
+  | "inbound_overflow"
   /** Anything else — an ordinary drop with no explanation. */
   | "connection_closed";
 

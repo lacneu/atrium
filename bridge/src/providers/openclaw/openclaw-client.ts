@@ -182,7 +182,11 @@ interface PendingRequest {
 export class OpenClawConnection {
   private readonly ws: WebSocket;
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly queue: GatewayFrame[] = [];
+  /** Buffered inbound frames, each carrying its WIRE size so the byte ceiling
+   *  measures the CURRENT backlog. Tracking only a running total would never come
+   *  back down, and a healthy long-lived connection would be closed as overflowing
+   *  after 128 MiB of ordinary traffic (codex P1). */
+  private readonly queue: { frame: GatewayFrame; bytes: number }[] = [];
   private waiter: ((frame: GatewayFrame | null) => void) | null = null;
   private closed = false;
   private closeError: Error | null = null;
@@ -224,6 +228,8 @@ export class OpenClawConnection {
   // alive; the session reads it to attribute an HONEST cause to a turn that was
   // in flight instead of a blanket "connection lost".
   private shutdownNotice: ShutdownNotice | null = null;
+  /** Set when WE closed for inbound overflow — the close that follows is ours. */
+  private overflowClosing = false;
   connectionEnd: ConnectionEnd | null = null;
   /**
    * Carry over a `shutdown` notice seen DURING the handshake.
@@ -245,6 +251,13 @@ export class OpenClawConnection {
   /** Inbound frames buffered but not yet consumed (drop-pressure witness). */
   get inboundQueueLen(): number {
     return this.queue.length;
+  }
+
+  /** …and their BYTES — the measure the ceiling actually enforces, and the one that
+   *  says whether a connection is falling behind. Published (G-27) so the condition
+   *  is observable before it bites, instead of reconstructed after a close. */
+  get inboundQueueBytes(): number {
+    return this.queuedBytes;
   }
 
   // ENVELOPE-SEQ CONTINUITY (frame-loss detection) — the contract and the
@@ -491,6 +504,12 @@ export class OpenClawConnection {
 
   private onMessage(raw: RawData): void {
     let frame: Record<string, unknown>;
+    // The WIRE size, measured before parsing: what the queue actually costs in
+    // memory is the frame's bytes, not the fact that it is one frame.
+    const wireBytes =
+      typeof (raw as { length?: unknown }).length === "number"
+        ? (raw as unknown as { length: number }).length
+        : 0;
     try {
       frame = JSON.parse(raw.toString());
     } catch {
@@ -546,17 +565,64 @@ export class OpenClawConnection {
     }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
     dbg("frame <-", clip(frame));
-    this.push(frame as GatewayFrame);
+    this.push(frame as GatewayFrame, wireBytes);
   }
 
-  private push(frame: GatewayFrame): void {
+  /**
+   * Ceiling on frames buffered but not yet consumed.
+   *
+   * Unbounded, this queue is the bridge's own version of the gateway's slow-consumer
+   * problem: a consumer that falls behind grows it until the process dies, taking
+   * every session with it. Closing instead is the SAFE failure — the reconnect plus
+   * transcript recovery already exist and are exercised, whereas an out-of-memory
+   * kill loses everything in flight.
+   */
+  private static readonly MAX_INBOUND_QUEUE = 10_000;
+  /**
+   * …and a BYTE ceiling, which is the one that actually protects the process
+   * (codex P1). A frame cap alone is not a memory bound: the gateway admits frames
+   * up to `maxPayload` (25 MiB live), so ten thousand large ones are gigabytes of
+   * retained JSON — an out-of-memory kill in exactly the scenario this guard exists
+   * for. Whichever ceiling is reached first closes the connection.
+   */
+  private static readonly MAX_INBOUND_BYTES = 128 * 1024 * 1024;
+  private queuedBytes = 0;
+
+  private push(frame: GatewayFrame, wireBytes = 0): void {
+    // A CLOSED connection accumulates nothing. Frames keep arriving for a moment
+    // after we close (the socket takes time to tear down), and queueing them would
+    // quietly rebuild the backlog we just dropped.
+    if (this.closed) return;
     if (this.waiter) {
       const w = this.waiter;
       this.waiter = null;
       w(frame);
-    } else {
-      this.queue.push(frame);
+      return;
     }
+    if (
+      this.queue.length >= OpenClawConnection.MAX_INBOUND_QUEUE ||
+      this.queuedBytes + wireBytes >= OpenClawConnection.MAX_INBOUND_BYTES
+    ) {
+      console.error(
+        `[openclaw] inbound queue overflow (${this.queue.length} frames, ${this.queuedBytes} bytes) — closing the connection; recovery re-reads the transcript`,
+      );
+      this.overflowClosing = true;
+      // DROP what is queued before closing (codex P2): `frames()` shifts from this
+      // queue before it checks `closed`, so leaving it full means the consumer keeps
+      // normalizing and writing for a long time instead of ending the turn and
+      // letting transcript recovery take over — the very thing the close is for.
+      this.queue.length = 0;
+      this.queuedBytes = 0;
+      try {
+        this.ws.close(1013, "inbound overflow");
+      } catch {
+        /* the socket may already be gone; onClose still runs below */
+      }
+      this.onClose(new OpenClawError("inbound queue overflow"));
+      return;
+    }
+    this.queuedBytes += wireBytes;
+    this.queue.push({ frame, bytes: wireBytes });
   }
 
   private onClose(
@@ -570,11 +636,17 @@ export class OpenClawConnection {
     // Name the end ONCE, at the moment it happens: the announced-shutdown notice
     // and the close code are both gone afterwards, and a turn still in flight is
     // about to be attributed a cause.
-    this.connectionEnd = classifyConnectionEnd({
-      code: socket?.code ?? null,
-      reasonText: socket?.reasonText ?? null,
-      shutdown: this.shutdownNotice,
-    });
+    this.connectionEnd = this.overflowClosing
+      ? {
+          kind: "inbound_overflow" as const,
+          restartExpectedMs: null,
+          reasonPresent: true,
+        }
+      : classifyConnectionEnd({
+          code: socket?.code ?? null,
+          reasonText: socket?.reasonText ?? null,
+          shutdown: this.shutdownNotice,
+        });
     // The name must survive EVERY exit, not just a turn already streaming: a close
     // landing while we await the `chat.send` ack rejects the pending request, and
     // that rejection is what the dispatch path classifies. Appending the kind to
@@ -628,7 +700,10 @@ export class OpenClawConnection {
     while (true) {
       const buffered = this.queue.shift();
       if (buffered !== undefined) {
-        yield buffered;
+        // Consumed: it no longer counts against the backlog ceiling.
+        this.queuedBytes -= buffered.bytes;
+        if (this.queuedBytes < 0) this.queuedBytes = 0;
+        yield buffered.frame;
         continue;
       }
       if (this.closed) {

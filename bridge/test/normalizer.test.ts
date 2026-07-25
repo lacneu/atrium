@@ -1977,3 +1977,84 @@ describe("frame loss: the gateway's seq-gap diagnostic", () => {
     expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
   });
 });
+
+describe("per-turn collections are bounded (G-34)", () => {
+  it("the truncation flag does not survive into the NEXT turn", () => {
+    // Left set, ONE capped turn would make every later turn declare an incomplete
+    // child list — quietly disabling the empty-response guard for the rest of the
+    // session (codex P2).
+    const n = newNormalizer();
+    n.beginTurn(0);
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (() => {}) as never;
+    try {
+      for (let i = 0; i < 1_050; i++) {
+        n.feed(
+          {
+            event: "agent",
+            payload: {
+              sessionKey: `agent:main:subagent:child-${i}`,
+              spawnedBy: SESSION_KEY,
+              runId: `child-run-${i}`,
+              stream: "lifecycle",
+              data: { phase: "start" },
+            },
+          },
+          1,
+        );
+      }
+    } finally {
+      console.error = realError;
+      void errors;
+    }
+    const capped = n.endTurn(2, "final");
+    const cappedFinal = capped.find((e) => e.type === "message.final");
+    expect(cappedFinal?.observedChildKeysTruncated).toBe(true);
+    // A FRESH turn starts with a complete list again.
+    n.beginTurn(3);
+    const clean = n.endTurn(4, "final");
+    const cleanFinal = clean.find((e) => e.type === "message.final");
+    expect(cleanFinal?.observedChildKeysTruncated).toBe(false);
+  });
+
+
+  it("stops recording tool args past the cap instead of growing all turn", () => {
+    // A tool loop used to grow this map for the whole turn, and the memory it cost
+    // was invisible. Past the cap the entries are dropped — LOUDLY (one line per
+    // episode), because a silent truncation reads as "nothing was dropped".
+    const n = newNormalizer();
+    n.beginTurn(0);
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = ((...args: unknown[]) => {
+      errors.push(args.join(" "));
+    }) as never;
+    try {
+      for (let i = 0; i < 2_100; i++) {
+        n.feed(
+          {
+            event: "agent",
+            payload: {
+              sessionKey: SESSION_KEY,
+              runId: OWN_RUN,
+              stream: "tool",
+              data: {
+                phase: "start",
+                name: "exec",
+                toolCallId: `call-${i}`,
+                args: { i },
+              },
+            },
+          },
+          1,
+        );
+      }
+    } finally {
+      console.error = realError;
+    }
+    // Exactly one overflow line — not one per dropped entry.
+    const overflow = errors.filter((e) => e.includes("toolArgs cap reached"));
+    expect(overflow).toHaveLength(1);
+  });
+});

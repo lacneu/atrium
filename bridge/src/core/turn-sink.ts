@@ -181,7 +181,52 @@ export class TurnSink {
   // stale child of a previous turn or a spawn that never started both fail the
   // intersection, keeping the empty_response guard honest (codex P2 ×2).
   private pendingObservedChildKeys: string[] = [];
+  /** TRUE when the normalizer's observed-child list hit its cap: the list is then
+   *  incomplete, so an absence in it cannot justify calling a turn empty. */
+  private pendingObservedChildKeysTruncated = false;
   private spawnedChildKeysThisTurn = new Set<string>();
+  /** TRUE once the cap dropped spawn keys: the set is then INCOMPLETE, so it may no
+   *  longer be used to decide that a child does NOT belong to this turn (codex P3).
+   *  A missing key would otherwise finalize a parent as empty while its child was
+   *  still working. */
+  private spawnedKeysTruncated = false;
+  /** Media attaches enqueued on the chain this turn — the enqueue-time counterpart
+   *  of the hosted cap (the set only grows once an upload SUCCEEDS). */
+  private queuedMediaCount = 0;
+  /** Per-turn caps for the sink's own collections, with the same discipline as the
+   *  normalizer's: a runaway turn must not grow them without bound, and a drop must
+   *  be VISIBLE — logged once per episode, never a silent truncation. */
+  private static readonly MAX_SPAWNED_CHILDREN = 1_000;
+  private static readonly MAX_HOSTED_FILES = 1_000;
+  private overflowLogged = new Set<string>();
+
+  /** Buffer a pre-open event, LOUDLY dropping past the cap: these events are the
+   *  start of a deferred turn's reply, so losing them silently means a reply that
+   *  begins mid-sentence with nothing in the log to explain it. */
+  private pushDeferred(event: NormalizedEvent): void {
+    if (
+      this.capReached(
+        "deferredEvents",
+        this.deferredEvents.length,
+        MAX_DEFERRED_EVENTS,
+      )
+    ) {
+      return;
+    }
+    this.deferredEvents.push(event);
+  }
+
+  private capReached(label: string, size: number, cap: number): boolean {
+    if (size < cap) return false;
+    if (!this.overflowLogged.has(label)) {
+      this.overflowLogged.add(label);
+      console.error(
+        `[sink] ${label} cap reached (${cap}) — further entries are DROPPED for this turn (chat=${this.chatId})`,
+      );
+    }
+    return true;
+  }
+
   // Fallback signal when the spawn RESULT omits the child key (gateway variance):
   // spawn called this turn + ANY child activity observed still exempts.
   private spawnCalledThisTurn = false;
@@ -411,6 +456,7 @@ export class TurnSink {
     this.turnArtifactBytes = 0;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
+    this.overflowLogged.clear();
     this.mediaChain = Promise.resolve();
     this.hasPendingMedia = false;
     this.sawVisibleText = false;
@@ -420,6 +466,8 @@ export class TurnSink {
     this.pendingMediaGeneratedUndelivered = false;
     this.pendingObservedChildKeys = [];
     this.spawnedChildKeysThisTurn = new Set();
+    this.spawnedKeysTruncated = false;
+    this.queuedMediaCount = 0;
     this.spawnCalledThisTurn = false;
     this.yieldCalledThisTurn = false;
     this.asyncTaskStartedThisTurn = false;
@@ -601,9 +649,7 @@ export class TurnSink {
       return true;
     }
     if (!eventIsVisible(event)) {
-      if (this.deferredEvents.length < MAX_DEFERRED_EVENTS) {
-        this.deferredEvents.push(event);
-      }
+      this.pushDeferred(event);
       return true;
     }
     this.sawDeferredVisible = true;
@@ -614,9 +660,7 @@ export class TurnSink {
     if (!opened) {
       // Transient create failure: keep the event so the next visible one (or
       // the terminal's last attempt) replays it.
-      if (this.deferredEvents.length < MAX_DEFERRED_EVENTS) {
-        this.deferredEvents.push(event);
-      }
+      this.pushDeferred(event);
       return true;
     }
     return false;
@@ -770,7 +814,24 @@ export class TurnSink {
                 // or the intersection with the frame's key fails (codex P2).
                 /agent:[A-Za-z0-9_.-]+(?::subagent:[A-Za-z0-9-]+)+/g,
               );
-              for (const k of m ?? []) this.spawnedChildKeysThisTurn.add(k);
+              for (const k of m ?? []) {
+                // Membership FIRST, exactly as the normalizer does for observed
+                // keys: at the cap, a repeated spawn result naming a child we
+                // already recorded drops nothing, and marking the set truncated
+                // would exempt a genuinely empty parent from the guard (codex P3).
+                if (this.spawnedChildKeysThisTurn.has(k)) continue;
+                if (
+                  this.capReached(
+                    "spawnedChildKeys",
+                    this.spawnedChildKeysThisTurn.size,
+                    TurnSink.MAX_SPAWNED_CHILDREN,
+                  )
+                ) {
+                  this.spawnedKeysTruncated = true;
+                  break;
+                }
+                this.spawnedChildKeysThisTurn.add(k);
+              }
               if ((m?.length ?? 0) > 0 && messageId !== null) {
                 // The parent is now waiting on its children (announce pattern).
                 this.writer.setPhase?.(messageId, "awaiting_subagents");
@@ -931,6 +992,20 @@ export class TurnSink {
             // an explicit rescues a stale mention. The chain's leading
             // hostedThisTurn check keeps it to ONE real attach per file. Part
             // order = item order (sequential chain).
+            // Cap at ENQUEUE (codex P2): one terminal can carry a whole directory,
+            // and checking only inside each queued callback means thousands of
+            // retained closures before the first one runs — the cap would bound the
+            // uploads but not the memory it exists to bound.
+            if (
+              this.capReached(
+                "queuedMedia",
+                this.queuedMediaCount,
+                TurnSink.MAX_HOSTED_FILES,
+              )
+            ) {
+              continue;
+            }
+            this.queuedMediaCount += 1;
             this.hasPendingMedia = true;
             // Bind THIS turn's dedup set (beginTurn replaces the field): a chain
             // that outlives its finalize must never write into the NEXT turn's set,
@@ -941,6 +1016,19 @@ export class TurnSink {
             const runIdForThisTurn = this.turnRunId;
             this.mediaChain = this.mediaChain.then(async () => {
               if (hostedForThisTurn.has(filename)) return; // already attached
+              // Capacity is checked BEFORE the upload (codex P2): checking after
+              // means the work was already done — and a later re-mention of the same
+              // file passes the dedup test and uploads it AGAIN, so the cap bounded
+              // neither the transfers nor the duplicates.
+              if (
+                this.capReached(
+                  "hostedFiles",
+                  hostedForThisTurn.size,
+                  TurnSink.MAX_HOSTED_FILES,
+                )
+              ) {
+                return;
+              }
               try {
                 const attached = await this.writer.addMedia(messageId, {
                   chatId: this.chatId,
@@ -1057,6 +1145,9 @@ export class TurnSink {
             this.pendingObservedChildKeys = Array.isArray(keys)
               ? keys.filter((k): k is string => typeof k === "string")
               : [];
+            this.pendingObservedChildKeysTruncated =
+              (event as { observedChildKeysTruncated?: unknown })
+                .observedChildKeysTruncated === true;
           }
           this.hasPendingFinal = true;
           break;
@@ -1135,8 +1226,13 @@ export class TurnSink {
               : null;
           const belongsToThisTurn =
             (childKey !== null && this.spawnedChildKeysThisTurn.has(childKey)) ||
+            // An INCOMPLETE set cannot rule a child out (codex P3): past the cap a
+            // key we never recorded would read as "not ours" and finalize the parent
+            // empty while that child was still working. Truncated ⇒ fall back to the
+            // permissive rule, exactly as when no key was captured at all.
             (this.spawnCalledThisTurn &&
-              this.spawnedChildKeysThisTurn.size === 0);
+              (this.spawnedChildKeysThisTurn.size === 0 ||
+                this.spawnedKeysTruncated));
           if (
             this.turnActive &&
             messageId !== null &&
@@ -1429,6 +1525,16 @@ export class TurnSink {
         this.pendingObservedChildKeys.some((k) =>
           this.spawnedChildKeysThisTurn.has(k),
         ) ||
+        // INCONCLUSIVE beats a wrong verdict (codex P2): child activity WAS observed,
+        // the turn DID spawn, and one side of the intersection was truncated by its
+        // cap — so a missing key proves nothing, and the cost of being wrong is an
+        // error card on a parent that legitimately delegated a silent reply. A cap
+        // must bound memory, never decide a turn. Activity is still required: with
+        // none observed at all, "empty" remains the honest verdict.
+        (this.spawnCalledThisTurn &&
+          this.pendingObservedChildKeys.length > 0 &&
+          (this.spawnedKeysTruncated ||
+            this.pendingObservedChildKeysTruncated)) ||
         // Fallback (gateway variance: spawn result without a child key): the
         // turn CALLED the spawn tool and SOME child activity was observed —
         // ONLY when no key could be extracted at all. When keys WERE extracted,

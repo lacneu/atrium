@@ -68,6 +68,12 @@ describe("classifyGatewayError", () => {
         new Error("OpenClaw Gateway connection closed [slow_consumer]"),
       ),
     ).toBe("CONNECTION_SATURATED");
+    // OUR OWN overflow close is the same user-facing fact as the gateway's.
+    expect(
+      classifyGatewayError(
+        new Error("inbound queue overflow [inbound_overflow]"),
+      ),
+    ).toBe("CONNECTION_SATURATED");
     // An UNNAMED close keeps its historic code (no behavior change).
     expect(
       classifyGatewayError(new Error("OpenClaw Gateway connection closed")),

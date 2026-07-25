@@ -129,7 +129,11 @@ export function classifyGatewayError(
   if (/\[gateway_restarting\]/.test(msg)) {
     return "GATEWAY_RESTARTING";
   }
-  if (/\[slow_consumer\]/.test(msg)) {
+  if (/\[slow_consumer\]|\[inbound_overflow\]/.test(msg)) {
+    // Both directions of the same fact: one end could not keep up and the link was
+    // cut. `slow_consumer` is the gateway hanging up on us; `inbound_overflow` is us
+    // closing rather than grow without bound. The reader's message is identical, so
+    // a send interrupted by either must not report a generic upstream error.
     return "CONNECTION_SATURATED";
   }
   if (
