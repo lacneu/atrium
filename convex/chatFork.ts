@@ -166,6 +166,22 @@ export const forkChat = mutation({
               // above — a fresh forked session must not show the source's.
               activeTokens: undefined,
               activeTokensAt: undefined,
+              // The gateway's pre-prompt budget assessment is a usage measure
+              // too, and it is now the gauge's PRIMARY source: inheriting it
+              // would make a brand-new fork display its parent's context fill —
+              // or its parent's OVERFLOW — until the first describe (codex P2).
+              estimatedPromptTokens: undefined,
+              promptBudgetBeforeReserve: undefined,
+              overflowTokens: undefined,
+              // Freshness qualifies a counter that is not being copied either.
+              totalTokensFresh: undefined,
+              // …and so does the ORDERING WATERMARK of those measures. Keeping it
+              // would leave the fork guarding an empty seat: the new session's
+              // first `sessions.describe` is a fresh clock, and if that clock reads
+              // behind the parent's watermark (another bridge replica, or a clock
+              // adjustment) the snapshot is judged stale and DISCARDED — the fork
+              // would then sit with no assessment at all (codex P2).
+              estimateAt: undefined,
             },
           }
         : {}),

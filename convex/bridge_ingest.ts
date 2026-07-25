@@ -361,6 +361,13 @@ type IngestOp =
         totalTokens?: number;
         contextTokens?: number;
         estimatedCostUsd?: number;
+        // Freshness of `totalTokens` (false = stale) and the gateway's own
+        // pre-prompt budget assessment — the numbers that let the gauge be
+        // honest instead of showing a counter it cannot trust.
+        totalTokensFresh?: boolean;
+        estimatedPromptTokens?: number;
+        promptBudgetBeforeReserve?: number;
+        overflowTokens?: number;
       };
     }
   // Session re-hydration READ (see docs/SESSION_CONTINUITY_DESIGN.md). The bridge

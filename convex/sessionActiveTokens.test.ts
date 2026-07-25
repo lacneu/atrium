@@ -166,4 +166,251 @@ describe("setSessionActiveTokens / setSessionMeta lifecycle", () => {
     const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
     expect(sm?.activeTokens).toBe(200000);
   });
+
+  // BUDGET-ESTIMATE ordering. The pre-prompt estimate (the gauge's primary
+  // source) and the post-turn usage stamp are BOTH fire-and-forget writes, so
+  // either can land late. Whoever is the more recent OBSERVATION must win — a
+  // stale write must neither erase a live overflow nor resurrect an old one.
+  test("a post-turn stamp CLEARS the estimate it postdates (fresh measure wins)", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 358960,
+        promptBudgetBeforeReserve: 308000,
+        observedAt: 1000,
+      },
+    });
+    await t.mutation(internal.stream.setSessionActiveTokens, {
+      chatId,
+      activeTokens: 120000,
+      observedAt: 2000, // AFTER the estimate: it describes the previous turn
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBeUndefined();
+    expect(sm?.promptBudgetBeforeReserve).toBeUndefined();
+    expect(sm?.activeTokens).toBe(120000);
+  });
+
+  test("a LATE post-turn stamp does NOT erase a newer estimate (would hide an overflow)", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    // Turn N+1's describe already landed with a live over-budget estimate…
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 400000,
+        promptBudgetBeforeReserve: 308000,
+        observedAt: 5000,
+      },
+    });
+    // The describe ALSO advanced the usage watermark (a snapshot with no counter
+    // drops the stamp and records its own observation time) — pinned here because
+    // that is WHY the late stamp below is rejected, and the reason must not be
+    // rediscovered by argument later.
+    const mid = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(mid?.activeTokensAt).toBe(5000);
+    // …and turn N's stamp arrives late.
+    await t.mutation(internal.stream.setSessionActiveTokens, {
+      chatId,
+      activeTokens: 90000,
+      observedAt: 3000,
+    });
+    // It never lands: neither as a stamp, nor as an estimate-clearing write.
+    const after = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(after?.activeTokens).toBeUndefined();
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBe(400000);
+  });
+
+  test("an OUT-OF-ORDER describe does not resurrect an older estimate", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 300000,
+        observedAt: 9000,
+      },
+    });
+    // A stale snapshot (older observation) carrying a different estimate.
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 100000,
+        observedAt: 4000,
+      },
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBe(300000);
+  });
+
+  test("a recent describe WITHOUT an estimate wins over an older one that had it", async () => {
+    // After a compaction or a model change the gateway clears its budget
+    // assessment, so a current describe legitimately carries NO estimate. That
+    // absence must win the ordering: otherwise an older POST still in flight
+    // resurrects the stale figure (codex P2) — sessionMeta is replaced wholesale,
+    // so the watermark has to survive the absence.
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 350000,
+        observedAt: 1000,
+      },
+    });
+    // Current describe: compaction cleared the assessment.
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: { contextTokens: 372000, observedAt: 2000 },
+    });
+    let sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBeUndefined();
+    // An OLDER snapshot still in flight must not bring the old figure back.
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 350000,
+        observedAt: 1500,
+      },
+    });
+    sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBeUndefined();
+  });
+
+  test("clearing an estimate ADVANCES the watermark: a delayed describe cannot resurrect it", async () => {
+    // The post-turn stamp supersedes the estimate; if the clear dropped the
+    // watermark, a describe delayed past it would look current and bring the
+    // stale figure back (codex P1).
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 350000,
+        observedAt: 1000,
+      },
+    });
+    await t.mutation(internal.stream.setSessionActiveTokens, {
+      chatId,
+      activeTokens: 120000,
+      observedAt: 2000,
+    });
+    // Delayed describe from BEFORE the clear.
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        estimatedPromptTokens: 350000,
+        observedAt: 1500,
+      },
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBeUndefined();
+  });
+
+  test("an older snapshot cannot flip the freshness flag back to fresh", async () => {
+    // The flag is describe-sourced, so it obeys the same ordering: a stale
+    // "fresh:true" must not overwrite a newer "fresh:false", or the gauge shows a
+    // number the gateway had just disowned (codex P2).
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        totalTokens: 200000,
+        totalTokensFresh: false,
+        observedAt: 5000,
+      },
+    });
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        totalTokens: 200000,
+        totalTokensFresh: true,
+        observedAt: 3000,
+      },
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.totalTokensFresh).toBe(false);
+  });
+
+  test("a stale describe updates NO describe-sourced field (flag and counter stay paired)", async () => {
+    // A recent "the counter is stale" must not end up qualifying an OLD counter
+    // written by the same stale snapshot (codex P2): the block moves as one unit.
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        totalTokens: 250000,
+        totalTokensFresh: false,
+        observedAt: 5000,
+      },
+    });
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 272000,
+        totalTokens: 90000,
+        totalTokensFresh: true,
+        observedAt: 3000,
+      },
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.totalTokensFresh).toBe(false);
+    expect(sm?.totalTokens).toBe(250000);
+    expect(sm?.contextTokens).toBe(372000);
+  });
+
+  test("a late post-turn stamp does NOT erase a NEWER describe's estimate (2nd turn on)", async () => {
+    // The usage watermark alone does not order this: a describe whose counter did
+    // not fall carries the PREVIOUS stamp forward instead of advancing it, so from
+    // the second turn on a delayed post-turn POST passes the ordering check. The
+    // estimate must then be defended by its OWN clock (codex P1).
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    // Turn 1 measured its window fill.
+    await t.mutation(internal.stream.setSessionActiveTokens, {
+      chatId,
+      activeTokens: 50000,
+      observedAt: 1000,
+    });
+    // Turn 2's pre-prompt describe: counter RISES (no drop → the old stamp and its
+    // watermark are carried forward) and it brings a fresh over-budget estimate.
+    await t.mutation(internal.stream.setSessionMeta, {
+      chatId,
+      meta: {
+        contextTokens: 372000,
+        totalTokens: 60000,
+        estimatedPromptTokens: 358960,
+        promptBudgetBeforeReserve: 308000,
+        observedAt: 2000,
+      },
+    });
+    const mid = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(mid?.activeTokensAt).toBe(1000); // the watermark did NOT advance
+    // Turn 1's stamp finally lands — newer than the watermark, older than the estimate.
+    await t.mutation(internal.stream.setSessionActiveTokens, {
+      chatId,
+      activeTokens: 55000,
+      observedAt: 1500,
+    });
+    const sm = await t.run(async (ctx) => (await ctx.db.get(chatId))!.sessionMeta);
+    expect(sm?.estimatedPromptTokens).toBe(358960);
+    expect(sm?.promptBudgetBeforeReserve).toBe(308000);
+    expect(sm?.activeTokens).toBe(55000); // the measure itself still lands
+  });
 });

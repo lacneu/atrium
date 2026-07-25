@@ -21,7 +21,10 @@ import {
   speedSelection,
   verbosityLine,
   effectiveContextUsed,
+  contextSource,
+  effectiveContextWindow,
 } from "./sessionKnobs";
+import type { SessionMetaView } from "./sessionKnobs";
 
 describe("isOverridden — binary, intent-based provenance (A1)", () => {
   test("true exactly when the field's key is present in sessionSettings", () => {
@@ -192,5 +195,157 @@ describe("effectiveContextUsed (context gauge source)", () => {
   test("null on missing data", () => {
     expect(effectiveContextUsed(null)).toBeNull();
     expect(effectiveContextUsed({})).toBeNull();
+  });
+
+  // The guard used to cover `totalTokens` ONLY, so an absurd `activeTokens`
+  // sailed straight through and was displayed as a percentage. Both counters are
+  // the SAME upstream field sampled at two moments (established by reading the
+  // gateway sources), so both need it.
+  test("REFUSES an absurd ACTIVE stamp too, not just the legacy counter", () => {
+    expect(
+      effectiveContextUsed({ activeTokens: 3194300, contextTokens: 372000 }),
+    ).toBeNull();
+  });
+
+  test("falls back to a sane legacy counter when the ACTIVE stamp is absurd", () => {
+    // The active stamp is unusable, but totalTokens is plausible: show that
+    // rather than nothing — an honest number beats an empty gauge.
+    expect(
+      effectiveContextUsed({
+        activeTokens: 3194300,
+        totalTokens: 90000,
+        contextTokens: 372000,
+      }),
+    ).toBe(90000);
+  });
+
+  // The gateway tells us when its counter is stale and leaves its OWN reading
+  // unknown in that case; freezing a percentage would be a lie with a number on it.
+  test("a STALE counter yields unknown when it is the ONLY source", () => {
+    expect(
+      effectiveContextUsed({
+        totalTokens: 112000,
+        contextTokens: 372000,
+        totalTokensFresh: false,
+      }),
+    ).toBeNull();
+    expect(
+      contextSource({ totalTokens: 112000, contextTokens: 372000, totalTokensFresh: false }),
+    ).toBe("unknown");
+  });
+
+  // The gateway's own estimate accounts for what the counters MISS (tool schemas,
+  // injected context) — the production incident of 2026-07-20 showed a
+  // comfortable 48% from a counter while the assembled prompt was over budget.
+  test("the gateway's prompt ESTIMATE wins over both counters (the 48%-then-wall case)", () => {
+    const sm = {
+      activeTokens: 179625,
+      totalTokens: 179625,
+      contextTokens: 372000,
+      estimatedPromptTokens: 358960,
+      promptBudgetBeforeReserve: 308000,
+    };
+    expect(effectiveContextUsed(sm)).toBe(358960);
+    expect(contextSource(sm)).toBe("budget_estimate");
+    // …and the counter alone would have painted a comfortable fill.
+    expect(
+      effectiveContextUsed({
+        activeTokens: 179625,
+        totalTokens: 179625,
+        contextTokens: 372000,
+      }),
+    ).toBe(179625);
+  });
+
+  test("a stale FLAG never suppresses the estimate (it qualifies the counters)", () => {
+    expect(
+      effectiveContextUsed({
+        estimatedPromptTokens: 200000,
+        activeTokens: 10,
+        contextTokens: 372000,
+        totalTokensFresh: false,
+      }),
+    ).toBe(200000);
+  });
+
+  // An estimate ABOVE the window is the most important reading of all: "the next
+  // send does not fit". Rejecting it as absurd would hide an imminent overflow
+  // behind a comfortable post-hoc counter (codex P2).
+  test("an OVER-BUDGET estimate is kept, not discarded as absurd", () => {
+    const sm = {
+      estimatedPromptTokens: 420000,
+      activeTokens: 110000,
+      contextTokens: 372000,
+    };
+    expect(effectiveContextUsed(sm)).toBe(420000);
+    expect(contextSource(sm)).toBe("budget_estimate");
+  });
+
+  // The stale flag arrives with a pre-send snapshot; the end-of-turn usage stamp
+  // is observed LATER and must not be suppressed by it (codex P2).
+  test("a stale flag does NOT suppress a later active stamp (only totalTokens)", () => {
+    expect(
+      effectiveContextUsed({
+        activeTokens: 150000,
+        totalTokens: 150000,
+        contextTokens: 372000,
+        totalTokensFresh: false,
+      }),
+    ).toBe(150000);
+    // With no active stamp, the flag still invalidates the counter it qualifies.
+    expect(
+      effectiveContextUsed({
+        totalTokens: 150000,
+        contextTokens: 372000,
+        totalTokensFresh: false,
+      }),
+    ).toBeNull();
+  });
+
+  // THE arithmetic of the production incident: the usable prompt budget is the
+  // window MINUS the output reserve, and dividing by the window instead made an
+  // over-budget prompt read as a comfortable fill (codex P2).
+  test("the denominator is the PROMPT BUDGET, not the raw window", () => {
+    const sm = {
+      estimatedPromptTokens: 358960,
+      promptBudgetBeforeReserve: 308000,
+      contextTokens: 372000,
+    };
+    expect(effectiveContextWindow(sm)).toBe(308000);
+    const used = effectiveContextUsed(sm) as number;
+    // 358960/308000 = 117% (does not fit) — NOT 96% against the window.
+    expect(Math.round((used / (effectiveContextWindow(sm) as number)) * 100)).toBe(117);
+    expect(Math.round((used / 372000) * 100)).toBe(96); // the misleading figure
+  });
+
+  test("falls back to the window when the gateway reports no budget", () => {
+    expect(effectiveContextWindow({ contextTokens: 272000 })).toBe(272000);
+    expect(effectiveContextWindow({})).toBeNull();
+    expect(effectiveContextWindow(null)).toBeNull();
+    // A zero/absent budget must not become the denominator.
+    expect(
+      effectiveContextWindow({ promptBudgetBeforeReserve: 0, contextTokens: 272000 }),
+    ).toBe(272000);
+  });
+
+  test("contextSource names the counter path and the empty case", () => {
+    expect(contextSource({ activeTokens: 5000, contextTokens: 272000 })).toBe(
+      "last_call_usage",
+    );
+    expect(contextSource(null)).toBe("unknown");
+    expect(contextSource({ contextTokens: 272000 })).toBe("unknown");
+  });
+
+  test("counters invalidated: a window is still known, so the detail row must render", () => {
+    // The advanced popover is the ONLY surface that explains the unknown gauge on
+    // touch or on a compacted header (no hover title), so its gate keys on the
+    // WINDOW — never on a usable figure, which is exactly what is missing here.
+    const sm = {
+      contextTokens: 372000,
+      totalTokens: 250000,
+      totalTokensFresh: false,
+    } as SessionMetaView;
+    expect(effectiveContextUsed(sm)).toBeNull();
+    expect(effectiveContextWindow(sm)).toBe(372000);
   });
 });

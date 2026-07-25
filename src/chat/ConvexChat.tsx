@@ -248,6 +248,8 @@ import {
   type SessionMetaView,
   type SessionSettingsView,
   effectiveContextUsed,
+  contextSource,
+  effectiveContextWindow,
 } from "./sessionKnobs";
 
 // Top-level chat surface. Wires the reactive Convex-backed runtime into
@@ -1605,25 +1607,52 @@ function ContextMeter({
   // the Advanced popover always passes detail).
   detail?: boolean;
 }) {
-  // effectiveContextUsed: the per-turn active stamp, else the legacy counter
-  // — and NULL when only a session-cumulative value is available (an
-  // LCM-managed session read "859% - 3194.3k/372.0k" in prod).
+  // effectiveContextUsed: the gateway's own prompt estimate when it exists, else
+  // a counter — and NULL whenever nothing is trustworthy (stale flag, or a value
+  // larger than the window, which is a cumulative total rather than a fill).
+  // Rendering NOTHING is deliberate: a user cannot self-regulate with a false
+  // instrument, and a wrong percentage is worse than an absent one.
   const used = effectiveContextUsed(sm);
+  const source = contextSource(sm);
+  // The DENOMINATOR is the gateway's usable prompt budget when it reports one,
+  // not the raw window: they differ by the output reserve, and that difference is
+  // what let an over-budget prompt read as a comfortable fill (see sessionKnobs).
+  const windowTokens = effectiveContextWindow(sm);
   const pct =
-    used != null && sm.contextTokens && sm.contextTokens > 0
-      ? Math.round((used / sm.contextTokens) * 100)
+    used != null && windowTokens
+      ? Math.round((used / windowTokens) * 100)
       : null;
-  if (pct == null || used == null) return null;
+  // UNKNOWN is a state, not an absence (codex P2): when the gateway gives us no
+  // trustworthy measure, say so instead of vanishing — a reader must be able to
+  // tell "we do not know" from "there is nothing to know". Only when the session
+  // is otherwise real (a window is known); with no meta at all there is nothing
+  // to explain.
+  if (pct == null || used == null) {
+    if (!windowTokens) return null;
+    return (
+      <span
+        className="oc-meter is-unknown"
+        title={m.chat_context_unknown()}
+        role="status"
+      >
+        <span className="oc-meter__label">{"—"}</span>
+      </span>
+    );
+  }
   // Calm → escalating usage colors (universal meter language, theme-stable).
   const level = pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
   return (
     <span
       className={`oc-meter ${level}`}
-      title={m.chat_context_used({
+      title={`${m.chat_context_used({
         pct,
         used: formatTokens(used),
-        total: formatTokens(sm.contextTokens as number),
-      })}
+        total: formatTokens(windowTokens as number),
+      })}\n${
+        source === "budget_estimate"
+          ? m.chat_context_source_estimate()
+          : m.chat_context_source_usage()
+      }`}
     >
       <span className="oc-meter__track">
         <span
@@ -1637,7 +1666,7 @@ function ContextMeter({
           <span className="oc-meter__detail">
             {" · "}
             {formatTokens(used)}/
-            {formatTokens(sm.contextTokens as number)}
+            {formatTokens(windowTokens as number)}
           </span>
         ) : null}
       </span>
@@ -2016,7 +2045,11 @@ function SessionKnobsMenu({
         {/* Read-only context-window usage. Lives here too so it stays reachable —
             with its full detail + on touch (no hover title) — when a narrow header
             compacts the inline meter. Model/reasoning are the knobs below. */}
-        {effectiveContextUsed(sm) != null && sm.contextTokens ? (
+        {/* Gated on the WINDOW alone: when the counters are invalidated
+            (`totalTokensFresh: false`) the meter renders its explicit unknown
+            state, and this is the only surface that explains it on touch or on a
+            compacted header — where the inline meter's `title` never shows. */}
+        {effectiveContextWindow(sm) ? (
           <div className="oc-spanel-pop__usage">
             <span className="oc-spanel-pop__usage-label">
               {m.chat_context_label()}

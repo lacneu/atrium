@@ -736,6 +736,13 @@
   border-radius: var(--radius-md);
   white-space: nowrap;
 }
+/* UNKNOWN context fill: the gateway gives no trustworthy measure. Rendered as a
+   muted dash rather than hidden, so "we do not know" is distinguishable from
+   "there is nothing to show" — a false percentage was the original defect. */
+.oc-meter.is-unknown {
+  opacity: 0.55;
+  cursor: help;
+}
 .oc-meter__track {
   width: 3.5rem;
   height: 0.4rem;

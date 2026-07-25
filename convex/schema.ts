@@ -1065,11 +1065,35 @@ export default defineSchema({
           v.array(v.object({ id: v.string(), label: v.string() })),
         ),
         verboseLevel: v.optional(v.string()), // e.g. "full"
-        totalTokens: v.optional(v.number()), // gateway sessions.get counter (CUMULATIVE under a context engine — not the window fill)
-        // REAL window usage of the LAST turn (bridge post-usage snapshot):
-        // the context gauge's primary source. totalTokens alone reads 859%
-        // on an LCM-managed long session (cumulative / window — prod report).
+        // The gateway's session token counter, read from `sessions.describe`.
+        totalTokens: v.optional(v.number()),
+        // The SAME upstream counter, read from the per-turn usage stamp instead.
+        // CORRECTION (established by reading the gateway sources): these two are
+        // NOT "cumulative vs real window fill" as this comment used to claim —
+        // they are one field sampled at two moments, and its derivation can fall
+        // back to a RUN-CUMULATIVE accumulator. Neither is a dependable window
+        // fill, which is why the gauge guards BOTH against absurd values and
+        // prefers `estimatedPromptTokens` when the gateway provides it.
         activeTokens: v.optional(v.number()),
+        // The gateway's OWN pre-prompt estimate of the assembled prompt and its
+        // budget — the numbers it uses for its own display, and the only ones
+        // that account for what the counters above miss (tool schemas, injected
+        // context). Absent when its pre-prompt check did not run (notably under a
+        // context engine that owns compaction), which is exactly when the gauge
+        // must say "unknown" rather than show a counter.
+        estimatedPromptTokens: v.optional(v.number()),
+        promptBudgetBeforeReserve: v.optional(v.number()),
+        overflowTokens: v.optional(v.number()),
+        // Observation time of the three fields above. The bridge's meta and
+        // usage writes are BOTH fire-and-forget and can arrive out of order, so
+        // this watermark decides who wins: a late post-turn stamp must not erase
+        // a NEWER estimate, and a late pre-turn snapshot must not resurrect an
+        // older one. Same role `activeTokensAt` plays for the usage stamp.
+        estimateAt: v.optional(v.number()),
+        // The gateway's freshness flag for its token counter: false = the number
+        // is stale. Upstream leaves the reading unknown in that case; so do we,
+        // rather than freeze a percentage that no longer reflects the session.
+        totalTokensFresh: v.optional(v.boolean()),
         // Bridge observation time of activeTokens: fire-and-forget POSTs can
         // arrive out of order — Convex rejects stale writes by this stamp.
         activeTokensAt: v.optional(v.number()),

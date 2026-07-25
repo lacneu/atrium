@@ -441,6 +441,15 @@ export interface SessionMetaReport {
   totalTokens?: number;
   contextTokens?: number;
   estimatedCostUsd?: number;
+  /** The gateway's freshness flag for `totalTokens`: false = stale, so the gauge
+   *  must report "unknown" rather than a frozen percentage (upstream's own rule). */
+  totalTokensFresh?: boolean;
+  /** The gateway's OWN pre-prompt budget assessment (from `contextBudgetStatus`):
+   *  the estimate it displays itself, and the only figure accounting for what the
+   *  counters miss. Absent when its pre-prompt check did not run. */
+  estimatedPromptTokens?: number;
+  promptBudgetBeforeReserve?: number;
+  overflowTokens?: number;
   // Bridge observation time: snapshots and per-turn stamps travel as
   // independent fire-and-forget POSTs — Convex orders them by this.
   observedAt?: number;

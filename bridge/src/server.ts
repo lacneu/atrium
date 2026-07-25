@@ -628,6 +628,48 @@ function parseSessionMeta(
     totalTokens: num(sess.totalTokens),
     contextTokens: num(sess.contextTokens),
     estimatedCostUsd: num(sess.estimatedCostUsd),
+    // FRESHNESS of the counter above. The gateway sets it false when the number
+    // is stale; it uses the flag itself to leave its own reading UNKNOWN instead
+    // of showing a frozen figure. We were dropping it and displaying the stale
+    // number as a live fill.
+    totalTokensFresh:
+      typeof sess.totalTokensFresh === "boolean"
+        ? sess.totalTokensFresh
+        : undefined,
+    // The gateway's OWN pre-prompt budget assessment — the numbers it uses for
+    // its own display, and the only ones that account for what the counters
+    // miss (tool schemas, injected context). It rides `sessions.describe`, which
+    // the bridge ALREADY calls before every send, so reading it costs nothing.
+    // Content-free by construction: three token counts.
+    ...contextBudgetFields(sess.contextBudgetStatus),
+  };
+}
+
+/**
+ * Project the gateway's `contextBudgetStatus` down to the three counts the gauge
+ * needs. Absent (or not an object) when its pre-prompt check did not run — under
+ * a context engine that owns compaction it is never written, and it is cleared
+ * after a compaction or a model change. That absence is INFORMATION: it is
+ * exactly when the gauge must say "unknown" instead of showing a counter.
+ */
+function contextBudgetFields(raw: unknown): {
+  estimatedPromptTokens?: number;
+  promptBudgetBeforeReserve?: number;
+  overflowTokens?: number;
+} {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  const o = raw as Record<string, unknown>;
+  const n = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const estimatedPromptTokens = n(o.estimatedPromptTokens);
+  const promptBudgetBeforeReserve = n(o.promptBudgetBeforeReserve);
+  const overflowTokens = n(o.overflowTokens);
+  return {
+    ...(estimatedPromptTokens !== undefined ? { estimatedPromptTokens } : {}),
+    ...(promptBudgetBeforeReserve !== undefined
+      ? { promptBudgetBeforeReserve }
+      : {}),
+    ...(overflowTokens !== undefined ? { overflowTokens } : {}),
   };
 }
 

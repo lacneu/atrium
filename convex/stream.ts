@@ -1821,6 +1821,13 @@ export const setSessionMeta = internalMutation({
       totalTokens: v.optional(v.number()),
       contextTokens: v.optional(v.number()),
       estimatedCostUsd: v.optional(v.number()),
+      // Honest-gauge inputs (see schema): the freshness flag for the counter
+      // above, and the gateway's own pre-prompt budget assessment. All optional
+      // and additive — an older bridge simply never sends them.
+      totalTokensFresh: v.optional(v.boolean()),
+      estimatedPromptTokens: v.optional(v.number()),
+      promptBudgetBeforeReserve: v.optional(v.number()),
+      overflowTokens: v.optional(v.number()),
       observedAt: v.optional(v.number()),
     }),
   },
@@ -1882,10 +1889,52 @@ export const setSessionMeta = internalMutation({
                     : prev.activeTokensAt,
               }
             : {};
+    // BUDGET-ESTIMATE ordering (codex P1). Both writers are fire-and-forget, so
+    // an OLDER describe can land after a newer one: accept the incoming estimate
+    // only when its observation time is at least as recent as the stored
+    // watermark, otherwise keep what we have. With no timestamps on either side
+    // the incoming snapshot wins (the historic behavior).
+    const prevEstimateAt = prev?.estimateAt;
+    const estimateIsStale =
+      metaAt !== undefined &&
+      prevEstimateAt !== undefined &&
+      metaAt < prevEstimateAt;
+    // The keys are ALWAYS present in this object (possibly as `undefined`, which
+    // Convex stores as "absent") so they OVERRIDE whatever `metaRest` carries: a
+    // stale snapshot brings its own estimate along, and re-adding the stored one
+    // without overwriting the incoming one would let the stale figure through.
+    const estimateFields = estimateIsStale
+      ? {
+          // Older snapshot: keep the stored assessment (and its watermark).
+          estimatedPromptTokens: prev?.estimatedPromptTokens,
+          promptBudgetBeforeReserve: prev?.promptBudgetBeforeReserve,
+          overflowTokens: prev?.overflowTokens,
+          estimateAt: prevEstimateAt,
+          // The whole DESCRIBE-SOURCED block obeys this watermark as one unit
+          // (codex P2): the freshness flag, and the counters it QUALIFIES. Keeping
+          // the flag while letting `metaRest` write the stale snapshot's counter
+          // would pair a recent "this is fresh" with an old number — a subtler
+          // version of the very defect this lot removes.
+          totalTokensFresh: prev?.totalTokensFresh,
+          totalTokens: prev?.totalTokens,
+          contextTokens: prev?.contextTokens,
+        }
+      : {
+          // Current snapshot wins: its estimate fields (or their ABSENCE, which is
+          // itself information — the gateway's pre-prompt check did not run, or a
+          // compaction/model change cleared it) come from `metaRest`.
+          // The watermark is kept even for an ABSENCE (codex P2): sessionMeta is
+          // replaced wholesale, so dropping it would let an OLDER in-flight
+          // snapshot that still carried an estimate be accepted afterwards and
+          // resurrect a stale gauge. A recent "there is no estimate" must be able
+          // to win the ordering too.
+          ...(metaAt !== undefined ? { estimateAt: metaAt } : {}),
+        };
     await ctx.db.patch(chatId, {
       sessionMeta: {
         ...metaRest,
         ...keepActive,
+        ...estimateFields,
         updatedAt: Date.now(),
       },
     });
@@ -1913,11 +1962,60 @@ export const setSessionActiveTokens = internalMutation({
     if (observedAt !== undefined && prevAt !== undefined && observedAt <= prevAt) {
       return; // an older observation arriving late must not overwrite
     }
+    // The pre-prompt ESTIMATE describes the turn that was about to run — this
+    // write is the MEASURE of the turn that just finished, so it supersedes it.
+    // Leaving the estimate in place would pin the gauge to a stale pre-turn figure
+    // for the rest of the session, exactly after a big message or a long reply
+    // (codex P1). The next `sessions.describe` re-supplies a current estimate.
+    // The pre-prompt ESTIMATE describes the turn that was about to run; this write
+    // is the MEASURE of the turn that just finished, so it supersedes it. Leaving
+    // it in place would pin the gauge to a stale pre-turn figure for the rest of
+    // the session, right after a big message or a long reply.
+    // …but ONLY when this measure is the more recent of the two. The usage
+    // watermark does not settle this on its own: a describe whose counter did not
+    // fall CARRIES THE PREVIOUS stamp forward (see `keepActive` in
+    // `setSessionMeta`) rather than advancing it to its own observation time, so
+    // from the second turn on a late post-turn POST clears the ordering check and
+    // would erase the estimate a NEWER describe had just written — pinning the
+    // gauge to a pre-compaction figure exactly when an overflow is brewing (codex
+    // P1). The estimate keeps its own clock, so compare against that clock.
+    const estimateSurvives =
+      observedAt !== undefined &&
+      chat.sessionMeta?.estimateAt !== undefined &&
+      chat.sessionMeta.estimateAt > observedAt;
+    const {
+      estimatedPromptTokens: _staleEstimate,
+      promptBudgetBeforeReserve: _staleBudget,
+      overflowTokens: _staleOverflow,
+      estimateAt: _previousEstimateAt,
+      ...metaWithoutEstimate
+    } = chat.sessionMeta ?? {};
+    // The clear ADVANCES the watermark instead of dropping it (codex P1): a
+    // describe delayed past this write would otherwise look current and
+    // resurrect the estimate we just superseded. Keep the later of the two.
+    const clearedEstimateAt =
+      observedAt !== undefined
+        ? _previousEstimateAt !== undefined && _previousEstimateAt > observedAt
+          ? _previousEstimateAt
+          : observedAt
+        : _previousEstimateAt;
     await ctx.db.patch(chatId, {
       sessionMeta: {
-        ...(chat.sessionMeta ?? {}),
+        ...metaWithoutEstimate,
+        // A newer describe's assessment outlives this older measure; the measure
+        // itself still lands (it is real, and the gauge prefers the estimate).
+        ...(estimateSurvives
+          ? {
+              estimatedPromptTokens: _staleEstimate,
+              promptBudgetBeforeReserve: _staleBudget,
+              overflowTokens: _staleOverflow,
+            }
+          : {}),
         activeTokens,
         ...(observedAt !== undefined ? { activeTokensAt: observedAt } : {}),
+        ...(clearedEstimateAt !== undefined
+          ? { estimateAt: clearedEstimateAt }
+          : {}),
         updatedAt: Date.now(),
       },
     });

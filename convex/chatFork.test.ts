@@ -43,6 +43,12 @@ async function seedChat(
         contextTokens: 272000,
         totalTokens: 15968,
         estimatedCostUsd: 0.42,
+        // The gateway's pre-prompt budget assessment AND its ordering watermark.
+        estimatedPromptTokens: 358960,
+        promptBudgetBeforeReserve: 308000,
+        overflowTokens: 50960,
+        totalTokensFresh: true,
+        estimateAt: 9_000_000,
       },
     });
     const n = opts?.messages ?? 3;
@@ -102,6 +108,15 @@ describe("chatFork.forkChat", () => {
     expect(state.fork!.sessionMeta?.contextTokens).toBe(272000);
     expect(state.fork!.sessionMeta?.totalTokens).toBeUndefined();
     expect(state.fork!.sessionMeta?.estimatedCostUsd).toBeUndefined();
+    // The pre-prompt assessment is a usage measure: a brand-new fork must not
+    // display its parent's fill — nor its parent's OVERFLOW.
+    expect(state.fork!.sessionMeta?.estimatedPromptTokens).toBeUndefined();
+    expect(state.fork!.sessionMeta?.promptBudgetBeforeReserve).toBeUndefined();
+    expect(state.fork!.sessionMeta?.overflowTokens).toBeUndefined();
+    expect(state.fork!.sessionMeta?.totalTokensFresh).toBeUndefined();
+    // …and neither does the WATERMARK that orders them: left behind, it would let
+    // the fork reject its own first describe as "stale" and stay assessment-less.
+    expect(state.fork!.sessionMeta?.estimateAt).toBeUndefined();
     // Same top-of-list placement as createChat (source has no sortKey → min 0).
     expect(state.fork!.archived).toBe(false);
     expect(state.fork!.sortKey).toBeLessThan(0);

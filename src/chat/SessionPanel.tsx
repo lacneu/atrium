@@ -34,6 +34,7 @@ import {
   agentLine,
   contextLine,
   contextPct,
+  effectiveContextWindow,
   effectiveContextUsed,
   costLine,
   verbosityLine,
@@ -295,10 +296,13 @@ export function SessionPanel({
   }
 
   const used = effectiveContextUsed(sm);
-  const pct = contextPct(used ?? undefined, sm?.contextTokens);
+  // Against the gateway's usable PROMPT budget when it reports one (window minus
+  // the output reserve) — see sessionKnobs.effectiveContextWindow.
+  const windowTokens = effectiveContextWindow(sm);
+  const pct = contextPct(used ?? undefined, windowTokens ?? undefined);
   const meterLevel =
     pct == null ? "" : pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
-  const context = contextLine(used ?? undefined, sm?.contextTokens);
+  const context = contextLine(used ?? undefined, windowTokens ?? undefined);
   const cost = costLine(sm?.estimatedCostUsd, sm?.totalTokens);
   // getChatAgent only names the agent for multi-agent users; runtime/model
   // still come from sessionMeta, so the line degrades gracefully.

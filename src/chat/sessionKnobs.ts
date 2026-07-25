@@ -108,21 +108,109 @@ export function shortLevelLabel(id: string, label: string): string {
 }
 
 /** Context-window usage percentage, or null when the meta is unusable. */
-/** The number the context gauge should treat as "used window tokens":
- *  the per-turn active stamp when present, else the legacy counter — but a
- *  legacy counter LARGER than the window is a session-cumulative value
- *  (context-engine sessions), not a fill: unusable, report null. */
+/** WHERE the gauge's number comes from — surfaced on hover so a reader can tell
+ *  a gateway ESTIMATE of the assembled prompt from a post-hoc usage counter, and
+ *  either from "we do not know". */
+export type ContextSource = "budget_estimate" | "last_call_usage" | "unknown";
+
+interface ContextMeta {
+  activeTokens?: number;
+  /** The gateway's usable prompt budget (window minus the output reserve) — the
+   *  denominator it measures against itself. */
+  promptBudgetBeforeReserve?: number;
+  totalTokens?: number;
+  contextTokens?: number;
+  /** The gateway's OWN pre-prompt estimate of the assembled prompt — the number
+   *  it uses for its own display. Present only when its pre-prompt check ran
+   *  (absent under a context engine that owns compaction). */
+  estimatedPromptTokens?: number;
+  /** The gateway's freshness flag for its token counter: false = "this number is
+   *  stale". Upstream uses it to leave the reading UNKNOWN rather than show a
+   *  frozen percentage; so do we. */
+  totalTokensFresh?: boolean;
+}
+
+/** The number the context gauge should treat as "used window tokens", or null
+ *  when nothing trustworthy is available — in which case the gauge must say
+ *  "unknown" instead of showing a figure.
+ *
+ *  Priority, most to least trustworthy:
+ *   1. `estimatedPromptTokens` — the gateway's own estimate of the prompt it is
+ *      about to assemble, and what it displays itself. It is the only source that
+ *      accounts for what the counters below MISS (tool schemas, injected context).
+ *   2/3. `activeTokens` then `totalTokens`. CAUTION, established by reading the
+ *      gateway sources: these are the SAME upstream field read at two different
+ *      moments, and its derivation can fall back to a RUN-CUMULATIVE accumulator.
+ *      Neither is a reliable window fill — hence the guard below, which now
+ *      applies to BOTH (it used to cover totalTokens only, so an absurd
+ *      activeTokens sailed straight through and was displayed as a percentage:
+ *      the production incident where a session showed a comfortable fill and hit
+ *      the wall anyway).
+ */
 export function effectiveContextUsed(
-  sm:
-    | { activeTokens?: number; totalTokens?: number; contextTokens?: number }
-    | null
-    | undefined,
+  sm: ContextMeta | null | undefined,
 ): number | null {
   if (!sm) return null;
-  if (sm.activeTokens != null) return sm.activeTokens;
-  if (sm.totalTokens == null) return null;
-  if (sm.contextTokens && sm.totalTokens > sm.contextTokens) return null;
-  return sm.totalTokens;
+  const window = sm.contextTokens;
+  // Absurd-value guard for the COUNTERS: a "used" larger than the window is not a
+  // fill, it is a cumulative total. Report null (unknown) rather than a figure we
+  // know to be wrong.
+  const usable = (n: number | undefined): number | null =>
+    n == null ? null : window && n > window ? null : n;
+  // 1. The gateway's own prompt estimate wins whenever it exists — and it is NOT
+  //    subject to the absurd-value guard (codex P2): an estimate ABOVE the window
+  //    is not a broken counter, it is the single most important reading there is
+  //    ("the next send does not fit"). Discarding it would hide an imminent
+  //    overflow behind a comfortable post-hoc counter. Callers clamp the visual
+  //    width; the NUMBER stays honest.
+  if (sm.estimatedPromptTokens != null) return sm.estimatedPromptTokens;
+  // 2. The per-turn stamp. NOT gated by `totalTokensFresh` (codex P2): that flag
+  //    qualifies the `totalTokens` sample it arrived with, while this stamp can be
+  //    observed LATER (end-of-turn usage merged into the same meta) — letting a
+  //    stale pre-send snapshot suppress a fresher observation would blank the
+  //    gauge for the rest of the session.
+  const active = usable(sm.activeTokens);
+  if (active != null) return active;
+  // 3. The legacy counter, and only here does its own freshness flag apply.
+  if (sm.totalTokensFresh === false) return null;
+  return usable(sm.totalTokens);
+}
+
+/**
+ * The DENOMINATOR the gauge must divide by: the gateway's usable PROMPT budget
+ * when it reports one, else the raw context window.
+ *
+ * They are not the same number — the budget is the window minus the reserve kept
+ * for the model's own output — and that difference is exactly what made the
+ * 2026-07-20 session look safe: an assembled prompt of 358 960 tokens reads
+ * 96% against a 372 000 window (comfortable) but 117% against the 308 000 budget
+ * the gateway actually had (it does not fit, which is what happened). Dividing by
+ * the window would keep the gauge wrong in the precise case it exists for.
+ */
+export function effectiveContextWindow(
+  sm: ContextMeta | null | undefined,
+): number | null {
+  if (!sm) return null;
+  if (sm.promptBudgetBeforeReserve != null && sm.promptBudgetBeforeReserve > 0) {
+    return sm.promptBudgetBeforeReserve;
+  }
+  return sm.contextTokens != null && sm.contextTokens > 0
+    ? sm.contextTokens
+    : null;
+}
+
+/** Which source `effectiveContextUsed` actually used — for the hover text. */
+export function contextSource(
+  sm: ContextMeta | null | undefined,
+): ContextSource {
+  if (!sm) return "unknown";
+  const window = sm.contextTokens;
+  const usable = (n: number | undefined): number | null =>
+    n == null ? null : window && n > window ? null : n;
+  if (sm.estimatedPromptTokens != null) return "budget_estimate";
+  if (usable(sm.activeTokens) != null) return "last_call_usage";
+  if (sm.totalTokensFresh === false) return "unknown";
+  return usable(sm.totalTokens) != null ? "last_call_usage" : "unknown";
 }
 
 export function contextPct(
