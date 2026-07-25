@@ -280,7 +280,10 @@ export interface ConvexWriter {
       mimeType?: string;
       explicit?: boolean;
       turnStartMs?: number;
-    },
+        /** Generation of the turn that started this upload — a late attach must not
+     *  inherit whatever generation now owns the message (see the impl note). */
+    runId?: string | null;
+  },
   ): Promise<boolean>;
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
@@ -785,6 +788,28 @@ export function causedByTooLarge(err: unknown): boolean {
 // consume loop awaiting it -> chats wedge with no self-heal. On timeout the op
 // aborts + throws; the per-message chain swallows the rejection so it self-heals.
 const WRITE_TIMEOUT_MS = 20_000;
+
+/**
+ * Bounded retry for IDEMPOTENT ops — today, `finalize` only.
+ *
+ * A finalize whose POST times out or hits a transient 5xx leaves the assistant row
+ * `streaming`: the reply is COMPLETE and the reader watches "Generating…" until the
+ * Convex stuck-stream watchdog terminates it twelve minutes later. Retrying is safe
+ * for exactly this op because Convex's finalize is first-terminal-wins — a second
+ * one is a no-op. It must NEVER be extended to a content op (`addPart`,
+ * `appendDelta`): re-posting those duplicates what the reader sees.
+ */
+const RETRY_BACKOFF_MS: readonly number[] = [500, 2_000];
+
+/**
+ * Ceiling on ONE media upload to Convex storage.
+ *
+ * Generous — a large attachment on a slow link is legitimate — but finite: the
+ * finalize waits on the media chain, so an upload that never returns holds a reply
+ * that is already written. Five minutes leaves real transfers alone while keeping
+ * the turn's fate out of the transfer's hands.
+ */
+const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 // Hard cap on ONE message's un-flushed delta buffer (chars). A sustained Convex
 // outage would otherwise grow it without bound -> OOM (which the process safety
 // net CANNOT catch). The turn's setSnapshot/finalize carries the FULL text, so
@@ -875,13 +900,54 @@ export class HttpConvexWriter implements ConvexWriter {
   /** Post an op. A message-keyed op (it carries `messageId`) is serialized on that
    *  message's chain; a message-less op (startAssistant/getUploadUrl/...) runs
    *  independently so it never blocks behind another chat's work. */
+  /** Ops safe to re-POST: see RETRY_BACKOFF_MS. Deliberately a one-entry set —
+   *  adding a content op here would duplicate what the reader sees. */
+  private static readonly IDEMPOTENT_OPS: ReadonlySet<string> = new Set([
+    "finalize",
+  ]);
+
+  /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
+  private async doPostWithRetry<T>(body: IngestOp): Promise<T> {
+    if (!HttpConvexWriter.IDEMPOTENT_OPS.has(body.op)) {
+      return await this.doPost<T>(body);
+    }
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+      try {
+        return await this.doPost<T>(body);
+      } catch (err) {
+        lastErr = err;
+        const canRetry =
+          attempt < RETRY_BACKOFF_MS.length &&
+          HttpConvexWriter.isTransientPostFailure(err);
+        if (!canRetry) break;
+        const delay = RETRY_BACKOFF_MS[attempt] ?? 0;
+        console.error(
+          `[writer] ${body.op} failed transiently — retrying in ${delay}ms ` +
+            `(attempt ${attempt + 1}/${RETRY_BACKOFF_MS.length + 1}): ` +
+            ((err as Error)?.message ?? err),
+        );
+        await new Promise((r) => {
+          const t = setTimeout(r, delay);
+          if (typeof t.unref === "function") t.unref();
+        });
+      }
+    }
+    // Exhausted. The turn is NOT silently lost: the row stays `streaming`, the
+    // Convex watchdog settles it as `stream_orphaned`, and that is now a NAMED
+    // turn-costing anomaly class that stays open until a human closes it
+    // (convex/anomalies.ts). The retry lowers how often that path is taken; it
+    // does not pretend to remove it.
+    throw lastErr;
+  }
+
   private post<T>(body: IngestOp): Promise<T> {
     const messageId =
       "messageId" in body && typeof (body as { messageId?: unknown }).messageId === "string"
         ? (body as { messageId: string }).messageId
         : null;
-    if (messageId === null) return this.doPost<T>(body);
-    return this.enqueue<T>(messageId, () => this.doPost<T>(body));
+    if (messageId === null) return this.doPostWithRetry<T>(body);
+    return this.enqueue<T>(messageId, () => this.doPostWithRetry<T>(body));
   }
 
   /** Run `op` after the message's prior op, and become its new chain tail. The
@@ -890,7 +956,20 @@ export class HttpConvexWriter implements ConvexWriter {
   private enqueue<T>(messageId: string, op: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(messageId) ?? Promise.resolve();
     const run = prev.then(op);
-    this.chains.set(messageId, run.catch(() => undefined));
+    const tail = run.catch(() => undefined);
+    this.chains.set(messageId, tail);
+    // LATE writes (a media upload that finished after its finalize) re-create this
+    // entry, and no second finalize will ever remove it — every late attach would
+    // keep a messageId and a promise for the life of the process (codex P2). A
+    // message that is no longer TRACKED is post-finalize by definition, so reap its
+    // entry once this op settles, unless a newer op has already claimed the tail.
+    if (!this.runByMessage.has(messageId)) {
+      void tail.then(() => {
+        if (this.chains.get(messageId) === tail) {
+          this.chains.delete(messageId);
+        }
+      });
+    }
     return run;
   }
 
@@ -944,6 +1023,25 @@ export class HttpConvexWriter implements ConvexWriter {
     this.pendingResync.delete(messageId);
     this.chains.delete(messageId);
     this.recTurns.delete(messageId);
+  }
+
+  /**
+   * Is this failure worth a second try? A TRANSIENT one is: a timeout, a network
+   * error, a 5xx. A 4xx is the server telling us the request itself is wrong —
+   * repeating it wastes the budget and delays the honest failure.
+   */
+  private static isTransientPostFailure(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    if (/timed out after/.test(msg)) return true;
+    const http = /-> HTTP (\d{3})/.exec(msg);
+    if (http !== null) {
+      const status = Number(http[1]);
+      // 408 and 429 are the server saying "valid request, not right now" — the very
+      // case this retry exists for (codex P2). Every other 4xx is a rejection that
+      // repeating only delays.
+      return status >= 500 || status === 408 || status === 429;
+    }
+    return true; // network-level (fetch threw): no status to judge by
   }
 
   private async doPost<T>(body: IngestOp): Promise<T> {
@@ -1403,6 +1501,12 @@ export class HttpConvexWriter implements ConvexWriter {
       // true / no turnStartMs -> no gate (fail open for legit deliveries).
       explicit?: boolean;
       turnStartMs?: number;
+      /** The generation (ack runId) of the turn that STARTED this upload. Passed
+       *  explicitly because a slow upload can outlive its own finalize: the lazily
+       *  read tag is gone by then, the part goes out untagged, and Convex accepts it
+       *  into whatever generation now owns the message — an announce's reply could
+       *  inherit the previous turn's attachment (codex P2). */
+      runId?: string | null;
     },
   ): Promise<boolean> {
     await this.flushDelta(messageId); // ordering: drain deltas before the part
@@ -1470,14 +1574,39 @@ export class HttpConvexWriter implements ConvexWriter {
         mimeType,
       );
       const uploadMs = Date.now() - uploadStartMs;
-      await this.post({
+      const ack = await this.post<{ accepted?: boolean }>({
         op: "addMediaPart",
-        ...this.genTag(messageId),
+        // The CALLER's generation wins when it STATED one — including an explicit
+        // `null`, which is a real generation for a turn opened without an ack runId
+        // (the Hermes transports do exactly that). Honoring it is what makes a late
+        // attach REJECTED when an announce has reopened the message, instead of
+        // inheriting whatever generation now owns it (codex P2).
+        //
+        // Keyed on PRESENCE, not on the value: a caller that says nothing falls back
+        // to the lazily read tag. Both media callers state it (turn-sink and the
+        // outbound scan, threaded through the production wrapper in index.ts) — that
+        // wiring is what makes honoring `null` safe, because a DROPPED parameter
+        // silently defaulting to null would reject every part on a message that owns
+        // a runId (codex P1, the hazard genTag's own note warns about).
+        ...("runId" in media
+          ? { runId: media.runId ?? null }
+          : this.genTag(messageId)),
         messageId,
         storageId,
         filename: media.filename,
         mimeType,
       });
+      // The server can REFUSE a part whose generation no longer owns the message (an
+      // announce reopened it while this upload ran). That is not an attachment: the
+      // boolean says so, so the caller neither claims the filename as hosted nor
+      // records a `stored` trace for a file that never landed (codex P2).
+      if (ack?.accepted === false) {
+        this.emitMediaTrace(messageId, media.chatId, "dropped", {
+          reason: "stale_generation",
+          mimeBase: mimeBaseOf(mimeType),
+        });
+        return false;
+      }
       // fetchMs (open/HTTP-fetch of the source) + uploadMs (stream to Convex
       // storage): the two durations that, summed, ARE the media-delivery cost —
       // the diagnostic that pins a "the text lagged behind the video" latency
@@ -1599,25 +1728,46 @@ export class HttpConvexWriter implements ConvexWriter {
     stream: Readable,
     mimeType: string,
   ): Promise<string> {
-    const response = await this.fetchImpl(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": uploadContentType(mimeType) },
-      body: Readable.toWeb(stream) as ReadableStream,
-      // `duplex` is not in the DOM RequestInit type but is required by undici
-      // for a streaming body; cast keeps the rest of the init type-checked.
-      duplex: "half",
-    } as RequestInit & { duplex: "half" });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `upload POST -> HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
-      );
+    // BOUNDED: a streaming upload that never completes used to hold the whole turn
+    // — the finalize waits on the media chain, so a complete reply sat in
+    // "Generating…" until the 12-minute watchdog. The reply must not depend on a
+    // hung transfer; past this deadline the attachment is the thing that fails.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    try {
+      const response = await this.fetchImpl(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": uploadContentType(mimeType) },
+        body: Readable.toWeb(stream) as ReadableStream,
+        // `duplex` is not in the DOM RequestInit type but is required by undici
+        // for a streaming body; cast keeps the rest of the init type-checked.
+        duplex: "half",
+        signal: controller.signal,
+      } as RequestInit & { duplex: "half" });
+      // The deadline stays ARMED through the response body (codex P2): a storage
+      // endpoint can send headers and then stall on the body — including the JSON
+      // that carries the storageId. Clearing the timer at the headers would leave
+      // that read unbounded, and the media chain pending behind it.
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(
+          `upload POST -> HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+        );
+      }
+      const body = (await response.json()) as { storageId?: string };
+      if (!body.storageId) {
+        throw new Error("upload POST returned no storageId");
+      }
+      return body.storageId;
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`upload POST timed out after ${UPLOAD_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    const body = (await response.json()) as { storageId?: string };
-    if (!body.storageId) {
-      throw new Error("upload POST returned no storageId");
-    }
-    return body.storageId;
   }
 
   async finalize(

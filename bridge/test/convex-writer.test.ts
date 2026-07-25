@@ -1018,3 +1018,228 @@ describe("uploadContentType (text blobs must serve as UTF-8, live mojibake repor
     );
   });
 });
+
+describe("finalize is retried when the POST fails transiently (G-30)", () => {
+  test("a complete reply is not left 'streaming' by one flaky POST", async () => {
+    // The reply is WRITTEN; only its terminal POST failed. Without a retry the row
+    // stays `streaming` and the reader watches "Generating…" until the 12-minute
+    // watchdog — for a turn that finished perfectly.
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = (JSON.parse(init.body) as { op: string }).op;
+      if (op === "finalize") {
+        attempts += 1;
+        if (attempts === 1) throw new Error("socket hang up");
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    await writer.finalize("m1", "complete", "the answer", null);
+    expect(attempts).toBe(2); // one failure, one successful retry
+  });
+
+  test("a 4xx is NOT retried — repeating a rejected request only delays the truth", async () => {
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = (JSON.parse(init.body) as { op: string }).op;
+      if (op === "finalize") {
+        attempts += 1;
+        return {
+          ok: false,
+          status: 400,
+          text: async () => "bad request",
+        } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    // The failure still surfaces — the point is that it is not repeated.
+    await writer.finalize("m1", "complete", "x", null).catch(() => undefined);
+    expect(attempts).toBe(1);
+  });
+
+  test("a 429 IS retried — 'valid request, not right now' is exactly the case", async () => {
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = (JSON.parse(init.body) as { op: string }).op;
+      if (op === "finalize") {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            ok: false,
+            status: 429,
+            text: async () => "slow down",
+          } as unknown as Response;
+        }
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    await writer.finalize("m1", "complete", "the answer", null);
+    expect(attempts).toBe(2);
+  });
+
+  test("a LATE write after finalize does not retain the message forever", async () => {
+    // A media upload that lands after its finalize re-creates the per-message chain
+    // entry, and no second finalize will remove it — every late attach would keep a
+    // messageId and a promise for the life of the process.
+    const fetchImpl = (async () =>
+      ({
+        ok: true,
+        json: async () => ({ storageId: "s1" }),
+      }) as unknown as Response) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    await writer.finalize("m1", "complete", "done", null);
+    expect(writer.hasMessageState("m1")).toBe(false);
+    // …then a LATE part for that same (already finalized) message.
+    await writer.addToolPart("m1", {
+      kind: "tool",
+      name: "late",
+      phase: "result",
+    } as never);
+    // Settled and reaped — not retained.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writer.hasMessageState("m1")).toBe(false);
+  });
+
+  test("a null runId falls back to the lazy tag — never a fabricated null on the wire", async () => {
+    // A caller with nothing to stamp (or wired before the parameter existed) must not
+    // make the server's generation guard reject the part: `expectedRunId: null` on a
+    // message that owns a runId rejects every attachment while returning HTTP 200.
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      sent.push(body);
+      return {
+        ok: true,
+        json: async () => ({ uploadUrl: "http://u.invalid", storageId: "s1" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    // No message is tracked (no startAssistant), so the lazy tag is ABSENT — the op
+    // must carry no runId key at all rather than an explicit null.
+    await writer
+      .addToolPart("m-untracked", {
+        kind: "tool",
+        name: "x",
+        phase: "result",
+      } as never)
+      .catch(() => undefined);
+    const part = sent.find((b) => b.op === "addPart");
+    expect(part).toBeDefined();
+    expect("runId" in (part ?? {})).toBe(false);
+  });
+
+  test("a STATED null generation is sent verbatim (a turn opened without a runId)", async () => {
+    // The Hermes transports open a turn with no ack runId, so `null` IS that turn's
+    // generation. Sending it is what makes a late attach REJECTED once an announce
+    // has reopened the message — falling back to the (already forgotten) tag would
+    // let the old file land in the new reply.
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+      if (String(url).includes("upload")) {
+        return {
+          ok: true,
+          json: async () => ({ storageId: "s1" }),
+        } as unknown as Response;
+      }
+      const body = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+      sent.push(body);
+      return {
+        ok: true,
+        json: async () => ({ uploadUrl: "http://upload.invalid" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    // addMedia needs a fetcher to read the bytes; without one it exits early and the
+    // op is never posted (the earlier version of this test proved nothing).
+    const writer = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      deltaFlushMs: 5,
+      fetchImpl,
+      getFetcher: () => ({
+        open: async () => ({
+          ok: true as const,
+          stream: Readable.from([Buffer.from("bytes")]),
+          mimeType: "application/pdf",
+          size: 5,
+        }),
+      }),
+    });
+    await writer
+      .addMedia("m-untracked", {
+        chatId: "c1",
+        filename: "f.pdf",
+        path: "f.pdf",
+        runId: null,
+      })
+      .catch(() => undefined);
+    const part = sent.find((b) => b.op === "addMediaPart");
+    // The key is present and null — NOT omitted.
+    expect(part !== undefined && "runId" in part).toBe(true);
+    expect(part?.runId).toBeNull();
+  });
+
+  test("a part REFUSED for a stale generation is reported as not attached", async () => {
+    // The server drops a media part whose generation no longer owns the message and
+    // reclaims the blob. Returning `true` here would make the caller claim the file
+    // as hosted and trace it as stored — a file that never landed.
+    const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+      if (String(url).includes("upload")) {
+        return {
+          ok: true,
+          json: async () => ({ storageId: "s1" }),
+        } as unknown as Response;
+      }
+      const body = JSON.parse(init.body ?? "{}") as { op?: string };
+      if (body.op === "addMediaPart") {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, accepted: false }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ uploadUrl: "http://upload.invalid" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      deltaFlushMs: 5,
+      fetchImpl,
+      getFetcher: () => ({
+        open: async () => ({
+          ok: true as const,
+          stream: Readable.from([Buffer.from("bytes")]),
+          mimeType: "application/pdf",
+          size: 5,
+        }),
+      }),
+    });
+    const attached = await writer.addMedia("m1", {
+      chatId: "c1",
+      filename: "f.pdf",
+      path: "f.pdf",
+      runId: "run-old",
+    });
+    expect(attached).toBe(false);
+  });
+
+  test("a CONTENT op is never retried — that would duplicate what the reader sees", async () => {
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = (JSON.parse(init.body) as { op: string }).op;
+      if (op === "addPart") {
+        attempts += 1;
+        throw new Error("socket hang up");
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    await writer
+      .addToolPart("m1", { kind: "tool", name: "x", phase: "start" } as never)
+      .catch(() => undefined);
+    expect(attempts).toBe(1);
+  });
+});

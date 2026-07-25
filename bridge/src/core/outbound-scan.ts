@@ -58,6 +58,10 @@ export async function scanAndHostOutbound(
   /** TRUE when the turn's own artifacts (tool args/outputs, reply text) name
    *  this file — the cross-conversation containment gate (see above). */
   correlated: (name: string) => boolean,
+  /** Generation of the turn that asked for this scan — carried onto every rescue
+   *  attach so an upload finishing after the finalize cannot land in a later
+   *  generation of the same message. */
+  runId: string | null = null,
 ): Promise<{ candidates: string[]; host: () => Promise<void> }> {
   const none = { candidates: [] as string[], host: async () => {} };
   if (!deps.enabled()) return none;
@@ -124,18 +128,24 @@ export async function scanAndHostOutbound(
   const host = async (): Promise<void> => {
     let chain: Promise<void> = Promise.resolve();
     for (const name of candidates) {
-      if (hosted.has(name)) continue; // attached by the explicit chain — dedup
-      hosted.add(name);
       chain = chain.then(async () => {
+        // The dedup check AND the claim both happen HERE, at execution — not while
+        // building the chain. Reserving up front made `hosted` mean "reserved", and
+        // the finalize's empty-reply guard reads it as "attached": a hosting that
+        // timed out then produced an empty bubble finalized `complete`, with neither
+        // a file nor an error (codex P2). The chain is sequential, so checking at
+        // execution keeps the same one-attach-per-file dedup.
+        if (hosted.has(name)) return; // attached by the explicit chain — dedup
         try {
           const attached = await deps.writer.addMedia(messageId, {
             chatId,
             filename: name,
             path: name,
+            runId,
           });
-          if (!attached) hosted.delete(name);
+          if (attached) hosted.add(name);
         } catch {
-          hosted.delete(name);
+          /* leave it unclaimed: nothing was attached */
         }
       });
     }

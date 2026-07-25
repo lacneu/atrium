@@ -100,6 +100,11 @@ export type OutboundScan = (
   /** TRUE when the turn's own artifacts name this file — the scan's
    *  cross-conversation containment gate (see outbound-scan.ts). */
   correlated: (name: string) => boolean,
+  /** The generation (ack runId) of the turn asking for the scan. A rescue upload
+   *  can outlive the finalize, and an announce may reopen the same message
+   *  meanwhile: stamped explicitly, the late part is rejected by the generation
+   *  guard instead of landing in the announce's reply (codex P2). */
+  runId: string | null,
 ) => Promise<{ candidates: string[]; host: () => Promise<void> }>;
 
 export class TurnSink {
@@ -138,6 +143,10 @@ export class TurnSink {
   // large attachment never gates the reply text (report ms70hx1c… 2026-07-05)
   // yet is never dropped and the busy-window stays streaming until finalize.
   private mediaChain: Promise<void> = Promise.resolve();
+  /** Ceiling on the whole per-turn media chain at finalize (see the call site).
+   *  Above the single-upload cap so an ordinary transfer is never cut short by
+   *  this one; it exists for the case the per-upload deadline cannot see. */
+  private static readonly MEDIA_CHAIN_BUDGET_MS = 6 * 60_000;
   private hasPendingMedia = false;
   // True once ANY non-empty text was made visible this turn (a streamed delta or
   // a snapshot), even if message.final is later empty — Convex keeps the streamed
@@ -459,6 +468,48 @@ export class TurnSink {
    *  engagement row (`task:<taskId>`), bubble or not: the task registry has
    *  delivered — the thread indicator must stop pointing at it. Idempotent
    *  (the Convex upsert never downgrades a terminal row). */
+  /**
+   * Wait for one media step, but not past `deadlineAt`. Returns whether it settled.
+   *
+   * The budget belongs to the whole media PHASE, not to one step: explicit uploads
+   * and the rescue scan run one after the other, so bounding only the first left the
+   * second free to hold the reply past the 12-minute watchdog — the defect moved
+   * rather than closed (codex P2). A timeout is reported, never silent: a reply
+   * arriving without its attachment needs an explanation.
+   */
+  private async awaitWithinMediaBudget(
+    work: Promise<unknown>,
+    deadlineAt: number,
+    label: string,
+  ): Promise<boolean> {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) {
+      console.error(
+        `[sink] media budget already spent — skipping ${label} (chat=${this.chatId})`,
+      );
+      return false;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), remaining);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    try {
+      const outcome = await Promise.race([
+        work.then(() => "done" as const),
+        budget,
+      ]);
+      if (outcome === "timeout") {
+        console.error(
+          `[sink] ${label} exceeded the ${TurnSink.MEDIA_CHAIN_BUDGET_MS}ms media budget — finalizing the TEXT without waiting (chat=${this.chatId})`,
+        );
+      }
+      return outcome === "done";
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async settleTaskDeliveryEngagement(): Promise<void> {
     const delivery = taskDeliveryRunFromRunId(this.turnRunId);
     if (delivery !== null) {
@@ -881,8 +932,15 @@ export class TurnSink {
             // hostedThisTurn check keeps it to ONE real attach per file. Part
             // order = item order (sequential chain).
             this.hasPendingMedia = true;
+            // Bind THIS turn's dedup set (beginTurn replaces the field): a chain
+            // that outlives its finalize must never write into the NEXT turn's set,
+            // or a later file with the same basename is deduped against a name it
+            // never attached — and silently never delivered (codex P2).
+            const hostedForThisTurn = this.hostedThisTurn;
+            // …and THIS turn's generation, for the same reason.
+            const runIdForThisTurn = this.turnRunId;
             this.mediaChain = this.mediaChain.then(async () => {
-              if (this.hostedThisTurn.has(filename)) return; // already attached
+              if (hostedForThisTurn.has(filename)) return; // already attached
               try {
                 const attached = await this.writer.addMedia(messageId, {
                   chatId: this.chatId,
@@ -893,8 +951,9 @@ export class TurnSink {
                   // week's files.
                   ...(explicit !== undefined ? { explicit } : {}),
                   turnStartMs,
+                  runId: runIdForThisTurn,
                 });
-                if (attached) this.hostedThisTurn.add(filename);
+                if (attached) hostedForThisTurn.add(filename);
               } catch (e) {
                 console.error(
                   "[sink] media upload failed (non-fatal):",
@@ -1181,6 +1240,7 @@ export class TurnSink {
           this.turnStartMs,
           this.hostedThisTurn,
           (name) => this.turnNames(name),
+          this.turnRunId,
         );
         scanHost = r.host;
         scanCandidates = r.candidates.length;
@@ -1221,10 +1281,40 @@ export class TurnSink {
     // hosting re-checks hostedThisTurn so a file the chain already attached is
     // deduped, while a failed/undelivered file is rescued. Media never dropped;
     // the message finalizes complete only once every part has landed.
-    await this.mediaChain;
-    if (scanHost) {
+    //
+    // BOUNDED (G-31): "once every part has landed" must not become "never". Each
+    // upload is capped in the writer, but a chain of them — or one wedged before
+    // its own deadline — still held a reply that was already written, and the
+    // reader watched "Generating…" until the 12-minute watchdog. Past this budget
+    // the TEXT is finalized and the missing attachment becomes a media diagnostic:
+    // an answer with a missing file beats no answer at all. The chain is not
+    // cancelled — a late attach still lands on the message.
+    // ONE deadline for the whole media phase (uploads THEN the rescue scan).
+    const mediaDeadlineAt = Date.now() + TurnSink.MEDIA_CHAIN_BUDGET_MS;
+    const mediaSettled = await this.awaitWithinMediaBudget(
+      this.mediaChain,
+      mediaDeadlineAt,
+      "media chain",
+    );
+    // The rescue scan exists to host files the chain did NOT attach — it decides by
+    // reading the dedup set. While the chain is still in flight that set is not yet
+    // the answer, so rescuing now would attach a second copy of a file whose upload
+    // is simply slow: two parts, two storage objects, for one file (codex P2). A
+    // missed rescue is recoverable; a duplicated attachment is what the user sees.
+    if (scanHost && !mediaSettled) {
+      console.error(
+        `[outbound-scan] skipped: media still in flight past the budget (chat=${this.chatId})`,
+      );
+    }
+    if (scanHost && mediaSettled) {
       try {
-        await scanHost();
+        // Bounded on the SAME budget: several stalled scan uploads run sequentially,
+        // and the reply must not depend on their total.
+        await this.awaitWithinMediaBudget(
+          scanHost(),
+          mediaDeadlineAt,
+          "outbound-scan hosting",
+        );
       } catch (e) {
         console.error(
           "[outbound-scan] host skipped (non-fatal):",

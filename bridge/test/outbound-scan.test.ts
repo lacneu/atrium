@@ -169,3 +169,82 @@ describe("chunkNamesFile (whole-name correlation match)", () => {
     ).toBe(true);
   });
 });
+
+describe("the hosted set means ATTACHED, not reserved", () => {
+  it("a file whose upload never returns is NOT claimed", async () => {
+    // The finalize's empty-reply guard reads this set as "an attachment landed". A
+    // reservation made before the upload succeeded turned a wedged transfer into an
+    // empty bubble finalized `complete` — no file, no error.
+    const dir = await mkdtemp(join(tmpdir(), "atrium-os-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "slow.pdf"), "x");
+    await utimes(join(dir, "slow.pdf"), new Date(NOW), new Date(NOW));
+    const claimed = new Set<string>();
+    const writer = {
+      addMedia: vi.fn(() => new Promise<boolean>(() => {})),
+    } as unknown as ConvexWriter;
+    const { host } = await scanAndHostOutbound(
+      deps(writer, dir),
+      "m1",
+      "c1",
+      NOW - 1000,
+      claimed,
+      () => true,
+    );
+    // Start the hosting and give it a turn of the event loop — it cannot finish.
+    void host();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(claimed.size).toBe(0);
+  });
+
+  it("a rescue attach carries the ASKING turn's generation", async () => {
+    // A rescue upload can outlive its finalize; if an announce reopens the message
+    // meanwhile, an untagged part lands in the announce's reply instead of being
+    // rejected by the generation guard.
+    const dir = await mkdtemp(join(tmpdir(), "atrium-os-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "late.pdf"), "x");
+    await utimes(join(dir, "late.pdf"), new Date(NOW), new Date(NOW));
+    const seen: Array<string | null | undefined> = [];
+    const writer = {
+      addMedia: vi.fn(async (_m: string, media: { runId?: string | null }) => {
+        seen.push(media.runId);
+        return true;
+      }),
+    } as unknown as ConvexWriter;
+    await (
+      await scanAndHostOutbound(
+        deps(writer, dir),
+        "m1",
+        "c1",
+        NOW - 1000,
+        new Set(),
+        () => true,
+        "run-abc",
+      )
+    ).host();
+    expect(seen).toEqual(["run-abc"]);
+  });
+
+  it("a file whose upload SUCCEEDS is claimed (dedup still works)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "atrium-os-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "ok.pdf"), "x");
+    await utimes(join(dir, "ok.pdf"), new Date(NOW), new Date(NOW));
+    const claimed = new Set<string>();
+    const writer = {
+      addMedia: vi.fn(async () => true),
+    } as unknown as ConvexWriter;
+    await (
+      await scanAndHostOutbound(
+        deps(writer, dir),
+        "m1",
+        "c1",
+        NOW - 1000,
+        claimed,
+        () => true,
+      )
+    ).host();
+    expect([...claimed]).toEqual(["ok.pdf"]);
+  });
+});

@@ -725,7 +725,7 @@ export const ingest = httpAction(async (ctx, request) => {
       // persist the storageId as a media part. mimeType is a content-type label
       // (non-PHI); filename/content are NOT logged.
       const mimeType = body.mimeType || "application/octet-stream";
-      await ctx.runMutation(internal.stream.addPart, {
+      const partOutcome = await ctx.runMutation(internal.stream.addPart, {
         messageId: body.messageId as Id<"messages">,
         part: {
           kind: "media",
@@ -739,6 +739,24 @@ export const ingest = httpAction(async (ctx, request) => {
       // Read the stored object's size/type for the trace (best-effort, non-PII):
       // distinguishes "bytes landed -> a failed download is the storage URL
       // origin" from "nothing stored -> the stream never reached storage".
+      // A part dropped by the GENERATION guard is not an attachment: report it so
+      // the bridge does not claim the file as hosted or trace it as stored (codex
+      // P2). The blob was already reclaimed server-side.
+      if (partOutcome?.accepted === false) {
+        await traceIngest(ctx, {
+          kind: "openclaw.ingest",
+          correlationId: body.messageId,
+          meta: {
+            op: body.op,
+            messageId: body.messageId,
+            partKind: "media",
+            mimeType,
+            ok: false,
+            reason: "stale_generation",
+          },
+        });
+        return json({ ok: true, accepted: false });
+      }
       let bytes: number | null = null;
       let storedType: string | null = null;
       try {
@@ -942,7 +960,7 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true });
     }
     case "finalize": {
-      await ctx.runMutation(internal.stream.finalize, {
+      const outcome = await ctx.runMutation(internal.stream.finalize, {
         messageId: body.messageId as Id<"messages">,
         status: body.status,
         text: body.text,
@@ -953,6 +971,13 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
         ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
       });
+      // Trace only a REAL terminal transition. The bridge retries a finalize whose
+      // response was lost, so the second call is an expected no-op — tracing it too
+      // would inflate the finalize counters the anomaly detector and the audits read
+      // (codex P2).
+      if (outcome?.transitioned === false) {
+        return json({ ok: true });
+      }
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
         correlationId: body.messageId,

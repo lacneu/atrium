@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 import type {
@@ -598,5 +598,114 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     // runtime test could guarantee for code not yet written).
     const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
     expect(manager.recoverVisibleText.length).toBe(3);
+  });
+});
+
+describe("a hung media upload never holds a written reply (G-31)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("finalizes the TEXT once the media budget elapses", async () => {
+    // The reply is complete; only an attachment is still uploading. Before this the
+    // finalize waited on the media chain with no ceiling, so the reader watched
+    // "Generating…" until the 12-minute watchdog — for an answer already written.
+    vi.useFakeTimers();
+    const writer = new FakeWriter();
+    // An upload that never returns (a wedged transfer, a stalled socket).
+    writer.addMedia = (() => new Promise<boolean>(() => {})) as never;
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    for (const frame of frames("mediaurls-list")) {
+      await manager.feed(frame, clock.tick());
+    }
+    clock.tick(BASE_RECV_TIMEOUT + 1);
+    // Do NOT await: the finalize is blocked on the media chain until the budget.
+    const finalizing = manager.tick(clock.now);
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
+    await finalizing;
+
+    const finalize = writer.calls.find((c) => c[0] === "finalize");
+    expect(finalize).toBeDefined();
+    // The TEXT landed; the attachment simply did not — an answer with a missing
+    // file beats no answer at all.
+    expect(writer.calls.some((c) => c[0] === "addMedia")).toBe(false);
+  });
+
+  it("does not double-attach: the rescue scan stands down while media is in flight", async () => {
+    // The rescue scan decides by reading the dedup set, which is not yet the answer
+    // while the chain runs. Rescuing then would host a SECOND copy of a file whose
+    // upload is merely slow — two parts and two storage objects for one file.
+    vi.useFakeTimers();
+    const writer = new FakeWriter();
+    let attachAttempts = 0;
+    writer.addMedia = (() => {
+      attachAttempts += 1;
+      return new Promise<boolean>(() => {});
+    }) as never;
+    let scanHostCalls = 0;
+    // The scan is the FOURTH constructor argument (an OutboundScan function), not an
+    // options object — passing it wrongly made an earlier version of this test pass
+    // without the fix, which is worse than no test.
+    const manager = new RunManager(
+      CHAT_ID,
+      SESSION_KEY,
+      writer,
+      (async () => ({
+        candidates: ["a.pdf"],
+        host: async () => {
+          scanHostCalls += 1;
+        },
+      })) as never,
+    );
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    for (const frame of frames("mediaurls-list")) {
+      await manager.feed(frame, clock.tick());
+    }
+    clock.tick(BASE_RECV_TIMEOUT + 1);
+    const finalizing = manager.tick(clock.now);
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
+    await finalizing;
+
+    expect(writer.calls.some((c) => c[0] === "finalize")).toBe(true);
+    expect(attachAttempts).toBe(1); // the explicit upload only
+    expect(scanHostCalls).toBe(0); // no second copy hosted behind its back
+  });
+
+  it("a hung RESCUE upload cannot hold the reply either (one budget, both steps)", async () => {
+    // With no explicit media the chain is already settled, so bounding only it left
+    // the scan free to hold the reply past the watchdog — the defect would have
+    // moved one step instead of closing.
+    vi.useFakeTimers();
+    const writer = new FakeWriter();
+    let hostStarted = false;
+    const manager = new RunManager(
+      CHAT_ID,
+      SESSION_KEY,
+      writer,
+      (async () => ({
+        candidates: ["scanned.pdf"],
+        host: () =>
+          new Promise<void>(() => {
+            hostStarted = true;
+          }),
+      })) as never,
+    );
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    // This scenario finalizes INSIDE feed (its final frame is terminal), so the
+    // budget has to be advanced while the feed is still in flight.
+    const driving = (async () => {
+      for (const frame of frames("chat-final-content")) {
+        await manager.feed(frame, clock.tick());
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
+    await driving;
+
+    expect(hostStarted).toBe(true); // the rescue really was attempted…
+    expect(writer.calls.some((c) => c[0] === "finalize")).toBe(true); // …and lost the race
   });
 });

@@ -78,6 +78,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
     sinceMs,
     hosted,
     correlated,
+    runId,
   ) =>
     scanAndHostOutbound(
       {
@@ -91,6 +92,7 @@ function buildBundle(config: BridgeConfig): InstanceBundle {
       sinceMs,
       hosted,
       correlated,
+      runId,
     );
   return { config, writer, mediaProvider, outboundScan };
 }

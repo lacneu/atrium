@@ -1136,7 +1136,11 @@ export const addPart = internalMutation({
           // best-effort: an already-gone blob must not fail the ingest
         }
       }
-      return;
+      // REPORTED, not silent (codex P2): the bridge's `addMedia` returns a boolean
+      // that means "an attachment landed", and it uses it to claim the filename as
+      // hosted and to emit a `stored` trace. A drop that reads as success makes the
+      // dedup set and the diagnostics both wrong.
+      return { accepted: false as const };
     }
     // Heartbeat: a turn streaming ONLY tool/media/reasoning parts (no text deltas)
     // must still refresh its live-text row, else the watchdog (which keys off that
@@ -1583,7 +1587,7 @@ export const finalize = internalMutation({
       console.log(
         "[stream] finalize skipped: message re-owned by another run (announce merge)",
       );
-      return;
+      return { transitioned: false as const };
     }
     // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
     // aborted when the gateway's late chat:final loses the race — and a reply
@@ -1597,7 +1601,11 @@ export const finalize = internalMutation({
       console.log(
         `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
       );
-      return;
+      // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
+      // so this no-op is expected — and the ingest route must not write a second
+      // `openclaw.ingest` trace for it, or every recovered network blip inflates the
+      // finalize counters the anomaly detector and the audits read (codex P2).
+      return { transitioned: false as const };
     }
     // A2: write the authoritative final text into the searchable/indexed `text`
     // ONCE here, and CLEAR `liveText` (so listByChat now reads `text`). Prefer the
@@ -1840,6 +1848,9 @@ export const finalize = internalMutation({
         { chatId: chat._id },
       );
     }
+    // The terminal transition really happened on THIS call (see the no-op returns
+    // above): the ingest route traces only this case.
+    return { transitioned: true as const };
   },
 });
 

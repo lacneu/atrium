@@ -953,3 +953,60 @@ describe("sweepStreams (bridge boot-time orphan sweep)", () => {
     expect(after?.status).toBe("streaming"); // not ours to sweep
   });
 });
+
+describe("a retried finalize does not inflate the ingest traces", () => {
+  test("the SECOND finalize of the same message writes no trace", async () => {
+    // The bridge now retries a finalize whose response was lost, so a duplicate call
+    // is expected. The mutation is a no-op — the trace must be one too, or every
+    // recovered network blip skews the finalize counters the detector reads.
+    const t = convexTest(schema, modules);
+    // The ingest route is per-bridge authenticated: mint the secret first (the
+    // default `post` Authorization reads the module SECRET this sets).
+    await seedAuthOnly(t);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      return await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+    });
+    const startRes = await post(t, { op: "startAssistant", chatId, runId: "r1" });
+    const { messageId } = (await startRes.json()) as { messageId: Id<"messages"> };
+    const finalizeBody = {
+      op: "finalize" as const,
+      messageId,
+      status: "complete" as const,
+      text: "the answer",
+      error: null,
+    };
+    await post(t, finalizeBody);
+    const afterFirst = await t.run(async (ctx) =>
+      (await ctx.db.query("traceEvents").collect()).filter((e) => {
+        try {
+          return (JSON.parse(e.meta ?? "{}") as { op?: string }).op === "finalize";
+        } catch {
+          return false;
+        }
+      }).length,
+    );
+    expect(afterFirst).toBe(1);
+    // The retry lands on an already-terminal message.
+    await post(t, finalizeBody);
+    const afterRetry = await t.run(async (ctx) =>
+      (await ctx.db.query("traceEvents").collect()).filter((e) => {
+        try {
+          return (JSON.parse(e.meta ?? "{}") as { op?: string }).op === "finalize";
+        } catch {
+          return false;
+        }
+      }).length,
+    );
+    expect(afterRetry).toBe(1);
+  });
+});
