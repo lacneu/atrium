@@ -230,6 +230,23 @@ class Session implements BridgeSession {
       outboundScan,
       onTurnError,
     );
+    // FRAME-LOSS reporting (see providers/openclaw/frame-seq.ts). The gateway
+    // drops frames destined for this socket when its outbound buffer is full,
+    // advancing the envelope `seq` as it does — the hole is the only trace.
+    // Recorded at CONNECTION (= chat) level, deliberately NOT charged to the
+    // turn in flight (codex P2): the envelope seq names neither session nor run,
+    // and this same socket also carries SUB-AGENT frames — so blaming the active
+    // reply would fabricate a "this answer is truncated" diagnostic. The
+    // gateway's OWN `seq gap` report does name its run and IS charged to the turn
+    // (normalizer -> sink). Fire-and-forget: a diagnostic never delays a turn.
+    connection.onFrameGap = (gap) => {
+      void writer.noteFrameGap?.(chatId, {
+        source: "envelope",
+        expected: gap.expected,
+        received: gap.received,
+        missing: gap.missing,
+      });
+    };
     this.writer = writer;
     this.observer = new SubAgentObserver(sessionKey, chatId);
     this.clock = clock;

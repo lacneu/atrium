@@ -229,6 +229,9 @@ export interface ConvexWriter {
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** Frames lost during the turn (omitted when none) — the per-turn
+       *  counterpart of the live `openclaw.frame_gap` traces. */
+      framesLost?: number;
       /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
       errorKind?: string | null;
@@ -279,6 +282,24 @@ export interface ConvexWriter {
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
    *  the agent generated media (codex imageGeneration) but the turn delivered none. */
   noteMediaUndelivered(messageId: string, chatId: string): Promise<void>;
+  /** FRAME LOSS diagnostic (see core/events EVENT_FRAME_GAP) -> an
+   *  `openclaw.frame_gap` trace. Counters only, never content. OPTIONAL so the
+   *  test fakes and the talk-consult facade stay valid without it. */
+  noteFrameGap?(
+    chatId: string,
+    data: {
+      source: string;
+      expected: number | null;
+      received: number | null;
+      missing: number | null;
+    },
+    /** The turn that lost the frames — ONLY when the loss is attributable.
+     *  The gateway's own `seq gap` report carries a runId, so it is; a hole in
+     *  the per-CONNECTION envelope seq is not (the same socket also carries
+     *  sub-agent frames, so charging it to the active parent reply would
+     *  fabricate a "truncated answer" diagnostic). Omitted = connection-level. */
+    messageId?: string | null,
+  ): Promise<void>;
   /** message.final -> internal.stream.finalize. */
   finalize(
     messageId: string,
@@ -540,6 +561,18 @@ type IngestOp =
       // the stream-to-storage upload. Together = the media-delivery cost.
       fetchMs?: number;
       uploadMs?: number;
+    }
+  // FRAME LOSS (content-free) -> an `openclaw.frame_gap` trace. `source`:
+  // "gateway" = its own `seq gap` report on the agent stream; "envelope" = our
+  // per-connection envelope-seq check. Counters only; no DB write, no part.
+  | {
+      op: "frameGapTrace";
+      chatId: string;
+      messageId?: string;
+      source: string;
+      expected?: number;
+      received?: number;
+      missing?: number;
     }
   // Re-hydration decision (content-free) -> `openclaw.rehydrate` trace keyed
   // chatId:outboxId. Message-less (its own correlation key) -> doPost, not enqueue.
@@ -1460,6 +1493,39 @@ export class HttpConvexWriter implements ConvexWriter {
     this.emitMediaTrace(messageId, chatId, "dropped", {
       reason: "generated_no_delivery",
     });
+  }
+
+  /**
+   * FRAME-LOSS diagnostic. Same discipline as the media trace: fire-and-forget
+   * OFF the per-message serialization chain (a direct doPost) so recording a
+   * loss can never delay or fail the turn that suffered it, and errors are
+   * swallowed. Counters only — the frames themselves never reach here, so there
+   * is nothing to leak by construction.
+   */
+  async noteFrameGap(
+    chatId: string,
+    data: {
+      source: string;
+      expected: number | null;
+      received: number | null;
+      missing: number | null;
+    },
+    messageId?: string | null,
+  ): Promise<void> {
+    await this.doPost({
+      op: "frameGapTrace",
+      chatId,
+      ...(messageId ? { messageId } : {}),
+      source: data.source,
+      ...(data.expected !== null ? { expected: data.expected } : {}),
+      ...(data.received !== null ? { received: data.received } : {}),
+      ...(data.missing !== null ? { missing: data.missing } : {}),
+    }).catch((e) =>
+      console.error(
+        "[frame-gap] trace skipped (non-fatal):",
+        (e as Error)?.message ?? e,
+      ),
+    );
   }
 
   /**

@@ -44,6 +44,7 @@ import {
   EVENT_MEDIA_UNDELIVERED,
   EVENT_AGENT_ACTIVITY,
   EVENT_CONTEXT_COMPACTION,
+  EVENT_FRAME_GAP,
   EVENT_PLAN_ADVANCE,
   type BridgeEvent,
 } from "../../core/events.js";
@@ -1087,6 +1088,36 @@ export class Normalizer {
         // Legacy 5.7 incremental: append verbatim (spaces are load-bearing).
         this.applyVisible(delta, false, false, now, events);
       }
+      return;
+    }
+    if (stream === "error") {
+      // The gateway's OWN loss diagnostic — not a turn failure. It tracks the
+      // per-run `seq` of the agent events it forwards and, when it sees a hole,
+      // tells us so on this stream (`{reason:"seq gap", expected, received}`,
+      // pinned upstream by server-chat.agent-events.test.ts). We had NO branch
+      // for it, so the single explicit signal that content was lost was
+      // silently discarded — the user then saw a truncated reply with no
+      // explanation, and we had nothing to diagnose with.
+      // It must NEVER finalize the turn in error: the frames that DID arrive are
+      // still valid, and the run continues. Content-free by construction
+      // (two counters), so it is safe to trace.
+      if (data.reason === "seq gap") {
+        const expected = typeof data.expected === "number" ? data.expected : null;
+        const received = typeof data.received === "number" ? data.received : null;
+        events.push({
+          type: EVENT_FRAME_GAP,
+          source: "gateway",
+          expected,
+          received,
+          missing:
+            expected !== null && received !== null && received > expected
+              ? received - expected
+              : null,
+          runId: this.currentRunId,
+        });
+      }
+      // Any OTHER `stream:"error"` payload stays observe-only too: it is a
+      // diagnostic channel, and an unknown shape must not be able to fail a turn.
       return;
     }
     if (stream === "compaction") {

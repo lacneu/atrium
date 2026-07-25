@@ -239,6 +239,10 @@ export class TurnSink {
   // overflow reads causally at a glance ("40% pre-turn + 66 tool calls ->
   // overflow") instead of needing a manual reconstruction.
   private toolCallCount = 0;
+  // Frame-loss events observed during THIS turn (see core/events EVENT_FRAME_GAP).
+  // Rides the per-turn pressure trace so "this reply may be missing a piece" is
+  // answerable after the fact, per turn, instead of only as a live signal.
+  private framesLostThisTurn = 0;
   // update_plan calls observed on a DELIVERY run this turn (item-derived —
   // the plan content never reaches those runs' wire). Applied ONCE at turn
   // end: the advance must know whether the turn spawned a further child
@@ -381,6 +385,7 @@ export class TurnSink {
     this.pressure = pressure ?? null;
     this.compactionPhase = null;
     this.toolCallCount = 0;
+    this.framesLostThisTurn = 0;
     this.planAdvancesThisTurn = 0;
     this.otherToolCallsThisTurn = 0;
     this.userAbortThisTurn = false;
@@ -896,6 +901,45 @@ export class TurnSink {
           await this.writer.noteMediaUndelivered(messageId, this.chatId);
           break;
         }
+        case "frame.gap": {
+          // Frames were LOST between the gateway and this turn (see core/events).
+          // Observe-only on purpose: the turn keeps running and everything that
+          // did arrive stays valid — the reply may simply be missing a piece, and
+          // that possibility must be VISIBLE instead of being discovered by the
+          // user. Counters only, never content.
+          // Accumulate the frames ACTUALLY missing, not the number of reports: a
+          // single gap can swallow many frames (expected 2, received 5 = three
+          // lost), and undercounting would understate exactly the incidents that
+          // matter most (codex P2).
+          const missing = asNumber(event.missing);
+          this.framesLostThisTurn += missing !== null && missing > 0 ? missing : 1;
+          // NOT awaited (codex P2): noteFrameGap already posts off the per-message
+          // chain, but awaiting it here would let a slow/unavailable Convex delay
+          // the deltas and the finalize by the write timeout — a diagnostic must
+          // never stall the stream it describes.
+          void this.writer
+            .noteFrameGap?.(
+              this.chatId,
+              {
+                source: asString(event.source) || "unknown",
+                expected: asNumber(event.expected),
+                received: asNumber(event.received),
+                missing,
+              },
+              // ATTRIBUTABLE: this path only ever carries the GATEWAY's own
+              // report, which names the run it lost frames for — so charging it
+              // to this turn is sound. Connection-level envelope holes never
+              // reach here (see session.ts).
+              messageId,
+            )
+            ?.catch((e: unknown) =>
+              console.error(
+                "[frame-gap] trace skipped (non-fatal):",
+                (e as Error)?.message ?? e,
+              ),
+            );
+          break;
+        }
         case "message.final": {
           // Buffer; the paired run.status decides complete vs error vs aborted.
           this.pendingFinalText = asString(event.text);
@@ -1408,6 +1452,11 @@ export class TurnSink {
       // its telemetry would otherwise be silently dropped (codex P2).
       this.pendingDiagStopReason !== null ||
       this.pendingDiagUsage !== null ||
+      // A FRAME LOSS must force the trace too (codex P2): a spontaneous turn has
+      // no pre-turn describe and may carry no other diagnostic, so the per-turn
+      // "frames were lost" counter would never ship — exactly on the turns whose
+      // reply is most likely to look truncated.
+      this.framesLostThisTurn > 0 ||
       // A silence AUTO-close (recv/empty_final/lifecycle_end/compaction timeout,
       // private_ack grace) warrants a trace even with no pre-send pressure — it
       // is the exact diagnostic the launch bug hinges on. A NORMAL gateway
@@ -1424,6 +1473,12 @@ export class TurnSink {
           // delta between consecutive turns' traces IS the per-turn cost.
           costUsd: this.pressure?.costUsd ?? null,
           toolCalls: this.toolCallCount,
+          // Frames LOST during this turn (0 on the overwhelming majority). A
+          // non-zero value is the honest answer to "why does this reply look
+          // truncated" — the measure did not exist before this lot.
+          ...(this.framesLostThisTurn > 0
+            ? { framesLost: this.framesLostThisTurn }
+            : {}),
           compaction: this.compactionPhase,
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.
@@ -1539,6 +1594,11 @@ export function chunkNamesFile(chunk: string, name: string): boolean {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+/** A finite number, or null — diagnostics must never ship NaN/Infinity. */
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function mediaItems(value: unknown): MediaItem[] {

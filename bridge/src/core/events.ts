@@ -58,6 +58,21 @@ export const EVENT_PLAN_ADVANCE = "plan.advance";
 //   { type: "context.compaction", phase: "preflight" | "midturn" }
 export const EVENT_CONTEXT_COMPACTION = "context.compaction";
 
+// FRAME LOSS — the one thing that was structurally invisible. Two independent
+// sources, both content-free (counters only, safe to trace):
+//   - "gateway": the gateway's own per-run diagnostic (`stream:"error"`,
+//     `data.reason:"seq gap"`) — it noticed a hole in the agent events it was
+//     forwarding and told us. Pinned upstream (server-chat.agent-events.test.ts).
+//   - "envelope": OUR detection on the per-connection envelope `seq`. The
+//     gateway drops frames to a slow consumer while STILL advancing that counter
+//     (server-broadcast.ts), so a hole is the only trace a dropped frame leaves.
+//     TARGETED broadcasts carry NO seq — their absence must never read as a hole.
+// Observe-only by construction: a lost frame must never fail a turn (the frames
+// that did arrive stay valid), so the sink only records a diagnostic.
+//   { type: "frame.gap", source: "gateway" | "envelope",
+//     expected: number|null, received: number|null, missing: number|null }
+export const EVENT_FRAME_GAP = "frame.gap";
+
 /**
  * A normalized event. Intentionally permissive ({ type } + arbitrary fields):
  * the producer (a provider normalizer) builds well-formed literals and the

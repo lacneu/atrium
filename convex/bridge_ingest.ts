@@ -242,6 +242,19 @@ type IngestOp =
       fetchMs?: number;
       uploadMs?: number;
     }
+  // Content-free FRAME-LOSS diagnostic: frames were lost between the gateway and
+  // a turn (the gateway's own `seq gap` report, or our envelope-seq detection).
+  // Counters and a source label only — no frame, no content. No DB write, no
+  // part: it records an `openclaw.frame_gap` trace.
+  | {
+      op: "frameGapTrace";
+      chatId: string;
+      messageId?: string;
+      source: string;
+      expected?: number;
+      received?: number;
+      missing?: number;
+    }
   // Content-free re-hydration DECISION trace (no DB write, no message part): records
   // WHY a dispatch did/didn't re-inject history as an `openclaw.rehydrate` trace keyed
   // `chatId:outboxId`. Enums/scalars only — never prompt/history text.
@@ -271,6 +284,9 @@ type IngestOp =
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** Frames lost during the turn (omitted when none) — the per-turn
+       *  counterpart of the live `openclaw.frame_gap` traces. */
+      framesLost?: number;
       errorKind?: string | null;
       stopReason?: string | null;
       finalizeCause?: string | null;
@@ -739,6 +755,35 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ ok: true });
     }
+    case "frameGapTrace": {
+      // FRAME LOSS between the gateway and a turn — the measure that did not
+      // exist before. Two sources: "gateway" (its own `seq gap` report on the
+      // agent stream) and "envelope" (our per-connection envelope-seq check).
+      // NO DB write and NO message part: the loss is a diagnostic, and a lost
+      // frame must never be able to fail a turn. Counters only, so nothing to
+      // redact by construction.
+      await traceIngest(ctx, {
+        kind: "openclaw.frame_gap",
+        chatId: body.chatId,
+        // Correlated to the TURN only when the loss is attributable to one (the
+        // gateway's own report carries a runId); a connection-level envelope hole
+        // correlates to the CHAT alone — the same socket also carries sub-agent
+        // frames, so blaming the active reply would be a fabricated diagnostic.
+        correlationId: body.messageId
+          ? `${body.chatId}:${body.messageId}`
+          : body.chatId,
+        meta: {
+          op: body.op,
+          ...(body.messageId ? { messageId: body.messageId } : {}),
+          source: body.source,
+          ...(body.expected !== undefined ? { expected: body.expected } : {}),
+          ...(body.received !== undefined ? { received: body.received } : {}),
+          ...(body.missing !== undefined ? { missing: body.missing } : {}),
+          ok: true,
+        },
+      });
+      return json({ ok: true });
+    }
     case "mediaTrace": {
       // SOC2-safe outbound-media diagnostic: record as an `openclaw.media` trace,
       // create NO message part and touch NO table. Structural codes/buckets only
@@ -838,6 +883,11 @@ export const ingest = httpAction(async (ctx, request) => {
           // Tool calls this turn: the mid-turn growth driver (a hard overflow at
           // a low pre-turn fill reads causally: many tool results accumulated).
           ...(typeof body.toolCalls === "number" ? { toolCalls: body.toolCalls } : {}),
+          // Frames LOST during the turn (absent when none): the honest answer to
+          // "why does this reply look truncated". Counter only.
+          ...(typeof body.framesLost === "number"
+            ? { framesLost: body.framesLost }
+            : {}),
           compaction: body.compaction,
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —
           // the counterpart of `compaction` (= handled silently). Distinguishes

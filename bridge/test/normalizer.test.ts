@@ -1894,3 +1894,86 @@ describe("agent.data vocabulary: tool progress vs completion, compaction verdict
     }
   });
 });
+
+// FRAME LOSS — the gateway's own diagnostic, which we used to discard.
+// It tracks the per-run `seq` of the agent events it forwards and, on a hole,
+// broadcasts `stream:"error"` with `{reason:"seq gap", expected, received}`
+// (pinned upstream by server-chat.agent-events.test.ts). Atrium had NO branch for
+// that stream, so the single explicit "content was lost" signal was dropped.
+describe("frame loss: the gateway's seq-gap diagnostic", () => {
+  function errFrame(data: Record<string, unknown>): unknown {
+    return {
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        seq: 9,
+        stream: "error",
+        ts: 0,
+        data,
+      },
+    };
+  }
+
+  it("emits a frame.gap diagnostic and does NOT fail the turn (upstream shape, verbatim)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // The exact payload shape upstream pins in its own unit test.
+    const events = normalizer.feed(
+      errFrame({ reason: "seq gap", expected: 2, received: 5 }),
+      clock.tick(),
+    );
+    const gaps = events.filter((e) => e.type === "frame.gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]).toMatchObject({
+      source: "gateway",
+      expected: 2,
+      received: 5,
+      missing: 3,
+    });
+    // A lost frame is a DIAGNOSTIC, never a turn failure: the frames that did
+    // arrive are still valid and the run continues.
+    expect(events.some((e) => e.type === "run.status")).toBe(false);
+    expect(events.some((e) => e.type === "message.final")).toBe(false);
+  });
+
+  it("an UNKNOWN stream:\"error\" payload is observed, never turned into a failure", () => {
+    // The error stream is a diagnostic channel: a shape we do not recognize must
+    // not be able to fail a turn (a lesson from every other unknown-frame path).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      errFrame({ reason: "something we have never seen" }),
+      clock.tick(),
+    );
+    expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
+    expect(events.some((e) => e.type === "run.status")).toBe(false);
+  });
+
+  it("a seq-gap frame for a FOREIGN session is ignored (isolation stays strict)", () => {
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          runId: "someone-elses-run",
+          sessionKey: "agent:bob:atrium:chat:other:mh7zzz",
+          stream: "error",
+          ts: 0,
+          data: { reason: "seq gap", expected: 1, received: 4 },
+        },
+      },
+      clock.tick(),
+    );
+    expect(events.filter((e) => e.type === "frame.gap")).toHaveLength(0);
+  });
+});

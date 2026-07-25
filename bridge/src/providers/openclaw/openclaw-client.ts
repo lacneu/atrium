@@ -22,6 +22,7 @@ import { URL } from "node:url";
 import WebSocket, { type RawData } from "ws";
 
 import type { DeviceIdentity } from "../../config.js";
+import { createSeqTracker, type SeqGap } from "./frame-seq.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
 // inbound gateway frame is appended (full, untruncated) as one JSON line — the
@@ -203,6 +204,17 @@ export class OpenClawConnection {
   // Convex derive the same raw cap instead of hardcoding one. `null` until the
   // first connect (the server enforces regardless).
   maxPayload: number | null = null;
+
+  // ENVELOPE-SEQ CONTINUITY (frame-loss detection) — the contract and the
+  // false-positive trap (targeted frames carry no seq) live in the pure
+  // `frame-seq.ts` module so they are unit-testable without a socket.
+  private readonly seq = createSeqTracker();
+  /** Total frames the gateway is known to have dropped on this connection. */
+  get gapsObserved(): number {
+    return this.seq.missingTotal;
+  }
+  /** Set by the owner (session) to receive loss reports. */
+  onFrameGap: ((gap: SeqGap) => void) | null = null;
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
@@ -396,6 +408,20 @@ export class OpenClawConnection {
         pending.resolve(frame as unknown as ResponseFrame);
       }
       return; // acks are correlated, never forwarded to the inbound consumer
+    }
+    // Envelope-seq continuity: a hole means the gateway dropped frames destined
+    // for US (slow-consumer protection). Report and keep going — the frames that
+    // DID arrive are valid, so a loss must never interrupt the stream.
+    const gap = this.seq.observe(frame);
+    if (gap !== null) {
+      console.warn(
+        `[openclaw] frame gap: ${gap.missing} frame(s) lost (expected ${gap.expected}, received ${gap.received})`,
+      );
+      try {
+        this.onFrameGap?.(gap);
+      } catch {
+        /* a loss report must never break the receive loop */
+      }
     }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
     dbg("frame <-", clip(frame));

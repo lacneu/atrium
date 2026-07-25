@@ -431,6 +431,16 @@ export class RunManager {
     this.sink.noteUserAbort();
   }
 
+  /**
+   * CONNECTION-level frame loss (the gateway dropped frames destined for this
+   * socket while still advancing its envelope `seq` — see frame-seq.ts). One
+   * connection serves exactly one chat, so the loss belongs to THIS chat's turn.
+   *
+   * Observe-only and best-effort: it records a diagnostic, never text and never a
+   * terminal, so it cannot corrupt the turn it describes. No-op between turns —
+   * a gap with no reply in flight has nothing to qualify (the next turn's frames
+   * are all still to come).
+   */
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
   async feed(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).
