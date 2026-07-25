@@ -102,6 +102,21 @@ export function actionForErrorCode(code: string | null): string {
       return "The gateway did not respond in time. Verify it is up and reachable (OPENCLAW_GATEWAY_URL); retry the turn.";
     case "GATEWAY_DISCONNECTED":
       return "The gateway connection dropped. Check the OpenClaw container; the next send reconnects automatically.";
+    // The SAME connection end, but the two spellings mark two different MOMENTS,
+    // and the delivery state differs between them — so the remediation must too.
+    // Uppercase = the DISPATCH path (classifyGatewayError): the close beat the
+    // `chat.send` ack, so nothing reached the agent. Lowercase = the STREAMING path
+    // (Session.closeCauseCode): the send was already ACKed and the run had begun.
+    case "GATEWAY_RESTARTING":
+      return "The gateway ANNOUNCED a shutdown and closed the connection before acknowledging this send. Delivery is UNPROVEN, not refused: a response can race ahead of the ack, so the agent may have taken the turn. Nothing to fix if the restart was intended — check the session transcript for a reply before re-running the work; if the gateway does not come back, check the OpenClaw service.";
+    case "gateway_restarting":
+      return "The gateway ANNOUNCED a shutdown and closed the connection while this turn was RUNNING: the agent had accepted it and may resume it after the restart. The bridge polls the session transcript to recover the reply — EXCEPT when the announced absence exceeded the recovery budget (9 min), where the turn is closed immediately and no poll remains. Check the transcript before re-running the work.";
+    case "CONNECTION_SATURATED":
+      return "The gateway closed the connection for slow consumption (its 50 MiB send buffer filled) before acknowledging this send; delivery is UNPROVEN rather than refused. Look at bridge CPU/event-loop pressure and at turns producing very large outputs; this is not a gateway fault.";
+    case "connection_saturated":
+      return "The gateway closed the connection for slow consumption (its 50 MiB send buffer filled) while this turn was streaming: frames had already been DROPPED, so the visible reply is incomplete even though the agent may have finished. Look at bridge CPU/event-loop pressure and at turns producing very large outputs; this is not a gateway fault.";
+    case "DISPATCH_STALLED":
+      return "This dispatch stayed `pending` far longer than any live dispatch could, so the reconciler settled it to unlock the conversation (its action died before marking the row, its POST to the bridge exceeded the cap, or a preempt re-dispatch never fired). Delivery is UNPROVEN. Look for a crashed/evicted Convex action, or a `/send exceeded` line, around that time.";
     case "BRIDGE_UNREACHABLE":
       return "Convex could not reach the bridge. Check the bridge container and BRIDGE_URL.";
     default:

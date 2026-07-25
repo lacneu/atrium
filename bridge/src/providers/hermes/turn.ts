@@ -18,6 +18,7 @@
 import { TurnSink } from "../../core/turn-sink.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import type { HermesClient } from "./client.js";
+import { assertBeforeSendDeadline } from "../../core/dispatch-deadline.js";
 import { HermesNormalizer } from "./normalizer.js";
 
 /** Abort reason set by /reset (vs a user Stop) — tells the turn to FINALIZE the
@@ -46,6 +47,16 @@ export interface HermesTurnOptions {
     contextTokens: number | null;
     costUsd?: number | null;
   };
+  /** The OUTBOX row this turn was dispatched from (from the `/send` body). Echoed
+   *  into the assistant row so Convex can answer "did this send ever run?" —
+   *  provider-neutral: outbox reconciliation serves both providers. */
+  dispatchOutboxId?: string | null;
+  /** When the /send HTTP handler received the request — the pre-send deadline is
+   *  measured from there, so time lost preparing history counts too. */
+  sendReceivedMs?: number;
+  /** How long the dispatch had already been pending when Convex sent the POST —
+   *  added to the local elapsed time by the pre-send deadline. */
+  dispatchAgeMs?: number;
   /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
    *  acceptance counts as a downstream failure on its target — a pre-acceptance
    *  reject is already classified by the /send handler. */
@@ -92,6 +103,15 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
       let mintedFresh = !opts.providerChatId;
       // The ACCEPTANCE point: POST returns the SSE stream, or throws (dispatch
       // failure). The gateway TOOK the run.
+      //
+      // LAST CHECK first (codex P1): session ensure + history preparation above can
+      // block for minutes, and past the deadline this dispatch is no longer ours —
+      // Convex has settled the row and released the next queued turn.
+      assertBeforeSendDeadline(
+        opts.sendReceivedMs ?? Date.now(),
+        Date.now(),
+        opts.dispatchAgeMs ?? 0,
+      );
       try {
         res = await opts.client.openStream(sessionId, opts.text, opts.signal);
       } catch (err) {
@@ -106,6 +126,15 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
           // must carry the rehydration history after all (freshText is
           // best-effort inside: a context-fetch failure returns the bare text).
           const text = opts.freshText ? await opts.freshText() : opts.text;
+          // RE-CHECK: minting a session and re-fetching the history can itself take
+          // minutes, so the retry is a SECOND acceptance point and needs the same
+          // guard as the first (codex P1) — otherwise the recovery path is the one
+          // way a stale handler still reaches the provider after reconciliation.
+          assertBeforeSendDeadline(
+        opts.sendReceivedMs ?? Date.now(),
+        Date.now(),
+        opts.dispatchAgeMs ?? 0,
+      );
           res = await opts.client.openStream(sessionId, text, opts.signal);
         } else {
           throw err;
@@ -145,7 +174,13 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
       opts.onTurnError,
     );
     try {
-      await sink.beginTurn(null, opts.pressure);
+      await sink.beginTurn(
+        null,
+        opts.pressure,
+        false,
+        false,
+        opts.dispatchOutboxId ?? null,
+      );
     } catch (err) {
       await res.body?.cancel().catch(() => {});
       rejectAccepted(err);

@@ -188,7 +188,9 @@ export async function drainNextQueued(
     // index order = _creationTime ascending within the (chat, "queued") range → FIFO.
     .first();
   if (next === null) return;
-  await ctx.db.patch(next._id, { status: "pending" });
+  // The dispatch window opens NOW — stamped so the reconciler measures the time
+  // this row has actually been in flight, not how long it waited in the queue.
+  await ctx.db.patch(next._id, { status: "pending", pendingSince: Date.now() });
   // Stamp the now-dispatched follow-up's LOGICAL order time (see lib/messageOrder).
   // `next.messageId` is the optimistic user message from send.ts (currently SENTINEL).
   // Use a value STRICTLY GREATER than every already-DISPATCHED message's effectiveOrder

@@ -118,6 +118,19 @@ crons.interval(
   {},
 );
 
+// Outbox reconciliation: every 5 minutes, settle `pending` outbox rows whose
+// dispatch provably went away. A `pending` row makes its chat BUSY, so an
+// un-marked one (dispatch action dead before it could mark the row, preempt-repark
+// flip that never fired) locks the conversation PERMANENTLY — every later send
+// queues behind it and the user has no way out. Every other busy holder already
+// had a watchdog; this was the one that did not. See outboxReconcile.ts.
+crons.interval(
+  "reconcile stalled outbox",
+  { minutes: 5 },
+  internal.outboxReconcile.reconcileStalledOutbox,
+  {},
+);
+
 // Rendition timeout: every 2 minutes, fail `pending` document renditions older
 // than RENDITION_TIMEOUT_MS so the viewer's "preparing preview" spinner is always
 // bounded — covers a conversion whose dispatch was accepted but never streamed a

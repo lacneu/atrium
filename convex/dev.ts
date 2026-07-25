@@ -799,6 +799,9 @@ export const testSend = mutation({
       text,
       attachmentIds: [],
       status: "pending",
+      // Same stamp as the production senders: a dev probe whose dispatch dies must
+      // not hold its chat on the legacy hour-long bound (codex P3).
+      pendingSince: Date.now(),
     });
     await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
 
@@ -986,6 +989,9 @@ export const testSendRouted = mutation({
       text,
       attachmentIds: [],
       status: "pending",
+      // Same stamp as the production senders: a dev probe whose dispatch dies must
+      // not hold its chat on the legacy hour-long bound (codex P3).
+      pendingSince: Date.now(),
       routedAgent,
     });
     await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
@@ -1063,6 +1069,15 @@ export const inspectChat = query({
         role: m.role,
         status: m.status,
         error: m.error ? m.error.slice(0, 140) : undefined,
+        // The STABLE failure class (never free text) — the field the diagnose
+        // surface keys on. Absent from this probe until a live restart test needed
+        // it and could not read it.
+        errorCode: m.errorCode,
+        // The dispatch this turn came from (outbox id — an id, never content): the
+        // correlation outboxReconcile keys on. Exposed for the same reason: a live
+        // check of the reconciliation chain could not see it otherwise.
+        dispatchOutboxId: m.dispatchOutboxId,
+        boundInstance: m.boundInstance,
         textLen: m.text.length,
         liveTextLen: (m.liveText ?? "").length,
         textPreview: m.text.slice(0, 80),
@@ -1420,6 +1435,9 @@ export const enqueueAttachmentTurn = internalMutation({
       attachmentIds: [storageId],
       attachments: [{ storageId, filename, mimeType }],
       status: "pending",
+      // Same stamp as the production senders: a dev probe whose dispatch dies must
+      // not hold its chat on the legacy hour-long bound (codex P3).
+      pendingSince: Date.now(),
     });
     await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
 
@@ -1433,6 +1451,34 @@ export const enqueueAttachmentTurn = internalMutation({
  * terminal `sent`. Complements chatStats (which reads the assistant turn).
  *   npx convex run dev:outboxStatus '{"outboxId":"<id>"}'
  */
+/**
+ * DEV-ONLY: plant a STALLED dispatch — a `pending` outbox row whose window opened
+ * long ago — so the reconciliation cron can be exercised against a REAL deployment
+ * instead of only in unit tests. Without it the lock this feature exists to break
+ * cannot be reproduced by hand: a healthy local dispatch acks in milliseconds.
+ *
+ *   npx convex run dev:seedStalledOutbox '{"chatId":"<id>"}'
+ *   npx convex run outboxReconcile:reconcileStalledOutbox '{}'
+ */
+export const seedStalledOutbox = mutation({
+  args: { chatId: v.id("chats"), ageMinutes: v.optional(v.number()) },
+  handler: async (ctx, { chatId, ageMinutes }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return { ok: false as const, reason: "chat not found" };
+    const outboxId = await ctx.db.insert("outbox", {
+      chatId,
+      userId: chat.userId,
+      clientMessageId: `stalled-probe-${Date.now()}`,
+      text: "(dev probe: a dispatch that never reported back)",
+      attachmentIds: [],
+      status: "pending" as const,
+      pendingSince: Date.now() - (ageMinutes ?? 20) * 60_000,
+    });
+    return { ok: true as const, outboxId };
+  },
+});
+
 export const outboxStatus = query({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }) => {
@@ -1995,6 +2041,9 @@ export const concurrencyProbe = mutation({
         text: s.text,
         attachmentIds: [],
         status: "pending",
+        // Same stamp as the production senders: a dev probe whose dispatch dies must
+        // not hold its chat on the legacy hour-long bound (codex P3).
+        pendingSince: Date.now(),
       });
       await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
       out.push({ chatId, instanceName: s.instanceName });

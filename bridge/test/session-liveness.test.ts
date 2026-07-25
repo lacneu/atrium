@@ -743,4 +743,163 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
     expect(String(last?.[3] ?? "")).toContain("connection_lost");
     reg.closeAll();
   });
+
+  it("names an ANNOUNCED restart instead of blaming a lost connection (deadline)", async () => {
+    // The gateway broadcasts `shutdown` before closing, so a turn in flight has a
+    // KNOWN cause. Before this lot the notice was dropped and every end read
+    // `connection_lost` — a false cause on a planned maintenance window.
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = { ...fakeConn(), connectionEnd: null as unknown };
+    const emptyPollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        return { payload: { messages: [{ role: "user", content: "question" }] } };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return emptyPollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    // The gateway announced a SHORT absence: recovery still runs (the run resumes
+    // and its answer may land in the transcript) — only the CAUSE changes.
+    conn.connectionEnd = {
+      kind: "gateway_restarting",
+      restartExpectedMs: 30_000,
+      reasonPresent: true,
+    };
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 30; i++) {
+      now += 20_000;
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("error");
+    expect(String(last?.[3] ?? "")).toBe("gateway_restarting");
+    // The class rides the DEADLINE settle too — this is the path a real restart
+    // takes (the live gateway sends no `restartExpectedMs`, so recovery always runs).
+    expect(String(last?.[4] ?? "")).toBe("gateway_restarting");
+    reg.closeAll();
+  });
+
+  it("does not poll for nine minutes when the gateway announced a LONGER absence", async () => {
+    // `restartExpectedMs` beyond the whole recovery budget: polling would burn the
+    // budget on a gateway that said it will not be back, then settle a FALSE
+    // cause. The honest answer is available immediately.
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = { ...fakeConn(), connectionEnd: null as unknown };
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        return { payload: { messages: [] } };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    // The health hook the boot wires: it must receive the NAMED class, not the
+    // generic `gateway_error` the forced-finalize path used to report (codex P2).
+    const turnErrors: string[] = [];
+    const reg = new SessionRegistry(servedMap(config, writer), () => now, (_t, code) =>
+      turnErrors.push(code),
+    );
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.connectionEnd = {
+      kind: "gateway_restarting",
+      restartExpectedMs: 30 * 60_000, // half an hour: past the 9-minute budget
+      reasonPresent: true,
+    };
+    conn.close();
+    // No timer advance at all: the settle must be immediate, not scheduled.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finalized.length).toBe(1);
+    const last = finalized[0] as unknown[];
+    expect(last?.[1]).toBe("error");
+    expect(String(last?.[3] ?? "")).toBe("gateway_restarting"); // `error`
+    // …and the FAILURE CLASS (`errorKind`, the 5th arg) — the field Convex stores
+    // as `errorCode` and the diagnose surface keys on. Asserting only `error` left
+    // that half of the chain unproven.
+    expect(String(last?.[4] ?? "")).toBe("gateway_restarting");
+    expect(turnErrors).toEqual(["gateway_restarting"]);
+    reg.closeAll();
+  });
+
+  it("names a saturated connection (1008 slow consumer) as its own cause", async () => {
+    // The gateway had been DROPPING frames before hanging up, so the reply is
+    // provably incomplete — a different fact from a network blip, and one whose
+    // remedy is on our side.
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = { ...fakeConn(), connectionEnd: null as unknown };
+    const emptyPollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      async *frames() {},
+      async request() {
+        return { payload: { messages: [{ role: "user", content: "question" }] } };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return emptyPollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.connectionEnd = {
+      kind: "slow_consumer",
+      restartExpectedMs: null,
+      reasonPresent: true,
+    };
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 30; i++) {
+      now += 20_000;
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(String(last?.[3] ?? "")).toBe("connection_saturated");
+    reg.closeAll();
+  });
 });

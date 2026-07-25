@@ -188,6 +188,9 @@ export interface ConvexWriter {
     chatId: string,
     runId: string | null,
     sessionKey?: string | null,
+    /** The OUTBOX row this turn was dispatched from (correlation for
+     *  outboxReconcile); null on a gateway-initiated turn. */
+    dispatchOutboxId?: string | null,
   ): Promise<string>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
@@ -475,6 +478,7 @@ type IngestOp =
       chatId: string;
       runId: string | null;
       sessionKey?: string | null;
+      dispatchOutboxId?: string | null;
     }
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
@@ -984,11 +988,22 @@ export class HttpConvexWriter implements ConvexWriter {
     chatId: string,
     runId: string | null,
     sessionKey?: string | null,
+    /** The OUTBOX row this turn was dispatched from — the correlation Convex
+     *  needs to answer "did this send ever run?" (see convex/outboxReconcile.ts).
+     *  Null on gateway-initiated turns (announce/task deliveries, talk), which is
+     *  itself the signal that no queued send is waiting on them. */
+    dispatchOutboxId?: string | null,
   ): Promise<string> {
     const ack = await this.post<{
       messageId: string;
       rec?: { recording: boolean; sessionId: string | null };
-    }>({ op: "startAssistant", chatId, runId, sessionKey: sessionKey ?? null });
+    }>({
+      op: "startAssistant",
+      chatId,
+      runId,
+      sessionKey: sessionKey ?? null,
+      dispatchOutboxId: dispatchOutboxId ?? null,
+    });
     this.runByMessage.set(ack.messageId, runId);
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
     // this turn's deltas with, and trigger a one-time clock calibration. The skew is

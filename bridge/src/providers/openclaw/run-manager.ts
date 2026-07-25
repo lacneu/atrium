@@ -116,7 +116,13 @@ export class RunManager {
   ) {
     this.sessionKey = sessionKey;
     this.normalizer = new Normalizer(sessionKey);
-    this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
+    this.sink = new TurnSink(
+      chatId,
+      writer,
+      outboundScan,
+      sessionKey,
+      onTurnError,
+    );
   }
 
   private tallyFrame(frame: unknown): void {
@@ -144,7 +150,9 @@ export class RunManager {
       String(f.type ?? "?"),
       String(f.event ?? "-"),
       typeof payload.state === "string" ? payload.state : "-",
-      typeof payload.deltaText === "string" && payload.deltaText ? "delta" : "-",
+      typeof payload.deltaText === "string" && payload.deltaText
+        ? "delta"
+        : "-",
       payload.message !== undefined ? "msg" : "-",
     ].join("/");
     this.frameTally.set(key, (this.frameTally.get(key) ?? 0) + 1);
@@ -318,6 +326,10 @@ export class RunManager {
       /** THIS send prepended rehydration history: the gateway will chew it
        *  silently first — surfaced as the `processing_history` phase. */
       rehydrated?: boolean;
+      /** The OUTBOX row this turn was dispatched from (from the `/send` body):
+       *  the correlation that lets Convex answer "did this send ever run?".
+       *  Absent on a spontaneous turn — no queued send is waiting on it. */
+      dispatchOutboxId?: string | null;
     },
   ): Promise<void> {
     // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
@@ -390,6 +402,7 @@ export class RunManager {
       turnContext?.pressure,
       turnContext?.spontaneous === true,
       turnContext?.rehydrated === true,
+      turnContext?.dispatchOutboxId ?? null,
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.
@@ -398,7 +411,9 @@ export class RunManager {
       : [];
     this.pendingProvenance = [];
     if (matched.length > 0) {
-      await this.sink.apply(matched.map((p) => ({ type: "provenance", part: p.part })));
+      await this.sink.apply(
+        matched.map((p) => ({ type: "provenance", part: p.part })),
+      );
     }
     // Replay response frames that raced ahead of the ack, in arrival order,
     // through the now-active sink + seeded normalizer — so the start of a
@@ -545,12 +560,19 @@ export class RunManager {
         // is filtered out and this run would otherwise lose all its sources.
         const sig = provenanceSignature(stashed.part);
         const isDup = this.pendingProvenance.some(
-          (p) => p.runId === stashed.runId && provenanceSignature(p.part) === sig,
+          (p) =>
+            p.runId === stashed.runId && provenanceSignature(p.part) === sig,
         );
-        if (!isDup && this.pendingProvenance.length < MAX_PROVENANCE_PARTS_PER_TURN) {
+        if (
+          !isDup &&
+          this.pendingProvenance.length < MAX_PROVENANCE_PARTS_PER_TURN
+        ) {
           this.pendingProvenance.push(stashed);
         }
-      } else if (this.replayArmed && this.pendingFrames.length < MAX_PENDING_FRAMES) {
+      } else if (
+        this.replayArmed &&
+        this.pendingFrames.length < MAX_PENDING_FRAMES
+      ) {
         // Only while a chat.send is in flight (armed). Between turns the buffer
         // stays empty, so post-finalization stray frames are never replayed.
         this.pendingFrames.push({ frame, now });
@@ -647,7 +669,6 @@ export class RunManager {
     }
   }
 
-
   /** Keep a bounded replay copy of the current spontaneous run's frames while
    *  its deferred message is UNOPENED (preemption insurance); purge the copy —
    *  it is dead weight — the moment the message opens. */
@@ -734,11 +755,15 @@ export class RunManager {
     status = "final",
     error: string | null = null,
     cause = "external",
+    /** Known failure class, when the caller has one (see Normalizer.endTurn). */
+    errorKind: string | null = null,
   ): Promise<void> {
     if (!this.sink.active) {
       return;
     }
-    await this.sink.apply(this.normalizer.endTurn(now, status, error, cause));
+    await this.sink.apply(
+      this.normalizer.endTurn(now, status, error, cause, errorKind),
+    );
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
@@ -787,4 +812,3 @@ function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
   const runId = p.runId;
   return typeof runId === "string" && runId ? runId : null;
 }
-

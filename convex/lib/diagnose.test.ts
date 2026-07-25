@@ -260,6 +260,43 @@ describe("actionForErrorCode", () => {
     expect(actionForErrorCode("BRIDGE_UNREACHABLE")).toMatch(/BRIDGE_URL/);
     expect(actionForErrorCode("GATEWAY_TIMEOUT")).toMatch(/OPENCLAW_GATEWAY_URL/);
   });
+  test("the two NAMED connection ends point at DIFFERENT investigations", () => {
+    // The whole point of naming them: waiting out an announced restart and chasing
+    // read pressure on the bridge have nothing in common. A shared generic
+    // remediation would erase the distinction for every API consumer.
+    const restarting = actionForErrorCode("GATEWAY_RESTARTING");
+    const saturated = actionForErrorCode("CONNECTION_SATURATED");
+    const generic = actionForErrorCode("GATEWAY_DISCONNECTED");
+    expect(restarting).not.toBe(generic);
+    expect(saturated).not.toBe(generic);
+    expect(restarting).not.toBe(saturated);
+    expect(restarting).toMatch(/announced|restart/i);
+    expect(saturated).toMatch(/slowly|buffer|dropped/i);
+    // The two spellings mark two MOMENTS with different delivery states, so they
+    // must NOT share a text: before the ack nothing reached the agent, after it the
+    // agent had the turn and may resume it. Telling a streaming interruption that
+    // "nothing reached the agent" would invite resending work already in flight.
+    const midStream = actionForErrorCode("gateway_restarting");
+    expect(midStream).not.toBe(restarting);
+    // NEITHER may claim the request was refused: a response frame can race ahead of
+    // the `chat.send` ack, so a pre-ack close leaves delivery UNPROVEN (codex P1).
+    expect(restarting).toMatch(/unproven/i);
+    expect(midStream).toMatch(/resume/i);
+    for (const a of [restarting, midStream]) {
+      expect(a).not.toMatch(/nothing reached the agent/i);
+    }
+    // …and the mid-stream text must not promise a recovery that a long announced
+    // absence skips (the turn is then closed with no poll left).
+    expect(midStream).toMatch(/budget|no poll/i);
+    const midStreamSat = actionForErrorCode("connection_saturated");
+    expect(midStreamSat).not.toBe(saturated);
+    expect(midStreamSat).toMatch(/incomplete|dropped/i);
+    // Both spellings still stay clear of the generic fallback.
+    for (const a of [midStream, midStreamSat]) {
+      expect(a).not.toBe(actionForErrorCode("WEIRD"));
+    }
+  });
+
   test("an unknown code -> a safe generic fallback", () => {
     expect(actionForErrorCode(null)).toMatch(/bridge logs/i);
     expect(actionForErrorCode("WEIRD")).toMatch(/escalate/i);

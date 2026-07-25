@@ -23,6 +23,12 @@ import WebSocket, { type RawData } from "ws";
 
 import type { DeviceIdentity } from "../../config.js";
 import { createSeqTracker, type SeqGap } from "./frame-seq.js";
+import {
+  classifyConnectionEnd,
+  readShutdownNotice,
+  type ConnectionEnd,
+  type ShutdownNotice,
+} from "./connection-end.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
 // inbound gateway frame is appended (full, untruncated) as one JSON line — the
@@ -205,6 +211,42 @@ export class OpenClawConnection {
   // first connect (the server enforces regardless).
   maxPayload: number | null = null;
 
+  // Per-connection send-buffer ceiling, from the hello-ok
+  // `payload.policy.maxBufferedBytes` (50 MiB upstream). Past it the gateway
+  // either DROPS our frames or closes us with `1008 "slow consumer"` — so this
+  // is the number that makes that condition observable BEFORE it bites, instead
+  // of being reconstructed after the fact from a hole in the seq counter.
+  maxBufferedBytes: number | null = null;
+
+  // NAMED CONNECTION END. A `shutdown` notice seen on this connection (the
+  // gateway announcing its own restart), and the classification of how the
+  // connection actually ended. `connectionEnd` stays null while the socket is
+  // alive; the session reads it to attribute an HONEST cause to a turn that was
+  // in flight instead of a blanket "connection lost".
+  private shutdownNotice: ShutdownNotice | null = null;
+  connectionEnd: ConnectionEnd | null = null;
+  /**
+   * Carry over a `shutdown` notice seen DURING the handshake.
+   *
+   * The frame is broadcast to every connection, including one still shaking hands —
+   * and it is consumed there, before this object exists. If the handshake then
+   * SUCCEEDS, the installed reader will never see that frame again, so without this
+   * hand-off the close that follows reads as an unexplained drop instead of the
+   * restart the gateway announced (codex P2).
+   */
+  adoptShutdownNotice(notice: ShutdownNotice): void {
+    this.shutdownNotice = notice;
+  }
+
+  /** True once the gateway announced a shutdown/restart on this connection. */
+  get shutdownAnnounced(): boolean {
+    return this.shutdownNotice !== null;
+  }
+  /** Inbound frames buffered but not yet consumed (drop-pressure witness). */
+  get inboundQueueLen(): number {
+    return this.queue.length;
+  }
+
   // ENVELOPE-SEQ CONTINUITY (frame-loss detection) — the contract and the
   // false-positive trap (targeted frames carry no seq) live in the pure
   // `frame-seq.ts` module so they are unit-testable without a socket.
@@ -240,7 +282,9 @@ export class OpenClawConnection {
         } catch {
           /* socket may already be gone */
         }
-        reject(err instanceof OpenClawError ? err : new OpenClawError(err.message));
+        reject(
+          err instanceof OpenClawError ? err : new OpenClawError(err.message),
+        );
       };
 
       const connectTimer = setTimeout(
@@ -249,13 +293,34 @@ export class OpenClawConnection {
       );
 
       ws.once("error", (err: Error) => fail(err));
+      // A shutdown ANNOUNCED while we are still connecting. The connection object
+      // does not exist yet (it is built at hello-ok), so the notice has nowhere to
+      // live but here — and without it a send that coincides with a restart reports
+      // a generic disconnect instead of the restart the gateway just announced
+      // (codex P2).
+      let handshakeShutdown: ShutdownNotice | null = null;
       // A clean socket close DURING the handshake (a 'close' with no preceding
       // 'error') would otherwise wait out the 30s connect timer before /send fails.
       // Fail fast. After a successful connect, attachReader removeAllListeners drops
       // this, and `fail` is a no-op once settled — so it can only fire mid-handshake.
-      ws.once("close", () =>
-        fail(new OpenClawError("OpenClaw closed the socket during connect")),
-      );
+      ws.once("close", (code: number, reason: Buffer) => {
+        // A refusal can land AFTER our connect request and BEFORE hello-ok, i.e.
+        // before the steady-state reader (and its classifier) is installed. Name it
+        // here too, or an auth rejection reads as a plain disconnect and sends the
+        // operator hunting for a network fault (codex P2). Same rule as the
+        // steady-state path: the reason is matched, never propagated.
+        const end = classifyConnectionEnd({
+          code,
+          reasonText: reason?.toString?.() ?? "",
+          shutdown: handshakeShutdown,
+        });
+        fail(
+          new OpenClawError(
+            "OpenClaw closed the socket during connect" +
+              (end.kind === "connection_closed" ? "" : ` [${end.kind}]`),
+          ),
+        );
+      });
 
       // Phase 1: await connect.challenge. Phase 2: await the connect res.
       let phase: "challenge" | "connect" = "challenge";
@@ -269,6 +334,20 @@ export class OpenClawConnection {
         } catch {
           return; // ignore malformed frames during handshake
         }
+        // Read a shutdown notice in EITHER phase, before anything else can reject
+        // the frame: the gateway broadcasts it to every connection, including one
+        // still shaking hands, and the close that follows must be named for what it
+        // is. Recorded, never consumed — the phase logic below runs unchanged.
+        const handshakeNotice = readShutdownNotice(frame);
+        if (handshakeNotice) {
+          handshakeShutdown = handshakeNotice;
+          console.log(
+            `[openclaw] gateway announced a shutdown DURING connect (restartExpectedMs=${
+              handshakeNotice.restartExpectedMs ?? "unknown"
+            })`,
+          );
+          return; // not the challenge nor our connect ack; keep waiting (or the close wins)
+        }
         if (phase === "challenge") {
           if (frame.type !== "event" || frame.event !== "connect.challenge") {
             fail(new OpenClawError("OpenClaw did not send connect.challenge"));
@@ -277,7 +356,12 @@ export class OpenClawConnection {
           const challenge = (frame.payload ?? {}) as Record<string, unknown>;
           const nonce = challenge.nonce;
           const ts = challenge.ts;
-          if (typeof nonce !== "string" || !nonce || ts === undefined || ts === null) {
+          if (
+            typeof nonce !== "string" ||
+            !nonce ||
+            ts === undefined ||
+            ts === null
+          ) {
             fail(new OpenClawError("connect.challenge missing nonce or ts"));
             return;
           }
@@ -285,7 +369,11 @@ export class OpenClawConnection {
           try {
             signedDevice = signChallenge(device, nonce, ts, token);
           } catch (err) {
-            fail(new OpenClawError(`device signing failed: ${(err as Error).message}`));
+            fail(
+              new OpenClawError(
+                `device signing failed: ${(err as Error).message}`,
+              ),
+            );
             return;
           }
           reqId = randomUUID();
@@ -323,7 +411,10 @@ export class OpenClawConnection {
         if (frame.ok) {
           // hello-ok: server info is under `payload` (verified live: frame.payload
           // = {type:"hello-ok", protocol, server:{version,connId}, features,...}).
-          const payload = (frame.payload ?? frame.result ?? {}) as Record<string, unknown>;
+          const payload = (frame.payload ?? frame.result ?? {}) as Record<
+            string,
+            unknown
+          >;
           const server = (payload.server ?? {}) as Record<string, unknown>;
           dbg(
             "connect hello-ok | server.version=",
@@ -337,6 +428,9 @@ export class OpenClawConnection {
           settled = true;
           clearTimeout(connectTimer);
           connection = new OpenClawConnection(ws);
+          if (handshakeShutdown !== null) {
+            connection.adoptShutdownNotice(handshakeShutdown);
+          }
           // Capture the gateway version for the compat manifest (defensive:
           // an absent/non-string field leaves null -> conservative policy).
           connection.gatewayVersion =
@@ -349,6 +443,11 @@ export class OpenClawConnection {
           connection.maxPayload =
             typeof policy.maxPayload === "number" && policy.maxPayload > 0
               ? policy.maxPayload
+              : null;
+          connection.maxBufferedBytes =
+            typeof policy.maxBufferedBytes === "number" &&
+            policy.maxBufferedBytes > 0
+              ? policy.maxBufferedBytes
               : null;
           connection.attachReader();
           resolve(connection);
@@ -376,9 +475,17 @@ export class OpenClawConnection {
     this.ws.removeAllListeners("message");
     this.ws.removeAllListeners("error");
     this.ws.on("message", (raw: RawData) => this.onMessage(raw));
-    this.ws.on("error", (err: Error) => this.onClose(new OpenClawError(err.message)));
-    this.ws.on("close", () =>
-      this.onClose(new OpenClawError("OpenClaw Gateway connection closed")),
+    this.ws.on("error", (err: Error) =>
+      this.onClose(new OpenClawError(err.message)),
+    );
+    this.ws.on("close", (code: number, reason: Buffer) =>
+      this.onClose(new OpenClawError("OpenClaw Gateway connection closed"), {
+        code,
+        // Decoded HERE and consumed HERE: the classification needs the text
+        // (`1008` alone cannot tell a slow consumer from a refused device), and
+        // only the derived code leaves this call.
+        reasonText: reason?.toString?.() ?? "",
+      }),
     );
   }
 
@@ -393,6 +500,20 @@ export class OpenClawConnection {
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
     captureFrame(frame);
+    // ANNOUNCED SHUTDOWN — recorded here, at connection scope, because that is
+    // what it describes: every session on this socket is about to lose it. The
+    // frame is then queued UNCHANGED like any other (observe-only: the normalizer
+    // still ignores it, and the drift detector still sees it), so this adds a
+    // reading without removing one.
+    const notice = readShutdownNotice(frame);
+    if (notice) {
+      this.shutdownNotice = notice;
+      console.log(
+        `[openclaw] gateway announced a shutdown (restartExpectedMs=${
+          notice.restartExpectedMs ?? "unknown"
+        })`,
+      );
+    }
     if (frame.type === "res") {
       const id = String(frame.id);
       dbg(
@@ -438,15 +559,53 @@ export class OpenClawConnection {
     }
   }
 
-  private onClose(err: Error): void {
+  private onClose(
+    err: Error,
+    socket?: { code?: number; reasonText?: string },
+  ): void {
     if (this.closed) {
       return;
     }
     this.closed = true;
-    this.closeError = err;
+    // Name the end ONCE, at the moment it happens: the announced-shutdown notice
+    // and the close code are both gone afterwards, and a turn still in flight is
+    // about to be attributed a cause.
+    this.connectionEnd = classifyConnectionEnd({
+      code: socket?.code ?? null,
+      reasonText: socket?.reasonText ?? null,
+      shutdown: this.shutdownNotice,
+    });
+    // The name must survive EVERY exit, not just a turn already streaming: a close
+    // landing while we await the `chat.send` ack rejects the pending request, and
+    // that rejection is what the dispatch path classifies. Appending the kind to
+    // the message (the generic phrase kept intact, so the existing classifier still
+    // recognizes a disconnect) is how the name reaches it — codex P2.
+    this.closeError =
+      this.connectionEnd.kind === "connection_closed"
+        ? err
+        : new OpenClawError(`${err.message} [${this.connectionEnd.kind}]`);
+    if (this.connectionEnd.kind !== "connection_closed") {
+      // Operator line, SOC2-safe: the derived KIND and counters, never the
+      // gateway's reason text. The buffer ceiling rides along on a slow-consumer
+      // close because that is the number the condition is measured against.
+      console.log(
+        `[openclaw] connection ended: ${this.connectionEnd.kind}` +
+          ` (wsCode=${socket?.code ?? "?"}` +
+          `${
+            this.connectionEnd.kind === "slow_consumer"
+              ? `, maxBufferedBytes=${this.maxBufferedBytes ?? "unknown"}, inboundQueueLen=${this.queue.length}`
+              : ""
+          }` +
+          `${
+            this.connectionEnd.restartExpectedMs !== null
+              ? `, restartExpectedMs=${this.connectionEnd.restartExpectedMs}`
+              : ""
+          })`,
+      );
+    }
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(err);
+      pending.reject(this.closeError);
     }
     this.pending.clear();
     if (this.waiter) {
@@ -497,7 +656,12 @@ export class OpenClawConnection {
       );
     }
     // Log method + sessionKey ONLY — never params.message (the user text = PHI).
-    dbg("req ->", method, "| key=", clip(params.sessionKey ?? params.key ?? "", 90));
+    dbg(
+      "req ->",
+      method,
+      "| key=",
+      clip(params.sessionKey ?? params.key ?? "", 90),
+    );
     return new Promise<ResponseFrame>((resolve, reject) => {
       const id = randomUUID();
       const timer = setTimeout(() => {

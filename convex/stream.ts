@@ -194,9 +194,36 @@ export const startAssistant = internalMutation({
     // matches the summarize job's openclawChatId nonce inside it instead of
     // racing on message creation times.
     turnSessionKey: v.optional(v.string()),
+    // The outbox row this turn was dispatched from (see schema note): the
+    // correlation outboxReconcile needs to tell "this send never ran" from
+    // "its ack was lost". Absent on gateway-initiated turns.
+    dispatchOutboxId: v.optional(v.string()),
     ...boundArg,
   },
-  handler: async (ctx, { chatId, runId, turnSessionKey, boundInstanceName }) => {
+  handler: async (
+    ctx,
+    { chatId, runId, turnSessionKey, dispatchOutboxId, boundInstanceName },
+  ) => {
+    // REFUSE a turn whose dispatch was already SETTLED. Aborting the Convex-side POST
+    // does not cancel the bridge's `/send` handler: a handler blocked past the
+    // reconciliation window (an unbounded internal fetch, a paused process) could
+    // reach this point long after `outboxReconcile` failed the row, told the user so,
+    // and drained the next queued send — starting the old turn then would overlap two
+    // turns on one session and produce a reply under an error card (codex P1). The
+    // row's terminal state is the authority, and this is the last place to read it.
+    // Throwing is a supported path: the bridge disarms its replay buffer and reports
+    // the failed turn (server.ts "beginTurn threw AFTER the ack").
+    if (dispatchOutboxId !== undefined) {
+      const rowId = ctx.db.normalizeId("outbox", dispatchOutboxId);
+      if (rowId !== null) {
+        const row = await ctx.db.get(rowId);
+        if (row !== null && row.status === "failed") {
+          throw new Error(
+            "dispatch already reconciled — refusing to open a turn for a settled send",
+          );
+        }
+      }
+    }
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       throw new Error("startAssistant: chat not found");
@@ -284,6 +311,7 @@ export const startAssistant = internalMutation({
       chatId,
       userId: chat.userId,
       ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),
+      ...(dispatchOutboxId !== undefined ? { dispatchOutboxId } : {}),
       role: "assistant",
       runId,
       status: "streaming",

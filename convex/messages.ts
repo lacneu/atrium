@@ -1378,6 +1378,11 @@ export const deleteMessage = mutation({
           attachmentIds: attachments.map((a) => a.storageId),
           attachments,
           status: "pending",
+          // Dispatched immediately → the in-flight window opens now (schema.outbox
+          // .pendingSince). EVERY creator of a `pending` row must stamp it: an
+          // unstamped one falls back to a far longer reconciliation bound, so the
+          // conversation would stay locked much longer than necessary (codex P2).
+          pendingSince: Date.now(),
           ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
           // Quote-reply: the regenerated dispatch must re-carry the excerpt,
           // or the re-sent instruction loses its targeted passage.

@@ -31,6 +31,11 @@ export interface HermesSendBody {
   /** The user message id of this turn — excluded from the fresh-session
    *  rehydration history (present on the wire; optional for old callers). */
   messageId?: string | null;
+  /** The OUTBOX row this turn was dispatched from — echoed into the assistant row
+   *  as the correlation outbox reconciliation needs (provider-neutral). */
+  outboxId?: string | null;
+  /** How long the dispatch had already been pending when Convex sent the POST. */
+  dispatchAgeMs?: number;
   /** Provider-session reset epoch (chats.providerResetCount at dispatch) —
    *  echoed by the post-ACK session bind so Convex refuses a bind that raced
    *  a /reset (bindProviderChat). Absent/null on an old Convex. */
@@ -293,9 +298,19 @@ export async function performHermesSend(
   // is reported as a downstream failure on its target (recordTurnError) — the
   // /send handler only classifies PRE-acceptance rejections.
   onTurnError?: (code: string) => void,
+  /** When the /send HTTP handler received the request — the pre-send deadline is
+   *  measured from there, so time lost in rehydration/staging counts too. */
+  sendReceivedMs: number = Date.now(),
 ): Promise<void> {
   if ((cfg.transport ?? "ws") === "ws") {
-    return performHermesWsSend(cfg, writer, body, registry, onTurnError);
+    return performHermesWsSend(
+      cfg,
+      writer,
+      body,
+      registry,
+      onTurnError,
+      sendReceivedMs,
+    );
   }
   const client = hermesClientFor(cfg);
   const abort = new AbortController();
@@ -344,6 +359,9 @@ export async function performHermesSend(
     // knob, attachments, best-effort — all inside the helper).
     freshText: () => promptWithFreshSessionHistory(writer, body, true),
     signal: abort.signal,
+    dispatchOutboxId: body.outboxId,
+    sendReceivedMs,
+    dispatchAgeMs: body.dispatchAgeMs,
     onTurnError,
     onBoundSession: async (sessionId) => {
       // A /reset that ran AFTER this turn started owns the slot now: a late
@@ -384,6 +402,7 @@ async function performHermesWsSend(
   body: HermesSendBody,
   registry: HermesTurnRegistry,
   onTurnError?: (code: string) => void,
+  sendReceivedMs: number = Date.now(),
 ): Promise<void> {
   const client = registry.wsClientFor(cfg);
   const targetKey = `${cfg.instanceName ?? ""}\u0000${body.agentId}\u0000${body.chatId}`;
@@ -419,6 +438,9 @@ async function performHermesWsSend(
       chatId: body.chatId,
       sessionKey: hermesSessionKey(body),
       providerChatId: prior,
+      dispatchOutboxId: body.outboxId,
+      sendReceivedMs,
+      dispatchAgeMs: body.dispatchAgeMs,
       text: wsText,
       // Session-recovery seam (same as the REST path): a degraded/failed
       // resume minted a fresh session → the prompt must carry the history.

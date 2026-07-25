@@ -275,6 +275,9 @@ export const sendMessage = mutation({
       // Busy chat → park as `queued` (the drainer dispatches it later); idle chat
       // → `pending` and dispatch now.
       status: busy ? "queued" : "pending",
+      // Stamp the dispatch window ONLY when this row is dispatched now; a queued
+      // row gets its stamp from the drain that promotes it.
+      ...(busy ? {} : { pendingSince: Date.now() }),
       // Per-turn routing target, read back by the dispatch.
       ...(args.routedAgent ? { routedAgent: args.routedAgent } : {}),
       // Quote-reply: the dispatch (and any redo) prefixes the text with the

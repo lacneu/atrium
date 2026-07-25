@@ -108,6 +108,7 @@ import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as observability from "../observability.js";
 import type * as openclaw from "../openclaw.js";
+import type * as outboxReconcile from "../outboxReconcile.js";
 import type * as preemptRepark from "../preemptRepark.js";
 import type * as projects from "../projects.js";
 import type * as routing from "../routing.js";
@@ -232,6 +233,7 @@ declare const fullApi: ApiFromModules<{
   notifications: typeof notifications;
   observability: typeof observability;
   openclaw: typeof openclaw;
+  outboxReconcile: typeof outboxReconcile;
   preemptRepark: typeof preemptRepark;
   projects: typeof projects;
   routing: typeof routing;

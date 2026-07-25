@@ -1267,6 +1267,8 @@
 	"runstatus_error": "Error",
 	"runstatus_error_orphaned": "The reply was generated on the agent side but could not be finalized (the bridge connection dropped mid-stream). You can delete or regenerate this message.",
 	"runstatus_error_connection_lost": "The connection to the gateway dropped during the reply (compaction, restart, or a network blip). This is not a stop on your side. Send your message again, or delete this turn to regenerate it.",
+	"runstatus_error_gateway_restarting": "The gateway announced a restart and the connection closed. This is not a stop on your side, and whether the agent already took this turn is unknown: it may have finished it while restarting. We deliver the answer if we can still see it, but a long restart can lose it. Check whether an answer arrives once the gateway is back before sending the same request again.",
+	"runstatus_error_connection_saturated": "The connection to the gateway was cut because the reply was arriving faster than we could read it, so part of it was dropped. This is a limitation on our side, not something you did. Whether the agent finished this turn is unknown — check before sending the same request again.",
 	"runstatus_error_response_timeout": "The agent worked for a long time without replying and the recovery window elapsed. Its reply may have completed on the gateway: retry — the history is taken into account — or ask a more focused question.",
 	"runstatus_error_context_length": "The agent's context window overflowed during this turn: the history plus the tool results accumulated mid-turn exceeded the model's capacity (the meter above reflects the pre-turn state). Retry asking to delegate to sub-agents, compact the session, or start a new chat.",
 	"runstatus_error_compaction_timeout": "The agent was optimizing (compacting) a large session but did not finish in time. Retry, compact the session, or start a new chat to begin with a lighter context.",
@@ -1341,6 +1343,10 @@
 	"error_gateway_timeout_hint": "The gateway did not respond in time. Check it’s started and reachable (OPENCLAW_GATEWAY_URL).",
 	"error_gateway_disconnected_label": "Gateway disconnected",
 	"error_gateway_disconnected_hint": "The connection to the gateway dropped. Check the OpenClaw container state and the gateway URL/port.",
+	"error_gateway_restarting_label": "Gateway restarting",
+	"error_gateway_restarting_hint": "The gateway announced a shutdown and closed the connection while this message was being sent. Delivery is UNPROVEN rather than refused — the gateway can accept a request and close before its acknowledgement is read — so check the session transcript for a reply before re-running the work. If the gateway does not come back on its own, check its service.",
+	"error_connection_saturated_label": "Connection saturated",
+	"error_connection_saturated_hint": "The gateway closed the connection because the bridge was reading it too slowly (its 50 MiB send buffer filled), so frames were dropped. Look at bridge load and at turns producing very large outputs.",
 	"error_bridge_unreachable_label": "Bridge unreachable",
 	"error_bridge_unreachable_hint": "Convex could not reach the bridge. Check the bridge container is running and BRIDGE_URL (http://<host-ip>:8787).",
 	"error_attachment_too_large_label": "Attachment too large",
@@ -2087,5 +2093,8 @@
 	"docviewer_inline_label": "(edited by the user):",
 	"docviewer_inline_too_large": "Too large to insert inline on this instance — trim the document or use an attachment-capable instance",
 	"docviewer_discard_failed": "Could not discard the draft — check your connection and retry",
-	"docviewer_save_not_applied": "Not applied — personal drafts are disabled while impersonating"
+	"docviewer_save_not_applied": "Not applied — personal drafts are disabled while impersonating",
+	"runstatus_error_dispatch_unknown": "Sending this message did not report back in time, so we stopped waiting and freed the conversation. Whether the agent received it is unknown — check whether an answer appears before sending the same request again.",
+	"error_dispatch_stalled_label": "Dispatch stalled (reconciled)",
+	"error_dispatch_stalled_hint": "This dispatch stayed pending far longer than any live one could, so the reconciler settled it to unlock the conversation. Its action died before marking the row, or a preempt re-dispatch never fired — look for a crashed or evicted Convex action around that time."
 }

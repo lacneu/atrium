@@ -167,6 +167,8 @@ type IngestOp =
       chatId: string;
       runId: string | null;
       sessionKey?: string | null;
+      /** The outbox row this turn was dispatched from (correlation, see schema). */
+      dispatchOutboxId?: string | null;
     }
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
@@ -595,6 +597,7 @@ export const ingest = httpAction(async (ctx, request) => {
         chatId: body.chatId as Id<"chats">,
         runId: body.runId ?? undefined,
         turnSessionKey: body.sessionKey ?? undefined,
+        dispatchOutboxId: body.dispatchOutboxId ?? undefined,
         boundInstanceName,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge

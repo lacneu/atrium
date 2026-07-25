@@ -303,6 +303,10 @@ export const attachDocuments = mutation({
       text,
       attachmentIds: [],
       status: "pending" as const,
+      // Dispatched immediately → the in-flight window opens now (see
+      // schema.outbox.pendingSince: it is what lets the reconciler tell a live
+      // dispatch from a chat lock nobody will release).
+      pendingSince: Date.now(),
     });
     await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
 

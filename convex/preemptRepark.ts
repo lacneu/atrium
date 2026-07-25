@@ -203,6 +203,12 @@ export async function maybeReparkPreemptedTurn(
     preemptRedispatched: true, // permanent bound stamp
     preemptHold: true, // transient hold marker (cleared by flip/stand-down)
     status: "pending",
+    // The hold is a LEGITIMATE `pending` window, but a bounded one (the delayed
+    // flip below owns the next transition). Stamped so that if that scheduled job
+    // never runs, the reconciler can still see a lock nobody will release —
+    // without the stamp the hold would be indistinguishable from a fresh dispatch
+    // forever.
+    pendingSince: Date.now(),
   });
   await ctx.scheduler.runAfter(
     PREEMPT_REPARK_DELAY_MS,

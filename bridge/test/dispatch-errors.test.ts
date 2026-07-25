@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   classifyGatewayError,
   faultDomain,
+  LOST_RESPONSE_CODES,
   type DispatchErrorCode,
 } from "../src/core/dispatch-errors.js";
 
@@ -51,6 +52,43 @@ describe("classifyGatewayError", () => {
     expect(classifyGatewayError(new Error("connection closed"))).toBe(
       "GATEWAY_DISCONNECTED",
     );
+  });
+
+  test("a NAMED close outranks the generic disconnect rule", () => {
+    // The client appends its classification of the close to the rejection message
+    // (`connection-end.ts`). Both strings ALSO match /closed/, so order matters: a
+    // send interrupted by an announced restart must not read as a plain socket loss.
+    expect(
+      classifyGatewayError(
+        new Error("OpenClaw Gateway connection closed [gateway_restarting]"),
+      ),
+    ).toBe("GATEWAY_RESTARTING");
+    expect(
+      classifyGatewayError(
+        new Error("OpenClaw Gateway connection closed [slow_consumer]"),
+      ),
+    ).toBe("CONNECTION_SATURATED");
+    // An UNNAMED close keeps its historic code (no behavior change).
+    expect(
+      classifyGatewayError(new Error("OpenClaw Gateway connection closed")),
+    ).toBe("GATEWAY_DISCONNECTED");
+    // Both are bridge-domain like the disconnect they refine — health semantics
+    // are deliberately untouched by this lot.
+    expect(faultDomain("GATEWAY_RESTARTING")).toBe("bridge");
+    expect(faultDomain("CONNECTION_SATURATED")).toBe("bridge");
+    // …and both keep the LOST-RESPONSE property of the code they refine: a
+    // `config.patch` that TRIGGERS an announced restart is the paradigm case for the
+    // read-back confirmation, so naming the end must not exclude it (codex P2).
+    for (const code of [
+      "GATEWAY_DISCONNECTED",
+      "GATEWAY_RESTARTING",
+      "CONNECTION_SATURATED",
+    ] as const) {
+      expect(LOST_RESPONSE_CODES.has(code)).toBe(true);
+    }
+    // A refusal is NOT a lost response: nothing was applied, so nothing to confirm.
+    expect(LOST_RESPONSE_CODES.has("AUTH_TOKEN_MISMATCH")).toBe(false);
+    expect(LOST_RESPONSE_CODES.has("INVALID_REQUEST")).toBe(false);
   });
 
   test("a bare invalid request (no agent text) -> INVALID_REQUEST", () => {

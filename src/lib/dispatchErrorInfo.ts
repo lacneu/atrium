@@ -42,6 +42,21 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_gateway_disconnected_label(),
     hint: m.error_gateway_disconnected_hint(),
   }),
+  // Named connection ends: an operator reading "socket closed" would go looking
+  // for a network fault, when the gateway had in fact ANNOUNCED its restart, or
+  // hung up because we were reading too slowly. Different investigations.
+  GATEWAY_RESTARTING: () => ({
+    label: m.error_gateway_restarting_label(),
+    hint: m.error_gateway_restarting_hint(),
+  }),
+  CONNECTION_SATURATED: () => ({
+    label: m.error_connection_saturated_label(),
+    hint: m.error_connection_saturated_hint(),
+  }),
+  DISPATCH_STALLED: () => ({
+    label: m.error_dispatch_stalled_label(),
+    hint: m.error_dispatch_stalled_hint(),
+  }),
   ATTACHMENT_TOO_LARGE: () => ({
     label: m.error_attachment_too_large_label(),
     hint: m.error_attachment_too_large_hint(),

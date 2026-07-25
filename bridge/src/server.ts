@@ -29,7 +29,12 @@ import {
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
-import { classifyGatewayError, faultDomain } from "./core/dispatch-errors.js";
+import { assertBeforeSendDeadline } from "./core/dispatch-deadline.js";
+import {
+  classifyGatewayError,
+  LOST_RESPONSE_CODES,
+  faultDomain,
+} from "./core/dispatch-errors.js";
 import { claimTalkRun, observeFinalize } from "./core/talk-consult.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import { base64FitsFrame } from "./core/attachment-limits.js";
@@ -44,7 +49,10 @@ import {
   type InboundReference,
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
-import { buildSessionKey, safeSessionPart } from "./providers/openclaw/session-keys.js";
+import {
+  buildSessionKey,
+  safeSessionPart,
+} from "./providers/openclaw/session-keys.js";
 import {
   transcriptEntryCount,
   extractLatestAssistantReply,
@@ -165,6 +173,10 @@ interface SendBody extends BodyRouting {
   /** The OUTBOX id of this dispatch — echoed as the `openclaw.rehydrate` trace's
    *  correlationId (`chatId:outboxId`), the obs-MCP join key. Null on an old Convex. */
   outboxId: string | null;
+  /** How long this dispatch had ALREADY been pending when Convex sent the POST (a
+   *  DURATION — no shared clock). Added to our own elapsed time by the pre-send
+   *  deadline. 0 on an old Convex that does not report it. */
+  dispatchAgeMs: number;
   /** The agent this turn SWITCHED AWAY FROM (null = not an agent switch) — non-secret
    *  names, echoed into the rehydrate trace + anomaly. From Convex's beginTurnRouting. */
   switchedFromAgentId: string | null;
@@ -347,10 +359,20 @@ export function parseSendBody(raw: string): SendBody | null {
     clientMessageId: obj.clientMessageId,
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
     providerResetCount:
-      typeof obj.providerResetCount === "number" ? obj.providerResetCount : null,
+      typeof obj.providerResetCount === "number"
+        ? obj.providerResetCount
+        : null,
     outboxId: typeof obj.outboxId === "string" ? obj.outboxId : null,
+    dispatchAgeMs:
+      typeof obj.dispatchAgeMs === "number" &&
+      Number.isFinite(obj.dispatchAgeMs) &&
+      obj.dispatchAgeMs >= 0
+        ? obj.dispatchAgeMs
+        : 0,
     switchedFromAgentId:
-      typeof obj.switchedFromAgentId === "string" ? obj.switchedFromAgentId : null,
+      typeof obj.switchedFromAgentId === "string"
+        ? obj.switchedFromAgentId
+        : null,
     switchedFromInstanceName:
       typeof obj.switchedFromInstanceName === "string"
         ? obj.switchedFromInstanceName
@@ -815,6 +837,10 @@ async function performSend(
   // generated file downloadable: write it here + emit `MEDIA:<path>`). Null when
   // outbound media is disabled (mode "off") — then no instruction is injected.
   deliveryDir: string | null,
+  /** When the /send HTTP handler received the request (its own entry, NOT this
+   *  call): the pre-send deadline is measured from there so time lost acquiring
+   *  the session counts too. */
+  sendReceivedMs: number = Date.now(),
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
@@ -882,7 +908,8 @@ async function performSend(
           ? sess.sessionId
           : null;
       preTurnTotalTokens =
-        typeof sess.totalTokens === "number" && Number.isFinite(sess.totalTokens)
+        typeof sess.totalTokens === "number" &&
+        Number.isFinite(sess.totalTokens)
           ? sess.totalTokens
           : null;
       preTurnContextTokens =
@@ -1077,7 +1104,10 @@ async function performSend(
       (sum, a) => sum + (typeof a?.content === "string" ? a.content.length : 0),
       0,
     );
-    if (conn.maxPayload !== null && !base64FitsFrame(base64Bytes, conn.maxPayload)) {
+    if (
+      conn.maxPayload !== null &&
+      !base64FitsFrame(base64Bytes, conn.maxPayload)
+    ) {
       throw new Error(
         `attachment too large for the gateway frame ` +
           `(base64 ${base64Bytes} > maxPayload ${conn.maxPayload})`,
@@ -1092,6 +1122,10 @@ async function performSend(
   // beginTurn (after seeding ownRunIds from the ack runId) — the start of a
   // streaming response is never dropped. Arming is scoped to THIS send→ack
   // window, so a stray frame between turns is never buffered or replayed.
+  // LAST CHECK before the gateway sees anything (codex P1): everything above may
+  // have blocked for minutes, and past the deadline this dispatch is no longer ours
+  // to send — Convex has settled the row and moved the conversation on.
+  assertBeforeSendDeadline(sendReceivedMs, Date.now(), body.dispatchAgeMs);
   session.runManager.armReplayBuffer();
   try {
     const response = await conn.request("chat.send", params, 20_000);
@@ -1114,6 +1148,10 @@ async function performSend(
         costUsd: preTurnCostUsd,
       },
       rehydrated: turnWasRehydrated,
+      // Correlation for outboxReconcile: the assistant row this turn opens carries
+      // the id of the send that caused it, so "this dispatch never ran" becomes a
+      // fact instead of a guess.
+      dispatchOutboxId: body.outboxId,
     });
     // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
     // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —
@@ -1131,7 +1169,9 @@ async function performSend(
     // the failed send window) — the wake fires AFTER that async open settles
     // (its recv deadline is armed by then), so the consume loop re-evaluates
     // with the fresh deadline instead of racing back to a null-timeout park.
-    session.runManager.disarmReplayBuffer(session.clock(), () => session.wake());
+    session.runManager.disarmReplayBuffer(session.clock(), () =>
+      session.wake(),
+    );
     throw err;
   }
   // beginTurn armed the recv/grace deadline from OUTSIDE the consume loop. If
@@ -1253,7 +1293,9 @@ async function fetchCompactionHistory(
   const str = (v: unknown): string | null =>
     typeof v === "string" && v ? v : null;
   const checkpoints = rawList
-    .filter((c): c is Record<string, unknown> => typeof c === "object" && c !== null)
+    .filter(
+      (c): c is Record<string, unknown> => typeof c === "object" && c !== null,
+    )
     .map((c) => ({
       checkpointId: str(c.checkpointId),
       createdAt: num(c.createdAt),
@@ -1280,10 +1322,16 @@ export interface CronJobSummary {
 /** OpenClaw `cron.list` → normalized summaries. FULL (non-compact) response so
  *  each job's agentId is present — the compact projection drops it. Read-only,
  *  never on the turn path. */
-async function fetchCronJobs(conn: OpenClawConnection): Promise<CronJobSummary[]> {
+async function fetchCronJobs(
+  conn: OpenClawConnection,
+): Promise<CronJobSummary[]> {
   // includeDisabled: the tab renders a "Paused" state — the default listing
   // omits disabled jobs, which would make every paused job invisible.
-  const res = await conn.request("cron.list", { includeDisabled: true }, 15_000);
+  const res = await conn.request(
+    "cron.list",
+    { includeDisabled: true },
+    15_000,
+  );
   const payload = res.payload as Record<string, unknown> | undefined;
   const rawList = Array.isArray(payload?.jobs)
     ? (payload.jobs as unknown[])
@@ -1650,7 +1698,8 @@ function normalizeUsagePayload(payload: unknown): ProviderUsage[] | null {
       const label = (w as { label?: unknown }).label;
       const usedPercent = (w as { usedPercent?: unknown }).usedPercent;
       const resetAt = (w as { resetAt?: unknown }).resetAt;
-      if (typeof label !== "string" || typeof usedPercent !== "number") continue;
+      if (typeof label !== "string" || typeof usedPercent !== "number")
+        continue;
       normWindows.push({
         label: label.slice(0, 24),
         usedPercent: Math.min(100, Math.max(0, usedPercent)),
@@ -1829,11 +1878,7 @@ export function enrichHealthSnapshot(
   // POST carries the base64-inflated payload): publish the binding MINIMUM so consumers
   // never advertise a size the POST can't carry (413 at readBody before the frame guard).
   const capToBody = (gw: number | null): number | null =>
-    gw === null
-      ? null
-      : httpBodyCap === null
-        ? gw
-        : Math.min(gw, httpBodyCap);
+    gw === null ? null : httpBodyCap === null ? gw : Math.min(gw, httpBodyCap);
   // Top-level cap (consumers WITHOUT per-target context, e.g. the global composer
   // gate): the CONSERVATIVE MIN across every known per-instance frame (live sessions +
   // last-seen caches). Taking the first live frame would let a big-limit instance's
@@ -1920,7 +1965,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   const hermesTurns = new HermesTurnRegistry();
   hermesTurnsRef = hermesTurns;
   const noteGatewayVersion = (instanceName: string, v: string | null): void => {
-    if (typeof v === "string" && v.length > 0) lastGatewayVersion.set(instanceName, v);
+    if (typeof v === "string" && v.length > 0)
+      lastGatewayVersion.set(instanceName, v);
   };
   const noteMaxPayload = (instanceName: string, n: number | null): void => {
     if (typeof n === "number" && n > 0) lastMaxPayload.set(instanceName, n);
@@ -2016,12 +2062,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // poll); a failure is non-fatal for that instance only.
       await Promise.all(
         [...served.entries()].map(async ([name, bundle]) => {
-          if (lastGatewayVersion.has(name) || live.some((t) => t.instanceName === name))
+          if (
+            lastGatewayVersion.has(name) ||
+            live.some((t) => t.instanceName === name)
+          )
             return;
           let inflight = versionDiscoveryInFlight.get(name);
           if (!inflight) {
-            inflight = discoverAgents(bundle.config, noteHandshakeFor(name), (v) =>
-              noteGatewayVersion(name, v),
+            inflight = discoverAgents(
+              bundle.config,
+              noteHandshakeFor(name),
+              (v) => noteGatewayVersion(name, v),
             )
               .then(() => undefined)
               .catch((err) => {
@@ -2038,7 +2089,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           await Promise.race([
             inflight,
             new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, CAPABILITIES_DISCOVERY_BUDGET_MS);
+              const timer = setTimeout(
+                resolve,
+                CAPABILITIES_DISCOVERY_BUDGET_MS,
+              );
               if (typeof timer.unref === "function") timer.unref();
             }),
           ]);
@@ -2053,7 +2107,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         buildCapabilityTargets(
           live.filter((t) => t.instanceName === name),
           name,
-          lastGatewayVersion.get(name) ?? bundle.config.gatewayVersionFallback ?? null,
+          lastGatewayVersion.get(name) ??
+            bundle.config.gatewayVersionFallback ??
+            null,
           bundle.config.kind ?? "openclaw",
           bundle.config.transport ?? "ws",
         ),
@@ -2123,7 +2179,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       if (!bundle) {
         // The poller asked for an instance this bridge does not serve (or omitted it):
         // refuse rather than discover the wrong gateway.
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -2191,16 +2250,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         bundle &&
         !registry.listLive().some((t) => t.instanceName === instanceName)
       ) {
-        void discoverAgents(bundle.config, noteHandshakeFor(instanceName!), (v) =>
-          noteGatewayVersion(instanceName!, v),
-        ).catch(
-          (err) => {
-            console.log(
-              `[refresh] discovery connect for ${instanceName} (non-fatal):`,
-              (err as Error)?.message ?? err,
-            );
-          },
-        );
+        void discoverAgents(
+          bundle.config,
+          noteHandshakeFor(instanceName!),
+          (v) => noteGatewayVersion(instanceName!, v),
+        ).catch((err) => {
+          console.log(
+            `[refresh] discovery connect for ${instanceName} (non-fatal):`,
+            (err as Error)?.message ?? err,
+          );
+        });
       }
       sendJson(res, 200, { ok: true, served: bundle !== undefined });
       return;
@@ -2254,6 +2313,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       return;
     }
 
+    // REQUEST-ENTRY wall clock, taken BEFORE the body is read: a slow upload (or a
+    // POST delayed while the Convex action was paused) is time the dispatch has been
+    // in flight too, and the pre-send deadline must count it (codex P1).
+    const requestReceivedMs = Date.now();
     let raw: string;
     try {
       raw = await readBody(req, shared.maxBodyBytes);
@@ -2274,7 +2337,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const patchInstance = patch.instanceName;
       const patchBundle = patchInstance ? served.get(patchInstance) : undefined;
       if (!patchInstance || !patchBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -2297,7 +2363,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const resetInstance = reset.instanceName;
       const resetBundle = resetInstance ? served.get(resetInstance) : undefined;
       if (!resetInstance || !resetBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       // PANEL reset execution-time guard: the Convex busy checks (resetSession
@@ -2313,8 +2382,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const live = registry.peekByChat(reset.chatId);
         if (
           (live !== undefined &&
-            (live.runManager.turnActive ||
-              live.runManager.dispatchInFlight)) ||
+            (live.runManager.turnActive || live.runManager.dispatchInFlight)) ||
           hermesTurns.peek(reset.chatId) !== undefined ||
           hermesTurns.peekWsTurn(reset.chatId) !== undefined
         ) {
@@ -2353,8 +2421,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // atomic with the refusal decision.
         if (
           reset.refuseIfActive &&
-          (session.runManager.turnActive ||
-            session.runManager.dispatchInFlight)
+          (session.runManager.turnActive || session.runManager.dispatchInFlight)
         ) {
           sendJson(res, 409, { ok: false, error: { code: "turn_active" } });
           return;
@@ -2389,7 +2456,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const abortInstance = abort.instanceName;
       const abortBundle = abortInstance ? served.get(abortInstance) : undefined;
       if (!abortInstance || !abortBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (abortBundle.config.kind === "hermes") {
@@ -2481,7 +2551,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const histInstance = hist.instanceName;
       const histBundle = histInstance ? served.get(histInstance) : undefined;
       if (!histInstance || !histBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -2526,7 +2599,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       try {
         const parsed: unknown = JSON.parse(raw || "{}");
         // `null`/arrays are valid JSON but not a body (codex P2).
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
           sendJson(res, 400, { ok: false, error: "invalid body" });
           return;
         }
@@ -2538,7 +2615,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const LCM_COMMANDS: Record<string, string> = {
         status: "/lossless status",
         doctor: "/lossless doctor",
-        repair_rollover_splits: "/lossless doctor apply rollover-splits confirm",
+        repair_rollover_splits:
+          "/lossless doctor apply rollover-splits confirm",
       };
       const lcmInstance =
         typeof lcmBody.instanceName === "string" ? lcmBody.instanceName : null;
@@ -2553,13 +2631,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           : undefined;
       const lcmBundle = lcmInstance ? served.get(lcmInstance) : undefined;
       if (!lcmInstance || !lcmBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (lcmCommand === undefined) {
         sendJson(res, 400, {
           ok: false,
-          error: "action must be one of: status | doctor | repair_rollover_splits",
+          error:
+            "action must be one of: status | doctor | repair_rollover_splits",
         });
         return;
       }
@@ -2675,10 +2757,15 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const cronInstance =
-        typeof cronBody.instanceName === "string" ? cronBody.instanceName : null;
+        typeof cronBody.instanceName === "string"
+          ? cronBody.instanceName
+          : null;
       const cronBundle = cronInstance ? served.get(cronInstance) : undefined;
       if (!cronInstance || !cronBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -2715,7 +2802,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const pInstance =
-        typeof probeBody.instanceName === "string" ? probeBody.instanceName : null;
+        typeof probeBody.instanceName === "string"
+          ? probeBody.instanceName
+          : null;
       const pBundle = pInstance ? served.get(pInstance) : undefined;
       const pIds = Array.isArray(probeBody.taskIds)
         ? probeBody.taskIds
@@ -2725,7 +2814,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             .slice(0, 20)
         : [];
       if (!pInstance || !pBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       // DISCOVERY: list the registry's live tasks whose requesterSessionKey
@@ -2751,140 +2843,150 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       try {
-        const { tasks, discovered, discoveryMeta } = await withOperatorConnection(
-          pBundle.config,
-          async (conn) => {
-            // PARALLEL lookups on the multiplexed socket: a sequential batch
-            // (10 ids x 10s worst case + a cold 30s connect) would blow past
-            // the Convex client's 50s budget and lose EVERY already-fetched
-            // status. Worst case here: connect + one 8s window.
-            const settled = await Promise.all(
-              pIds.map(async (taskId) => {
-                try {
-                  const r = await conn.request("tasks.get", { taskId }, 8_000);
-                  const task = (r.payload as { task?: Record<string, unknown> })
-                    ?.task;
-                  return {
-                    taskId,
-                    status:
-                      typeof task?.status === "string"
-                        ? task.status.slice(0, 40)
-                        : null,
-                    summary:
-                      typeof task?.terminalSummary === "string"
-                        ? task.terminalSummary.slice(0, 600)
-                        : null,
-                    error:
-                      typeof task?.error === "string"
-                        ? task.error.slice(0, 400)
-                        : null,
-                  };
-                } catch (err) {
-                  // DISTINGUISH the registry's explicit "task not found"
-                  // (pinned: INVALID_REQUEST `task not found: <id>`) from a
-                  // transient failure (timeout, drop, missing RPC on an old
-                  // gateway): only the former may ever settle a row as lost —
-                  // a transient error must leave the local state untouched,
-                  // so the entry is OMITTED from the batch.
-                  const msg = (err as Error)?.message ?? "";
-                  if (/task not found/i.test(msg)) {
+        const { tasks, discovered, discoveryMeta } =
+          await withOperatorConnection(
+            pBundle.config,
+            async (conn) => {
+              // PARALLEL lookups on the multiplexed socket: a sequential batch
+              // (10 ids x 10s worst case + a cold 30s connect) would blow past
+              // the Convex client's 50s budget and lose EVERY already-fetched
+              // status. Worst case here: connect + one 8s window.
+              const settled = await Promise.all(
+                pIds.map(async (taskId) => {
+                  try {
+                    const r = await conn.request(
+                      "tasks.get",
+                      { taskId },
+                      8_000,
+                    );
+                    const task = (
+                      r.payload as { task?: Record<string, unknown> }
+                    )?.task;
                     return {
                       taskId,
-                      status: "not_found",
-                      summary: null,
-                      error: null,
+                      status:
+                        typeof task?.status === "string"
+                          ? task.status.slice(0, 40)
+                          : null,
+                      summary:
+                        typeof task?.terminalSummary === "string"
+                          ? task.terminalSummary.slice(0, 600)
+                          : null,
+                      error:
+                        typeof task?.error === "string"
+                          ? task.error.slice(0, 400)
+                          : null,
                     };
+                  } catch (err) {
+                    // DISTINGUISH the registry's explicit "task not found"
+                    // (pinned: INVALID_REQUEST `task not found: <id>`) from a
+                    // transient failure (timeout, drop, missing RPC on an old
+                    // gateway): only the former may ever settle a row as lost —
+                    // a transient error must leave the local state untouched,
+                    // so the entry is OMITTED from the batch.
+                    const msg = (err as Error)?.message ?? "";
+                    if (/task not found/i.test(msg)) {
+                      return {
+                        taskId,
+                        status: "not_found",
+                        summary: null,
+                        error: null,
+                      };
+                    }
+                    return null;
                   }
-                  return null;
-                }
-              }),
-            );
-            const gets = settled.filter(
-              (t): t is NonNullable<typeof t> => t !== null,
-            );
-            // Session-scoped discovery (best-effort: a gateway without the
-            // RPC, or a transient failure, yields an empty list — the local
-            // state stays untouched).
-            let found: {
-              taskId: string;
-              status: string;
-              toolName: string | null;
-            }[] = [];
-            // COUNTS-only diagnostics (no keys/content — SOC2): how many live
-            // sessions matched the chat and how many records the registry
-            // listed. A persistent {sessions:0} explains an empty discovery.
-            let discoveryMeta: { sessions: number; listed: number } | null =
-              null;
-            if (discoverKeys.length > 0) {
-              try {
-                // SERVER-side filters (TasksListParamsSchema, pinned from the
-                // gateway dist: sessionKey + status[] + limit): an unfiltered
-                // list is paginated (~100 oldest records) and NEVER contains
-                // the live link — the very task this discovery exists for.
-                // One request per live session key (normally exactly one).
-                let listedTotal = 0;
-                const records: Record<string, unknown>[] = [];
-                for (const key of discoverKeys.slice(0, 3)) {
-                  const r = await conn.request(
-                    "tasks.list",
-                    { sessionKey: key, status: ["queued", "running"], limit: 50 },
-                    10_000,
-                  );
-                  const payload = r.payload as { tasks?: unknown[] } | null;
-                  const list = Array.isArray(payload?.tasks)
-                    ? payload.tasks
-                    : [];
-                  listedTotal += list.length;
-                  for (const t of list) {
-                    if (typeof t === "object" && t !== null) {
-                      records.push(t as Record<string, unknown>);
+                }),
+              );
+              const gets = settled.filter(
+                (t): t is NonNullable<typeof t> => t !== null,
+              );
+              // Session-scoped discovery (best-effort: a gateway without the
+              // RPC, or a transient failure, yields an empty list — the local
+              // state stays untouched).
+              let found: {
+                taskId: string;
+                status: string;
+                toolName: string | null;
+              }[] = [];
+              // COUNTS-only diagnostics (no keys/content — SOC2): how many live
+              // sessions matched the chat and how many records the registry
+              // listed. A persistent {sessions:0} explains an empty discovery.
+              let discoveryMeta: { sessions: number; listed: number } | null =
+                null;
+              if (discoverKeys.length > 0) {
+                try {
+                  // SERVER-side filters (TasksListParamsSchema, pinned from the
+                  // gateway dist: sessionKey + status[] + limit): an unfiltered
+                  // list is paginated (~100 oldest records) and NEVER contains
+                  // the live link — the very task this discovery exists for.
+                  // One request per live session key (normally exactly one).
+                  let listedTotal = 0;
+                  const records: Record<string, unknown>[] = [];
+                  for (const key of discoverKeys.slice(0, 3)) {
+                    const r = await conn.request(
+                      "tasks.list",
+                      {
+                        sessionKey: key,
+                        status: ["queued", "running"],
+                        limit: 50,
+                      },
+                      10_000,
+                    );
+                    const payload = r.payload as { tasks?: unknown[] } | null;
+                    const list = Array.isArray(payload?.tasks)
+                      ? payload.tasks
+                      : [];
+                    listedTotal += list.length;
+                    for (const t of list) {
+                      if (typeof t === "object" && t !== null) {
+                        records.push(t as Record<string, unknown>);
+                      }
                     }
                   }
+                  discoveryMeta = {
+                    sessions: discoverKeys.length,
+                    listed: listedTotal,
+                  };
+                  // Known ids are excluded BEFORE the cap: with 10+ live tasks
+                  // a stable-ordered list would otherwise return the same known
+                  // entries forever and starve the new invisible link behind
+                  // them (the gets batch already refreshes the known ones).
+                  const known = new Set(pIds);
+                  found = records
+                    .filter((rec) => {
+                      const id = rec.taskId ?? rec.id;
+                      return (
+                        (rec.status === "queued" || rec.status === "running") &&
+                        typeof id === "string" &&
+                        id !== "" &&
+                        !known.has(id)
+                      );
+                    })
+                    .slice(0, 10)
+                    .map((rec) => ({
+                      taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
+                      status: (rec.status as string).slice(0, 40),
+                      // The chain key: the tool family. Pinned live shape:
+                      // sourceId "image_generate:openai" (tool before ':'),
+                      // summary `kind` ("image_generation") as the fallback.
+                      toolName:
+                        typeof rec.sourceId === "string" && rec.sourceId !== ""
+                          ? rec.sourceId.split(":")[0]!.slice(0, 60)
+                          : typeof rec.kind === "string" && rec.kind !== ""
+                            ? rec.kind.slice(0, 60)
+                            : null,
+                    }));
+                } catch (err) {
+                  console.error(
+                    "tasks-probe discovery failed (non-fatal):",
+                    (err as Error)?.message ?? err,
+                  );
                 }
-                discoveryMeta = {
-                  sessions: discoverKeys.length,
-                  listed: listedTotal,
-                };
-                // Known ids are excluded BEFORE the cap: with 10+ live tasks
-                // a stable-ordered list would otherwise return the same known
-                // entries forever and starve the new invisible link behind
-                // them (the gets batch already refreshes the known ones).
-                const known = new Set(pIds);
-                found = records
-                  .filter((rec) => {
-                    const id = rec.taskId ?? rec.id;
-                    return (
-                      (rec.status === "queued" || rec.status === "running") &&
-                      typeof id === "string" &&
-                      id !== "" &&
-                      !known.has(id)
-                    );
-                  })
-                  .slice(0, 10)
-                  .map((rec) => ({
-                    taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
-                    status: (rec.status as string).slice(0, 40),
-                    // The chain key: the tool family. Pinned live shape:
-                    // sourceId "image_generate:openai" (tool before ':'),
-                    // summary `kind` ("image_generation") as the fallback.
-                    toolName:
-                      typeof rec.sourceId === "string" && rec.sourceId !== ""
-                        ? rec.sourceId.split(":")[0]!.slice(0, 60)
-                        : typeof rec.kind === "string" && rec.kind !== ""
-                          ? rec.kind.slice(0, 60)
-                          : null,
-                  }));
-              } catch (err) {
-                console.error(
-                  "tasks-probe discovery failed (non-fatal):",
-                  (err as Error)?.message ?? err,
-                );
               }
-            }
-            return { tasks: gets, discovered: found, discoveryMeta };
-          },
-          noteHandshakeFor(pInstance),
-        );
+              return { tasks: gets, discovered: found, discoveryMeta };
+            },
+            noteHandshakeFor(pInstance),
+          );
         sendJson(res, 200, { ok: true, tasks, discovered, discoveryMeta });
       } catch (err) {
         const code = classifyGatewayError(err);
@@ -2912,7 +3014,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const mInstance =
-        typeof manageBody.instanceName === "string" ? manageBody.instanceName : null;
+        typeof manageBody.instanceName === "string"
+          ? manageBody.instanceName
+          : null;
       const mBundle = mInstance ? served.get(mInstance) : undefined;
       const mOp = typeof manageBody.op === "string" ? manageBody.op : null;
       const mJobId =
@@ -2920,7 +3024,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           ? manageBody.jobId
           : null;
       if (!mInstance || !mBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (!mOp || !mJobId) {
@@ -2965,7 +3072,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         if (result.ok) sendJson(res, 200, result);
         else if (result.code === "not_found")
           sendJson(res, 404, { ok: false, error: { code: "not_found" } });
-        else if (result.code === "unsupported" || result.code === "invalid_patch")
+        else if (
+          result.code === "unsupported" ||
+          result.code === "invalid_patch"
+        )
           sendJson(res, 400, { ok: false, error: { code: result.code } });
         else sendJson(res, 502, { ok: false, error: { code: result.code } });
       } catch (err) {
@@ -2989,11 +3099,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const compactInstance = compact.instanceName;
       if (!compactInstance || !served.has(compactInstance)) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
-        const session = await registry.acquire(toRouting(compact, compactInstance));
+        const session = await registry.acquire(
+          toRouting(compact, compactInstance),
+        );
         await performCompact(session);
         sendJson(res, 200, { ok: true });
       } catch (err) {
@@ -3036,7 +3151,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const saInstance = body.instanceName;
       if (!saInstance || !served.has(saInstance)) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (!body.childSessionKey || !body.interactionId || !body.message) {
@@ -3060,7 +3178,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         );
         // Arm BEFORE the send so a re-woken child's terminal is recognized as this
         // interaction's reply (the child is usually already reaped after its spawn).
-        session.armSubAgentInteraction(body.childSessionKey, body.interactionId);
+        session.armSubAgentInteraction(
+          body.childSessionKey,
+          body.interactionId,
+        );
         const saParams: Record<string, unknown> = {
           sessionKey: body.childSessionKey,
           message: body.message,
@@ -3120,27 +3241,36 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         parsedTts = {};
       }
       const ttsInstance =
-        typeof parsedTts.instanceName === "string" ? parsedTts.instanceName : "";
+        typeof parsedTts.instanceName === "string"
+          ? parsedTts.instanceName
+          : "";
       const method =
         typeof parsedTts.method === "string" ? parsedTts.method : "";
       const ttsText = typeof parsedTts.text === "string" ? parsedTts.text : "";
       if (
         !ttsInstance ||
         !["status", "providers", "convert"].includes(method) ||
-        (method === "convert" && (ttsText.length === 0 || ttsText.length > 20_000))
+        (method === "convert" &&
+          (ttsText.length === 0 || ttsText.length > 20_000))
       ) {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
       const ttsBundle = served.get(ttsInstance);
       if (!ttsBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (ttsBundle.config.kind !== "openclaw") {
         // Hermes has no direct synthesize-and-return RPC (its voice.tts plays
         // on the gateway host) — state it instead of failing opaquely.
-        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        sendJson(res, 400, {
+          ok: false,
+          error: { code: "provider_unsupported" },
+        });
         return;
       }
       try {
@@ -3189,13 +3319,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           ok: true,
           payload: {
             mime: opened.mimeType || "audio/mpeg",
-            provider: (result.payload as { provider?: string }).provider ?? null,
+            provider:
+              (result.payload as { provider?: string }).provider ?? null,
             audioBase64: Buffer.concat(chunks).toString("base64"),
           },
         });
       } catch (err) {
         const code = classifyGatewayError(err);
-        console.error(`bridge /tts ${method} failed [${code}]:`, (err as Error)?.message ?? err);
+        console.error(
+          `bridge /tts ${method} failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
         sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
@@ -3222,22 +3356,32 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const talkInstance =
-        typeof talkBody.instanceName === "string" ? talkBody.instanceName : null;
+        typeof talkBody.instanceName === "string"
+          ? talkBody.instanceName
+          : null;
       const talkBundle = talkInstance ? served.get(talkInstance) : undefined;
       if (!talkInstance || !talkBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (talkBundle.config.kind === "hermes") {
         // No talk surface on Hermes — honest code instead of an opaque RPC error.
-        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        sendJson(res, 400, {
+          ok: false,
+          error: { code: "provider_unsupported" },
+        });
         return;
       }
       // Only transports the gateway advertises; webrtc is the live-verified
       // default (the mint response shape was probed on it).
       const talkTransport =
         typeof talkBody.transport === "string" &&
-        ["webrtc", "provider-websocket", "gateway-relay"].includes(talkBody.transport)
+        ["webrtc", "provider-websocket", "gateway-relay"].includes(
+          talkBody.transport,
+        )
           ? talkBody.transport
           : "webrtc";
       // Optional per-session VOICE (the composer's picker): forwarded verbatim
@@ -3330,11 +3474,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           : null;
       const tcBundle = tcInstance ? served.get(tcInstance) : undefined;
       if (!tcInstance || !tcBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       if (tcBundle.config.kind === "hermes") {
-        sendJson(res, 400, { ok: false, error: { code: "provider_unsupported" } });
+        sendJson(res, 400, {
+          ok: false,
+          error: { code: "provider_unsupported" },
+        });
         return;
       }
       if (!tcChatId || !tcCanonical || !tcAgentId || !tcCallId || !tcArgs) {
@@ -3358,7 +3508,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       let resolveStarted!: (
         v: { ok: true; runId: string } | { ok: false; code: string },
       ) => void;
-      let resolveTerminal!: (v: { resultText?: string; errorText?: string }) => void;
+      let resolveTerminal!: (v: {
+        resultText?: string;
+        errorText?: string;
+      }) => void;
       const started = new Promise<
         { ok: true; runId: string } | { ok: false; code: string }
       >((r) => (resolveStarted = r));
@@ -3458,7 +3611,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const voiceRaced = await Promise.race([
         terminal,
-        new Promise<"pending">((r) => setTimeout(() => r("pending"), CONSULT_HOLD_MS)),
+        new Promise<"pending">((r) =>
+          setTimeout(() => r("pending"), CONSULT_HOLD_MS),
+        ),
       ]);
       if (voiceRaced === "pending") {
         // The voice tells the user the work continues; the DETACHED writer
@@ -3479,7 +3634,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const afBundle = afInstance ? served.get(afInstance) : undefined;
       if (!afInstance || !afBundle) {
         // Never answer for an instance this bridge does not serve.
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -3520,7 +3678,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const cdBundle = cdInstance ? served.get(cdInstance) : undefined;
       if (!cdInstance || !cdBundle) {
         // Refuse a body that claims an instance this bridge does not serve.
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       try {
@@ -3532,11 +3693,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, result.status, result.body);
       } catch (err) {
         const code = classifyGatewayError(err);
-        if (code === "GATEWAY_DISCONNECTED" && (body.op === "set" || body.op === "clear")) {
+        if (
+          LOST_RESPONSE_CODES.has(code) &&
+          (body.op === "set" || body.op === "clear")
+        ) {
           // The patch may have APPLIED and only the response was lost to a
           // config-triggered gateway restart — reconnect and confirm before
           // reporting failure (see confirmDefaultsAfterRestart).
-          const confirmed = await confirmDefaultsAfterRestart(cdBundle.config, body);
+          const confirmed = await confirmDefaultsAfterRestart(
+            cdBundle.config,
+            body,
+          );
           if (confirmed !== null) {
             console.error(
               "bridge /config-defaults: write confirmed after gateway restart",
@@ -3549,7 +3716,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
         }
-        if (code === "INVALID_REQUEST" && (body.op === "set" || body.op === "clear")) {
+        if (
+          code === "INVALID_REQUEST" &&
+          (body.op === "set" || body.op === "clear")
+        ) {
           // The config.patch params shape ({raw, baseHash}) is bench-verified
           // on 2026.6.5 — an INVALID_REQUEST here most likely means the shape
           // drifted on a NEWER gateway version. Precise operator hint, non-PHI.
@@ -3588,7 +3758,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const mvBundle = mvInstance ? served.get(mvInstance) : undefined;
       if (!mvBundle) {
         // The dirs to check are per-instance — refuse without a served instance.
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       const result = await validateSharedFs({
@@ -3602,6 +3775,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       return;
     }
 
+    // The pre-send deadline is measured from REQUEST ENTRY (above), which precedes
+    // both the body read and any provider/session work — every one of those can be
+    // where a paused or blocked bridge loses its minutes.
+    const sendReceivedMs = requestReceivedMs;
     const body = parseSendBody(raw);
     if (body === null) {
       sendJson(res, 400, { ok: false, error: "invalid body" });
@@ -3704,6 +3881,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           { ...body, attachments: inline },
           hermesTurns,
           reportTurnError,
+          sendReceivedMs,
         );
         // A real send proves connection + the ROUTED agent answered.
         health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
@@ -3713,7 +3891,14 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const session = await registry.acquire(toRouting(body, sendInstance));
-      await performSend(session, body, bundle.writer, inboundCfg, deliveryDir);
+      await performSend(
+        session,
+        body,
+        bundle.writer,
+        inboundCfg,
+        deliveryDir,
+        sendReceivedMs,
+      );
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       sendJson(res, 200, { ok: true });

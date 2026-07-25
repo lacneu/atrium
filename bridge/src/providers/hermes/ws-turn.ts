@@ -18,6 +18,7 @@
 //   abort: session.interrupt {session_id}
 
 import { TurnSink } from "../../core/turn-sink.js";
+import { assertBeforeSendDeadline } from "../../core/dispatch-deadline.js";
 import {
   EVENT_CONTEXT_COMPACTION,
   EVENT_MESSAGE_DELTA,
@@ -50,6 +51,15 @@ export interface HermesWsTurnOptions {
   sessionKey: string;
   /** The chat's stored Hermes WS session id (stored_session_id), or null. */
   providerChatId: string | null;
+  /** The OUTBOX row this turn was dispatched from (correlation for outbox
+   *  reconciliation; null on a gateway-initiated turn). */
+  dispatchOutboxId?: string | null;
+  /** When the /send HTTP handler received the request — the pre-send deadline is
+   *  measured from there, not from this turn's own start. */
+  sendReceivedMs?: number;
+  /** How long the dispatch had already been pending when Convex sent the POST —
+   *  added to the local elapsed time by the pre-send deadline. */
+  dispatchAgeMs?: number;
   text: string;
   /** Re-request the prompt WITH the rehydration history: called when the turn
    *  expected a warm session (providerChatId set) but had to MINT a fresh one
@@ -105,6 +115,9 @@ export function runHermesWsTurn(
   opts: HermesWsTurnOptions,
   registerSession: (runtimeSessionId: string, onEvent: (type: string, payload: Record<string, unknown>) => void) => () => void,
 ): HermesWsTurnRun {
+  // The /send handler's OWN entry when given (time lost before this turn started
+  // counts too — codex P1); this turn's start otherwise.
+  const turnStartedMs = opts.sendReceivedMs ?? Date.now();
   let runtimeSid: string | null = null;
   let forceSettleRef: ((writeAborted?: boolean) => void) | null = null;
   let resolveAccepted!: () => void;
@@ -712,7 +725,13 @@ export function runHermesWsTurn(
       // 3) Open the streaming row BEFORE resolving accepted (chat busy before
       // /send returns 200 — same contract as the REST path).
       try {
-        await sink.beginTurn(runtimeSid);
+        await sink.beginTurn(
+          runtimeSid,
+          undefined,
+          false,
+          false,
+          opts.dispatchOutboxId ?? null,
+        );
       } catch (err) {
         rejectAccepted(err);
         return;
@@ -746,6 +765,10 @@ export function runHermesWsTurn(
         const promptParts = [effectiveText];
         if (fileRefs.length) promptParts.push(fileRefs.join("\n"));
         if (opts.filesFetcher) promptParts.push(DELIVERY_DIRECTIVE);
+        // Same rule as the OpenClaw path, at Hermes' acceptance point: staging above
+        // can block for minutes, and past the deadline this dispatch is no longer
+        // ours to submit (codex P1).
+        assertBeforeSendDeadline(turnStartedMs, Date.now(), opts.dispatchAgeMs ?? 0);
         await opts.client.call("prompt.submit", {
           session_id: runtimeSid,
           text: promptParts.join("\n\n"),

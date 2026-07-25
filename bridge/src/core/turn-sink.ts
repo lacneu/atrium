@@ -112,6 +112,11 @@ export class TurnSink {
   // openclawChatId nonce embedded in it; time-based joins race on late replies).
   private readonly sessionKey?: string;
 
+  // The outbox row THIS turn was dispatched from, set at beginTurn and echoed
+  // into startAssistant. Per-TURN (not per-session): a spontaneous delivery on the
+  // same session carries none, which is exactly how Convex tells them apart.
+  private dispatchOutboxId: string | null = null;
+
   private messageId: string | null = null;
   /** The assistant message id for the CURRENT/last turn (null before the first
    *  beginTurn). Lets the session tag a sub-agent observation with the message
@@ -363,8 +368,12 @@ export class TurnSink {
     },
     deferOpen = false,
     rehydrated = false,
+    /** The outbox row this turn was dispatched from; null for a gateway-initiated
+     *  turn (announce/task delivery, talk) — no queued send is waiting on those. */
+    dispatchOutboxId: string | null = null,
   ): Promise<void> {
     this.turnEpoch++;
+    this.dispatchOutboxId = dispatchOutboxId;
     // A REAL turn preempting a DEFERRED (announce) turn that never opened must
     // deactivate the sink BEFORE the startAssistant await below: leaving
     // turnActive=true across that await would route the new run's racing
@@ -436,6 +445,7 @@ export class TurnSink {
       this.chatId,
       ackRunId,
       this.sessionKey ?? null,
+      this.dispatchOutboxId,
     );
     this.turnActive = true;
     if (this.pendingRehydrated && this.messageId !== null) {
@@ -573,6 +583,7 @@ export class TurnSink {
           this.chatId,
           this.deferredRunId,
           this.sessionKey ?? null,
+          this.dispatchOutboxId,
         );
         if (this.turnEpoch !== epoch) {
           // A new turn preempted this open while the write was in flight: do

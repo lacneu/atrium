@@ -538,6 +538,10 @@ export const autoRetryTurn = internalMutation({
       attachmentIds: attachments.map((a) => a.storageId),
       attachments,
       status: "pending",
+      // Dispatched immediately → the in-flight window opens now (see
+      // schema.outbox.pendingSince: it is what lets the reconciler tell a live
+      // dispatch from a chat lock nobody will release).
+      pendingSince: Date.now(),
       ...(routedAgent ? { routedAgent } : {}),
       // Quote-reply: the auto-retried dispatch must re-carry the excerpt,
       // or the re-sent instruction loses its targeted passage.

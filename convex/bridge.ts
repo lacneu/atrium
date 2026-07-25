@@ -906,6 +906,10 @@ export const beginTurnRouting = internalMutation({
     userId: v.id("users"),
     routedAgent: v.object({ instanceName: v.string(), agentId: v.string() }),
     turnId: v.id("messages"),
+    // The outbox row being dispatched. Given so the segment this dispatch uses is
+    // remembered on it — the only way a LOST ack can still be confirmed later
+    // (outboxReconcile). Optional: callers that do not dispatch a row omit it.
+    outboxId: v.optional(v.id("outbox")),
   },
   // `isSwitch` = this turn re-keyed the gateway session (the routed agent differs from
   // the preceding routed turn's agent, OR the first per-turn selection that mints a
@@ -928,7 +932,7 @@ export const beginTurnRouting = internalMutation({
     }),
     v.null(),
   ),
-  handler: async (ctx, { chatId, userId, routedAgent, turnId }) => {
+  handler: async (ctx, { chatId, userId, routedAgent, turnId, outboxId }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return null;
     // AUTHORIZE before persisting ANY turn state (codex P2): a forged routedAgent — or one
@@ -969,6 +973,12 @@ export const beginTurnRouting = internalMutation({
       ? `turn:${turnId}`
       : (chat.routingSegment ?? `turn:${turnId}`);
     await ctx.db.patch(chatId, { perTurnRouting: true });
+    // Remember the segment ON THE ROW (same mutation, no extra round trip). It is
+    // NOT a confirmation — the chat's tuple still only advances on a real ack — but
+    // it is what lets a reconciled dispatch confirm the routing it actually used.
+    if (outboxId !== undefined) {
+      await ctx.db.patch(outboxId, { dispatchSegment: segment });
+    }
     // `isSwitch` drives routedSwitch (the freshness signal). `switchedFrom*` is the
     // DIAGNOSTIC predecessor — present only on a switch with a KNOWN previous agent
     // (null on a legacy/unbound first selection, where isSwitch is still true).
@@ -1057,6 +1067,20 @@ export const reparkIfBusy = internalMutation({
   },
 });
 
+/**
+ * Hard cap on the `/send` POST.
+ *
+ * The bridge answers only once it has acquired its session, re-applied settings,
+ * re-hydrated history and received the gateway's `chat.send` ack — so this is
+ * generous on purpose (30 s connect + 30 s request timeouts upstream, plus
+ * retries). But it must EXIST: without it a hung bridge holds the row `pending`
+ * for the whole action budget, and a `pending` row keeps its chat busy — i.e. a
+ * silent network stall becomes a locked conversation. Comfortably under
+ * `outboxReconcile.STALLED_PENDING_MS`, so the timeout settles the row itself
+ * (with its real cause) long before the reconciler has to.
+ */
+export const SEND_POST_TIMEOUT_MS = 4 * 60_000;
+
 export const dispatch = internalAction({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }) => {
@@ -1114,6 +1138,7 @@ export const dispatch = internalAction({
         userId: row.userId as Id<"users">,
         routedAgent: row.routedAgent,
         turnId: row.messageId as Id<"messages">,
+        outboxId,
       });
     }
 
@@ -1330,6 +1355,9 @@ export const dispatch = internalAction({
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
           method: "POST",
+          // Bounded: an unanswered POST must not hold the row `pending` (= the
+          // chat busy) for the action's whole budget.
+          signal: AbortSignal.timeout(SEND_POST_TIMEOUT_MS),
           headers: {
             "Content-Type": "application/json",
             // Shared secret authenticates Convex -> bridge (server-to-server).
@@ -1370,6 +1398,16 @@ export const dispatch = internalAction({
             // key) while the browser's own clientMessageId stays intact for
             // send.sendMessage's retry dedup (preemptRepark.ts).
             clientMessageId: row.dispatchKey ?? row.clientMessageId,
+            // How long this row has ALREADY been `pending` — a DURATION, so no clock
+            // is shared. The bridge adds its own elapsed time and refuses to submit a
+            // prompt whose dispatch is past the deadline: otherwise a POST arriving
+            // just before reconciliation would still get a full local budget and could
+            // start a turn Convex had already settled (codex P1). An old bridge
+            // ignores this unknown field.
+            dispatchAgeMs: Math.max(
+              0,
+              Date.now() - (row.pendingSince ?? row._creationTime),
+            ),
             // The user message id for THIS turn — the bridge excludes it when it
             // fetches prior history for session re-hydration (so the current
             // message is not duplicated into the injected context).
@@ -1402,6 +1440,26 @@ export const dispatch = internalAction({
       } catch (err) {
         console.error("bridge POST /send failed:", err);
         ok = false;
+        // A TIMEOUT is not the same fact as an unreachable bridge: the request may
+        // have been received and executed, and only its response lost. Saying
+        // "unreachable" would assert the send never happened.
+        // A TIMEOUT is a different fact from an unreachable bridge, and it must NOT
+        // become a failure. Aborting our `fetch` does not cancel the bridge's
+        // handler: it can finish `performSend` afterwards and START the turn. If we
+        // failed the row here we would paint an error card on a turn that then runs,
+        // and drain the next queued send on top of it — two turns on one session
+        // (codex P1). So we stop WAITING without deciding: the row stays `pending`
+        // and `outboxReconcile` owns it, marking it `sent` if that late turn shows
+        // up and settling it honestly if nothing ever does.
+        if (
+          err instanceof Error &&
+          (err.name === "TimeoutError" || err.name === "AbortError")
+        ) {
+          console.error(
+            `bridge POST /send exceeded ${SEND_POST_TIMEOUT_MS}ms — leaving the row pending for reconciliation`,
+          );
+          return;
+        }
         // Network-level: the request never reached the bridge (down / wrong URL).
         errorCode = "BRIDGE_UNREACHABLE";
       }

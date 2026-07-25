@@ -66,6 +66,16 @@ export const KNOWN_ERROR_CODES = [
   "connection_lost",
   // Recv-silence self-heal exhausted: the agent worked past the recovery budget.
   "response_timeout",
+  // The gateway ANNOUNCED its restart before closing (`event:"shutdown"`) — a
+  // known maintenance window rather than an unexplained drop.
+  "gateway_restarting",
+  // The dispatch never reported back and the reconciler settled the row to unlock
+  // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose
+  // only its response), which is what its message says.
+  "DISPATCH_STALLED",
+  // The gateway closed us with `1008 "slow consumer"`: it had been dropping
+  // frames before cutting the link, so the reply was provably incomplete.
+  "connection_saturated",
   // The gateway's normalized hard failure classes (errorKind, from
   // ChatErrorEventSchema) that the bridge persists as errorCode — allowlisted
   // so the diagnostic surface names them instead of collapsing to "unknown".

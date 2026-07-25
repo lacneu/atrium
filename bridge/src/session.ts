@@ -30,6 +30,16 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 // mid-turn): the UI maps it to "connection lost — retry", never the user
 // "Interrompu". Distinct from the user Stop (Convex-set "aborted").
 const CONNECTION_LOST_CODE = "connection_lost";
+// The gateway ANNOUNCED its own restart (`event:"shutdown"`) before the socket
+// went away: a KNOWN maintenance window, not a mystery. Distinct from
+// connection_lost because the honest message differs ("it is coming back", and
+// often when) and because a restart RESUMES the run gateway-side.
+const GATEWAY_RESTARTING_CODE = "gateway_restarting";
+// The gateway hung up with `1008 "slow consumer"`: our receive buffer passed its
+// ceiling, so it had already been DROPPING frames before cutting us off. Distinct
+// from a network blip — the reply was provably incomplete, and the remedy is on
+// our side, not the user's.
+const CONNECTION_SATURATED_CODE = "connection_saturated";
 // The gateway kept reasoning past the recovery budget (a recv-silence turn whose
 // active status-query never resolved) — an actionable class distinct from a
 // dropped connection (the socket was fine; the agent simply took too long).
@@ -347,12 +357,14 @@ class Session implements BridgeSession {
       // it to its OWN table best-effort, off the critical path — it never gates the
       // summary upsert above and a failed detail write must not wedge the loop.
       if (record.toolPart) {
-        void this.writer.upsertSubAgentToolPart(record.toolPart).catch((err) => {
-          console.warn(
-            `[subagent] tool-part upsert failed chat=${this.chatId}:`,
-            (err as Error)?.message ?? err,
-          );
-        });
+        void this.writer
+          .upsertSubAgentToolPart(record.toolPart)
+          .catch((err) => {
+            console.warn(
+              `[subagent] tool-part upsert failed chat=${this.chatId}:`,
+              (err as Error)?.message ?? err,
+            );
+          });
       }
     }
   }
@@ -414,7 +426,14 @@ class Session implements BridgeSession {
         // finalize as a clear "connection lost" error, never "aborted" (which
         // the UI renders as the user's "Interrompu"). A user Stop set Convex
         // status "aborted" already; first-terminal-wins keeps it.
-        await this.runManager.endTurn(this.clock(), "error", CONNECTION_LOST_CODE);
+        const crashCause = this.closeCauseCode();
+        await this.runManager.endTurn(
+          this.clock(),
+          "error",
+          crashCause,
+          "external",
+          Session.namedKind(crashCause),
+        );
       } catch (err) {
         console.error(
           `[session] crash finalize error chat=${this.chatId}:`,
@@ -468,7 +487,8 @@ class Session implements BridgeSession {
         this.runManager.nextTimeout(tNow),
         this.observer.nextTimeout(tNow),
       );
-      const timeoutMs = timeoutSec === null ? null : Math.max(0, timeoutSec * 1000);
+      const timeoutMs =
+        timeoutSec === null ? null : Math.max(0, timeoutSec * 1000);
       // Arm the wake resolver for THIS race, then check `wakePending`
       // synchronously BEFORE blocking: a wake() delivered during the previous
       // iteration's await (feed/tick/recovery, when the resolver was null) is
@@ -509,22 +529,62 @@ class Session implements BridgeSession {
               // restart-recovery resumes the run and the answer lands in the
               // TRANSCRIPT. Poll it over a fresh connection; settle as
               // connection_lost only when the deadline passes with no reply.
-              console.log(
-                `[session] close mid-turn — starting transcript recovery chat=${this.chatId} (compactionPending=${this.runManager.compactionPending})`,
-              );
-              this.scheduleOrphanRecovery();
+              const cause = this.closeCauseCode();
+              const restartMs =
+                this.connection.connectionEnd?.restartExpectedMs ?? null;
+              // An announced absence LONGER than the whole recovery budget: polling
+              // would burn nine minutes on a gateway that has told us it will not be
+              // back, and then settle `connection_lost` — a false cause after a long
+              // wait. Settle immediately with the TRUE one instead.
+              if (
+                cause === GATEWAY_RESTARTING_CODE &&
+                restartMs !== null &&
+                restartMs > ORPHAN_RECOVERY_WALL_MS
+              ) {
+                console.log(
+                  `[session] gateway restart announced beyond the recovery budget (restartExpectedMs=${restartMs}) — settling ${cause} chat=${this.chatId}`,
+                );
+                try {
+                  await this.runManager.endTurn(
+                    now,
+                    "error",
+                    cause,
+                    cause,
+                    Session.namedKind(cause),
+                  );
+                } catch (err) {
+                  console.error(
+                    "[session] announced-restart settle failed:",
+                    (err as Error)?.message ?? err,
+                  );
+                }
+              } else {
+                console.log(
+                  `[session] close mid-turn — starting transcript recovery chat=${this.chatId} (compactionPending=${this.runManager.compactionPending}, cause=${cause})`,
+                );
+                this.scheduleOrphanRecovery("socket_drop", cause);
+              }
             } else if (this.runManager.compactionPending) {
               // No fetcher injected (test harness): keep the bounded settle.
               const rm = this.runManager;
               const settleClock = this.clock;
+              const deferredCause = this.closeCauseCode();
               setTimeout(() => {
                 if (!rm.isFinalized) {
-                  void rm.endTurn(settleClock(), "error", CONNECTION_LOST_CODE).catch((e) =>
-                    console.error(
-                      "[session] deferred compaction settle failed:",
-                      (e as Error)?.message ?? e,
-                    ),
-                  );
+                  void rm
+                    .endTurn(
+                      settleClock(),
+                      "error",
+                      deferredCause,
+                      "external",
+                      Session.namedKind(deferredCause),
+                    )
+                    .catch((e) =>
+                      console.error(
+                        "[session] deferred compaction settle failed:",
+                        (e as Error)?.message ?? e,
+                      ),
+                    );
                 }
               }, 120_000).unref?.();
             } else {
@@ -532,9 +592,19 @@ class Session implements BridgeSession {
                 `[session] close mid-turn — force-abort chat=${this.chatId} (no compaction pending)`,
               );
               try {
-                await this.runManager.endTurn(now, "error", CONNECTION_LOST_CODE);
+                const abortCause = this.closeCauseCode();
+                await this.runManager.endTurn(
+                  now,
+                  "error",
+                  abortCause,
+                  "external",
+                  Session.namedKind(abortCause),
+                );
               } catch (err) {
-                console.error("session close finalize error:", (err as Error)?.message ?? err);
+                console.error(
+                  "session close finalize error:",
+                  (err as Error)?.message ?? err,
+                );
               }
             }
           }
@@ -604,7 +674,10 @@ class Session implements BridgeSession {
             ),
           );
         } catch (err) {
-          console.error("session subagent observe error:", (err as Error)?.message ?? err);
+          console.error(
+            "session subagent observe error:",
+            (err as Error)?.message ?? err,
+          );
         }
         // Anchor propagation for frames the observer never re-observes (a
         // stashed announce replays INSIDE feed()): hand the turn's run ids +
@@ -685,9 +758,46 @@ class Session implements BridgeSession {
           // awaits nothing (no registration write) — it just cleans up + fires the writes.
           await this.flushSubAgentObserved(this.observer.sweep(now));
         } catch (err) {
-          console.error("session subagent sweep error:", (err as Error)?.message ?? err);
+          console.error(
+            "session subagent sweep error:",
+            (err as Error)?.message ?? err,
+          );
         }
       }
+    }
+  }
+
+  /**
+   * The stable cause for a turn that was in flight when THIS connection ended.
+   *
+   * Only the ends whose message genuinely differs for the reader get their own
+   * code. An auth refusal or another policy close stays `connection_lost` here —
+   * accurate (the connection WAS lost) and not actionable by the user; the
+   * precise kind is reported by `bridge_status`, where the operator looks.
+   */
+  /**
+   * The named kind to report as the failure CLASS, or null.
+   *
+   * Only the ends this lot newly identifies are stated: the historic
+   * `connection_lost` path keeps reporting exactly what it always did, so the
+   * operator telemetry gains the new classes without any pre-existing series
+   * changing meaning underneath.
+   */
+  private static namedKind(cause: string): string | null {
+    return cause === GATEWAY_RESTARTING_CODE ||
+      cause === CONNECTION_SATURATED_CODE
+      ? cause
+      : null;
+  }
+
+  private closeCauseCode(): string {
+    switch (this.connection.connectionEnd?.kind) {
+      case "gateway_restarting":
+        return GATEWAY_RESTARTING_CODE;
+      case "slow_consumer":
+        return CONNECTION_SATURATED_CODE;
+      default:
+        return CONNECTION_LOST_CODE;
     }
   }
 
@@ -704,6 +814,10 @@ class Session implements BridgeSession {
    */
   private scheduleOrphanRecovery(
     reason: "socket_drop" | "recv_silence" = "socket_drop",
+    // Cause captured AT THE DROP: by the time the deadline fires, the connection
+    // object may have been replaced, so re-reading it then would lose the name of
+    // the end we are settling for.
+    dropCause: string = CONNECTION_LOST_CODE,
   ): void {
     const rm = this.runManager;
     const fetcher = this.transcriptFetcher;
@@ -719,7 +833,9 @@ class Session implements BridgeSession {
       // (fresh 9-min budget + connection_lost class + the stale-transcript
       // baseline gate — the gateway may be REBOOTING now; codex R8 P2). Any
       // other combination is already covered by the active poll.
-      if (!(reason === "socket_drop" && this.recoveryReason === "recv_silence")) {
+      if (
+        !(reason === "socket_drop" && this.recoveryReason === "recv_silence")
+      ) {
         return;
       }
     }
@@ -782,14 +898,18 @@ class Session implements BridgeSession {
           : ORPHAN_RECOVERY_WALL_MS;
       if (polls > maxPolls || Date.now() - startedWallMs >= wallMs) {
         const settleCode =
-          reason === "recv_silence"
-            ? RESPONSE_TIMEOUT_CODE
-            : CONNECTION_LOST_CODE;
+          reason === "recv_silence" ? RESPONSE_TIMEOUT_CODE : dropCause;
         console.log(
           `[session] transcript recovery deadline — settling ${settleCode} chat=${chatId}`,
         );
         await rm
-          .endTurn(clock(), "error", settleCode, settleCode)
+          .endTurn(
+            clock(),
+            "error",
+            settleCode,
+            settleCode,
+            Session.namedKind(settleCode),
+          )
           .catch((e) =>
             console.error(
               "[session] orphan settle failed:",
@@ -904,11 +1024,16 @@ class Session implements BridgeSession {
           `[recovery] message-tool reply recovered (${text.length} chars) chat=${this.chatId}`,
         );
       } else {
-        console.log(`[recovery] no recoverable delivery found chat=${this.chatId}`);
+        console.log(
+          `[recovery] no recoverable delivery found chat=${this.chatId}`,
+        );
       }
     } catch (err) {
       // Non-fatal: the private-ack grace will flush best-effort content.
-      console.error("[recovery] sessions.get failed:", (err as Error)?.message ?? err);
+      console.error(
+        "[recovery] sessions.get failed:",
+        (err as Error)?.message ?? err,
+      );
     }
   }
 
@@ -1045,7 +1170,10 @@ export class SessionRegistry {
    *  the process alive — and is cleared by closeAll. */
   private ensureSweeper(): void {
     if (this.sweepTimer !== null) return;
-    this.sweepTimer = setInterval(() => this.reapStaleSessions(this.clock()), SWEEP_INTERVAL_MS);
+    this.sweepTimer = setInterval(
+      () => this.reapStaleSessions(this.clock()),
+      SWEEP_INTERVAL_MS,
+    );
     if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
   }
 
@@ -1085,7 +1213,11 @@ export class SessionRegistry {
     // yields a DIFFERENT key. We keep at most one live connection per chatId; if
     // the key changed we must close the stale one (else its consumer loop keeps
     // writing to the same chat under the old agent → leak + cross-write).
-    const sessionKey = buildSessionKey(openclawChatId ?? chatId, agentId, canonical);
+    const sessionKey = buildSessionKey(
+      openclawChatId ?? chatId,
+      agentId,
+      canonical,
+    );
     // The routed instance is ALSO part of a session's identity (one bridge, N
     // gateways): a chat whose routed instance changes (a chat with no stored
     // instanceName re-resolves per turn, and two gateways can expose the SAME agent
@@ -1113,9 +1245,7 @@ export class SessionRegistry {
     if (pending) {
       // Honor an in-flight create only if it targets the SAME key + instance;
       // otherwise wait for it to settle, then recurse so the re-key is applied.
-      return pending.then((s) =>
-        matches(s) ? s : this.acquire(routing),
-      );
+      return pending.then((s) => (matches(s) ? s : this.acquire(routing)));
     }
     const promise = this.create(chatId, sessionKey, routing).finally(() => {
       this.inflight.delete(chatId);

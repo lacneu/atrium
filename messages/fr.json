@@ -1267,6 +1267,8 @@
 	"runstatus_error": "Erreur",
 	"runstatus_error_orphaned": "La réponse a été générée côté agent mais n’a pas pu être finalisée (connexion au bridge interrompue en cours de route). Vous pouvez supprimer ou régénérer ce message.",
 	"runstatus_error_connection_lost": "La connexion à la passerelle a été interrompue pendant la réponse (compaction, redémarrage ou coupure réseau). Ce n'est pas une interruption de votre part. Renvoyez votre message, ou supprimez ce tour pour le régénérer.",
+	"runstatus_error_gateway_restarting": "La passerelle a annoncé un redémarrage et la connexion s'est fermée. Ce n'est pas une interruption de votre part, et nous ne savons pas si l'agent avait déjà pris ce tour : il a peut-être terminé pendant le redémarrage. Nous livrons la réponse si nous pouvons encore la voir, mais un long redémarrage peut la perdre. Vérifiez si une réponse arrive au retour de la passerelle avant de renvoyer la même demande.",
+	"runstatus_error_connection_saturated": "La connexion à la passerelle a été coupée parce que la réponse arrivait plus vite que nous ne pouvions la lire : une partie a été perdue. C'est une limite de notre côté, pas une erreur de la vôtre. Nous ne savons pas si l'agent a terminé ce tour — vérifiez avant de renvoyer la même demande.",
 	"runstatus_error_response_timeout": "L'agent a travaillé longtemps sans répondre et le délai de récupération est dépassé. Sa réponse a peut-être abouti côté passerelle : réessayez — l'historique sera pris en compte — ou reformulez une demande plus ciblée.",
 	"runstatus_error_context_length": "La fenêtre de contexte de l'agent a débordé pendant ce tour : l'historique plus les résultats d'outils accumulés en cours de tour ont dépassé la capacité du modèle (la jauge en haut reflète l'état d'avant le tour). Réessayez en demandant de déléguer aux sous-agents, compactez la session, ou démarrez un nouveau chat.",
 	"runstatus_error_compaction_timeout": "L'agent optimisait (compactait) une session volumineuse mais n'a pas terminé à temps. Réessayez, compactez la session, ou démarrez un nouveau chat pour repartir sur un contexte plus léger.",
@@ -1341,6 +1343,10 @@
 	"error_gateway_timeout_hint": "La passerelle n’a pas répondu à temps. Vérifiez qu’elle est démarrée et joignable (OPENCLAW_GATEWAY_URL).",
 	"error_gateway_disconnected_label": "Passerelle déconnectée",
 	"error_gateway_disconnected_hint": "La connexion à la passerelle a été coupée. Vérifiez l’état du conteneur OpenClaw et l’URL/port de la passerelle.",
+	"error_gateway_restarting_label": "Passerelle en redémarrage",
+	"error_gateway_restarting_hint": "La passerelle a annoncé un arrêt et fermé la connexion pendant l'envoi de ce message. La livraison n'est pas PROUVÉE pour autant : la passerelle peut accepter une requête puis fermer avant que son accusé ne soit lu. Vérifiez la transcription de session avant de relancer le travail. Si la passerelle ne revient pas d'elle-même, vérifiez son service.",
+	"error_connection_saturated_label": "Connexion saturée",
+	"error_connection_saturated_hint": "La passerelle a fermé la connexion parce que le bridge la lisait trop lentement (son tampon d'envoi de 50 Mio s'est rempli) : des trames ont été perdues. Regardez la charge du bridge et les tours produisant de très grosses sorties.",
 	"error_bridge_unreachable_label": "Bridge injoignable",
 	"error_bridge_unreachable_hint": "Convex n’a pas pu joindre le bridge. Vérifiez que le conteneur bridge tourne et BRIDGE_URL (http://<ip-hôte>:8787).",
 	"error_attachment_too_large_label": "Pièce jointe trop volumineuse",
@@ -2087,5 +2093,8 @@
 	"docviewer_inline_label": "(version modifiée par l'utilisateur) :",
 	"docviewer_inline_too_large": "Trop volumineux pour une insertion en ligne sur cette instance — réduisez le document ou utilisez une instance acceptant les pièces jointes",
 	"docviewer_discard_failed": "Impossible d'abandonner le brouillon — vérifiez la connexion et réessayez",
-	"docviewer_save_not_applied": "Non appliqué — les brouillons personnels sont désactivés pendant l'usurpation"
+	"docviewer_save_not_applied": "Non appliqué — les brouillons personnels sont désactivés pendant l'usurpation",
+	"runstatus_error_dispatch_unknown": "L'envoi de ce message n'a pas répondu à temps : nous avons arrêté d'attendre et libéré la conversation. Nous ne savons pas si l'agent l'a reçu — vérifiez si une réponse apparaît avant de renvoyer la même demande.",
+	"error_dispatch_stalled_label": "Dispatch bloqué (réconcilié)",
+	"error_dispatch_stalled_hint": "Ce dispatch est resté en attente bien plus longtemps qu'un dispatch vivant ne peut l'être : le réconciliateur l'a clos pour débloquer la conversation. Son action est morte avant de marquer la ligne, ou une reprise après préemption n'a jamais démarré — cherchez une action Convex plantée ou évincée à ce moment-là."
 }

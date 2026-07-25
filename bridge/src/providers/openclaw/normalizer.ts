@@ -621,8 +621,13 @@ export class Normalizer {
     status = "final",
     error: string | null = null,
     cause = "external",
+    // A caller that ALREADY knows the failure class states it (a NAMED connection
+    // end). Without this the kind stayed null on every forced finalize, the text
+    // fallback below could not classify a bare code, and the operator telemetry
+    // reported a generic `gateway_error` for an end we had just identified.
+    errorKind: string | null = null,
   ): BridgeEvent[] {
-    return this.finalize(now, status, error, null, cause);
+    return this.finalize(now, status, error, errorKind, cause);
   }
 
   /** Finalize the active turn as failed after a per-message upstream error. */

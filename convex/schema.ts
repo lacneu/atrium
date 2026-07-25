@@ -1199,6 +1199,23 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()),
+    // The OUTBOX row whose dispatch produced this turn — the only CORRELATION
+
+    // between a queued send and the assistant reply it caused. Written by
+
+    // `startAssistant` from the id the bridge received in its `/send` body.
+
+    // Without it, "did this send ever run?" is unanswerable: a delivery run, a
+
+    // spontaneous talk turn and this row's own reply are indistinguishable, and
+
+    // outboxReconcile would have to choose between swallowing a message and
+
+    // showing a card next to a real reply. Absent on gateway-initiated turns
+
+    // (announce/task deliveries, talk) — which is itself the signal.
+
+    dispatchOutboxId: v.optional(v.string()),
     // ANNOUNCE MERGE (sub-agent result lands in the SAME bubble): when a
     // gateway announce-run reopens this finished message, the pre-announce
     // text is parked here so finalize can recompose `prefix + separator +
@@ -1301,6 +1318,15 @@ export default defineSchema({
     // streaming message keeps the runtime `isRunning`). The reconciler ranges
     // exactly the streaming set ordered by updatedAt and flips the stale ones.
     .index("by_status_updated", ["status", "updatedAt"])
+    // Point lookup "did THIS dispatch produce a turn?" — outboxReconcile asks it
+    // once per stalled row. A per-chat scan would read the whole conversation.
+    .index("by_dispatch_outbox", ["dispatchOutboxId"])
+    // (boundInstance, dispatchOutboxId): "has the bridge serving THIS INSTANCE ever
+    // written a dispatch correlation?" — outboxReconcile's deployment guard. Scoped
+    // to the instance, not the chat: the per-turn router can send consecutive turns
+    // of ONE chat to different instances, so an upgraded bridge on instance A must
+    // not vouch for an older one on instance B.
+    .index("by_bound_instance_dispatch", ["boundInstance", "dispatchOutboxId"])
     // INGEST AUTHORIZATION: "was a turn in this chat routed to instance X?" —
     // the per-bridge cross-gateway write barrier's per-turn allow check. Indexed
     // (chatId, routedInstanceName) so it is an O(log n) point lookup, never a
@@ -1892,6 +1918,22 @@ export default defineSchema({
     // stays untouched (it is the BROWSER retry dedup key in send.sendMessage;
     // rewriting it would let a network-retried send duplicate the message).
     dispatchKey: v.optional(v.string()),
+    // WHEN this row entered `pending` — the dispatch-in-flight window. NOT
+    // derivable from `_creationTime`: a mid-turn send can sit `queued` for hours
+    // before the drain promotes it, so creation time would read as "stuck for
+    // hours" the instant it is dispatched. A `pending` row makes its chat BUSY
+    // (lib/outboxQueue.isChatBusy), so this stamp is what lets the reconciler tell
+    // a live dispatch from a lock nobody will ever release. Optional: rows written
+    // before this field exists fall back to a deliberately huge age threshold.
+    pendingSince: v.optional(v.number()),
+    // The EPHEMERAL routing segment this dispatch used (beginTurnRouting's returned
+    // `segment`), remembered ONLY so a dispatch whose ack was lost can still be
+    // CONFIRMED later: the normal path calls `confirmTurnRouting` right after the
+    // gateway ack, and skipping it leaves the chat's routing tuple at the previous
+    // agent — a later return to that agent then reads as same-agent and reuses its
+    // session with no rehydration. Written next to `perTurnRouting`; unconfirmed by
+    // itself (the chat's own tuple stays the only decision state).
+    dispatchSegment: v.optional(v.string()),
     status: v.union(
       // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an
       // in-flight turn, held here until that turn ends. The drainer (lib/
@@ -1905,6 +1947,12 @@ export default defineSchema({
     ),
   })
     .index("by_status", ["status"])
+    // (status, pendingSince): the reconciler's candidate order. It MUST be the
+    // dispatch START, not `_creationTime`: a row created long ago and promoted from
+    // `queued` a second ago would otherwise hold a scan slot ahead of a genuinely
+    // stalled row created later — starving it out of a bounded scan for as long as
+    // that crowd lasts, which silently breaks the "no chat stays locked" guarantee.
+    .index("by_status_pending_since", ["status", "pendingSince"])
     // (chatId, status): the busy-check reads (chat, "pending") and the FIFO drain
     // reads (chat, "queued") ordered by _creationTime — both are point ranges, no
     // scan. The single-in-flight-turn serialization is built on this index.

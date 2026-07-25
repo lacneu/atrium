@@ -361,6 +361,11 @@ async function dispatchRenditionTurn(
       },
     ],
     status: "pending" as const,
+    // Dispatched immediately → the in-flight window opens now (schema.outbox
+    // .pendingSince). EVERY creator of a `pending` row must stamp it: an
+    // unstamped one falls back to a far longer reconciliation bound, so the
+    // conversation would stay locked much longer than necessary (codex P2).
+    pendingSince: Date.now(),
   });
   await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
 }

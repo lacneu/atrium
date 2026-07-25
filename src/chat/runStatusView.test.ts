@@ -122,6 +122,28 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.detail).toBeNull(); // the bare code is not a useful detail
   });
 
+  it("a NAMED connection end gets its own headline, not the generic lost-connection one", () => {
+    // The bridge writes these as the error STRING (the socket-drop settle path), so
+    // both the code and the string route must recognize them — otherwise the reader
+    // sees the bare technical code.
+    const generic = errorDetailView("connection_lost", null).headline;
+    for (const code of ["gateway_restarting", "connection_saturated"]) {
+      const viaString = errorDetailView(code, null);
+      expect(viaString.headline).toBeTruthy();
+      expect(viaString.headline).not.toBe(code);
+      expect(viaString.headline).not.toBe(generic);
+      expect(viaString.detail).toBeNull(); // the bare code is not a useful detail
+      // The UPPERCASE curated code (failDispatch, pre-ack) resolves to the SAME
+      // headline: a close before the ack does not prove the request was refused —
+      // a response can race ahead of it — so the reader must not be told a
+      // different story per moment.
+      const preAck = errorDetailView("", code.toUpperCase());
+      expect(preAck.headline).toBe(viaString.headline);
+      // And neither wording may promise a delivery state we cannot establish.
+      expect(preAck.headline ?? "").not.toMatch(/nothing ran|never reached/i);
+    }
+  });
+
   it("stream_orphaned via error string (legacy path, no errorCode) keeps its headline", () => {
     const v = errorDetailView("stream_orphaned", null);
     expect(v.headline).toBeTruthy();

@@ -182,6 +182,20 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   refusal: m.runstatus_error_refusal,
   stream_orphaned: m.runstatus_error_orphaned,
   connection_lost: m.runstatus_error_connection_lost,
+  // A named connection end: the gateway said it was restarting, or it hung up on
+  // us for being too slow to read. Both used to arrive as `connection_lost`.
+  gateway_restarting: m.runstatus_error_gateway_restarting,
+  connection_saturated: m.runstatus_error_connection_saturated,
+  // The same two ends can also kill a send BEFORE the turn streams (failDispatch
+  // stores the CURATED uppercase code then). SAME text, deliberately: the delivery
+  // state is UNKNOWN at both moments, so no reader-facing wording may separate
+  // them. Pre-ack does not prove nothing ran — a response frame can race ahead of
+  // the `chat.send` ack (performSend handles exactly that) — and post-ack recovery
+  // is not guaranteed either, since an announced absence longer than the recovery
+  // budget closes the turn with no poll left (codex P1 ×2). Telling the user
+  // "nothing ran, resend" would duplicate accepted agent work.
+  GATEWAY_RESTARTING: m.runstatus_error_gateway_restarting,
+  CONNECTION_SATURATED: m.runstatus_error_connection_saturated,
   // The agent kept working past the recovery budget (recv-silence self-heal
   // exhausted) — the turn is closed but the agent may still finish gateway-side.
   response_timeout: m.runstatus_error_response_timeout,
@@ -205,6 +219,10 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   no_agent: m.runstatus_error_no_agent,
   agent_restricted: m.runstatus_error_agent_restricted,
   send_failed: m.runstatus_error_send_failed,
+  // The dispatch never reported back and was reconciled. The generic "send failed"
+  // headline would tell the reader to just retry — but delivery is UNKNOWN here,
+  // and a blind retry can duplicate a turn the agent already accepted.
+  DISPATCH_STALLED: m.runstatus_error_dispatch_unknown,
   ATTACHMENT_TOO_LARGE: m.runstatus_error_attachment_too_large,
   ATTACHMENT_REJECTED: m.runstatus_error_attachment_rejected,
 };
@@ -223,6 +241,8 @@ const OVERFLOW_TEXT_RE =
 const ERROR_STRING_CODES = new Set([
   "stream_orphaned",
   "connection_lost",
+  "gateway_restarting",
+  "connection_saturated",
   "response_timeout",
   // failDispatch stores the code string in `error` too (raw === code -> the
   // detail line is suppressed, only the localized headline shows).
