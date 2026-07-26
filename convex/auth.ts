@@ -19,8 +19,10 @@
 // `convex/http.ts` to expose the OAuth callback routes. authTables is spread in
 // schema.ts; http.ts registers the routes.
 
-import Google from "@auth/core/providers/google";
-import MicrosoftEntraID from "@auth/core/providers/microsoft-entra-id";
+import Google, { type GoogleProfile } from "@auth/core/providers/google";
+import MicrosoftEntraID, {
+  type MicrosoftEntraIDProfile,
+} from "@auth/core/providers/microsoft-entra-id";
 import { Anonymous } from "@convex-dev/auth/providers/Anonymous";
 import { convexAuth } from "@convex-dev/auth/server";
 import {
@@ -41,7 +43,7 @@ import {
 // --- Google (set AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET on the deployment) -------
 const googleEnabled = !!process.env.AUTH_GOOGLE_ID;
 const google = Google({
-  profile(p: Record<string, unknown>) {
+  profile(p: GoogleProfile) {
     // Google reliably sends email_verified; require it + an allowed domain.
     if (!emailVerifiedTruthy(p.email_verified)) {
       throw new Error("Email non vérifié par Google.");
@@ -81,7 +83,7 @@ if (process.env.AUTH_MICROSOFT_ENTRA_ID_ID && !msIssuer) {
 const microsoft = MicrosoftEntraID({
   issuer: msIssuer,
   checks: ["state"],
-  profile(p: Record<string, unknown>) {
+  profile(p: MicrosoftEntraIDProfile) {
     const email = extractEntraEmail(p);
     if (!emailDomainAllowed(email)) {
       throw new Error("Domaine de courriel non autorisé.");
