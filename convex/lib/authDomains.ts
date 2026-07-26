@@ -50,7 +50,11 @@ export function anonAuthEnabled(): boolean {
  * authorization. Returns undefined if no claim carries an email (→ fail-closed).
  */
 export function extractEntraEmail(
-  p: Record<string, unknown>,
+  p: Readonly<{
+    email?: unknown;
+    upn?: unknown;
+    preferred_username?: unknown;
+  }>,
 ): string | undefined {
   const cand = (p.email ?? p.upn ?? p.preferred_username) as
     | string
