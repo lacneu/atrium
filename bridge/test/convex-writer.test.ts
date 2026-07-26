@@ -1144,6 +1144,25 @@ describe("uploadContentType (text blobs must serve as UTF-8, live mojibake repor
   });
 });
 
+describe("the session-state clear is retried too (idempotent by construction)", () => {
+  test("a transient failure is retried: a lost clear would strand the OLD session's state", async () => {
+    let attempts = 0;
+    const fetchImpl = (async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("network");
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    await w.clearSessionState("chat-1", 1_000);
+
+    // Without the retry, a rollover that loses this POST leaves the new session
+    // wearing the old one's counters and overfull warning — and no later send
+    // is "fresh" again to try once more.
+    expect(attempts).toBe(2);
+  });
+});
+
 describe("finalize is retried when the POST fails transiently (G-30)", () => {
   test("a complete reply is not left 'streaming' by one flaky POST", async () => {
     // The reply is WRITTEN; only its terminal POST failed. Without a retry the row

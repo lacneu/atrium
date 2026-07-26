@@ -3,7 +3,7 @@
 // the builtin plan tool (input = start args, output = result).
 
 import { describe, expect, it } from "vitest";
-import { planPartFromTool } from "../src/core/plan-part.js";
+import { planPartFromPlanStream, planPartFromTool } from "../src/core/plan-part.js";
 
 // Verbatim (trimmed) from the capture: the 2nd update of a 4-step plan.
 const INPUT = {
@@ -75,5 +75,48 @@ describe("planPartFromTool (real captured shapes)", () => {
       planPartFromTool("update_plan", "completed", { plan: [] }, {}),
     ).toBeNull();
     expect(planPartFromTool("update_plan", "completed", {}, {})).toBeNull();
+  });
+});
+
+// --- G-22: the NATIVE `stream:"plan"` event --------------------------------
+// The gateway maintains the same plan on its own stream. Two shapes, both read
+// from the deployed 2026.7.1 build: `handleTurnPlanUpdated` sends the structured
+// entries the tool result also carries, `splitPlanText` sends plain lines.
+describe("planPartFromPlanStream (native plan stream)", () => {
+  it("the STRUCTURED shape yields a part IDENTICAL to the tool path", () => {
+    // The program's own acceptance criterion: the two paths must never diverge.
+    const fromTool = planPartFromTool("update_plan", "completed", INPUT, OUTPUT);
+    const fromStream = planPartFromPlanStream({
+      phase: "update",
+      title: "Plan updated",
+      source: "codex-app-server",
+      explanation: INPUT.explanation,
+      steps: INPUT.plan,
+    });
+    expect(fromStream).toEqual(fromTool);
+  });
+
+  it("the PLAIN-LINE shape reads every line as a step, status `pending`", () => {
+    // The gateway stated no status: showing progress it never reported would be
+    // an invention the reader cannot tell from a real one.
+    const p = planPartFromPlanStream({
+      phase: "update",
+      steps: ["Lire le fichier", "Corriger la fonction", "Lancer les tests"],
+    });
+    expect(p).toEqual({
+      kind: "plan",
+      steps: [
+        { step: "Lire le fichier", status: "pending" },
+        { step: "Corriger la fonction", status: "pending" },
+        { step: "Lancer les tests", status: "pending" },
+      ],
+    });
+  });
+
+  it("an empty or malformed payload yields nothing (never an empty plan card)", () => {
+    expect(planPartFromPlanStream({ phase: "update", steps: [] })).toBeNull();
+    expect(planPartFromPlanStream({ phase: "update" })).toBeNull();
+    expect(planPartFromPlanStream(null)).toBeNull();
+    expect(planPartFromPlanStream({ steps: [{ nope: 1 }] })).toBeNull();
   });
 });

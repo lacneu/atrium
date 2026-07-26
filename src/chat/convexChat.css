@@ -6740,6 +6740,11 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.74rem;
   color: var(--muted-foreground);
 }
+/* The context PRE-ANNOUNCEMENT (G-08): the session no longer fits. A warning,
+   not an error — the turn has not failed yet, which is the whole point. */
+.oc-spanel__help--warn {
+  color: var(--warning-foreground, var(--destructive));
+}
 .oc-spanel__error {
   display: flex;
   align-items: center;

@@ -99,6 +99,8 @@ export const KNOWN_ERROR_CODES = [
   // could not read, and the transcript recovery found nothing: a NAMED cause
   // instead of an unexplained empty turn.
   "msgtool_args_unreadable",
+  // The turn ended still waiting for a command approval Atrium cannot grant.
+  "awaiting_approval",
   // Dispatch-failure codes (failDispatch stores the CODE, the UI localizes):
   "not_configured",
   "no_agent",

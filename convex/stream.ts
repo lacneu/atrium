@@ -767,11 +767,46 @@ async function reopenParentForAnnounce(
 // Values are allowlisted here — the bridge is trusted but the wire is not the
 // schema. Sets ONLY the phase (+updatedAt, which doubles as a watchdog
 // heartbeat while the agent legitimately works in silence).
+/**
+ * How long the session-RESET fence stays armed.
+ *
+ * The fence compares a BRIDGE timestamp (`observedAt`) against a CONVEX one
+ * (`sessionResetAt`), and the two clocks are not the same machine's. Left armed
+ * forever, a bridge running behind would have every valid post-reset write
+ * rejected until its drift caught up — the fresh session would sit with no meta
+ * and no gauge (codex P2). In-flight writes of the old session land within
+ * seconds, so the fence only has to cover that; past this window it disarms and
+ * the deployment self-heals whatever its skew.
+ */
+const RESET_FENCE_WINDOW_MS = 2 * 60 * 1000;
+
+/** True when `observedAt` describes the session a reset just replaced. */
+function beforeSessionReset(
+  observedAt: number | undefined,
+  resetAt: number | undefined,
+): boolean {
+  if (observedAt === undefined || resetAt === undefined) return false;
+  if (Date.now() - resetAt > RESET_FENCE_WINDOW_MS) return false; // disarmed
+  // `<=`, not `<` (codex P2): the two timestamps come from different machines,
+  // so a verdict of the OLD session observed in the SAME millisecond as the
+  // reset is ambiguous — and admitting it leaves a false warning the meta
+  // refreshes then preserve. A clock genuinely ahead still slips through; that
+  // one self-heals on the next send, which finds the session fresh.
+  return observedAt <= resetAt;
+}
+
 const TURN_PHASES = new Set([
   "processing_history",
   "compacting",
   "querying_gateway",
   "awaiting_subagents",
+  // The gateway emitted its DEFERRED terminal (`lifecycle phase:"finishing"`):
+  // the answer is complete and it is finishing its post-turn work. Before this
+  // the turn simply went silent until the 240 s recv timeout (G-20).
+  "post_processing",
+  // A tool asked for a human approval this app cannot grant (G-21): the turn is
+  // deliberately waiting, and saying so beats a silent spinner.
+  "awaiting_approval",
 ]);
 
 export const setPhase = internalMutation({
@@ -1939,6 +1974,193 @@ export const finalize = internalMutation({
 // The bridge calls this (via the ingest httpAction) when it learns a turn's
 // session meta. INTERNAL (not browser-callable). All fields optional + stamped
 // with `updatedAt` — never holds secrets (model/level names are non-sensitive).
+/**
+ * Record the compaction VERDICT on the chat (G-08).
+ *
+ * A compaction that failed for good means the session never shrank: the next
+ * turn is very likely to hit the context wall, and the counters the gauge shows
+ * can look perfectly comfortable meanwhile. Persisted on the chat because it has
+ * to PRE-ANNOUNCE the next turn — it deliberately outlives the turn that
+ * observed it, and only a compaction that actually completed clears it.
+ */
+/**
+ * Drop the session-scoped context state after the gateway session was ACTUALLY
+ * replaced (G-08). Called from the reset ACTION's success path, never from the
+ * mutation that schedules it: the bridge refuses a reset when a turn went live
+ * in the schedule→execute window, and clearing eagerly would show a fresh,
+ * un-warned session while the gateway still held the old, overfull one.
+ */
+export const clearSessionStateAfterReset = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    /** When the reset was DISPATCHED. Anything observed at or after it belongs
+     *  to the session that came next, not the one being cleared (codex P2): the
+     *  panel does not reserve the chat, so a user can send — and that turn can
+     *  write fresh meta — between the reset POST and this cleanup. */
+    resetStartedAt: v.number(),
+    /** When the gateway CONFIRMED the reset. The two instants answer different
+     *  questions and a single one cannot do both (codex P2): what to KEEP is
+     *  decided by the dispatch time (protecting the new session's early writes),
+     *  while the FENCE against later stragglers must sit at the completion —
+     *  a background compaction of the OLD session can be received anywhere in
+     *  between. Defaults to the dispatch time for an older caller. */
+    resetCompletedAt: v.optional(v.number()),
+    ...boundArg,
+  },
+  handler: async (
+    ctx,
+    { chatId, resetStartedAt, resetCompletedAt, boundInstanceName },
+  ) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    await assertChatBound(ctx, chatId, boundInstanceName);
+    const {
+      // The compaction verdict…
+      sessionOverfull,
+      sessionOverfullAt,
+      // …and every SESSION-DEPENDENT context measure with it: the warning also
+      // fires when the gateway's own estimate exceeds its budget, and those
+      // numbers describe the session that no longer exists. Kept, they would go
+      // on saying "this no longer fits" about an empty session until the next
+      // send refreshes them. Same set the fork drops.
+      estimatedPromptTokens,
+      promptBudgetBeforeReserve,
+      overflowTokens,
+      estimateAt,
+      totalTokens,
+      totalTokensFresh,
+      activeTokens,
+      activeTokensAt,
+      estimatedCostUsd,
+      ...rest
+    } = chat.sessionMeta ?? {};
+    void sessionOverfull;
+    void sessionOverfullAt;
+    void estimatedPromptTokens;
+    void promptBudgetBeforeReserve;
+    void overflowTokens;
+    void estimateAt;
+    void totalTokens;
+    void totalTokensFresh;
+    void activeTokens;
+    void activeTokensAt;
+    // …but a value the NEXT session already wrote is kept: only what predates
+    // the reset is dropped.
+    const estimateIsNewer =
+      estimateAt !== undefined && estimateAt >= resetStartedAt;
+    const usageIsNewer =
+      activeTokensAt !== undefined && activeTokensAt >= resetStartedAt;
+    // The VERDICT is judged against the COMPLETION bound, the measures against
+    // the DISPATCH one — deliberately different (codex P2). A verdict that
+    // landed while the reset was in flight almost certainly belongs to the old
+    // session, and a false "this no longer fits" is worse than a missing one:
+    // the next compaction re-raises it. A missing GAUGE, by contrast, is worse
+    // than a briefly stale one, and it self-heals on the next describe.
+    const resetSettledAt = resetCompletedAt ?? resetStartedAt;
+    const verdictIsNewer =
+      sessionOverfullAt !== undefined && sessionOverfullAt > resetSettledAt;
+    if (!estimateIsNewer) {
+      void estimatedPromptTokens;
+      void promptBudgetBeforeReserve;
+      void overflowTokens;
+      void estimateAt;
+      void totalTokens;
+      void totalTokensFresh;
+      void estimatedCostUsd;
+    }
+    // The fence is stamped even when no verdict stood: a compaction event of the
+    // OLD session may already be in flight, and it must not warn the new one.
+    // Anchored at the reset's DISPATCH, the same instant the keeps compare to.
+    await ctx.db.patch(chatId, {
+      sessionMeta: {
+        ...rest,
+        ...(estimateIsNewer
+          ? {
+              ...(estimatedPromptTokens !== undefined
+                ? { estimatedPromptTokens }
+                : {}),
+              ...(promptBudgetBeforeReserve !== undefined
+                ? { promptBudgetBeforeReserve }
+                : {}),
+              ...(overflowTokens !== undefined ? { overflowTokens } : {}),
+              estimateAt,
+              // The COUNTERS come from the same describe as the estimate above
+              // (codex P2): kept apart, the new session would show a fresh
+              // estimate with no counter and no cost until the next refresh.
+              ...(totalTokens !== undefined ? { totalTokens } : {}),
+              ...(totalTokensFresh !== undefined ? { totalTokensFresh } : {}),
+              ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+            }
+          : {}),
+        ...(usageIsNewer ? { activeTokens, activeTokensAt } : {}),
+        ...(verdictIsNewer
+          ? { sessionOverfull, sessionOverfullAt }
+          : {}),
+        // The fence only ever MOVES FORWARD (codex P2): two resets can settle out
+        // of order, and letting the older one overwrite the newer fence would
+        // re-open the window for a verdict observed in between.
+        sessionResetAt: Math.max(
+          resetCompletedAt ?? resetStartedAt,
+          chat.sessionMeta?.sessionResetAt ?? 0,
+        ),
+      },
+    });
+  },
+});
+
+export const setSessionOverfull = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    overfull: v.boolean(),
+    /** Bridge observation time — the fence against a verdict observed BEFORE a
+     *  session reset (codex P2). Absent on an older bridge: unfenced, as before. */
+    observedAt: v.optional(v.number()),
+    ...boundArg,
+  },
+  handler: async (ctx, { chatId, overfull, observedAt, boundInstanceName }) => {
+    // A chat deleted between the HTTP authorization and this late POST is a
+    // NO-OP, exactly like setSessionMeta — never a 403 (codex P3):
+    // `chatAllowsInstance` returns false for a missing chat, so asserting first
+    // turned a benign late compaction event into an authorization failure.
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    await assertChatBound(ctx, chatId, boundInstanceName);
+    const meta = chat.sessionMeta ?? {};
+    // ORDERED BY OBSERVATION, in BOTH directions (codex P2). Verdicts travel as
+    // independent fire-and-forget POSTs, so a stale one can land after a fresher
+    // one — and a stale `false` erasing a real warning is exactly as wrong as a
+    // stale `true` raising a false one. The watermark is the later of the last
+    // applied verdict and the last session RESET (a verdict observed before the
+    // reset describes the session the user threw away).
+    if (beforeSessionReset(observedAt, meta.sessionResetAt)) return;
+    const watermark = meta.sessionOverfullAt ?? 0;
+    if (observedAt !== undefined && watermark > 0 && observedAt < watermark) {
+      return;
+    }
+    if ((meta.sessionOverfull ?? false) === overfull) {
+      // Same verdict: no display churn, but the WATERMARK still advances (codex
+      // P2). Skipping it would leave the first all-clear unstamped, and an older
+      // failure POST arriving afterwards — the exact reordering this guards
+      // against — would then be accepted and re-raise the warning.
+      if (observedAt !== undefined && observedAt > watermark) {
+        await ctx.db.patch(chatId, {
+          sessionMeta: { ...meta, sessionOverfullAt: observedAt },
+        });
+      }
+      return;
+    }
+    await ctx.db.patch(chatId, {
+      sessionMeta: {
+        ...meta,
+        sessionOverfull: overfull,
+        // The watermark of the APPLIED verdict, whatever its value: recording it
+        // only on a raise would leave a clear unordered.
+        sessionOverfullAt: observedAt ?? Date.now(),
+      },
+    });
+  },
+});
+
 export const setSessionMeta = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -1988,6 +2210,11 @@ export const setSessionMeta = internalMutation({
     // the stamp on the conservative counter-fell signal.
     const { observedAt: metaAt, ...metaRest } = meta;
     const prev = chat.sessionMeta;
+    // RESET FENCE (codex P2): a describe snapshot OBSERVED BEFORE the user reset
+    // this conversation describes the session they threw away. Landing after the
+    // reset it would restore the old estimate and budget — and immediately
+    // re-raise the "no longer fits" warning on a brand-new, empty session.
+    if (beforeSessionReset(metaAt, prev?.sessionResetAt)) return;
     const stampAt = prev?.activeTokensAt;
     const metaIsNewer =
       metaAt !== undefined && (stampAt === undefined || metaAt > stampAt);
@@ -2073,6 +2300,26 @@ export const setSessionMeta = internalMutation({
         ...metaRest,
         ...keepActive,
         ...estimateFields,
+        // The compaction VERDICT belongs to setSessionOverfull and to nothing
+        // else: this meta refresh rebuilds the object from scratch, so without
+        // carrying it forward an ordinary describe (every send) would erase the
+        // warning right before the turn it exists to pre-announce (codex P2).
+        ...(prev?.sessionOverfull !== undefined
+          ? { sessionOverfull: prev.sessionOverfull }
+          : {}),
+        // The WATERMARK travels independently of the verdict (codex P2): the
+        // first all-clear stamps a watermark while leaving `sessionOverfull`
+        // absent, and dropping it here would let an older `true` POST arrive
+        // afterwards against a zero watermark and re-raise the warning the
+        // fresher verdict had just cleared.
+        ...(prev?.sessionOverfullAt !== undefined
+          ? { sessionOverfullAt: prev.sessionOverfullAt }
+          : {}),
+        // …and the reset FENCE with it: dropped, a late verdict from the old
+        // session would be admitted on the very next refresh.
+        ...(prev?.sessionResetAt !== undefined
+          ? { sessionResetAt: prev.sessionResetAt }
+          : {}),
         updatedAt: Date.now(),
       },
     });
@@ -2100,6 +2347,9 @@ export const setSessionActiveTokens = internalMutation({
     if (observedAt !== undefined && prevAt !== undefined && observedAt <= prevAt) {
       return; // an older observation arriving late must not overwrite
     }
+    // RESET FENCE (codex P2), same rule as setSessionMeta: a measure of the
+    // session the user just threw away must not describe the fresh one.
+    if (beforeSessionReset(observedAt, chat.sessionMeta?.sessionResetAt)) return;
     // The pre-prompt ESTIMATE describes the turn that was about to run — this
     // write is the MEASURE of the turn that just finished, so it supersedes it.
     // Leaving the estimate in place would pin the gauge to a stale pre-turn figure

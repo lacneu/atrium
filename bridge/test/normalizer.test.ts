@@ -2863,3 +2863,325 @@ describe("G-17: assistant-stream phase and replace", () => {
     expect(visible(ev)).toEqual(["full answer"]);
   });
 });
+
+// --- G-22: the native plan stream reaches the thread ------------------------
+describe("G-22: `stream:\"plan\"` becomes a plan part", () => {
+  it("emits the SAME plan part the update_plan tool path would, and counts NO tool call", () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "plan",
+          data: {
+            phase: "update",
+            title: "Plan updated",
+            source: "codex-app-server",
+            explanation: "On commence par lire.",
+            steps: [
+              { step: "Lire le fichier", status: "completed" },
+              { step: "Corriger", status: "in_progress" },
+            ],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev.find((e) => e.type === "plan")?.plan).toEqual({
+      kind: "plan",
+      steps: [
+        { step: "Lire le fichier", status: "completed" },
+        { step: "Corriger", status: "in_progress" },
+      ],
+      explanation: "On commence par lire.",
+    });
+    // A plan is not a tool call: the spawn/yield gates read those counters.
+    expect(ev.some((e) => e.type === "tool.status")).toBe(false);
+  });
+});
+
+// --- G-20: the gateway's DEFERRED terminal ----------------------------------
+// The standard embedded-agent path sets `deferTerminalLifecycle`, so the gateway
+// emits `lifecycle phase:"finishing"` when it is done producing and closing the
+// turn out. We had no branch: the turn went silent until the 240 s recv timeout.
+describe("G-20: lifecycle `finishing` and terminal metadata", () => {
+  const startTurn = () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+  const lifecycle = (data: Record<string, unknown>) => ({
+    event: "agent",
+    payload: {
+      runId: OWN_RUN,
+      sessionKey: SESSION_KEY,
+      stream: "lifecycle",
+      data,
+    },
+  });
+
+  it("`finishing` says what the turn is doing and arms a wait WELL under the 240 s silence", () => {
+    const { n, clock } = startTurn();
+    const ev = n.feed(lifecycle({ phase: "finishing", startedAt: 1, endedAt: 2 }), clock.tick());
+    expect(ev.find((e) => e.type === "turn.phase")?.phase).toBe("post_processing");
+    expect(n.finalized).toBe(false);
+    const wait = n.nextTimeout(clock.now);
+    expect(wait).not.toBeNull();
+    expect(wait!).toBeLessThan(BASE_RECV_TIMEOUT);
+  });
+
+  it("the real `end` cancels that wait (no double terminal)", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(lifecycle({ phase: "end", stopReason: "stop", livenessState: "working" }), clock.tick());
+    // Only the normal 10 s follow-on grace remains — the finishing wait is gone.
+    const ev = n.tick(clock.now + 61);
+    expect(ev.some((e) => e.type === "message.final")).toBe(true);
+  });
+
+  it("codex P2: a new run CLEARS the \"finishing\" label (nothing else does)", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const ev = n.feed(lifecycle({ phase: "start" }), clock.tick());
+    // Deltas never clear a phase: without this the resumed run would show
+    // "Finishing up…" for its whole life.
+    expect(ev.find((e) => e.type === "turn.phase")?.phase).toBe("generating");
+  });
+
+  it("a `finishing` that never becomes an `end` still closes the turn", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const ev = n.tick(clock.now + 61);
+    expect(n.finalized).toBe(true);
+    expect(ev.find((e) => e.type === "message.final")).toMatchObject({
+      diagnosticFinalizeCause: "lifecycle_finishing_timeout",
+    });
+  });
+
+  it("the terminal METADATA reaches the diagnostics (a provider-timeout kill reads as one)", () => {
+    const { n, clock } = startTurn();
+    // Exactly what `buildLifecycleTerminalMeta` ships on a timed-out run.
+    n.feed(
+      lifecycle({
+        phase: "end",
+        aborted: true,
+        status: "timed_out",
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+        livenessState: "working",
+      }),
+      clock.tick(),
+    );
+    const final = n
+      .tick(clock.now + 11)
+      .find((e) => e.type === "message.final");
+    expect(final).toMatchObject({
+      diagnosticTimeoutPhase: "provider",
+      diagnosticProviderStarted: true,
+      diagnosticAborted: true,
+    });
+  });
+
+  it("`yielded` is the PRIMARY hand-off signal, reported without any sessions_yield tool", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "end", yielded: true, livenessState: "working" }), clock.tick());
+    const final = n.tick(clock.now + 11).find((e) => e.type === "message.final");
+    expect(final).toMatchObject({ gatewayYielded: true });
+  });
+
+  it("codex P2: a compaction REPLAY does not inherit the abandoned attempt's terminal metadata", () => {
+    const { n, clock } = startTurn();
+    // The abandoned attempt was killed by the provider timeout…
+    n.feed(
+      lifecycle({
+        phase: "end",
+        aborted: true,
+        stopReason: "timeout",
+        timeoutPhase: "provider",
+        providerStarted: true,
+        livenessState: "abandoned",
+        replayInvalid: true,
+      }),
+      clock.tick(),
+    );
+    // …and the replay finishes cleanly. The turn the user keeps is the replay's.
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          seq: 2,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "la réponse" }] },
+        },
+      },
+      clock.tick(),
+    );
+    const final = ev.find((e) => e.type === "message.final");
+    expect(final).toMatchObject({
+      diagnosticTimeoutPhase: null,
+      diagnosticProviderStarted: null,
+      diagnosticAborted: false,
+    });
+  });
+
+  it("codex P1: an unknown `timeoutPhase` is BUCKETED, never forwarded verbatim (SOC2)", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      lifecycle({
+        phase: "end",
+        aborted: true,
+        // The wire type is a free string: a gateway variant could put anything
+        // here, and this rides a metadata-ONLY trace.
+        timeoutPhase: "waiting on user request: transférer 4000 EUR à Jean",
+        livenessState: "working",
+      }),
+      clock.tick(),
+    );
+    const final = n.tick(clock.now + 11).find((e) => e.type === "message.final");
+    expect(final?.diagnosticTimeoutPhase).toBe("other");
+  });
+
+  it("a known `timeoutPhase` keeps its own name", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "end", aborted: true, timeoutPhase: "queue" }), clock.tick());
+    const final = n.tick(clock.now + 11).find((e) => e.type === "message.final");
+    expect(final?.diagnosticTimeoutPhase).toBe("queue");
+  });
+
+  it("a NOMINAL end reports no terminal metadata (the gateway ships none)", () => {
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "end", stopReason: "stop", livenessState: "working" }), clock.tick());
+    const final = n.tick(clock.now + 11).find((e) => e.type === "message.final");
+    expect(final).toMatchObject({
+      diagnosticTimeoutPhase: null,
+      diagnosticProviderStarted: null,
+      diagnosticAborted: false,
+      gatewayYielded: false,
+    });
+  });
+});
+
+// --- G-21: a command approval nobody can grant ------------------------------
+describe("G-21: `stream:\"approval\"`", () => {
+  const startTurn = () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+  const approval = (data: Record<string, unknown>) => ({
+    event: "agent",
+    payload: {
+      runId: OWN_RUN,
+      sessionKey: SESSION_KEY,
+      stream: "approval",
+      data,
+    },
+  });
+
+  it("`requested` says what the turn waits for and suspends the SILENCE clock", () => {
+    const { n, clock } = startTurn();
+    const ev = n.feed(
+      approval({
+        phase: "requested",
+        kind: "exec",
+        status: "pending",
+        title: "Command approval requested",
+        itemId: "cmd-1",
+        toolCallId: "call-1",
+        approvalId: "ap-1",
+        command: "rm -rf /tmp/x",
+      }),
+      clock.tick(),
+    );
+    expect(ev.find((e) => e.type === "turn.phase")?.phase).toBe("awaiting_approval");
+    // The run is ALIVE and deliberately waiting: the 240 s silence budget is the
+    // wrong clock, and letting it fire produced an unexplained empty response.
+    n.tick(clock.now + BASE_RECV_TIMEOUT + 1);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("codex P2: keep-alive traffic cannot re-arm the 240 s silence under an approval", () => {
+    const { n, clock } = startTurn();
+    n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
+    // A heartbeat of our own run lands while the human is still deciding.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "start" },
+        },
+      },
+      clock.tick(),
+    );
+    // Re-armed, the 240 s budget would fire long before the 900 s approval wait
+    // and close the turn as a recv_timeout instead of naming the cause.
+    n.tick(clock.now + BASE_RECV_TIMEOUT + 1);
+    expect(n.finalized).toBe(false);
+    expect(n.takeRecvSilence()).toBe(false);
+  });
+
+  it("content that RESUMES releases the approval wait (the answer came through)", () => {
+    const { n, clock } = startTurn();
+    n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "la suite" },
+        },
+      },
+      clock.tick(),
+    );
+    // Back on the normal clock: an approval that resolved out of band must not
+    // hold the turn for 900 s.
+    n.tick(clock.now + BASE_RECV_TIMEOUT + 1);
+    expect(n.takeRecvSilence()).toBe(true);
+  });
+
+  it("`resolved` releases the wait and clears the phase", () => {
+    const { n, clock } = startTurn();
+    n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
+    const ev = n.feed(
+      approval({ phase: "resolved", kind: "exec", status: "denied" }),
+      clock.tick(),
+    );
+    expect(ev.find((e) => e.type === "turn.phase")?.phase).toBe("generating");
+    // …and the normal silence budget is back in charge.
+    n.tick(clock.now + BASE_RECV_TIMEOUT + 1);
+    expect(n.takeRecvSilence()).toBe(true);
+  });
+
+  it("an approval nobody answers ends the turn with a NAMED cause, never a silent timeout", () => {
+    const { n, clock } = startTurn();
+    n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
+    const ev = n.tick(clock.now + 901);
+    expect(n.finalized).toBe(true);
+    const final = ev.find((e) => e.type === "message.final");
+    expect(final).toMatchObject({
+      errorKind: "awaiting_approval",
+      diagnosticFinalizeCause: "approval_timeout",
+    });
+    // The persisted error IS the code: the UI prints the localized headline and
+    // suppresses a detail identical to it, so no untranslated English sentence
+    // ends up under the French label (codex P2).
+    expect(final?.error).toBe("awaiting_approval");
+  });
+});

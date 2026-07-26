@@ -53,6 +53,7 @@ type Call =
   | ["addMedia", string, { filename: string; path: string }]
   | ["finalize", string, FinalizeStatus, string, string | null, string | null]
   | ["addCompactionPart", string, string]
+  | ["setSessionOverfull", string, string]
   | [
       "recordGatewayPressure",
       string,
@@ -76,6 +77,17 @@ class FakeWriter implements ConvexWriter {
   async startAssistant(chatId: string, runId: string | null): Promise<string> {
     this.calls.push(["startAssistant", chatId, runId]);
     return MESSAGE_ID;
+  }
+  async setSessionOverfull(
+    chatId: string,
+    overfull: boolean,
+    observedAt?: number,
+  ): Promise<void> {
+    this.calls.push([
+      "setSessionOverfull",
+      chatId,
+      `${overfull}:${observedAt !== undefined ? "stamped" : "unstamped"}`,
+    ]);
   }
   async appendDelta(messageId: string, text: string): Promise<void> {
     this.calls.push(["appendDelta", messageId, text]);
@@ -660,6 +672,115 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     );
     expect(applied).toBe(false);
     expect(manager.isFinalized).toBe(false);
+  });
+
+  it("codex P1: a compaction that fails BETWEEN turns reaches the sink (no active turn)", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    // No turn is running: the gateway compacts on its own and fails.
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false },
+        },
+      },
+      clock.tick(),
+    );
+    // The verdict is chat-scoped: it needs no message, and losing it leaves the
+    // NEXT turn walking into the context wall with no warning.
+    expect(JSON.stringify(writer.calls)).toContain("setSessionOverfull");
+  });
+
+  it("codex P2: a compaction END racing the ack is BOTH recorded and replayed", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    manager.armReplayBuffer();
+    const compactionEnd = {
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        stream: "compaction",
+        data: { phase: "end", completed: false, willRetry: false },
+      },
+    };
+    await manager.feed(compactionEnd, clock.tick());
+    // The chat-scoped verdict is recorded immediately…
+    expect(JSON.stringify(writer.calls)).toContain("setSessionOverfull");
+
+    // …and the frame still reaches the TURN when its ack lands: swallowed, the
+    // turn would stay in compaction state and lose its thread marker.
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(JSON.stringify(writer.calls)).toContain("addCompactionPart");
+  });
+
+  it("codex P2: a BACKGROUND compaction verdict is captured even during an active turn", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    // The compaction started between turns; its `end` lands after this turn
+    // opened, on the gateway's own background run.
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "bg-run",
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "end", completed: false, willRetry: false },
+        },
+      },
+      clock.tick(),
+    );
+    // The admission policy refuses that run for the REPLY — rightly — but the
+    // chat-scoped verdict must not be lost with it.
+    expect(JSON.stringify(writer.calls)).toContain("setSessionOverfull");
+    // …and nothing of it entered the reply.
+    expect(JSON.stringify(writer.calls)).not.toContain("addCompactionPart");
+  });
+
+  it("codex P2: a compaction END in the PRE-ACK window still reaches the upcoming turn", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    // An announce turn is driving the sink…
+    await manager.beginTurn(clock.now, "announce:child-9", {
+      expectedSessionId: null,
+      spontaneous: true,
+    });
+    // …the user sends, and the UPCOMING run's compaction brackets the ack.
+    manager.armReplayBuffer();
+    const compaction = (data: Record<string, unknown>) => ({
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        stream: "compaction",
+        data,
+      },
+    });
+    await manager.feed(compaction({ phase: "start" }), clock.tick());
+    await manager.feed(
+      compaction({ phase: "end", completed: false, willRetry: false }),
+      clock.tick(),
+    );
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+
+    // Swallowed, the turn would hold only the `start`: stuck in compaction until
+    // the 900 s budget, and with the marker still reading "in progress" instead
+    // of the FAILED verdict the `end` carries.
+    expect(
+      writer.calls.filter(
+        (c) => c[0] === "addCompactionPart" && c[2] === "failed",
+      ),
+    ).toHaveLength(1);
   });
 
   it("the epoch AND the recovery generation are REQUIRED — the compiler is the guard for future callers", () => {

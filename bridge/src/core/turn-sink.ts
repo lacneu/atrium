@@ -58,6 +58,12 @@ const AUTO_CLOSE_CAUSES = new Set([
   // The silence-recovery settle (gateway never answered within the recovery
   // budget) — same diagnostic family as the timeouts above.
   "response_timeout",
+  // The gateway's DEFERRED terminal never became a real one (G-20). Same
+  // diagnostic family, and without it the named timeout this lot introduces was
+  // computed and never persisted (codex P2).
+  "lifecycle_finishing_timeout",
+  // Nobody answered a command approval within its budget (G-21).
+  "approval_timeout",
 ]);
 const EMPTY_RESPONSE_TEXT =
   "The agent finished without a usable response (no text, and any file delivery failed).";
@@ -205,6 +211,13 @@ export class TurnSink {
   // Chat finals this turn that arrived already CUT at the gateway's 8 000-char
   // display cap (G-13). Counter only — never the text.
   private pendingTruncatedFinals = 0;
+  // Terminal metadata from the gateway's lifecycle terminal (G-20).
+  /** Tool cards written as RUNNING whose terminal never came — closed at the
+   *  turn's terminal so no spinner can outlive the turn. */
+  private openToolCards = new Map<string, ToolPart>();
+  private pendingDiagTimeoutPhase: string | null = null;
+  private pendingDiagProviderStarted: boolean | null = null;
+  private pendingDiagAborted = false;
   // Foreign-run frames this turn refused admission (G-12), all reasons summed.
   // The rate at which strangers reach a live turn was never measured; shipping
   // the counter is how the policy stops being a guess.
@@ -490,6 +503,10 @@ export class TurnSink {
     // later empty turn of the session with a cause that was not theirs.
     this.pendingMsgtoolArgsUnreadable = false;
     this.pendingTruncatedFinals = 0;
+    this.openToolCards.clear();
+    this.pendingDiagTimeoutPhase = null;
+    this.pendingDiagProviderStarted = null;
+    this.pendingDiagAborted = false;
     this.pendingForeignRunRejections = 0;
     this.queuedMediaCount = 0;
     this.spawnCalledThisTurn = false;
@@ -626,6 +643,29 @@ export class TurnSink {
   /** Apply a batch of normalized events to the writer, strictly in order. */
   async apply(events: NormalizedEvent[]): Promise<void> {
     for (const event of events) {
+      // CHAT-scoped, message-independent: the compaction verdict describes the
+      // SESSION, not this turn's bubble. Applied before the deferred gate (codex
+      // P2): a silent announce turn buffers its events and then discards the
+      // buffer at its terminal, so a compaction that failed during one would
+      // have left the next ordinary turn un-warned. It creates no message.
+      if (event.type === "session.overfull") {
+        try {
+          const seen = (event as { observedAt?: unknown }).observedAt;
+          await this.writer.setSessionOverfull?.(
+            this.chatId,
+            (event as { overfull?: unknown }).overfull === true,
+            // The producer's own receipt time when it has one; otherwise NOW,
+            // which is still before the awaited write below.
+            typeof seen === "number" ? seen : Date.now(),
+          );
+        } catch (e) {
+          console.error(
+            "[sink] session-overfull verdict not recorded (non-fatal):",
+            (e as Error)?.message ?? e,
+          );
+        }
+        continue;
+      }
       if (this.pendingOpen) {
         const consumed = await this.applyDeferred(event);
         if (consumed) continue;
@@ -926,7 +966,25 @@ export class TurnSink {
             ...(event.input !== undefined ? { input: event.input } : {}),
             ...(event.output !== undefined ? { output: event.output } : {}),
           };
+          // LAST-RESORT ANTI-SPINNER (W5 confinement): remember the cards that
+          // are RUNNING so the turn's terminal can close any the gateway never
+          // finished. Hermes already flushes its open tools on every terminal
+          // path (`ws-turn.ts`); OpenClaw did not, and this lot deliberately
+          // changes WHEN a turn reaches its terminal. Tracked here — the sink is
+          // the only layer that knows a card was actually written (a deferred
+          // announce turn with no bubble has none, and flushing there would open
+          // an empty one).
+          if (toolCallId && part.phase === "start") {
+            this.openToolCards.set(toolCallId, part);
+          }
           await this.writer.addToolPart(messageId, part);
+          // Forgotten only once the TERMINAL write actually landed (codex P2):
+          // dropping the entry first means a transient failure leaves the `start`
+          // card persisted as running with nothing left to close it — the exact
+          // spinner this tracking exists to prevent.
+          if (toolCallId && part.phase !== "start") {
+            this.openToolCards.delete(toolCallId);
+          }
           // A successful cron mutation (add/update/remove) ALSO gets its own
           // compact part so the thread renders a dedicated "Crons" section —
           // the user must see their prompt produced/changed scheduled jobs
@@ -1164,6 +1222,16 @@ export class TurnSink {
             event.diagnosticStopReason
               ? event.diagnosticStopReason
               : null;
+          this.pendingDiagTimeoutPhase =
+            typeof event.diagnosticTimeoutPhase === "string" &&
+            event.diagnosticTimeoutPhase
+              ? event.diagnosticTimeoutPhase
+              : null;
+          this.pendingDiagProviderStarted =
+            typeof event.diagnosticProviderStarted === "boolean"
+              ? event.diagnosticProviderStarted
+              : null;
+          this.pendingDiagAborted = event.diagnosticAborted === true;
           this.pendingDiagFinalizeCause =
             typeof event.diagnosticFinalizeCause === "string" &&
             event.diagnosticFinalizeCause
@@ -1195,6 +1263,11 @@ export class TurnSink {
               .msgtoolArgsUnreadable;
             this.pendingMsgtoolArgsUnreadable =
               typeof unreadable === "number" && unreadable > 0;
+            // The gateway's OWN hand-off signal (G-20): PRIMARY, with the
+            // `sessions_yield` tool frame kept as the multi-version fallback.
+            if ((event as { gatewayYielded?: unknown }).gatewayYielded === true) {
+              this.yieldCalledThisTurn = true;
+            }
             const cut = (event as { truncatedFinals?: unknown }).truncatedFinals;
             this.pendingTruncatedFinals = typeof cut === "number" ? cut : 0;
             const refused = (event as { foreignRunRejections?: unknown })
@@ -1218,6 +1291,50 @@ export class TurnSink {
           }
           // Intermediate statuses (working/running/compacting) have no schema
           // representation -> dropped.
+          break;
+        }
+        case "turn.phase": {
+          // A live processing phase the PROVIDER discovered (G-20). Convex
+          // allowlists the value, so an unknown one is dropped there rather than
+          // trusted here.
+          //
+          // AWAITED, unlike the other setPhase callers: `setPhase` bypasses the
+          // writer's per-message chain, so two quick transitions (an approval
+          // `requested` immediately `resolved`) are independent fire-and-forget
+          // POSTs that can land out of order — the stale label would then stick
+          // for the rest of the reply (codex P2). Best-effort: a label must
+          // never fail a turn.
+          {
+            const ph = asString(event.phase);
+            if (ph) {
+              try {
+                await this.writer.setPhase?.(messageId, ph);
+              } catch (e) {
+                console.error(
+                  "[sink] phase not recorded (non-fatal):",
+                  (e as Error)?.message ?? e,
+                );
+              }
+            }
+          }
+          break;
+        }
+        case "plan": {
+          // NATIVE work plan (G-22): the SAME part the `update_plan` tool path
+          // writes, from the gateway's own stream. Deliberately NOT counted as a
+          // tool call or a plan ADVANCE — it is a snapshot of the plan, not a
+          // step completion, and the spawn/yield gates read those counters.
+          {
+            const plan = (event as { plan?: unknown }).plan;
+            if (plan && typeof plan === "object") {
+              await this.writer.addPlanPart?.(
+                messageId,
+                plan as Parameters<
+                  NonNullable<typeof this.writer.addPlanPart>
+                >[1],
+              );
+            }
+          }
           break;
         }
         case "plan.advance": {
@@ -1662,6 +1779,41 @@ export class TurnSink {
         );
       }
     }
+    // ANTI-SPINNER (W5 confinement): close every card still RUNNING. Convex
+    // upserts tool parts on (message, toolCallId), so this patches the card in
+    // place — the reader sees the tool stop, not a second card. Placed HERE, at
+    // the very end, because it must read the EFFECTIVE outcome (codex P2): a
+    // clean gateway terminal that the empty-response guard reclassifies as an
+    // error would otherwise show the unfinished tool as a success next to a
+    // failed reply. Best-effort: a spinner outliving its turn is a worse failure
+    // than a card closed without its result.
+    if (this.openToolCards.size > 0) {
+      // A SYNTHETIC close (a silence deadline, a deferred terminal that never
+      // arrived) confirms nothing about the tool either: painting the card green
+      // would report a success the gateway never reported.
+      const syntheticClose =
+        this.pendingDiagFinalizeCause !== null &&
+        AUTO_CLOSE_CAUSES.has(this.pendingDiagFinalizeCause);
+      const closingPhase =
+        effectiveStatus === "complete" && !syntheticClose ? "completed" : "error";
+      console.log(
+        `[sink] closing ${this.openToolCards.size} tool card(s) the gateway never finished`,
+      );
+      for (const [, running] of this.openToolCards) {
+        try {
+          await this.writer.addToolPart(messageId, {
+            ...running,
+            phase: closingPhase,
+          });
+        } catch (e) {
+          console.error(
+            "[sink] open tool card not closed (non-fatal):",
+            (e as Error)?.message ?? e,
+          );
+        }
+      }
+      this.openToolCards.clear();
+    }
     // The error string (if any) was buffered from message.final; on a clean turn
     // it is null. lifecycle:error finalizes with both partial text + error.
     await this.writer.finalize(
@@ -1733,6 +1885,13 @@ export class TurnSink {
       // with no other diagnostic.
       this.pendingTruncatedFinals > 0 ||
       this.pendingForeignRunRejections > 0 ||
+      // Terminal metadata with nothing else to ride on (codex P2): a spontaneous
+      // turn has no pre-send pressure, and these fields exist precisely to make a
+      // partial terminal observable — computed and then never shipped would be
+      // the opposite of the fix.
+      this.pendingDiagTimeoutPhase !== null ||
+      this.pendingDiagProviderStarted !== null ||
+      this.pendingDiagAborted ||
       // A silence AUTO-close (recv/empty_final/lifecycle_end/compaction timeout,
       // private_ack grace) warrants a trace even with no pre-send pressure — it
       // is the exact diagnostic the launch bug hinges on. A NORMAL gateway
@@ -1767,6 +1926,15 @@ export class TurnSink {
           errorKind: this.pendingDiagErrorKind,
           stopReason: this.pendingDiagStopReason,
           finalizeCause: this.pendingDiagFinalizeCause,
+          // Terminal metadata the gateway ships and we used to drop (G-20): a
+          // provider-timeout kill now reads as one instead of an unexplained end.
+          ...(this.pendingDiagTimeoutPhase !== null
+            ? { timeoutPhase: this.pendingDiagTimeoutPhase }
+            : {}),
+          ...(this.pendingDiagProviderStarted !== null
+            ? { providerStarted: this.pendingDiagProviderStarted }
+            : {}),
+          ...(this.pendingDiagAborted ? { gatewayAborted: true } : {}),
           // REAL post-turn usage when the gateway stamps it on agent events
           // (vs the pre-turn describe counters above) — the delta per turn.
           postTotalTokens: this.pendingDiagUsage?.totalTokens ?? null,
@@ -1826,6 +1994,13 @@ function eventIsVisible(event: NormalizedEvent): boolean {
       // completed/error card keeps the historic open-on-activity behavior.
       return asString((event as { phase?: unknown }).phase) !== "start";
     case "media":
+      return true;
+    case "plan":
+      // The NATIVE plan stream (G-22) is user-visible work, exactly like the
+      // `update_plan` tool card it mirrors — which DOES open a bubble through
+      // `tool.status`. Without this a spontaneous run whose only output is a
+      // plan update has its event buffered and then discarded at the terminal,
+      // so the plan never reaches the thread (codex P2).
       return true;
     default:
       return false;

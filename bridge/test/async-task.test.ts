@@ -206,6 +206,32 @@ describe("turn-sink: async engagement lifecycle (captured flow)", () => {
     expect(writer.finals[0]?.error).toBeNull();
   });
 
+  it("codex P2: a spontaneous run whose only output is a native PLAN still reaches the thread", async () => {
+    const writer = new AsyncWriter();
+    const manager = new RunManager("planchat1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: DELIVERY_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "plan",
+          data: {
+            phase: "update",
+            steps: [{ step: "Analyser le rapport", status: "in_progress" }],
+          },
+        },
+      },
+      (now += 1),
+    );
+    await manager.feed(chatFinal(DELIVERY_RUN), (now += 1));
+    await manager.tick(now + 100_000);
+    // A plan is visible work: the `update_plan` TOOL path opens a bubble, and
+    // the native stream must not be the one output that silently disappears.
+    expect(writer.started).toBe(1);
+  });
+
   it("a NO_REPLY delivery run still SETTLES the engagement (no bubble)", async () => {
     const writer = new AsyncWriter();
     const manager = new RunManager("asyncchat1", SESSION_KEY, writer);

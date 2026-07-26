@@ -49,6 +49,11 @@ async function seedChat(
         overflowTokens: 50960,
         totalTokensFresh: true,
         estimateAt: 9_000_000,
+        // The SOURCE session's compaction verdict, and the reset fence that
+        // goes with it.
+        sessionOverfull: true,
+        sessionOverfullAt: 9_000_000,
+        sessionResetAt: 8_000_000,
       },
     });
     const n = opts?.messages ?? 3;
@@ -117,6 +122,12 @@ describe("chatFork.forkChat", () => {
     // …and neither does the WATERMARK that orders them: left behind, it would let
     // the fork reject its own first describe as "stale" and stay assessment-less.
     expect(state.fork!.sessionMeta?.estimateAt).toBeUndefined();
+    // …and neither does the compaction VERDICT: it describes the session the
+    // fork does not share, and every later meta refresh preserves it — so an
+    // inherited warning would never clear itself (codex P2).
+    expect(state.fork!.sessionMeta?.sessionOverfull).toBeUndefined();
+    expect(state.fork!.sessionMeta?.sessionOverfullAt).toBeUndefined();
+    expect(state.fork!.sessionMeta?.sessionResetAt).toBeUndefined();
     // Same top-of-list placement as createChat (source has no sortKey → min 0).
     expect(state.fork!.archived).toBe(false);
     expect(state.fork!.sortKey).toBeLessThan(0);

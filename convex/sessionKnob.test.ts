@@ -151,6 +151,385 @@ describe("chats.setSessionKnob", () => {
 // CONF-4b "Réinitialiser la session": the public, owner-scoped entry point that
 // schedules the SAME internal.bridge.dispatchReset used by message deletion.
 describe("chats.resetSession", () => {
+  test("a reset CLEARS the session-overfull verdict (a fresh session is not overfull)", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: 1_000,
+      });
+    });
+
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: 2_000,
+      });
+    });
+
+    // No turn event fires for a reset, so nothing else can clear it — and every
+    // later meta refresh copies the verdict forward (codex P2).
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull).toBeUndefined();
+  });
+
+  test("codex P2: a verdict OBSERVED BEFORE the reset cannot warn the new session", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    const before = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: Date.now(),
+      });
+    });
+    // A compaction event of the OLD session was already in flight.
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: before - 1,
+      });
+    });
+
+    // Nothing would ever clear it: every later meta refresh preserves it.
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull).toBeUndefined();
+  });
+
+  test("a verdict observed AFTER the reset still applies (the fence is not a mute)", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: Date.now(),
+      });
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: Date.now() + 1_000,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull).toBe(true);
+  });
+
+  test("codex P2: a stale `false` cannot erase a NEWER real warning", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: 2_000,
+      });
+      // An OLDER "all clear" lands afterwards: independent POSTs reorder.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: false,
+        observedAt: 1_000,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull).toBe(true);
+  });
+
+  test("codex P2: a reset also purges the session's context ESTIMATES", async () => {
+    const t = convexTest(schema, modules);
+    const { as, userId } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    void userId;
+    await t.run(async (ctx) => {
+      await ctx.db.patch(chatId, {
+        sessionMeta: {
+          model: "gpt-5",
+          contextTokens: 272_000,
+          // The warning ALSO fires on this pair, with no verdict involved.
+          estimatedPromptTokens: 358_960,
+          promptBudgetBeforeReserve: 308_000,
+        },
+      });
+    });
+
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: Date.now(),
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    // A brand-new session must not keep saying the conversation no longer fits.
+    expect(meta?.estimatedPromptTokens).toBeUndefined();
+    expect(meta?.promptBudgetBeforeReserve).toBeUndefined();
+    // …while the static budget the rehydration needs survives.
+    expect(meta?.contextTokens).toBe(272_000);
+  });
+
+  test("codex P2: an all-clear ADVANCES the watermark, so an older failure cannot re-raise it", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    await t.run(async (ctx) => {
+      // The FIRST verdict is an all-clear: implicitly the current value, so the
+      // no-churn path used to return without stamping anything.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: false,
+        observedAt: 2_000,
+      });
+      // …and an OLDER failure lands afterwards.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: 1_000,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull ?? false).toBe(false);
+  });
+
+  test("codex P2: a describe snapshot OBSERVED BEFORE the reset cannot restore the old estimate", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    const before = Date.now() - 1;
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: Date.now(),
+      });
+    });
+    // The pre-reset describe was already in flight.
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionMeta, {
+        chatId,
+        meta: {
+          estimatedPromptTokens: 358_960,
+          promptBudgetBeforeReserve: 308_000,
+          observedAt: before,
+        },
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    // Restored, it would immediately re-raise "no longer fits" on an empty session.
+    expect(meta?.estimatedPromptTokens).toBeUndefined();
+  });
+
+  test("codex P2: the reset fence DISARMS, so a lagging bridge clock cannot starve a session", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    // A reset that happened long ago (the fence covers in-flight writes only).
+    await t.run(async (ctx) => {
+      await ctx.db.patch(chatId, {
+        sessionMeta: { sessionResetAt: Date.now() - 10 * 60 * 1000 },
+      });
+    });
+
+    // A bridge whose clock runs behind stamps an "old" time for a CURRENT write.
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionMeta, {
+        chatId,
+        meta: { model: "gpt-5", contextTokens: 272_000, observedAt: 1_000 },
+      });
+    });
+
+    // Armed forever, the fresh session would sit with no meta and no gauge until
+    // the drift caught up.
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.model).toBe("gpt-5");
+  });
+
+  test("codex P1: scheduling a reset does NOT clear the session state (the gateway may refuse it)", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+      });
+    });
+
+    await as.mutation(api.chats.resetSession, { chatId });
+
+    // The bridge REFUSES a reset when a turn goes live in the schedule→execute
+    // window. Clearing eagerly would show a fresh, un-warned session while the
+    // gateway still held the old, overfull one.
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull).toBe(true);
+  });
+
+  test("codex P2: the all-clear WATERMARK survives a meta refresh (an older failure cannot return)", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    await t.run(async (ctx) => {
+      // First verdict: an all-clear. It stamps a watermark while leaving
+      // `sessionOverfull` absent.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: false,
+        observedAt: 2_000,
+      });
+      // An ordinary describe refresh runs in between.
+      await ctx.runMutation(internal.stream.setSessionMeta, {
+        chatId,
+        meta: { model: "gpt-5" },
+      });
+      // …and the OLDER failure POST finally lands.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: 1_000,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull ?? false).toBe(false);
+  });
+
+  test("codex P2: the post-reset clear KEEPS meta a newer session already wrote", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    // The panel does not reserve the chat: the user can send while the reset is
+    // in flight, and that turn's describe lands FIRST.
+    await t.run(async (ctx) => {
+      await ctx.runMutation(internal.stream.setSessionMeta, {
+        chatId,
+        meta: {
+          estimatedPromptTokens: 12_000,
+          promptBudgetBeforeReserve: 308_000,
+          totalTokens: 11_500,
+          estimatedCostUsd: 0.02,
+          observedAt: 5_000,
+        },
+      });
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: 4_000,
+      });
+    });
+
+    // Wiping it would leave the NEW session with no gauge until another send.
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.estimatedPromptTokens).toBe(12_000);
+    // The counters ride the SAME describe: dropping them would leave the new
+    // session with an estimate but no gauge and no cost (codex P2).
+    expect(meta?.totalTokens).toBe(11_500);
+    expect(meta?.estimatedCostUsd).toBe(0.02);
+  });
+
+  test("codex P2: an OLDER reset settling last cannot weaken the fence", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+
+    // Inside the fence's live window (it disarms after two minutes).
+    const t0 = Date.now();
+    await t.run(async (ctx) => {
+      // Two resets are scheduled; the NEWER one settles first.
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: t0,
+      });
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: t0 - 3_000,
+      });
+      // A verdict of the OLD session, observed between the two.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: t0 - 1_500,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull ?? false).toBe(false);
+  });
+
+  test("codex P2: a straggler of the OLD session received DURING the reset is still fenced", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const t0 = Date.now();
+
+    await t.run(async (ctx) => {
+      // The reset was dispatched at t0-4s and CONFIRMED at t0: the background
+      // compaction of the old session was received in between.
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: t0 - 4_000,
+        resetCompletedAt: t0,
+      });
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: t0 - 2_000,
+      });
+    });
+
+    // With the dispatch stamp alone it read as "after the reset" and warned a
+    // session that no longer exists.
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta?.sessionOverfull ?? false).toBe(false);
+  });
+
+  test("codex P2: a verdict that landed DURING the reset is dropped, while the gauge is kept", async () => {
+    const t = convexTest(schema, modules);
+    const { as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const t0 = Date.now();
+
+    await t.run(async (ctx) => {
+      // Both landed between the dispatch and the confirmation.
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId,
+        overfull: true,
+        observedAt: t0 - 2_000,
+      });
+      await ctx.runMutation(internal.stream.setSessionMeta, {
+        chatId,
+        meta: {
+          estimatedPromptTokens: 9_000,
+          promptBudgetBeforeReserve: 308_000,
+          observedAt: t0 - 2_000,
+        },
+      });
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId,
+        resetStartedAt: t0 - 4_000,
+        resetCompletedAt: t0,
+      });
+    });
+
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    // A false "no longer fits" is worse than a missing one: the next compaction
+    // re-raises it.
+    expect(meta?.sessionOverfull ?? false).toBe(false);
+    // A missing GAUGE is worse than a briefly stale one, and it self-heals.
+    expect(meta?.estimatedPromptTokens).toBe(9_000);
+  });
+
   test("the owner schedules a bridge reset (dispatchReset, no regenerate)", async () => {
     const t = convexTest(schema, modules);
     const { as } = await seedUser(t);

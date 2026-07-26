@@ -1084,6 +1084,19 @@ export default defineSchema({
         estimatedPromptTokens: v.optional(v.number()),
         promptBudgetBeforeReserve: v.optional(v.number()),
         overflowTokens: v.optional(v.number()),
+        // The last compaction FAILED and will not be retried (G-08): the session
+        // did NOT shrink, so the next turn is very likely to hit the context
+        // wall. A VERDICT, not a number — the gauge's counters can look
+        // comfortable while this is true, which is exactly the production
+        // symptom. Cleared by a compaction that actually completed.
+        sessionOverfull: v.optional(v.boolean()),
+        sessionOverfullAt: v.optional(v.number()),
+        // When the user RESET this conversation's gateway session. A fence, not
+        // a display value: a compaction event of the PREVIOUS session can still
+        // be in flight when the reset lands, and applying its verdict afterwards
+        // would leave a brand-new session permanently warned (the verdict is
+        // preserved across every later meta refresh, so nothing would clear it).
+        sessionResetAt: v.optional(v.number()),
         // Observation time of the three fields above. The bridge's meta and
         // usage writes are BOTH fire-and-forget and can arrive out of order, so
         // this watermark decides who wins: a late post-turn stamp must not erase

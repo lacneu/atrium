@@ -148,6 +148,10 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   refusal: "assistant.cause.refusal",
   gateway_timeout: "assistant.cause.gateway_timeout",
   gateway_error: "assistant.cause.gateway_error",
+  // The turn was blocked on a human command approval Atrium has no surface to
+  // grant (G-21). A REAL lost turn with a nameable, actionable cause — and the
+  // signal that the resolution path is the missing feature.
+  awaiting_approval: "assistant.cause.awaiting_approval",
 };
 
 /**

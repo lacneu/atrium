@@ -81,6 +81,35 @@ event the bridge receives. Fields: `type` (`"task_completion"`), `source`
 
 Legend: **H** = handled, **D** = ignored deliberately, **G** = not handled (gap).
 
+### Declared gap — command approvals (`stream:"approval"`)
+
+The gateway asks a HUMAN to approve a command: `{stream:"approval",
+data:{phase:"requested"|"resolved", kind:"exec", status, itemId, toolCallId,
+approvalId?, approvalSlug?, command, host}}`.
+
+The bridge handles the **observation** side (H): `requested` suspends the silence
+budget, sets the `awaiting_approval` turn phase, and bounds the wait; `resolved`
+releases it; an expired wait finalizes with the named `awaiting_approval` code so
+the per-cause anomaly chain reports it.
+
+The **resolution** side is a declared gap (G): Atrium exposes no surface to answer
+an approval, and never calls `exec.approval.resolve`. Granting one automatically
+would be a security decision no operator made, so the turn ends honestly instead.
+Closing this gap is a product change (an approval prompt in the thread plus the
+resolve RPC), not a protocol fix.
+
+Two consequences of that gap are DECLARED rather than worked around:
+
+- an expired wait finalizes the Atrium turn but does **not** cancel the gateway
+  run. Every other synthetic terminal behaves the same way (`recv_timeout`,
+  `compaction_timeout`, the deferred-terminal timeout): the bridge stops waiting,
+  it does not kill work the user may still receive. Cancelling *because we gave
+  up* would also kill a command a human is about to approve in the Control UI —
+  a decision that belongs to the resolution feature, not to a timeout;
+- while that run stays pending gateway-side, a later send on the same session may
+  be serialized behind it. That is the gateway's own behaviour, and it is the
+  visible cost of the missing feature.
+
 ### Chat event base fields
 
 | Field | Verdict | Evidence |

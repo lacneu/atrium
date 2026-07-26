@@ -14,11 +14,15 @@ import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
 import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
 import {
+  compactionCompleted,
+  compactionFailedForGood,
+} from "../../core/compaction-verdict.js";
+import {
   isRelayOwnedTalkRun,
   isTalkConsultRunId,
 } from "../../core/talk-consult.js";
 import type { ConvexWriter } from "../../convex-writer.js";
-import type { BridgeEvent } from "../../core/events.js";
+import { EVENT_SESSION_OVERFULL, type BridgeEvent } from "../../core/events.js";
 import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   parseProvenanceFrame,
@@ -561,6 +565,35 @@ export class RunManager {
         }
         return;
       }
+      // The compaction VERDICT is read FIRST: the announce flush just below can
+      // open a spontaneous turn and route this very frame into it, where the
+      // admission policy refuses it as a foreign background run. It is
+      // chat-scoped and creates no message, so reading it here costs the
+      // announce path nothing.
+      //
+      // KEPT WITHOUT A FAILING TEST, said plainly: codex raised the ordering and
+      // it is obviously the safer one, but every interleaving I built still
+      // recorded the verdict either way — the flush does not make the sink
+      // active without the announce's own terminal. Ordering, not a proven fix.
+      const idleVerdict = idleCompactionVerdict(frame, this.sessionKey);
+      if (idleVerdict !== null) {
+        await this.sink.apply([
+          {
+            type: EVENT_SESSION_OVERFULL,
+            overfull: idleVerdict,
+            // Stamped at FRAME RECEIPT, not at the POST: a verdict observed
+            // before a session reset must still lose the reset fence even if
+            // its write queues behind slower ones.
+            observedAt: Date.now(),
+          },
+        ]);
+        // …and the frame CONTINUES to the pre-ack buffer when one is armed
+        // (codex P2): its matching `start` may already be buffered for the turn
+        // about to open, and swallowing the `end` would leave that turn stuck in
+        // compaction state and without its thread marker. The chat-scoped
+        // verdict above and the turn-scoped replay are two different consumers.
+        if (!this.replayArmed) return;
+      }
       // Any inactive-window activity (gateway health/tick frames arrive every
       // ~30s) flushes announce frames stashed during a real turn.
       if (this.pendingAnnounce.length > 0) {
@@ -575,6 +608,12 @@ export class RunManager {
           return;
         }
       }
+      // BETWEEN TURNS the gateway still compacts on its own, and a compaction
+      // that FAILS is the state the NEXT turn inherits (G-08). The verdict is
+      // CHAT-scoped — it needs no message and no active turn — so it is the one
+      // thing that must reach the sink here: without this the branch that
+      // records it is dead code in production, and the next turn walks into the
+      // context wall unwarned (codex P1).
       // Inactive window (pre-ack / between turns). Keep two things for the
       // upcoming run: a provenance report (flushed by runId in beginTurn) and any
       // RESPONSE frame that raced ahead of the ack (replayed in beginTurn) — both
@@ -620,6 +659,34 @@ export class RunManager {
     // normalizer admits foreign runIds as follow-ups — a stale announce
     // chat:final slipping in there could finalize/replace the user's in-flight
     // reply.
+    // A BACKGROUND compaction can also land while a turn is running (it started
+    // between turns and ends after the next one opened). Its run is foreign to
+    // the active turn, so the admission policy refuses it and the verdict would
+    // be lost (codex P2). Read it here — chat-scoped, no message, no effect on
+    // the reply — and let the frame continue: a compaction of OUR OWN run still
+    // has to reach the normalizer for the turn's own compaction handling.
+    {
+      const rid = sessionRunIdFor(frame, this.sessionKey);
+      const foreign = rid !== null && !this.normalizer.ownRunIds.has(rid);
+      if (foreign) {
+        const verdict = idleCompactionVerdict(frame, this.sessionKey);
+        if (verdict !== null) {
+          await this.sink.apply([
+            {
+              type: EVENT_SESSION_OVERFULL,
+              overfull: verdict,
+              observedAt: Date.now(),
+            },
+          ]);
+          // …and the frame CONTINUES when a send is armed (codex P2): during the
+          // pre-ack window `ownRunIds` still holds only the announce run, so the
+          // UPCOMING turn's own compaction looks foreign here. Swallowing its
+          // `end` would leave that turn holding a buffered `start`, stuck in
+          // `compactionPending` until the 900 s budget and missing its marker.
+          if (!this.replayArmed) return; // never into the active reply stream
+        }
+      }
+    }
     const activeAnnounce = announceRunIdFor(frame, this.sessionKey);
     if (activeAnnounce !== null) {
       if (!this.handledAnnounceRuns.has(activeAnnounce)) {
@@ -953,6 +1020,33 @@ function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
 
 /** The frame's runId when it is an agent/chat event addressed EXACTLY to this
  *  session (child-lane frames carry the child's key -> null). */
+/**
+ * The compaction VERDICT carried by a `stream:"compaction"` frame of OUR session
+ * arriving BETWEEN turns, or null when the frame says nothing about it.
+ *
+ * Read here rather than through the normalizer on purpose: between turns the
+ * frame belongs to a gateway BACKGROUND run, which the admission policy refuses
+ * by construction (G-12) — routing it through would have been dead code. The
+ * decision itself is the SHARED rule (`core/compaction-verdict.ts`), so the two
+ * producers can never drift.
+ */
+function idleCompactionVerdict(
+  frame: unknown,
+  sessionKey: string,
+): boolean | null {
+  if (typeof frame !== "object" || frame === null) return null;
+  const f = frame as Record<string, unknown>;
+  if (f.event !== "agent") return null;
+  const payload = f.payload;
+  if (typeof payload !== "object" || payload === null) return null;
+  const p = payload as Record<string, unknown>;
+  if (p.sessionKey !== sessionKey || p.stream !== "compaction") return null;
+  const data = p.data;
+  if (compactionFailedForGood(data)) return true;
+  if (compactionCompleted(data)) return false;
+  return null;
+}
+
 function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
   if (typeof frame !== "object" || frame === null) return null;
   const f = frame as Record<string, unknown>;

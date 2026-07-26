@@ -182,6 +182,14 @@ export const forkChat = mutation({
               // adjustment) the snapshot is judged stale and DISCARDED — the fork
               // would then sit with no assessment at all (codex P2).
               estimateAt: undefined,
+              // …and the compaction VERDICT (G-08): it describes the SOURCE
+              // session, which the fork does not share. Inherited, the fork
+              // would open already warned that it cannot answer, and every later
+              // meta refresh preserves the flag — so it would never clear itself
+              // (codex P2).
+              sessionOverfull: undefined,
+              sessionOverfullAt: undefined,
+              sessionResetAt: undefined,
             },
           }
         : {}),

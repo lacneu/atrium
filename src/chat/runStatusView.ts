@@ -45,6 +45,11 @@ const PHASE_LABEL: Record<string, () => string> = {
   compacting: m.runstatus_phase_compacting,
   querying_gateway: m.runstatus_phase_querying_gateway,
   awaiting_subagents: m.runstatus_phase_awaiting_subagents,
+  // The gateway finished producing and is closing the turn out (deferred
+  // terminal): the reader sees progress instead of an unexplained silence.
+  post_processing: m.runstatus_phase_post_processing,
+  // A tool is waiting on a human approval this app cannot grant (G-21).
+  awaiting_approval: m.runstatus_phase_awaiting_approval,
 };
 
 /** Coarse tool families for the working label (and the lot-C flow summaries):
@@ -206,6 +211,9 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   // read. A NAMED cause: the fault is ours, and the label says so rather than
   // implying the agent had nothing to say.
   msgtool_args_unreadable: m.runstatus_error_msgtool_unreadable,
+  // Blocked on a command approval: the missing feature is named, and the label
+  // tells the reader what they CAN do — never a workaround for a defect.
+  awaiting_approval: m.runstatus_error_awaiting_approval,
   // Zero-work clean close (silent NO_REPLY / end-of-run grace): auto-retried
   // by the backend; this label shows when the bounded retries also came back
   // empty.

@@ -50,11 +50,17 @@ class OrderingWriter implements ConvexWriter {
     this.order.push(`snapshot:${text}`);
     return true;
   }
-  readonly toolParts: { textOffset?: number }[] = [];
+  readonly toolParts: { textOffset?: number; toolCallId?: string; phase?: string }[] =
+    [];
+  /** When set, an addToolPart of THIS phase throws (a transient write failure). */
+  failToolPhase: string | null = null;
   async addToolPart(
     _messageId: string,
-    part: { textOffset?: number },
+    part: { textOffset?: number; toolCallId?: string; phase?: string },
   ): Promise<void> {
+    if (this.failToolPhase !== null && part.phase === this.failToolPhase) {
+      throw new Error("transient write failure");
+    }
     this.toolParts.push(part);
   }
   async addCompactionPart(): Promise<void> {}
@@ -243,6 +249,125 @@ describe("text-first media delivery (report ms70hx1c…)", () => {
   });
 });
 
+// --- W5 confinement: no spinner may outlive its turn -----------------------
+describe("open tool cards are closed at the turn's terminal", () => {
+  it("a tool whose result never came is CLOSED, not left running forever", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_spin", writer);
+    await sink.beginTurn("run-spin");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+      // …no result ever arrives; the turn reaches its terminal anyway.
+      { type: "message.final", text: "done" },
+      { type: "run.status", status: "final" },
+    ]);
+    const t1 = writer.toolParts.filter(
+      (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+    );
+    expect((t1.at(-1) as { phase?: string })?.phase).toBe("completed");
+  });
+
+  it("on an ERROR terminal the unfinished card reads ERROR, never a success", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_spinerr", writer);
+    await sink.beginTurn("run-spinerr");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+      { type: "message.final", text: "", error: "gateway died" },
+      { type: "run.status", status: "error", message: "gateway died" },
+    ]);
+    const t1 = writer.toolParts.filter(
+      (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+    );
+    expect((t1.at(-1) as { phase?: string })?.phase).toBe("error");
+  });
+
+  it("codex P2: a SYNTHETIC close (a timeout) reads ERROR too, never a success", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_synth", writer);
+    await sink.beginTurn("run-synth");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+      // The deferred terminal never arrived: the turn closes on OUR deadline,
+      // which confirms nothing about the tool.
+      {
+        type: "message.final",
+        text: "partial",
+        diagnosticFinalizeCause: "lifecycle_finishing_timeout",
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    const t1 = writer.toolParts.filter(
+      (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+    );
+    expect((t1.at(-1) as { phase?: string })?.phase).toBe("error");
+  });
+
+  it("codex P2: a turn RECLASSIFIED as empty closes its unfinished tool as ERROR", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_reclass", writer);
+    await sink.beginTurn("run-reclass");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+      // A CLEAN gateway terminal with no visible reply: the empty-response guard
+      // turns it into an error AFTER the raw status is read.
+      { type: "message.final", text: "" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).not.toBeNull(); // the turn IS an error
+    const t1 = writer.toolParts.filter(
+      (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+    );
+    // A success badge next to a failed reply is a contradiction the reader
+    // cannot resolve.
+    expect((t1.at(-1) as { phase?: string })?.phase).toBe("error");
+  });
+
+  it("codex P2: a FAILED terminal write leaves the card tracked, so the turn still closes it", async () => {
+    const writer = new OrderingWriter();
+    writer.failToolPhase = "completed"; // the terminal update hits a transient error
+    const sink = new TurnSink("chat_toolfail", writer);
+    await sink.beginTurn("run-toolfail");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+    ]);
+    // The terminal update throws; the sink's apply propagates it, which is the
+    // existing contract — what matters is what the TURN does next.
+    await expect(
+      sink.apply([
+        { type: "tool.status", name: "exec", phase: "completed", toolCallId: "t1" },
+      ]),
+    ).rejects.toThrow();
+    writer.failToolPhase = null; // the turn's own cleanup writes fine
+    await sink.apply([
+      { type: "message.final", text: "done" },
+      { type: "run.status", status: "final" },
+    ]);
+    const t1 = writer.toolParts.filter(
+      (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+    );
+    // Untracked after the failed write, nothing would have closed the card.
+    expect((t1.at(-1) as { phase?: string })?.phase).toBe("completed");
+  });
+
+  it("a tool that DID finish is not closed twice", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_nospin", writer);
+    await sink.beginTurn("run-nospin");
+    await sink.apply([
+      { type: "tool.status", name: "exec", phase: "start", toolCallId: "t1" },
+      { type: "tool.status", name: "exec", phase: "completed", toolCallId: "t1" },
+      { type: "message.final", text: "done" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(
+      writer.toolParts.filter(
+        (p) => (p as { toolCallId?: string }).toolCallId === "t1",
+      ),
+    ).toHaveLength(2);
+  });
+});
+
 describe("codex P2: a refused snapshot must not move the tool-card anchor", () => {
   it("keeps the anchor on the text Convex actually holds", async () => {
     const writer = new OrderingWriter();
@@ -294,6 +419,19 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     expect(writer.order[writer.order.length - 1]).toBe(
       "finalize:error:empty_response_silent",
     );
+  });
+
+  it("G-20: a turn the GATEWAY says it handed off is exempt, with no sessions_yield tool", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_y", writer);
+    await sink.beginTurn("run-y");
+    await sink.apply([
+      // No `sessions_yield` frame anywhere: the gateway's own signal is primary.
+      { type: "message.final", text: "", gatewayYielded: true },
+      { type: "run.status", status: "final" },
+    ]);
+    // A deliberate hand-off is not an empty response — the child announces later.
+    expect(writer.lastFinalizeKind).toBeNull();
   });
 
   it("G-16: an empty turn whose message-tool args were UNREADABLE names that cause, not a generic empty response", async () => {

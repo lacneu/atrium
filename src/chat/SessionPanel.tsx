@@ -35,6 +35,7 @@ import {
   contextLine,
   contextPct,
   effectiveContextWindow,
+  contextOverfullReason,
   effectiveContextUsed,
   costLine,
   verbosityLine,
@@ -303,6 +304,10 @@ export function SessionPanel({
   const meterLevel =
     pct == null ? "" : pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
   const context = contextLine(used ?? undefined, windowTokens ?? undefined);
+  // PRE-ANNOUNCEMENT (G-08): the gateway's last compaction failed, or its own
+  // estimate already exceeds the budget. Said here, ONCE and actionably, instead
+  // of arriving as a raw context error on the next send.
+  const overfullReason = contextOverfullReason(sm);
   const cost = costLine(sm?.estimatedCostUsd, sm?.totalTokens);
   // getChatAgent only names the agent for multi-agent users; runtime/model
   // still come from sessionMeta, so the line degrades gracefully.
@@ -350,6 +355,13 @@ export function SessionPanel({
                       <span className="oc-meter__label">{context}</span>
                     </span>
                   </div>
+                ) : null}
+                {overfullReason !== null ? (
+                  <p className="oc-spanel__help oc-spanel__help--warn">
+                    {overfullReason === "compaction_failed"
+                      ? m.spanel_context_overfull_compaction()
+                      : m.spanel_context_overfull()}
+                  </p>
                 ) : null}
                 <div className="oc-spanel__static">
                   <span className="oc-spanel__label">

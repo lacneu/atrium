@@ -61,7 +61,13 @@ const writer = {
   noteMediaUndelivered: async () => {},
   finalize: async () => {},
   upsertSubAgent: async () => {},
+  clearSessionState: async (chatId: string) => {
+    overfullCalls.push([chatId, false]);
+  },
 } as unknown as ConvexWriter;
+
+/** Recorded `clearSessionState` calls — the fresh-session clear (G-08). */
+const overfullCalls: [string, boolean][] = [];
 
 /** Fake gateway connection: describe → a WARM session (systemSent:true, so ONLY
  *  firstSendPending&&routedSwitch can make it fresh); chat.send ALWAYS throws and
@@ -153,4 +159,19 @@ describe("P2.A — a failed first send preserves firstSendPending → the retry 
     expect(sent[1]).toContain(HISTORY); // <- the P2.A guard
     expect(sent[1]!.startsWith(HISTORY)).toBe(true); // history is PREPENDED, not buried
   });
+
+  it("codex P2: a GATEWAY-fresh session clears the compaction verdict (no user reset involved)", async () => {
+    overfullCalls.length = 0;
+    await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "shared-secret" },
+      body: body("cfresh"),
+    });
+    // A daily/idle rollover, a redeploy or an agent switch makes a NEW session
+    // without any reset. The verdict describes the old one, and every meta
+    // refresh preserves it — so nothing else would ever clear it.
+    await new Promise((r) => setTimeout(r, 10)); // the clear is fire-and-forget
+    expect(overfullCalls).toContainEqual(["chat-retry", false]);
+  });
+
 });

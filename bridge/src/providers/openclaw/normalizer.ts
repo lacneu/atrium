@@ -34,6 +34,11 @@
 
 import { MediaConfigurationError, sanitizeFrame, sanitizeText } from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
+import { planPartFromPlanStream } from "../../core/plan-part.js";
+import {
+  compactionCompleted,
+  compactionFailedForGood,
+} from "../../core/compaction-verdict.js";
 import {
   EVENT_OPENCLAW_FRAME,
   EVENT_MESSAGE_DELTA,
@@ -47,6 +52,9 @@ import {
   EVENT_CONTEXT_COMPACTION,
   EVENT_FRAME_GAP,
   EVENT_PLAN_ADVANCE,
+  EVENT_PLAN,
+  EVENT_TURN_PHASE,
+  EVENT_SESSION_OVERFULL,
   type BridgeEvent,
 } from "../../core/events.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
@@ -70,6 +78,9 @@ export {
   EVENT_RUN_STATUS,
   EVENT_TOOL_STATUS,
   EVENT_MEDIA,
+  EVENT_PLAN,
+  EVENT_TURN_PHASE,
+  EVENT_SESSION_OVERFULL,
 };
 export type { BridgeEvent };
 
@@ -110,6 +121,30 @@ export const TRUNCATED_FINAL_GRACE = 20.0;
 export const TRUNCATED_FINAL_MIN_BODY = 8_000;
 export const PRIVATE_ACK_GRACE = 5.0; // wait after a private-ack final for the visible message
 export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follow-on run
+// The DEFERRED terminal (`phase:"finishing"`): the gateway is done producing and
+// is finishing its post-turn work (transcript persistence, hooks) before it emits
+// the real `end` — the standard embedded-agent path sets `deferTerminalLifecycle`
+// (verified in the deployed 2026.7.1 build). We had no branch for it, so the turn
+// simply went silent until the 240 s recv timeout. Bounded well under that: the
+// real end normally lands in seconds, and if it never does the turn still closes.
+export const LIFECYCLE_FINISHING_GRACE = 60.0;
+// A tool asked for HUMAN approval (`stream:"approval" phase:"requested"`). The
+// run is alive and deliberately waiting, so the 240 s silence budget is the wrong
+// clock — but the wait must still be BOUNDED, or this re-creates the "Génération…"
+// that never ends. Same budget as a compaction: generous enough for a person to
+// answer, short enough that the turn always settles with a named cause.
+// MUST stay under the Convex stuck-stream watchdog (STALE_STREAM_MS = 12 min):
+// an approval wait is genuinely SILENT — no frames, no writes, nothing to bump
+// `updatedAt` — so a longer budget would let the watchdog reap the message as
+// `stream_orphaned` before this could close it with the cause it exists to name
+// (codex P2). Ten minutes leaves the watchdog its margin.
+export const APPROVAL_WAIT = 600.0;
+// The turn ended while still waiting for an approval Atrium has no way to grant.
+// A NAMED terminal, so the per-cause anomaly chain reports it instead of the turn
+// reading as an unexplained timeout. See the `gap` entry in
+// docs/design/protocol-schema-coverage.md: the resolution path is NOT implemented,
+// and inventing an automatic approval would be a security decision nobody made.
+export const APPROVAL_PENDING_CODE = "awaiting_approval";
 
 // Channels/providers that mean "deliver into the current chat" (vs an external
 // target like Telegram). A message-tool send to one of these is the visible
@@ -251,6 +286,36 @@ const TOOL_PROGRESS_PHASES: ReadonlySet<string> = new Set([
 
 function isToolProgressPhase(phase: unknown): boolean {
   return isString(phase) && TOOL_PROGRESS_PHASES.has(phase);
+}
+
+/**
+ * WHERE a run's timeout struck, bucketed to the values the gateway actually
+ * emits (enumerated from the deployed 2026.7.1 build: `provider`, `queue`,
+ * `gateway_draining`).
+ *
+ * Bucketed for the SAME reason `stopReason` is: this rides `chat.gateway_pressure`,
+ * a metadata-only trace exposed through the observability/MCP surface. The field
+ * is typed as a free string on the wire, so forwarding it verbatim would open a
+ * path for arbitrary gateway text — possibly carrying request content — into
+ * records whose whole contract is that they never hold any (codex P1, SOC2).
+ */
+const TIMEOUT_PHASES: ReadonlySet<string> = new Set([
+  "provider",
+  "queue",
+  "gateway_draining",
+]);
+
+function bucketTimeoutPhase(phase: string): string {
+  return TIMEOUT_PHASES.has(phase) ? phase : "other";
+}
+
+/**
+ * The normalizer's clock is epoch SECONDS (`Date.now() / 1000`); the reset fence
+ * compares milliseconds. Converted here so a verdict carries the instant its
+ * FRAME arrived, not the instant its write happens to go out.
+ */
+function observedAtMs(nowSeconds: number): number {
+  return Math.round(nowSeconds * 1000);
 }
 
 const PRIVATE_ACK_RE =
@@ -593,6 +658,14 @@ export class Normalizer {
   // the terminal frame's optional stopReason, and the REAL post-turn usage the
   // gateway flattens onto agent events on live deployments (dev 2026-07-04).
   private diagStopReason: string | null = null;
+  /** Terminal diagnostics the gateway ships and we used to drop (G-20). */
+  private diagTimeoutPhase: string | null = null;
+  private diagProviderStarted: boolean | null = null;
+  private diagAborted = false;
+  /** The gateway's OWN hand-off signal (`lifecycle.yielded`). */
+  sawYielded = false;
+  /** A tool is waiting on a human approval this app cannot grant (G-21). */
+  private approvalPending = false;
   // WHY the current turn finalized (set by finalize()); shipped in the pressure
   // trace so the exact close path is unambiguous on the next live repro.
   private finalizeCause: string | null = null;
@@ -681,6 +754,11 @@ export class Normalizer {
     // stopReason/usage frames would inherit the PREVIOUS turn's values in its
     // pressure trace).
     this.diagStopReason = null;
+    this.diagTimeoutPhase = null;
+    this.diagProviderStarted = null;
+    this.diagAborted = false;
+    this.sawYielded = false;
+    this.approvalPending = false;
     this.finalizeCause = null;
     this.recvSilence = false;
     this.diagUsage = null;
@@ -817,6 +895,39 @@ export class Normalizer {
         this.text = this.pendingAckText;
       }
       events.push(...this.finalize(now, "final", null, null, "private_ack_grace"));
+    } else if (expired.has("approval_wait")) {
+      // Nobody answered within the budget. NAMED, never a silent timeout: the
+      // turn is blocked on a decision this app cannot make.
+      //
+      // The gateway run is deliberately NOT cancelled — same contract as every
+      // other synthetic terminal here: we stop waiting, we do not kill work the
+      // user may still receive, and cancelling *because we gave up* would also
+      // kill a command a human is about to approve in the Control UI. Declared,
+      // with its consequences, in docs/design/protocol-schema-coverage.md.
+      this.clearWait("approval_wait");
+      this.approvalPending = false;
+      // The CODE is persisted as the error string too (codex P2): the UI shows
+      // the localized headline for the code and suppresses a detail identical to
+      // it, so a hardcoded English sentence here would be printed underneath the
+      // French label, untranslated and saying the same thing twice.
+      events.push(
+        ...this.finalize(
+          now,
+          "error",
+          APPROVAL_PENDING_CODE,
+          APPROVAL_PENDING_CODE,
+          "approval_timeout",
+        ),
+      );
+    } else if (expired.has("lifecycle_finishing")) {
+      // The DEFERRED terminal never became a real one. The answer is already
+      // written (the gateway said it was finishing), so close on it rather than
+      // hold the turn to the 240 s silence timeout — the defect this branch
+      // exists to end (G-20).
+      this.clearWait("lifecycle_finishing");
+      events.push(
+        ...this.finalize(now, "final", null, null, "lifecycle_finishing_timeout"),
+      );
     } else if (expired.has("truncated_final")) {
       // The recovery had its window and brought nothing back. Finalize with the
       // truncated text we do have — never hold the turn open for a reply that
@@ -1015,6 +1126,13 @@ export class Normalizer {
         if (!this.compactionSignaled) {
           this.compactionSignaled = true;
           events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "preflight" });
+          // A session-id ROTATION is proof a compaction completed: clear any
+          // standing overfull verdict.
+          events.push({
+            type: EVENT_SESSION_OVERFULL,
+            overfull: false,
+            observedAt: observedAtMs(now),
+          });
         }
       }
     }
@@ -1445,6 +1563,39 @@ export class Normalizer {
       }
       return;
     }
+    if (stream === "approval") {
+      // G-21. The gateway asks a HUMAN to approve a command; Atrium has no
+      // surface to answer, so the turn used to sit silent until the 240 s recv
+      // timeout and settle as an unexplained empty response. Say what it is
+      // waiting for, suspend the silence clock, and BOUND the wait.
+      const phase = data.phase;
+      if (phase === "requested") {
+        this.approvalPending = true;
+        this.clearWait("recv");
+        this.arm("approval_wait", now + APPROVAL_WAIT);
+        events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_approval" });
+      } else if (phase === "resolved") {
+        // Explicitly released by the gateway (approved, denied or failed) — the
+        // run resumes its normal cadence. `generating` CLEARS the stored phase.
+        this.approvalPending = false;
+        this.clearWait("approval_wait");
+        this.armRecv(now);
+        events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
+      }
+      return;
+    }
+    if (stream === "plan") {
+      // NATIVE work plan (G-22). The gateway emits it on its own stream — we had
+      // no branch, so a plan the model maintained was invisible unless it also
+      // went through the `update_plan` TOOL. Same PlanPart either way (shared
+      // reader), and never a tool call: the turn's tool counters, and the
+      // spawn/yield gates that read them, stay untouched.
+      const planPart = planPartFromPlanStream(data);
+      if (planPart !== null) {
+        events.push({ type: EVENT_PLAN, plan: planPart, runId: this.currentRunId });
+      }
+      return;
+    }
     if (stream === "error") {
       // The gateway's OWN loss diagnostic — not a turn failure. It tracks the
       // per-run `seq` of the agent events it forwards and, when it sees a hole,
@@ -1744,8 +1895,22 @@ export class Normalizer {
    */
   private handleCompaction(data: JsonObject, now: number, events: BridgeEvent[]): void {
     if (this.finalized) {
-      // Between-turns (threshold) compaction: nothing to guard here — the next
-      // turn's preflight rotation detector reports it on its own message.
+      // Between-turns (threshold) compaction: nothing to guard on a finished
+      // turn — the next turn's preflight rotation detector reports a SUCCESS on
+      // its own message. But a FAILURE has no such fallback (the rotation only
+      // happens when the compaction worked), and it is exactly the state the
+      // next turn inherits: record the verdict, which is chat-scoped and needs
+      // no active turn (codex P2).
+      // (Between turns the RUN MANAGER routes this — the frame's background run
+      // is foreign to the admission policy, so it never reaches us here. Kept
+      // for the case where our own run is finalized but its frames still flow.)
+      if (compactionFailedForGood(data)) {
+        events.push({
+          type: EVENT_SESSION_OVERFULL,
+          overfull: true,
+          observedAt: observedAtMs(now),
+        });
+      }
       return;
     }
     const phase = data.phase;
@@ -1779,6 +1944,26 @@ export class Normalizer {
       if (failedForGood) {
         events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "failed" });
       }
+      // The VERDICT the NEXT turn inherits (G-08). Emitted on BOTH outcomes: a
+      // later compaction that actually completed has to be able to clear a
+      // warning an earlier failure raised, and the success path deliberately
+      // adds no thread marker of its own (codex P2).
+      // Stamped from the FRAME's own receipt (codex P2): the sink would
+      // otherwise substitute its later write time, and a verdict observed before
+      // a session reset would slip past the reset fence and warn the fresh one.
+      if (compactionCompleted(data)) {
+        events.push({
+          type: EVENT_SESSION_OVERFULL,
+          overfull: false,
+          observedAt: observedAtMs(now),
+        });
+      } else if (failedForGood) {
+        events.push({
+          type: EVENT_SESSION_OVERFULL,
+          overfull: true,
+          observedAt: observedAtMs(now),
+        });
+      }
       if (data.willRetry === true) {
         // Overflow replay in flight on the same run: stay in the widened
         // budget; resumed content restores the normal one. The gateway has now
@@ -1799,6 +1984,36 @@ export class Normalizer {
 
   private handleLifecycle(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
     const phase = data.phase;
+    // TERMINAL METADATA (G-20). Upstream ships these on every deferred terminal
+    // (`DEFERRED_TERMINAL_METADATA_KEYS`, verified in the deployed build) and we
+    // read none of them: a run killed by the provider timeout was
+    // indistinguishable from one that simply finished. Absent on a NOMINAL end —
+    // `buildLifecycleTerminalMeta` returns nothing unless the run timed out or
+    // was aborted — so every read is guarded.
+    if (phase === "finishing" || phase === "end" || phase === "error") {
+      if (isString(data.stopReason)) {
+        this.diagStopReason = bucketStopReason(data.stopReason);
+      }
+      if (isString(data.timeoutPhase)) {
+        this.diagTimeoutPhase = bucketTimeoutPhase(data.timeoutPhase);
+      }
+      if (typeof data.providerStarted === "boolean") {
+        this.diagProviderStarted = data.providerStarted;
+      }
+      if (data.aborted === true) this.diagAborted = true;
+      // The gateway's OWN hand-off signal, and the PRIMARY one: the
+      // `sessions_yield` tool heuristic stays as the multi-version fallback
+      // (same pattern as the explicit compaction stream vs `abandoned`).
+      if (data.yielded === true) this.sawYielded = true;
+    }
+    if (phase === "finishing") {
+      // PRE-terminal, never a terminal: the run produced everything it will
+      // produce and the real `end` follows. Say so instead of going silent, and
+      // bound the wait — 240 s of nothing was the whole defect.
+      this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+      events.push({ type: EVENT_TURN_PHASE, phase: "post_processing" });
+      return;
+    }
     if (phase === "error") {
       const message = extractLifecycleError(data.error);
       // A lifecycle error MAY carry a structured errorKind (like chat:error);
@@ -1819,6 +2034,7 @@ export class Normalizer {
       return;
     }
     if (phase === "end") {
+      this.clearWait("lifecycle_finishing"); // the real terminal arrived
       // livenessState == "abandoned" is the multi-version compaction FALLBACK
       // heuristic (2026.5.19+ gateways emit no explicit signal). A plain
       // replayInvalid with livenessState == "working" is a normal terminal end
@@ -1876,6 +2092,13 @@ export class Normalizer {
       return;
     }
     if (phase === "start") {
+      // A new run STARTS after a deferred terminal: the "Finishing up…" label
+      // belongs to the run that just ended. Nothing else clears a phase — deltas
+      // do not — so without this the resumed turn keeps showing it (codex P2).
+      if (this.deadlines.has("lifecycle_finishing")) {
+        events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
+      }
+      this.clearWait("lifecycle_finishing");
       if (this.compactionPending) {
         this.compactionPending = false;
         this.armRecv(now);
@@ -2044,6 +2267,16 @@ export class Normalizer {
     this.pendingAckText = "";
     this.clearWait("empty_final");
     this.clearWait("private_ack");
+    if (this.approvalPending) {
+      // Real content resumed: the approval was answered somewhere (the gateway's
+      // own `resolved` may not reach us on every version). Release the wait the
+      // same way resumed content releases a compaction.
+      this.approvalPending = false;
+      this.clearWait("approval_wait");
+      // The frame's own re-arm ran BEFORE this (with the flag still set, so it
+      // deleted the deadline): put the normal silence budget back now.
+      this.armRecv(now);
+    }
     if (this.compactionPending) {
       // Real content resumed ⇒ the compaction (incl. an overflow replay on the
       // same run, which has no lifecycle start to clear this) is over: restore
@@ -2218,6 +2451,12 @@ export class Normalizer {
       type: EVENT_MESSAGE_FINAL,
       text: this.safeSanitizeText(text),
       diagnosticStopReason: this.diagStopReason,
+      diagnosticTimeoutPhase: this.diagTimeoutPhase,
+      diagnosticProviderStarted: this.diagProviderStarted,
+      diagnosticAborted: this.diagAborted,
+      // The gateway said the turn HANDED OFF: the empty-response guard must
+      // exempt it even when no `sessions_yield` tool frame was seen.
+      gatewayYielded: this.sawYielded,
       diagnosticUsage: this.diagUsage,
       diagnosticFinalizeCause: this.finalizeCause,
       // Native media generation with NO delivery directive (no MEDIA:/outbound):
@@ -2306,6 +2545,7 @@ export class Normalizer {
       // observability chain keys on.
       finalEvent.errorKind = errorKind;
     }
+    // Open tool cards close FIRST (see the flush above), then the terminal.
     const result: BridgeEvent[] = [finalEvent, statusEvent];
     // The agent ran native media generation this turn but delivered NO media
     // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
@@ -2348,6 +2588,13 @@ export class Normalizer {
     // would report a truncation the reply we keep never had.
     this.truncatedFinals = 0;
     this.msgtoolUnreadableArgs = 0;
+    // …and the abandoned attempt's TERMINAL metadata (codex P2): a clean replay
+    // would otherwise publish the dead attempt's timeoutPhase / providerStarted /
+    // aborted at its own final, describing a run the user never sees.
+    this.diagTimeoutPhase = null;
+    this.diagProviderStarted = null;
+    this.diagAborted = false;
+    this.sawYielded = false;
     // A recovery in flight belongs to the abandoned attempt; the replay is
     // entitled to its own attempt.
     this.recoveryGeneration++;
@@ -2357,6 +2604,14 @@ export class Normalizer {
 
   private armRecv(now: number): void {
     if (this.finalized) {
+      return;
+    }
+    if (this.approvalPending) {
+      // A tool is waiting on a HUMAN (G-21). Keep-alive traffic — heartbeats,
+      // health frames — would otherwise re-arm the 240 s silence budget, which
+      // then fires long before the approval wait and closes the turn as a
+      // recv_timeout instead of naming what it was waiting for (codex P2).
+      this.deadlines.delete("recv");
       return;
     }
     const budget = this.compactionPending ? COMPACTION_RECV_TIMEOUT : BASE_RECV_TIMEOUT;

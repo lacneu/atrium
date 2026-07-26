@@ -42,6 +42,17 @@ import {
  * failure is the storage URL ORIGIN (self-hosted serving config), not a missing
  * object; `null`/`bytes: 0` means the stream never reached storage.
  */
+/**
+ * WHERE a run's timeout struck, reduced to the values the gateway emits. The
+ * bridge already buckets it, but THIS endpoint is the trust boundary: an older
+ * or divergent bridge can post arbitrary gateway text, and `gateway_pressure` is
+ * a metadata-ONLY record exposed through the diagnostic surface (codex P1, SOC2).
+ */
+const TIMEOUT_PHASES = new Set(["provider", "queue", "gateway_draining"]);
+function bucketTimeoutPhase(phase: string): string {
+  return TIMEOUT_PHASES.has(phase) ? phase : "other";
+}
+
 export const storageMeta = internalQuery({
   args: { storageId: v.id("_storage") },
   handler: async (ctx, { storageId }) => {
@@ -190,6 +201,19 @@ type IngestOp =
       sizeBytes?: number;
     }
   | {
+      op: "clearSessionState";
+      chatId: string;
+      /** The instant the session was found/made fresh. Anything observed at or
+       *  after it belongs to the NEW session and is kept. */
+      observedAt: number;
+    }
+  | {
+      op: "setSessionOverfull";
+      chatId: string;
+      overfull: boolean;
+      observedAt?: number;
+    }
+  | {
       op: "setSnapshot";
       messageId: string;
       text: string;
@@ -294,6 +318,9 @@ type IngestOp =
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
+      timeoutPhase?: string;
+      providerStarted?: boolean;
+      gatewayAborted?: boolean;
       errorKind?: string | null;
       stopReason?: string | null;
       finalizeCause?: string | null;
@@ -644,6 +671,28 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ ok: true });
     }
+    case "clearSessionState": {
+      await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+        chatId: body.chatId as Id<"chats">,
+        resetStartedAt: body.observedAt,
+        // ATOMIC cross-instance barrier, like every other ingest write (codex
+        // P1): a chat rebound between the HTTP check and this mutation must not
+        // have its session state wiped by the instance that no longer serves it.
+        boundInstanceName,
+      });
+      return json({ ok: true });
+    }
+    case "setSessionOverfull": {
+      await ctx.runMutation(internal.stream.setSessionOverfull, {
+        chatId: body.chatId as Id<"chats">,
+        overfull: body.overfull,
+        ...(typeof body.observedAt === "number"
+          ? { observedAt: body.observedAt }
+          : {}),
+        boundInstanceName,
+      });
+      return json({ ok: true });
+    }
     case "setSnapshot": {
       const snap = await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
@@ -934,6 +983,16 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(typeof body.foreignRunsRefused === "number"
             ? { foreignRunsRefused: body.foreignRunsRefused }
             : {}),
+          // Terminal metadata the gateway ships on its lifecycle terminal
+          // (G-20): WHERE a timeout struck, whether the provider had even
+          // started, whether the run was aborted. Structural only.
+          ...(typeof body.timeoutPhase === "string" && body.timeoutPhase
+            ? { timeoutPhase: bucketTimeoutPhase(body.timeoutPhase) }
+            : {}),
+          ...(typeof body.providerStarted === "boolean"
+            ? { providerStarted: body.providerStarted }
+            : {}),
+          ...(body.gatewayAborted === true ? { gatewayAborted: true } : {}),
           compaction: body.compaction,
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —
           // the counterpart of `compaction` (= handled silently). Distinguishes

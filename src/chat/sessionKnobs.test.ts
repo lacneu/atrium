@@ -11,6 +11,8 @@ import {
   SPEED_OPTIONS,
   agentLine,
   capitalize,
+  contextOverfull,
+  contextOverfullReason,
   contextLine,
   contextPct,
   costLine,
@@ -347,5 +349,56 @@ describe("effectiveContextUsed (context gauge source)", () => {
     } as SessionMetaView;
     expect(effectiveContextUsed(sm)).toBeNull();
     expect(effectiveContextWindow(sm)).toBe(372000);
+  });
+});
+
+// --- G-08: the session no longer fits, said BEFORE the next turn fails -------
+describe("contextOverfull (pre-announcement)", () => {
+  test("the REASON is distinguished: only a real verdict may claim the compaction failed", () => {
+    // Saying "the last compaction failed" when the only evidence is an
+    // over-budget estimate tells the reader something that never happened.
+    expect(
+      contextOverfullReason({
+        estimatedPromptTokens: 358_960,
+        promptBudgetBeforeReserve: 308_000,
+      }),
+    ).toBe("estimate_exceeds_budget");
+    expect(
+      contextOverfullReason({ activeTokens: 40_000, sessionOverfull: true }),
+    ).toBe("compaction_failed");
+    expect(contextOverfullReason({})).toBeNull();
+  });
+
+  test("a FAILED compaction marks the session overfull even when the counters look comfortable", () => {
+    // The production symptom exactly: the gauge reads fine, and the next send
+    // hits the wall. The verdict is not derivable from the numbers.
+    expect(
+      contextOverfull({
+        activeTokens: 40_000,
+        contextTokens: 200_000,
+        sessionOverfull: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("the gateway's own estimate ABOVE its budget is overfull too", () => {
+    expect(
+      contextOverfull({
+        estimatedPromptTokens: 358_960,
+        promptBudgetBeforeReserve: 308_000,
+        contextTokens: 372_000,
+      }),
+    ).toBe(true);
+  });
+
+  test("a healthy session is NOT flagged (no warning on a conversation that fits)", () => {
+    expect(
+      contextOverfull({
+        estimatedPromptTokens: 40_000,
+        promptBudgetBeforeReserve: 308_000,
+      }),
+    ).toBe(false);
+    expect(contextOverfull(null)).toBe(false);
+    expect(contextOverfull({})).toBe(false);
   });
 });

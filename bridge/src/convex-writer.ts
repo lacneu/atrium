@@ -194,6 +194,22 @@ export interface ConvexWriter {
   ): Promise<string>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
+  /** The compaction VERDICT (G-08): the last compaction failed for good, so the
+   *  session never shrank and the NEXT turn is likely to hit the context wall.
+   *  Chat-scoped on purpose — it must outlive the turn that observed it. */
+  /** The gateway session was REPLACED (a reset, or a rollover the bridge detects
+   *  as fresh): drop every session-scoped context measure and the compaction
+   *  verdict, keeping anything already observed for the NEW session. */
+  clearSessionState?(chatId: string, observedAt: number): Promise<void>;
+
+  setSessionOverfull?(
+    chatId: string,
+    overfull: boolean,
+    /** Frame-RECEIPT time, so a verdict observed before a session reset still
+     *  loses the reset fence when its write queues behind slower ones. */
+    observedAt?: number,
+  ): Promise<void>;
+
   /** message.snapshot -> internal.stream.setSnapshot. `replace` declares an
    *  AUTHORIZED shrink (compaction reset / upstream `replace` refresh); without
    *  it Convex refuses a snapshot that would shorten the displayed reply. */
@@ -243,6 +259,9 @@ export interface ConvexWriter {
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
+      timeoutPhase?: string;
+      providerStarted?: boolean;
+      gatewayAborted?: boolean;
       /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
       errorKind?: string | null;
@@ -502,6 +521,17 @@ type IngestOp =
       runId?: string | null;
     } & RecTags)
   | ({
+      op: "clearSessionState";
+      chatId: string;
+      observedAt: number;
+    }
+  | {
+      op: "setSessionOverfull";
+      chatId: string;
+      overfull: boolean;
+      observedAt?: number;
+    }
+  | {
       op: "setSnapshot";
       replace?: boolean;
       messageId: string;
@@ -799,7 +829,7 @@ export function causedByTooLarge(err: unknown): boolean {
 const WRITE_TIMEOUT_MS = 20_000;
 
 /**
- * Bounded retry for IDEMPOTENT ops — today, `finalize` only.
+ * Bounded retry for IDEMPOTENT ops — `finalize` and the session-state clear.
  *
  * A finalize whose POST times out or hits a transient 5xx leaves the assistant row
  * `streaming`: the reply is COMPLETE and the reader watches "Generating…" until the
@@ -909,10 +939,16 @@ export class HttpConvexWriter implements ConvexWriter {
   /** Post an op. A message-keyed op (it carries `messageId`) is serialized on that
    *  message's chain; a message-less op (startAssistant/getUploadUrl/...) runs
    *  independently so it never blocks behind another chat's work. */
-  /** Ops safe to re-POST: see RETRY_BACKOFF_MS. Deliberately a one-entry set —
-   *  adding a content op here would duplicate what the reader sees. */
+  /** Ops safe to re-POST: see RETRY_BACKOFF_MS. Deliberately TINY — adding a
+   *  content op here would duplicate what the reader sees. */
   private static readonly IDEMPOTENT_OPS: ReadonlySet<string> = new Set([
     "finalize",
+    // The session-state clear is idempotent BY CONSTRUCTION: it drops only what
+    // predates its own `observedAt`, so a replay after the state is already
+    // clean changes nothing. It has to be retried (codex P2) — a lost POST
+    // during a rollover leaves the OLD session's counters and overfull verdict
+    // on the new one, and no later send is "fresh" again to try once more.
+    "clearSessionState",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -1307,6 +1343,27 @@ export class HttpConvexWriter implements ConvexWriter {
         this.pendingResync.add(messageId);
         throw err;
       }
+    });
+  }
+
+  async clearSessionState(chatId: string, observedAt: number): Promise<void> {
+    await this.post({ op: "clearSessionState", chatId, observedAt });
+  }
+
+  async setSessionOverfull(
+    chatId: string,
+    overfull: boolean,
+    observedAt?: number,
+  ): Promise<void> {
+    await this.post({
+      op: "setSessionOverfull",
+      chatId,
+      overfull,
+      // The fence a session reset uses to refuse a verdict that belongs to the
+      // session the user just threw away. The CALLER's receipt time when it has
+      // one — stamping it here would date the verdict from the POST, after a
+      // reset that landed while it queued (codex P2).
+      observedAt: observedAt ?? Date.now(),
     });
   }
 

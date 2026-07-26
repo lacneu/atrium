@@ -452,6 +452,7 @@ function chatAbortedFrame(seq: number): unknown {
 
 type SinkCall =
   | ["addCompactionPart", string, string]
+  | ["setSessionOverfull", string, boolean]
   | [
       "recordGatewayPressure",
       string,
@@ -481,6 +482,15 @@ class SinkFakeWriter implements ConvexWriter {
     return true;
   }
   async addToolPart(): Promise<void> {}
+  readonly overfullStamps: (number | undefined)[] = [];
+  async setSessionOverfull(
+    chatId: string,
+    overfull: boolean,
+    observedAt?: number,
+  ): Promise<void> {
+    this.calls.push(["setSessionOverfull", chatId, overfull]);
+    this.overfullStamps.push(observedAt);
+  }
   async addCompactionPart(
     messageId: string,
     part: CompactionPart,
@@ -539,6 +549,232 @@ async function settle(): Promise<void> {
   // recordGatewayPressure is fire-and-forget (void promise) — let it land.
   await new Promise((r) => setTimeout(r, 0));
 }
+
+// --- G-08: the compaction VERDICT outlives the turn -------------------------
+describe("codex P2: terminal metadata rides the trace even with nothing else", () => {
+  it("a spontaneous turn with ONLY terminal metadata still ships its pressure trace", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_meta", writer);
+    // No pre-send pressure (a spontaneous turn has none), no usage, no error.
+    await sink.beginTurn(RUN);
+    await sink.apply([
+      {
+        type: "message.final",
+        text: "partial",
+        diagnosticTimeoutPhase: "provider",
+        diagnosticProviderStarted: true,
+        diagnosticAborted: true,
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    await new Promise((r) => setTimeout(r, 0)); // the trace is fire-and-forget
+    const trace = writer.calls.find((c) => c[0] === "recordGatewayPressure");
+    // Computed and then never shipped would be the opposite of the fix.
+    expect(trace).toBeDefined();
+    expect(JSON.stringify(trace ?? null)).toContain("provider");
+  });
+});
+
+describe("codex P2: the new timeout causes are OBSERVABLE", () => {
+  it("a deferred-terminal timeout ships its pressure trace", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_ft", writer);
+    await sink.beginTurn(RUN);
+    await sink.apply([
+      {
+        type: "message.final",
+        text: "",
+        diagnosticFinalizeCause: "lifecycle_finishing_timeout",
+      },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    // A named cause nobody can see is a cause nobody can act on.
+    expect(JSON.stringify(writer.calls)).toContain("lifecycle_finishing_timeout");
+  });
+
+  it("an approval timeout ships its pressure trace", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_at", writer);
+    await sink.beginTurn(RUN);
+    await sink.apply([
+      {
+        type: "message.final",
+        text: "",
+        error: "approval",
+        errorKind: "awaiting_approval",
+        diagnosticFinalizeCause: "approval_timeout",
+      },
+      { type: "run.status", status: "error", message: "approval" },
+    ]);
+    await settle();
+    expect(JSON.stringify(writer.calls)).toContain("approval_timeout");
+  });
+});
+
+describe("normalizer emits the session-overfull verdict", () => {
+  it("an explicit compaction that FAILED for good raises it", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+      }),
+      1,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
+      overfull: true,
+    });
+  });
+
+  it("codex P2: a compaction that fails BETWEEN turns is recorded too", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    // The turn is over; the gateway compacts on its own and FAILS. A success
+    // would be caught by the next turn's rotation detector — a failure has no
+    // such fallback, and it is exactly the state the next turn inherits.
+    n.feed(
+      lifecycleFrame(PRE_SESSION_ID, {
+        phase: "end",
+        stopReason: "stop",
+        livenessState: "working",
+      }),
+      1,
+    );
+    n.tick(1 + 11); // the follow-on grace elapses: the turn is finalized
+    expect(n.finalized).toBe(true);
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+      }),
+      2,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
+      overfull: true,
+    });
+  });
+
+  it("codex P2: the verdict carries the FRAME's receipt time, not the write time", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    // The normalizer clock is epoch SECONDS; the reset fence compares ms.
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+      }),
+      1_700_000_000,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
+      overfull: true,
+      observedAt: 1_700_000_000_000,
+    });
+  });
+
+  it("an explicit compaction that COMPLETED clears it — with no second thread marker", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+      }),
+      1,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
+      overfull: false,
+    });
+    // A success adds NO compaction part: the thread would otherwise grow a
+    // marker for every healthy compaction.
+    expect(ev.some((e) => e.type === "context.compaction")).toBe(false);
+  });
+});
+
+describe("TurnSink records the session-overfull verdict", () => {
+  it("a FAILED compaction marks the session overfull (it must PRE-ANNOUNCE the next turn)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_of", writer);
+    await sink.beginTurn(RUN, { totalTokens: 19698, contextTokens: 272000 });
+    // The VERDICT rides its own event (it must be able to CLEAR the warning
+    // without adding a second marker to the thread).
+    await sink.apply([
+      { type: "context.compaction", phase: "failed" },
+      { type: "session.overfull", overfull: true },
+    ]);
+    expect(writer.calls).toContainEqual(["setSessionOverfull", "chat_of", true]);
+  });
+
+  it("a compaction that COMPLETED clears it (a healthy session must not stay flagged)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_ok", writer);
+    await sink.beginTurn(RUN, { totalTokens: 19698, contextTokens: 272000 });
+    // `preflight` is emitted by the session-id ROTATION detector: proof a
+    // compaction actually completed before the prompt.
+    await sink.apply([
+      { type: "context.compaction", phase: "preflight" },
+      { type: "session.overfull", overfull: false },
+    ]);
+    expect(writer.calls).toContainEqual(["setSessionOverfull", "chat_ok", false]);
+  });
+
+  it("two verdicts in ONE turn are applied IN ORDER (a late `false` cannot mask a failure)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_seq", writer);
+    await sink.beginTurn(RUN, { totalTokens: 19698, contextTokens: 272000 });
+    await sink.apply([
+      { type: "session.overfull", overfull: false }, // a preflight succeeded…
+      { type: "session.overfull", overfull: true }, // …then a mid-turn one failed
+    ]);
+    const verdicts = writer.calls.filter((c) => c[0] === "setSessionOverfull");
+    expect(verdicts).toEqual([
+      ["setSessionOverfull", "chat_seq", false],
+      ["setSessionOverfull", "chat_seq", true],
+    ]);
+  });
+
+  it("codex P2: a SILENT deferred turn still records its verdict (no message needed)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_defer", writer);
+    // A spontaneous announce turn: nothing visible, so no bubble is ever opened
+    // and its buffered events are discarded at the terminal.
+    await sink.beginTurn(RUN, undefined, true); // deferOpen
+    await sink.apply([
+      { type: "session.overfull", overfull: true },
+      { type: "run.status", status: "final" },
+    ]);
+    // The verdict is CHAT-scoped: losing it would leave the next ordinary turn
+    // un-warned about a compaction that really failed.
+    expect(writer.calls).toContainEqual([
+      "setSessionOverfull",
+      "chat_defer",
+      true,
+    ]);
+  });
+
+  it("codex P2: the producer's OWN receipt time is forwarded, not the write time", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_stamp", writer);
+    await sink.beginTurn(RUN, { totalTokens: 1, contextTokens: 2 });
+    await sink.apply([
+      { type: "session.overfull", overfull: true, observedAt: 1_234_567 },
+    ]);
+    // The reset fence compares against WHEN THE FRAME WAS SEEN. Re-stamping at
+    // the write would let a verdict observed before a reset slip past it.
+    expect(writer.overfullStamps).toEqual([1_234_567]);
+  });
+
+  it("a midturn ANNOUNCEMENT decides nothing yet (the verdict comes at the end)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_mid", writer);
+    await sink.beginTurn(RUN, { totalTokens: 19698, contextTokens: 272000 });
+    await sink.apply([{ type: "context.compaction", phase: "midturn" }]);
+    expect(
+      writer.calls.filter((c) => c[0] === "setSessionOverfull"),
+    ).toHaveLength(0);
+  });
+});
 
 describe("TurnSink compaction part + pressure trace", () => {
   it("context.compaction -> ONE compaction part; finalize ships the pressure trace with the phase", async () => {

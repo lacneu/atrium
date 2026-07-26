@@ -55,6 +55,44 @@ function readPlan(v: unknown): PlanPart["steps"] | null {
  * authoritative (the gateway validated them); the input args are the
  * fallback when a drifted result omits the plan.
  */
+/**
+ * Work plan from the NATIVE `stream:"plan"` agent event (G-22).
+ *
+ * The gateway emits `{phase:"update", explanation?, steps}` in TWO shapes,
+ * both verified in the deployed 2026.7.1 build:
+ *   - `handleTurnPlanUpdated` → `steps: [{step, status}]` — the SAME shape the
+ *     `update_plan` tool result carries, so it goes through the SAME reader;
+ *   - `splitPlanText` → `steps: ["a line", …]` — plain lines, no status. The
+ *     honest default is `pending`: the gateway stated none, and inventing
+ *     `in_progress` would show progress that was never reported.
+ *
+ * Deliberately built from the same primitives as `planPartFromTool` (`readPlan`,
+ * the caps): the two paths render the SAME part, and a divergence between them
+ * would be invisible to the reader while being wrong for one of the providers.
+ */
+export function planPartFromPlanStream(data: unknown): PlanPart | null {
+  if (!isRecord(data)) return null;
+  const raw = data.steps;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  // Normalize the string shape into the structured one, then use the SHARED
+  // reader for everything else (caps, status allowlist, malformed entries).
+  const normalized = raw.map((entry) =>
+    typeof entry === "string" ? { step: entry, status: "pending" } : entry,
+  );
+  const steps = readPlan(normalized);
+  if (steps === null) return null;
+  const explanationRaw = data.explanation;
+  const explanation =
+    typeof explanationRaw === "string" && explanationRaw !== ""
+      ? explanationRaw.slice(0, EXPLANATION_CAP)
+      : undefined;
+  return {
+    kind: "plan",
+    steps,
+    ...(explanation !== undefined ? { explanation } : {}),
+  };
+}
+
 export function planPartFromTool(
   name: string | null,
   phase: string | null,

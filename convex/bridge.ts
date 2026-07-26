@@ -1858,6 +1858,23 @@ export const dispatchReset = internalAction({
       return;
     }
 
+    // Captured BEFORE the POST: the post-reset cleanup keeps anything observed
+    // at or after this instant, so a turn the user starts while the reset is in
+    // flight does not lose its fresh meta (codex P2).
+    //
+    // RESIDUAL, stated rather than papered over: a send that starts AFTER this
+    // stamp and completes BEFORE the bridge's own activity check would keep the
+    // OLD session's counters on the reset one. The bridge REFUSES a panel reset
+    // while a turn is live (`refuseIfActive`), so the realistic version of that
+    // race is already closed; what remains needs an entire LLM turn to run
+    // inside one HTTP round-trip. Closing it properly means the bridge returning
+    // the instant the session actually rolled — a protocol change, not a patch.
+    //
+    // A BACKGROUND compaction of the old session received WHILE the POST is in
+    // flight is handled by the second bound (`resetCompletedAt`); if one still
+    // slips through, it SELF-HEALS — the next send finds the session fresh
+    // (`computeFreshSession`) and clears the whole state.
+    const resetStartedAt = Date.now();
     let ok = false;
     let refusedTurnActive = false;
     try {
@@ -1903,6 +1920,38 @@ export const dispatchReset = internalAction({
       ok = false;
     }
 
+    // The conversation's session STATE follows the same rule as the regenerate
+    // below: only a CLEAN reset replaced the gateway session. Done here, not in
+    // the mutation that scheduled us (codex P1): the bridge refuses a reset when
+    // a turn went live in the schedule→execute window, and clearing the state
+    // eagerly would have shown a fresh, un-warned session while the gateway
+    // still held the old, overfull one.
+    if (ok) {
+      // BEST-EFFORT, and it must be (codex P1): the instance fence below THROWS
+      // on a chat rebound since the routing lookup, and an uncaught throw here
+      // would exit before the regenerate is scheduled — leaving its outbox row
+      // pending forever and the user with no reply. A stale gauge is a far
+      // smaller failure than a lost turn.
+      try {
+        await ctx.runMutation(internal.stream.clearSessionStateAfterReset, {
+          chatId,
+          resetStartedAt,
+          // The gateway has CONFIRMED the reset by now: a straggler of the old
+          // session received while the POST was in flight must still lose the
+          // fence, which the dispatch stamp alone cannot do (codex P2).
+          resetCompletedAt: Date.now(),
+          // The SAME atomic barrier the ingest path uses: a chat rebound to
+          // another instance between the routing lookup and this cleanup keeps
+          // ITS state — the reset we ran no longer describes it.
+          boundInstanceName: routing.target.instanceName,
+        });
+      } catch (err) {
+        console.error(
+          "bridge.dispatchReset: session-state cleanup skipped:",
+          err,
+        );
+      }
+    }
     // Chain the regenerate ONLY after a clean reset (else a stale-session
     // regenerate would answer with the deleted context). If the reset FAILED,
     // surface it on the regenerate row instead of leaving it pending + silent.

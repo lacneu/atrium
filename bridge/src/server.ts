@@ -893,12 +893,25 @@ async function performSend(
   // Whether THIS send prepended rehydration history (function-scope: read by
   // the post-ack beginTurn in the LATER try block for the processing_history phase).
   let turnWasRehydrated = false;
+  // The instant the session boundary is observed: captured BEFORE the describe,
+  // so a FRESH-session clear can never be dated after the snapshot that describes
+  // the NEW session (codex P2). Dated later, the clear would either wipe that
+  // snapshot or make the fence reject it, and the fresh session would show no
+  // gauge and no cost for a whole turn.
+  // `- 1` so the boundary is strictly BEFORE the describe even when both land in
+  // the same millisecond: the fence and the keep-rule both compare on equality,
+  // and a tie would classify the new session's own snapshot as pre-reset.
+  const sessionObservedAt = Date.now() - 1;
+  // Stamped when THIS describe's answer is in hand, strictly after the boundary
+  // above so the fresh session's own snapshot is never classified as pre-reset.
+  let describeObservedAt = sessionObservedAt + 1;
   try {
     const desc = await conn.request(
       "sessions.describe",
       { key: sessionKey },
       8_000,
     );
+    describeObservedAt = Date.now();
     const sess = (
       desc.payload as { session?: Record<string, unknown> } | undefined
     )?.session;
@@ -935,7 +948,14 @@ async function performSend(
     if (sess) {
       const models = await ensureAvailableModels(conn);
       void writer
-        .reportSessionMeta(body.chatId, parseSessionMeta(sess, models))
+        .reportSessionMeta(body.chatId, {
+          ...parseSessionMeta(sess, models),
+          // Stamped when the DESCRIBE was observed, not when its POST goes out
+          // (codex P2): a describe of the OLD session already in flight when a
+          // reset/rollover lands would otherwise look newer than the fence and
+          // restore the estimate and budget that were just purged.
+          observedAt: describeObservedAt,
+        })
         .catch((e) =>
           console.error(
             "[sessionMeta] skipped (non-fatal):",
@@ -977,6 +997,25 @@ async function performSend(
       firstTurnOnSession,
       routedSwitch,
     );
+    if (freshSession) {
+      // A gateway session the bridge considers FRESH (a daily/idle rollover, a
+      // redeploy, a per-turn agent switch) is a new session even though no user
+      // reset it. The compaction VERDICT describes the OLD one and is preserved
+      // across every meta refresh, so without this a failed compaction would go
+      // on telling the user their brand-new session cannot answer (codex P2).
+      // The WHOLE session-scoped context state, not just the verdict (codex P2):
+      // when `sessions.describe` returned no session at all, nothing replaces the
+      // old measures either, and an estimate that exceeded its budget would keep
+      // warning about a session that no longer exists.
+      void writer
+        .clearSessionState?.(body.chatId, sessionObservedAt)
+        .catch((e) =>
+          console.error(
+            "[rehydrate] session-state clear skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+    }
     const decision = rehydrationDecision({
       freshSession,
       hasAttachments: hasInlineAttachments,

@@ -25,6 +25,8 @@ export type SessionMetaView = {
   availableModels?: { id: string; label: string }[];
   verboseLevel?: string;
   totalTokens?: number;
+  /** Compaction verdict (G-08) — see ContextMeta. */
+  sessionOverfull?: boolean;
   // REAL window usage of the last turn (bridge post-usage stamp). Primary
   // gauge source: totalTokens is CUMULATIVE under a context engine (LCM) and
   // dividing it by the window read 859% in prod.
@@ -128,6 +130,10 @@ interface ContextMeta {
    *  stale". Upstream uses it to leave the reading UNKNOWN rather than show a
    *  frozen percentage; so do we. */
   totalTokensFresh?: boolean;
+  /** The last compaction FAILED and will not be retried (G-08): the session did
+   *  not shrink. A VERDICT, not a number — the counters above can read
+   *  comfortable while this is true, which is the production symptom. */
+  sessionOverfull?: boolean;
 }
 
 /** The number the context gauge should treat as "used window tokens", or null
@@ -197,6 +203,37 @@ export function effectiveContextWindow(
   return sm.contextTokens != null && sm.contextTokens > 0
     ? sm.contextTokens
     : null;
+}
+
+/**
+ * TRUE when the session is known not to fit any more: either the gateway's own
+ * estimate exceeds the budget it measures against, or its last compaction failed
+ * for good. Pre-announces the next turn's overflow instead of letting it arrive
+ * as a raw error the reader cannot act on.
+ */
+export type OverfullReason = "compaction_failed" | "estimate_exceeds_budget";
+
+/**
+ * WHY the session no longer fits, or null when it does. The two causes are NOT
+ * interchangeable in the message shown: claiming "the last compaction failed"
+ * when the only evidence is an over-budget estimate states a fact that never
+ * happened (codex P2).
+ */
+export function contextOverfullReason(
+  sm: ContextMeta | null | undefined,
+): OverfullReason | null {
+  if (!sm) return null;
+  // The VERDICT is the stronger, more specific statement: it wins the label.
+  if (sm.sessionOverfull === true) return "compaction_failed";
+  const used = effectiveContextUsed(sm);
+  const budget = effectiveContextWindow(sm);
+  return used != null && budget != null && used > budget
+    ? "estimate_exceeds_budget"
+    : null;
+}
+
+export function contextOverfull(sm: ContextMeta | null | undefined): boolean {
+  return contextOverfullReason(sm) !== null;
 }
 
 /** Which source `effectiveContextUsed` actually used — for the hover text. */

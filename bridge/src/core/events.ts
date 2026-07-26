@@ -26,6 +26,20 @@ export const EVENT_MESSAGE_FINAL = "message.final"; // the turn's authoritative 
 export const EVENT_RUN_STATUS = "run.status"; // {status, runId}
 export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId, toolCallId?, input?, output?}
 export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
+// {plan} — the agent's work plan from the NATIVE `stream:"plan"` agent event
+// (G-22), already normalized into the SAME PlanPart the `update_plan` tool path
+// produces. Not a tool call: it must never touch the turn's tool counters.
+export const EVENT_PLAN = "plan";
+// {phase} — the turn's LIVE processing phase, when the provider normalizer is
+// the only place that knows it (e.g. the gateway's deferred terminal,
+// `post_processing`). The sink forwards it to setPhase; unknown values are
+// dropped server-side, so a newer bridge never breaks an older backend.
+export const EVENT_TURN_PHASE = "turn.phase";
+// {overfull} — the COMPACTION VERDICT (G-08). Separate from the compaction PART
+// on purpose: the part describes what happened during this turn, this verdict
+// describes the state the NEXT turn inherits, and a successful compaction must
+// be able to clear it without adding a second marker to the thread.
+export const EVENT_SESSION_OVERFULL = "session.overfull";
 // {runId} — the agent GENERATED media (e.g. a codex `imageGeneration` item) but the
 // turn delivered NO media (no MEDIA:/mediaUrls/outbound path) → nothing for the bridge
 // to fetch. A SOC2-safe diagnostic so the #7 self-correction loop can flag the agent's
