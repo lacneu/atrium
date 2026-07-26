@@ -505,7 +505,7 @@ export const compactSession = action({
     if (!routing || routing.target === null) {
       throw new Error("no_agent: chat has no routed agent");
     }
-    const { status } = await postBridge(
+    const { status, data } = await postBridge(
       "/compact",
       {
         chatId,
@@ -524,6 +524,24 @@ export const compactSession = action({
       resource: "chat",
       resourceId: chatId,
     });
+    // The gateway REFUSES with a 200 (no transcript, one already running, an
+    // unsupported harness). Reporting that as success told the user their session
+    // had been compacted when nothing had changed — and the context-overflow card's
+    // "Compact the session" button is exactly where that lie costs the most. The
+    // bucketed class rides the message so the UI can name the cause.
+    const body = data as
+      | { compacted?: unknown; reasonClass?: unknown }
+      | undefined;
+    if (body?.compacted === false) {
+      const cls =
+        typeof body.reasonClass === "string" && body.reasonClass !== ""
+          ? `:${body.reasonClass}`
+          : "";
+      throw new ConvexError(`compact_refused${cls}`);
+    }
+    // An older bridge answers `{ok:true}` with no `compacted` field. UNKNOWN is not
+    // a refusal: inventing one would tell the user nothing happened when it may
+    // well have.
     return null;
   },
 });

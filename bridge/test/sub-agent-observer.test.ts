@@ -387,6 +387,49 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
     expect(obs.size).toBe(1); // NOT reaped on error — recovery stays observable
   });
 
+  it("W2 / G-11: a child's failure carries a STABLE errorCode, not just prose", () => {
+    // Before this, `subAgents` had no `errorCode` at all: a child that died of a
+    // context overflow showed raw prose, and nothing could count how many
+    // sub-agents died of overflow. The classifier already existed one file away.
+    const obs = new SubAgentObserver(ERR_PARENT, "chatCode");
+    const overflow = {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: ERR_CHILD,
+        spawnedBy: ERR_PARENT,
+        runId: "child-run",
+        state: "error",
+        errorMessage:
+          "The AI service failed: input token count exceeds the maximum number of input tokens",
+      },
+    };
+    const out = obs.observe(overflow, 1000);
+    expect(out[0]).toMatchObject({
+      status: "error",
+      childSessionKey: ERR_CHILD,
+      errorCode: "context_length",
+    });
+  });
+
+  it("W2 / G-11: an UNRECOGNIZED failure carries no code (fail-safe, never a guess)", () => {
+    const obs = new SubAgentObserver(ERR_PARENT, "chatCode2");
+    const odd = {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: ERR_CHILD,
+        spawnedBy: ERR_PARENT,
+        runId: "child-run",
+        state: "error",
+        errorMessage: "le sous-agent a rendu quelque chose d'étrange",
+      },
+    };
+    const out = obs.observe(odd, 1000);
+    expect(out[0]).toMatchObject({ status: "error" });
+    expect((out[0] as { errorCode?: string }).errorCode).toBeUndefined();
+  });
+
   it("overflow RECOVERY: chat:error then chat:final -> the done overwrites (reap at done)", () => {
     // The exact NAS sequence (2026-07-03 14:39): precheck overflow -> attempt
     // abandoned (chat:error) -> tool results truncated -> run resumes -> clean

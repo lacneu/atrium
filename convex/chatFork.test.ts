@@ -585,6 +585,41 @@ describe("chatFork.forkChat", () => {
     );
   });
 
+  test("a WITHHELD send's card is a valid branch point (W2)", async () => {
+    // The pre-send guard's card offers "New session from here". That card is minted
+    // by bridge.failDispatch — a plain `db.insert` with an errorCode and no runId,
+    // NOT by stream.finalize — so its acceptance here is not implied by any other
+    // fork test. If it were rejected, the two wired exits the overflow card promises
+    // would be one, on exactly the turn that has no other way out.
+    const t = convexTest(schema, modules);
+    const { userId, chatId, ids } = await seedChat(t, { messages: 2 });
+    const blockedId = await t.run(async (ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "error" as const,
+        text: "",
+        error: "send_failed",
+        errorCode: "context_length_presend",
+        updatedAt: 3000,
+      }),
+    );
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const { chatId: forkId } = await as.mutation(api.chatFork.forkChat, {
+      branchMessageId: blockedId,
+    });
+    const msgs = await t.run(async (ctx) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", forkId as Id<"chats">))
+        .collect(),
+    );
+    // The user's own turns are carried; the branch itself is the failed card.
+    expect(msgs.length).toBeGreaterThanOrEqual(2);
+    expect(ids.length).toBe(2);
+  });
+
   test("a branch point still STREAMING is refused (no silent one-message-early fork)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seedChat(t);

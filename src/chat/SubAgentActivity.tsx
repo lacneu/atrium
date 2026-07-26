@@ -126,7 +126,7 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
           secondary-conversation panel the row opens. */}
       {card.failure ? (
         <p className="oc-subagent__error" role="status">
-          {shortenSubAgentError(card.errorMessage)}
+          {shortenSubAgentError(card.errorMessage, card.errorCode)}
         </p>
       ) : null}
     </div>

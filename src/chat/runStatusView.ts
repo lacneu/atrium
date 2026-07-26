@@ -178,10 +178,30 @@ export interface ErrorDetailView {
   headline: string | null;
   /** Raw technical detail (gateway text) — null when empty or redundant. */
   detail: string | null;
+  /** The class this view RESOLVED to, including the text-phrasing fallback. The
+   *  card keys its wired actions on THIS, not on the raw `errorCode`: an overflow
+   *  recognized only by its phrasing used to get the right headline and no way out
+   *  — a dead end on the one failure the app can act on itself. */
+  code: string | null;
 }
 
-const ERROR_CODE_LABEL: Record<string, () => string> = {
+/** The overflow FAMILY: every class whose remedy is the same two actions (compact
+ *  the session, or branch a fresh one). Exported so the card and the view stay in
+ *  agreement — a new member added to one and forgotten in the other would show the
+ *  right headline with no way to act on it. */
+export const CONTEXT_OVERFLOW_CODES: ReadonlySet<string> = new Set([
+  // The gateway's own hard overflow, mid-turn.
+  "context_length",
+  // The same, on a turn whose session had just been compacted (retried once).
+  "context_length_compacted",
+  // The bridge WITHHELD the send: measured not to fit, compaction did not shrink it.
+  "context_length_presend",
+]);
+
+export const ERROR_CODE_LABEL: Record<string, () => string> = {
   context_length: m.runstatus_error_context_length,
+  context_length_compacted: m.runstatus_error_context_length_compacted,
+  context_length_presend: m.runstatus_error_context_length_presend,
   rate_limit: m.runstatus_error_rate_limit,
   timeout: m.runstatus_error_timeout,
   refusal: m.runstatus_error_refusal,
@@ -288,7 +308,7 @@ export function errorDetailView(
   // A code string in `error` (orphaned/dispatch pattern) is not a useful detail.
   const detail =
     raw && raw !== code && !ERROR_STRING_CODES.has(raw) ? raw : null;
-  return { headline, detail };
+  return { headline, detail, code };
 }
 
 /** Re-exported from the shared module so existing importers (RunStatus) are

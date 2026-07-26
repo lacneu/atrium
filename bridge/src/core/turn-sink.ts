@@ -286,6 +286,11 @@ export class TurnSink {
   // THIS send prepended rehydration history (threaded from beginTurn): the
   // gateway chews it silently first — surfaced as the processing_history phase.
   private pendingRehydrated = false;
+  /** THIS turn's send was preceded by a SUCCESSFUL pre-send compaction (W2). Makes a
+   *  `context_length` failure a transient class: the session provably just shrank, so
+   *  a single re-dispatch composes a smaller prompt. Without the compaction it is a
+   *  hard wall and a retry would only fail again at the user's expense. */
+  private compactedBeforeSend = false;
 
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
@@ -326,6 +331,12 @@ export class TurnSink {
     costUsd?: number | null;
   } | null = null;
   private compactionPhase: string | null = null;
+  /** WHY the gateway compacted this turn, from `session.operation` (W2 / G-09).
+   *  null = the event never arrived (broadcast `dropIfSlow`) ⇒ UNKNOWN. */
+  private compactionReason: string | null = null;
+  /** The gateway REFUSED to compact (already active / deferred / unsupported)
+   *  rather than trying and failing — the pre-send guard needs the difference. */
+  private compactionRefused = false;
   // Tool calls emitted THIS turn: rides the pressure trace so a mid-turn
   // overflow reads causally at a glance ("40% pre-turn + 66 tool calls ->
   // overflow") instead of needing a manual reconstruction.
@@ -457,6 +468,9 @@ export class TurnSink {
     /** The outbox row this turn was dispatched from; null for a gateway-initiated
      *  turn (announce/task delivery, talk) — no queued send is waiting on those. */
     dispatchOutboxId: string | null = null,
+    /** Further per-turn facts. An OBJECT, not another positional boolean: five
+     *  trailing positionals is already one too many to read at a call site. */
+    opts: { compactedBeforeSend?: boolean } = {},
   ): Promise<void> {
     this.turnEpoch++;
     this.dispatchOutboxId = dispatchOutboxId;
@@ -479,6 +493,8 @@ export class TurnSink {
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
     this.compactionPhase = null;
+    this.compactionReason = null;
+    this.compactionRefused = false;
     this.toolCallCount = 0;
     this.framesLostThisTurn = 0;
     this.planAdvancesThisTurn = 0;
@@ -515,6 +531,7 @@ export class TurnSink {
     this.turnRunId = ackRunId;
     this.lastChildHeartbeatMs = 0;
     this.pendingRehydrated = false;
+    this.compactedBeforeSend = false;
     this.pendingOpen = false;
     this.deferredRunId = null;
     this.deferredEvents = [];
@@ -539,6 +556,7 @@ export class TurnSink {
     // drains them right after this returns. (No await between the two lines, so
     // there is no active-with-null-messageId window.)
     this.pendingRehydrated = rehydrated;
+    this.compactedBeforeSend = opts.compactedBeforeSend === true;
     this.messageId = await this.writer.startAssistant(
       this.chatId,
       ackRunId,
@@ -648,6 +666,20 @@ export class TurnSink {
       // P2): a silent announce turn buffers its events and then discards the
       // buffer at its terminal, so a compaction that failed during one would
       // have left the next ordinary turn un-warned. It creates no message.
+      // WHY the gateway compacted, from its OWN account (W2 / G-09). Handled here,
+      // before the deferred gate, because it creates no message: the PRIMARY cause
+      // signal, where until now it was inferred from a session-id rotation — and
+      // the marker shown to the reader implied a pre-emptive threshold compaction
+      // even when the session had actually hit an OVERFLOW. A `dropIfSlow` event
+      // may never arrive, so its ABSENCE stays "unknown", never "threshold".
+      if (event.type === "compaction.cause") {
+        const r = asString((event as { reason?: unknown }).reason);
+        if (r) this.compactionReason = r;
+        if ((event as { refusal?: unknown }).refusal === true) {
+          this.compactionRefused = true;
+        }
+        continue;
+      }
       if (event.type === "session.overfull") {
         try {
           const seen = (event as { observedAt?: unknown }).observedAt;
@@ -1377,6 +1409,12 @@ export class TurnSink {
               kind: "compaction",
               phase,
               at: Date.now(),
+              // The marker can finally say WHY (G-09), or stay silent about the
+              // cause when the gateway's account did not reach us — instead of
+              // wording that implied a pre-emptive compaction either way.
+              ...(this.compactionReason !== null
+                ? { reason: this.compactionReason }
+                : {}),
             });
           } else if (phase === "failed") {
             console.log(
@@ -1636,6 +1674,15 @@ export class TurnSink {
       this.pendingMediaGeneratedUndelivered
     ) {
       effectiveErrorKind = EMPTY_RESPONSE_CODE;
+    }
+    // A `context_length` on a turn whose session was JUST compacted is not the wall
+    // it looks like: the prompt that overflowed was assembled before the shrink took
+    // effect, or the shrink was not quite enough. Name it distinctly so Convex can
+    // re-dispatch it ONCE under the zero-content gates (turnRetry) instead of
+    // handing the user a dead end. An un-compacted overflow keeps `context_length`:
+    // retrying it would fail identically and cost the user another wait.
+    if (effectiveErrorKind === "context_length" && this.compactedBeforeSend) {
+      effectiveErrorKind = "context_length_compacted";
     }
     // A DELIVERY run's terminal `aborted` with nothing streamed is the gateway
     // closing a TOOL-ONLY continuation turn (measured live 2026.7.1: an
@@ -1921,6 +1968,13 @@ export class TurnSink {
             ? { foreignRunsRefused: this.pendingForeignRunRejections }
             : {}),
           compaction: this.compactionPhase,
+          // The CAUSE, allowlisted upstream of here. Absent = the gateway's own
+          // account never reached us: an operator reading this trace must see
+          // "unknown", not infer a threshold compaction (G-09).
+          ...(this.compactionReason !== null
+            ? { compactionReason: this.compactionReason }
+            : {}),
+          ...(this.compactionRefused ? { compactionRefused: true } : {}),
           // The HARD-overflow marker: the gateway reported errorKind
           // "context_length" (un-recovered), vs `compaction` = handled silently.
           errorKind: this.pendingDiagErrorKind,

@@ -83,11 +83,62 @@ export function clampSummary(text: string): string {
   return `${cut}…`;
 }
 
-/** The character budget for one rehydration block: the legacy window-derived budget
- *  (50% of the context window at ~3 chars/token) bounded by the hard ceiling. */
+/**
+ * Chars per token, PRUDENTLY.
+ *
+ * This module used 3 — an optimistic figure that makes a composed block look
+ * cheaper than it is, so a 60 000-char history "worth 20k tokens" could really
+ * cost 30k and push the very prompt it was meant to ground into overflow. The
+ * gateway's own planner is more careful: 2 chars/token on tool results, plus a
+ * 1.2 safety margin (`preemptive-compaction.ts`, `compaction-planning.ts`).
+ * Matching it means the budget under-promises instead of over-promising — the
+ * only safe direction for a value that decides whether a turn fits.
+ */
+export const CHARS_PER_TOKEN = 2;
+export const TOKEN_ESTIMATE_MARGIN = 1.2;
+
+/** Tokens a text is CONSERVATIVELY worth (over-estimates on purpose). */
+export function estimateTokens(chars: number): number {
+  return Math.ceil((chars / CHARS_PER_TOKEN) * TOKEN_ESTIMATE_MARGIN);
+}
+
+/** Above this share of the window, rehydration is REFUSED outright: the session
+ *  is already near its limit and the gateway holds the history anyway, so
+ *  injecting more is the one action guaranteed to make things worse (G-10). */
+export const REHYDRATION_MAX_FILL = 0.7;
+
+/** The character budget for one rehydration block: half the context window
+ *  converted with the PRUDENT ratio above, bounded by the hard ceiling. */
 export function rehydrationBudgetChars(windowTokens: number): number {
-  const windowBudget = Math.floor(windowTokens * 0.5) * 3;
+  const windowBudget = Math.floor(windowTokens * 0.5) * CHARS_PER_TOKEN;
   return Math.max(2_000, Math.min(windowBudget, HARD_MAX_HISTORY_CHARS));
+}
+
+/**
+ * Does the COMPOSED prompt still fit? (G-10)
+ *
+ * The old budget bounded the history block in CHARACTERS and nothing bounded the
+ * whole — history + separator + the user's own text — against the LIVE window. A
+ * long message on top of a full-budget history therefore composed a prompt the
+ * session could not take.
+ *
+ * `windowTokens` must be the SMALLEST live window in play: on an agent switch the
+ * turn may run on a model with a narrower context than the one that composed the
+ * history, and sizing against the larger of the two is how the block overflows
+ * the model that actually receives it.
+ */
+export function composedPromptFits(params: {
+  historyChars: number;
+  userChars: number;
+  separatorChars: number;
+  windowTokens: number;
+}): boolean {
+  if (!Number.isFinite(params.windowTokens) || params.windowTokens <= 0) {
+    return true; // unknown window: never REFUSE on an absent measure (P6)
+  }
+  const total =
+    params.historyChars + params.userChars + params.separatorChars;
+  return estimateTokens(total) <= Math.floor(params.windowTokens * 0.5);
 }
 
 export interface RehydrationTurn {

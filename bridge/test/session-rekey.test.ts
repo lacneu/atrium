@@ -36,6 +36,11 @@ function fakeConn() {
       closed = true;
       release();
     },
+    // The session subscribes to session events on connect (W2 / G-09): the fake
+    // models a connection, so it answers RPCs.
+    async request() {
+      return { payload: {} };
+    },
     async *frames() {
       try {
         await gate;

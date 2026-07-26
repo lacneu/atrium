@@ -379,6 +379,71 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(JSON.stringify(traces)).not.toContain("transférer");
   });
 
+  test("the compaction CAUSE reaches the trace (it was computed and dropped)", async () => {
+    // G-09 exists to answer "why did the gateway compact". The bridge derived the
+    // cause and POSTed it; the ingest projected every OTHER field and silently
+    // omitted this one, so no trace ever carried it — the measurement existed and
+    // was invisible, which is the failure mode this whole program keeps hitting.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      compaction: "midturn",
+      compactionReason: "overflow",
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    expect(traces[traces.length - 1]?.compactionReason).toBe("overflow");
+  });
+
+  test("a REFUSED compaction is named as a refusal, not as a failure", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      compactionReason: "already_active",
+      compactionRefused: true,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    expect(traces[traces.length - 1]?.compactionRefused).toBe(true);
+    expect(traces[traces.length - 1]?.compactionReason).toBe("already_active");
+  });
+
+  test("the boundary BUCKETS the compaction reason too (no gateway sentence)", async () => {
+    // Same discipline as timeoutPhase: the bridge already buckets this, and the
+    // boundary does it again because a divergent bridge is not a trusted source.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      compactionReason: "compacting after: virement de 4000 EUR à Jean",
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    // DROPPED, not coerced: an unrecognized value must not read as a measurement.
+    expect(traces[traces.length - 1]?.compactionReason).toBeUndefined();
+    expect(JSON.stringify(traces)).not.toContain("virement");
+  });
+
   test("codex P2: an ordinary meta refresh does NOT erase the session-overfull verdict", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedAssistantMessage(t);

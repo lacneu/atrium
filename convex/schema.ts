@@ -121,6 +121,13 @@ export const messagePart = v.union(
     kind: v.literal("compaction"),
     phase: v.string(),
     at: v.number(),
+    // WHY the gateway compacted, from its own `session.operation` account
+    // (W2 / G-09) — ALLOWLISTED by the bridge before it gets here (the upstream
+    // failure path carries arbitrary error text). ABSENT means the cause is
+    // UNKNOWN: the event is broadcast `dropIfSlow`, so a slow consumer simply
+    // never receives it — and the marker must then say nothing about the cause
+    // rather than imply a pre-emptive threshold compaction.
+    reason: v.optional(v.string()),
   }),
   // Provenance report (provenance/v1, docs/PROVENANCE_CONTRACT.md): what a
   // gateway context-injecting plugin (conversational memory / document RAG)
@@ -1428,6 +1435,13 @@ export default defineSchema({
     ),
     resultText: v.optional(v.string()), // the child's final answer (server-paths stripped)
     errorMessage: v.optional(v.string()), // failure reason on error (paths stripped)
+    // The STABLE failure class of that reason (W2 / G-11), from the shared
+    // classifier — the same allowlist the parent message's `errorCode` uses. A
+    // child that died of a context overflow used to show raw prose and was
+    // invisible to the observability surface: nothing could count "how many
+    // sub-agents died of overflow this week". Optional and allowlisted at the
+    // ingest boundary: an unknown value normalizes to "unknown", never raw text.
+    errorCode: v.optional(v.string()),
     phase: v.optional(v.string()), // last observed lifecycle phase (e.g. "startup")
     // The tools the CHILD called — NAME + lifecycle status ONLY (SOC2: never the
     // args/results, which are the child's retrieved/produced CONTENT). Lets a

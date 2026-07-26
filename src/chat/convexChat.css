@@ -6742,6 +6742,20 @@ button.oc-bmk-rail__count:hover {
 }
 /* The context PRE-ANNOUNCEMENT (G-08): the session no longer fits. A warning,
    not an error — the turn has not failed yet, which is the whole point. */
+/* WIRED exits on the context-overflow card (W2, P4): the label no longer ADVISES
+   a manual workaround, so the actions need somewhere to live. */
+.oc-error-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.oc-error-card__notice {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
 .oc-spanel__help--warn {
   color: var(--warning-foreground, var(--destructive));
 }

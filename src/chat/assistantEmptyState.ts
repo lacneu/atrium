@@ -195,7 +195,7 @@ export function assistantEmptyState(
     return {
       kind: "failed",
       taskName: cleanTaskName(failed.taskName),
-      reason: shortenSubAgentError(failed.errorMessage),
+      reason: shortenSubAgentError(failed.errorMessage, failed.errorCode),
     };
   }
 

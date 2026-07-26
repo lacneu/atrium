@@ -110,6 +110,44 @@ Two consequences of that gap are DECLARED rather than worked around:
   be serialized behind it. That is the gateway's own behaviour, and it is the
   visible cost of the missing feature.
 
+### Declared contract — the pre-send guard (`sessions.describe` → `sessions.compact`)
+
+Before every send the bridge already describes the session. Four fields on that
+answer say whether the next prompt fits: `estimatedPromptTokens` (the gateway's own
+pre-prompt assessment), `promptBudgetBeforeReserve` (the usable budget, which is
+NOT the raw window), `overflowTokens` (the gateway stating outright that the
+assembled prompt does not fit) and `totalTokensFresh`. The guard reads them and acts
+in four graduated tiers: below 70 % nothing, 70–85 % inform, 85–95 % compact
+pre-emptively but always send, above 95 % compact and — if the compaction did not
+happen — withhold the send.
+
+`sessions.compact` answers `{ok, compacted, reason?}` and REFUSES with an HTTP 200
+(no transcript, one already running, an unsupported harness). `compacted` is the
+only field that proves a shrink; `reason` is free text and is bucketed at both the
+bridge and the ingest boundary.
+
+Three properties are load-bearing, and each has a test that fails without it:
+
+- the guard can never cost a turn that would have succeeded. An unknown fill, an
+  absent budget, a compaction RPC that throws, a session with a run already active,
+  or a dispatch too old to afford the call — every one of them SENDS. Only an
+  explicit, positive measurement plus an observed refusal withholds anything;
+- a compaction is attempted at most once per turn, and a STRUCTURAL refusal (no
+  transcript, unsupported harness, deferred-and-unscheduled) is remembered against
+  the `sessionId` it was seen on, so later turns get the verdict immediately instead
+  of a 60-second wait for the same answer. A TRANSIENT refusal ("already active") is
+  not remembered;
+- the compaction's timeout is clamped to what the pre-send deadline still allows,
+  reserving room for the re-describe and the send itself.
+
+One consequence is DECLARED rather than worked around: an announce/delivery run that
+STARTS while the guard's compaction is already in flight can be interrupted by the
+gateway's own `interruptSessionRunIfActive`. The bridge refuses to compact when a run
+is active at the moment of the decision (including a DEFERRED announce turn, which is
+busy while still invisible), but it cannot un-send an RPC. The same window exists for
+the user's manual compaction, and closing it needs a gateway-side "compact only if
+idle" option, not a bridge change.
+
 ### Chat event base fields
 
 | Field | Verdict | Evidence |

@@ -40,7 +40,10 @@ function fakeConn() {
       closed = true;
       release();
     },
-    async *frames() {
+    async request() {
+        return { payload: {} };
+      },
+      async *frames() {
       await gate; // never yields a frame
     },
   };

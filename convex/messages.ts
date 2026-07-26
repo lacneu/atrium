@@ -309,7 +309,16 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               // Gateway context-compaction marker (content-free by construction:
               // phase + timestamp). Always shipped — the user-facing "context was
               // optimized" note is not a tool detail.
-              parts.push({ kind: "compaction", phase: part.phase, at: part.at });
+              // `reason` RIDES: it is the whole point of the marker's cause
+              // sentence, and it is allowlisted by the bridge AND re-checked at
+              // ingest. Stripping it here made the sentence unreachable — the
+              // measurement existed and the reader never saw it.
+              parts.push({
+                kind: "compaction",
+                phase: part.phase,
+                at: part.at,
+                ...(part.reason !== undefined ? { reason: part.reason } : {}),
+              });
               break;
           }
         }
@@ -427,6 +436,12 @@ type SubAgentEntry = {
   childIdShort: string;
   status: SubAgentStatus;
   errorCategory: string;
+  /** The STABLE failure class of the child's error (W2 / G-11), allowlisted at
+   *  ingest — the value an operator can AGGREGATE ("how many sub-agents died of
+   *  context overflow this week"), which `errorCategory` (a text heuristic)
+   *  could never answer. null when the child did not fail, or when its prose
+   *  matched nothing recognizable. SOC2-safe: an enum, never gateway text. */
+  errorCode: string | null;
   hasTaskName: boolean;
   // The spawning assistant message — surfaces the parent<->child CORRELATION for
   // debugging (a structural message id only, never content; SOC2-safe). null for a
@@ -524,6 +539,7 @@ async function loadSubAgentSummary(
     status: c.status,
     // PATTERN-MATCHES the raw error but RETURNS ONLY a fixed enum (never the text).
     errorCategory: classifySubAgentError(c.status, c.errorMessage),
+    errorCode: c.errorCode ?? null,
     // Presence boolean ONLY — never the taskName text.
     hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",
     // The spawning message id (structural, SOC2-safe) — the correlation link.

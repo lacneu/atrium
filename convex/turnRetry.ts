@@ -57,12 +57,20 @@ export const EMPTY_RESPONSE_RETRY_CODE = "empty_response_silent";
  *  below make the re-dispatch equivalent to the user's own re-send (live prod
  *  2026-07-20: OpenAI internal error, manual re-send succeeded). */
 export const PROVIDER_INTERNAL_CODE = "provider_internal";
+/** A context overflow on a turn whose session the bridge's pre-send guard had JUST
+ *  compacted successfully (W2). The prompt that overflowed was assembled around the
+ *  shrink, so the same send composed again is a genuinely different one — unlike a
+ *  plain `context_length`, which is a wall a retry would only hit harder. Bounded to
+ *  ONE attempt: if a freshly compacted session still does not fit, the honest card
+ *  and its two wired actions (compact / branch) are the right answer. */
+export const CONTEXT_LENGTH_COMPACTED_CODE = "context_length_compacted";
 
 /** The errorKinds a finalize may auto-retry (all zero-content classes). */
 export const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
   SESSION_INIT_CONFLICT_CODE,
   EMPTY_RESPONSE_RETRY_CODE,
   PROVIDER_INTERNAL_CODE,
+  CONTEXT_LENGTH_COMPACTED_CODE,
 ]);
 
 /** Bounded chain: at most this many automatic re-dispatches per turn. */
@@ -80,7 +88,13 @@ export function maxRetriesForKind(kind: string): number {
   // provider_internal keeps 2: the failure happens AT the provider call and
   // the zero-content gate proves nothing was generated — a retry bills
   // nothing extra (the 5s/15s curve rides out blips and VPN flips).
-  return kind === EMPTY_RESPONSE_RETRY_CODE ? 1 : MAX_TURN_RETRIES;
+  // context_length_compacted keeps 1 for the same reason as the silent close: the
+  // provider refused an oversized prompt, and a second identical refusal buys the
+  // user nothing but another wait.
+  return kind === EMPTY_RESPONSE_RETRY_CODE ||
+    kind === CONTEXT_LENGTH_COMPACTED_CODE
+    ? 1
+    : MAX_TURN_RETRIES;
 }
 
 /** Backoff before attempt N+1 (indexed by the FAILED attempt number). Aligned

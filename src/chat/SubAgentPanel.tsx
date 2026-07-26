@@ -648,7 +648,9 @@ export function SubAgentPanelContent({
         sessionMeta: card.sessionMeta,
         telemetry: card.telemetry,
         result: card.resultText,
-        error: card.failure ? shortenSubAgentError(card.errorMessage) : undefined,
+        error: card.failure
+          ? shortenSubAgentError(card.errorMessage, card.errorCode)
+          : undefined,
         tools: exportTools,
       };
       downloadTextFile(
@@ -842,7 +844,7 @@ export function SubAgentPanelContent({
                   {m.subagent_panel_error()}
                 </h3>
                 <p className="oc-subpanel__error">
-                  {shortenSubAgentError(card.errorMessage)}
+                  {shortenSubAgentError(card.errorMessage, card.errorCode)}
                 </p>
               </section>
             ) : null}

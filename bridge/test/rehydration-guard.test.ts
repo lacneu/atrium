@@ -8,6 +8,14 @@
 
 import { describe, expect, it } from "vitest";
 import { computeFreshSession, rehydrationDecision } from "../src/server.js";
+import { readFileSync } from "node:fs";
+import {
+  CHARS_PER_TOKEN,
+  REHYDRATION_MAX_FILL,
+  TOKEN_ESTIMATE_MARGIN,
+  composedPromptFits,
+  sessionFill,
+} from "../src/core/context-budget.js";
 
 const D = (freshSession: boolean, hasAttachments: boolean, enabled: boolean) =>
   rehydrationDecision({ freshSession, hasAttachments, enabled });
@@ -65,5 +73,133 @@ describe("computeFreshSession — switch (new key) counts as fresh", () => {
       !sess || sess.systemSent === false;
     expect(systemSentOnly({ systemSent: true })).toBe(false); // <- the regression
     expect(computeFreshSession({ systemSent: true }, true, true)).toBe(true); // <- fixed
+  });
+});
+
+// --- W2 / G-10: an almost-full session refuses the injection -----------------
+describe("rehydrationDecision: the fill gate", () => {
+  const base = { freshSession: true, hasAttachments: false, enabled: true };
+
+  it("REFUSES beyond 70% fill — the gateway already holds this history", () => {
+    expect(rehydrationDecision({ ...base, fill: 0.71 })).toBe("skip_full");
+    expect(rehydrationDecision({ ...base, fill: 1.4 })).toBe("skip_full");
+  });
+
+  it("allows it below the threshold (the feature must keep working)", () => {
+    expect(rehydrationDecision({ ...base, fill: 0.69 })).toBe("rehydrate");
+    expect(rehydrationDecision({ ...base, fill: 0 })).toBe("rehydrate");
+  });
+
+  it("an UNKNOWN fill never refuses (P6 — a guard must not cost a turn)", () => {
+    expect(rehydrationDecision({ ...base, fill: null })).toBe("rehydrate");
+    expect(rehydrationDecision({ ...base })).toBe("rehydrate");
+    expect(rehydrationDecision({ ...base, fill: Number.NaN })).toBe("rehydrate");
+  });
+
+  it("the EARLIER gates still win (a full session does not mask them)", () => {
+    expect(rehydrationDecision({ ...base, enabled: false, fill: 0.9 })).toBe(
+      "skip_disabled",
+    );
+    expect(rehydrationDecision({ ...base, freshSession: false, fill: 0.9 })).toBe(
+      "skip_warm",
+    );
+    expect(rehydrationDecision({ ...base, hasAttachments: true, fill: 0.9 })).toBe(
+      "skip_attachment",
+    );
+  });
+});
+
+// --- W2: the fill measure itself --------------------------------------------
+describe("sessionFill", () => {
+  it("prefers the gateway's OWN estimate over its budget, not the raw window", () => {
+    // 358 960 against a 372 000 window reads comfortable; against the 308 000
+    // budget the gateway actually had, it does not fit — the 2026-07-20 session.
+    expect(
+      sessionFill({
+        estimatedPromptTokens: 358_960,
+        promptBudgetBeforeReserve: 308_000,
+        contextTokens: 372_000,
+      })!,
+    ).toBeGreaterThan(1);
+  });
+
+  it("a counter ABOVE the window is a cumulative total, not a fill → unknown", () => {
+    // The 859% production report: dividing a run-cumulative counter by the window.
+    expect(
+      sessionFill({ totalTokens: 3_000_000, contextTokens: 272_000 }),
+    ).toBeNull();
+  });
+
+  it("a counter the gateway STATES is stale is unknown, never 0", () => {
+    expect(
+      sessionFill({
+        totalTokens: 100,
+        contextTokens: 272_000,
+        totalTokensFresh: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("no budget at all is unknown (nothing to divide by)", () => {
+    expect(sessionFill({ estimatedPromptTokens: 1_000 })).toBeNull();
+    expect(sessionFill({})).toBeNull();
+  });
+});
+
+// --- W2: the two copies of the thresholds must never drift -------------------
+// The bridge is a separate npm package from `convex/`, so it cannot import
+// `convex/lib/rehydration.ts`. The numbers therefore live twice — and a silent
+// divergence would change WHEN a turn is refused on one side only. This reads the
+// other copy as TEXT and compares, so a drift fails here instead of shipping.
+describe("context-budget constants: no drift with convex/lib/rehydration.ts", () => {
+  it("the ratio, the margin and the fill ceiling are identical on both sides", () => {
+    const convexSrc = readFileSync(
+      new URL("../../convex/lib/rehydration.ts", import.meta.url),
+      "utf-8",
+    );
+    const read = (name: string): string => {
+      const m = new RegExp(`export const ${name} = ([0-9.]+);`).exec(convexSrc);
+      expect(m, `${name} not found in convex/lib/rehydration.ts`).not.toBeNull();
+      return m![1]!;
+    };
+    expect(Number(read("CHARS_PER_TOKEN"))).toBe(CHARS_PER_TOKEN);
+    expect(Number(read("TOKEN_ESTIMATE_MARGIN"))).toBe(TOKEN_ESTIMATE_MARGIN);
+    expect(Number(read("REHYDRATION_MAX_FILL"))).toBe(REHYDRATION_MAX_FILL);
+  });
+});
+
+// --- W2 / G-10: the composed prompt, at the bridge -------------------------
+describe("composedPromptFits (bridge copy)", () => {
+  it("bounds history + separator + the USER's text, not the history alone", () => {
+    const w = 32_000;
+    expect(
+      composedPromptFits({
+        historyChars: 20_000,
+        userChars: 500,
+        separatorChars: 2,
+        windowTokens: w,
+      }),
+    ).toBe(true);
+    expect(
+      composedPromptFits({
+        historyChars: 20_000,
+        userChars: 20_000,
+        separatorChars: 2,
+        windowTokens: w,
+      }),
+    ).toBe(false);
+  });
+
+  it("an UNKNOWN window never refuses (P6)", () => {
+    for (const w of [null, undefined, 0, -1, Number.NaN]) {
+      expect(
+        composedPromptFits({
+          historyChars: 10 ** 6,
+          userChars: 10 ** 6,
+          separatorChars: 2,
+          windowTokens: w,
+        }),
+      ).toBe(true);
+    }
   });
 });

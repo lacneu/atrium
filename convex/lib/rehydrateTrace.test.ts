@@ -98,3 +98,83 @@ describe("shouldReportRehydrateMissed — fires ONLY on the bug condition", () =
     ).toBe(false);
   });
 });
+
+// ── The pre-send guard's report on the trace (W2) ───────────────────────────
+//
+// This projection is the INGEST trust boundary. The bridge already buckets the
+// gateway's free-text compaction reason; doing it again here is not redundancy —
+// a divergent, older, or forged bridge is not a trusted source, and this trace is
+// contractually content-free.
+
+const baseTrace = {
+  decision: "skip_full",
+  freshSession: false,
+  routedSwitch: false,
+  prependedTurns: 0,
+  routedAgentId: "alice",
+  routedInstanceName: "primary",
+  switchedFromAgentId: null,
+  switchedFromInstanceName: null,
+};
+
+describe("presend fields on the rehydrate trace", () => {
+  it("carries the decision, the measured fill and its provenance", () => {
+    const meta = rehydrateTraceMeta({
+      ...baseTrace,
+      presendAction: "compact_or_block",
+      presendFillPct: 97,
+      presendFillSource: "gateway_estimate",
+      presendCompaction: "refused",
+      presendBlocked: true,
+      presendCompactReasonClass: "no transcript",
+    });
+    expect(meta.presendAction).toBe("compact_or_block");
+    expect(meta.presendFillPct).toBe(97);
+    expect(meta.presendFillSource).toBe("gateway_estimate");
+    expect(meta.presendCompaction).toBe("refused");
+    expect(meta.presendBlocked).toBe(true);
+    expect(meta.presendCompactReasonClass).toBe("no transcript");
+  });
+
+  it("DROPS anything off the allowlist instead of passing it through", () => {
+    // The failure this prevents: a gateway sentence reaching a trace because a
+    // bridge forgot to bucket it.
+    const meta = rehydrateTraceMeta({
+      ...baseTrace,
+      presendAction: "obliterate",
+      presendFillSource: "vibes",
+      presendCompaction: "probably fine",
+      presendCompactReasonClass:
+        "reply session initialization conflicted for agent:alice:...",
+    });
+    expect(meta.presendAction).toBeUndefined();
+    expect(meta.presendFillSource).toBeUndefined();
+    expect(meta.presendCompaction).toBeUndefined();
+    expect(meta.presendCompactReasonClass).toBeUndefined();
+  });
+
+  it("a non-numeric or absent fill leaves the field OFF, never 0", () => {
+    // 0 % would read as "measured, and the session was empty" — the opposite of
+    // "we could not measure it".
+    expect(
+      rehydrateTraceMeta({ ...baseTrace, presendFillPct: null }).presendFillPct,
+    ).toBeUndefined();
+    expect(
+      rehydrateTraceMeta({ ...baseTrace, presendFillPct: Number.NaN })
+        .presendFillPct,
+    ).toBeUndefined();
+    expect(rehydrateTraceMeta(baseTrace).presendFillPct).toBeUndefined();
+  });
+
+  it("records `blocked` only when it is TRUE", () => {
+    expect(
+      rehydrateTraceMeta({ ...baseTrace, presendBlocked: false })
+        .presendBlocked,
+    ).toBeUndefined();
+  });
+
+  it("a normal turn adds no presend fields at all", () => {
+    const meta = rehydrateTraceMeta(baseTrace);
+    expect(Object.keys(meta).filter((k) => k.startsWith("presend"))).toEqual([]);
+  });
+});

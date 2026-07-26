@@ -35,9 +35,12 @@
 import { MediaConfigurationError, sanitizeFrame, sanitizeText } from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
+import { classifyFailureText } from "../../core/failure-classifier.js";
 import {
+  bucketCompactionReason,
   compactionCompleted,
   compactionFailedForGood,
+  isCompactionRefusal,
 } from "../../core/compaction-verdict.js";
 import {
   EVENT_OPENCLAW_FRAME,
@@ -55,6 +58,7 @@ import {
   EVENT_PLAN,
   EVENT_TURN_PHASE,
   EVENT_SESSION_OVERFULL,
+  EVENT_COMPACTION_CAUSE,
   type BridgeEvent,
 } from "../../core/events.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
@@ -81,6 +85,7 @@ export {
   EVENT_PLAN,
   EVENT_TURN_PHASE,
   EVENT_SESSION_OVERFULL,
+  EVENT_COMPACTION_CAUSE,
 };
 export type { BridgeEvent };
 
@@ -183,8 +188,6 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 // exceeded") PLUS Atrium's own UI phrasings, so a hard overflow ALWAYS
 // classifies to context_length and shows the actionable card — never a generic
 // error (report 2026-07: 4 of 6 documented phrasings were previously missed).
-const CONTEXT_OVERFLOW_TEXT_RE =
-  /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens|reduce the length|exceeds? (?:the )?(?:model'?s )?(?:maximum )?context/i;
 
 // The gateway's per-session OCC guard: commitReplySessionInitialization retries a
 // stale snapshot ONCE, then throws this exact message when a concurrent writer
@@ -195,7 +198,6 @@ const CONTEXT_OVERFLOW_TEXT_RE =
 // (polling-session.ts REPLY_SESSION_INIT_CONFLICT_MESSAGE_RE). Classifying it to
 // a stable code lets Convex auto-retry the turn (turnRetry.ts) and the UI show
 // an honest "transient, retrying" card instead of a generic error.
-const SESSION_INIT_CONFLICT_RE = /reply session initialization conflicted/i;
 // Same transient-session-conflict family, embedded/PI runtime flavor: the
 // gateway's per-session prompt lock detects a concurrent writer ("session file
 // changed while embedded prompt lock was released") — observed live when a
@@ -229,15 +231,11 @@ const EMBEDDED_LOCK_CONFLICT_RE =
 //   "LLM streaming response contained a malformed fragment. Please try again."
 //   raw OpenAI generic: "An error occurred while processing your request"
 //   bare transport statuses: HTTP 5xx / 5xx status words.
-const PROVIDER_INTERNAL_TEXT_RE =
-  /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
 // NEVER-transient guards, checked FIRST: an auth/entitlement/config failure
 // matching a loose 5xx-ish marker must not auto-retry (a wrong key retried is
 // wasted quota and a misleading label; a refusal must stay a refusal). The
 // rate-limit family is also excluded — its correct handling is a LONGER
 // backoff than the 5/15s retry curve, and real gateways classify it upstream.
-const PROVIDER_INTERNAL_EXCLUDE_RE =
-  /rate[- ]?limit|too many requests|http\s*4\d\d\b|unauthorized|forbidden|invalid[_ ](?:api[_ ]?key|request|model)|api[_ ]?key|authentication|billing|quota|insufficient|not[_ ]found|unsupported|refus|content[_ ]policy|context overflow|prompt too large/i;
 
 // Terminal stopReason values we persist into the (metadata-only) pressure
 // trace. The schema types stopReason as a FREE string — anything outside this
@@ -810,6 +808,27 @@ export class Normalizer {
    * `null` (no describe / no session yet) ⇒ adopt the first id seen silently —
    * a brand-new session must never read as "compacted".
    */
+  /**
+   * The pre-send guard compacted THIS session, on purpose, before the turn (W2).
+   *
+   * WHY this exists: `session.operation` is the gateway's own account of a
+   * compaction and the only carrier of a cause it computed itself — and it is
+   * unreachable without a dedicated connection (see session.ts). Without this, the
+   * marker's cause sentence and the pressure trace's `compactionReason` would be
+   * permanently absent, i.e. two projections shipped in this same lot carrying
+   * nothing. For the compactions ATRIUM causes we do not need the gateway to tell
+   * us why: we asked, pre-emptively, before assembling the prompt — which is
+   * exactly the `pre_compaction` class.
+   *
+   * Consumed ONCE, by the rotation that our own compaction produces.
+   */
+  notePresendCompactionCause(reasonClass: string): void {
+    this.presendCompactionCause = reasonClass;
+  }
+
+  /** One-shot cause class stashed by the pre-send guard (see below). */
+  private presendCompactionCause: string | null = null;
+
   noteExpectedSessionId(sessionId: string | null): void {
     this.expectedSessionId = sessionId;
   }
@@ -992,7 +1011,8 @@ export class Normalizer {
     if (
       eventType !== "agent" &&
       eventType !== "chat" &&
-      eventType !== "chat.side_result"
+      eventType !== "chat.side_result" &&
+      eventType !== "session.operation"
     ) {
       // Anything that is not a session content stream is unattributable and is
       // never forwarded to the browser (isolation requirement).
@@ -1126,6 +1146,19 @@ export class Normalizer {
         if (!this.compactionSignaled) {
           this.compactionSignaled = true;
           events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "preflight" });
+          // The cause, when WE are the cause: the pre-send guard compacted this
+          // session moments ago and this rotation is that compaction's footprint.
+          // One-shot — a later rotation we did not ask for stays cause-less rather
+          // than inheriting this one.
+          if (this.presendCompactionCause !== null) {
+            events.push({
+              type: EVENT_COMPACTION_CAUSE,
+              reason: this.presendCompactionCause,
+              completed: true,
+              refusal: false,
+            });
+            this.presendCompactionCause = null;
+          }
           // A session-id ROTATION is proof a compaction completed: clear any
           // standing overfull verdict.
           events.push({
@@ -1137,6 +1170,10 @@ export class Normalizer {
       }
     }
     const data = isObject(payload.data) ? payload.data : {};
+    if (eventType === "session.operation") {
+      this.handleSessionOperation(payload, events);
+      return events;
+    }
     if (eventType === "chat.side_result") {
       this.handleSideResult(payload, now, events);
     } else if (eventType === "chat") {
@@ -1145,6 +1182,45 @@ export class Normalizer {
       this.handleAgent(payload, data, now, events);
     }
     return events;
+  }
+
+  /**
+   * `session.operation` — the gateway's OWN account of a compaction (W2 / G-09).
+   *
+   * It carries `{operationId, operation:"compact", phase:"start"|"end", completed?,
+   * reason?}`. The `reason` is what Atrium never had: until now the cause was
+   * inferred (a session-id rotation ⇒ "preflight"), and the marker shown to the
+   * user implied a pre-emptive threshold compaction even when the real cause was
+   * an OVERFLOW the session had already hit.
+   *
+   * This is now the PRIMARY source, with the rotation heuristic as the fallback —
+   * the pattern the explicit compaction stream already established. It has to
+   * stay a fallback: the event is broadcast with `dropIfSlow: true`, so a slow
+   * consumer simply does not receive it, and its ABSENCE proves nothing.
+   */
+  // NOT CURRENTLY FED (2026-07-26). `session.operation` is delivered only to
+  // connections that called `sessions.subscribe`, and subscribing on the
+  // turn-serving socket cost conversation frames — proven by bisect on the live
+  // bench (see the comment in session.ts). This handler stays because it is the
+  // correct reader for the event and is covered by tests; it will be fed by the
+  // dedicated session-events connection when that is built. Until then a
+  // GATEWAY-decided compaction has no observable cause (that stream carries phase
+  // and verdict only); the compactions ATRIUM performs label themselves through
+  // `notePresendCompactionCause`.
+  private handleSessionOperation(
+    payload: JsonObject,
+    events: BridgeEvent[],
+  ): void {
+    if (payload.operation !== "compact") return;
+    if (payload.phase !== "end") return; // `start` says nothing about the cause
+    const reason = bucketCompactionReason(payload.reason);
+    if (reason === null) return;
+    events.push({
+      type: EVENT_COMPACTION_CAUSE,
+      reason,
+      completed: payload.completed === true,
+      refusal: isCompactionRefusal(reason),
+    });
   }
 
   /**
@@ -1385,12 +1461,11 @@ export class Normalizer {
         const diagKind =
           isString(payload.errorKind) && CHAT_ERROR_KINDS.has(payload.errorKind)
             ? payload.errorKind
-            : CONTEXT_OVERFLOW_TEXT_RE.test(reason ?? "")
-              ? "context_length"
-              : SESSION_INIT_CONFLICT_RE.test(reason ?? "") ||
-                  EMBEDDED_LOCK_CONFLICT_RE.test(reason ?? "")
-                ? "session_init_conflict"
-                : null;
+            : // The SHARED classifier (W2 / G-11) — the same one the sub-agent
+              // path now uses. `provider_internal` is deliberately possible here
+              // too: this is a DIAGNOSTIC field on a turn already closing
+              // `complete`, so it cannot trigger a retry.
+              classifyFailureText(reason ?? null);
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
@@ -2494,15 +2569,9 @@ export class Normalizer {
       // the actionable headline + pressure-trace marker still fire. Same for
       // the session-init OCC conflict — the stable code Convex's bounded
       // auto-retry keys on (only ever fired for a ZERO-content turn there).
-      errorKind = CONTEXT_OVERFLOW_TEXT_RE.test(error)
-        ? "context_length"
-        : SESSION_INIT_CONFLICT_RE.test(error) ||
-            EMBEDDED_LOCK_CONFLICT_RE.test(error)
-          ? "session_init_conflict"
-          : PROVIDER_INTERNAL_TEXT_RE.test(error) &&
-              !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
-            ? "provider_internal"
-            : null;
+      // ONE classifier, shared with the sub-agent path (W2 / G-11): a second
+      // copy would drift and only one side would ever be fixed.
+      errorKind = classifyFailureText(error);
     }
     if (
       error !== null &&

@@ -491,11 +491,13 @@ class SinkFakeWriter implements ConvexWriter {
     this.calls.push(["setSessionOverfull", chatId, overfull]);
     this.overfullStamps.push(observedAt);
   }
+  readonly compactionParts: CompactionPart[] = [];
   async addCompactionPart(
     messageId: string,
     part: CompactionPart,
   ): Promise<void> {
     this.calls.push(["addCompactionPart", messageId, part.phase]);
+    this.compactionParts.push(part);
   }
   async recordGatewayPressure(
     chatId: string,
@@ -551,6 +553,108 @@ async function settle(): Promise<void> {
 }
 
 // --- G-08: the compaction VERDICT outlives the turn -------------------------
+// --- W2 / G-09: the gateway's OWN account of WHY it compacted ---------------
+// Until now the cause was INFERRED (a session-id rotation ⇒ "preflight"), and the
+// marker shown to the reader implied a pre-emptive threshold compaction even when
+// the session had actually hit an OVERFLOW. `session.operation` carries the real
+// reason — verified on the wire in the deployed 2026.7.1 build.
+describe("W2 / G-09: session.operation names the compaction cause", () => {
+  const sessionOperation = (data: Record<string, unknown>) => ({
+    type: "event",
+    event: "session.operation",
+    payload: { sessionKey: SESSION_KEY, ...data },
+  });
+
+  it("a compaction END names its reason", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      sessionOperation({
+        operationId: "op-1",
+        operation: "compact",
+        phase: "end",
+        completed: true,
+        reason: "overflow",
+      }),
+      1,
+    );
+    expect(ev.find((e) => e.type === "compaction.cause")).toMatchObject({
+      reason: "overflow",
+      completed: true,
+      refusal: false,
+    });
+  });
+
+  it("a REFUSAL is flagged as such — not as a failure", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      sessionOperation({
+        operation: "compact",
+        phase: "end",
+        completed: false,
+        reason: "already_in_flight",
+      }),
+      1,
+    );
+    expect(ev.find((e) => e.type === "compaction.cause")).toMatchObject({
+      reason: "already_in_flight",
+      refusal: true,
+    });
+  });
+
+  it("SOC2: an unrecognized reason is BUCKETED, never forwarded verbatim", () => {
+    // The upstream FAILURE path sends `formatErrorMessage(err)` — arbitrary text,
+    // and this value reaches a metadata-only trace and a user-facing marker.
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      sessionOperation({
+        operation: "compact",
+        phase: "end",
+        completed: false,
+        reason: "Error writing /home/node/.openclaw/agents/alice/sessions/x.jsonl",
+      }),
+      1,
+    );
+    const cause = ev.find((e) => e.type === "compaction.cause");
+    expect(cause).toMatchObject({ reason: "other" });
+    expect(JSON.stringify(cause)).not.toContain("/home/node");
+  });
+
+  it("`start` says nothing about the cause, and a non-compact operation is ignored", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    expect(
+      n.feed(sessionOperation({ operation: "compact", phase: "start" }), 1).some(
+        (e) => e.type === "compaction.cause",
+      ),
+    ).toBe(false);
+    expect(
+      n
+        .feed(
+          sessionOperation({ operation: "reset", phase: "end", reason: "manual" }),
+          2,
+        )
+        .some((e) => e.type === "compaction.cause"),
+    ).toBe(false);
+  });
+
+  it("another session's operation is dropped (isolation unchanged)", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      {
+        type: "event",
+        event: "session.operation",
+        payload: {
+          sessionKey: "agent:x:atrium:chat:u-y:someone-else",
+          operation: "compact",
+          phase: "end",
+          reason: "overflow",
+        },
+      },
+      1,
+    );
+    expect(ev).toEqual([]);
+  });
+});
+
 describe("codex P2: terminal metadata rides the trace even with nothing else", () => {
   it("a spontaneous turn with ONLY terminal metadata still ships its pressure trace", async () => {
     const writer = new SinkFakeWriter();
@@ -609,6 +713,60 @@ describe("codex P2: the new timeout causes are OBSERVABLE", () => {
     ]);
     await settle();
     expect(JSON.stringify(writer.calls)).toContain("approval_timeout");
+  });
+});
+
+describe("W2 / G-09: the cause reaches the marker and the trace", () => {
+  it("a KNOWN cause is stamped on the compaction part AND the pressure trace", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_cause", writer);
+    await sink.beginTurn(RUN, { totalTokens: 250_000, contextTokens: 272_000 });
+    await sink.apply([
+      { type: "compaction.cause", reason: "overflow", completed: true, refusal: false },
+      { type: "context.compaction", phase: "midturn" },
+      { type: "message.final", text: "réponse" },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    const dump = JSON.stringify(writer.calls);
+    expect(dump).toContain("overflow");
+    // …on BOTH surfaces: the reader's marker and the operator's trace.
+    expect(writer.compactionParts.at(-1)?.reason).toBe("overflow");
+  });
+
+  it("NO cause event ⇒ the marker says NOTHING about the cause (unknown, not threshold)", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_nocause", writer);
+    await sink.beginTurn(RUN, { totalTokens: 250_000, contextTokens: 272_000 });
+    await sink.apply([
+      // The event is broadcast `dropIfSlow`: a slow consumer simply never gets it.
+      { type: "context.compaction", phase: "midturn" },
+      { type: "message.final", text: "réponse" },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    // Inventing "threshold" here is exactly what made the old marker mislead.
+    expect(writer.compactionParts.at(-1)?.reason).toBeUndefined();
+    expect(JSON.stringify(writer.calls)).not.toContain("compactionReason");
+  });
+
+  it("the cause does NOT leak into the next turn", async () => {
+    const writer = new SinkFakeWriter();
+    const sink = new TurnSink("chat_leak", writer);
+    await sink.beginTurn(RUN, { totalTokens: 1, contextTokens: 2 });
+    await sink.apply([
+      { type: "compaction.cause", reason: "overflow", completed: true, refusal: false },
+      { type: "message.final", text: "a" },
+      { type: "run.status", status: "final" },
+    ]);
+    await sink.beginTurn("run-2", { totalTokens: 1, contextTokens: 2 });
+    await sink.apply([
+      { type: "context.compaction", phase: "midturn" },
+      { type: "message.final", text: "b" },
+      { type: "run.status", status: "final" },
+    ]);
+    await settle();
+    expect(writer.compactionParts.at(-1)?.reason).toBeUndefined();
   });
 });
 

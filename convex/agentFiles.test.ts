@@ -422,6 +422,94 @@ describe("agentFiles.compactSession", () => {
   });
 });
 
+describe("agentFiles.compactSession reports a REFUSAL (W2)", () => {
+  /** A chat with a routed agent — the minimum for the bridge call to be attempted. */
+  async function routedChat(t: ReturnType<typeof convexTest>) {
+    const { as, userId } = await seedUser(t, "user");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: "main",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: Date.now(),
+      });
+    });
+    const chatId = (await as.mutation(api.chats.createChat, {
+      instanceName: "main",
+      agentId: "alice",
+    })) as Id<"chats">;
+    return { as, chatId };
+  }
+
+  test("the gateway refusing (HTTP 200, compacted:false) is NOT reported as success", async () => {
+    // The gateway declines with a 200 (no transcript, one already running). Silently
+    // succeeding told the user their session had been compacted when nothing had
+    // changed — on the very button the overflow card offers as a way out.
+    const t = convexTest(schema, modules);
+    const { as, chatId } = await routedChat(t);
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: { ok: true, compacted: false, reasonClass: "no transcript" },
+    }));
+    try {
+      await expect(
+        as.action(api.agentFiles.compactSession, { chatId }),
+      ).rejects.toThrow(/compact_refused/);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("the refusal carries its bucketed CLASS, never a gateway sentence", async () => {
+    const t = convexTest(schema, modules);
+    const { as, chatId } = await routedChat(t);
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: { ok: true, compacted: false, reasonClass: "already_active" },
+    }));
+    try {
+      await expect(
+        as.action(api.agentFiles.compactSession, { chatId }),
+      ).rejects.toThrow(/compact_refused:already_active/);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a CONFIRMED compaction still succeeds", async () => {
+    const t = convexTest(schema, modules);
+    const { as, chatId } = await routedChat(t);
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: { ok: true, compacted: true },
+    }));
+    try {
+      await expect(
+        as.action(api.agentFiles.compactSession, { chatId }),
+      ).resolves.toBeNull();
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("an OLD bridge (no `compacted` field) is not turned into a refusal", async () => {
+    // UNKNOWN is not a refusal: inventing one would tell the user nothing happened
+    // when it may well have.
+    const t = convexTest(schema, modules);
+    const { as, chatId } = await routedChat(t);
+    const bridge = stubBridge(() => ({ status: 200, json: { ok: true } }));
+    try {
+      await expect(
+        as.action(api.agentFiles.compactSession, { chatId }),
+      ).resolves.toBeNull();
+    } finally {
+      bridge.restore();
+    }
+  });
+});
+
 describe("agentFiles chat defaults (admin-only)", () => {
   test("non-admin read/write are rejected", async () => {
     const t = convexTest(schema, modules);

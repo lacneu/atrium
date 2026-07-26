@@ -123,6 +123,14 @@ export interface BridgeSession {
    *  freshly-created webchat session (so it cannot tell a brand-new cross-agent
    *  session from a warm one). Rehydration uses it to re-ground a switched agent. */
   firstSendPending: boolean;
+  /** The gateway `sessionId` for which the pre-send guard observed a STRUCTURAL
+   *  compaction refusal (no transcript, an unsupported harness, a deferred
+   *  compaction that is not scheduled). Null when none. While it matches the live
+   *  sessionId, the guard SKIPS the compaction RPC instead of spending 60 s on a
+   *  call already known not to work — the user gets the named cause and the two
+   *  wired actions immediately. A transient refusal ("already active") is NOT
+   *  remembered: it says only "not right now". */
+  presendCompactRefusedFor: string | null;
   /** Prod the inbound consume loop to re-evaluate its next deadline. MUST be
    *  called after `runManager.beginTurn` (which arms the recv/grace deadline from
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
@@ -205,6 +213,8 @@ class Session implements BridgeSession {
   private recoveryGen = 0;
   // See BridgeSession.firstSendPending. True until performSend runs the first turn.
   firstSendPending = true;
+  // See BridgeSession.presendCompactRefusedFor.
+  presendCompactRefusedFor: string | null = null;
   private consumerStarted = false;
   // Wake seam for the consume loop (see consume() + wake()): lets beginTurn,
   // which runs OFF this loop and arms the recv/grace deadline, prod the loop to
@@ -1319,6 +1329,40 @@ export class SessionRegistry {
       bundle.config.openclawToken!,
       bundle.config.deviceIdentity!,
     );
+    // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
+    // gateway's own account of a compaction — it carries the CAUSE (`overflow` vs
+    // a threshold vs `manual`), which Atrium could only infer until now, and it is
+    // delivered ONLY to connections that asked for it. Best-effort on purpose: a
+    // gateway that does not know the method, or refuses the scope, must not stop
+    // this session from serving turns — the rotation heuristic still covers the
+    // detection, only the cause stays unknown.
+    // NO `sessions.subscribe` on THIS connection — MEASURED, 2026-07-26.
+    //
+    // Subscribing here was the obvious way to receive `session.operation`, the
+    // gateway's own account of a compaction and the only carrier of its CAUSE
+    // (G-09). It also broke the live bench: `spawn-parallel-merge` went from OK in
+    // 67 s to a reproducible failure at ~180 s, with two of three announce runs
+    // never merging and the children anchored to the wrong bubble. Attributed by
+    // bisect — the pre-lot bridge passed, this lot failed, and removing ONLY the
+    // subscription (everything else of the lot in place) made it pass again.
+    //
+    // The socket that carries a conversation is not a place to add a diagnostic
+    // stream: the sessions channel pushes `sessions.changed` / `session.message` /
+    // `session.tool` traffic through the same consumer, and the frames the turn
+    // depends on are what gets lost. A diagnostic must never cost the conversation.
+    //
+    // What IS observable without it, stated precisely:
+    //  - the compaction's PHASE and VERDICT, from `{stream:"compaction"}` — that
+    //    stream carries `{phase, willRetry, completed}` and no cause;
+    //  - the CAUSE of the compactions ATRIUM itself performs: the pre-send guard
+    //    labels its own compaction `pre_compaction` and the rotation it produces
+    //    carries that label (normalizer.notePresendCompactionCause);
+    //  - the guard's own REFUSAL class, on the guard's own trace.
+    // What stays UNOBSERVABLE: the cause of a compaction the GATEWAY decided on its
+    // own (an overflow it hit, a memory threshold it crossed). That needs a
+    // SEPARATE, dedicated connection whose frames never reach RunManager.feed —
+    // scoped as its own piece of work, not smuggled into the turn path.
+    // `handleSessionOperation` stays ready for it and is unfed until then.
     // Transcript fetcher for orphan-turn recovery: a SHORT dedicated
     // connection per poll (the session's own socket is dead when recovery
     // runs; the gateway may be mid-reboot — connect errors are the caller's

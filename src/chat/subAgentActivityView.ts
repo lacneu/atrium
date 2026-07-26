@@ -1,4 +1,5 @@
 import { m } from "@/paraglide/messages.js";
+import { ERROR_CODE_LABEL } from "./runStatusView";
 
 // Pure logic for the chat-level "Sous-agents" block (SubAgentActivity.tsx).
 //
@@ -76,6 +77,8 @@ export type SubAgentRow = {
   resultText?: string;
   phase?: string;
   errorMessage?: string;
+  /** The child's STABLE failure class (W2 / G-11) — allowlisted server-side. */
+  errorCode?: string;
   tools?: ReadonlyArray<SubAgentToolRow>;
   sessionMeta?: SubAgentSessionMeta;
   telemetry?: SubAgentTelemetry;
@@ -110,6 +113,8 @@ export type SubAgentCardView = {
   failure: boolean;
   phase?: string;
   errorMessage?: string;
+  /** The child's STABLE failure class (W2 / G-11) — allowlisted server-side. */
+  errorCode?: string;
   resultText?: string;
   /** The tools the child used (name + status + the toolCallId join key) — the
    *  AUTHORITATIVE summary list (its length is the tool count). The panel renders
@@ -280,6 +285,7 @@ function toCard(row: SubAgentRow): SubAgentCardView {
     // phase is only meaningful while running; drop it on a settled card.
     phase: row.status === "running" ? row.phase : undefined,
     errorMessage: row.errorMessage,
+    errorCode: row.errorCode,
     resultText: row.resultText,
     // Name + status only (the row never carries args/results — SOC2).
     tools: row.tools?.map((t) => ({
@@ -463,8 +469,19 @@ function firstMeaningfulLine(text: string): string | null {
  * fallback. Guaranteed to be <= SUBAGENT_ERROR_CAP chars and free of the
  * untrusted-content boilerplate.
  */
-export function shortenSubAgentError(raw: string | null | undefined): string {
+export function shortenSubAgentError(
+  raw: string | null | undefined,
+  /** The child's STABLE failure class (W2 / G-11). When it maps to a localized
+   *  label, that label WINS: it is the same actionable sentence the parent
+   *  message shows for the same cause, and it is the only useful thing left when
+   *  the prose turns out to be boilerplate (the generic fallback below). */
+  code?: string | null,
+): string {
   const generic = m.subagents_error_generic();
+  if (code) {
+    const label = ERROR_CODE_LABEL[code]?.();
+    if (label) return label;
+  }
   if (raw === null || raw === undefined) return generic;
   const text = raw.trim();
   if (text === "") return generic;

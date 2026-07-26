@@ -3,10 +3,12 @@ import { useMessage } from "@assistant-ui/react";
 import { CircleAlert, RotateCw, Square } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import type { MessageStatus } from "./convexTypes";
+import { ContextLengthActions } from "./ContextLengthActions";
 import {
   runStatusView,
   runStatusOutageLabel,
   errorDetailView,
+  CONTEXT_OVERFLOW_CODES,
   messageHasText,
   activeToolFromParts,
   toolFamily,
@@ -82,6 +84,21 @@ export function RunStatus() {
   const autoRetry = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.autoRetry ?? null,
   );
+  // WIRED exits for a context overflow (W2, P4): the card carries the two actions
+  // the label used to merely ADVISE — and one of the sentences it advised cited a
+  // `/reset` Atrium does not have.
+  const ctxChatId = useMessage(
+    (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  // The CONVEX id from custom, like every other per-message action in the app
+  // (delete, feedback, branch): assistant-ui's own `msg.id` is not guaranteed to be
+  // it, and `forkChat` takes an `Id<"messages">`. A wrong id here would leave the
+  // withheld-send card with one working exit instead of the two it promises.
+  const ctxMessageId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId ??
+      msg.id,
+  );
   // Boolean selector -> this only re-renders on the empty<->non-empty crossing,
   // not on every streamed token. Drives the thinking (no text) vs generating
   // (has text) distinction.
@@ -138,7 +155,7 @@ export function RunStatus() {
     // Actionable presentation: a CLASSIFIED failure (gateway errorKind such as
     // context_length, or a curated code) shows a localized headline; the raw
     // gateway text demotes to a technical detail line underneath.
-    const { headline, detail } = errorDetailView(error, errorCode);
+    const { headline, detail, code } = errorDetailView(error, errorCode);
     return (
       <div className="oc-error-card" role="alert" title={runId ? `run ${runId}` : undefined}>
         <CircleAlert size={18} className="oc-error-card__icon" aria-hidden />
@@ -159,6 +176,15 @@ export function RunStatus() {
             </span>
           ) : null}
           {autoRetry ? <RetryCountdown retry={autoRetry} /> : null}
+          {/* A context overflow is the one failure the app can act on ITSELF —
+              compact the session, or branch a fresh one from here. Shown only
+              when there is a chat to act on. */}
+          {code && CONTEXT_OVERFLOW_CODES.has(code) && ctxChatId ? (
+            <ContextLengthActions
+              chatId={ctxChatId}
+              messageId={ctxMessageId ?? null}
+            />
+          ) : null}
         </div>
       </div>
     );

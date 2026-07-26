@@ -24,6 +24,10 @@ import {
 interface CompactionMeta {
   phase: string;
   at: number;
+  /** WHY the gateway compacted, from its own account (W2 / G-09). ABSENT means
+   *  UNKNOWN — the event is broadcast `dropIfSlow`, so silence is not evidence
+   *  of a pre-emptive compaction. */
+  reason?: string | null;
 }
 
 /** The per-turn marker written by the bridge sink (null = no compaction). */
@@ -33,6 +37,31 @@ function useCompaction(): CompactionMeta | null {
       (msg.metadata?.custom as { compaction?: CompactionMeta | null } | undefined)
         ?.compaction ?? null,
   );
+}
+
+/** The one-sentence cause suffix, or "" when the gateway's account never
+ *  arrived. Threshold-family reasons all read as "pre-emptive" — the distinction
+ *  the reader needs is overflow vs precaution vs manual, not which internal
+ *  threshold fired. */
+export function causeSentence(reason: string | null | undefined): string {
+  switch (reason) {
+    case "overflow":
+      return m.compaction_cause_overflow();
+    case "manual":
+      return m.compaction_cause_manual();
+    case "heap_threshold":
+    case "rss_threshold":
+    case "pre_compaction":
+    case "non_manual_trigger":
+      return m.compaction_cause_threshold();
+    case "already_active":
+    case "already_in_flight":
+    case "deferred_compaction_not_scheduled":
+    case "unsupported_harness_compaction":
+      return m.compaction_cause_refused();
+    default:
+      return ""; // unknown, "other", or a cause with no distinct meaning here
+  }
 }
 
 export function CompactionNotice() {
@@ -46,11 +75,18 @@ export function CompactionNotice() {
   // the conversation was summarized when nothing was: the session is still at
   // full size, which is exactly why the next turn may hit the context wall.
   const failed = compaction.phase === "failed";
-  const detail = failed
+  const base = failed
     ? m.compaction_detail_failed()
     : compaction.phase === "midturn"
       ? m.compaction_detail_midturn()
       : m.compaction_detail_preflight();
+  // WHY it happened, when the gateway told us (W2 / G-09). Until now the copy
+  // implied a PRE-EMPTIVE compaction in every case — including the one where the
+  // window had already overflowed, which is a materially different situation for
+  // the reader. An ABSENT reason adds nothing: the event is broadcast
+  // `dropIfSlow`, so silence means unknown, and inventing "pre-emptive" is
+  // exactly the misstatement this fixes.
+  const detail = `${base}${causeSentence(compaction.reason)}`;
   // An INSTANT tooltip (shadcn, 150ms — matching BridgeStatusBadge), replacing
   // the native `title` whose OS-imposed ~1-2s delay made the explanation feel
   // absent (user feedback 2026-07-05: several hover attempts to find it).

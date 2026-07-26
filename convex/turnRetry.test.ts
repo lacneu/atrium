@@ -8,6 +8,7 @@ import {
   MAX_TURN_RETRIES,
   RETRY_DELAY_MS,
   SESSION_INIT_CONFLICT_CODE,
+  CONTEXT_LENGTH_COMPACTED_CODE,
 } from "./turnRetry";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -23,6 +24,50 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("a compacted session's overflow retries ONCE (W2)", () => {
+  const at = (kind: string, lastAttempt = 0) => ({
+    status: "error",
+    errorKind: kind,
+    finalTextLen: 0,
+    partCount: 0,
+    chatBusy: false,
+    lastAttempt,
+  });
+
+  test("the compacted class retries once, then stops", () => {
+    // The session provably shrank right before this send, so composing it again is
+    // a different attempt — worth exactly one.
+    expect(retryDecision(at(CONTEXT_LENGTH_COMPACTED_CODE))).toEqual({
+      attempt: 1,
+      delayMs: RETRY_DELAY_MS[0],
+    });
+    expect(retryDecision(at(CONTEXT_LENGTH_COMPACTED_CODE, 1))).toBeNull();
+  });
+
+  test("a PLAIN context overflow is never retried", () => {
+    // Nothing changed about the session: a retry would fail identically and cost
+    // the user another wait. The honest card and its two actions are the answer.
+    expect(retryDecision(at("context_length"))).toBeNull();
+  });
+
+  test("a WITHHELD send is never retried by the system either", () => {
+    // The guard already decided this one cannot fit. Re-dispatching it would walk
+    // straight back into the same measurement.
+    expect(retryDecision(at("context_length_presend"))).toBeNull();
+  });
+
+  test("visible content on the failed turn cancels the retry", () => {
+    // Same zero-content gate as every other retryable class: deleting a card that
+    // shows work would lose it.
+    expect(
+      retryDecision({ ...at(CONTEXT_LENGTH_COMPACTED_CODE), finalTextLen: 12 }),
+    ).toBeNull();
+    expect(
+      retryDecision({ ...at(CONTEXT_LENGTH_COMPACTED_CODE), partCount: 1 }),
+    ).toBeNull();
+  });
 });
 
 describe("retryDecision (pure gate/bound logic)", () => {

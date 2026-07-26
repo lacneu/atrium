@@ -150,7 +150,7 @@ export function convertConvexMessage(
   // bridge sink; keep the FIRST defensively). Rendered by CompactionNotice —
   // always visible (it explains the agent's shortened memory + a long wait),
   // never gated behind the tools toggle.
-  let compaction: { phase: string; at: number } | null = null;
+  let compaction: { phase: string; at: number; reason?: string } | null = null;
 
   // 1) Parts that PRECEDE the text chronologically (listByChat returns parts
   //    flat + sorted by order): reasoning goes into content; tool calls are
@@ -179,7 +179,14 @@ export function convertConvexMessage(
     } else if (isPlanPart(p)) {
       planParts.push(p);
     } else if (isCompactionPart(p) && compaction === null) {
-      compaction = { phase: p.phase, at: p.at };
+      // `reason` = WHY the gateway compacted (W2 / G-09), when its own account
+      // reached us. Absent stays absent: the notice must not imply a pre-emptive
+      // compaction on silence.
+      compaction = {
+        phase: p.phase,
+        at: p.at,
+        ...(typeof p.reason === "string" && p.reason ? { reason: p.reason } : {}),
+      };
     }
   });
 

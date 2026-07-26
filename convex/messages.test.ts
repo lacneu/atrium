@@ -602,6 +602,63 @@ describe("listByChat elides oversized part fields from the window", () => {
   });
 });
 
+describe("the compaction marker carries its CAUSE to the reader (W2 / G-09)", () => {
+  test("`reason` survives the window projection", async () => {
+    // The bridge derives the cause from the gateway's own `session.operation`
+    // account, the schema stores it, and the marker's sentence reads it — but the
+    // projection rebuilt the part from `{kind, phase, at}` and dropped it, so the
+    // sentence could never appear. Same failure as the trace that computed a value
+    // and never shipped it.
+    const t = convexTest(schema, modules);
+    const { userId, chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "hi",
+        updatedAt: 1,
+      });
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "compaction" as const,
+          phase: "midturn",
+          at: 1_000,
+          reason: "overflow",
+        },
+      });
+      // A marker with NO cause: the gateway's account is broadcast `dropIfSlow`, so
+      // its absence must stay absent — never a default that reads as a threshold.
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 1,
+        part: { kind: "compaction" as const, phase: "preflight", at: 2_000 },
+      });
+      return { userId, chatId, messageId };
+    });
+
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const view = await as.query(api.messages.listByChat, { chatId });
+    const msg = view.find((mm) => mm._id === messageId);
+    if (!msg) throw new Error("message not in view");
+    expect((msg.parts[0] as Record<string, unknown>).reason).toBe("overflow");
+    expect((msg.parts[1] as Record<string, unknown>).reason).toBeUndefined();
+  });
+});
+
 describe("deleteMessage — sub-agent cascade (retry drops the child session)", () => {
   test("deleting the spawning turn purges its sub-agents + tool parts + interactions", async () => {
     const t = convexTest(schema, modules);

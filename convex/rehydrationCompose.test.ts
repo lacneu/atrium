@@ -16,6 +16,7 @@ import {
   SUMMARY_BACKOFF_CAP_MS,
   clampSummary,
   composeRehydration,
+  composedPromptFits,
   rehydrationBudgetChars,
   summaryBackoffMs,
   type RehydrationTurn,
@@ -173,13 +174,62 @@ describe("composeRehydration", () => {
 });
 
 describe("sizing helpers", () => {
-  test("rehydrationBudgetChars: legacy formula under the cap, hard-capped above", () => {
-    // 32k window -> 48k chars (legacy) — under the 60k cap.
-    expect(rehydrationBudgetChars(32_000)).toBe(48_000);
-    // 200k window -> would be 300k chars — capped.
+  test("rehydrationBudgetChars: PRUDENT ratio under the cap, hard-capped above", () => {
+    // The ratio moved 3 -> 2 chars/token deliberately (G-10): 3 made a block look
+    // cheaper than it is, so a "20k-token" history could really cost 30k and push
+    // the very prompt it grounds into overflow. The gateway's own planner uses 2
+    // plus a margin; the budget must under-promise, never over-promise.
+    // 32k window -> 16k tokens -> 32k chars.
+    expect(rehydrationBudgetChars(32_000)).toBe(32_000);
+    // 200k window -> would be 200k chars — capped.
     expect(rehydrationBudgetChars(200_000)).toBe(HARD_MAX_HISTORY_CHARS);
     // Tiny window -> the 2k floor.
     expect(rehydrationBudgetChars(1_000)).toBe(2_000);
+  });
+
+  test("G-10: the COMPOSED prompt is bounded in TOKENS against the live window", () => {
+    // The old cap bounded the history block in CHARS and nothing bounded the
+    // whole — history + separator + the user's own text — so a long message on
+    // top of a full-budget history composed a prompt the session could not take.
+    const window = 32_000;
+    expect(
+      composedPromptFits({
+        historyChars: 20_000,
+        userChars: 500,
+        separatorChars: 2,
+        windowTokens: window,
+      }),
+    ).toBe(true);
+    // Same history, a very long user message: it no longer fits.
+    expect(
+      composedPromptFits({
+        historyChars: 20_000,
+        userChars: 20_000,
+        separatorChars: 2,
+        windowTokens: window,
+      }),
+    ).toBe(false);
+  });
+
+  test("G-10: an UNKNOWN window never refuses (P6 — a guard must not cost a turn)", () => {
+    for (const w of [0, -1, Number.NaN]) {
+      expect(
+        composedPromptFits({
+          historyChars: 1_000_000,
+          userChars: 1_000_000,
+          separatorChars: 2,
+          windowTokens: w,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  test("G-10: the SMALLEST window decides (an agent switch can narrow the context)", () => {
+    // Sized against the wider model, this block fits; against the narrow one that
+    // actually receives it, it does not. The caller must pass the smaller.
+    const block = { historyChars: 30_000, userChars: 200, separatorChars: 2 };
+    expect(composedPromptFits({ ...block, windowTokens: 200_000 })).toBe(true);
+    expect(composedPromptFits({ ...block, windowTokens: 32_000 })).toBe(false);
   });
 
   test("clampSummary: under cap unchanged; over cap cut at a word boundary + mark", () => {

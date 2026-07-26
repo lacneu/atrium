@@ -29,6 +29,7 @@ import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { normalizeMessageErrorCode } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { deliveryChildKey } from "./lib/deliveryRuns";
@@ -195,6 +196,9 @@ export const upsertSubAgent = internalMutation({
     resultText: v.optional(v.string()),
     phase: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
+    /** The STABLE failure class of that reason (W2 / G-11). Allowlisted below —
+     *  an unrecognized value becomes "unknown", never raw gateway text. */
+    errorCode: v.optional(v.string()),
     tools: v.optional(
       v.array(
         v.object({
@@ -284,6 +288,11 @@ export const upsertSubAgent = internalMutation({
         resultText: args.resultText,
         phase: args.phase,
         errorMessage: args.errorMessage,
+        // Same allowlist as the parent message's `errorCode` (G-11): one list,
+        // so a class the UI cannot localize never reaches a row.
+        ...(args.errorCode !== undefined
+          ? { errorCode: normalizeMessageErrorCode(args.errorCode) ?? undefined }
+          : {}),
         tools: args.tools,
         sessionMeta: args.sessionMeta,
         telemetry: args.telemetry,
@@ -306,6 +315,7 @@ export const upsertSubAgent = internalMutation({
       resultText?: string;
       phase?: string;
       errorMessage?: string;
+      errorCode?: string;
       taskName?: string;
       tools?: SubAgentTool[];
       sessionMeta?: SubAgentSessionMeta;
@@ -379,6 +389,9 @@ export const upsertSubAgent = internalMutation({
       existing.status === "error" && patch.status === "done";
     if (args.resultText !== undefined) patch.resultText = args.resultText;
     if (args.errorMessage !== undefined) patch.errorMessage = args.errorMessage;
+    if (args.errorCode !== undefined) {
+      patch.errorCode = normalizeMessageErrorCode(args.errorCode) ?? undefined;
+    }
     else if (recoveredToDone && existing.errorMessage !== undefined) {
       // Explicit undefined => Convex removes the field.
       patch.errorMessage = undefined;

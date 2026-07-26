@@ -31,6 +31,7 @@
 
 import { sanitizeText } from "./sanitize.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
+import { classifyFailureText } from "../../core/failure-classifier.js";
 import {
   childChatTerminalStatus,
   type SubAgentStatus,
@@ -470,6 +471,13 @@ export class SubAgentObserver {
             textFromMessage(readField(payload, "message"));
           const errMsg = this.sanitizeResult(reason);
           if (errMsg) rec.errorMessage = errMsg;
+          // …and its STABLE CLASS (W2 / G-11). Classified from the RAW reason, not
+          // the sanitized copy: sanitizing strips server paths and can cut the
+          // phrase the classifier matches on. A child that died of a context
+          // overflow is now countable — before this it was prose nobody could
+          // aggregate, and the classifier already existed one file away.
+          const code = classifyFailureText(reason);
+          if (code) rec.errorCode = code;
         }
         return [...meta, rec];
       }

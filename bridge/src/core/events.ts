@@ -40,6 +40,12 @@ export const EVENT_TURN_PHASE = "turn.phase";
 // describes the state the NEXT turn inherits, and a successful compaction must
 // be able to clear it without adding a second marker to the thread.
 export const EVENT_SESSION_OVERFULL = "session.overfull";
+// {reason, completed, refusal} — WHY the gateway compacted, from its own
+// `session.operation` account (W2 / G-09). The PRIMARY cause signal; the
+// session-id rotation heuristic stays the fallback because this event is
+// broadcast `dropIfSlow` and its absence proves nothing. Reason is ALLOWLISTED
+// (the failure path carries arbitrary error text upstream).
+export const EVENT_COMPACTION_CAUSE = "compaction.cause";
 // {runId} — the agent GENERATED media (e.g. a codex `imageGeneration` item) but the
 // turn delivered NO media (no MEDIA:/mediaUrls/outbound path) → nothing for the bridge
 // to fetch. A SOC2-safe diagnostic so the #7 self-correction loop can flag the agent's

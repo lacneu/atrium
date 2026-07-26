@@ -29,7 +29,54 @@ import {
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
-import { assertBeforeSendDeadline } from "./core/dispatch-deadline.js";
+import {
+  REHYDRATION_MAX_FILL,
+  composedPromptFits,
+  sessionFill,
+  sessionFillDetail,
+  type SessionFillSource,
+} from "./core/context-budget.js";
+import {
+  COMPACT_TIMEOUT_MS,
+  ContextBlockedError,
+  compactBudget,
+  presendAction,
+  requiresCompaction,
+  sendAfterCompaction,
+  type PresendAction,
+} from "./core/presend-guard.js";
+import {
+  bucketCompactionReason,
+  isPermanentCompactionRefusal,
+  isTransientCompactionRefusal,
+} from "./core/compaction-verdict.js";
+
+/**
+ * What the pre-send guard did, for the bridge log + the (content-free) rehydrate
+ * trace. Enums and one integer percent — no gateway string ever reaches it.
+ */
+interface PresendReport {
+  action: PresendAction;
+  fillPct: number | null;
+  fillSource: SessionFillSource | null;
+  compactOutcome:
+    | "not_needed"
+    | "compacted"
+    | "refused"
+    | "error"
+    | "unknown"
+    | "skipped_busy"
+    | "skipped_known_refusal"
+    | "skipped_no_budget";
+  /** Bucketed class of the gateway's refusal reason (never its text). */
+  compactReasonClass?: string;
+  /** The send was WITHHELD. The only value in this report that changes an outcome. */
+  blocked: boolean;
+}
+import {
+  PRE_SEND_DEADLINE_MS,
+  assertBeforeSendDeadline,
+} from "./core/dispatch-deadline.js";
 import {
   classifyGatewayError,
   LOST_RESPONSE_CODES,
@@ -428,15 +475,30 @@ export type RehydrationDecision =
   | "rehydrate"
   | "skip_attachment"
   | "skip_disabled"
-  | "skip_warm";
+  | "skip_warm"
+  /** The session is already too full to take an injection (G-10). */
+  | "skip_full";
 export function rehydrationDecision(opts: {
   freshSession: boolean;
   hasAttachments: boolean;
   enabled: boolean;
+  /** LIVE fill of the session, 0..1+, or null when unknown. Beyond
+   *  REHYDRATION_MAX_FILL the injection is REFUSED: the gateway already holds
+   *  this history, so adding it is the one action guaranteed to make an
+   *  almost-full session worse. `null` never refuses — a guard must not cost a
+   *  turn on an absent measure (P6). */
+  fill?: number | null;
 }): RehydrationDecision {
   if (!opts.enabled) return "skip_disabled";
   if (!opts.freshSession) return "skip_warm";
   if (opts.hasAttachments) return "skip_attachment"; // can't prepend history here
+  if (
+    opts.fill != null &&
+    Number.isFinite(opts.fill) &&
+    opts.fill > REHYDRATION_MAX_FILL
+  ) {
+    return "skip_full";
+  }
   return "rehydrate";
 }
 
@@ -828,7 +890,14 @@ export async function applyPatchIntent(
   });
 }
 
-async function performSend(
+/**
+ * EXPORTED for the pre-send confinement tests (W2). Four lots in a row shipped a
+ * hardening with no failing test because nothing in the suite could answer the
+ * gateway's RPCs; the guard here DECIDES THE FATE OF A SEND from a
+ * `sessions.describe` answer, and "a successful compaction lets the send through"
+ * is only expressible against the real send path.
+ */
+export async function performSend(
   session: BridgeSession,
   body: SendBody,
   writer: ConvexWriter,
@@ -890,6 +959,15 @@ async function performSend(
   let preTurnTotalTokens: number | null = null;
   let preTurnContextTokens: number | null = null;
   let preTurnCostUsd: number | null = null;
+  // The gateway's OWN pre-prompt assessment (W2): the only figures that account
+  // for what the counters miss (tool schemas, injected context), and the ones the
+  // pre-send guard measures against. Absent when its pre-prompt check did not run
+  // (notably under a context engine that owns compaction) — then the fill is
+  // UNKNOWN and every guard built on it falls open.
+  let preTurnEstimatedPromptTokens: number | null = null;
+  let preTurnPromptBudget: number | null = null;
+  let preTurnOverflowTokens: number | null = null;
+  let preTurnTotalTokensFresh: boolean | null = null;
   // Whether THIS send prepended rehydration history (function-scope: read by
   // the post-ack beginTurn in the LATER try block for the processing_history phase).
   let turnWasRehydrated = false;
@@ -905,6 +983,16 @@ async function performSend(
   // Stamped when THIS describe's answer is in hand, strictly after the boundary
   // above so the fresh session's own snapshot is never classified as pre-reset.
   let describeObservedAt = sessionObservedAt + 1;
+  // Pre-send guard outcome (W2). Set inside the try below — whose catch makes EVERY
+  // failure fall open — and acted upon after it. `blocked` is the only value that
+  // stops a send, and nothing but an explicit, positive measurement can set it.
+  let presend: PresendReport = {
+    action: "send",
+    fillPct: null,
+    fillSource: null,
+    compactOutcome: "not_needed",
+    blocked: false,
+  };
   try {
     const desc = await conn.request(
       "sessions.describe",
@@ -912,32 +1000,220 @@ async function performSend(
       8_000,
     );
     describeObservedAt = Date.now();
-    const sess = (
+    let sess = (
       desc.payload as { session?: Record<string, unknown> } | undefined
     )?.session;
-    if (sess) {
+    // Capture the pre-turn figures from a describe answer. A FUNCTION because the
+    // pre-send guard can compact and RE-describe: the rehydration decision and the
+    // mirrored meter must then read the POST-compaction session, not the one we
+    // measured before shrinking it.
+    const captureDescribe = (s: Record<string, unknown>): void => {
       preSendSessionId =
-        typeof sess.sessionId === "string" && sess.sessionId
-          ? sess.sessionId
-          : null;
+        typeof s.sessionId === "string" && s.sessionId ? s.sessionId : null;
       preTurnTotalTokens =
-        typeof sess.totalTokens === "number" &&
-        Number.isFinite(sess.totalTokens)
-          ? sess.totalTokens
+        typeof s.totalTokens === "number" && Number.isFinite(s.totalTokens)
+          ? s.totalTokens
           : null;
       preTurnContextTokens =
-        typeof sess.contextTokens === "number" &&
-        Number.isFinite(sess.contextTokens)
-          ? sess.contextTokens
+        typeof s.contextTokens === "number" && Number.isFinite(s.contextTokens)
+          ? s.contextTokens
           : null;
       // Session-cumulative cost from the SAME describe (the gateway never
       // emits `usage` on chat events — live capture 2026-07-03 — so this is
       // the real per-turn cost source: consecutive traces' deltas).
       preTurnCostUsd =
-        typeof sess.estimatedCostUsd === "number" &&
-        Number.isFinite(sess.estimatedCostUsd)
-          ? sess.estimatedCostUsd
+        typeof s.estimatedCostUsd === "number" &&
+        Number.isFinite(s.estimatedCostUsd)
+          ? s.estimatedCostUsd
           : null;
+      const num = (v: unknown): number | null =>
+        typeof v === "number" && Number.isFinite(v) ? v : null;
+      preTurnEstimatedPromptTokens = num(s.estimatedPromptTokens);
+      preTurnPromptBudget = num(s.promptBudgetBeforeReserve);
+      preTurnOverflowTokens = num(s.overflowTokens);
+      preTurnTotalTokensFresh =
+        typeof s.totalTokensFresh === "boolean" ? s.totalTokensFresh : null;
+    };
+    if (sess) captureDescribe(sess);
+
+    // ── PRE-SEND GUARD (W2 / G-04, G-06) ─────────────────────────────────────
+    // Four times in three days in production, a turn was spent, the user waited,
+    // and the answer was a hard `context_length`. The figures that would have said
+    // so were already on this describe. Graduated: inform, then compact
+    // pre-emptively, then — past 95 % — compact and, if the compaction did not
+    // happen, withhold the send rather than buy a failure.
+    {
+      const fill0 = sessionFillDetail({
+        estimatedPromptTokens: preTurnEstimatedPromptTokens,
+        promptBudgetBeforeReserve: preTurnPromptBudget,
+        totalTokens: preTurnTotalTokens,
+        contextTokens: preTurnContextTokens,
+        totalTokensFresh: preTurnTotalTokensFresh,
+      });
+      const action = presendAction({
+        fill: fill0.fill,
+        overflowTokens: preTurnOverflowTokens,
+        alreadyCompacted: false,
+      });
+      presend = {
+        action,
+        fillPct: fill0.fill === null ? null : Math.round(fill0.fill * 100),
+        fillSource: fill0.source,
+        compactOutcome: "not_needed",
+        blocked: false,
+      };
+      // A compaction INTERRUPTS an active run (the gateway's own handler calls
+      // interruptSessionRunIfActive). A delivery/announce run can be live on this
+      // session even though Convex considers the chat idle — compacting under it
+      // would destroy a reply the user is owed. Busy ⇒ do nothing, send as before.
+      const busy =
+        session.runManager.turnActive || session.runManager.dispatchInFlight;
+      // What is LEFT of this dispatch's pre-send deadline. Measured, not assumed:
+      // Convex tells us how long the row was already pending, and everything above
+      // (patch, describe, rehydration reads) has already spent some of it.
+      const compactMs = compactBudget(
+        PRE_SEND_DEADLINE_MS - (body.dispatchAgeMs + (Date.now() - sendReceivedMs)),
+      );
+      // A compaction ALREADY known not to work on THIS gateway session (a
+      // structural refusal remembered from an earlier turn): skip the call. Waiting
+      // 60 s per send for the same answer is the kind of thing that makes a product
+      // feel broken; the user gets the named cause and the two wired actions now.
+      const knownRefusal =
+        preSendSessionId !== null &&
+        session.presendCompactRefusedFor === preSendSessionId;
+      if (requiresCompaction(action) && busy) {
+        presend.compactOutcome = "skipped_busy";
+        console.error(
+          `[presend] chat=${body.chatId} ${action} SKIPPED — a run is active on this session`,
+        );
+      } else if (requiresCompaction(action) && knownRefusal) {
+        // BEFORE the budget check: a refusal we have already observed is knowledge,
+        // and acting on it immediately is both faster and more accurate than
+        // discovering there is no time to re-ask.
+        presend.compactOutcome = "skipped_known_refusal";
+        // Same verdict as a fresh refusal, and ordered BEFORE the budget check on
+        // purpose: this session's harness cannot compact at all, so the remedy is
+        // not "unattempted for lack of time" — it is unavailable, whatever time
+        // remains. Blocking here also gives the user a named card with two working
+        // exits, where letting the send run out the deadline gives them a generic
+        // "dispatch deadline exceeded".
+        presend.blocked = !sendAfterCompaction({
+          action,
+          compacted: false,
+          attemptFailed: false,
+        });
+      } else if (requiresCompaction(action) && compactMs === null) {
+        // Not enough of the dispatch deadline left to run a summarization and still
+        // send. The send goes out UNTOUCHED: a remedy we did not attempt is not
+        // evidence the prompt does not fit, and losing a turn to our own guard is
+        // the one failure this module exists to prevent.
+        presend.compactOutcome = "skipped_no_budget";
+        console.error(
+          `[presend] chat=${body.chatId} ${action} SKIPPED — not enough dispatch budget left to compact`,
+        );
+      } else if (requiresCompaction(action) && compactMs !== null) {
+        try {
+          const r = await conn.request(
+            "sessions.compact",
+            { key: sessionKey },
+            // CLAMPED to what the deadline still allows (never more than the
+            // gateway-sized budget).
+            compactMs,
+          );
+          const p = r.payload as
+            | { compacted?: unknown; reason?: unknown }
+            | undefined;
+          // THREE outcomes, not two. `compacted:false` is an OBSERVED refusal and
+          // may withhold the send; `compacted:true` is a shrink; anything else — a
+          // truncated answer, an older gateway that does not report the field — is
+          // UNKNOWN, and an unknown must never cost a turn (P6). Reading the
+          // absence as a refusal is the same mistake the Convex side already
+          // avoids in `compactSession`.
+          presend.compactOutcome =
+            p?.compacted === true
+              ? "compacted"
+              : p?.compacted === false
+                ? "refused"
+                : "unknown";
+          // `reason` is FREE TEXT on the wire and this report rides a trace —
+          // bucket it (SOC2: metadata only, never a gateway string).
+          if (p?.compacted === false) {
+            // `?? undefined`: an ABSENT reason must stay absent in the report, not
+            // become a null that reads as "measured, and it was nothing".
+            presend.compactReasonClass =
+              bucketCompactionReason(
+                typeof p?.reason === "string" ? p.reason : undefined,
+              ) ?? undefined;
+            // REMEMBER only a refusal that will hold next turn, and only against the
+            // sessionId it was observed on: a reset or rollover mints a new session
+            // that deserves its own attempt.
+            if (
+              preSendSessionId !== null &&
+              isPermanentCompactionRefusal(presend.compactReasonClass ?? null)
+            ) {
+              session.presendCompactRefusedFor = preSendSessionId;
+            }
+          }
+        } catch (e) {
+          // The RPC threw (UNAVAILABLE "still active", a lifecycle change, a
+          // timeout): we do NOT know the session did not shrink, so the send goes.
+          presend.compactOutcome = "error";
+          console.error(
+            `[presend] chat=${body.chatId} compaction attempt failed (non-fatal):`,
+            (e as Error)?.message ?? e,
+          );
+        }
+        // Re-describe so everything downstream (rehydration, the header meter, the
+        // pressure snapshot) reads the session as it is AFTER the compaction.
+        if (presend.compactOutcome === "compacted") {
+          // OUR compaction is about to rotate the session id, which is how the
+          // normalizer detects a preflight compaction. Name its cause now, or the
+          // marker would say a compaction happened and stay silent on why — and
+          // `session.operation`, the only source that carries the gateway's own
+          // reason, is unreachable from this connection (see session.ts).
+          session.runManager.notePresendCompactionCause("pre_compaction");
+          try {
+            const d2 = await conn.request(
+              "sessions.describe",
+              { key: sessionKey },
+              8_000,
+            );
+            const s2 = (
+              d2.payload as { session?: Record<string, unknown> } | undefined
+            )?.session;
+            if (s2) {
+              sess = s2;
+              describeObservedAt = Date.now();
+              captureDescribe(s2);
+            }
+          } catch (e) {
+            console.error(
+              `[presend] chat=${body.chatId} re-describe after compaction failed (non-fatal):`,
+              (e as Error)?.message ?? e,
+            );
+          }
+        }
+        presend.blocked = !sendAfterCompaction({
+          action,
+          compacted: presend.compactOutcome === "compacted",
+          // An UNKNOWN answer is treated exactly like a thrown RPC: we cannot say
+          // the session did not shrink, so the send goes.
+          attemptFailed:
+            presend.compactOutcome === "error" ||
+            presend.compactOutcome === "unknown",
+          // "Already active" says a run or a compaction was live on this session —
+          // the busy-check above can miss one that started during its own await.
+          // Blocking on that would withhold a turn for a reason about to expire.
+          transientRefusal: isTransientCompactionRefusal(
+            presend.compactReasonClass ?? null,
+          ),
+        });
+      }
+      if (presend.action !== "send") {
+        console.error(
+          `[presend] chat=${body.chatId} action=${presend.action} fill=${presend.fillPct ?? "?"}% source=${presend.fillSource ?? "unknown"} overflow=${preTurnOverflowTokens ?? "none"} compaction=${presend.compactOutcome}${presend.compactReasonClass ? `/${presend.compactReasonClass}` : ""} blocked=${presend.blocked}`,
+        );
+      }
     }
 
     // (a) Mirror LIVE session meta onto the chat for the header strip (model +
@@ -1016,15 +1292,33 @@ async function performSend(
           ),
         );
     }
+    // LIVE fill from the describe we just did (null when nothing trustworthy is
+    // available — the guards below then fall open, P6).
+    const liveFill = sess
+      ? sessionFill({
+          estimatedPromptTokens: preTurnEstimatedPromptTokens,
+          promptBudgetBeforeReserve: preTurnPromptBudget,
+          totalTokens: preTurnTotalTokens,
+          contextTokens: preTurnContextTokens,
+          totalTokensFresh: preTurnTotalTokensFresh,
+        })
+      : null;
     const decision = rehydrationDecision({
       freshSession,
       hasAttachments: hasInlineAttachments,
       enabled: rehydrationEnabled,
+      fill: liveFill,
     });
     let prependedTurns = 0;
     let summaryUsed = false;
     let summaryChars = 0;
-    if (decision === "skip_attachment") {
+    if (decision === "skip_full") {
+      // REFUSED, and said so: a chat that silently gets no context is
+      // indistinguishable from a rehydration bug. Counts + chatId only (no PHI).
+      console.error(
+        `[rehydrate] chat=${body.chatId} SKIPPED — session already ${Math.round((liveFill ?? 0) * 100)}% full (>${Math.round(REHYDRATION_MAX_FILL * 100)}%); the gateway already holds this history`,
+      );
+    } else if (decision === "skip_attachment") {
       // Ship the bare message — prepending history to an attachment turn crashes the
       // gateway. KNOWN GAP (best-effort, strictly better than crashing): this chat
       // lacks pre-attachment context until the session next rolls. Counts/chatId
@@ -1037,7 +1331,25 @@ async function performSend(
         body.chatId,
         body.messageId,
       );
-      if (ctx.history) {
+      // The COMPOSED prompt — history + separator + the user's own text — bounded
+      // in TOKENS against the live window (G-10). The composer bounds the history
+      // block alone, in characters, so a long message on top of a full-budget
+      // history composed a prompt the session could not take. The SMALLEST window
+      // decides: an agent switch can narrow the context under the history.
+      const composedFits =
+        !ctx.history ||
+        composedPromptFits({
+          historyChars: ctx.history.length,
+          userChars: String(body.text ?? "").length,
+          separatorChars: 2,
+          windowTokens: preTurnContextTokens,
+        });
+      if (ctx.history && !composedFits) {
+        console.error(
+          `[rehydrate] chat=${body.chatId} SKIPPED — composed prompt exceeds the live window (history=${ctx.history.length}c + text=${String(body.text ?? "").length}c vs window=${preTurnContextTokens ?? "?"}tok)`,
+        );
+      }
+      if (ctx.history && composedFits) {
         message = `${ctx.history}\n\n${body.text}`;
         prependedTurns = ctx.turnCount;
         // History was INJECTED (verbatim turns OR a summary-only rehydration
@@ -1077,12 +1389,31 @@ async function performSend(
       switchedFromAgentId: body.switchedFromAgentId,
       switchedFromInstanceName: body.switchedFromInstanceName,
       ...(summaryUsed ? { summaryUsed, summaryChars } : {}),
+      // Pre-send guard (W2): WHY this turn was informed / compacted / withheld.
+      // Enums + one integer percent — the reason class is bucketed, never raw.
+      presendAction: presend.action,
+      presendFillPct: presend.fillPct,
+      presendFillSource: presend.fillSource,
+      presendCompaction: presend.compactOutcome,
+      presendBlocked: presend.blocked,
+      ...(presend.compactReasonClass !== undefined
+        ? { presendCompactReasonClass: presend.compactReasonClass }
+        : {}),
     });
   } catch (err) {
     console.error(
       "[rehydrate] skipped (non-fatal):",
       (err as Error)?.message ?? err,
     );
+  }
+
+  // The ONE outcome of the guard that stops a send. OUTSIDE the try above on
+  // purpose: that catch makes every failure of the guard fall open, so a block can
+  // only ever come from the explicit assignment above — never from a thrown
+  // anything. The turn ends immediately as `context_length`, with no provider
+  // spend, and its card carries the two wired actions (compact / branch).
+  if (presend.blocked) {
+    throw new ContextBlockedError(presend.fillPct);
   }
 
   // Shared-fs INBOUND (Phase 3): stream each tool-read reference to the shared
@@ -1191,6 +1522,9 @@ async function performSend(
       // the id of the send that caused it, so "this dispatch never ran" becomes a
       // fact instead of a guess.
       dispatchOutboxId: body.outboxId,
+      // The guard shrank the session for THIS send: a `context_length` answer is
+      // then transient, and Convex may re-dispatch it once.
+      compactedBeforeSend: presend.compactOutcome === "compacted",
     });
     // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
     // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —
@@ -1285,12 +1619,29 @@ async function performReset(session: BridgeSession): Promise<void> {
  * timeout: the gateway summarizes with the model, which can take well beyond
  * the default RPC budget.
  */
-async function performCompact(session: BridgeSession): Promise<void> {
-  await session.connection.request(
+async function performCompact(
+  session: BridgeSession,
+): Promise<{ compacted: boolean; reasonClass: string | null }> {
+  const r = await session.connection.request(
     "sessions.compact",
     { key: session.sessionKey },
-    60_000,
+    COMPACT_TIMEOUT_MS,
   );
+  // The gateway answers `{ok, compacted, reason?}` and REFUSES with a 200 (no
+  // transcript, one already running, an unsupported harness). Returning void here
+  // made every refusal look like a success: the user pressed "Compact the session",
+  // was told nothing was wrong, and nothing had changed. Report the outcome so the
+  // caller can say what actually happened.
+  const p = r.payload as { compacted?: unknown; reason?: unknown } | undefined;
+  return {
+    compacted: p?.compacted === true,
+    reasonClass:
+      p?.compacted === true
+        ? null
+        : bucketCompactionReason(
+            typeof p?.reason === "string" ? p.reason : undefined,
+          ),
+  };
 }
 
 /**
@@ -3148,8 +3499,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const session = await registry.acquire(
           toRouting(compact, compactInstance),
         );
-        await performCompact(session);
-        sendJson(res, 200, { ok: true });
+        const outcome = await performCompact(session);
+        // A REFUSAL is not a server error (nothing broke) but it is not a success
+        // either: 200 with the fact, and the caller decides what to tell the user.
+        sendJson(res, 200, {
+          ok: true,
+          compacted: outcome.compacted,
+          ...(outcome.reasonClass !== null
+            ? { reasonClass: outcome.reasonClass }
+            : {}),
+        });
       } catch (err) {
         const code = classifyGatewayError(err);
         console.error(

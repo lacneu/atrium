@@ -61,7 +61,17 @@ describe("emailDomainAllowed (default example.com)", () => {
       "b@x.com",
     );
     expect(extractEntraEmail({ preferred_username: "c@x.com" })).toBe("c@x.com");
-    expect(extractEntraEmail({ sub: "123", name: "No Email" })).toBeUndefined();
+    // The real claim set carries MANY more fields than the three this function
+    // reads. Spread through a variable, not written inline: a fresh object literal
+    // triggers TS's excess-property check, and `npx convex dev` / `convex deploy`
+    // run `tsc` over `convex/**` INCLUDING tests — so this one line silently
+    // blocked EVERY push for days (found 2026-07-26, while the root `tsc` and
+    // vitest both stayed green).
+    const claimsWithoutEmail: Record<string, unknown> = {
+      sub: "123",
+      name: "No Email",
+    };
+    expect(extractEntraEmail(claimsWithoutEmail)).toBeUndefined();
     expect(extractEntraEmail({ email: "" })).toBeUndefined();
   });
 });

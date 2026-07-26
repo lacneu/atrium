@@ -10,6 +10,8 @@
 //
 // Pure function over the thrown error's message -> unit-tested offline.
 
+import { ContextBlockedError } from "./presend-guard.js";
+
 export type DispatchErrorCode =
   | "AGENT_NOT_FOUND" // configured agentId no longer exists on the gateway
   | "AUTH_TOKEN_MISMATCH" // operator token <-> device identity / pairing rejected
@@ -22,6 +24,11 @@ export type DispatchErrorCode =
   | "ATTACHMENT_TOO_LARGE" // gateway refused an attachment over a size/staging cap
   | "ATTACHMENT_REJECTED" // gateway could not parse/stage the attachment (e.g. its base64 validator overflowed)
   | "INVALID_REQUEST" // gateway rejected the request shape
+  // The bridge's OWN pre-send guard withheld the send: the session was measured not
+  // to fit and the mandatory compaction did not shrink it. A DISTINCT code from the
+  // gateway's `context_length`, because it states a different fact — nothing ran and
+  // nothing was billed. It gets the same two wired actions (see ContextBlockedError).
+  | "context_length_presend"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -60,6 +67,11 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
   "INVALID_REQUEST",
+  // Not literally "the gateway refused it" — the BRIDGE refused it, on a figure the
+  // gateway reported. Listed here because this set's job is bridge HEALTH: the link
+  // and the credentials worked perfectly, and a full session must never paint the
+  // bridge red. The failure is still fully surfaced (card, trace, anomaly).
+  "context_length_presend",
 ]);
 
 /**
@@ -91,6 +103,9 @@ export function classifyGatewayError(
   err: unknown,
   opts?: { hasAttachments?: boolean },
 ): DispatchErrorCode {
+  // The bridge's own withheld send, recognised by TYPE before any text rule: a
+  // decision we made cannot be left to depend on how we phrased it.
+  if (err instanceof ContextBlockedError) return "context_length_presend";
   const msg = (
     err instanceof Error ? err.message : String(err ?? "")
   ).toLowerCase();

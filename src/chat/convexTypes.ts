@@ -87,6 +87,11 @@ export type ConvexMessagePartView =
       /** "preflight" (before the model call) | "midturn" (run restarted). */
       phase: string;
       at: number;
+      /** WHY the gateway compacted, from its own `session.operation` account
+       *  (W2 / G-09), allowlisted by the bridge. ABSENT = UNKNOWN: the event is
+       *  broadcast `dropIfSlow`, so silence is not evidence of a pre-emptive
+       *  compaction — the notice must then say nothing about the cause. */
+      reason?: string;
     }
   | CronPartView
   | PlanPartView

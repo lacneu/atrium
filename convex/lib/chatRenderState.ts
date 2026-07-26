@@ -87,6 +87,12 @@ export const KNOWN_ERROR_CODES = [
   // ChatErrorEventSchema) that the bridge persists as errorCode — allowlisted
   // so the diagnostic surface names them instead of collapsing to "unknown".
   "context_length",
+  // The overflow class the bridge mints when the turn's session had JUST been
+  // compacted by the pre-send guard: retryable exactly once (turnRetry).
+  "context_length_compacted",
+  // The pre-send guard WITHHELD the send: measured not to fit, and the mandatory
+  // compaction did not shrink it. Nothing ran, nothing was billed.
+  "context_length_presend",
   "rate_limit",
   "timeout",
   "refusal",

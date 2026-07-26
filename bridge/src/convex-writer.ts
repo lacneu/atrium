@@ -44,6 +44,11 @@ export interface CompactionPart {
   kind: "compaction";
   phase: string;
   at: number;
+  /** WHY the gateway compacted, from its own `session.operation` account
+   *  (W2 / G-09), already ALLOWLISTED. Absent = UNKNOWN (the event is broadcast
+   *  `dropIfSlow`), and the marker then says nothing about the cause rather than
+   *  implying a pre-emptive threshold compaction. */
+  reason?: string;
 }
 
 // The provenance part shape lives in core/provenance.ts (pure contract module).
@@ -83,6 +88,10 @@ export interface SubAgentRecord {
   // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
   // monitor show WHY a sub-agent failed / why the parent is stuck.
   errorMessage?: string;
+  /** The STABLE class of that reason, from the shared classifier (W2 / G-11):
+   *  a child that died of a context overflow is now countable, not just
+   *  readable. Allowlisted at the ingest boundary. */
+  errorCode?: string;
   // The tools the CHILD called -- NAME + lifecycle status ONLY here (the cheap,
   // always-loaded summary on the subAgents doc). The full per-tool DETAIL (args +
   // result) rides on `toolPart` below and is routed to a SEPARATE table. Deduped/
@@ -452,6 +461,15 @@ export interface RehydrateTraceArgs {
    *  bounded size) — content-free counters, absent on skip decisions. */
   summaryUsed?: boolean;
   summaryChars?: number;
+  /** Pre-send guard (W2): the graduated action taken, the measured fill and where
+   *  it came from, what the compaction attempt did, and whether the send was
+   *  WITHHELD. Content-free by construction (enums + an integer percent). */
+  presendAction?: string;
+  presendFillPct?: number | null;
+  presendFillSource?: string | null;
+  presendCompaction?: string;
+  presendBlocked?: boolean;
+  presendCompactReasonClass?: string;
 }
 
 /** Operations the Convex ingest httpAction understands (its JSON `op` field). */
@@ -2029,6 +2047,7 @@ export class HttpConvexWriter implements ConvexWriter {
       resultText: record.resultText,
       phase: record.phase,
       errorMessage: record.errorMessage,
+      ...(record.errorCode !== undefined ? { errorCode: record.errorCode } : {}),
       tools: record.tools,
       sessionMeta: record.sessionMeta,
       telemetry: record.telemetry,

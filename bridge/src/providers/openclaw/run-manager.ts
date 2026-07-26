@@ -233,6 +233,12 @@ export class RunManager {
 
   /** True while a turn is actively driving the sink — gates whether
    *  currentMessageId belongs to a LIVE turn (vs the last finished one). */
+  /** The pre-send guard compacted this session before the turn (W2): the cause of
+   *  the rotation that follows is ours, and the marker may say so. */
+  notePresendCompactionCause(reasonClass: string): void {
+    this.normalizer.notePresendCompactionCause(reasonClass);
+  }
+
   get turnActive(): boolean {
     return this.sink.active;
   }
@@ -343,6 +349,9 @@ export class RunManager {
        *  the correlation that lets Convex answer "did this send ever run?".
        *  Absent on a spontaneous turn — no queued send is waiting on it. */
       dispatchOutboxId?: string | null;
+      /** The pre-send guard COMPACTED this session right before this send (W2):
+       *  makes a `context_length` failure retryable exactly once. */
+      compactedBeforeSend?: boolean;
     },
   ): Promise<void> {
     // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
@@ -421,6 +430,7 @@ export class RunManager {
       turnContext?.spontaneous === true,
       turnContext?.rehydrated === true,
       turnContext?.dispatchOutboxId ?? null,
+      { compactedBeforeSend: turnContext?.compactedBeforeSend === true },
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.

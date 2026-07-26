@@ -66,6 +66,7 @@ import type * as lib_bridgeRouting from "../lib/bridgeRouting.js";
 import type * as lib_chartValidation from "../lib/chartValidation.js";
 import type * as lib_charts from "../lib/charts.js";
 import type * as lib_chatRenderState from "../lib/chatRenderState.js";
+import type * as lib_compactionReasons from "../lib/compactionReasons.js";
 import type * as lib_compat from "../lib/compat.js";
 import type * as lib_crypto_cipher from "../lib/crypto/cipher.js";
 import type * as lib_crypto_convexValidator from "../lib/crypto/convexValidator.js";
@@ -191,6 +192,7 @@ declare const fullApi: ApiFromModules<{
   "lib/chartValidation": typeof lib_chartValidation;
   "lib/charts": typeof lib_charts;
   "lib/chatRenderState": typeof lib_chatRenderState;
+  "lib/compactionReasons": typeof lib_compactionReasons;
   "lib/compat": typeof lib_compat;
   "lib/crypto/cipher": typeof lib_crypto_cipher;
   "lib/crypto/convexValidator": typeof lib_crypto_convexValidator;

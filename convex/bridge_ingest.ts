@@ -29,6 +29,7 @@ import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
+import { compactionReasonClass } from "./lib/compactionReasons";
 import {
   rehydrateTraceMeta,
   shouldReportRehydrateMissed,
@@ -299,6 +300,14 @@ type IngestOp =
       routedInstanceName: string | null;
       switchedFromAgentId: string | null;
       switchedFromInstanceName: string | null;
+      // Pre-send guard (W2). Every field is re-validated against an allowlist in
+      // rehydrateTraceMeta — this union documents the wire, it does not trust it.
+      presendAction?: string;
+      presendFillPct?: number | null;
+      presendFillSource?: string | null;
+      presendCompaction?: string;
+      presendBlocked?: boolean;
+      presendCompactReasonClass?: string;
     }
   // Content-free per-turn GATEWAY CONTEXT-PRESSURE trace (chat.gateway_pressure):
   // the pre-turn token counters (from the bridge's per-turn sessions.describe —
@@ -313,6 +322,10 @@ type IngestOp =
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** WHY it compacted — bucketed by the bridge, re-bucketed on arrival. */
+      compactionReason?: string;
+      /** The gateway REFUSED to compact rather than failing at it. */
+      compactionRefused?: boolean;
       /** Frames lost during the turn (omitted when none) — the per-turn
        *  counterpart of the live `openclaw.frame_gap` traces. */
       framesLost?: number;
@@ -434,6 +447,8 @@ type IngestOp =
       resultText?: string;
       phase?: string;
       errorMessage?: string;
+      /** The stable failure class of that reason (W2 / G-11). */
+      errorCode?: string;
       tools?: Array<{ name: string; status: "running" | "done"; toolCallId?: string }>;
       // STATIC session config (model / reasoning / speed / scope / spawn config) for
       // the panel bar + Advanced. All optional (rendered only when present).
@@ -994,6 +1009,17 @@ export const ingest = httpAction(async (ctx, request) => {
             : {}),
           ...(body.gatewayAborted === true ? { gatewayAborted: true } : {}),
           compaction: body.compaction,
+          // WHY the gateway compacted, from its OWN account (G-09). The bridge
+          // computed this and shipped it; the ingest DROPPED it, so the cause the
+          // lot existed to surface never reached a single trace. Re-bucketed here
+          // because the boundary does not trust the sender's vocabulary.
+          ...(() => {
+            const cls = compactionReasonClass(body.compactionReason);
+            return cls !== null ? { compactionReason: cls } : {};
+          })(),
+          // The gateway DECLINED to compact (vs tried and failed): the difference
+          // between "your session is unchanged" and "something broke".
+          ...(body.compactionRefused === true ? { compactionRefused: true } : {}),
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —
           // the counterpart of `compaction` (= handled silently). Distinguishes
           // "the gateway coped" from "the turn FAILED on context".
@@ -1191,6 +1217,7 @@ export const ingest = httpAction(async (ctx, request) => {
         resultText: body.resultText,
         phase: body.phase,
         errorMessage: body.errorMessage,
+        errorCode: body.errorCode,
         tools: body.tools,
         sessionMeta: body.sessionMeta,
         telemetry: body.telemetry,
