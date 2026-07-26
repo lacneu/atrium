@@ -202,6 +202,10 @@ const ERROR_CODE_LABEL: Record<string, () => string> = {
   compaction_timeout: m.runstatus_error_compaction_timeout,
   // The turn finished but delivered nothing usable (no text, failed file).
   empty_response: m.runstatus_error_empty_response,
+  // The reply went out through a message-tool call whose arguments we could not
+  // read. A NAMED cause: the fault is ours, and the label says so rather than
+  // implying the agent had nothing to say.
+  msgtool_args_unreadable: m.runstatus_error_msgtool_unreadable,
   // Zero-work clean close (silent NO_REPLY / end-of-run grace): auto-retried
   // by the backend; this label shows when the bounded retries also came back
   // empty.

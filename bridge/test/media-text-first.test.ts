@@ -31,10 +31,32 @@ class OrderingWriter implements ConvexWriter {
     return "msg_1";
   }
   async appendDelta(_messageId: string, _text: string): Promise<void> {}
-  async setSnapshot(_messageId: string, text: string): Promise<void> {
+  refuseShorter = false;
+  private lastSnapshot = "";
+  async setSnapshot(
+    _messageId: string,
+    text: string,
+    replace?: boolean,
+  ): Promise<boolean> {
+    if (
+      this.refuseShorter &&
+      replace !== true &&
+      text.length < this.lastSnapshot.length
+    ) {
+      this.order.push(`snapshot-refused:${text}`);
+      return false;
+    }
+    this.lastSnapshot = text;
     this.order.push(`snapshot:${text}`);
+    return true;
   }
-  async addToolPart(): Promise<void> {}
+  readonly toolParts: { textOffset?: number }[] = [];
+  async addToolPart(
+    _messageId: string,
+    part: { textOffset?: number },
+  ): Promise<void> {
+    this.toolParts.push(part);
+  }
   async addCompactionPart(): Promise<void> {}
   async recordGatewayPressure(): Promise<void> {}
   async addProvenancePart(): Promise<void> {}
@@ -221,6 +243,25 @@ describe("text-first media delivery (report ms70hx1c…)", () => {
   });
 });
 
+describe("codex P2: a refused snapshot must not move the tool-card anchor", () => {
+  it("keeps the anchor on the text Convex actually holds", async () => {
+    const writer = new OrderingWriter();
+    writer.refuseShorter = true;
+    const sink = new TurnSink("chat_anchor", writer);
+    await sink.beginTurn("run-anchor");
+    await sink.apply([
+      { type: "message.snapshot", text: "line one\nline two\nline three" },
+      // A stale, shorter snapshot: Convex refuses it and keeps the long text.
+      { type: "message.snapshot", text: "line one\n" },
+      { type: "tool.status", name: "read", phase: "completed" },
+    ]);
+    expect(writer.order).toContain("snapshot-refused:line one\n");
+    // The anchor must still point INSIDE the text the reader is looking at —
+    // the start of "line three" (offset 18), not offset 9 of a refused write.
+    expect(writer.toolParts.at(-1)?.textOffset).toBe(18);
+  });
+});
+
 describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => {
   it("a COMPLETE turn that WORKED (tool) but delivered no text and no media -> empty_response error", async () => {
     const writer = new OrderingWriter();
@@ -253,6 +294,40 @@ describe("empty-result guard (report ms7b5j… — silent blank bubble)", () => 
     expect(writer.order[writer.order.length - 1]).toBe(
       "finalize:error:empty_response_silent",
     );
+  });
+
+  it("G-16: an empty turn whose message-tool args were UNREADABLE names that cause, not a generic empty response", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_mt", writer);
+    await sink.beginTurn("run-mt");
+    await sink.apply([
+      { type: "tool.status", name: "message", phase: "start" },
+      // The reply mechanism ran; its arguments could not be read, so no text
+      // reached us and the transcript recovery came back with nothing either.
+      { type: "message.final", text: "", msgtoolArgsUnreadable: 1 },
+      { type: "run.status", status: "final" },
+    ]);
+    // NOT "the agent produced nothing" — the fault is ours and is named.
+    expect(writer.lastFinalizeKind).toBe("msgtool_args_unreadable");
+  });
+
+  it("G-16: the named cause does not leak into the NEXT turn", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_mt2", writer);
+    await sink.beginTurn("run-mt-a");
+    await sink.apply([
+      { type: "tool.status", name: "message", phase: "start" },
+      { type: "message.final", text: "", msgtoolArgsUnreadable: 1 },
+      { type: "run.status", status: "final" },
+    ]);
+    // Turn B closes on the run status ALONE — no message.final, so nothing
+    // recomputes the flag from the event: only beginTurn's reset can clear it.
+    await sink.beginTurn("run-mt-b");
+    await sink.apply([
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "run.status", status: "final" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("empty_response");
   });
 
   it("a top-level reply of EXACTLY the NO_REPLY sentinel is silence, not content (codex P2)", async () => {

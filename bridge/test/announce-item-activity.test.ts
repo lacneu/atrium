@@ -121,7 +121,9 @@ class ItemWriter implements ConvexWriter {
     return `msg_item_${this.started}`;
   }
   async appendDelta(): Promise<void> {}
-  async setSnapshot(): Promise<void> {}
+  async setSnapshot(): Promise<boolean> {
+    return true;
+  }
   async addToolPart(_m: string, p: ToolPart): Promise<void> {
     this.toolParts.push(p);
   }

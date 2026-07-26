@@ -33,6 +33,7 @@
  */
 
 import { MediaConfigurationError, sanitizeFrame, sanitizeText } from "./sanitize.js";
+import { isGatewayInitiatedRunId } from "./run-families.js";
 import {
   EVENT_OPENCLAW_FRAME,
   EVENT_MESSAGE_DELTA,
@@ -89,6 +90,24 @@ export const COMPACTION_TIMEOUT_CODE = "compaction_timeout";
 const COMPACTION_TIMEOUT_TEXT =
   "The gateway did not finish optimizing (compacting) the session in time.";
 export const EMPTY_FINAL_GRACE = 90.0; // wait after an empty chat:final for real content
+// The gateway's DISPLAY projection truncates a chat final's text at 8 000 chars
+// and appends this exact marker (`chat-display-projection.ts`, verified in the
+// deployed 2026.7.1 build). It is a HISTORY cap reused on a LIVE event, so a long
+// reply delivered through the message tool reaches us already cut — and nothing
+// detected it: the truncated text was persisted as the answer, marker and all.
+export const TRUNCATED_FINAL_MARKER = "\n...(truncated)...";
+// Wait after a truncated final for the transcript recovery to bring back the FULL
+// text. Short on purpose: the recovery RPC is bounded at 10 s, and if it brings
+// nothing the truncated text is still finalized — better a cut answer than a
+// 90-second wait for one.
+export const TRUNCATED_FINAL_GRACE = 20.0;
+// The projection cuts at EXACTLY its cap and then appends the marker, so a real
+// truncation always carries a body at least this long. Without the length test,
+// any short reply that happens to end with the marker (an agent quoting a log
+// excerpt, or told to end that way) would hold the turn open for the recovery
+// grace it does not need (codex P2). An operator who lowers the cap below this
+// loses the detection — never the reply.
+export const TRUNCATED_FINAL_MIN_BODY = 8_000;
 export const PRIVATE_ACK_GRACE = 5.0; // wait after a private-ack final for the visible message
 export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follow-on run
 
@@ -458,6 +477,16 @@ export class Normalizer {
   // the deliberate "re-send an old file via MEDIA:" case survives a stale-dropped
   // earlier mention (the sink dedupes actual double-attaches).
   mediaPaths: Map<string, boolean>;
+  // Chat-frame dedup keys ALREADY seen this turn. A single scalar slot only
+  // caught ADJACENT repeats: an upstream replay (`meta:{cached:true}`) that
+  // re-sends A after B (A,B,A) slipped straight through and duplicated content.
+  // Insertion-ordered Set = LRU: at the cap the oldest key is evicted, which at
+  // worst re-admits a very old duplicate — it never decides a turn, so unlike
+  // the per-turn caps of W8 this eviction is deliberately SILENT (a loud log
+  // here would fire on every long turn and devalue the pattern).
+  seenDedupKeys: Set<string>;
+  /** The immediately preceding chat dedup key — the ADJACENT-only rule, kept for
+   *  frames with no `seq` to identify them by. */
   lastDedupKey: string | null;
   // 6.5 webchat sink: the gateway runs the message-tool itself and only emits a
   // bare `stream:"item"` frame (no args, no result) — the delivered text lives
@@ -465,6 +494,64 @@ export class Normalizer {
   // holding a private-ack/empty-final grace, the session loop recovers the text
   // via `sessions.get` (history recovery, deferred since 5.19) exactly once.
   sawMessageToolItem: boolean;
+  // Message-tool calls this turn whose `args` we could not read at all (G-16).
+  // The tool IS the visible-reply mechanism, so an unreadable call means the
+  // answer may exist only in the transcript: it arms the same history recovery
+  // as a gateway-run message tool, and it NAMES the cause if that recovery
+  // still finds nothing — instead of the turn reading as a plain empty response.
+  msgtoolUnreadableArgs: number;
+  // This turn received a chat final the gateway had CUT at its 8 000-char display
+  // cap (G-13). The text is real but INCOMPLETE, so the transcript recovery stays
+  // eligible even though the turn holds content — the one case where "we already
+  // have an answer" is not a reason to stop looking for it.
+  sawTruncatedFinal: boolean;
+  truncatedFinals: number;
+  // Runs the gateway flagged `isHeartbeat` on an `agent` frame. The discriminant
+  // exists ONLY there (the `chat` payload has no such field — verified in the
+  // deployed 2026.7.1 build), so it must be LEARNED from agent traffic and then
+  // applied when a chat frame of that run shows up. Bounded, session-scoped:
+  // heartbeats outlive a turn, so this is deliberately NOT reset per turn.
+  private heartbeatRunIds = new Set<string>();
+  // A replay of THIS turn is expected on a NEW runId — set the moment the
+  // gateway tells us so (an abandoned lifecycle end we reset for, or an explicit
+  // `compaction end willRetry:true`). Positive proof of filiation: without it,
+  // `compactionPending` alone is a 900-second door held open for any run.
+  private replayExpected = false;
+  /** The announced replay is expected to CONTINUE on the current runId (the
+   *  explicit `compaction end willRetry:true` path). The proof is then only a
+   *  hedge for a gateway that rotates instead, and the first frame of the
+   *  resumed run consumes it — leaving it standing would keep admitting any run
+   *  of the session for as long as the turn ran (codex P1). */
+  private replaySameRun = false;
+  // Runs adopted through a grace window. ADDITIVE ONLY: an adopted run may add
+  // text, never finalize the turn — the harm G-12 names is a stranger becoming
+  // the answer AND closing the turn on it.
+  private adoptedRunIds = new Set<string>();
+  /** Foreign-run frames refused this turn, by reason. This counter is also the
+   *  instrument that measures the real exposure — before it, the rate at which
+   *  strangers reached a live turn was simply unknown. */
+  foreignRunRejections: Map<string, number>;
+  // Assistant-stream frames tagged `phase:"commentary"` this turn (G-17). Count
+  // only — the preamble text is conversational content.
+  commentaryFrames: number;
+  /** The frame being processed belongs to a run adopted through a grace window. */
+  private frameRunAdopted = false;
+  /** Adopted runs that still owe a boundary before their first additive write.
+   *  PER RUN (codex P2): two runs can be admitted in the same grace window, and a
+   *  single flag let the first consume the separator while the second's reply was
+   *  then glued onto it. Bounded by the same LRU rule as the other per-run sets. */
+  private adoptedSeparatorOwed = new Set<string>();
+  /** The runId of the frame being processed (empty when it carries none). */
+  private frameRunId = "";
+  /**
+   * Bumped whenever the turn's content is INVALIDATED — a new turn, or a
+   * compaction reset that discards the abandoned attempt. A recovery RPC in
+   * flight across such a reset would otherwise apply the abandoned attempt's
+   * text and finalize the turn on it, locking out the replay's real answer
+   * (codex P1). The turn epoch does not move on a compaction reset, so this
+   * counter is the one that has to.
+   */
+  recoveryGeneration = 0;
   // The agent ran NATIVE media generation this turn (a codex `imageGeneration`
   // item). It carries no path/url/bytes — if the turn then delivers no media
   // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
@@ -531,6 +618,11 @@ export class Normalizer {
   private static readonly MAX_TOOL_ARGS = 2_000;
   private static readonly MAX_MEDIA_PATHS = 2_000;
   private static readonly MAX_OBSERVED_CHILDREN = 1_000;
+  /** Chat dedup memory (G-15). NOT one of the caps above: eviction here is an
+   *  LRU, silent, and decides nothing — see `seenDedupKeys`. */
+  private static readonly MAX_DEDUP_KEYS = 64;
+  /** Heartbeat runIds remembered per session (G-12). Same LRU rationale. */
+  private static readonly MAX_HEARTBEAT_RUNS = 64;
   private overflowLogged = new Set<string>();
 
   /** TRUE when the cap is reached (caller skips the write); logs once. */
@@ -562,8 +654,19 @@ export class Normalizer {
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
     this.mediaPaths = new Map();
+    this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.msgtoolUnreadableArgs = 0;
+    this.sawTruncatedFinal = false;
+    this.truncatedFinals = 0;
+    this.recoveryGeneration++;
+    this.replayExpected = false;
+    this.replaySameRun = false;
+    this.adoptedRunIds = new Set();
+    this.adoptedSeparatorOwed = new Set();
+    this.foreignRunRejections = new Map();
+    this.commentaryFrames = 0;
     this.sawMediaGeneration = false;
     this.observedChildKeys = new Set();
     this.observedChildKeysTruncated = false;
@@ -590,8 +693,19 @@ export class Normalizer {
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
     this.mediaPaths = new Map();
+    this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.msgtoolUnreadableArgs = 0;
+    this.sawTruncatedFinal = false;
+    this.truncatedFinals = 0;
+    this.recoveryGeneration++;
+    this.replayExpected = false;
+    this.replaySameRun = false;
+    this.adoptedRunIds = new Set();
+    this.adoptedSeparatorOwed = new Set();
+    this.foreignRunRejections = new Map();
+    this.commentaryFrames = 0;
     this.sawMediaGeneration = false;
     this.observedChildKeys = new Set();
     // …and its completeness flag: left set, ONE capped turn would make every later
@@ -703,6 +817,12 @@ export class Normalizer {
         this.text = this.pendingAckText;
       }
       events.push(...this.finalize(now, "final", null, null, "private_ack_grace"));
+    } else if (expired.has("truncated_final")) {
+      // The recovery had its window and brought nothing back. Finalize with the
+      // truncated text we do have — never hold the turn open for a reply that
+      // already arrived, only shortened.
+      this.clearWait("truncated_final");
+      events.push(...this.finalize(now, "final", null, null, "truncated_final_grace"));
     } else if (expired.has("empty_final") || expired.has("lifecycle_end") || expired.has("recv")) {
       if (this.compactionPending && expired.has("recv")) {
         // #40295 DEADLOCK: a compaction started, then the gateway went silent for
@@ -758,7 +878,11 @@ export class Normalizer {
       return [];
     }
     const eventType = frame.event;
-    if (eventType !== "agent" && eventType !== "chat") {
+    if (
+      eventType !== "agent" &&
+      eventType !== "chat" &&
+      eventType !== "chat.side_result"
+    ) {
       // Anything that is not a session content stream is unattributable and is
       // never forwarded to the browser (isolation requirement).
       return [];
@@ -813,17 +937,59 @@ export class Normalizer {
     if (payload.sessionKey !== this.sessionKey) {
       return []; // foreign session OR sessionless -> drop
     }
+    // LEARN the heartbeat discriminant BEFORE the admission check below. It rides
+    // the `agent` payload only, so if we waited for admission we would refuse the
+    // very frames that identify the run and never learn anything (the flag would
+    // be dead code). Bounded LRU: heartbeats recur for the life of the session.
+    if (payload.isHeartbeat === true && isString(payload.runId) && payload.runId) {
+      Normalizer.touch(
+        this.heartbeatRunIds,
+        payload.runId,
+        Normalizer.MAX_HEARTBEAT_RUNS,
+      );
+    }
     const frameRunId = payload.runId;
     if (isString(frameRunId) && frameRunId && this.ownRunIds.size > 0 && !this.ownRunIds.has(frameRunId)) {
-      // Same session, different run. Admit it only while a lifecycle-end or
-      // compaction grace is open (a legitimate follow-on / replay run);
-      // otherwise it is a background run and must not become the answer.
-      if (this.deadlines.has("lifecycle_end") || this.compactionPending) {
-        this.ownRunIds.add(frameRunId);
-      } else {
+      const refusal = this.foreignRunRefusal(frameRunId);
+      if (refusal !== null) {
+        this.noteForeignRunRejection(refusal);
         return [];
       }
+      this.ownRunIds.add(frameRunId);
+      this.adoptedRunIds.add(frameRunId);
+      this.replaySameRun = false;
+      if (this.text !== "") {
+        Normalizer.touch(
+          this.adoptedSeparatorOwed,
+          frameRunId,
+          Normalizer.MAX_HEARTBEAT_RUNS,
+        );
+      }
+      // One replay per signal: a second unknown run needs its own proof.
+      this.replayExpected = false;
+    this.replaySameRun = false;
     }
+    // ADDITIVE ONLY (G-12). A run admitted through a grace window may ADD to the
+    // turn and close it — a legitimate follow-on or compaction replay does both —
+    // but it may never OVERWRITE text another run already delivered. That is the
+    // corruption the lot is about: an answer the user has read, replaced by
+    // something else. Evaluated per frame, from the frame's own run.
+    // The announced replay RESUMED on the run we already own: the hedge for a
+    // rotating gateway is spent, and holding it open would admit any run of the
+    // session for the rest of the turn (codex P1).
+    if (
+      this.replayExpected &&
+      this.replaySameRun &&
+      isString(frameRunId) &&
+      frameRunId &&
+      this.ownRunIds.has(frameRunId)
+    ) {
+      this.replayExpected = false;
+      this.replaySameRun = false;
+    }
+    this.frameRunId = isString(frameRunId) && frameRunId ? frameRunId : "";
+    this.frameRunAdopted =
+      this.frameRunId !== "" && this.adoptedRunIds.has(this.frameRunId);
     if (isString(frameRunId) && frameRunId) {
       this.currentRunId = frameRunId;
     }
@@ -853,12 +1019,69 @@ export class Normalizer {
       }
     }
     const data = isObject(payload.data) ? payload.data : {};
-    if (eventType === "chat") {
+    if (eventType === "chat.side_result") {
+      this.handleSideResult(payload, now, events);
+    } else if (eventType === "chat") {
       this.handleChat(payload, data, now, events);
     } else {
       this.handleAgent(payload, data, now, events);
     }
     return events;
+  }
+
+  /**
+   * `chat.side_result` — content the AGENT produced, thrown away until now (G-18).
+   *
+   * The gateway emits it when a message is answered WITHOUT starting an agent run
+   * (`!agentRunStarted && !queuedFollowupEnqueued`, verified in the deployed
+   * 2026.7.1 build): the "by the way" reply goes out on this event, and the
+   * `chat` final that immediately follows carries NO message. We dropped the
+   * event at the type gate, so the turn saw only the empty final — 90 seconds of
+   * grace, then `empty_response_silent` on a turn that HAD an answer.
+   *
+   * Admitted under the SAME barriers as `chat` (sessionKey above, runId above —
+   * upstream sends the caller's own `clientRunId`) and applied ADDITIVELY: the
+   * empty final that follows must be able to close the turn on this text.
+   */
+  private handleSideResult(
+    payload: JsonObject,
+    now: number,
+    events: BridgeEvent[],
+  ): void {
+    const text = isString(payload.text) ? payload.text : "";
+    if (!text.trim()) return;
+    // Re-broadcasts reach this event too, and it bypasses the chat dedup: an
+    // identical retransmission would deliver the same paragraph twice (codex P2).
+    // Same memory, same LRU — keyed on the event's own identity.
+    const dedupKey = JSON.stringify([
+      "side_result",
+      payload.runId ?? null,
+      payload.kind ?? null,
+      payload.ts ?? null,
+      text,
+    ]);
+    if (this.seenDedupKeys.has(dedupKey)) {
+      this.noteDedupKey(dedupKey);
+      return;
+    }
+    this.noteDedupKey(dedupKey);
+    if (payload.isError === true) {
+      // A failure notice, NOT the reply. Applying it as reply text would close
+      // the turn `complete` on an explicit upstream error (codex P2): the user
+      // would read a failure as the agent's answer. Finalize as an error with
+      // the notice as its message — the empty final that follows is then a no-op.
+      events.push(
+        ...this.finalize(
+          now,
+          "error",
+          this.safeSanitizeText(text) || "The agent reported a failure.",
+          null,
+          "side_result_error",
+        ),
+      );
+      return;
+    }
+    this.applyVisible(text, false, false, now, events);
   }
 
   // -- chat (5.19 official path) -------------------------------------------
@@ -957,8 +1180,24 @@ export class Normalizer {
       isString(deltaText) ? deltaText : null,
       contentFingerprint(message),
     ]);
-    if (dedupKey === this.lastDedupKey) {
-      return; // exact re-broadcast: passthrough only, no normalized dup
+    // Remember a key ONLY when the frame carries a reliable identifier. Without
+    // `seq` (documented for targeted broadcasts) the key is content alone, so a
+    // legitimately repeated delta — "ha", "!", "ha" — would have its second
+    // occurrence deleted as a re-broadcast (codex P1). Those frames keep the
+    // ADJACENT-only rule the scalar slot always had; only seq-bearing frames get
+    // the memory that closes the A,B,A replay.
+    const hasSeq = typeof payload.seq === "number";
+    if (hasSeq) {
+      if (this.seenDedupKeys.has(dedupKey)) {
+        // Refresh on the HIT too: a key that keeps being replayed is the most
+        // recently seen, and letting it age out would re-admit it as new text.
+        this.noteDedupKey(dedupKey);
+        this.lastDedupKey = dedupKey;
+        return; // exact re-broadcast: passthrough only, no normalized dup
+      }
+      this.noteDedupKey(dedupKey);
+    } else if (dedupKey === this.lastDedupKey) {
+      return;
     }
     this.lastDedupKey = dedupKey;
 
@@ -1071,6 +1310,36 @@ export class Normalizer {
     }
     const snapshotText = textFromMessage(message);
     if (snapshotText) {
+      if (
+        isFinal &&
+        snapshotText.endsWith(TRUNCATED_FINAL_MARKER) &&
+        snapshotText.length - TRUNCATED_FINAL_MARKER.length >=
+          TRUNCATED_FINAL_MIN_BODY
+      ) {
+        // The gateway CUT this reply for display (G-13). Show what arrived — a
+        // cut answer beats a blank one — but do NOT close the turn on it: arm a
+        // short grace so the transcript recovery can replace it with the full
+        // text. `sawTruncatedFinal` is what makes that recovery eligible even
+        // though the turn now holds "real" content.
+        this.truncatedFinals++;
+        if (this.truncatedFinals === 1) {
+          console.warn(
+            `[normalizer] chat final TRUNCATED by the gateway display projection (session=${this.sessionKey}, len=${snapshotText.length}) — recovering the full text from the transcript`,
+          );
+        }
+        this.sawTruncatedFinal = true;
+        this.applyVisible(snapshotText, true, false, now, events);
+        if (!this.finalized) {
+          // A lifecycle end may already have armed its 10 s follow-on grace, and
+          // the recovery RPC alone is allowed 10 s: leaving it in place would
+          // finalize the CUT text before the full one could arrive (codex P1).
+          // This wait supersedes it — the turn has its terminal already, what it
+          // is waiting for now is the complete text.
+          this.clearWait("lifecycle_end");
+          this.arm("truncated_final", now + TRUNCATED_FINAL_GRACE);
+        }
+        return;
+      }
       this.applyVisible(snapshotText, true, isFinal, now, events);
       return;
     }
@@ -1081,7 +1350,7 @@ export class Normalizer {
       // precedence: a mid-stream refresh is followed by MORE deltas, which a
       // locked hasSnapshot would silently drop (stream stuck to timeout).
       if (payload.replace === true) {
-        this.applyVisible(deltaText, true, isFinal, now, events);
+        this.applyVisible(deltaText, true, isFinal, now, events, true);
         this.hasSnapshot = false; // stay in delta mode; the stream continues
         return;
       }
@@ -1136,12 +1405,43 @@ export class Normalizer {
       }
       const text = data.text;
       const delta = data.delta;
+      // PHASE (G-17). The gateway tags every assistant-stream payload
+      // `commentary` | `final_answer` (`AssistantPhaseSchema`), and it emits the
+      // model's PREAMBLE as `{text: <commentary>, replace: true,
+      // phase: "commentary"}` — verified in the deployed 2026.7.1 build
+      // (`buildAssistantStreamData` / `emitAssistantStreamDataSafely`).
+      // We read neither field, so a preamble became the reply text AND locked
+      // `hasSnapshot`, after which every delta of the REAL answer was dropped in
+      // silence. A commentary is progress, never the answer: it is already
+      // surfaced as a `stream:"item"` preamble, so it leaves the reply buffer
+      // untouched here.
+      const phase = isString(data.phase) ? data.phase : null;
+      if (phase === "commentary") {
+        this.commentaryFrames++;
+        if (this.commentaryFrames === 1) {
+          console.log(
+            `[normalizer] assistant commentary kept OUT of the reply buffer (session=${this.sessionKey})`,
+          );
+        }
+        return;
+      }
+      // `replace` is a REFRESH of the same answer, not a new authority: apply it
+      // through the snapshot path (so the UI resyncs and Convex allows the
+      // shrink) but do NOT lock snapshot precedence — more deltas follow. Same
+      // rule the chat path already applies to `ChatDeltaEventSchema.replace`.
+      const replace = data.replace === true;
       if (isString(text) && text) {
         // Full snapshot: replace and lock out later deltas/acks.
-        this.applyVisible(text, true, false, now, events);
+        this.applyVisible(text, true, false, now, events, replace);
+        if (replace) this.hasSnapshot = false;
       } else if (isString(delta) && delta) {
-        // Legacy 5.7 incremental: append verbatim (spaces are load-bearing).
-        this.applyVisible(delta, false, false, now, events);
+        if (replace) {
+          this.applyVisible(delta, true, false, now, events, true);
+          this.hasSnapshot = false;
+        } else {
+          // Legacy 5.7 incremental: append verbatim (spaces are load-bearing).
+          this.applyVisible(delta, false, false, now, events);
+        }
       }
       return;
     }
@@ -1258,11 +1558,28 @@ export class Normalizer {
   get wantsHistoryRecovery(): boolean {
     return (
       !this.finalized &&
-      this.sawMessageToolItem &&
+      (this.sawMessageToolItem ||
+        this.msgtoolUnreadableArgs > 0 ||
+        this.sawTruncatedFinal) &&
       !this.recoveryAttempted &&
-      !this.hasRealContent() &&
-      (this.deadlines.has("private_ack") || this.deadlines.has("empty_final"))
+      // A truncated final IS content — incomplete content. It is the one case
+      // where holding text must not stop the recovery.
+      (!this.hasRealContent() || this.sawTruncatedFinal) &&
+      (this.deadlines.has("private_ack") ||
+        this.deadlines.has("empty_final") ||
+        this.deadlines.has("truncated_final"))
     );
+  }
+
+  /**
+   * The recovery must bring back the FULL text: this turn holds a final the
+   * gateway CUT (G-13). Only then may the caller fall back to the plain
+   * assistant transcript entry — for the other triggers that entry is typically
+   * the private ack ("Sent."), and persisting it would hide a lost reply behind
+   * something that looks like an answer (codex P1).
+   */
+  get recoveryNeedsFullText(): boolean {
+    return this.sawTruncatedFinal;
   }
 
   /** Mark the (single) recovery attempt as started so the loop never re-fires. */
@@ -1300,10 +1617,21 @@ export class Normalizer {
         runId: this.currentRunId,
       });
       if (phase === "start") {
-        const visible = this.messageToolText(data.args);
+        const { text: visible, unreadable } = this.messageToolText(data.args);
         if (visible) {
           this.hasVisibleToolText = true;
           this.applyVisible(visible, true, false, now, events);
+        } else if (unreadable) {
+          // The reply mechanism ran and we cannot read what it sent. LOUD, once
+          // per turn: silence here is exactly how a turn ended blank with no
+          // trace of why. Recovery from the transcript is the same path the
+          // gateway-run message tool already uses.
+          this.msgtoolUnreadableArgs++;
+          if (this.msgtoolUnreadableArgs === 1) {
+            console.warn(
+              `[normalizer] message-tool args UNREADABLE (session=${this.sessionKey}) — the reply text may be lost; falling back to transcript recovery`,
+            );
+          }
         }
       }
     } else {
@@ -1423,6 +1751,9 @@ export class Normalizer {
     const phase = data.phase;
     if (phase === "start") {
       this.explicitCompaction = "active";
+      // A NEW compaction attempt must earn its own admission proof.
+      this.replayExpected = false;
+    this.replaySameRun = false;
       this.compactionPending = true; // widened recv budget while the gateway summarizes
       this.armRecv(now);
       events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
@@ -1450,7 +1781,12 @@ export class Normalizer {
       }
       if (data.willRetry === true) {
         // Overflow replay in flight on the same run: stay in the widened
-        // budget; resumed content restores the normal one.
+        // budget; resumed content restores the normal one. The gateway has now
+        // ANNOUNCED a replay, so a new runId carrying it is admissible (G-12) —
+        // this path normally keeps the same run, but the announcement is exactly
+        // the proof the policy asks for and older gateways may rotate.
+        this.replayExpected = true;
+        this.replaySameRun = true; // upstream continues on the SAME run
         this.armRecv(now);
       } else {
         // Compaction settled with no replay (threshold/manual): the run
@@ -1509,13 +1845,19 @@ export class Normalizer {
           events.push({ type: EVENT_RUN_STATUS, status: "working", runId: this.currentRunId });
           return;
         }
+        // The gateway ABANDONED the run to replay it: a new runId for THIS turn
+        // is now expected, which is the positive proof the admission policy
+        // requires (G-12). Without it, `compactionPending` alone would hold a
+        // 900-second door open for any run of the session.
+        this.replayExpected = true;
+        this.replaySameRun = false; // the gateway restarts on a NEW runId here
         this.resetForCompaction(now);
         // The abandoned run's deltas/snapshot are ALREADY persisted in Convex;
         // resetForCompaction only clears the normalizer's internal buffers. Emit
         // an empty snapshot so the sink CLEARS that stale liveText too — otherwise
         // a replay that yields no new text would let stream.finalize fall back to
         // the invalidated prefix. The replay refills it when real text resumes.
-        events.push({ type: EVENT_MESSAGE_SNAPSHOT, text: "" });
+        events.push({ type: EVENT_MESSAGE_SNAPSHOT, text: "", replace: true });
         events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
         // Signal the compaction itself (persisted marker), and suppress the
         // follow-up session-id rotation — the replay's rotated id is THIS same
@@ -1545,12 +1887,87 @@ export class Normalizer {
 
   // -- visible-text state machine ------------------------------------------
 
+  /**
+   * ADMISSION POLICY for a frame of an UNKNOWN run on our own session (G-12).
+   *
+   * Returns `null` to admit, or the REASON to refuse. Before this, any unknown
+   * run was adopted as long as a grace window happened to be open — and the
+   * compaction grace is 900 seconds. A frame of a foreign run then became the
+   * user's answer and closed their turn; the case is reproducible.
+   *
+   * Three families can never be this turn's continuation, whatever window is
+   * open, and each is recognized POSITIVELY rather than guessed:
+   *  - heartbeat runs (`isHeartbeat` on the agent stream);
+   *  - gateway-minted turns — announce / task delivery / talk consult / a
+   *    `chat.inject` broadcast, which mints `inject-<messageId>` and sends a
+   *    `chat` FINAL on this very session;
+   *  - during a compaction, anything arriving before the gateway told us a
+   *    replay was coming.
+   */
+  private foreignRunRefusal(runId: string): string | null {
+    if (this.heartbeatRunIds.has(runId)) return "heartbeat";
+    if (isGatewayInitiatedRunId(runId)) return "gateway_initiated";
+    // The COMPACTION rule is tested FIRST because it is the STRICTER one and the
+    // two windows overlap: a normal lifecycle end arms its 10 s grace without
+    // clearing it, so a compaction starting during that grace would otherwise be
+    // decided by the looser rule and admit an unannounced run (codex P1).
+    if (this.compactionPending) {
+      // 900 s. POSITIVE proof required: the gateway either abandoned the run for
+      // a replay (heuristic path) or announced `compaction end willRetry:true`.
+      return this.replayExpected ? null : "compaction_no_replay_signal";
+    }
+    if (this.deadlines.has("lifecycle_end")) {
+      // Short (10 s) follow-on window: unchanged apart from the family checks
+      // above — a follow-on run of the same turn legitimately lands here.
+      return null;
+    }
+    return "no_grace";
+  }
+
+  /** Count a refused foreign-run frame; logs the first of each reason. */
+  private noteForeignRunRejection(reason: string): void {
+    const seen = this.foreignRunRejections.get(reason) ?? 0;
+    this.foreignRunRejections.set(reason, seen + 1);
+    if (seen === 0) {
+      console.warn(
+        `[normalizer] foreign run REFUSED (session=${this.sessionKey}, reason=${reason}) — it will not become this turn's answer`,
+      );
+    }
+  }
+
+  /**
+   * Move `key` to the most-recent end of a bounded Set, evicting the oldest past
+   * `cap`. `Set.add` on a key already present does NOT reorder it, so without the
+   * delete this would be a FIFO wearing an LRU's name (codex P2) — and a still
+   * ACTIVE entry could be evicted by 64 newer ones.
+   */
+  private static touch(set: Set<string>, key: string, cap: number): void {
+    set.delete(key);
+    set.add(key);
+    while (set.size > cap) {
+      const oldest = set.values().next().value;
+      if (oldest === undefined) break;
+      set.delete(oldest);
+    }
+  }
+
+  /** Record (or refresh) a chat dedup key within MAX_DEDUP_KEYS. */
+  private noteDedupKey(key: string): void {
+    Normalizer.touch(this.seenDedupKeys, key, Normalizer.MAX_DEDUP_KEYS);
+  }
+
   private applyVisible(
     candidate: string,
     isSnapshot: boolean,
     isFinal: boolean,
     now: number,
     events: BridgeEvent[],
+    /** This snapshot is ALLOWED to shorten the persisted reply. Only the
+     *  upstream `ChatDeltaEventSchema.replace` refresh sets it: everything else
+     *  on this path is the gateway's growing view of the same answer, and a
+     *  shrink there is a stale/out-of-order frame that Convex must refuse
+     *  (G-14). Never widen this without an upstream signal to point at. */
+    authorizedShrink = false,
   ): void {
     if (this.finalized) {
       return;
@@ -1572,13 +1989,52 @@ export class Normalizer {
     }
     let emitted: string;
     let eventType: string;
+    // An ADOPTED run's snapshot that is not a continuation of what we already
+    // hold is APPENDED, never substituted (G-12): its content is additional, and
+    // a stranger that slipped through the admission policy still cannot erase
+    // the delivered answer. A continuation (the same text plus more) replaces as
+    // usual — that is the compaction replay and the ordinary follow-on.
+    // A DELTA from an adopted run is additive too (codex P1): when the first
+    // reply arrived as a snapshot, `hasSnapshot` is set and the lock below would
+    // drop those deltas outright — losing the follow-on's content entirely.
+    const forcedAppend =
+      this.frameRunAdopted &&
+      this.text !== "" &&
+      (isSnapshot ? !candidate.startsWith(this.text) : this.hasSnapshot);
+    if (forcedAppend) {
+      isSnapshot = false;
+    }
+    if (this.frameRunAdopted && this.adoptedSeparatorOwed.has(this.frameRunId)) {
+      // FIRST write of this adopted run, whatever form it takes. Consumed here
+      // either way, so the boundary is marked ONCE and never again inside the
+      // run's own stream ("réponse complète" then "." must not become
+      // "réponse complète\n\n." — codex P2).
+      this.adoptedSeparatorOwed.delete(this.frameRunId);
+      // Only an APPEND needs the boundary: two independent replies concatenated
+      // raw read as one corrupted sentence. This covers the demoted snapshot AND
+      // a plain delta onto text another run produced (codex P2). A continuation
+      // SNAPSHOT replaces the text outright, so it has no boundary to mark.
+      if (
+        !isSnapshot &&
+        this.text !== "" &&
+        !/\s$/.test(this.text) &&
+        !/^\s/.test(candidate)
+      ) {
+        candidate = "\n\n" + candidate;
+      }
+    }
     if (isSnapshot) {
       this.hasSnapshot = true;
       this.text = candidate;
       emitted = candidate;
       eventType = EVENT_MESSAGE_SNAPSHOT;
     } else {
-      if (this.hasSnapshot) {
+      // …but the snapshot LOCK must not then swallow it (codex P1): when the
+      // first reply itself arrived as a snapshot, dropping the demoted content
+      // here would lose the follow-on entirely AND skip the finalization below,
+      // leaving the turn to close on a grace timeout. A demotion is a decision
+      // about the WRITE, never a reason to discard.
+      if (this.hasSnapshot && !forcedAppend) {
         return; // an authoritative snapshot already won; ignore deltas
       }
       this.text += candidate;
@@ -1593,9 +2049,18 @@ export class Normalizer {
       // same run, which has no lifecycle start to clear this) is over: restore
       // the normal silence budget.
       this.compactionPending = false;
+      // …and the replay it announced has ARRIVED. Left standing, a second
+      // compaction later in the same turn would inherit an admission proof it
+      // never earned, re-opening the foreign-run path (codex P1).
+      this.replayExpected = false;
+    this.replaySameRun = false;
       this.armRecv(now);
     }
-    events.push({ type: eventType, text: this.safeSanitizeText(emitted) });
+    events.push({
+      type: eventType,
+      text: this.safeSanitizeText(emitted),
+      ...(isSnapshot && authorizedShrink ? { replace: true } : {}),
+    });
     // A MEDIA: directive (or a bare outbound path) in the VISIBLE reply is a real
     // attachment — emit a media event so it renders as a downloadable part. We
     // scan the RAW `candidate` (the directive is dropped from the sanitized text).
@@ -1677,40 +2142,55 @@ export class Normalizer {
     }
   }
 
-  private messageToolText(argsIn: Json): string {
+  /**
+   * Visible reply text carried by a message-tool call.
+   *
+   * `unreadable` separates "we COULD NOT READ these arguments" from the several
+   * deliberate "this is not the visible reply" outcomes (an external target, a
+   * foreign channel, another action). Only the first means the reply text may
+   * have been LOST — it used to return "" like all the others, so the turn ended
+   * blank with nothing to diagnose (G-16). The caller recovers the text from the
+   * transcript, exactly as it already does for a gateway-run message tool.
+   */
+  private messageToolText(argsIn: Json): { text: string; unreadable: boolean } {
     let args: Json = argsIn;
     if (isString(args)) {
       try {
         args = JSON.parse(args);
       } catch {
-        return "";
+        return { text: "", unreadable: true };
       }
     }
     if (!isObject(args)) {
-      return "";
+      return { text: "", unreadable: true };
     }
     const action = args.action;
     if (action !== "send" && action !== "thread-reply" && action !== undefined && action !== null) {
-      return "";
+      return { text: "", unreadable: false };
     }
     for (const key of EXTERNAL_TARGET_KEYS) {
       if (args[key]) {
-        return ""; // explicit external destination -> not the current reply
+        // Explicit external destination -> not the current reply.
+        return { text: "", unreadable: false };
       }
     }
     for (const key of ["channel", "provider"]) {
       const value = args[key];
       if (value && !CURRENT_CHAT_CHANNELS.has(String(value).toLowerCase())) {
-        return "";
+        return { text: "", unreadable: false };
       }
     }
     for (const key of VISIBLE_TEXT_KEYS) {
       const text = textFromContent(args[key]);
       if (text) {
-        return text;
+        return { text, unreadable: false };
       }
     }
-    return "";
+    // Readable arguments with no text under any known key: a shape question, not
+    // a parse failure (a media-only send lands here legitimately). Deliberately
+    // NOT flagged unreadable — a false "content lost" alarm on every such call
+    // would be worse than the gap it claims to cover.
+    return { text: "", unreadable: false };
   }
 
   // -- finalization & deadlines --------------------------------------------
@@ -1749,6 +2229,15 @@ export class Normalizer {
       // …and whether that list is COMPLETE: the sink's empty-response guard makes a
       // negative decision from it, which an incomplete list cannot support.
       observedChildKeysTruncated: this.observedChildKeysTruncated,
+      // The turn's reply may have gone out through a message-tool call we could
+      // not read: the empty-response verdict must name THAT instead of claiming
+      // the agent produced nothing (G-16 / P8).
+      msgtoolArgsUnreadable: this.msgtoolUnreadableArgs,
+      // Count only — the text itself is conversational content (SOC2).
+      truncatedFinals: this.truncatedFinals,
+      // Foreign-run frames refused this turn, by reason. The exposure was never
+      // measured; this counter IS the measurement (G-12).
+      foreignRunRejections: Object.fromEntries(this.foreignRunRejections),
     };
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,
@@ -1843,10 +2332,26 @@ export class Normalizer {
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
     this.mediaPaths = new Map();
+    this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.deadlines.delete("empty_final");
     this.deadlines.delete("private_ack");
     this.deadlines.delete("lifecycle_end");
+    // …and the truncated-final wait (codex P2): the replay invalidates the cut
+    // final that armed it, so leaving it running would let its 20 s expire on a
+    // replay still in flight and finalize the turn on partial or empty text.
+    this.deadlines.delete("truncated_final");
+    this.sawTruncatedFinal = false;
+    // The abandoned attempt's DIAGNOSTICS are invalidated with its content
+    // (codex P2): kept, they would let an empty replay be classed
+    // `msgtool_args_unreadable` with no unreadable call of its own, and its trace
+    // would report a truncation the reply we keep never had.
+    this.truncatedFinals = 0;
+    this.msgtoolUnreadableArgs = 0;
+    // A recovery in flight belongs to the abandoned attempt; the replay is
+    // entitled to its own attempt.
+    this.recoveryGeneration++;
+    this.recoveryAttempted = false;
     this.armRecv(now);
   }
 

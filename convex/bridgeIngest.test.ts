@@ -108,6 +108,18 @@ async function partsOf(t: T, messageId: Id<"messages">) {
   );
 }
 
+async function liveTextOf(t: T, messageId: Id<"messages">) {
+  return await t.run(
+    async (ctx) =>
+      (
+        await ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .first()
+      )?.text,
+  );
+}
+
 async function tracesByKind(t: T, kind: string) {
   return await t.run(async (ctx) => {
     const all = await ctx.db.query("traceEvents").collect();
@@ -221,6 +233,144 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     const ops = traces.map((tr) => JSON.parse(tr.meta ?? "{}").op);
     expect(ops).not.toContain("appendDelta");
     expect(ops).not.toContain("setSnapshot");
+  });
+
+  // --- G-14: nothing the user has read may shrink ---------------------------
+  // A snapshot is the gateway's full view of ONE growing answer. A shorter one
+  // is a stale/out-of-order frame, and before this guard it silently truncated a
+  // reply already on screen. Convex is the durable lock: it refuses the shrink,
+  // records the two LENGTHS (never the text), and TELLS the bridge so its local
+  // liveText mirror does not diverge.
+  test("snapshot regression: a SHORTER snapshot never overwrites the displayed reply, is traced by length, and is reported unapplied", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "the full answer, all of it" });
+    const res = await post(t, { op: "setSnapshot", messageId, text: "the full" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, applied: false });
+
+    const live = await liveTextOf(t, messageId);
+    expect(live).toBe("the full answer, all of it");
+
+    const regressions = (await tracesByKind(t, "assistant.stream"))
+      .map((tr) => JSON.parse(tr.meta ?? "{}"))
+      .filter((m) => m.phase === "snapshot_regression");
+    expect(regressions).toHaveLength(1);
+    expect(regressions[0]).toMatchObject({ oldLen: 26, newLen: 8 });
+    // SOC2: the trace carries lengths, never a character of the reply.
+    expect(JSON.stringify(regressions[0])).not.toContain("the full");
+  });
+
+  test("snapshot regression: a DECLARED shrink (replace:true — compaction reset, sentinel purge, upstream replace) still applies", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "invalidated prefix" });
+    const res = await post(t, { op: "setSnapshot", messageId, text: "", replace: true });
+
+    expect(await res.json()).toMatchObject({ ok: true, applied: true });
+    expect(await liveTextOf(t, messageId)).toBe("");
+    const regressions = (await tracesByKind(t, "assistant.stream"))
+      .map((tr) => JSON.parse(tr.meta ?? "{}"))
+      .filter((m) => m.phase === "snapshot_regression");
+    expect(regressions).toHaveLength(0);
+  });
+
+  test("snapshot growth is untouched: a LONGER snapshot replaces the text as before", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "the full" });
+    const res = await post(t, { op: "setSnapshot", messageId, text: "the full answer" });
+
+    expect(await res.json()).toMatchObject({ ok: true, applied: true });
+    expect(await liveTextOf(t, messageId)).toBe("the full answer");
+  });
+
+  test("codex P1: a finalize whose text is SHORTER than what already streamed keeps the streamed reply", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "the full answer, all of it" });
+    // The terminal write is where the reply the user KEEPS is decided: the guard
+    // on setSnapshot would otherwise be defeated one write later.
+    await post(t, { op: "finalize", messageId, status: "complete", text: "the full" });
+
+    const kept = await t.run(async (ctx) => (await ctx.db.get(messageId))?.text);
+    expect(kept).toBe("the full answer, all of it");
+    const regressions = (await tracesByKind(t, "assistant.stream"))
+      .map((tr) => JSON.parse(tr.meta ?? "{}"))
+      .filter((m) => m.phase === "snapshot_regression");
+    expect(regressions).toHaveLength(1);
+  });
+
+  test("codex P1: a final that DIFFERS (an authoritative re-render) still wins, even when shorter", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "réponse partielle déjà str" });
+    // Not a prefix of what streamed: this is the gateway's own rendering of the
+    // answer, not the same text cut short. It must not be second-guessed.
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "complete",
+      text: "réponse complète livrée",
+    });
+
+    const kept = await t.run(async (ctx) => (await ctx.db.get(messageId))?.text);
+    expect(kept).toBe("réponse complète livrée");
+  });
+
+  test("codex P1: a final REPEATING a snapshot the row already refused never wins, prefix or not", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "the revised full answer" });
+    // A stale frame that is NOT a prefix of the displayed text: refused live…
+    const refused = await post(t, { op: "setSnapshot", messageId, text: "the draft" });
+    expect(await refused.json()).toMatchObject({ applied: false });
+    // …and it comes back as the turn's final. The length test alone would let it
+    // through (it is not a prefix); the remembered refusal does not.
+    await post(t, { op: "finalize", messageId, status: "complete", text: "the draft" });
+
+    const kept = await t.run(async (ctx) => (await ctx.db.get(messageId))?.text);
+    expect(kept).toBe("the revised full answer");
+  });
+
+  test("codex P2: an authorized `replace` does not let the refused final walk back in", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "abcdef" });
+    await post(t, { op: "setSnapshot", messageId, text: "abc" }); // refused
+    // A DECLARED shrink then replaces the displayed text with something shorter…
+    await post(t, { op: "setSnapshot", messageId, text: "XYZ", replace: true });
+    // …so the stale final is no longer "shorter than displayed". The remembered
+    // refusal has to stand on its own.
+    await post(t, { op: "finalize", messageId, status: "complete", text: "abc" });
+
+    const kept = await t.run(async (ctx) => (await ctx.db.get(messageId))?.text);
+    expect(kept).toBe("XYZ");
+  });
+
+  test("codex P1: an ERROR finalize may still carry a shorter partial (no guard)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+
+    await post(t, { op: "setSnapshot", messageId, text: "a long partial reply here" });
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "cut",
+      error: "gateway error",
+    });
+
+    const kept = await t.run(async (ctx) => (await ctx.db.get(messageId))?.text);
+    expect(kept).toBe("cut");
   });
 
   test("streaming lifecycle: startAssistant creates the live-text row; deltas update it WITHOUT churning the message doc; finalize sets message.text + deletes the row", async () => {

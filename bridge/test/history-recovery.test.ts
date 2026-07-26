@@ -229,3 +229,216 @@ describe("extractLatestAssistantReply (restart-recovery transcript scan)", () =>
     expect(extractLatestAssistantReply({ messages: "garbage" })).toBe("");
   });
 });
+
+// --- G-16: an unreadable message-tool call is never silent -------------------
+// The message tool IS the visible-reply mechanism. When its `args` cannot be
+// read, the reply text may exist only in the transcript — the same situation as
+// a gateway-run message tool, so it must arm the same recovery, and it must NAME
+// itself if the turn still ends with nothing.
+const toolStartFrame = (args: unknown) => ({
+  type: "event",
+  event: "agent",
+  payload: {
+    sessionKey: KEY,
+    stream: "tool",
+    data: { name: "message", phase: "start", args },
+  },
+});
+
+describe("G-16: message-tool args we cannot read", () => {
+  it("UNREADABLE args (malformed JSON) arm the transcript recovery instead of a blank turn", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(toolStartFrame('{"message": "half a paylo'), 1);
+    n.feed(ackFinalFrame("r1"), 2);
+    expect(n.wantsHistoryRecovery).toBe(true);
+  });
+
+  it("a DELIBERATE non-reply (explicit external channel) does NOT arm recovery", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(
+      toolStartFrame({ action: "send", channel: "telegram", message: "for someone else" }),
+      1,
+    );
+    n.feed(ackFinalFrame("r1"), 2);
+    // Readable args that simply are not this conversation's reply: nothing was
+    // lost, so claiming a recovery is needed would be a false alarm.
+    expect(n.wantsHistoryRecovery).toBe(false);
+  });
+
+  it("the final event carries the unreadable count so the empty verdict can NAME its cause", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(toolStartFrame("]not json at all["), 1);
+    const ev = n.endTurn(3, "final", null, "recv_timeout");
+    const final = ev.find((e) => e.type === "message.final");
+    expect(final).toMatchObject({ msgtoolArgsUnreadable: 1 });
+  });
+
+  it("a new turn clears the count (turn N must not label turn N+1)", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(toolStartFrame("]not json at all["), 1);
+    n.beginTurn(4);
+    n.noteRunStarted("r2", 4);
+    const final = n.endTurn(5, "final", null, "recv_timeout").find(
+      (e) => e.type === "message.final",
+    );
+    expect(final).toMatchObject({ msgtoolArgsUnreadable: 0 });
+  });
+});
+
+// --- G-13: a final the gateway already CUT ----------------------------------
+// `broadcastChatFinal` runs the reply through the DISPLAY projection, whose cap
+// is 8 000 chars + the marker below (verified in the deployed 2026.7.1 build).
+// Nothing detected it: the cut text was persisted as the answer, marker and all.
+const MARKER = "\n...(truncated)...";
+
+const truncatedFinalFrame = (runId: string, body: string) => ({
+  type: "event",
+  event: "chat",
+  payload: {
+    runId,
+    sessionKey: KEY,
+    seq: 9,
+    state: "final",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: body + MARKER }],
+    },
+  },
+});
+
+describe("G-13: a gateway-truncated chat final", () => {
+  it("does NOT close the turn, and stays eligible for transcript recovery even though it holds text", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    const ev = n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
+    // The cut text IS shown (better than a blank bubble)...
+    const snap = ev.find((e) => e.type === "message.snapshot");
+    expect(String(snap?.text ?? "").length).toBeGreaterThan(8000);
+    // ...but the turn is NOT finalized on it, and the recovery is armed — the one
+    // case where already having an answer must not stop us looking for it.
+    expect(n.finalized).toBe(false);
+    expect(n.wantsHistoryRecovery).toBe(true);
+  });
+
+  it("the recovered FULL text replaces the cut one and closes the turn", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
+    n.markRecoveryAttempted();
+    const ev = n.recoverVisibleText("a".repeat(8000) + "THE REST OF THE ANSWER", 2);
+    const snap = ev.find((e) => e.type === "message.snapshot");
+    expect(String(snap?.text)).toContain("THE REST OF THE ANSWER");
+    expect(String(snap?.text)).not.toContain("(truncated)");
+    expect(n.finalized).toBe(true);
+  });
+
+  it("when the recovery brings nothing back, the grace finalizes with the cut text (never an open turn)", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
+    n.markRecoveryAttempted();
+    const ev = n.tick(1 + 21); // past TRUNCATED_FINAL_GRACE
+    const final = ev.find((e) => e.type === "message.final");
+    expect(n.finalized).toBe(true);
+    expect(final).toMatchObject({
+      diagnosticFinalizeCause: "truncated_final_grace",
+      truncatedFinals: 1,
+    });
+  });
+
+  it("a compaction reset CANCELS the truncated-final wait (codex P2)", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
+    // The gateway then abandons the run to compact: the cut final is invalidated
+    // and the replay is in flight…
+    n.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          sessionKey: KEY,
+          runId: "r1",
+          stream: "lifecycle",
+          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
+        },
+      },
+      2,
+    );
+    // …so the 20 s wait armed by that final must not close the turn under it.
+    n.tick(2 + 21);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("codex P1: an already-armed lifecycle grace does not finalize the cut text first", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    // The gateway ends the run (10 s follow-on grace armed) and THEN sends the
+    // truncated final — a frame order this normalizer handles explicitly.
+    n.feed(
+      {
+        type: "event",
+        event: "agent",
+        payload: {
+          sessionKey: KEY,
+          runId: "r1",
+          stream: "lifecycle",
+          data: { phase: "end", stopReason: "stop", livenessState: "working" },
+        },
+      },
+      1,
+    );
+    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 2);
+    // The recovery RPC alone may take 10 s: the 10 s lifecycle grace must not
+    // close the turn on the cut text before it can answer.
+    n.tick(2 + 11);
+    expect(n.finalized).toBe(false);
+    expect(n.wantsHistoryRecovery).toBe(true);
+  });
+
+  it("codex P2: a SHORT reply that merely ends with the marker is not a truncation", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    // An agent quoting a log excerpt, or told to end that way: the body is
+    // nowhere near the projection cap, so nothing was cut.
+    n.feed(truncatedFinalFrame("r1", "tail of the log"), 1);
+    expect(n.finalized).toBe(true);
+    expect(n.wantsHistoryRecovery).toBe(false);
+  });
+
+  it("an UNtruncated final is untouched: it finalizes immediately as before", () => {
+    const n = new Normalizer(KEY);
+    n.beginTurn(0);
+    n.noteRunStarted("r1", 0);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "r1",
+          sessionKey: KEY,
+          seq: 9,
+          state: "final",
+          message: { role: "assistant", content: [{ type: "text", text: "short answer" }] },
+        },
+      },
+      1,
+    );
+    expect(n.finalized).toBe(true);
+    expect(n.wantsHistoryRecovery).toBe(false);
+  });
+});

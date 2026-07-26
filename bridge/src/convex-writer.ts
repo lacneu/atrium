@@ -194,8 +194,14 @@ export interface ConvexWriter {
   ): Promise<string>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
-  /** message.snapshot -> internal.stream.setSnapshot. */
-  setSnapshot(messageId: string, text: string): Promise<void>;
+  /** message.snapshot -> internal.stream.setSnapshot. `replace` declares an
+   *  AUTHORIZED shrink (compaction reset / upstream `replace` refresh); without
+   *  it Convex refuses a snapshot that would shorten the displayed reply. */
+  setSnapshot(
+    messageId: string,
+    text: string,
+    replace?: boolean,
+  ): Promise<boolean>;
   /** tool.status -> internal.stream.addPart(kind:tool). */
   addToolPart(messageId: string, part: ToolPart): Promise<void>;
   /** A successful cron-tool mutation -> internal.stream.addPart(kind:cron).
@@ -235,6 +241,8 @@ export interface ConvexWriter {
       /** Frames lost during the turn (omitted when none) — the per-turn
        *  counterpart of the live `openclaw.frame_gap` traces. */
       framesLost?: number;
+      finalTruncated?: number;
+      foreignRunsRefused?: number;
       /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
       errorKind?: string | null;
@@ -495,6 +503,7 @@ type IngestOp =
     } & RecTags)
   | ({
       op: "setSnapshot";
+      replace?: boolean;
       messageId: string;
       text: string;
       runId?: string | null;
@@ -1301,7 +1310,11 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
-  async setSnapshot(messageId: string, text: string): Promise<void> {
+  async setSnapshot(
+    messageId: string,
+    text: string,
+    replace?: boolean,
+  ): Promise<boolean> {
     // t0: this snapshot FRAME's receipt (snapshot-streaming gateways never call
     // appendDelta, so without this the bridge-internal segment is empty for them).
     const recvAt = Date.now();
@@ -1338,13 +1351,28 @@ export class HttpConvexWriter implements ConvexWriter {
           ...this.recTags(messageId, suffix, recvAt),
         });
       } else {
-        await this.post({
+        const ack = await this.post<{ applied?: boolean }>({
           op: "setSnapshot",
           messageId,
           text,
+          ...(replace === true ? { replace: true } : {}),
           ...this.genTag(messageId),
           ...this.recTags(messageId, text, recvAt),
         });
+        if (ack?.applied === false) {
+          // Convex kept the text it already had (anti-regression guard, a
+          // generation mismatch, or a terminal message). Leaving confirmedText
+          // at `prev` keeps our mirror EQUAL to what Convex holds, so the next
+          // snapshot still extends from the right place; advancing it to the
+          // refused text would make a later suffix append onto the longer
+          // stored text and corrupt the reply.
+          //
+          // `pendingResync` is deliberately NOT cleared (codex P2): a refused
+          // write proves nothing about the timed-out append that set it, so the
+          // next snapshot must still go out FULL. Only an ACCEPTED full snapshot
+          // resolves that ambiguity.
+          return false;
+        }
       }
     } catch (err) {
       // ANY timed-out / lost-response write MAY have applied server-side. appendDelta
@@ -1360,6 +1388,7 @@ export class HttpConvexWriter implements ConvexWriter {
     // ambiguity, so clear the flag.
     this.pendingResync.delete(messageId);
     this.confirmedText.set(messageId, text);
+    return true;
   }
 
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {

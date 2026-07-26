@@ -66,6 +66,14 @@ const EMPTY_RESPONSE_TEXT =
 // this class is auto-retryable — a worked-but-undelivered turn (e.g. a billed
 // native media generation whose delivery dropped) must surface its failure,
 // never silently re-run (codex P1).
+// The turn's visible reply was sent through a message-tool call whose arguments
+// the bridge could not parse, and the transcript recovery produced nothing: the
+// answer was produced somewhere we cannot see. Distinct from EMPTY_RESPONSE_CODE
+// because the cause is KNOWN and actionable (a protocol/shape gap on our side),
+// and never auto-retryable — the agent did the work.
+const MSGTOOL_UNREADABLE_CODE = "msgtool_args_unreadable";
+const MSGTOOL_UNREADABLE_TEXT =
+  "The agent sent its reply through a message tool whose arguments could not be read.";
 const SILENT_RESPONSE_CODE = "empty_response_silent";
 const SILENT_RESPONSE_TEXT =
   "The agent ended the turn without producing any response.";
@@ -190,6 +198,17 @@ export class TurnSink {
    *  A missing key would otherwise finalize a parent as empty while its child was
    *  still working. */
   private spawnedKeysTruncated = false;
+  // This turn made a message-tool call whose args the normalizer could not read
+  // (G-16). It does not by itself make the turn empty — but if the turn DOES end
+  // empty, this is the cause, and "the agent produced nothing" would be a lie.
+  private pendingMsgtoolArgsUnreadable = false;
+  // Chat finals this turn that arrived already CUT at the gateway's 8 000-char
+  // display cap (G-13). Counter only — never the text.
+  private pendingTruncatedFinals = 0;
+  // Foreign-run frames this turn refused admission (G-12), all reasons summed.
+  // The rate at which strangers reach a live turn was never measured; shipping
+  // the counter is how the policy stops being a guess.
+  private pendingForeignRunRejections = 0;
   /** Media attaches enqueued on the chain this turn — the enqueue-time counterpart
    *  of the hosted cap (the set only grows once an upload SUCCEEDS). */
   private queuedMediaCount = 0;
@@ -467,6 +486,11 @@ export class TurnSink {
     this.pendingObservedChildKeys = [];
     this.spawnedChildKeysThisTurn = new Set();
     this.spawnedKeysTruncated = false;
+    // Left set, ONE turn with an unreadable message-tool call would relabel every
+    // later empty turn of the session with a cause that was not theirs.
+    this.pendingMsgtoolArgsUnreadable = false;
+    this.pendingTruncatedFinals = 0;
+    this.pendingForeignRunRejections = 0;
     this.queuedMediaCount = 0;
     this.spawnCalledThisTurn = false;
     this.yieldCalledThisTurn = false;
@@ -769,18 +793,37 @@ export class TurnSink {
         }
         case "message.snapshot": {
           let snap = asString(event.text);
+          // The producer DECLARED this snapshot may shorten the reply (a
+          // compaction reset, or an upstream `replace` refresh). Convex refuses
+          // any other shrink as a regression (G-14), so the declaration has to
+          // travel with the write.
+          let snapReplace = event.replace === true;
           // A snapshot of exactly the sentinel is silence — write the purge,
           // never the literal (codex P2). Any other snapshot resolves the gate.
-          if (snap.trim() === "NO_REPLY") snap = "";
+          if (snap.trim() === "NO_REPLY") {
+            snap = "";
+            snapReplace = true; // a DELIBERATE purge of streamed noise
+          }
           this.sentinelGate = null;
           // A snapshot REPLACES the whole reply text, so visibility must track the
           // new content: an empty/whitespace snapshot (e.g. the "" emitted to clear
           // an invalidated prefix on compaction) RESETS visibility to false, so a
           // replay that then ends empty still trips the empty-result guard (codex P2).
-          this.sawVisibleText = snap.trim().length > 0;
-          this.visibleTextLen = snap.length;
-          this.visibleLineStart = snap.lastIndexOf("\n") + 1;
-          await this.writer.setSnapshot(messageId, snap);
+          //
+          // Updated ONLY when Convex ACCEPTED the write (codex P2): on a refused
+          // regression the stored text is still the longer one, and mirroring the
+          // refused length here would anchor every later tool card at an offset
+          // that does not exist in the reply the user is reading.
+          const snapApplied = await this.writer.setSnapshot(
+            messageId,
+            snap,
+            snapReplace,
+          );
+          if (snapApplied !== false) {
+            this.sawVisibleText = snap.trim().length > 0;
+            this.visibleTextLen = snap.length;
+            this.visibleLineStart = snap.lastIndexOf("\n") + 1;
+          }
           break;
         }
         case "tool.status": {
@@ -1148,6 +1191,21 @@ export class TurnSink {
             this.pendingObservedChildKeysTruncated =
               (event as { observedChildKeysTruncated?: unknown })
                 .observedChildKeysTruncated === true;
+            const unreadable = (event as { msgtoolArgsUnreadable?: unknown })
+              .msgtoolArgsUnreadable;
+            this.pendingMsgtoolArgsUnreadable =
+              typeof unreadable === "number" && unreadable > 0;
+            const cut = (event as { truncatedFinals?: unknown }).truncatedFinals;
+            this.pendingTruncatedFinals = typeof cut === "number" ? cut : 0;
+            const refused = (event as { foreignRunRejections?: unknown })
+              .foreignRunRejections;
+            this.pendingForeignRunRejections =
+              typeof refused === "object" && refused !== null
+                ? Object.values(refused as Record<string, unknown>).reduce<number>(
+                    (n, v) => n + (typeof v === "number" ? v : 0),
+                    0,
+                  )
+                : 0;
           }
           this.hasPendingFinal = true;
           break;
@@ -1567,6 +1625,12 @@ export class TurnSink {
         // auto-retryable empty class (zero work = re-running bills nothing).
         effectiveError = SILENT_RESPONSE_TEXT;
         effectiveErrorKind = SILENT_RESPONSE_CODE;
+      } else if (this.pendingMsgtoolArgsUnreadable) {
+        // NAMED cause (P8): the reply mechanism ran, its arguments were
+        // unreadable, and the transcript recovery found nothing either. Never
+        // the auto-retryable silent class — the agent worked and billed.
+        effectiveError = MSGTOOL_UNREADABLE_TEXT;
+        effectiveErrorKind = MSGTOOL_UNREADABLE_CODE;
       } else {
         effectiveError = EMPTY_RESPONSE_TEXT;
         effectiveErrorKind = EMPTY_RESPONSE_CODE;
@@ -1664,6 +1728,11 @@ export class TurnSink {
       // "frames were lost" counter would never ship — exactly on the turns whose
       // reply is most likely to look truncated.
       this.framesLostThisTurn > 0 ||
+      // Same reasoning for a gateway-TRUNCATED final: it is the direct answer to
+      // "why does this reply stop mid-sentence", and it must ship even on a turn
+      // with no other diagnostic.
+      this.pendingTruncatedFinals > 0 ||
+      this.pendingForeignRunRejections > 0 ||
       // A silence AUTO-close (recv/empty_final/lifecycle_end/compaction timeout,
       // private_ack grace) warrants a trace even with no pre-send pressure — it
       // is the exact diagnostic the launch bug hinges on. A NORMAL gateway
@@ -1685,6 +1754,12 @@ export class TurnSink {
           // truncated" — the measure did not exist before this lot.
           ...(this.framesLostThisTurn > 0
             ? { framesLost: this.framesLostThisTurn }
+            : {}),
+          ...(this.pendingTruncatedFinals > 0
+            ? { finalTruncated: this.pendingTruncatedFinals }
+            : {}),
+          ...(this.pendingForeignRunRejections > 0
+            ? { foreignRunsRefused: this.pendingForeignRunRejections }
             : {}),
           compaction: this.compactionPhase,
           // The HARD-overflow marker: the gateway reported errorKind

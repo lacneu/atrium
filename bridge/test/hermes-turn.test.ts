@@ -18,7 +18,7 @@ function spyWriter() {
       return "msg-1";
     },
     appendDelta: async () => {},
-    setSnapshot: async () => {},
+    setSnapshot: async () => true,
     addPart: async () => {},
     addMedia: async () => {},
     addProvenancePart: async () => {},

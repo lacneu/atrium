@@ -95,6 +95,10 @@ export const KNOWN_ERROR_CODES = [
   "compaction_timeout",
   // The turn finished COMPLETE but delivered nothing usable (no text + no media).
   "empty_response",
+  // The reply went out through a message-tool call whose arguments the bridge
+  // could not read, and the transcript recovery found nothing: a NAMED cause
+  // instead of an unexplained empty turn.
+  "msgtool_args_unreadable",
   // Dispatch-failure codes (failDispatch stores the CODE, the UI localizes):
   "not_configured",
   "no_agent",

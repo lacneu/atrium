@@ -831,6 +831,9 @@ class Session implements BridgeSession {
     // Per-EPOCH claim (not a global boolean): the same turn never double-polls,
     // while a NEWER turn can always start its own recovery.
     const boundEpoch = rm.turnEpoch;
+    // Same reasoning as the epoch: a compaction reset mid-poll invalidates the
+    // attempt whose text we are recovering, and the epoch does not move for it.
+    const boundRecoveryGen = rm.recoveryGeneration;
     if (this.recoveryEpoch === boundEpoch) {
       // Same-turn re-entry: a socket_drop SUPERSEDES a running recv_silence
       // (fresh 9-min budget + connection_lost class + the stale-transcript
@@ -870,8 +873,15 @@ class Session implements BridgeSession {
       if (this.recoveryGen !== boundGen) {
         return; // superseded by a newer recovery (do NOT touch its claim)
       }
-      if (rm.turnEpoch !== boundEpoch) {
-        // A NEWER turn is running — this recovery belongs to a finished one.
+      if (
+        rm.turnEpoch !== boundEpoch ||
+        rm.recoveryGeneration !== boundRecoveryGen
+      ) {
+        // A NEWER turn is running — or a compaction reset invalidated the
+        // attempt this poll belongs to WITHOUT moving the epoch (codex P1).
+        // Checked here, at the TOP of every tick: the expiry branch below calls
+        // endTurn directly, so without this a stale poll could close the replay
+        // that is still running as `connection_lost` / `response_timeout`.
         // Only release the claim if a newer recovery hasn't already re-claimed it.
         if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
         return;
@@ -996,7 +1006,7 @@ class Session implements BridgeSession {
           );
           // The tick checks the epoch above, but this write happens after another
           // await: pass the bound epoch so the guard holds at the write itself.
-          await rm.recoverVisibleText(text, clock(), boundEpoch);
+          await rm.recoverVisibleText(text, clock(), boundEpoch, boundRecoveryGen);
           if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
           return;
         }
@@ -1016,6 +1026,11 @@ class Session implements BridgeSession {
     // private-ack grace can finalize this turn in 5, and a queued send can open the
     // next one immediately after. Captured here, checked at the write.
     const boundEpoch = this.runManager.turnEpoch;
+    // Read BEFORE the RPC, like the epoch: the turn may move on during it.
+    const needsFullText = this.runManager.recoveryNeedsFullText;
+    // Also captured before the RPC: a compaction reset during it INVALIDATES the
+    // attempt this recovery belongs to, and the turn epoch does not move for it.
+    const boundRecoveryGen = this.runManager.recoveryGeneration;
     try {
       const raw = await this.connection.request(
         "sessions.get",
@@ -1026,17 +1041,25 @@ class Session implements BridgeSession {
         raw && typeof raw === "object" && "payload" in raw
           ? (raw as { payload: unknown }).payload
           : raw;
-      const text = extractMessageToolReplies(payload);
+      // Prefer a message-tool delivery. The plain assistant entry is a fallback
+      // ONLY for a gateway-TRUNCATED final (G-13), where it is the full reply:
+      // for the other triggers that entry is typically the private ack ("Sent."),
+      // and persisting it would hide a lost reply behind something that reads
+      // like an answer, masking the named cause (codex P1).
+      const text =
+        extractMessageToolReplies(payload) ||
+        (needsFullText ? extractLatestAssistantReply(payload) : "");
       if (text) {
         const applied = await this.runManager.recoverVisibleText(
           text,
           this.clock(),
           boundEpoch,
+          boundRecoveryGen,
         );
         console.log(
           applied
-            ? `[recovery] message-tool reply recovered (${text.length} chars) chat=${this.chatId}`
-            : `[recovery] message-tool reply found but NOT delivered — the turn had already moved on chat=${this.chatId}`,
+            ? `[recovery] transcript reply recovered (${text.length} chars) chat=${this.chatId}`
+            : `[recovery] transcript reply found but NOT delivered — the turn had already moved on chat=${this.chatId}`,
         );
       } else {
         console.log(

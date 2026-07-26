@@ -187,7 +187,9 @@ class SinkWriter implements ConvexWriter {
     return "msg_cron_1";
   }
   async appendDelta(): Promise<void> {}
-  async setSnapshot(): Promise<void> {}
+  async setSnapshot(): Promise<boolean> {
+    return true;
+  }
   async addToolPart(_m: string, p: ToolPart): Promise<void> {
     this.toolParts.push(p);
   }

@@ -770,6 +770,11 @@ export class RunManager {
     return true;
   }
 
+  /** See `Normalizer.recoveryNeedsFullText` — read at the recovery's write. */
+  get recoveryNeedsFullText(): boolean {
+    return this.normalizer.recoveryNeedsFullText;
+  }
+
   /**
    * SINGLE ORDERED APPLICATION PATH (G-29).
    *
@@ -846,10 +851,16 @@ export class RunManager {
    * from "a test samples the callers" to "the compiler refuses a caller that has
    * not decided which turn it is recovering".
    */
+  /** See `Normalizer.recoveryGeneration` — captured by the caller before the RPC. */
+  get recoveryGeneration(): number {
+    return this.normalizer.recoveryGeneration;
+  }
+
   async recoverVisibleText(
     text: string,
     now: number,
     expectedEpoch: number,
+    expectedRecoveryGen: number,
   ): Promise<boolean> {
     if (!this.sink.active) {
       return false;
@@ -861,12 +872,16 @@ export class RunManager {
     // guard exists to prevent.
     let applied = false;
     await this.applyOrdered(() => {
-      if (this.turnEpoch !== expectedEpoch || !this.sink.active) {
+      if (
+        this.turnEpoch !== expectedEpoch ||
+        this.normalizer.recoveryGeneration !== expectedRecoveryGen ||
+        !this.sink.active
+      ) {
         // Never silent: a dropped recovery is a lost reply for the turn it belonged
         // to, and the operator needs to know it happened rather than wonder why the
         // transcript held an answer nobody delivered.
         console.log(
-          `[recovery] dropped: turn moved on (expectedEpoch=${expectedEpoch} current=${this.turnEpoch})`,
+          `[recovery] dropped: turn moved on (expectedEpoch=${expectedEpoch} current=${this.turnEpoch}, expectedGen=${expectedRecoveryGen} current=${this.normalizer.recoveryGeneration})`,
         );
         return [];
       }
@@ -941,7 +956,14 @@ function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
 function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
   if (typeof frame !== "object" || frame === null) return null;
   const f = frame as Record<string, unknown>;
-  if (f.event !== "agent" && f.event !== "chat") return null;
+  // `chat.side_result` carries visible reply text too (G-18), so it must be
+  // attributable like any other content frame: without it the pre-ack replay
+  // buffer does not recognize the frame, and a side-result racing an announce
+  // turn's ack reaches the WRONG turn's normalizer, where it is refused as a
+  // foreign run — the reply simply disappears (codex P1).
+  if (f.event !== "agent" && f.event !== "chat" && f.event !== "chat.side_result") {
+    return null;
+  }
   const payload = f.payload;
   if (typeof payload !== "object" || payload === null) return null;
   const p = payload as Record<string, unknown>;

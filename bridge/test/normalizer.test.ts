@@ -2058,3 +2058,808 @@ describe("per-turn collections are bounded (G-34)", () => {
     expect(overflow).toHaveLength(1);
   });
 });
+
+// --- G-15: dedup with MEMORY, not one adjacent slot -------------------------
+describe("G-15: a non-adjacent chat re-broadcast is deduplicated too", () => {
+  const startTurn = (): { n: Normalizer; clock: Clock } => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+
+  const delta = (seq: number, text: string) => ({
+    event: "chat",
+    payload: {
+      runId: OWN_RUN,
+      sessionKey: SESSION_KEY,
+      seq,
+      state: "delta",
+      deltaText: text,
+    },
+  });
+
+  const textsOf = (ev: BridgeEvent[]) =>
+    ev.filter((e) => e.type === "message.delta").map((e) => e.text);
+
+  it("A,B,A: the replayed A is dropped (the scalar slot only caught A,A)", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    ev.push(...n.feed(delta(1, "alpha "), clock.tick()));
+    ev.push(...n.feed(delta(2, "beta "), clock.tick()));
+    // Upstream replays the FIRST frame (documented `meta:{cached:true}` replay):
+    // byte-identical runId/seq/state/deltaText. Nothing about it is new.
+    ev.push(...n.feed(delta(1, "alpha "), clock.tick()));
+    expect(textsOf(ev)).toEqual(["alpha ", "beta "]);
+  });
+
+  it("beyond the memory cap the OLDEST key is evicted, and the recent window still dedups", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    // 64 distinct frames fill the window; the 65th evicts frame #1's key.
+    for (let i = 1; i <= 65; i++) ev.push(...n.feed(delta(i, `d${i} `), clock.tick()));
+    const beforeReplay = textsOf(ev).length;
+    // A replay INSIDE the window is still dropped...
+    ev.push(...n.feed(delta(65, "d65 "), clock.tick()));
+    expect(textsOf(ev)).toHaveLength(beforeReplay);
+    // ...while the evicted one is re-admitted. That is the honest trade: an LRU
+    // eviction can only re-admit a very old duplicate, it never drops content.
+    ev.push(...n.feed(delta(1, "d1 "), clock.tick()));
+    expect(textsOf(ev)).toHaveLength(beforeReplay + 1);
+  });
+
+  it("codex P1: without `seq` a legitimately REPEATED delta survives (adjacent-only rule)", () => {
+    const { n, clock } = startTurn();
+    const noSeq = (text: string) => ({
+      event: "chat",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        state: "delta",
+        deltaText: text,
+      },
+    });
+    const ev: BridgeEvent[] = [];
+    ev.push(...n.feed(noSeq("ha"), clock.tick()));
+    ev.push(...n.feed(noSeq("!"), clock.tick()));
+    ev.push(...n.feed(noSeq("ha"), clock.tick()));
+    // Content alone is not an identity: deleting the second "ha" would silently
+    // rewrite the reply. Only an ADJACENT exact repeat is a re-broadcast here.
+    expect(textsOf(ev)).toEqual(["ha", "!", "ha"]);
+    ev.push(...n.feed(noSeq("ha"), clock.tick()));
+    expect(textsOf(ev)).toEqual(["ha", "!", "ha"]);
+  });
+
+  it("codex P2: a key REPLAYED inside the window is refreshed, so it never ages out", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    ev.push(...n.feed(delta(1, "A "), clock.tick())); // A is the OLDEST key
+    for (let i = 2; i <= 64; i++) ev.push(...n.feed(delta(i, `d${i} `), clock.tick()));
+    // The window is now exactly full. A is replayed: an LRU moves it to the
+    // most-recent end, a FIFO leaves it first in line for eviction.
+    ev.push(...n.feed(delta(1, "A "), clock.tick()));
+    // One new key forces exactly one eviction.
+    ev.push(...n.feed(delta(65, "d65 "), clock.tick()));
+    const before = textsOf(ev).length;
+    // A was seen a moment ago: it must still be recognized as a re-broadcast.
+    ev.push(...n.feed(delta(1, "A "), clock.tick()));
+    expect(textsOf(ev)).toHaveLength(before);
+  });
+
+  it("a new turn starts with an EMPTY memory (a key from turn N must not silence turn N+1)", () => {
+    const { n, clock } = startTurn();
+    const ev1 = n.feed(delta(1, "same text "), clock.tick());
+    expect(textsOf(ev1)).toEqual(["same text "]);
+    n.beginTurn(clock.tick());
+    n.noteRunStarted(OWN_RUN, clock.now);
+    // Identical frame, NEW turn: this is real content for this turn.
+    const ev2 = n.feed(delta(1, "same text "), clock.tick());
+    expect(textsOf(ev2)).toEqual(["same text "]);
+  });
+});
+
+// --- G-12: who may become THIS turn's answer --------------------------------
+// A frame of an UNKNOWN run on our own session used to be adopted whenever any
+// grace window happened to be open — and the compaction grace is 900 seconds.
+// The adopted run then became the user's answer and closed their turn. The
+// families below can never be this turn's continuation, and each is recognized
+// POSITIVELY. The two confinement tests at the end are the point of the lot:
+// the legitimate replay and the legitimate follow-on must still be adopted.
+describe("G-12: foreign-run admission policy", () => {
+  const startTurn = () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+
+  const chatFinal = (runId: string, text: string) => ({
+    event: "chat",
+    payload: {
+      runId,
+      sessionKey: SESSION_KEY,
+      seq: 1,
+      state: "final",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    },
+  });
+
+  const agentFrame = (runId: string, extra: Record<string, unknown> = {}) => ({
+    event: "agent",
+    payload: {
+      runId,
+      sessionKey: SESSION_KEY,
+      stream: "assistant",
+      data: { delta: "…" },
+      ...extra,
+    },
+  });
+
+  /** Open the SHORT follow-on grace: a normal lifecycle end of our own run. */
+  const openLifecycleGrace = (n: Normalizer, clock: Clock) =>
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "end", stopReason: "stop", livenessState: "working" },
+        },
+      },
+      clock.tick(),
+    );
+
+  it("a HEARTBEAT run never becomes the answer, even inside an open grace", () => {
+    const { n, clock } = startTurn();
+    // The discriminant rides the AGENT payload only — learn it there…
+    n.feed(agentFrame("heartbeat-run-42", { isHeartbeat: true }), clock.tick());
+    openLifecycleGrace(n, clock);
+    // …then refuse the run when its CHAT final tries to close our turn.
+    const ev = n.feed(chatFinal("heartbeat-run-42", "unrelated heartbeat reply"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+    expect(n.ownRunIds.has("heartbeat-run-42")).toBe(false);
+  });
+
+  it("codex P2: an ACTIVE heartbeat is refreshed and never aged out by newer ones", () => {
+    const { n, clock } = startTurn();
+    n.feed(agentFrame("hb-live", { isHeartbeat: true }), clock.tick());
+    // 63 other heartbeats fill the window exactly…
+    for (let i = 0; i < 63; i++) {
+      n.feed(agentFrame(`hb-other-${i}`, { isHeartbeat: true }), clock.tick());
+    }
+    // …then hb-live beats again (an LRU refreshes it, a FIFO does not)…
+    n.feed(agentFrame("hb-live", { isHeartbeat: true }), clock.tick());
+    // …and one more heartbeat forces exactly one eviction.
+    n.feed(agentFrame("hb-newest", { isHeartbeat: true }), clock.tick());
+    openLifecycleGrace(n, clock);
+    // …and is still recognized: a FIFO would have evicted it, and its chat final
+    // would then have been adopted as the user's answer.
+    const ev = n.feed(chatFinal("hb-live", "heartbeat output"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("a chat.inject broadcast (`inject-<messageId>`) never becomes the answer", () => {
+    const { n, clock } = startTurn();
+    openLifecycleGrace(n, clock);
+    // The gateway mints this runId and broadcasts a chat FINAL on our session.
+    const ev = n.feed(chatFinal("inject-msg_7", "injected by an operator"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("a gateway-initiated turn (announce family) never becomes the answer", () => {
+    const { n, clock } = startTurn();
+    openLifecycleGrace(n, clock);
+    const ev = n.feed(chatFinal("announce:child-1", "a sub-agent's own turn"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("codex P1: a replay proof is CONSUMED by the replay — a later compaction must earn its own", () => {
+    const { n, clock } = startTurn();
+    const compaction = (data: Record<string, unknown>) => ({
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        stream: "compaction",
+        data,
+      },
+    });
+    n.feed(compaction({ phase: "start" }), clock.tick());
+    n.feed(compaction({ phase: "end", willRetry: true, completed: true }), clock.tick());
+    // The announced replay ARRIVES on the same run: the proof is now spent.
+    n.feed(agentFrame(OWN_RUN), clock.tick());
+    // A SECOND compaction begins and has announced nothing.
+    n.feed(compaction({ phase: "start" }), clock.tick());
+    const ev = n.feed(chatFinal("some-background-run", "not your answer"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("codex P1: a NON-content frame of the resumed run spends the replay proof", () => {
+    const { n, clock } = startTurn();
+    const compaction = (data: Record<string, unknown>) => ({
+      event: "agent",
+      payload: {
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        stream: "compaction",
+        data,
+      },
+    });
+    n.feed(compaction({ phase: "start" }), clock.tick());
+    n.feed(compaction({ phase: "end", willRetry: true, completed: true }), clock.tick());
+    // The resumed run signals with a TOOL frame — no visible text, so the
+    // content path never runs and the proof used to stay open for the whole turn.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "tool",
+          data: { name: "read", phase: "completed" },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.feed(chatFinal("some-background-run", "not your answer"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("codex P1: a compaction starting inside the lifecycle grace applies the STRICTER rule", () => {
+    const { n, clock } = startTurn();
+    // The 10 s follow-on grace is open…
+    openLifecycleGrace(n, clock);
+    // …and a compaction starts on our own run without clearing it.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "start" },
+        },
+      },
+      clock.tick(),
+    );
+    // Nothing has announced a replay: the looser lifecycle rule must not decide.
+    const ev = n.feed(chatFinal("some-background-run", "not your answer"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("during a compaction, an unknown run is refused until the gateway ANNOUNCES a replay", () => {
+    const { n, clock } = startTurn();
+    // Compaction started: the 900s window is open, but nothing says a replay is
+    // coming on a new run — the door stays shut.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "compaction",
+          data: { phase: "start" },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.feed(chatFinal("some-background-run", "not your answer"), clock.tick());
+    expect(ev).toEqual([]);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("every refusal is COUNTED by reason and reaches the final event", () => {
+    const { n, clock } = startTurn();
+    n.feed(agentFrame("hb-1", { isHeartbeat: true }), clock.tick());
+    openLifecycleGrace(n, clock);
+    n.feed(chatFinal("hb-1", "x"), clock.tick());
+    n.feed(chatFinal("inject-a", "y"), clock.tick());
+    n.feed(chatFinal("inject-b", "z"), clock.tick());
+    const final = n
+      .endTurn(clock.tick(), "final", null, "recv_timeout")
+      .find((e) => e.type === "message.final");
+    // 2 heartbeat refusals: the agent frame that TAUGHT us the run is itself a
+    // frame of a foreign run, and it is refused on the same ground. Counting it
+    // is the honest reading — a heartbeat frame did reach a live turn.
+    expect(final?.foreignRunRejections).toEqual({
+      heartbeat: 2,
+      gateway_initiated: 2,
+    });
+  });
+
+  it("an ADOPTED run may add and close, but never OVERWRITE the delivered answer", () => {
+    const { n, clock } = startTurn();
+    // Our own run delivers the answer…
+    n.feed(agentFrame(OWN_RUN), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "the delivered answer" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    // …then a run admitted through the grace sends unrelated content.
+    const ev = n.feed(chatFinal("webchat-followon", "SOMETHING ELSE ENTIRELY"), clock.tick());
+    const final = ev.find((e) => e.type === "message.final");
+    // It is APPENDED, not substituted: the answer the user read survives.
+    expect(String(final?.text)).toContain("the delivered answer");
+    expect(String(final?.text)).toContain("SOMETHING ELSE ENTIRELY");
+    // …and the turn does close (a follow-on legitimately finishes it).
+    expect(n.finalized).toBe(true);
+  });
+
+  it("the demotion never SWALLOWS the follow-on when the first reply was a snapshot (codex P1)", () => {
+    const { n, clock } = startTurn();
+    // The first reply arrives as a SNAPSHOT, which locks snapshot precedence.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { text: "the delivered answer" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    const ev = n.feed(chatFinal("webchat-followon", "SOMETHING ELSE ENTIRELY"), clock.tick());
+    const final = ev.find((e) => e.type === "message.final");
+    expect(String(final?.text)).toContain("the delivered answer");
+    expect(String(final?.text)).toContain("SOMETHING ELSE ENTIRELY");
+    // …and the turn closes NOW, not on a grace timeout.
+    expect(n.finalized).toBe(true);
+  });
+
+  it("codex P1: an adopted run's DELTAS are additive too, never dropped by the snapshot lock", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { text: "the delivered answer" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    const ev: BridgeEvent[] = [];
+    // A follow-on run that STREAMS rather than snapshots.
+    ev.push(
+      ...n.feed(
+        {
+          event: "agent",
+          payload: {
+            runId: "webchat-followon",
+            sessionKey: SESSION_KEY,
+            stream: "assistant",
+            data: { delta: "and one more thing" },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    expect(ev.filter((e) => e.type === "message.delta")).toHaveLength(1);
+  });
+
+  it("codex P2: additive text from an adopted run is SEPARATED from the previous reply", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { text: "the delivered answer" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    const ev = n.feed(chatFinal("webchat-followon", "Nouveau texte"), clock.tick());
+    const final = ev.find((e) => e.type === "message.final");
+    // Raw concatenation would read as "…answerNouveau texte" — one corrupted
+    // sentence out of two independent replies.
+    expect(String(final?.text)).toContain("answer\n\nNouveau texte");
+  });
+
+  it("codex P2: the boundary holds when the previous reply came from DELTAS", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "Réponse." },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    // The follow-on STREAMS onto a reply that was itself streamed: with no
+    // snapshot lock, `forcedAppend` is false and the separator was being dropped.
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "webchat-followon",
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "Ajout" },
+        },
+      },
+      clock.tick(),
+    );
+    const d = ev.find((e) => e.type === "message.delta");
+    expect(d?.text).toBe("\n\nAjout");
+  });
+
+  it("codex P2: TWO runs adopted in the same grace each get their own boundary", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "Réponse." },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    // BOTH runs are admitted before either writes any text — a single shared
+    // flag is then armed once and consumed by whichever writes first.
+    const silent = (runId: string) => ({
+      event: "agent",
+      payload: {
+        runId,
+        sessionKey: SESSION_KEY,
+        stream: "assistant",
+        data: { mediaUrls: [] },
+      },
+    });
+    n.feed(silent("webchat-followon-a"), clock.tick());
+    n.feed(silent("webchat-followon-b"), clock.tick());
+    const first = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "webchat-followon-a",
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "PremierAjout" },
+        },
+      },
+      clock.tick(),
+    );
+    const second = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: "webchat-followon-b",
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "SecondAjout" },
+        },
+      },
+      clock.tick(),
+    );
+    // A single shared flag let the first run consume the boundary and glued the
+    // second reply straight onto it.
+    expect(first.find((e) => e.type === "message.delta")?.text).toBe("\n\nPremierAjout");
+    expect(second.find((e) => e.type === "message.delta")?.text).toBe("\n\nSecondAjout");
+  });
+
+  it("codex P2: no separator is injected inside an adopted run's OWN continuation", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { text: "réponse" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    const ev: BridgeEvent[] = [];
+    // The adopted run first EXTENDS the text (a continuation snapshot)…
+    ev.push(
+      ...n.feed(
+        {
+          event: "agent",
+          payload: {
+            runId: "webchat-followon",
+            sessionKey: SESSION_KEY,
+            stream: "assistant",
+            data: { text: "réponse complète" },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    // …then streams the rest of its OWN sentence.
+    ev.push(
+      ...n.feed(
+        {
+          event: "agent",
+          payload: {
+            runId: "webchat-followon",
+            sessionKey: SESSION_KEY,
+            stream: "assistant",
+            data: { delta: "." },
+          },
+        },
+        clock.tick(),
+      ),
+    );
+    const last = ev.filter((e) => e.type === "message.delta").at(-1);
+    expect(last?.text).toBe(".");
+  });
+
+  it("an adopted run CONTINUING the same text still replaces (the replay/follow-on case)", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "assistant",
+          data: { delta: "the answer" },
+        },
+      },
+      clock.tick(),
+    );
+    openLifecycleGrace(n, clock);
+    const ev = n.feed(chatFinal("webchat-followon", "the answer, completed"), clock.tick());
+    const final = ev.find((e) => e.type === "message.final");
+    expect(final?.text).toBe("the answer, completed");
+  });
+
+  // --- CONFINEMENT: the behaviours this policy must NOT break ---------------
+
+  it("CONFINEMENT: the legitimate compaction REPLAY is still adopted", () => {
+    const { n, clock } = startTurn();
+    n.feed(agentFrame(OWN_RUN), clock.tick());
+    // The gateway abandons the run to compact — it has now TOLD us a replay is
+    // coming, which is the positive proof the policy requires.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.feed(chatFinal("webchat-replay-run", "the replayed answer"), clock.tick());
+    expect(ev.some((e) => e.type === "message.snapshot")).toBe(true);
+    expect(n.ownRunIds.has("webchat-replay-run")).toBe(true);
+  });
+
+  it("CONFINEMENT: a plain follow-on run in the short grace is still adopted", () => {
+    const { n, clock } = startTurn();
+    openLifecycleGrace(n, clock);
+    const ev = n.feed(chatFinal("webchat-followon", "the continued answer"), clock.tick());
+    expect(ev.some((e) => e.type === "message.snapshot")).toBe(true);
+    expect(n.ownRunIds.has("webchat-followon")).toBe(true);
+  });
+});
+
+// --- G-18: `chat.side_result` is content, not noise -------------------------
+describe("G-18: a by-the-way reply reaches the conversation", () => {
+  it("side_result text becomes the reply, and the empty final that follows closes the turn on it", () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    // Upstream shape: the agent answered without starting a run, so the text
+    // rides this event and the chat final that follows carries NO message.
+    const ev1 = n.feed(
+      {
+        event: "chat.side_result",
+        payload: {
+          kind: "btw",
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          question: "and by the way?",
+          text: "By the way, the meeting moved to Thursday.",
+          isError: false,
+          ts: 1,
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev1.filter((e) => e.type === "message.delta").map((e) => e.text)).toEqual([
+      "By the way, the meeting moved to Thursday.",
+    ]);
+
+    const ev2 = n.feed(
+      {
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 1, state: "final" },
+      },
+      clock.tick(),
+    );
+    // The turn closes on REAL content instead of waiting out a 90-second grace
+    // and settling as an unexplained silent-empty response.
+    expect(n.finalized).toBe(true);
+    const final = ev2.find((e) => e.type === "message.final");
+    expect(String(final?.text)).toContain("moved to Thursday");
+  });
+
+  it("an ERROR side_result finalizes the turn as an ERROR, never as the reply", () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    const ev = n.feed(
+      {
+        event: "chat.side_result",
+        payload: {
+          kind: "btw",
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          text: "The lookup tool is unavailable.",
+          isError: true,
+          ts: 1,
+        },
+      },
+      clock.tick(),
+    );
+    // Presenting an explicit upstream failure as the agent's answer would be a
+    // lie the user has no way to detect (codex P2).
+    expect(ev.some((e) => e.type === "message.delta")).toBe(false);
+    const status = ev.find((e) => e.type === "run.status");
+    expect(status?.status).toBe("error");
+    const final = ev.find((e) => e.type === "message.final");
+    expect(String(final?.error)).toContain("lookup tool is unavailable");
+  });
+
+  it("codex P2: an identical side_result RE-BROADCAST is not delivered twice", () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    const frame = {
+      event: "chat.side_result",
+      payload: {
+        kind: "btw",
+        runId: OWN_RUN,
+        sessionKey: SESSION_KEY,
+        text: "By the way, the meeting moved to Thursday.",
+        isError: false,
+        ts: 1,
+      },
+    };
+    const ev1 = n.feed(frame, clock.tick());
+    const ev2 = n.feed(frame, clock.tick());
+    expect(ev1.filter((e) => e.type === "message.delta")).toHaveLength(1);
+    expect(ev2.filter((e) => e.type === "message.delta")).toHaveLength(0);
+  });
+
+  it("a side_result of ANOTHER session is still dropped (isolation unchanged)", () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    const ev = n.feed(
+      {
+        event: "chat.side_result",
+        payload: {
+          kind: "btw",
+          runId: "other-run",
+          sessionKey: "agent:x:atrium:chat:u-y:someone-else",
+          text: "not yours",
+          ts: 1,
+        },
+      },
+      clock.tick(),
+    );
+    expect(ev).toEqual([]);
+  });
+});
+
+// --- G-17: a preamble is not the answer -------------------------------------
+// The gateway emits the model's preamble on the assistant stream as
+// `{text, replace:true, phase:"commentary"}` (verified in the deployed 2026.7.1
+// build). We read neither field: the preamble became the reply text AND locked
+// snapshot precedence, after which every delta of the real answer was dropped.
+describe("G-17: assistant-stream phase and replace", () => {
+  const startTurn = () => {
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(OWN_RUN, clock.now);
+    return { n, clock };
+  };
+
+  const assistant = (data: Record<string, unknown>) => ({
+    event: "agent",
+    payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, stream: "assistant", data },
+  });
+
+  const visible = (ev: BridgeEvent[]) =>
+    ev
+      .filter((e) => e.type === "message.delta" || e.type === "message.snapshot")
+      .map((e) => e.text);
+
+  it("a commentary preamble stays OUT of the reply, and the real answer still streams", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    ev.push(
+      ...n.feed(
+        assistant({
+          text: "Let me look that up for you…",
+          delta: "",
+          replace: true,
+          phase: "commentary",
+          itemId: "commentary-1",
+        }),
+        clock.tick(),
+      ),
+    );
+    ev.push(...n.feed(assistant({ delta: "The answer ", phase: "final_answer" }), clock.tick()));
+    ev.push(...n.feed(assistant({ delta: "is 42." }), clock.tick()));
+    // The preamble never entered the buffer, and the deltas were NOT swallowed
+    // by a snapshot lock the preamble had no business setting.
+    expect(visible(ev)).toEqual(["The answer ", "is 42."]);
+  });
+
+  it("`replace` on the assistant stream refreshes the text WITHOUT locking out later deltas", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    ev.push(...n.feed(assistant({ delta: "draft text" }), clock.tick()));
+    ev.push(
+      ...n.feed(
+        assistant({ text: "corrected text", delta: "", replace: true, phase: "final_answer" }),
+        clock.tick(),
+      ),
+    );
+    ev.push(...n.feed(assistant({ delta: " and more" }), clock.tick()));
+    expect(visible(ev)).toEqual(["draft text", "corrected text", " and more"]);
+    // The refresh is a DECLARED shrink: Convex must be allowed to apply it.
+    const snap = ev.find((e) => e.type === "message.snapshot");
+    expect(snap?.replace).toBe(true);
+  });
+
+  it("an untagged assistant snapshot keeps its historical authority (no behaviour change)", () => {
+    const { n, clock } = startTurn();
+    const ev: BridgeEvent[] = [];
+    ev.push(...n.feed(assistant({ text: "full answer" }), clock.tick()));
+    ev.push(...n.feed(assistant({ delta: " ignored" }), clock.tick()));
+    expect(visible(ev)).toEqual(["full answer"]);
+  });
+});

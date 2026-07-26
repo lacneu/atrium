@@ -32,7 +32,9 @@ class FakeWriter implements ConvexWriter {
     return "msg_preempt_1";
   }
   async appendDelta(): Promise<void> {}
-  async setSnapshot(): Promise<void> {}
+  async setSnapshot(): Promise<boolean> {
+    return true;
+  }
   async addToolPart(_m: string, _p: ToolPart): Promise<void> {}
   async addCompactionPart(): Promise<void> {}
   async recordGatewayPressure(): Promise<void> {}

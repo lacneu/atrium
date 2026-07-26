@@ -279,8 +279,9 @@ class FakeWriter implements ConvexWriter {
   async appendDelta(): Promise<void> {
     this.calls.push(["other", "appendDelta"]);
   }
-  async setSnapshot(): Promise<void> {
+  async setSnapshot(): Promise<boolean> {
     this.calls.push(["other", "setSnapshot"]);
+    return true;
   }
   async addToolPart(_m: string, _p: ToolPart): Promise<void> {
     this.calls.push(["other", "addToolPart"]);

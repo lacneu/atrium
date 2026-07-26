@@ -79,7 +79,7 @@ function recordingWriter() {
   const writer = {
     startAssistant: async () => "msg-1",
     appendDelta: async () => {},
-    setSnapshot: async () => {},
+    setSnapshot: async () => true,
     addToolPart: async () => {},
     addMedia: async () => {},
     addProvenancePart: async () => {},
@@ -213,7 +213,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const writer = {
       startAssistant: async () => "msg-1",
       appendDelta: async () => {},
-      setSnapshot: async () => {},
+      setSnapshot: async () => true,
       addToolPart: async () => {},
       addMedia: async () => {},
       addProvenancePart: async () => {},

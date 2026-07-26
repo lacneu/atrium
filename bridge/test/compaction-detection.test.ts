@@ -477,7 +477,9 @@ class SinkFakeWriter implements ConvexWriter {
     return "msg_compact_1";
   }
   async appendDelta(): Promise<void> {}
-  async setSnapshot(): Promise<void> {}
+  async setSnapshot(): Promise<boolean> {
+    return true;
+  }
   async addToolPart(): Promise<void> {}
   async addCompactionPart(
     messageId: string,

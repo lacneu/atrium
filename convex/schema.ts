@@ -1618,6 +1618,14 @@ export default defineSchema({
     // `generation`). Absent = row created by a pre-isolation writer.
     boundInstance: v.optional(v.string()),
     text: v.string(),
+    // The LAST snapshot this row REFUSED as a regression (anti-regression guard,
+    // G-14). A refused write is not forgotten: the same stale text routinely
+    // comes back as the turn's final, and the terminal write is where the reply
+    // the user keeps is decided. Comparing there — instead of guessing from
+    // lengths — lets an authoritative RE-RENDER (a different, possibly shorter
+    // text the guard never refused) still win, which an existing abort test
+    // proves is a real case. Transient: the row dies with the turn.
+    refusedText: v.optional(v.string()),
     updatedAt: v.number(),
     // Live PROCESSING PHASE of the in-flight turn (processing_history /
     // compacting / querying_gateway / awaiting_subagents) — shown by the

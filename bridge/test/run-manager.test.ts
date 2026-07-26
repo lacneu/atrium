@@ -80,8 +80,9 @@ class FakeWriter implements ConvexWriter {
   async appendDelta(messageId: string, text: string): Promise<void> {
     this.calls.push(["appendDelta", messageId, text]);
   }
-  async setSnapshot(messageId: string, text: string): Promise<void> {
+  async setSnapshot(messageId: string, text: string): Promise<boolean> {
     this.calls.push(["setSnapshot", messageId, text]);
+    return true;
   }
   async addToolPart(messageId: string, part: ToolPart): Promise<void> {
     this.calls.push(["addToolPart", messageId, part]);
@@ -251,6 +252,40 @@ describe("run-manager -> convex-writer mapping", () => {
       ["setSnapshot", MESSAGE_ID, "Bonjour !"],
       ["finalize", MESSAGE_ID, "complete", "Bonjour !", null, null],
     ]);
+  });
+
+  it("codex P1: a `chat.side_result` racing the ack is BUFFERED and replayed like any content frame", async () => {
+    // The event carries visible reply text (G-18). If the pre-ack buffer does not
+    // recognize its frame type it goes straight through to whatever turn is live —
+    // an announce turn, where it is refused as a foreign run — and the user's
+    // direct reply is simply lost.
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    // An ANNOUNCE turn is already driving the sink…
+    await manager.beginTurn(clock.now, "announce:child-9", { expectedSessionId: null, spontaneous: true });
+    // …when the user sends: the buffer is armed while that turn is still live.
+    manager.armReplayBuffer();
+    await manager.feed(
+      {
+        event: "chat.side_result",
+        payload: {
+          kind: "btw",
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          text: "By the way, the meeting moved.",
+          isError: false,
+          ts: 1,
+        },
+      },
+      clock.tick(),
+    );
+
+    // The ack lands and the real turn opens: the buffered frame is replayed
+    // INTO it. Unbuffered, it reached the announce turn's normalizer, which
+    // refuses it as a foreign run — the reply vanishes with no trace.
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(JSON.stringify(writer.calls)).toContain("the meeting moved");
   });
 
   it("disarmReplayBuffer (failed send) drops the armed window so a stray frame is NOT buffered/replayed", async () => {
@@ -564,6 +599,7 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       "turn N's answer",
       clock.tick(),
       recoveredEpoch,
+      manager.recoveryGeneration,
     );
 
     // Reported as NOT delivered, so the caller cannot log a success (codex P3).
@@ -583,6 +619,7 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       "the recovered answer",
       clock.tick(),
       manager.turnEpoch,
+      manager.recoveryGeneration,
     );
     expect(applied).toBe(true);
     const finalize = writer.calls.find((c) => c[0] === "finalize");
@@ -592,12 +629,47 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     );
   });
 
-  it("the epoch is REQUIRED — the compiler is the guard for future callers", () => {
-    // A forgotten epoch is the entire defect, so it cannot be optional: this pins
-    // that the signature takes it (a caller that omits it does not compile, which no
-    // runtime test could guarantee for code not yet written).
+  it("a compaction reset INVALIDATES a recovery already in flight (codex P1)", async () => {
+    const writer = new FakeWriter();
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, OWN_RUN);
+    const boundEpoch = manager.turnEpoch;
+    const boundGen = manager.recoveryGeneration;
+    // The gateway abandons the run to compact WHILE the sessions.get is in
+    // flight: the turn epoch does not move, so only the generation can tell the
+    // recovery that the text it carries belongs to a discarded attempt.
+    await manager.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
+        },
+      },
+      clock.tick(),
+    );
+    expect(manager.turnEpoch).toBe(boundEpoch); // the epoch alone would let it through
+    const applied = await manager.recoverVisibleText(
+      "the abandoned attempt's answer",
+      clock.tick(),
+      boundEpoch,
+      boundGen,
+    );
+    expect(applied).toBe(false);
+    expect(manager.isFinalized).toBe(false);
+  });
+
+  it("the epoch AND the recovery generation are REQUIRED — the compiler is the guard for future callers", () => {
+    // A forgotten guard is the entire defect, so neither can be optional: this
+    // pins that the signature takes both (a caller that omits one does not
+    // compile, which no runtime test could guarantee for code not yet written).
+    // The generation is the second guard: a compaction reset invalidates the
+    // attempt a recovery belongs to WITHOUT moving the turn epoch.
     const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
-    expect(manager.recoverVisibleText.length).toBe(3);
+    expect(manager.recoverVisibleText.length).toBe(4);
   });
 });
 
@@ -827,6 +899,7 @@ describe("single ordered application path (G-29)", () => {
       "turn N's answer",
       clock.tick(),
       recoveredEpoch,
+      manager.recoveryGeneration,
     );
     // …and a new turn starts before the queued unit runs. NOT awaited: awaiting would
     // drain the chain first, which is precisely the race this test must avoid

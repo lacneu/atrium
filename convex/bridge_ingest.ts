@@ -193,6 +193,9 @@ type IngestOp =
       op: "setSnapshot";
       messageId: string;
       text: string;
+      // Declares an AUTHORIZED shrink (compaction reset / upstream `replace`
+      // refresh). Absent = the snapshot may only grow (stream.setSnapshot).
+      replace?: boolean;
       runId?: string | null;
       recSessionId?: string;
       bridgeRecvAt?: number;
@@ -289,6 +292,8 @@ type IngestOp =
       /** Frames lost during the turn (omitted when none) — the per-turn
        *  counterpart of the live `openclaw.frame_gap` traces. */
       framesLost?: number;
+      finalTruncated?: number;
+      foreignRunsRefused?: number;
       errorKind?: string | null;
       stopReason?: string | null;
       finalizeCause?: string | null;
@@ -640,10 +645,11 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true });
     }
     case "setSnapshot": {
-      await ctx.runMutation(internal.stream.setSnapshot, {
+      const snap = await ctx.runMutation(internal.stream.setSnapshot, {
         messageId: body.messageId as Id<"messages">,
         text: body.text,
         boundInstanceName,
+        ...(body.replace !== undefined ? { replace: body.replace } : {}),
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,
@@ -651,7 +657,9 @@ export const ingest = httpAction(async (ctx, request) => {
         bridgeSkew: body.bridgeSkew,
         sizeBytes: body.sizeBytes,
       });
-      return json({ ok: true });
+      // Report the refusal: the bridge mirrors liveText to send suffix-only
+      // deltas and must not advance that mirror past a write we rejected.
+      return json({ ok: true, applied: snap.applied });
     }
     case "addPart": {
       await ctx.runMutation(internal.stream.addPart, {
@@ -915,6 +923,16 @@ export const ingest = httpAction(async (ctx, request) => {
           // "why does this reply look truncated". Counter only.
           ...(typeof body.framesLost === "number"
             ? { framesLost: body.framesLost }
+            : {}),
+          // Chat finals the gateway CUT at its display cap before sending them
+          // (absent when none). Counter only — the text stays out of traces.
+          ...(typeof body.finalTruncated === "number"
+            ? { finalTruncated: body.finalTruncated }
+            : {}),
+          // Frames of a FOREIGN run refused admission to this turn (absent when
+          // none). Counter only — this is the exposure measurement for G-12.
+          ...(typeof body.foreignRunsRefused === "number"
+            ? { foreignRunsRefused: body.foreignRunsRefused }
             : {}),
           compaction: body.compaction,
           // Hard, UN-recovered overflow (gateway errorKind "context_length") —

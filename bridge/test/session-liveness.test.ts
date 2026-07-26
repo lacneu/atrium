@@ -52,7 +52,7 @@ function fakeWriter() {
   const writer = {
     startAssistant: async () => "msg-1",
     appendDelta: async () => {},
-    setSnapshot: async () => {},
+    setSnapshot: async () => true,
     addToolPart: async () => {},
     addMedia: async () => {},
     addProvenancePart: async () => {},
@@ -235,9 +235,12 @@ function fakeConnRecording() {
     async *frames() {
       await gate;
     },
+    reply: { payload: {} } as unknown,
     async request(method: string) {
       requests.push(method);
-      return { payload: {} }; // benign; recovery extracts no text -> logs, harmless
+      // Default: benign, recovery extracts no text -> logs, harmless. A test may
+      // set `reply` to drive a real transcript through the recovery path.
+      return (this as { reply: unknown }).reply;
     },
   };
 }
@@ -380,6 +383,106 @@ describe("Session consume loop — history recovery survives a wake (review #14 
     await new Promise((r) => setTimeout(r, 30)); // loop TOP checks recovery -> sessions.get
 
     expect(conn.requests).toContain("sessions.get");
+    reg.closeAll();
+  });
+
+  // codex P1 (W4): the recovery read only the message-tool entries. A TRUNCATED
+  // DIRECT reply (G-13) has no toolResult at all, so the full text sat in the
+  // transcript's plain assistant entry and was never read — the turn finalized
+  // 20 s later with the cut text and its marker.
+  it("does NOT promote a private ack to the reply when the trigger was not a truncation (codex P1)", async () => {
+    let now = 1000;
+    const conn = fakeConnRecording();
+    conn.reply = {
+      payload: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "the question" }] },
+          // The transcript holds only an acknowledgement — the real delivery is
+          // nowhere to be found. This wording is deliberately one the
+          // private-ack heuristic does NOT match: the guard must come from
+          // restricting the fallback, not from a phrase list that will always be
+          // incomplete. Persisting it would hide a lost reply behind something
+          // that reads like an answer.
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Acknowledged, the note was handed off." }],
+          },
+        ],
+      },
+    };
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire({
+      chatId: "own-chat",
+      openclawChatId: "own-chat",
+      agentId: "main",
+      canonical: "u-testuser01",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    s.runManager.armReplayBuffer();
+    for (const frame of FIXTURES.scenarios["message-tool-item-then-private-ack"]!.frames) {
+      await s.runManager.feed(frame, now);
+    }
+    await s.runManager.beginTurn(now, FIXTURES.run_id);
+    s.wake();
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(conn.requests).toContain("sessions.get");
+    expect(JSON.stringify(finalized)).not.toContain("handed off");
+    reg.closeAll();
+  });
+
+  it("recovers a plain ASSISTANT transcript entry when there is no message-tool delivery", async () => {
+    let now = 1000;
+    const conn = fakeConnRecording();
+    const FULL = "the complete answer that the display projection had cut";
+    conn.reply = {
+      payload: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "the question" }] },
+          { role: "assistant", content: [{ type: "text", text: FULL }] },
+        ],
+      },
+    };
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire({
+      chatId: "own-chat",
+      openclawChatId: "own-chat",
+      agentId: "main",
+      canonical: "u-testuser01",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    s.runManager.armReplayBuffer();
+    // A chat final the gateway CUT at its display cap: the reply lives in the
+    // transcript's plain ASSISTANT entry, with no message-tool delivery at all.
+    await s.runManager.feed(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: "agent:main:atrium:chat:u-testuser01:own-chat",
+          runId: FIXTURES.run_id,
+          seq: 1,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `${"a".repeat(8000)}\n...(truncated)...` }],
+          },
+        },
+      },
+      now,
+    );
+    await s.runManager.beginTurn(now, FIXTURES.run_id);
+    s.wake();
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(conn.requests).toContain("sessions.get");
+    // The recovered text reached the writer as the turn's REPLY.
+    expect(JSON.stringify(finalized)).toContain("display projection had cut");
     reg.closeAll();
   });
 });

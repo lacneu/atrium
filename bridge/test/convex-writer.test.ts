@@ -599,6 +599,131 @@ function liveTextOf(sent: SentOp[]): string {
   return t;
 }
 
+// A fetch that behaves like the REAL Convex handler once G-14 is in: it holds
+// the server-side liveText, refuses a snapshot that would shorten it (unless
+// `replace` declares the shrink), and reports `applied:false` on refusal. The
+// writer keeps a local mirror of that same text to send suffix-only deltas, so
+// a refusal it fails to notice desynchronizes the two.
+function guardedFetch() {
+  const sent: SentOp[] = [];
+  let serverText = "";
+  const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+    const op = JSON.parse(init.body) as SentOp & { replace?: boolean };
+    sent.push(op);
+    if (op.op === "appendDelta") {
+      serverText += op.text ?? "";
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }
+    if (op.op === "setSnapshot") {
+      const next = op.text ?? "";
+      if (op.replace !== true && next.length < serverText.length) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, applied: false }),
+        } as unknown as Response;
+      }
+      serverText = next;
+      return {
+        ok: true,
+        json: async () => ({ ok: true, applied: true }),
+      } as unknown as Response;
+    }
+    return { ok: true, json: async () => ({}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, sent, serverText: () => serverText };
+}
+
+describe("G-14: a refused snapshot must not desynchronize the writer's mirror", () => {
+  test("after Convex REFUSES a shrinking snapshot, the next extension is still computed from what Convex actually holds", async () => {
+    const { fetchImpl, sent, serverText } = guardedFetch();
+    const w = writerWith(fetchImpl);
+
+    await w.setSnapshot("m1", "the full answer");
+    await w.setSnapshot("m1", "the full"); // stale/out-of-order: refused server-side
+    await w.setSnapshot("m1", "the full answer, continued");
+
+    // The refusal left the server on the LONGER text...
+    expect(serverText()).toBe("the full answer, continued");
+    // ...and the third write extended from THAT, not from the refused text.
+    // Trusting the refused write would have appended " answer, continued" onto
+    // "the full answer" and produced "the full answer answer, continued".
+    expect(sent[2]).toEqual({
+      op: "appendDelta",
+      messageId: "m1",
+      text: ", continued",
+    });
+  });
+
+  test("codex P2: a REFUSED snapshot leaves the resync marker standing (the next write stays FULL)", async () => {
+    const sent: SentOp[] = [];
+    let serverText = "";
+    let failNext = true;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = JSON.parse(init.body) as SentOp & { replace?: boolean };
+      if (op.op === "appendDelta" && failNext) {
+        failNext = false;
+        // Timed out but APPLIED server-side: the writer's mirror is now unsafe.
+        serverText += op.text ?? "";
+        sent.push(op);
+        throw new Error("timeout");
+      }
+      sent.push(op);
+      if (op.op === "appendDelta") {
+        serverText += op.text ?? "";
+        return { ok: true, json: async () => ({}) } as unknown as Response;
+      }
+      if (op.op === "setSnapshot") {
+        const next = op.text ?? "";
+        if (op.replace !== true && next.length < serverText.length) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, applied: false }),
+          } as unknown as Response;
+        }
+        serverText = next;
+        return {
+          ok: true,
+          json: async () => ({ ok: true, applied: true }),
+        } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const w = writerWith(fetchImpl);
+    await expect(w.setSnapshot("m1", "ab")).rejects.toThrow(); // applied, mirror unsure
+    await w.setSnapshot("m1", "a"); // shorter -> REFUSED; the doubt is unresolved
+    await w.setSnapshot("m1", "abc");
+
+    // Clearing the marker on the refusal would have sent a suffix from the stale
+    // mirror ("a" -> "bc") and produced "abbc" server-side.
+    expect(serverText).toBe("abc");
+    expect(sent.at(-1)).toMatchObject({ op: "setSnapshot", text: "abc" });
+  });
+
+  test("a DECLARED shrink is applied and DOES advance the mirror", async () => {
+    const { fetchImpl, sent, serverText } = guardedFetch();
+    const w = writerWith(fetchImpl);
+
+    await w.setSnapshot("m1", "invalidated prefix");
+    await w.setSnapshot("m1", "", true); // compaction reset
+    await w.setSnapshot("m1", "replayed answer");
+
+    expect(serverText()).toBe("replayed answer");
+    expect(sent[1]).toEqual({
+      op: "setSnapshot",
+      messageId: "m1",
+      text: "",
+      replace: true,
+    });
+    // The mirror followed the cleared text: the replay extends from empty.
+    expect(sent[2]).toEqual({
+      op: "appendDelta",
+      messageId: "m1",
+      text: "replayed answer",
+    });
+  });
+});
+
 describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => {
   test("a snapshot that STRICTLY EXTENDS the last write goes out as a SUFFIX delta", async () => {
     const { fetchImpl, sent } = autoFetch();

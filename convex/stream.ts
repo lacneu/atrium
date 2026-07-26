@@ -151,12 +151,16 @@ function streamCorrelationId(
 async function traceStream(
   ctx: MutationCtx,
   args: {
-    phase: "start" | "finalize";
+    phase: "start" | "finalize" | "snapshot_regression";
     chatId: Id<"chats">;
     runId: string | undefined;
     messageId: Id<"messages">;
     streamStatus: "streaming" | "complete" | "error" | "aborted";
     textLen?: number;
+    /** Snapshot regression only: the LENGTHS of the kept and refused texts.
+     *  Lengths only — the texts themselves are conversational content (SOC2). */
+    oldLen?: number;
+    newLen?: number;
     /** The CURATED failure class (`errorCode`) — a stable non-PHI code, never the
      *  gateway's text. Without it the anomaly detector could only count errors:
      *  a context overflow and two unrelated blips looked identical, so the signal
@@ -179,6 +183,8 @@ async function traceStream(
         // String lifecycle status lives in meta (the `status` column is numeric).
         streamStatus: args.streamStatus,
         ...(args.textLen !== undefined ? { textLen: args.textLen } : {}),
+        ...(args.oldLen !== undefined ? { oldLen: args.oldLen } : {}),
+        ...(args.newLen !== undefined ? { newLen: args.newLen } : {}),
         ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
       }),
     });
@@ -990,6 +996,15 @@ export const setSnapshot = internalMutation({
     ...recArgs,
     // Generation guard (see appendDelta).
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    // An AUTHORIZED shrink. A snapshot normally only ever grows: it is the
+    // gateway's full view of the same reply. Two producers legitimately shorten
+    // it, and only these two set this flag — the compaction reset (an empty
+    // snapshot clearing an invalidated prefix) and an upstream
+    // `ChatDeltaEventSchema.replace` refresh. Everything else that shrinks the
+    // text is a REGRESSION (an out-of-order or stale snapshot) and is refused
+    // here: this is the durable lock that makes the displayed reply insensitive
+    // to any residual disorder upstream of Convex.
+    replace: v.optional(v.boolean()),
     ...boundArg,
   },
   handler: async (
@@ -1003,6 +1018,7 @@ export const setSnapshot = internalMutation({
       bridgeSkew,
       sizeBytes,
       expectedRunId,
+      replace,
       boundInstanceName,
     },
   ) => {
@@ -1024,7 +1040,7 @@ export const setSnapshot = internalMutation({
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId
     ) {
-      return;
+      return { applied: false as const };
     }
     const text =
       message.announcePrefix !== undefined && message.announcePrefix !== ""
@@ -1036,7 +1052,7 @@ export const setSnapshot = internalMutation({
     if (row === null) {
       // See appendDelta: never recreate a row for a finished turn (no finalize will
       // delete it again) — a late snapshot for a terminal message is dropped.
-      if (message.status !== "streaming") return;
+      if (message.status !== "streaming") return { applied: false as const };
       seq = 1; // 1-based: a fresh SSE cursor of 0 reads from the first chunk (seq > 0)
       streamRowId = await ctx.db.insert("streamingText", {
         messageId,
@@ -1052,6 +1068,29 @@ export const setSnapshot = internalMutation({
       });
       chatId = message.chatId;
     } else {
+      // ANTI-REGRESSION (G-14): refuse a snapshot that would SHORTEN the text
+      // already displayed, unless the shrink is declared. Without this, any
+      // stale/out-of-order snapshot silently truncated a reply the user had
+      // already read, and nothing recorded it.
+      if (replace !== true && text.length < (row.text ?? "").length) {
+        await traceStream(ctx, {
+          phase: "snapshot_regression",
+          chatId: row.chatId,
+          runId: message.runId,
+          messageId,
+          streamStatus: "streaming",
+          oldLen: (row.text ?? "").length,
+          newLen: text.length,
+        });
+        // REMEMBER the refusal: this exact text usually comes back as the turn's
+        // final, and finalize is where the kept reply is decided (codex P1).
+        await ctx.db.patch(row._id, { refusedText: text });
+        // The caller MUST know: the bridge mirrors `liveText` locally to send
+        // suffix-only deltas, and a refused write it believed applied would
+        // make the next suffix append onto text that never shrank (codex-class
+        // divergence — same lesson as addPart's `accepted:false`).
+        return { applied: false as const };
+      }
       seq = row.chunkSeq ?? 1;
       await ctx.db.patch(row._id, { text, updatedAt: now, chunkSeq: seq + 1 });
       streamRowId = row._id;
@@ -1095,6 +1134,7 @@ export const setSnapshot = internalMutation({
         ? { recTimingId: chunkRecTimingId }
         : {}),
     });
+    return { applied: true as const };
   },
 });
 
@@ -1629,7 +1669,7 @@ export const finalize = internalMutation({
     // row text — closing with the bare snapshot would overwrite the already
     // delivered reply (live 2026-07-19: a replayed announce, preempted
     // mid-stream, shrank a full report to its replayed head).
-    const finalText =
+    let finalText =
       text !== undefined && text !== ""
         ? prefix !== ""
           ? prefix + ANNOUNCE_SEP + text
@@ -1639,6 +1679,46 @@ export const finalize = internalMutation({
           : streamedText === "" || prefix.startsWith(streamedText)
             ? prefix // replayed head of the parked reply (nothing new): keep the reply
             : prefix + ANNOUNCE_SEP + streamedText; // genuinely new partial content
+    // ANTI-REGRESSION AT THE TERMINAL WRITE (G-14, codex P1). The guard on
+    // setSnapshot protects the LIVE row, but the reply the user keeps is this
+    // `text` — a stale or truncated final would defeat the guard one write later.
+    //
+    // The test is PREFIX, not length. A final that merely differs is the
+    // gateway's authoritative re-render (directives stripped, whitespace
+    // collapsed) and may legitimately be shorter — an existing abort test proves
+    // that case is real. A final that is a strict PREFIX of what the user has
+    // already read is not a re-render: it is the same text, cut. Only for a
+    // COMPLETE turn (an error/aborted finalize legitimately carries a partial or
+    // an error string), and never for declared stream noise.
+    // Two independent reasons to keep the streamed text. The remembered refusal
+    // is EXACT and stands on its own: gating it behind the length comparison let
+    // an authorized `replace` shorten the row and, once the displayed text was no
+    // longer longer, the very same stale final walked back in (codex P2).
+    const finalRepeatsRefused =
+      stRow?.refusedText !== undefined && finalText === stRow.refusedText;
+    // A strict PREFIX of what is displayed is the same text, cut. A final that
+    // merely DIFFERS is the gateway's authoritative re-render and may
+    // legitimately be shorter — an existing abort test proves that case is real.
+    const finalCutsDisplayed =
+      finalText.length < streamedText.length &&
+      streamedText.startsWith(finalText);
+    if (
+      status === "complete" &&
+      !discardStreamText &&
+      streamedText !== "" &&
+      (finalRepeatsRefused || finalCutsDisplayed)
+    ) {
+      await traceStream(ctx, {
+        phase: "snapshot_regression",
+        chatId: message.chatId,
+        runId: message.runId,
+        messageId,
+        streamStatus: status,
+        oldLen: streamedText.length,
+        newLen: finalText.length,
+      });
+      finalText = streamedText;
+    }
     await ctx.db.patch(messageId, {
       status,
       text: finalText,

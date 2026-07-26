@@ -8,7 +8,7 @@
 //
 // Event shapes (all carry a `type`; payload fields are read structurally):
 //   { type: "message.delta",    text }
-//   { type: "message.snapshot", text }
+//   { type: "message.snapshot", text, replace? }
 //   { type: "message.final",    text, error? }
 //   { type: "run.status",       status, runId }
 //   { type: "tool.status",      name, phase, runId, toolCallId?, input?, output? }
@@ -17,7 +17,11 @@
 
 export const EVENT_OPENCLAW_FRAME = "openclaw.frame"; // deprecated raw passthrough
 export const EVENT_MESSAGE_DELTA = "message.delta"; // append `text` to the streaming reply
-export const EVENT_MESSAGE_SNAPSHOT = "message.snapshot"; // replace the streaming reply with `text`
+// replace the streaming reply with `text`. `replace: true` DECLARES that the new
+// text may be SHORTER than what is persisted (a compaction reset, an upstream
+// `replace` refresh, a sentinel purge); without it Convex refuses a shrink as a
+// regression, so a stale snapshot can never truncate a reply already displayed.
+export const EVENT_MESSAGE_SNAPSHOT = "message.snapshot";
 export const EVENT_MESSAGE_FINAL = "message.final"; // the turn's authoritative final `text`
 export const EVENT_RUN_STATUS = "run.status"; // {status, runId}
 export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId, toolCallId?, input?, output?}
