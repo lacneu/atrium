@@ -43,11 +43,25 @@ const FILES = [
   "schema/agent.ts",
   // Shared field types the two above import.
   "schema/primitives.ts",
+  // The `sessions.*` lane: get / describe / patch / reset / compact / compaction.list
+  // are 6 of the bridge's 26 RPC calls and the busiest family after chat.
+  "schema/sessions.ts",
+  // `cron.*` (6 calls) is USER-VISIBLE — the Scheduled tab lists, edits and runs jobs,
+  // and `cronManage` is a capability gated on a specific gateway version, so a
+  // contract drift here shows up as a broken control rather than a silent one.
+  "schema/cron.ts",
+  // `tasks.*` (2 calls): the background-task reconciliation the activity indicator
+  // uses before expiring an engagement.
+  "schema/tasks.ts",
   // Contracts the modules above import transitively; they must ride along for the
   // flat layout to typecheck. Explicit rather than an automatic import walk, which
   // would silently widen the reviewed surface.
   "client-info.ts",
   "secret-ref-contract.ts",
+  // Imported by sessions.ts for `PluginJsonValueSchema` alone. Vendored because the
+  // flat layout must typecheck, and CLASSIFIED like any other module — an unread
+  // schema in the manifest is worse than an absent one.
+  "schema/plugins.ts",
 ];
 
 /** The one repository these bytes may be attributed to. */
@@ -275,6 +289,12 @@ for (const rel of FILES) {
     }
   }
   files[name] = {
+    // WHERE these bytes came from, inside the tag. Recorded rather than inferred:
+    // the vendored layout is flat, so `logs-chat.ts` could be `schema/logs-chat.ts`
+    // or `logs-chat.ts` and the integrity test was GUESSING between the two. A guess
+    // that falls through to the wrong candidate verifies the wrong file, and the
+    // upstream diff cannot derive its watchlist from a guess at all.
+    upstreamPath: `packages/gateway-protocol/src/${rel}`,
     vendored: createHash("sha256").update(body).digest("hex"),
     upstream: createHash("sha256").update(raw).digest("hex"),
     // Empty when the file needed no rewrite.

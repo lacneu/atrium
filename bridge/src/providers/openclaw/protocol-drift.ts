@@ -144,6 +144,11 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * `protocol/openclaw/coverage/<newest version>.json`, which the coverage ratchet
  * pins against the vendored TypeBox schemas.
  *
+ * Vendoring `sessions.ts` + `plugins.ts`, then `cron.ts` + `tasks.ts` (2026-07-27),
+ * took the examined surface from 94 entries to 363: the `sessions.*` lane — 6 of the bridge's 26 RPC calls, the
+ * busiest family after chat — is now under contract, and nine more gaps became
+ * VISIBLE rather than merely absent.
+ *
  * Vendoring 2026.7.1 added three DECLARED gaps (W10): two outbound fields the bridge
  * does not send (`ChatSendParams`/`ChatAbortParams` are `additionalProperties:false`,
  * so the floor gateway would reject them), and `ChatAbortedEvent.errorMessage`, which
@@ -152,14 +157,40 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 41,
-  ignored: 50,
-  gaps: 3,
+  handled: 107,
+  ignored: 241,
+  gaps: 15,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
   gapList: [
     "ChatAbortedEvent.errorMessage",
     "ChatSendParams.expectedSessionRoutingContract",
     "ChatAbortParams.preserveSideRuns",
+    // The whole `session.operation` event: the gateway's own account of a compaction,
+    // unreachable from the turn socket by decision (subscribing there cost announce
+    // frames — measured 2026-07-26). Its cause IS retrievable on demand through
+    // `sessions.compaction.list`; what the event alone gives is the cause AT THE
+    // MOMENT it happens, attachable to the turn. `handleSessionOperation` is the
+    // ready, unfed reader.
+    "SessionOperationEvent.operationId",
+    "SessionOperationEvent.operation",
+    "SessionOperationEvent.phase",
+    "SessionOperationEvent.sessionKey",
+    "SessionOperationEvent.agentId",
+    "SessionOperationEvent.ts",
+    "SessionOperationEvent.completed",
+    "SessionOperationEvent.reason",
+    // We reset sessions without telling the gateway why. Corrected after review: the
+    // field admits only "new" | "reset", so it never identifies the CLIENT — it only
+    // separates a reset from a fresh session in the gateway's own accounting.
+    "SessionsResetParams.reason",
+    // Three the cron/tasks classification surfaced (2026-07-27), all user-facing:
+    // a recurring job's COST is on every run entry and the Scheduled tab shows
+    // duration and status only; a job that has failed twenty times in a row looks
+    // exactly like one that failed once; and a running task publishes a progress line
+    // while the activity indicator shows a bare spinner.
+    "CronJobState.consecutiveErrors",
+    "CronRunLogEntry.usage",
+    "TaskSummary.progressSummary",
   ] as string[],
 } as const;
 

@@ -16,10 +16,11 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 (multi-version support, multi-instance, two providers, durable persistence),
 the divergence is documented as deliberate rather than "fixed".
 
-Known internal offset: the runtime drift detector vendors its schema at
-`2026.6.11` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts:24`) while the
-validated ceiling is `2026.7.1`. Unknown-field warnings against a 2026.7.x
-gateway may therefore be schema staleness, not real drift.
+No internal offset: the runtime drift detector vendors its schema at
+`2026.7.1` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+the validated ceiling. An unknown-field warning against a 2026.7.x gateway is
+therefore real drift, not schema staleness — it names a field the published
+contract does not declare, and should be read as such.
 
 ---
 

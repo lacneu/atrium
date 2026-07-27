@@ -891,6 +891,50 @@ export async function applyPatchIntent(
 }
 
 /**
+ * The `chat.send` body for a SUB-AGENT interaction (`/subagent-send`).
+ *
+ * A pure builder, EXPORTED, for one reason: the outbound ratchet validates every body
+ * the bridge sends against the vendored gateway schemas, and a body built inline in an
+ * HTTP handler cannot be reached by a test. Review found that the inventory of call
+ * sites pinned their COUNT and not their CONTENT — a field added here would have
+ * sailed past while breaking every sub-agent send on an older gateway.
+ */
+export function subAgentSendParams(
+  childSessionKey: string,
+  message: string,
+  interactionId: string,
+  /** Inline base64 attachments, when the interaction carries any. Part of the BUILDER
+   *  rather than assigned afterwards (raised in review): appended outside, the
+   *  attachment-bearing shape of this body was never validated against the vendored
+   *  schemas, even though `performSend`'s equivalent branch was. The caller still owns
+   *  the frame guard — it can refuse the request before building anything. */
+  attachments?: unknown,
+): Record<string, unknown> {
+  return {
+    sessionKey: childSessionKey,
+    message,
+    // Stable per interaction so a dispatch retry dedupes at the gateway.
+    idempotencyKey: `interaction-${interactionId}`,
+    ...(Array.isArray(attachments) && attachments.length > 0
+      ? { attachments }
+      : {}),
+  };
+}
+
+/**
+ * The `chat.send` body for a lossless-claw command (`/lossless`). Pure and exported
+ * for the same reason as `subAgentSendParams`. `now` is a parameter so the body is
+ * deterministic under test.
+ */
+export function lcmSendParams(
+  sessionKey: string,
+  command: string,
+  now: number,
+): Record<string, unknown> {
+  return { sessionKey, message: command, idempotencyKey: `lcm-${now}` };
+}
+
+/**
  * EXPORTED for the pre-send confinement tests (W2). Four lots in a row shipped a
  * hardening with no failing test because nothing in the suite could answer the
  * gateway's RPCs; the guard here DECIDES THE FATE OF A SEND from a
@@ -1689,7 +1733,14 @@ async function fetchCompactionHistory(
     .map((c) => ({
       checkpointId: str(c.checkpointId),
       createdAt: num(c.createdAt),
-      reason: str(c.reason),
+      // BUCKETED, not passed through (found 2026-07-27 while classifying the vendored
+      // sessions schema — the manifest claimed this was already bucketed and it was
+      // not). `reason` is FREE TEXT on the wire and this list is served by a
+      // metadata-only surface (/api/v1/compaction-history and the obs MCP), so an
+      // unrecognised value must collapse to "other" rather than travel verbatim —
+      // exactly the treatment `timeoutPhase` and the pre-send guard's own reason
+      // already get.
+      reason: bucketCompactionReason(c.reason),
       tokensBefore: num(c.tokensBefore),
       tokensAfter: num(c.tokensAfter),
     }));
@@ -3081,11 +3132,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             const before = await countEntries();
             await conn.request(
               "chat.send",
-              {
-                sessionKey: lcmSessionKey,
-                message: lcmCommand,
-                idempotencyKey: `lcm-${Date.now()}`,
-              },
+              lcmSendParams(lcmSessionKey, lcmCommand, Date.now()),
               15_000,
             );
             // The command layer answers synchronously gateway-side; poll the
@@ -3580,12 +3627,6 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           body.childSessionKey,
           body.interactionId,
         );
-        const saParams: Record<string, unknown> = {
-          sessionKey: body.childSessionKey,
-          message: body.message,
-          // Stable per interaction so a dispatch retry dedupes at the gateway.
-          idempotencyKey: `interaction-${body.interactionId}`,
-        };
         const saAtts = body.attachments;
         if (Array.isArray(saAtts) && saAtts.length > 0) {
           // Frame guard (mirror the main /send path): the attachment rides THIS
@@ -3607,8 +3648,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             });
             return;
           }
-          saParams.attachments = saAtts;
         }
+        const saParams = subAgentSendParams(
+          body.childSessionKey,
+          body.message,
+          body.interactionId,
+          saAtts,
+        );
         await session.connection.request("chat.send", saParams, 20_000);
         sendJson(res, 200, { ok: true });
       } catch (err) {

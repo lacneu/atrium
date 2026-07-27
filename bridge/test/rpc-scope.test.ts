@@ -16,68 +16,10 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { COMPAT_MANIFEST } from "../src/compat.js";
+import { promisedVersion } from "./helpers/vendored.js";
+import { requestCallSites, sourceFiles } from "./helpers/rpc-sites.js";
 
 const SRC = new URL("../src/", import.meta.url);
-
-/** Source files of the bridge, recursively. */
-function sourceFiles(dir: URL = SRC, out: URL[] = []): URL[] {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
-    if (entry.isDirectory()) sourceFiles(child, out);
-    else if (entry.name.endsWith(".ts")) out.push(child);
-  }
-  return out;
-}
-
-/** Every `.request(` call site: the method name when it is a plain string literal,
- *  or the raw first-argument EXPRESSION when it is anything else. */
-function requestCallSites(): {
-  method: string | null;
-  expression?: string;
-  file: string;
-}[] {
-  // Two patterns over the same anchor. The literal one extracts the name; the ANY one
-  // counts call sites. A site the first matches and the second does not cannot exist;
-  // a site only the second matches is an INDIRECT method name, which defeats the
-  // whole derivation — reported by name rather than silently skipped (the first
-  // version of this test only looked for double-quoted literals, so a constant or a
-  // template literal would have added an RPC with no contract and stayed green).
-  // Three call shapes the first versions missed, each raised in review and each a way
-  // for an RPC to vanish from the derived surface while every size assertion stayed
-  // green: an OPTIONAL call (`client.request?.(…)`), a GENERIC call
-  // (`client.request<Result>(…)`), and the two combined.
-  // The type-argument class must ALLOW braces (`request<{ok:boolean}>(…)` is the shape
-  // the bridge would actually write) while excluding parentheses and newlines so the
-  // match cannot run away. Excluding braces made the generic case silently unmatched.
-  const CALL = String.raw`\.request(?:\?\.)?\s*(?:<[^()\n]*>\s*)?\(`;
-  const LITERAL = new RegExp(
-    `${CALL}\\s*(?:/\\*[\\s\\S]*?\\*/\\s*)?(?://[^\\n]*\\n\\s*)*"([a-zA-Z0-9._]+)"`,
-    "g",
-  );
-  const ANY = new RegExp(CALL, "g");
-  const sites: { method: string | null; expression?: string; file: string }[] = [];
-  for (const file of sourceFiles()) {
-    const source = readFileSync(file, "utf-8");
-    const name = file.pathname.split("/").pop()!;
-    const literals = [...source.matchAll(LITERAL)];
-    const all = [...source.matchAll(ANY)];
-    // Match them by position: a literal call site starts where an ANY match starts.
-    const literalStarts = new Set(literals.map((m) => m.index));
-    for (const m of literals) sites.push({ method: m[1]!, file: name });
-    for (const m of all) {
-      if (literalStarts.has(m.index)) continue;
-      // The first argument's own text, up to the comma. Identifying an indirect site
-      // by its EXPRESSION rather than by its file (raised in review): keyed by file,
-      // a second indirect call in server.ts would have silently inherited the TTS
-      // expansion and vanished from the derived surface.
-      const after = source.slice(m.index! + m[0].length);
-      const expression = (after.split(",")[0] ?? "").trim();
-      sites.push({ method: null, expression, file: name });
-    }
-  }
-  return sites;
-}
 
 /** Call sites whose method name is a TEMPLATE over an allowlisted set, with the set
  *  enumerated. The bridge has exactly one: `/tts` builds `tts.${method}` from a body
@@ -143,11 +85,9 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
  *  a bump would otherwise make a module added only there count as covering an RPC for
  *  the 2026.7.1 contract we actually claim. */
 function vendoredModules(): Set<string> {
-  const promised = COMPAT_MANIFEST.providers.openclaw?.supportedRange?.maxValidated;
-  if (!promised) throw new Error("the openclaw provider declares no supported range");
   return new Set(
     readdirSync(
-      new URL(`../protocol/openclaw/${promised}/`, import.meta.url),
+      new URL(`../protocol/openclaw/${promisedVersion()}/`, import.meta.url),
     ).filter((f) => f.endsWith(".ts")),
   );
 }
@@ -158,29 +98,23 @@ function vendoredModules(): Set<string> {
  *  vendored AND every field classified. Shrinking this list is the work; growing it
  *  without a decision is what the test forbids. */
 const UNCOVERED_SNAPSHOT = [
+  // `cron.*` and `tasks.*` left this list on 2026-07-27 with schema/cron.ts and
+  // schema/tasks.ts (31 more schemas classified).
+  // `sessions.*` left this list on 2026-07-27: schema/sessions.ts is vendored and its
+  // 48 schemas are classified — EXCEPT `sessions.get`, which upstream does not
+  // validate at all: its handler parses `{key, sessionKey, limit}` by hand
+  // (server-methods/sessions.ts) and no `SessionsGetParamsSchema` exists. Uncovered by
+  // CONSTRUCTION, not by omission — the same category as `usage.status` and `tts.*`.
+  "sessions.get",
   "agents.files.get",
   "agents.files.list",
   "agents.files.set",
   "agents.list",
   "config.get",
   "config.patch",
-  "cron.get",
-  "cron.list",
-  "cron.remove",
-  "cron.run",
-  "cron.runs",
-  "cron.update",
   "models.list",
-  "sessions.compact",
-  "sessions.compaction.list",
-  "sessions.describe",
-  "sessions.get",
-  "sessions.patch",
-  "sessions.reset",
   "talk.client.create",
   "talk.client.toolCall",
-  "tasks.get",
-  "tasks.list",
   // The three `tts.*` methods the /tts passthrough can reach. Upstream schematizes
   // only `tts.speak` (channels.ts), so `status`/`providers`/`convert` have no param
   // schema at all — they are uncovered by CONSTRUCTION, not by omission.
@@ -189,15 +123,48 @@ const UNCOVERED_SNAPSHOT = [
   "tts.status",
 ];
 
+/** Every `*ParamsSchema` exported by the modules vendored for the PROMISED version. */
+function vendoredParamSchemas(): Set<string> {
+  const dir = new URL(`../protocol/openclaw/${promisedVersion()}/`, import.meta.url);
+  const out = new Set<string>();
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".ts"))) {
+    const text = readFileSync(new URL(f, dir), "utf-8");
+    for (const m of text.matchAll(/export const ([A-Za-z0-9_]+Schema)\b/g)) {
+      out.add(m[1]!);
+    }
+  }
+  return out;
+}
+
+/** Upstream's mechanical naming: `sessions.compaction.list` ->
+ *  `SessionsCompactionListParamsSchema`. */
+function paramsSchemaName(method: string): string {
+  return `${method
+    .split(".")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("")}ParamsSchema`;
+}
+
+/**
+ * Methods whose CONTRACT is not enumerated in this repo.
+ *
+ * ONE definition, deliberately: "the module is vendored" is not coverage — a module
+ * can be present and still hold no schema for the method (`sessions.get` is parsed by
+ * hand upstream and has none). Two tests computing "covered" two different ways
+ * disagreed the moment sessions.ts landed, so the schema-level check is now the only
+ * one and the module check feeds it.
+ */
 function uncovered(): string[] {
   const modules = vendoredModules();
+  const schemas = vendoredParamSchemas();
   return [...calledMethods().keys()]
     .filter((m) => {
       const ns = m.split(".")[0]!;
       if (!(ns in NAMESPACE_MODULE)) return true; // unmapped: reported by name below
       const module = NAMESPACE_MODULE[ns] ?? null;
       if (module === null) return false; // no params on the wire: nothing to cover
-      return !modules.has(module);
+      if (!modules.has(module)) return true; // module not vendored at all
+      return !schemas.has(paramsSchemaName(m)); // vendored, but no schema for THIS method
     })
     .sort();
 }
@@ -330,47 +297,62 @@ describe("RPC scope derivation (W10)", () => {
     ).toEqual([...UNCOVERED_SNAPSHOT].sort());
   });
 
-  it("a covered method has its OWN params schema in the vendored module", async () => {
-    // Namespace-level coverage is not coverage: `chat.newRpc` would count as covered
-    // merely because `logs-chat.ts` exists, with no schema for it and nothing to
-    // classify (raised in review). Upstream's naming is mechanical —
-    // `sessions.describe` -> `SessionsDescribeParamsSchema` — so the link is
-    // checkable. Methods with NO params schema upstream are listed by name: for those
-    // the gateway itself validates nothing, which is a fact about the protocol.
-    const promised =
-      COMPAT_MANIFEST.providers.openclaw?.supportedRange?.maxValidated;
-    if (!promised) throw new Error("no supported range");
-    const exports = new Set<string>();
-    for (const file of readdirSync(
-      new URL(`../protocol/openclaw/${promised}/`, import.meta.url),
-    ).filter((f) => f.endsWith(".ts"))) {
-      const text = readFileSync(
-        new URL(`../protocol/openclaw/${promised}/${file}`, import.meta.url),
-        "utf-8",
-      );
-      for (const m of text.matchAll(/export const ([A-Za-z0-9_]+Schema)\b/g)) {
-        exports.add(m[1]!);
-      }
-    }
-    const schemaName = (method: string): string =>
-      `${method
-        .split(".")
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join("")}ParamsSchema`;
-
-    const missing = [...calledMethods().keys()]
+  it("the methods we claim to cover are nameable in the vendored schemas", () => {
+    // DIRECT, not derived (raised in review): the previous version filtered
+    // `!uncovered().includes(m)` and then re-applied the very check `uncovered()` had
+    // just applied, so it could never find anything — a test that could not fail.
+    // This one names the methods and looks their schema up in the vendored files, so
+    // losing a schema, losing the vendoring, or dropping the schema check out of
+    // `uncovered()` all turn it red.
+    const MUST_BE_ENUMERATED = [
+      "chat.send",
+      "chat.abort",
+      "sessions.describe",
+      "sessions.patch",
+      "sessions.reset",
+      "sessions.compact",
+      "sessions.compaction.list",
+      // The cron/tasks families, added 2026-07-27. This list is the DIRECT,
+      // non-derived claim, so every newly covered method must join it — omitting them
+      // (as the first edit silently did) leaves their schemas free to vanish while the
+      // snapshot stays green.
+      "cron.list",
+      "cron.get",
+      "cron.update",
+      "cron.remove",
+      "cron.run",
+      "cron.runs",
+      "tasks.get",
+      "tasks.list",
+    ];
+    // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
+    // a method whose schema happens to be vendored — `cron.status`, say — would leave
+    // `uncovered()` and its snapshot untouched and every test green, while that
+    // schema's classification still said the bridge never calls it. Equality forces
+    // the new method into view.
+    const covered = [...calledMethods().keys()]
       .filter((m) => !uncovered().includes(m))
-      // Methods that take NO params have nothing to enumerate — `usage.status` is
-      // `async ({ respond }) => …` upstream. Excluded by the same declared fact that
-      // keeps them out of the uncovered set, not by a special case here.
       .filter((m) => NAMESPACE_MODULE[m.split(".")[0]!] !== null)
-      .filter((m) => !exports.has(schemaName(m)))
       .sort();
     expect(
-      missing,
-      "these methods sit in a vendored module but have no *ParamsSchema there — " +
-        "their contract is not actually enumerated: " + missing.join(", "),
-    ).toEqual([]);
+      covered,
+      "a method became covered without joining MUST_BE_ENUMERATED — add it, and check " +
+        "its schema classification still tells the truth about what the bridge does",
+    ).toEqual([...MUST_BE_ENUMERATED].sort());
+
+    const schemas = vendoredParamSchemas();
+    for (const m of MUST_BE_ENUMERATED) {
+      expect(
+        schemas.has(paramsSchemaName(m)),
+        `${m} -> ${paramsSchemaName(m)} is missing from the vendored schemas`,
+      ).toBe(true);
+      // …and the derivation must AGREE that it is covered. The two together are what
+      // make the claim mean something.
+      expect(uncovered(), m).not.toContain(m);
+    }
+    // The seventh sessions call stays declared-uncovered: upstream parses it by hand
+    // and exports no schema for it.
+    expect(uncovered()).toContain("sessions.get");
   });
 
   it("the chat lane IS covered (the ratchet is not vacuous)", () => {

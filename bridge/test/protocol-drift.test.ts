@@ -10,7 +10,7 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPAT_MANIFEST } from "../src/compat.js";
+import { promisedVersion } from "./helpers/vendored.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -118,8 +118,7 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
   // would otherwise swing the runtime matrix onto a contract nobody had promised).
   // `compat.test.ts` separately refuses a `maxValidated` with no vendored directory,
   // so this lookup cannot point at nothing.
-  const REFERENCE = COMPAT_MANIFEST.providers.openclaw?.supportedRange?.maxValidated;
-  if (!REFERENCE) throw new Error("the openclaw provider declares no supported range");
+  const REFERENCE = promisedVersion();
   const MANIFEST = JSON.parse(
     readFileSync(
       new URL(`../protocol/openclaw/coverage/${REFERENCE}.json`, import.meta.url),

@@ -38,9 +38,15 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { vendoredVersions } from "./helpers/vendored.js";
+
 const PROTOCOL = new URL("../protocol/openclaw/", import.meta.url);
 
 interface FileHashes {
+  /** Path inside the tag these bytes were copied from, repo-root relative. The
+   *  vendored layout is FLAT, so the location is not recoverable from the filename —
+   *  it has to be recorded, and the upstream watchlist derives from it. */
+  upstreamPath: string;
   /** sha256 of the vendored file AS WRITTEN (our header included). Self-attested. */
   vendored: string;
   /** sha256 of the RAW upstream bytes. A claim about a PUBLIC tag: recomputable by
@@ -78,13 +84,6 @@ function stripHeader(text: string): string {
   return lines.slice(end + 1).join("\n");
 }
 
-function vendoredVersions(): string[] {
-  return readdirSync(PROTOCOL, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && e.name !== "coverage")
-    .map((e) => e.name)
-    .sort();
-}
-
 const sha256 = (s: string): string =>
   createHash("sha256").update(s).digest("hex");
 
@@ -118,6 +117,32 @@ describe("vendored protocol integrity", () => {
         // A 40-hex commit id, not a branch name or "HEAD": the point is that the
         // exact upstream tree is nameable years later.
         expect(prov!.upstreamSha).toMatch(/^[0-9a-f]{40}$/);
+      });
+
+      it("names WHERE inside the tag each file came from, and the file agrees", () => {
+        if (prov === null) return; // reported by the test above
+        // Checkable WITHOUT a checkout: the vendoring script writes the same path
+        // into the file's own header, so the record and the bytes must corroborate
+        // each other. A record that no one cross-checks is a comment.
+        const wrong: string[] = [];
+        for (const [file, hashes] of Object.entries(prov.files)) {
+          if (!/^packages\/gateway-protocol\/src\/.+\.ts$/.test(hashes.upstreamPath ?? "")) {
+            wrong.push(`${file}: implausible upstreamPath ${hashes.upstreamPath}`);
+            continue;
+          }
+          if (!hashes.upstreamPath.endsWith(`/${file}`)) {
+            wrong.push(`${file}: upstreamPath ${hashes.upstreamPath} names another file`);
+            continue;
+          }
+          const header = readFileSync(
+            new URL(`${version}/${file}`, PROTOCOL),
+            "utf-8",
+          ).slice(0, 400);
+          if (!header.includes(hashes.upstreamPath)) {
+            wrong.push(`${file}: header does not cite ${hashes.upstreamPath}`);
+          }
+        }
+        expect(wrong, wrong.join("\n")).toEqual([]);
       });
 
       it("every recorded file still hashes to its recorded sha256", () => {
@@ -219,15 +244,18 @@ describe("vendored protocol integrity", () => {
         }
         const wrong: string[] = [];
         for (const [file, hashes] of Object.entries(prov.files)) {
-          // Two possible upstream locations (schema modules vs the shared contracts
-          // one level up) — the same split the vendoring script encodes.
-          const candidates = [
-            `${root}/packages/gateway-protocol/src/schema/${file}`,
-            `${root}/packages/gateway-protocol/src/${file}`,
-          ];
-          const found = candidates.find((c) => existsSync(c));
-          if (found === undefined) {
-            wrong.push(`${file} (absent upstream)`);
+          // The RECORDED path, not a guess between two candidates. Guessing verified
+          // whichever file happened to exist: had a schema module ever appeared at
+          // both locations, or moved between them across tags, the check would have
+          // gone green against the wrong bytes while claiming the right ones.
+          const declared = hashes.upstreamPath;
+          if (typeof declared !== "string" || declared.length === 0) {
+            wrong.push(`${file} (provenance records no upstream path)`);
+            continue;
+          }
+          const found = `${root}/${declared}`;
+          if (!existsSync(found)) {
+            wrong.push(`${file} (absent upstream at ${declared})`);
             continue;
           }
           if (sha256(readFileSync(found, "utf-8")) !== hashes.upstream) {

@@ -16,6 +16,7 @@
 // explicit overflow path never resets accumulated text (the run continues on
 // the same runId with no lifecycle end).
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   Normalizer,
@@ -25,6 +26,7 @@ import {
 } from "../src/providers/openclaw/normalizer.js";
 import type { BridgeEvent } from "../src/core/events.js";
 import { TurnSink } from "../src/core/turn-sink.js";
+import { bucketCompactionReason } from "../src/core/compaction-verdict.js";
 import type {
   CompactionPart,
   ConvexWriter,
@@ -1156,5 +1158,45 @@ describe("a TRUNCATED child-key set never decides a turn is empty", () => {
       truncated: false,
     });
     expect(kind).toBe("empty_response");
+  });
+});
+
+// ── The compaction HISTORY is metadata-only too (found 2026-07-27) ──────────
+//
+// `/compaction-history` shapes the gateway's checkpoints for `/api/v1` and the obs
+// MCP. Its `reason` was passed through VERBATIM while the coverage manifest claimed it
+// was bucketed — the classification exercise of vendoring `sessions.ts` is what caught
+// the discrepancy. A free-text gateway string on a metadata-only surface is the same
+// defect already fixed twice this month (timeoutPhase, the pre-send guard's reason).
+
+describe("compaction history: the checkpoint reason is BUCKETED", () => {
+  it("a known reason survives; an unknown one collapses to `other`", () => {
+    expect(bucketCompactionReason("overflow")).toBe("overflow");
+    expect(bucketCompactionReason("manual")).toBe("manual");
+    // The shape a leak would take: a sentence the gateway composed.
+    expect(
+      bucketCompactionReason("compacting after: virement de 4000 EUR à Jean"),
+    ).toBe("other");
+  });
+
+  it("an absent reason stays absent (never a default that reads as measured)", () => {
+    expect(bucketCompactionReason(undefined)).toBeNull();
+    expect(bucketCompactionReason("")).toBeNull();
+    expect(bucketCompactionReason(42)).toBeNull();
+  });
+
+  it("the /compaction-history shaper calls it (not a raw passthrough)", () => {
+    // Reads the source: the shaper is a private function inside the HTTP handler and
+    // is not exported. What must never come back is `reason: str(c.reason)`.
+    const src = readFileSync(
+      new URL("../src/server.ts", import.meta.url),
+      "utf-8",
+    );
+    const shaper = src.slice(
+      src.indexOf("async function fetchCompactionHistory"),
+      src.indexOf("/** One normalized scheduled job"),
+    );
+    expect(shaper).toContain("reason: bucketCompactionReason(c.reason)");
+    expect(shaper).not.toContain("reason: str(c.reason)");
   });
 });

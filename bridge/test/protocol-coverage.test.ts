@@ -21,6 +21,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { vendoredVersions } from "./helpers/vendored.js";
+
 // EVERY vendored version, not one hardcoded (W10 / G1). The ratchet's whole value is
 // that bumping the validated range = vendoring the new tag = this test enumerating
 // what changed; pinned to a single directory, it went green on a version nobody had
@@ -34,16 +36,6 @@ const VENDORED_MODULES = (
     glob: (p: string) => Record<string, () => Promise<Record<string, unknown>>>;
   }
 ).glob("../protocol/openclaw/*/*.ts");
-
-/** Vendored version directories, in ascending order. */
-function vendoredVersions(): string[] {
-  return readdirSync(new URL("../protocol/openclaw", import.meta.url), {
-    withFileTypes: true,
-  })
-    .filter((e) => e.isDirectory() && e.name !== "coverage")
-    .map((e) => e.name)
-    .sort();
-}
 
 interface FieldEntry {
   status: "handled" | "ignored" | "gap";
