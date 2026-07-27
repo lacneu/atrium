@@ -55,6 +55,12 @@
       "upstream": "a36929d4603f1801083f3af975813aeffcb346ef88fad819ddedf7069e483da6",
       "rewrites": []
     },
+    "channels.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/channels.ts",
+      "vendored": "64e06ea370ef0bac6f37c865df4e5180536dac7409e606eb0aefd7808f6c948f",
+      "upstream": "d34dffa70ffa5f5c942cd0397e2bddb9457c8a3b465ebff2eedf2965dc88d51b",
+      "rewrites": []
+    },
     "agents-models-skills.ts": {
       "upstreamPath": "packages/gateway-protocol/src/schema/agents-models-skills.ts",
       "vendored": "0f5b54de7cf54eef345bb6c967943c37f283fee9bec00f7bcce8da3f49e20e74",

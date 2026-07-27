@@ -99,8 +99,26 @@ async function exportedSchemas(
  *  those are classified whole-schema). */
 function topLevelFields(schema: Record<string, unknown>): string[] {
   const props = schema.properties;
-  if (typeof props !== "object" || props === null) return [];
-  return Object.keys(props as Record<string, unknown>);
+  if (typeof props === "object" && props !== null) {
+    return Object.keys(props as Record<string, unknown>);
+  }
+  // A UNION has no `properties` of its own — it has branches, and each branch is an
+  // object with fields the bridge's consumers read. Returning [] for it made the
+  // whole-schema rule vacuous exactly where it mattered: `TalkClientCreateResult` is a
+  // four-branch union whose fields Convex projects, and a field added to a branch would
+  // have entered under a green "handled" verdict.
+  //
+  // The UNION of the branches' fields, deduped: a classification must account for every
+  // field any accepted shape can carry, not for one branch's idea of the contract.
+  const branches = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(branches)) {
+    const out = new Set<string>();
+    for (const b of branches) {
+      for (const f of topLevelFields(b as Record<string, unknown>)) out.add(f);
+    }
+    return [...out].sort();
+  }
+  return [];
 }
 
 const VALID_STATUSES = new Set(["handled", "ignored", "gap"]);
@@ -161,6 +179,30 @@ describe(`protocol coverage ratchet (openclaw @ ${VENDORED_VERSION})`, () => {
         // Whole-schema classification: must itself be a valid entry.
         const err = validEntry(entry as FieldEntry, name);
         if (err) problems.push(err);
+        // A whole-schema `ignored` is DELIBERATELY exempt from field checks: if nothing
+        // in the schema is read, a new field in it changes nothing, and demanding a
+        // classification per field would drown the signal (that reasoning is why the
+        // ignored families are entered whole).
+        //
+        // Say the LIMIT plainly, because it is easy to describe this ratchet as
+        // "every new top-level field is triaged" and that is not what it does: a field
+        // added to a wholly-ignored schema passes unexamined, BY DESIGN. What the design
+        // rests on is that the schema is unread — so the day the bridge starts reading
+        // one, the entry must be split into fields in the SAME change, and nothing here
+        // can force that. The compensating control is the RPC-scope test: a method
+        // becoming covered forces its classification to be re-read.
+        //
+        // `handled` and `gap` are NOT exempt when the schema has fields. "This schema is
+        // handled" says nothing about WHICH fields the bridge reads, so a field added
+        // later slips in under a green light — exactly the hole this ratchet exists to
+        // close, one level up. Union and empty schemas have no fields and stay whole.
+        if (entry.status !== "ignored" && topLevelFields(schema).length > 0) {
+          problems.push(
+            `${name}: classified "${entry.status}" as a WHOLE schema, but it has ` +
+              `${topLevelFields(schema).length} field(s) — classify them individually, ` +
+              `or a field added upstream enters under this verdict unread`,
+          );
+        }
         continue;
       }
       const fields = topLevelFields(schema);

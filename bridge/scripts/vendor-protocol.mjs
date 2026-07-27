@@ -57,6 +57,15 @@ const FILES = [
   // gateway configuration. `config.patch` carries a `baseHash` OCC guard, so a
   // contract move here silently turns a guarded write into an unguarded one.
   "schema/config.ts",
+  // `talk.client.create` / `talk.client.toolCall`: the realtime voice lane. Two calls
+  // only, but they mint a browser-held session carrying a short-lived credential and
+  // relay every voice consult, so a contract move here surfaces with NO talk-specific
+  // diagnosis: `classifyGatewayError` has no code for this lane. The generic classifier
+  // still does its job — a rejected parameter is INVALID_REQUEST, a timeout is
+  // GATEWAY_TIMEOUT, and auth/permission/disconnect each keep their own code — but none
+  // of that says "the voice contract moved", so the user sees a generic voice failure and
+  // learns nothing about what changed.
+  "schema/channels.ts",
   // `agents.list`, `models.list` and the `agents.files.*` trio share one module.
   // The Files agent's whole CRUD surface lives behind `agents.files.set`.
   "schema/agents-models-skills.ts",

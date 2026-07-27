@@ -106,12 +106,21 @@ const UNCOVERED_SNAPSHOT = [
   // (server-methods/sessions.ts) and no `SessionsGetParamsSchema` exists. Uncovered by
   // CONSTRUCTION, not by omission — the same category as `usage.status` and `tts.*`.
   "sessions.get",
+  // `usage.status` is `async ({ respond }) => …` upstream: it takes NO parameters, so
+  // there is no params schema to vendor and none to classify. Listed anyway — a method
+  // the ratchet cannot see is a method nobody re-examines at the next version bump.
+  "usage.status",
   // `config.*`, `agents.*` and `models.list` left this list on 2026-07-27 with
   // schema/config.ts and schema/agents-models-skills.ts (76 more schemas classified).
   // The classification found a real one: `ModelChoice.available` is dropped by
   // `dedupeModels`, so the picker offers models the gateway says cannot run.
-  "talk.client.create",
-  "talk.client.toolCall",
+  //
+  // `talk.client.create` / `.toolCall` left it the same day with schema/channels.ts.
+  // WHAT REMAINS BELOW IS THE FLOOR, not a backlog: every method still here is
+  // uncovered BY CONSTRUCTION because upstream publishes no params schema for it.
+  // `usage.status` takes no params at all. Shrinking this list further would require a
+  // change UPSTREAM, so a future reader should not read it as work left undone.
+  //
   // The three `tts.*` methods the /tts passthrough can reach. Upstream schematizes
   // only `tts.speak` (channels.ts), so `status`/`providers`/`convert` have no param
   // schema at all — they are uncovered by CONSTRUCTION, not by omission.
@@ -119,6 +128,29 @@ const UNCOVERED_SNAPSHOT = [
   "tts.providers",
   "tts.status",
 ];
+
+/** The methods mapped to `null` — "no params on the wire" — whose claim is now
+ *  CONTRADICTED by a vendored module exporting their params schema.
+ *
+ *  `null` is an assertion about upstream, made by reading its handler. Assertions decay:
+ *  a namespace can gain parameters, and small namespaces are routinely folded into a
+ *  module we already vendor. Then the schema is right there and the mapping still says
+ *  there is nothing to cover.
+ *
+ *  DECIDED LIMIT: this catches the case where the new schema lands in a module we
+ *  vendor. If upstream puts it in a module we do not, nothing in this repo can see it —
+ *  the same construction limit as `tts.*`, and the reason the version-bump runbook reads
+ *  the upstream diff rather than trusting these tests alone. */
+function contradictedNoParamsClaims(): string[] {
+  const schemas = vendoredParamSchemas();
+  return [...calledMethods().keys()]
+    .filter((m) => {
+      const ns = m.split(".")[0]!;
+      return ns in NAMESPACE_MODULE && NAMESPACE_MODULE[ns] === null;
+    })
+    .filter((m) => schemas.has(paramsSchemaName(m)))
+    .sort();
+}
 
 /** Every `*ParamsSchema` exported by the modules vendored for the PROMISED version. */
 function vendoredParamSchemas(): Set<string> {
@@ -159,7 +191,18 @@ function uncovered(): string[] {
       const ns = m.split(".")[0]!;
       if (!(ns in NAMESPACE_MODULE)) return true; // unmapped: reported by name below
       const module = NAMESPACE_MODULE[ns] ?? null;
-      if (module === null) return false; // no params on the wire: nothing to cover
+      // A `null` mapping means "takes no params on the wire". That USED to return
+      // false — covered — which made `usage.status` invisible to this test AND to the
+      // MUST_BE_ENUMERATED equality, so it appeared in neither list while the lot
+      // summary claimed it was in the declared gap. A method with no contract is
+      // UNCOVERED whatever the reason; the reason belongs in the snapshot's comment,
+      // not in a filter that hides it.
+      //
+      // The `null` is a CLAIM about upstream, and it is checked below by
+      // `noParamsClaimHolds` — returning `true` here alone would leave the claim
+      // unfalsifiable: a params schema appearing upstream would change nothing and every
+      // assertion would stay green.
+      if (module === null) return true;
       if (!modules.has(module)) return true; // module not vendored at all
       return !schemas.has(paramsSchemaName(m)); // vendored, but no schema for THIS method
     })
@@ -294,6 +337,20 @@ describe("RPC scope derivation (W10)", () => {
     ).toEqual([...UNCOVERED_SNAPSHOT].sort());
   });
 
+  it("a method claimed to take NO params still takes none upstream", () => {
+    // `NAMESPACE_MODULE[ns] === null` says "there is nothing to cover here". That claim
+    // came from reading an upstream handler, and nothing re-read it: a namespace can gain
+    // parameters, and a small one is routinely folded into a module we already vendor.
+    // Then the schema sits in the repo while the mapping still says there is nothing.
+    const contradicted = contradictedNoParamsClaims();
+    expect(
+      contradicted,
+      `mapped to "no params on the wire", yet a vendored module exports their params ` +
+        `schema: ${contradicted.join(", ")} — map the namespace to that module and ` +
+        `classify the fields`,
+    ).toEqual([]);
+  });
+
   it("the methods we claim to cover are nameable in the vendored schemas", () => {
     // DIRECT, not derived (raised in review): the previous version filtered
     // `!uncovered().includes(m)` and then re-applied the very check `uncovered()` had
@@ -329,6 +386,10 @@ describe("RPC scope derivation (W10)", () => {
       "agents.files.list",
       "agents.files.set",
       "models.list",
+      // The `talk.*` client lane, added 2026-07-27. Every RPC family the bridge calls
+      // is now under contract except the ones upstream publishes no params schema for.
+      "talk.client.create",
+      "talk.client.toolCall",
     ];
     // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
     // a method whose schema happens to be vendored — `cron.status`, say — would leave

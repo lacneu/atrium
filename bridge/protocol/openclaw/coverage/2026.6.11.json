@@ -838,8 +838,40 @@
    "why": "delivery routing for a completed run — gateway-side"
   },
   "CronDelivery": {
-   "status": "handled",
-   "by": "normalizeCronJobDetail reads `delivery.mode` (none|announce|webhook) — the detail says where a run's result goes. A UNION, classified whole: the bridge reads the shared discriminant rather than matching members."
+   "fields": {
+    "mode": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it as `deliveryMode` (none|announce|webhook) — the shared discriminant of the union, and the one thing the Scheduled tab states about a job's output"
+    },
+    "channel": {
+     "status": "ignored",
+     "why": "`delivery` is read by normalizeCronJobDetail (cron-manage.ts) and only its `mode` crosses to the app. The rest describes WHERE a run's result is delivered — a gateway channel routing decision configured on the gateway, shown read-only in the Scheduled tab and never edited from Atrium"
+    },
+    "threadId": {
+     "status": "ignored",
+     "why": "`delivery` is read by normalizeCronJobDetail (cron-manage.ts) and only its `mode` crosses to the app. The rest describes WHERE a run's result is delivered — a gateway channel routing decision configured on the gateway, shown read-only in the Scheduled tab and never edited from Atrium"
+    },
+    "accountId": {
+     "status": "ignored",
+     "why": "`delivery` is read by normalizeCronJobDetail (cron-manage.ts) and only its `mode` crosses to the app. The rest describes WHERE a run's result is delivered — a gateway channel routing decision configured on the gateway, shown read-only in the Scheduled tab and never edited from Atrium"
+    },
+    "to": {
+     "status": "ignored",
+     "why": "`delivery` is read by normalizeCronJobDetail (cron-manage.ts) and only its `mode` crosses to the app. The rest describes WHERE a run's result is delivered — a gateway channel routing decision configured on the gateway, shown read-only in the Scheduled tab and never edited from Atrium"
+    },
+    "bestEffort": {
+     "status": "ignored",
+     "why": "whether a failed delivery is tolerated — part of the same gateway-side routing policy as `channel`/`to`"
+    },
+    "failureDestination": {
+     "status": "ignored",
+     "why": "where a FAILED run reports — same gateway-side routing policy; Atrium surfaces the failure from the run log instead"
+    },
+    "completionDestination": {
+     "status": "ignored",
+     "why": "announce-branch only: where a completed run announces. Same gateway-side routing policy"
+    }
+   }
   },
   "CronDeliveryPatch": {
    "status": "ignored",
@@ -854,8 +886,16 @@
    "why": "same failure-alert family"
   },
   "CronGetParams": {
-   "status": "handled",
-   "by": "cron-manage `get` sends `{id}` (the schema is a union of the id and legacy jobId arms; the bridge always uses `id`)"
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "cron-manage `get` sends `{id}`"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    }
+   }
   },
   "CronJob": {
    "fields": {
@@ -1110,16 +1150,152 @@
    }
   },
   "CronPayload": {
-   "status": "handled",
-   "by": "normalizeCronJobDetail reads `kind` (the payload family the message editor must preserve) and the prompt text — `message` for an agentTurn, `text` for a systemEvent. A UNION, so it is classified whole: the bridge reads the members' shared fields rather than matching the union, and an unknown member degrades to a null prompt instead of breaking the detail."
+   "fields": {
+    "kind": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it — the payload family the message editor must preserve, and buildGatewayCronPatch refuses an unknown one rather than guessing"
+    },
+    "message": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it as the prompt of an agentTurn job"
+    },
+    "text": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it as the prompt of a systemEvent job"
+    },
+    "allowUnsafeExternalContent": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "argv": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "cwd": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "env": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "fallbacks": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "input": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "lightContext": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "model": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "noOutputTimeoutSeconds": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "outputMaxBytes": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "thinking": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "timeoutSeconds": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "toolsAllow": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    }
+   }
   },
   "CronPayloadPatch": {
-   "status": "handled",
-   "by": "buildGatewayCronPatch SENDS one: editing a cron's prompt emits `{kind:\"systemEvent\", text}` or `{kind:\"agentTurn\", message}`, chosen from the job's CURRENT kind. An unknown current kind fails CLOSED (the update is refused) rather than guessing a member."
+   "fields": {
+    "kind": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch SENDS it, chosen from the job's CURRENT kind; an unknown current kind fails CLOSED (the update is refused)"
+    },
+    "message": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch sends it for an agentTurn job"
+    },
+    "text": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch sends it for a systemEvent job"
+    },
+    "allowUnsafeExternalContent": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "argv": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "cwd": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "env": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "fallbacks": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "input": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "lightContext": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "model": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "noOutputTimeoutSeconds": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "outputMaxBytes": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "thinking": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "timeoutSeconds": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    },
+    "toolsAllow": {
+     "status": "ignored",
+     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    }
+   }
   },
   "CronRemoveParams": {
-   "status": "handled",
-   "by": "cron-manage `remove` sends `{id}`"
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "cron-manage `remove` sends `{id}`"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    }
+   }
   },
   "CronRunLogEntry": {
    "fields": {
@@ -1214,8 +1390,20 @@
    }
   },
   "CronRunParams": {
-   "status": "handled",
-   "by": "cron-manage `run` sends `{id, mode:\"force\"}`"
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "cron-manage `run` sends `{id, mode:\"force\"}`"
+    },
+    "mode": {
+     "status": "handled",
+     "by": "cron-manage `run` always sends `\"force\"` — a manual run from the tab is an explicit human act, not a scheduling decision"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    }
+   }
   },
   "CronRunsParams": {
    "fields": {
@@ -1270,16 +1458,56 @@
    }
   },
   "CronSchedule": {
-   "status": "handled",
-   "by": "READ by fetchCronJobs and normalizeCronJobDetail (kind / expr / at / everyMs, rendered into a printable cadence) and SENT by buildGatewayCronPatch when the user edits it. A UNION, classified whole: an unrecognised member degrades to text instead of breaking the tab."
+   "fields": {
+    "kind": {
+     "status": "handled",
+     "by": "printableSchedule (cron-manage.ts) discriminates on it, and buildGatewayCronPatch passes the edited schedule through with its kind"
+    },
+    "expr": {
+     "status": "handled",
+     "by": "printableSchedule reads it (with a `cron`/`expr` fallback) for the cron cadence"
+    },
+    "at": {
+     "status": "handled",
+     "by": "printableSchedule reads it for a one-shot job"
+    },
+    "everyMs": {
+     "status": "handled",
+     "by": "printableSchedule reads it for an interval job"
+    },
+    "tz": {
+     "status": "handled",
+     "by": "printableSchedule renders it beside the expression — `cron <expr> (<tz>)` — so a job scheduled in another timezone does not read as if it ran in the viewer's"
+    },
+    "anchorMs": {
+     "status": "ignored",
+     "why": "gateway-side scheduling detail the Scheduled tab does not model: it renders a printable cadence from kind/expr/at/everyMs and edits those alone"
+    },
+    "staggerMs": {
+     "status": "ignored",
+     "why": "gateway-side scheduling detail the Scheduled tab does not model: it renders a printable cadence from kind/expr/at/everyMs and edits those alone"
+    }
+   }
   },
   "CronStatusParams": {
    "status": "ignored",
    "why": "cron.status is the declarative reconcile probe; Atrium never declares jobs from config"
   },
   "CronUpdateParams": {
-   "status": "handled",
-   "by": "cron-manage `update` sends `{id, patch}` — the patch built by buildGatewayCronPatch"
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "cron-manage `update` sends `{id, patch}`"
+    },
+    "patch": {
+     "status": "handled",
+     "by": "built by buildGatewayCronPatch from the tab's edits — schedule and/or prompt"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    }
+   }
   },
   "TaskLedgerStatus": {
    "status": "handled",
@@ -1908,6 +2136,286 @@
   "ToolsInvokeResult": {
    "status": "ignored",
    "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "TalkClientCreateParams": {
+   "fields": {
+    "transport": {
+     "status": "handled",
+     "by": "server.ts sends it on every create, from the /talk-session body; convex/talk.ts asks for `webrtc`. CORRECTED after review: an earlier note called that \"the only client-owned transport\" — the contract also defines `provider-websocket` as a browser session. The single-transport reality is a CHOICE Atrium makes, not a property of the protocol, and the session parser downstream is shaped to that choice"
+    },
+    "voice": {
+     "status": "handled",
+     "by": "forwarded from the /talk-session request body, which convex/talk.ts builds from the CALLER's arguments (bounded to 60 chars) — a per-conversation preference, not instance configuration. Omitted when absent, so the gateway default applies"
+    },
+    "vadThreshold": {
+     "status": "handled",
+     "by": "forwarded from the /talk-session request body; convex/talk.ts sends it only when it is a finite number strictly between 0 and 1, so an out-of-range value silently becomes 'use the gateway default' rather than a rejected session"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "Atrium does not send it at create: server.ts builds the `talk.client.create` body from `transport` plus the optional voice and VAD threshold, and nothing else. The conversation is named at consult time instead, by `talk.client.toolCall.sessionKey` (the agent session key `buildSessionKey` produces). CORRECTED after review: an earlier note inferred from this that the gateway mints the session \"unattached\" and that sending the key twice would create two identities — neither is established here, and upstream's own client does send it on create. What this classification rests on is Atrium's behaviour, not a guess about the server's"
+    },
+    "provider": {
+     "status": "ignored",
+     "why": "which realtime provider serves voice is gateway configuration; the capability Atrium exposes is a per-instance yes/no"
+    },
+    "model": {
+     "status": "ignored",
+     "why": "the REALTIME model (ears and mouth) is a different axis from the agent model the chat's knob selects: the consult itself runs as a normal agent turn through talk.client.toolCall and uses the session's own settings"
+    },
+    "reasoningEffort": {
+     "status": "ignored",
+     "why": "same axis as `model` — belongs to the realtime voice model, not to the agent turn the consult spawns"
+    },
+    "silenceDurationMs": {
+     "status": "ignored",
+     "why": "finer voice-activity tuning than Atrium exposes; the UI offers the threshold alone, and sending a partial tuning set would silently override gateway defaults for the rest"
+    },
+    "prefixPaddingMs": {
+     "status": "ignored",
+     "why": "same finer VAD tuning as silenceDurationMs"
+    },
+    "mode": {
+     "status": "ignored",
+     "why": "the gateway's talk MODE selection. Atrium always creates a client-held session and leaves the mode at the gateway default; `transport` already states the one axis it chooses"
+    },
+    "brain": {
+     "status": "ignored",
+     "why": "which component answers inside the realtime session; Atrium always routes the substance to an agent turn via toolCall, so the brain choice is not its call"
+    }
+   }
+  },
+  "TalkClientCreateResult": {
+   "fields": {
+    "clientSecret": {
+     "status": "handled",
+     "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): REQUIRED non-empty, else the session is refused. A short-lived provider credential — it transits to the authenticated chat owner and is never logged or persisted"
+    },
+    "offerUrl": {
+     "status": "handled",
+     "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): REQUIRED and must be https, because the browser posts its SDP offer there; a non-https value is refused outright"
+    },
+    "provider": {
+     "status": "handled",
+     "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): descriptive, defaulted to \"\" when absent"
+    },
+    "transport": {
+     "status": "handled",
+     "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): descriptive, defaulted to \"\" when absent"
+    },
+    "model": {
+     "status": "handled",
+     "by": "projected by convex/lib/talk.ts (null when absent) and then LOAD-BEARING: `buildCallUrl` (src/chat/talkSession.ts) appends it as a query parameter on the SDP calls endpoint, because the provider's WebRTC flow requires it — omitting it 500s on the real offer (live repro 2026-07-16). CORRECTED after review: an earlier note called it \"descriptive\", which would have made it look droppable"
+    },
+    "voice": {
+     "status": "handled",
+     "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): descriptive, null when absent"
+    },
+    "expiresAt": {
+     "status": "gap",
+     "note": "projected by convex/lib/talk.ts and read by NOBODY. CORRECTED after review: the first note claimed the browser uses it to know when the credential dies. It does not — the UI discovers expiry only from an HTTP 401 on the SDP offer, which it surfaces as `talk_secret_expired`. So a person whose secret expires while they were deciding learns it by a failed connection instead of a session that never opened stale. The value is already on hand; nothing consumes it."
+    },
+    "websocketUrl": {
+     "status": "ignored",
+     "why": "belongs to the json-pcm websocket branch of the union, which the consumer never accepts: it requires an https `offerUrl`, so only the WebRTC SDP shape survives. Atrium asks for `webrtc` — a choice, not a protocol constraint"
+    },
+    "protocol": {
+     "status": "ignored",
+     "why": "websocket-branch field — see websocketUrl"
+    },
+    "audio": {
+     "status": "ignored",
+     "why": "websocket-branch audio format — see websocketUrl"
+    },
+    "relaySessionId": {
+     "status": "ignored",
+     "why": "gateway-relay branch: the relay id only matters when the GATEWAY carries the audio, which Atrium's browser-held session never asks for"
+    },
+    "roomUrl": {
+     "status": "ignored",
+     "why": "managed-room branch — same exclusion as the relay branch: not the transport Atrium requests"
+    },
+    "token": {
+     "status": "ignored",
+     "why": "managed-room join token — see roomUrl"
+    },
+    "offerHeaders": {
+     "status": "gap",
+     "note": "NOT projected and NOT sent. The contract lets a session require extra headers on the SDP offer POST; convex/lib/talk.ts drops them and `exchangeSdp` (src/chat/talkSession.ts) sends `Authorization` and `Content-Type` only. CORRECTED after review: this was classified `ignored` while its own note admitted the handshake would fail — a reason that names a breakage is a GAP, not a deliberate exclusion. Impact: a gateway or provider that starts requiring a header fails voice in the browser, at the SDP exchange, with a bare `sdp_<status>` and nothing pointing here."
+    },
+    "initialMessage": {
+     "status": "ignored",
+     "why": "a first utterance the session may carry. Atrium opens a voice session on an existing conversation and lets the person speak first; injecting a message would put words in the turn nobody said"
+    }
+   }
+  },
+  "TalkClientToolCallParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "handled",
+     "by": "server.ts sends `buildSessionKey(chat, agent, canonical)` — the AGENT session key, so a voice consult lands in the same session as a typed turn"
+    },
+    "callId": {
+     "status": "handled",
+     "by": "server.ts forwards the voice model's call id, which correlates the reply"
+    },
+    "name": {
+     "status": "handled",
+     "by": "server.ts sends the fixed `openclaw_agent_consult`"
+    },
+    "args": {
+     "status": "handled",
+     "by": "server.ts forwards the consult arguments the voice model produced"
+    },
+    "relaySessionId": {
+     "status": "ignored",
+     "why": "only meaningful when the GATEWAY relays the audio; Atrium's browser holds the session, so there is no relay id to quote"
+    }
+   }
+  },
+  "TalkClientToolCallResult": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "server.ts requires a non-empty runId (else `talk_malformed`), claims the run and drives it through the same RunManager/normalizer pipeline as a typed turn"
+    },
+    "idempotencyKey": {
+     "status": "gap",
+     "note": "NOT read: server.ts requires `runId` from the result and discards the rest, so the `idempotencyKey` the gateway returns is dropped. CORRECTED TWICE after review — the first note claimed keeping it would make a retry safe (`TalkClientToolCallParams` is additionalProperties:false and declares no such field, so there is nowhere to send it back), and the second asserted what the key identifies inside the gateway, which nothing here establishes. The verifiable fact is the whole gap: the gateway hands back an identifier for this consult and Atrium keeps none of it, so whatever that identifier is good for, we cannot use it."
+    }
+   }
+  },
+  "TalkSessionJoinParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionCreateParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionAppendAudioParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionTurnParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionCancelTurnParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionCancelOutputParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionSubmitToolResultParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionSteerParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionCloseParams": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionCreateResult": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionTurnResult": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionJoinResult": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkSessionOkResult": {
+   "status": "ignored",
+   "why": "the `talk.session.*` lane is the gateway's OWN realtime session driver (join/append-audio/turn/cancel/submit-tool-result/close). Atrium's voice mode uses the CLIENT lane instead — `talk.client.create` mints a browser-held session and the browser speaks the transport directly — so the bridge never drives a session frame by frame and must not: audio relayed through it would add a hop to a latency-bound path"
+  },
+  "TalkClientSteerParams": {
+   "status": "ignored",
+   "why": "client-lane steering: it would let a voice session redirect a running agent turn with text. Atrium does not expose it — its voice mode consults an agent and waits, and a second control channel into a live turn is a race the turn model has no answer for. Ignored by DECISION, not because the lane is unused"
+  },
+  "TalkAgentControlResult": {
+   "status": "ignored",
+   "why": "the result of applying agent control (steer/abort/queue) to a Talk run. Atrium sends no such control — see TalkClientSteerParams — so nothing reads this shape"
+  },
+  "TalkEvent": {
+   "status": "ignored",
+   "why": "the gateway's canonical Talk event envelope (`turn.started`, `tool.call`, …). Nothing in Atrium reads it. CORRECTED after review: an earlier note said the BROWSER consumes it directly off the transport — it does not. The browser's data channel carries the PROVIDER's own event shapes, and `parseTalkToolCall` (src/chat/talkSession.ts) recognises exactly two of them (`response.output_item.done` and `response.function_call_arguments.done`), ignoring everything else. The gateway envelope is a lane Atrium is not on at all: the substance of a consult reaches it as a normal agent run instead"
+  },
+  "ChannelsStatusParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelAccountSnapshot": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelUiMeta": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelEventLoopHealth": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelsStatusResult": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelsLogoutParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelsStopParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "ChannelsStartParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "WebLoginStartParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "WebLoginWaitParams": {
+   "status": "ignored",
+   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
+  },
+  "TalkModeParams": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkConfigParams": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkConfigResult": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkCatalogParams": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkCatalogResult": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkSpeakParams": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TalkSpeakResult": {
+   "status": "ignored",
+   "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
   }
  }
 }

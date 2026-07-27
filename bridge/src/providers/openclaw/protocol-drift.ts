@@ -145,12 +145,13 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * pins against the vendored TypeBox schemas.
  *
  * Vendoring `sessions.ts` + `plugins.ts`, then `cron.ts` + `tasks.ts`, then
- * `config.ts` + `agents-models-skills.ts` (all 2026-07-27) took the examined surface
- * from 94 entries to 475. Every RPC family the bridge calls is now under contract
- * except `talk.*` and the handful upstream publishes no params schema for
- * (`sessions.get`, `usage.status`, three `tts.*`). Each round of classification made
- * gaps VISIBLE rather than merely absent — and each one found a real defect, which is
- * the whole argument for reading a schema field by field instead of trusting a bench.
+ * `config.ts` + `agents-models-skills.ts`, then `channels.ts` (all 2026-07-27) took the
+ * examined surface from 94 entries to 596. EVERY RPC family the bridge calls is now
+ * under contract; what remains uncovered is uncovered BY CONSTRUCTION, because upstream
+ * publishes no params schema for it (`sessions.get`, `usage.status`, three `tts.*`).
+ * Each round of classification made gaps VISIBLE rather than merely absent — and each
+ * one found a real defect, which is the whole argument for reading a schema field by
+ * field instead of trusting a bench.
  *
  * Vendoring 2026.7.1 added three DECLARED gaps (W10): two outbound fields the bridge
  * does not send (`ChatSendParams`/`ChatAbortParams` are `additionalProperties:false`,
@@ -160,9 +161,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 134,
-  ignored: 326,
-  gaps: 15,
+  handled: 158,
+  ignored: 420,
+  gaps: 18,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
   gapList: [
     "ChatAbortedEvent.errorMessage",
@@ -194,6 +195,19 @@ export const COVERAGE_SUMMARY = {
     "CronJobState.consecutiveErrors",
     "CronRunLogEntry.usage",
     "TaskSummary.progressSummary",
+    // The voice lane (2026-07-27): the result carries an identifier for the consult and
+    // the bridge keeps only `runId`. Stated as the verifiable fact after two corrections —
+    // there is no param to quote the key back on, and what it identifies inside the
+    // gateway is not something this repo establishes.
+    "TalkClientToolCallResult.idempotencyKey",
+    // The voice credential states when it dies and nothing reads it: the UI discovers
+    // expiry from an HTTP 401 on the SDP offer instead of declining to open a session
+    // whose secret has already lapsed.
+    "TalkClientCreateResult.expiresAt",
+    // The session may require extra headers on the SDP offer; the projection drops them
+    // and the browser sends Authorization + Content-Type only. A gateway that starts
+    // requiring one fails voice at the handshake with a bare sdp_<status>.
+    "TalkClientCreateResult.offerHeaders",
   ] as string[],
 } as const;
 
