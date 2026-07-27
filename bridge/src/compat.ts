@@ -287,32 +287,70 @@ export interface ResolvedCapabilities {
  *    whose minVersion IS the supported floor (`supportedRange.min`) are true
  *    (the floor is the weakest gateway we ever talk to);
  *  - version within range: capability true iff version >= its minVersion;
- *  - version beyond `maxValidated`: all validated capabilities true, plus the
- *    `versionBeyondValidated` flag.
+ *  - version beyond `maxValidated`: FROZEN at the maxValidated profile — the
+ *    capabilities we have actually exercised, and no more — plus the
+ *    `versionBeyondValidated` flag (which drives a user-visible banner).
+ *
+ * WHY frozen rather than fail-open (Olivier's decision, 2026-07-26). The old rule
+ * granted every capability unconditionally beyond `maxValidated`. On today's table
+ * that is indistinguishable from the normal rule — every `minVersion` is at or below
+ * `maxValidated`, so the version already clears them all — which is precisely why the
+ * fail-open went unnoticed. It bites the day a capability is DECLARED for a version we
+ * have not benched: the old rule handed it out on a gateway nobody had exercised.
+ * Freezing says the honest thing instead: you get what we tested, and the banner says
+ * the rest is unverified.
+ *
+ * The rejected alternative was withholding WRITE capabilities beyond the validated
+ * range. It was measured and refused: no production instance is beyond it today, the
+ * version number is a poor proxy for a known contract (a fully validated 2026.7.1
+ * emits `agent.lastTo`, a field upstream's own schema does not declare), and these
+ * flags gate UI affordances, not safety — so the effect would have been features
+ * vanishing from a client who upgraded. Restricting on OBSERVED drift is defensible;
+ * restricting on a version number is not.
  */
 export function resolveCapabilities(
   provider: string,
   gatewayVersion: string | null,
 ): ResolvedCapabilities {
   const compat = COMPAT_MANIFEST.providers[provider];
-  if (!compat || compat.supportedRange === null) {
-    return { capabilities: {}, versionBeyondValidated: false };
-  }
+  if (!compat) return { capabilities: {}, versionBeyondValidated: false };
+  return resolveCapabilitiesFor(
+    compat.supportedRange,
+    compat.capabilities,
+    gatewayVersion,
+  );
+}
+
+/**
+ * The policy itself, over an EXPLICIT range + capability table.
+ *
+ * Split out so a test can exercise the case the shipped manifest cannot express: a
+ * capability whose `minVersion` is ABOVE `maxValidated`. That is the only input on
+ * which freezing and failing open differ, so it is the only input that can prove the
+ * change — everything else passes either way.
+ */
+export function resolveCapabilitiesFor(
+  range: VersionRange | null,
+  table: Record<string, string>,
+  gatewayVersion: string | null,
+): ResolvedCapabilities {
+  if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
   const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
   if (parsed === null) {
     // Unknown gateway version -> conservative floor.
-    for (const [cap, minVersion] of Object.entries(compat.capabilities)) {
-      capabilities[cap] = minVersion === compat.supportedRange.min;
+    for (const [cap, minVersion] of Object.entries(table)) {
+      capabilities[cap] = minVersion === range.min;
     }
     return { capabilities, versionBeyondValidated: false };
   }
-  const maxValidated = parseVersion(compat.supportedRange.maxValidated);
+  const maxValidated = parseVersion(range.maxValidated);
   const beyond = maxValidated !== null && compareVersions(parsed, maxValidated) > 0;
-  for (const [cap, minVersion] of Object.entries(compat.capabilities)) {
+  // FROZEN: judged as the last version we exercised, never as itself.
+  const effective = beyond && maxValidated !== null ? maxValidated : parsed;
+  for (const [cap, minVersion] of Object.entries(table)) {
     const min = parseVersion(minVersion);
-    capabilities[cap] =
-      beyond || (min !== null && compareVersions(parsed, min) >= 0);
+    capabilities[cap] = min !== null && compareVersions(effective, min) >= 0;
   }
   return { capabilities, versionBeyondValidated: beyond };
 }

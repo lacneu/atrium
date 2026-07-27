@@ -12,16 +12,22 @@
 // The known-field sets below are the vendored schema surface of the bridge's
 // maxValidated gateway version. They are NOT hand-trusted: the protocol
 // coverage ratchet test asserts a BIJECTION between these sets and the
-// per-field entries of protocol/openclaw/coverage.json — which is itself
+// per-field entries of protocol/openclaw/coverage/<version>.json — which is itself
 // ratcheted against the vendored TypeBox schemas. One chain, no drift:
-//   vendored schema <-> coverage.json <-> these runtime sets.
+//   vendored schema <-> coverage/<version>.json <-> these runtime sets.
 
-// Stays 2026.6.11: that is the schema set actually vendored under
-// protocol/openclaw/ (and what coverage.json ratchets against). The 2026.7.1
-// bench observed EXACTLY ONE addition over it (`agent.effectiveResponseUsage`,
-// listed below), so 6.11 + that field IS the 7.1 surface; bump this only when
-// the published 2026.7.1 schemas are vendored and re-audited.
-export const DRIFT_VENDORED_VERSION = "2026.6.11";
+// 2026.7.1 — the schema set now vendored under protocol/openclaw/ and ratcheted by
+// coverage/2026.7.1.json.
+//
+// CORRECTED 2026-07-26 (W10/G-74): this said the 7.1 bench had observed "EXACTLY ONE
+// addition" over 6.11, and therefore that 6.11 plus that field WAS the 7.1 surface.
+// Vendoring the published 2026.7.1 schemas falsified it — the diff carries at least
+// `ChatAbortedEvent.errorMessage`, `ChatSendParams.expectedSessionRoutingContract` and
+// `ChatAbortParams.preserveSideRuns`. A BENCH observes the fields a scenario happens
+// to exercise; it cannot enumerate a contract. That is what the vendored schema is
+// for, and inferring "the surface" from a bench run is the exact mistake the ratchet
+// exists to make impossible.
+export const DRIFT_VENDORED_VERSION = "2026.7.1";
 
 /** Union of the four chat event schemas' top-level payload fields. */
 export const KNOWN_CHAT_FIELDS: ReadonlySet<string> = new Set([
@@ -135,15 +141,26 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix ("what does this bridge support against its validated gateway
  * version"). Like the known-field sets above, these numbers are NOT
  * hand-trusted: the drift test asserts they equal a recount of
- * protocol/openclaw/coverage.json, which the coverage ratchet pins against
- * the vendored TypeBox schemas.
+ * `protocol/openclaw/coverage/<newest version>.json`, which the coverage ratchet
+ * pins against the vendored TypeBox schemas.
+ *
+ * Vendoring 2026.7.1 added three DECLARED gaps (W10): two outbound fields the bridge
+ * does not send (`ChatSendParams`/`ChatAbortParams` are `additionalProperties:false`,
+ * so the floor gateway would reject them), and `ChatAbortedEvent.errorMessage`, which
+ * a first pass wrongly classified as handled — the aborted branch returns before the
+ * read that serves `state === "error"`. All three are now visible in the operator
+ * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
   handled: 41,
   ignored: 50,
-  gaps: 0,
+  gaps: 3,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
-  gapList: [] as string[],
+  gapList: [
+    "ChatAbortedEvent.errorMessage",
+    "ChatSendParams.expectedSessionRoutingContract",
+    "ChatAbortParams.preserveSideRuns",
+  ] as string[],
 } as const;
 
 export interface DriftEntry {

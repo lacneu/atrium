@@ -4,7 +4,7 @@
 // is the executable copy of the bench-validation ledger — if the manifest data
 // drifts, these tables fail loudly.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -16,6 +16,7 @@ import {
   compareVersions,
   parseVersion,
   resolveCapabilities,
+  resolveCapabilitiesFor,
 } from "../src/compat.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -294,8 +295,12 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 
 describe("resolveCapabilities — beyond maxValidated", () => {
   // All STRICTLY above maxValidated (2026.7.1) now that 7.1 is validated.
+  // The assertion below was already the frozen profile; only the NAME claimed
+  // otherwise ("enables all validated capabilities" read as a grant). On the shipped
+  // table the two rules coincide — see the shared-table suite for the input where
+  // they do not.
   test.each(["2026.7.2", "2026.8.0", "2027.1.1"])(
-    "%s enables all validated capabilities + flags versionBeyondValidated",
+    "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
       expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
@@ -357,4 +362,118 @@ describe("resolveCapabilities — edges", () => {
       versionBeyondValidated: false,
     });
   });
+});
+
+// ── The vendored-schema ratchet must actually cover what we claim (W10 / Q21) ──
+//
+// `maxValidated` is the bridge's public promise: "this version's wire contract has
+// been examined". The examination artifact is the VENDORED schema directory plus its
+// coverage manifest — the ratchet that stays red until a human classifies every new
+// field. A `maxValidated` with no vendored directory is a promise with nothing behind
+// it: the version was bench-run, but no machine ever presented its contract changes
+// to anyone. That is precisely the hole the program's five unreviewed 7.1 additions
+// went through.
+//
+// This test is EXPECTED to be red until the target version is vendored. That is the
+// point: it converts "we forgot to vendor" from an invisible omission into a failing
+// gate.
+
+describe("every claimed version has an examined contract (W10)", () => {
+  const PROTOCOL_DIR = resolve(__dirname, "../protocol/openclaw");
+
+  /** Vendored directories present on disk, newest-first is irrelevant here. */
+  function vendoredVersions(): string[] {
+    return readdirSync(PROTOCOL_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name !== "coverage")
+      .map((e) => e.name);
+  }
+
+  test("the OpenClaw `maxValidated` has a vendored schema directory", () => {
+    // `supportedRange` is nullable in the type (a provider row can be a structural
+    // placeholder, as the Hermes row was). A missing range here would silently skip
+    // the check, so it fails instead.
+    const range = COMPAT_MANIFEST.providers.openclaw?.supportedRange;
+    if (!range) throw new Error("the openclaw provider declares no supported range");
+    const max = range.maxValidated;
+    expect(
+      vendoredVersions(),
+      `maxValidated ${max} has no protocol/openclaw/${max}/ — its wire contract was ` +
+        `never enumerated, so no ratchet can have reviewed it. Run the vendoring ` +
+        `script for ${max} and classify what it surfaces.`,
+    ).toContain(max);
+  });
+
+  test("vendored directories and coverage manifests are a BIJECTION", () => {
+    // A manifest naming a version with no directory means the ratchet walks nothing
+    // while looking busy; a directory with no manifest means schemas nobody
+    // classified. Both are the same hole from opposite sides.
+    const manifests = readdirSync(resolve(PROTOCOL_DIR, "coverage"))
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.replace(/\.json$/, ""))
+      .sort();
+    expect(manifests).toEqual(vendoredVersions().sort());
+    // And each manifest must NAME the version it is filed under — a copied file
+    // with a stale `version` would classify one contract while claiming another.
+    for (const v of manifests) {
+      const m = JSON.parse(
+        readFileSync(resolve(PROTOCOL_DIR, "coverage", `${v}.json`), "utf-8"),
+      ) as { version: string };
+      expect(m.version, `coverage/${v}.json`).toBe(v);
+    }
+  });
+});
+
+// ── The capability policy, asserted from a SHARED table (W10 / G7) ──────────
+//
+// `test/fixtures/capability-policy.json` is read by this suite AND by
+// convex/compat.test.ts. The two implementations live in different npm packages and
+// cannot import each other; the Convex one calls itself an "EXACT MIRROR" and nothing
+// checked it. One table, two readers: a divergence reddens one side.
+//
+// The synthetic manifest exists for one case the shipped one cannot express — a
+// capability declared ABOVE `maxValidated`. Freezing and failing open agree on every
+// other input, so that case is the only proof this policy changed at all.
+
+interface PolicyCase {
+  name: string;
+  provider: string;
+  version: string | null;
+  beyond: boolean;
+  capabilities: Record<string, boolean>;
+}
+interface PolicyFixture {
+  manifest: {
+    providers: Record<
+      string,
+      { supportedRange: { min: string; maxValidated: string } | null; capabilities: Record<string, string> }
+    >;
+  };
+  cases: PolicyCase[];
+}
+
+const POLICY = JSON.parse(
+  readFileSync(resolve(__dirname, "fixtures/capability-policy.json"), "utf-8"),
+) as PolicyFixture;
+
+describe("capability policy — frozen at the validated profile", () => {
+  test("the shared table is not empty (a vacuous fixture proves nothing)", () => {
+    expect(POLICY.cases.length).toBeGreaterThan(5);
+    // And it MUST contain the discriminating case, or the whole exercise is theatre.
+    const beyondCase = POLICY.cases.find((c) => c.beyond);
+    expect(beyondCase, "no beyond-maxValidated case in the table").toBeDefined();
+    expect(beyondCase!.capabilities.unbenchedCap).toBe(false);
+  });
+
+  for (const c of POLICY.cases) {
+    test(c.name, () => {
+      const p = POLICY.manifest.providers[c.provider]!;
+      const resolved = resolveCapabilitiesFor(
+        p.supportedRange,
+        p.capabilities,
+        c.version,
+      );
+      expect(resolved.capabilities).toEqual(c.capabilities);
+      expect(resolved.versionBeyondValidated).toBe(c.beyond);
+    });
+  }
 });

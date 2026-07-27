@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from openclaw/openclaw @ v2026.6.11 — packages/gateway-protocol/src/secret-ref-contract.ts.
+// VENDORED VERBATIM from openclaw/openclaw @ v2026.7.1 — packages/gateway-protocol/src/secret-ref-contract.ts.
 // Source of truth for the wire protocol; used ONLY by the protocol-coverage
 // ratchet test (never imported by runtime bridge code). Do not edit by hand:
 // re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.

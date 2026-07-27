@@ -390,6 +390,8 @@
 	"chat_notfound_body": "This link does not match any conversation. It may have been deleted, or the address is incomplete.",
 	"chat_new_conversation": "New conversation",
 	"chat_latest_messages": "Latest messages",
+	"chat_beyond_validated_banner": "This gateway runs {version}, a version we have not put through validation yet. Everything on screen has been tested — but if something behaves oddly, it is worth reporting.",
+	"chat_beyond_validated_banner_unknown": "This gateway runs a version we have not put through validation yet. Everything on screen has been tested — but if something behaves oddly, it is worth reporting.",
 	"chat_degraded_banner": "This agent's gateway is not responding. An in-flight turn may time out and a new send will likely fail — retry once it is back.",
 	"chat_unavailable_banner": "The chat service is temporarily unavailable. Sending messages is suspended — try again in a moment. If this persists, contact your administrator.",
 	"chat_readonly_banner": "This chat is read-only: its agent is no longer available to you (your agent access was changed). Start a new chat with an available agent.",

@@ -1,0 +1,139 @@
+{
+  "why": [
+    "ONE expectation table for the capability policy, asserted by BOTH implementations:",
+    "bridge/src/compat.ts (resolveCapabilitiesFor) and convex/lib/compat.ts",
+    "(resolveCapabilitiesFromManifest). They are separate npm packages and cannot import",
+    "each other, so the Convex copy carries an 'EXACT MIRROR' comment and nothing ever",
+    "checked it. This file is the check: a divergence reddens one suite.",
+    "",
+    "The manifest is SYNTHETIC on purpose. The shipped one cannot express the case that",
+    "matters — a capability declared for a version we have never benched — because every",
+    "real minVersion sits at or below maxValidated. On every other input, freezing at the",
+    "validated profile and failing open give the same answer, which is exactly why the",
+    "fail-open survived unnoticed."
+  ],
+  "manifest": {
+    "providers": {
+      "demo": {
+        "supportedRange": { "min": "1.0.0", "maxValidated": "2.0.0" },
+        "validatedVersions": ["1.0.0", "1.5.0", "2.0.0"],
+        "capabilities": {
+          "floorCap": "1.0.0",
+          "midCap": "1.5.0",
+          "maxCap": "2.0.0",
+          "unbenchedCap": "3.0.0"
+        }
+      },
+      "placeholder": {
+        "supportedRange": null,
+        "validatedVersions": [],
+        "capabilities": { "anything": "1.0.0" }
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "the floor: only floor-min capabilities",
+      "provider": "demo",
+      "version": "1.0.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": false,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "mid-range: everything at or below the live version",
+      "provider": "demo",
+      "version": "1.5.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "exactly maxValidated is NOT beyond, and unbenched stays off",
+      "provider": "demo",
+      "version": "2.0.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "maxCap": true,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "BEYOND maxValidated: frozen at the validated profile — this is the case that discriminates freeze from fail-open, and `unbenchedCap: false` is the whole point",
+      "provider": "demo",
+      "version": "2.5.0",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "maxCap": true,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "far beyond: still the validated profile, never more",
+      "provider": "demo",
+      "version": "9.9.9",
+      "beyond": true,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": true,
+        "maxCap": true,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "below the floor: nothing (the version clears no minVersion)",
+      "provider": "demo",
+      "version": "0.9.0",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": false,
+        "midCap": false,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "unparseable version: CONSERVATIVE floor, and never the beyond flag",
+      "provider": "demo",
+      "version": "not-a-version",
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": false,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "absent version: same conservative floor",
+      "provider": "demo",
+      "version": null,
+      "beyond": false,
+      "capabilities": {
+        "floorCap": true,
+        "midCap": false,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "a provider with no published range: zero capabilities",
+      "provider": "placeholder",
+      "version": "5.0.0",
+      "beyond": false,
+      "capabilities": {}
+    }
+  ]
+}

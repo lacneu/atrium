@@ -449,8 +449,14 @@ export function providerCapabilityTable(
  *   - null/unparseable version: CONSERVATIVE floor — a capability is true only
  *     when its minVersion IS the supported floor (`range.min`);
  *   - version within range: true iff version >= its minVersion;
- *   - version beyond `maxValidated`: every capability true + `versionBeyondValidated`.
- *  Both sides fail CLOSED on the same inputs (the `parseVersion` mirror guarantees it). */
+ *   - version beyond `maxValidated`: FROZEN at the maxValidated profile (the
+ *     capabilities actually exercised, and no more) + `versionBeyondValidated`, which
+ *     drives a user-visible banner.
+ *  Both sides fail CLOSED on the same inputs (the `parseVersion` mirror guarantees it),
+ *  and the agreement is now PINNED: bridge/test/fixtures/capability-policy.json is a
+ *  single expectation table read by this suite and by the bridge's — the "EXACT MIRROR"
+ *  claim above used to be a comment nothing checked. See bridge/src/compat.ts for why
+ *  freezing replaced failing open (Olivier's decision, 2026-07-26). */
 export function resolveCapabilitiesFromManifest(
   compat: unknown,
   provider: string,
@@ -469,9 +475,11 @@ export function resolveCapabilitiesFromManifest(
   }
   const beyondCmp = compareVersions(gatewayVersion as string, range.maxValidated);
   const beyond = beyondCmp !== null && beyondCmp > 0;
+  // FROZEN: judged as the last version we exercised, never as itself.
+  const effective = beyond ? range.maxValidated : (gatewayVersion as string);
   for (const [cap, minVersion] of Object.entries(table)) {
-    const cmp = compareVersions(gatewayVersion as string, minVersion);
-    capabilities[cap] = beyond || (cmp !== null && cmp >= 0);
+    const cmp = compareVersions(effective, minVersion);
+    capabilities[cap] = cmp !== null && cmp >= 0;
   }
   return { capabilities, versionBeyondValidated: beyond };
 }

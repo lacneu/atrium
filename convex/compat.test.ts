@@ -6,6 +6,7 @@
 // the serve-last-good failure path, and the REAL RBAC gates on the public
 // queries (bridge.read / active-user + chat ownership).
 
+import { readFileSync } from "node:fs";
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -839,6 +840,96 @@ describe("forChat (active user, OWN chat only)", () => {
     });
   });
 
+  test("a PER-TURN selection reads the NEXT SEND's instance, not the binding", async () => {
+    // The banner and the capability gates must describe the gateway the send will
+    // actually hit. Bound to a validated instance, composing toward an unvalidated
+    // one, the reader has to be told BEFORE sending — and switching back has to clear
+    // it (raised in review; `bridgeHealth.getBridgeAvailability` already worked this
+    // way and this query did not).
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.compat.upsertBridgeCompat, {
+      bridgeVersion: "1.4.0",
+      protocolVersion: 2,
+      compat: MANIFEST,
+      targets: [
+        {
+          instanceName: "main",
+          provider: "openclaw",
+          gatewayVersion: "2026.6.5",
+          capabilities: { agentDiscovery: true, abort: true },
+          versionBeyondValidated: false,
+        },
+        {
+          instanceName: "edge",
+          provider: "openclaw",
+          gatewayVersion: "2027.1.1",
+          capabilities: { agentDiscovery: true, abort: true },
+          versionBeyondValidated: true,
+        },
+      ],
+    });
+    const owner = await seedChatOwner(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userAgents", {
+        userId: owner.userId,
+        instanceName: "edge",
+        agentId: "bob",
+        isDefault: false,
+        source: "manual",
+        createdAt: Date.now(),
+      });
+    });
+    const chatId = await t.run((ctx) =>
+      ctx.db.insert("chats", {
+        userId: owner.userId,
+        instanceName: "main",
+        agentId: "alice",
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // No selection: the chat's own binding, which is validated.
+    const bound = await owner.as.query(api.compat.forChat, { chatId });
+    expect(bound).toMatchObject({
+      gatewayVersion: "2026.6.5",
+      versionBeyondValidated: false,
+    });
+
+    // Composing toward the unvalidated instance: the flag follows the TARGET.
+    const next = await owner.as.query(api.compat.forChat, {
+      chatId,
+      routedAgent: { instanceName: "edge", agentId: "bob" },
+    });
+    expect(next).toMatchObject({
+      gatewayVersion: "2027.1.1",
+      versionBeyondValidated: true,
+    });
+  });
+
+  test("a routedAgent the user is NOT entitled to falls back to the chat's binding", async () => {
+    // A forged selection must never scope-read another instance. The resolver
+    // re-authorizes, so the answer is exactly the no-selection answer.
+    const t = convexTest(schema, modules);
+    await seedSnapshot(t);
+    const owner = await seedChatOwner(t);
+    const chatId = await t.run((ctx) =>
+      ctx.db.insert("chats", {
+        userId: owner.userId,
+        instanceName: "main",
+        agentId: "alice",
+        updatedAt: Date.now(),
+      }),
+    );
+    const forged = await owner.as.query(api.compat.forChat, {
+      chatId,
+      routedAgent: { instanceName: "secret", agentId: "nobody" },
+    });
+    expect(forged).toMatchObject({
+      gatewayVersion: "2026.6.5",
+      versionBeyondValidated: false,
+    });
+  });
+
   test("an UNBOUND legacy chat resolves through the routing resolver", async () => {
     const t = convexTest(schema, modules);
     await seedSnapshot(t);
@@ -952,4 +1043,49 @@ describe("mergeProtocolInfo (multi-bridge drift union)", () => {
     expect(mergeProtocolInfo(a, null)).toBe(a);
     expect(mergeProtocolInfo(null, null)).toBeNull();
   });
+});
+
+// ── The SAME shared table the bridge asserts (W10 / G7) ────────────────────
+//
+// `bridge/test/fixtures/capability-policy.json` is the single expectation table for
+// the capability policy. This suite and the bridge's both read it, so the "EXACT
+// MIRROR" claim in convex/lib/compat.ts is finally checked by something: a divergence
+// between the two implementations reddens one side.
+//
+// Read with `readFileSync` rather than imported: `tsc -p convex` (the deploy compiler)
+// has no `resolveJsonModule`, and a JSON import here would break the deploy while
+// vitest stayed green — the exact trap this program hit on 2026-07-26.
+
+describe("capability policy — the shared table (bridge <-> convex)", () => {
+  interface PolicyCase {
+    name: string;
+    provider: string;
+    version: string | null;
+    beyond: boolean;
+    capabilities: Record<string, boolean>;
+  }
+  const POLICY = JSON.parse(
+    readFileSync(
+      new URL("../bridge/test/fixtures/capability-policy.json", import.meta.url),
+      "utf-8",
+    ),
+  ) as { manifest: unknown; cases: PolicyCase[] };
+
+  test("the table carries the discriminating case", () => {
+    const beyondCase = POLICY.cases.find((c) => c.beyond);
+    expect(beyondCase, "no beyond-maxValidated case in the shared table").toBeDefined();
+    expect(beyondCase!.capabilities.unbenchedCap).toBe(false);
+  });
+
+  for (const c of POLICY.cases) {
+    test(c.name, () => {
+      const resolved = resolveCapabilitiesFromManifest(
+        POLICY.manifest,
+        c.provider,
+        c.version,
+      );
+      expect(resolved.capabilities).toEqual(c.capabilities);
+      expect(resolved.versionBeyondValidated).toBe(c.beyond);
+    });
+  }
 });

@@ -390,6 +390,8 @@
 	"chat_notfound_body": "Ce lien ne correspond à aucune conversation. Elle a peut-être été supprimée, ou l’adresse est incomplète.",
 	"chat_new_conversation": "Nouvelle conversation",
 	"chat_latest_messages": "Derniers messages",
+	"chat_beyond_validated_banner": "Cette passerelle est en {version}, une version que nous n'avons pas encore validée. Tout ce qui est affiché a été testé — mais si quelque chose se comporte bizarrement, cela vaut la peine de le signaler.",
+	"chat_beyond_validated_banner_unknown": "Cette passerelle utilise une version que nous n'avons pas encore validée. Tout ce qui est affiché a été testé — mais si quelque chose se comporte bizarrement, cela vaut la peine de le signaler.",
 	"chat_degraded_banner": "La passerelle de cet agent ne répond plus. Un traitement en cours risque d’expirer et un nouvel envoi échouera probablement — réessayez quand elle sera rétablie.",
 	"chat_unavailable_banner": "Le service de chat est momentanément indisponible. L’envoi de message est suspendu — réessayez dans un instant. Si cela persiste, contactez votre administrateur.",
 	"chat_readonly_banner": "Ce chat est en lecture seule : l’agent associé ne t’est plus disponible (ton accès aux agents a été modifié). Démarre un nouveau chat avec un agent disponible.",

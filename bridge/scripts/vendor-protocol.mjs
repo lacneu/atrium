@@ -1,0 +1,304 @@
+#!/usr/bin/env node
+// VENDOR the gateway's wire-contract schemas for one version (W10 / G0).
+//
+// WHY a script and not a manual copy: `maxValidated` is the bridge's public promise
+// that a version's contract has been EXAMINED, and the examination artifact is these
+// files plus the coverage manifest that stays red until a human classifies every new
+// field. Copying by hand made that artifact optional — five contract additions of
+// 2026.7.1 entered support with nobody looking, and `maxValidated` pointed at a
+// version with no vendored directory at all.
+//
+// It writes `PROVENANCE.json` next to the modules: the upstream commit SHA of the
+// tag, plus a sha256 per file. `vendor-integrity.test.ts` recomputes those hashes, so
+// a hand-edited "verbatim" file fails a gate instead of quietly becoming fiction.
+//
+// Usage:
+//   node scripts/vendor-protocol.mjs 2026.7.1 [--src <path to an openclaw checkout>]
+//
+// With no `--src`, a shallow clone of `v<version>` goes to a temp dir. A cached
+// checkout is faster and is what the bench already keeps around.
+
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+
+/** Files to vendor, with their path RELATIVE to `packages/gateway-protocol/src/`.
+ *  Stated per file because upstream keeps the schema modules in `schema/` and the
+ *  shared contracts they import one level up — an assumed single directory made the
+ *  script fail on the second kind.
+ *
+ *  DERIVED, not chosen: `rpc-scope.test.ts` enumerates the RPC methods the bridge
+ *  actually calls and fails when one is covered by no vendored module. Add a module
+ *  here when that test names it — never "just in case", because every vendored
+ *  schema is classification work for a human, and an unread schema in the manifest
+ *  is worse than an absent one (it looks reviewed). */
+const FILES = [
+  // The chat lane: `chat.send` / `chat.abort` params and every event the
+  // normalizer reads off the wire.
+  "schema/logs-chat.ts",
+  // `agent` events: tool / lifecycle / assistant / item streams.
+  "schema/agent.ts",
+  // Shared field types the two above import.
+  "schema/primitives.ts",
+  // Contracts the modules above import transitively; they must ride along for the
+  // flat layout to typecheck. Explicit rather than an automatic import walk, which
+  // would silently widen the reviewed surface.
+  "client-info.ts",
+  "secret-ref-contract.ts",
+];
+
+/** The one repository these bytes may be attributed to. */
+const UPSTREAM_REPO = "openclaw/openclaw";
+
+const version = process.argv[2];
+if (!version || version.startsWith("-")) {
+  console.error(
+    "usage: vendor-protocol.mjs <version> [--src <openclaw checkout>]",
+  );
+  process.exit(2);
+}
+const srcFlag = process.argv.indexOf("--src");
+const providedSrc = srcFlag > -1 ? process.argv[srcFlag + 1] : null;
+
+const REPO = path.resolve(import.meta.dirname, "..");
+const OUT_DIR = path.join(REPO, "protocol", "openclaw", version);
+
+/** A checkout of the tag: the caller's, or a fresh shallow clone. */
+function resolveSource() {
+  if (providedSrc) {
+    const dir = path.resolve(providedSrc);
+    if (!fs.existsSync(path.join(dir, ".git"))) {
+      throw new Error(`--src ${dir} is not a git checkout`);
+    }
+    // The tag MUST match: vendoring "verbatim from v2026.7.1" out of a checkout
+    // sitting on something else is exactly the fiction PROVENANCE.json exists to
+    // prevent.
+    const described = execFileSync(
+      "git",
+      ["-C", dir, "describe", "--tags", "--exact-match"],
+      { encoding: "utf-8" },
+    ).trim();
+    if (described !== `v${version}`) {
+      throw new Error(
+        `--src ${dir} is at ${described}, not v${version} — refusing to vendor`,
+      );
+    }
+    // A DIRTY tree bearing the right tag would vendor edited bytes while
+    // PROVENANCE.json attributes them to openclaw/openclaw (raised in review). The
+    // attribution is the whole value of the record, so it must not be assumable.
+    const dirty = execFileSync("git", ["-C", dir, "status", "--porcelain"], {
+      encoding: "utf-8",
+    }).trim();
+    if (dirty !== "") {
+      throw new Error(
+        `--src ${dir} has uncommitted changes — refusing to attribute edited bytes ` +
+          `to ${UPSTREAM_REPO}`,
+      );
+    }
+    // And it must be a checkout OF that repository. A local fork carrying the same
+    // tag name is the other half of the same lie.
+    // EXACT host+path, not a substring: `https://github.com/openclaw/openclaw.git.evil`
+    // contains the repository name and is a different repository (raised in review).
+    const remoteUrls = execFileSync("git", ["-C", dir, "remote", "-v"], {
+      encoding: "utf-8",
+    })
+      .split("\n")
+      .map((l) => l.split(/\s+/)[1] ?? "")
+      .filter((u) => u.length > 0);
+    const isUpstream = (url) => {
+      // Accept the shapes git actually produces for one repository, and nothing else:
+      //   https://github.com/<repo>[.git]   git@github.com:<repo>[.git]
+      const normalized = url.replace(/\.git$/, "");
+      return (
+        normalized === `https://github.com/${UPSTREAM_REPO}` ||
+        normalized === `http://github.com/${UPSTREAM_REPO}` ||
+        normalized === `git@github.com:${UPSTREAM_REPO}` ||
+        normalized === `ssh://git@github.com/${UPSTREAM_REPO}`
+      );
+    };
+    const upstreamUrl = remoteUrls.find(isUpstream);
+    if (upstreamUrl !== undefined) {
+      // The checkout has the right remote and the right tag NAME — but a local tag can
+      // be created on modified sources (raised in review). Ask the remote what
+      // `v<version>` actually points at and require our HEAD to be that commit.
+      // `ls-remote` needs no fetch and no objects. `--offline` skips it EXPLICITLY,
+      // which is a stated downgrade rather than a silent one.
+      if (process.argv.includes("--offline")) {
+        console.error(
+          `[vendor] --offline: NOT verifying that v${version} in ${UPSTREAM_REPO} is ` +
+            `the commit being vendored. The provenance record will attribute these ` +
+            `bytes to that tag on trust.`,
+        );
+      } else {
+        const head = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], {
+          encoding: "utf-8",
+        }).trim();
+        // `refs/tags/X` is the TAG OBJECT for an annotated tag; the COMMIT is
+        // `refs/tags/X^{}` (upstream's release tags are annotated — the first version
+        // of this check compared a tag-object sha against a commit sha and reported a
+        // mismatch on a perfectly good checkout).
+        const listing = execFileSync(
+          "git",
+          [
+            "ls-remote",
+            upstreamUrl,
+            `refs/tags/v${version}`,
+            `refs/tags/v${version}^{}`,
+          ],
+          { encoding: "utf-8" },
+        ).trim();
+        const rows = listing
+          .split("\n")
+          .filter((l) => l.trim().length > 0)
+          .map((l) => l.split(/\s+/));
+        const peeled = rows.find(([, ref]) => ref?.endsWith("^{}"));
+        const plain = rows.find(([, ref]) => ref === `refs/tags/v${version}`);
+        const remoteSha = (peeled ?? plain ?? [])[0] ?? "";
+        if (remoteSha === "") {
+          throw new Error(
+            `${UPSTREAM_REPO} has no tag v${version} — refusing to vendor`,
+          );
+        }
+        if (remoteSha !== head) {
+          throw new Error(
+            `v${version} in ${UPSTREAM_REPO} is ${remoteSha.slice(0, 12)} but --src ` +
+              `is at ${head.slice(0, 12)} — the local tag does not match upstream's`,
+          );
+        }
+      }
+    }
+    if (!remoteUrls.some(isUpstream)) {
+      throw new Error(
+        `--src ${dir} has no remote that IS ${UPSTREAM_REPO} (found: ` +
+          `${remoteUrls.join(", ") || "none"}) — refusing to vendor bytes we would ` +
+          `then attribute to it`,
+      );
+    }
+    return dir;
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-vendor-"));
+  console.error(`[vendor] shallow clone v${version} -> ${tmp}`);
+  execFileSync(
+    "git",
+    [
+      "clone",
+      "--quiet",
+      "--depth",
+      "1",
+      "--branch",
+      `v${version}`,
+      `https://github.com/${UPSTREAM_REPO}.git`,
+      tmp,
+    ],
+    { stdio: "inherit" },
+  );
+  return tmp;
+}
+
+const src = resolveSource();
+const upstreamSha = execFileSync("git", ["-C", src, "rev-parse", "HEAD"], {
+  encoding: "utf-8",
+}).trim();
+const srcRoot = path.join(src, "packages", "gateway-protocol", "src");
+if (!fs.existsSync(srcRoot)) {
+  throw new Error(`no gateway-protocol source at ${srcRoot} — upstream layout changed`);
+}
+
+const header = (rel) =>
+  `// VENDORED VERBATIM from openclaw/openclaw @ v${version} — ` +
+  `packages/gateway-protocol/src/${rel}.\n` +
+  `// Source of truth for the wire protocol; used ONLY by the protocol-coverage\n` +
+  `// ratchet test (never imported by runtime bridge code). Do not edit by hand:\n` +
+  `// re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.\n` +
+  `// (Only change vs upstream: ../ imports rebased to ./ for the flat layout.)\n`;
+
+fs.mkdirSync(OUT_DIR, { recursive: true });
+const files = {};
+for (const rel of FILES) {
+  const from = path.join(srcRoot, rel);
+  if (!fs.existsSync(from)) {
+    throw new Error(`upstream has no ${rel} at v${version} — module renamed?`);
+  }
+  const name = path.basename(rel);
+  const raw = fs.readFileSync(from, "utf-8");
+  // The ONLY transformation, stated in the header: the flat vendored layout has no
+  // parent directories, so `../x/y.js` and `./x/y.js` imports collapse to `./y.js`.
+  //
+  // Applied LINE BY LINE and only to import/export declarations (raised in review):
+  // a comment or a string literal containing `from "../foo.js"` was being rewritten
+  // too, which made the file non-verbatim outside the one change the header announces.
+  const flattened = raw
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      const isDeclaration =
+        (t.startsWith("import ") ||
+          t.startsWith("export ") ||
+          t.startsWith("}")) &&
+        / from "/.test(t);
+      // The FIRST `from "…"` only — the specifier. A trailing comment mentioning
+      // another path (`import … from "../a.js"; // moved from "../b.js"`) was being
+      // rewritten too, which is precisely the "verbatim except the specifier" promise
+      // broken (raised in review). Note the non-global regex.
+      return isDeclaration
+        ? line.replace(/from "\.\.?\/(?:[^"]*\/)?([^/"]+\.js)"/, 'from "./$1"')
+        : line;
+    })
+    .join("\n");
+  const body = header(rel) + flattened;
+  fs.writeFileSync(path.join(OUT_DIR, name), body);
+  // TWO hashes, and the second is the one that matters.
+  //
+  // `vendored` covers what we WROTE (header included): it catches a local edit, but
+  // it is SELF-ATTESTED — someone editing a schema can update this number too and
+  // every gate stays green (raised in review, 2026-07-26).
+  // `upstream` is the sha256 of the RAW upstream bytes, before our header and before
+  // the import rewrite. That number is a claim about the CONTENT OF A PUBLIC TAG:
+  // anyone with the tag can recompute it, so faking it requires lying about
+  // something checkable outside this repo. `vendor-integrity.test.ts` also verifies
+  // that stripping our header and undoing nothing else reproduces it, which pins the
+  // body of every vendored file to upstream's own bytes for the unmodified files.
+  // The rewrite is line-local and REVERSIBLE: record the original import lines so the
+  // test can reconstruct the upstream bytes exactly and compare against `upstream`.
+  // Without this, a rewritten file could only be checked against a self-attested
+  // hash — and `primitives.ts` is rewritten, so that exemption would have covered a
+  // walked schema module.
+  const rewrites = [];
+  if (flattened !== raw) {
+    const before = raw.split("\n");
+    const after = flattened.split("\n");
+    for (let i = 0; i < before.length; i += 1) {
+      if (before[i] !== after[i]) rewrites.push({ line: i, upstream: before[i] });
+    }
+  }
+  files[name] = {
+    vendored: createHash("sha256").update(body).digest("hex"),
+    upstream: createHash("sha256").update(raw).digest("hex"),
+    // Empty when the file needed no rewrite.
+    rewrites,
+  };
+}
+
+fs.writeFileSync(
+  path.join(OUT_DIR, "PROVENANCE.json"),
+  `${JSON.stringify(
+    {
+      version,
+      upstreamRepo: UPSTREAM_REPO,
+      upstreamTag: `v${version}`,
+      upstreamSha,
+      // No timestamp on purpose: re-running must produce a BYTE-IDENTICAL directory,
+      // so a diff means the contract moved, never that the clock did.
+      files,
+    },
+    null,
+    2,
+  )}\n`,
+);
+
+console.error(
+  `[vendor] ${Object.keys(files).length} file(s) -> protocol/openclaw/${version}/ (upstream ${upstreamSha.slice(0, 12)})`,
+);

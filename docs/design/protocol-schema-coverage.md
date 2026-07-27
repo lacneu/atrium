@@ -325,10 +325,16 @@ the same ground. Classified on that axis.
 3. **`stopReason` unconsumed (low impact).** Informational only; no branch
    depends on why a turn stopped. Loss is cosmetic/diagnostic.
 
-4. **`seq` gap-detection absent (low impact).** No ordering/gap check
-   (normalizer.ts:663-670 uses `seq` only for exact-rebroadcast dedup). Real-world
-   impact low because the transport is an ordered WS/TCP stream; a dropped/reordered
-   frame would not be detected, but the gateway does not reorder on one socket.
+4. **`seq` gap-detection — CLOSED, and the old justification was FALSE.**
+   Corrected 2026-07-26 (W10/G-74). The text here used to say the impact was low
+   "because the transport is an ordered WS/TCP stream" and "the gateway does not
+   reorder on one socket". Ordering was never the risk: upstream **drops frames on
+   purpose**. In `server-broadcast.ts`, a broadcast marked `dropIfSlow` on a slow
+   consumer skips the frame AND advances that client's `clientSeq` — a deliberate
+   gap on a single, perfectly ordered socket. (Non-`dropIfSlow` broadcasts close the
+   link with `1008 "slow consumer"` instead, which is the other half of the same
+   fact.) The bridge now detects the gap (`noteFrameGap`, per-turn `framesLost` on
+   the pressure trace) rather than reasoning about why it could not happen.
 
 ### Conditionally mitigated (does not outrank the above)
 
@@ -378,3 +384,13 @@ normalized events (`message.delta/snapshot/final`, `run.status`, `tool.status`,
 about the OpenClaw→normalized translation; Hermes may or may not expose
 equivalent signals, and the shared `context.compaction` / `run.status` event
 shapes are the contract any provider must satisfy — not the OpenClaw field names.
+
+**Corrected 2026-07-26 (W10/G-74).** The paragraph above is written in the future
+tense — "when the Hermes adapter lands", "structural placeholder with zero
+capabilities". That has been false since 0.38.0: the Hermes adapter SHIPPED, with two
+transports (REST and WS), its own normalizer under `providers/hermes/`, and a
+`supportedRange` of `0.18.0 … 0.18.2` in `compat.ts` — the placeholder row is gone.
+What is still true is the part that matters: Hermes has **no vendored schema and no
+coverage matrix of its own**, so nothing ratchets its wire contract. Every field-level
+verdict in §1–§4 remains OpenClaw-only, and a Hermes protocol change would land
+unannounced. That is a DECLARED gap (the program's W12), not a pending adapter.

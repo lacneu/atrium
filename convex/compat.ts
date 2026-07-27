@@ -37,7 +37,7 @@ import {
   type CompatSummary,
   type NormalizedCapabilities,
 } from "./lib/compat";
-import { resolveTargetForChat } from "./routing";
+import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { resolveHealthPollTargets } from "./lib/bridgeRouting";
 
 const COMPAT_KEY = "singleton";
@@ -259,11 +259,30 @@ export const forInstance = query({
  *  back to the routing resolver (the same instance a dispatch would use) for
  *  legacy unbound chats. Direct singleton read after that — no N+1. */
 export const forChat = query({
-  args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }) => {
+  args: {
+    chatId: v.id("chats"),
+    // The agent the COMPOSER currently targets, when the user has made a per-turn
+    // selection. Mirrors `bridgeHealth.getBridgeAvailability`, and for the same
+    // reason: the capability state that matters is the NEXT SEND's gateway, not the
+    // one this chat happens to be bound to. Without it, selecting an agent on an
+    // unvalidated instance showed no banner until after the send, and switching BACK
+    // left a stale one (raised in review).
+    //
+    // A forged value is harmless: `resolveTargetForTurn` re-authorizes the agent
+    // against this user's entitlements, so a non-entitled instance resolves to null
+    // and this query answers exactly as it would with no selection.
+    routedAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (ctx, { chatId, routedAgent }) => {
     const { userId } = await requireActive(ctx);
     const chat = await requireOwnedChat(ctx, userId, chatId);
     const instanceName =
+      (routedAgent
+        ? (await resolveTargetForTurn(ctx, chat, userId, routedAgent)).target
+            ?.instanceName
+        : null) ??
       chat.instanceName ??
       (await resolveTargetForChat(ctx, chat, userId)).target?.instanceName ??
       null;

@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from openclaw/openclaw @ v2026.6.11 — packages/gateway-protocol/src/schema/logs-chat.ts.
+// VENDORED VERBATIM from openclaw/openclaw @ v2026.7.1 — packages/gateway-protocol/src/schema/logs-chat.ts.
 // Source of truth for the wire protocol; used ONLY by the protocol-coverage
 // ratchet test (never imported by runtime bridge code). Do not edit by hand:
 // re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.
@@ -37,6 +37,7 @@ export const ChatHistoryParamsSchema = Type.Object(
     sessionKey: NonEmptyString,
     agentId: Type.Optional(NonEmptyString),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+    offset: Type.Optional(Type.Integer({ minimum: 0 })),
     maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 500_000 })),
   },
   { additionalProperties: false },
@@ -100,6 +101,7 @@ export const ChatSendParamsSchema = Type.Object(
     systemInputProvenance: Type.Optional(InputProvenanceSchema),
     systemProvenanceReceipt: Type.Optional(Type.String()),
     suppressCommandInterpretation: Type.Optional(Type.Boolean()),
+    expectedSessionRoutingContract: Type.Optional(NonEmptyString),
     idempotencyKey: NonEmptyString,
   },
   { additionalProperties: false },
@@ -111,6 +113,7 @@ export const ChatAbortParamsSchema = Type.Object(
     sessionKey: NonEmptyString,
     agentId: Type.Optional(NonEmptyString),
     runId: Type.Optional(NonEmptyString),
+    preserveSideRuns: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -175,6 +178,7 @@ export const ChatAbortedEventSchema = Type.Object(
     ...ChatEventBaseSchema,
     state: Type.Literal("aborted"),
     message: Type.Optional(Type.Unknown()),
+    errorMessage: Type.Optional(Type.String()),
     stopReason: Type.Optional(Type.String()),
   },
   { additionalProperties: false },

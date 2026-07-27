@@ -8,10 +8,12 @@
 //      turn pins against the vendored TypeBox schemas). One chain:
 //        vendored schema <-> coverage.json <-> runtime sets.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { COMPAT_MANIFEST } from "../src/compat.js";
 import {
   COVERAGE_SUMMARY,
+  DRIFT_VENDORED_VERSION,
   KNOWN_AGENT_FIELDS,
   KNOWN_CHAT_FIELDS,
   protocolDrift,
@@ -111,9 +113,16 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       { fields?: Record<string, unknown> } & Record<string, unknown>
     >;
   }
+  // The manifest of the version the bridge PROMISES — `maxValidated` — not the newest
+  // directory on disk (raised in review: vendoring a future version to prepare a bump
+  // would otherwise swing the runtime matrix onto a contract nobody had promised).
+  // `compat.test.ts` separately refuses a `maxValidated` with no vendored directory,
+  // so this lookup cannot point at nothing.
+  const REFERENCE = COMPAT_MANIFEST.providers.openclaw?.supportedRange?.maxValidated;
+  if (!REFERENCE) throw new Error("the openclaw provider declares no supported range");
   const MANIFEST = JSON.parse(
     readFileSync(
-      new URL("../protocol/openclaw/coverage.json", import.meta.url),
+      new URL(`../protocol/openclaw/coverage/${REFERENCE}.json`, import.meta.url),
       "utf-8",
     ),
   ) as Manifest;
@@ -131,6 +140,16 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       }
     }
     expect([...KNOWN_CHAT_FIELDS].sort()).toEqual([...union].sort());
+  });
+
+  it("DRIFT_VENDORED_VERSION equals the PROMISED version (maxValidated)", () => {
+    // The constant is what the operator matrix and the drift badge report as "the
+    // contract this bridge is judged against". Nothing pinned it, so it sat on
+    // 2026.6.11 while `maxValidated` said 2026.7.1 — and its comment then explained,
+    // at length, why 6.11 plus one field WAS the 7.1 surface. Pinned to
+    // `maxValidated` rather than to the newest directory: a directory vendored ahead
+    // of a bump is legitimate preparation and must not move what we report.
+    expect(DRIFT_VENDORED_VERSION).toBe(REFERENCE);
   });
 
   it("COVERAGE_SUMMARY == a recount of the manifest (counts + gap list)", () => {

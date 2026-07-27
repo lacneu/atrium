@@ -18,13 +18,32 @@
 // classifies it. A protocol evolution can never land silently again — the
 // diff between two vendored versions IS the migration checklist.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import * as logsChat from "../protocol/openclaw/2026.6.11/logs-chat.js";
-import * as agent from "../protocol/openclaw/2026.6.11/agent.js";
-import * as primitives from "../protocol/openclaw/2026.6.11/primitives.js";
 
-const VENDORED_VERSION = "2026.6.11";
+// EVERY vendored version, not one hardcoded (W10 / G1). The ratchet's whole value is
+// that bumping the validated range = vendoring the new tag = this test enumerating
+// what changed; pinned to a single directory, it went green on a version nobody had
+// examined while `maxValidated` had already moved on. `import.meta.glob` keeps the
+// paths statically analyzable (a computed dynamic import would not resolve).
+// `import.meta.glob` is Vite's, so it is not on the Node `ImportMeta` type the
+// bridge's tsconfig uses. Narrowed here rather than adding vite's client types to the
+// whole package for one test.
+const VENDORED_MODULES = (
+  import.meta as unknown as {
+    glob: (p: string) => Record<string, () => Promise<Record<string, unknown>>>;
+  }
+).glob("../protocol/openclaw/*/*.ts");
+
+/** Vendored version directories, in ascending order. */
+function vendoredVersions(): string[] {
+  return readdirSync(new URL("../protocol/openclaw", import.meta.url), {
+    withFileTypes: true,
+  })
+    .filter((e) => e.isDirectory() && e.name !== "coverage")
+    .map((e) => e.name)
+    .sort();
+}
 
 interface FieldEntry {
   status: "handled" | "ignored" | "gap";
@@ -40,15 +59,41 @@ interface Manifest {
   schemas: Record<string, SchemaEntry>;
 }
 
-const MANIFEST = JSON.parse(
-  readFileSync(new URL("../protocol/openclaw/coverage.json", import.meta.url), "utf-8"),
-) as Manifest;
+function manifestFor(version: string): Manifest {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../protocol/openclaw/coverage/${version}.json`, import.meta.url),
+      "utf-8",
+    ),
+  ) as Manifest;
+}
 
-/** Every exported TypeBox schema of the vendored modules, keyed by its export
- *  name minus the `Schema` suffix (the manifest's key convention). */
-function exportedSchemas(): Map<string, Record<string, unknown>> {
+/** EVERY `.ts` file of a vendored version — the list is derived, not fixed.
+ *
+ *  It used to be a hardcoded trio, which meant vendoring a new module (say
+ *  `sessions.ts`) made `rpc-scope.test.ts` report its RPCs as COVERED while this
+ *  ratchet never walked it: its schemas and fields would need no classification at
+ *  all, and every test would pass. Modules that export no `*Schema` (the shared
+ *  contracts) contribute nothing and cost nothing. */
+function walkedFiles(version: string): string[] {
+  return readdirSync(
+    new URL(`../protocol/openclaw/${version}/`, import.meta.url),
+  ).filter((f) => f.endsWith(".ts"));
+}
+
+/** Every exported TypeBox schema of one version's vendored modules, keyed by its
+ *  export name minus the `Schema` suffix (the manifest's key convention). */
+async function exportedSchemas(
+  version: string,
+): Promise<Map<string, Record<string, unknown>>> {
   const out = new Map<string, Record<string, unknown>>();
-  for (const mod of [logsChat, agent, primitives]) {
+  for (const file of walkedFiles(version)) {
+    const key = `../protocol/openclaw/${version}/${file}`;
+    const loader = VENDORED_MODULES[key];
+    if (loader === undefined) {
+      throw new Error(`vendored ${version} is missing ${file}`);
+    }
+    const mod = await loader();
     for (const [name, value] of Object.entries(mod)) {
       if (!name.endsWith("Schema")) continue;
       if (typeof value !== "object" || value === null) continue;
@@ -86,19 +131,36 @@ function validEntry(entry: FieldEntry, where: string): string | null {
   return null;
 }
 
+for (const VENDORED_VERSION of vendoredVersions()) {
 describe(`protocol coverage ratchet (openclaw @ ${VENDORED_VERSION})`, () => {
+  const MANIFEST = manifestFor(VENDORED_VERSION);
+
   it("the manifest targets the vendored version", () => {
     expect(MANIFEST.version).toBe(VENDORED_VERSION);
   });
 
-  it("EVERY exported schema is classified — a new schema in a version bump must be triaged", () => {
-    const schemas = exportedSchemas();
+  it("the version is not VACUOUSLY vendored", async () => {
+    // An empty directory with an empty matching manifest satisfies every other test
+    // here, the bijection in compat.test.ts and the provenance integrity check — and
+    // reports a version as examined whose contract was never enumerated (raised in
+    // review). It is the exact failure this lot exists to prevent, one level up.
+    const schemas = await exportedSchemas(VENDORED_VERSION);
+    expect(
+      schemas.size,
+      `protocol/openclaw/${VENDORED_VERSION}/ exports no schemas — an empty ` +
+        `directory claims an examination that never happened`,
+    ).toBeGreaterThan(10);
+    expect(Object.keys(MANIFEST.schemas).length).toBeGreaterThan(10);
+  });
+
+  it("EVERY exported schema is classified — a new schema in a version bump must be triaged", async () => {
+    const schemas = await exportedSchemas(VENDORED_VERSION);
     const missing = [...schemas.keys()].filter((k) => !(k in MANIFEST.schemas));
     expect(missing, `unclassified schemas: ${missing.join(", ")}`).toEqual([]);
   });
 
-  it("EVERY top-level field of a per-field schema is classified — a new field must be triaged", () => {
-    const schemas = exportedSchemas();
+  it("EVERY top-level field of a per-field schema is classified — a new field must be triaged", async () => {
+    const schemas = await exportedSchemas(VENDORED_VERSION);
     const problems: string[] = [];
     for (const [name, entry] of Object.entries(MANIFEST.schemas)) {
       const schema = schemas.get(name);
@@ -123,8 +185,8 @@ describe(`protocol coverage ratchet (openclaw @ ${VENDORED_VERSION})`, () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
-  it("no ORPHAN manifest entries — a schema/field that left the protocol must leave the manifest", () => {
-    const schemas = exportedSchemas();
+  it("no ORPHAN manifest entries — a schema/field that left the protocol must leave the manifest", async () => {
+    const schemas = await exportedSchemas(VENDORED_VERSION);
     const problems: string[] = [];
     for (const [name, entry] of Object.entries(MANIFEST.schemas)) {
       const schema = schemas.get(name);
@@ -159,3 +221,4 @@ describe(`protocol coverage ratchet (openclaw @ ${VENDORED_VERSION})`, () => {
     );
   });
 });
+}

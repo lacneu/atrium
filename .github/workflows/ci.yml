@@ -68,6 +68,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # SEPARATE, NAMED step even though `typecheck` already chains it: this is the
+      # gate whose ABSENCE cost days. `convex dev` / `npx convex deploy` run `tsc`
+      # over `convex/**` with convex/tsconfig.json — a DIFFERENT project from the
+      # root one (notably `lib: ES2021` vs `ES2023`, so `Array.prototype.at` does
+      # not exist there). On 2026-07-26 a single excess-property error in
+      # `convex/authDomains.test.ts` silently blocked EVERY push for days behind a
+      # fully green CI, and would have failed a production `convex deploy`. Named
+      # here so the failure reads as what it is: the deploy is broken.
+      - name: Typecheck Convex (the `convex deploy` gate)
+        run: npm run typecheck:convex
+
       - name: Build
         run: npm run build
 

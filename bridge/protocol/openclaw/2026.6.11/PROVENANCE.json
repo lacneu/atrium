@@ -1,0 +1,42 @@
+{
+  "version": "2026.6.11",
+  "upstreamRepo": "openclaw/openclaw",
+  "upstreamTag": "v2026.6.11",
+  "upstreamSha": "e085fa1a3ffd32d0ea6917e1e6fb4ecbffbb77d2",
+  "files": {
+    "logs-chat.ts": {
+      "vendored": "2f43b90534ecb395082ee730fdcdce0a7fa3ccf72567719ae673aff892d5851b",
+      "upstream": "91ec5bf6138a6e5f5909bd2c210858684751b8180598c85140a51878df72d093",
+      "rewrites": []
+    },
+    "agent.ts": {
+      "vendored": "ce30c41385b3d6a2ec197bd8b3ee129e390931e6098f94b09c32995077298923",
+      "upstream": "5d28d8da7c068c57262f57777bcb70591af28a21fa801e41905ff114b0d58123",
+      "rewrites": []
+    },
+    "primitives.ts": {
+      "vendored": "9a2b64e02e0e4bc40d519f14296970212f30ea46892a54f128b2b4faa0a238db",
+      "upstream": "d7ea10c42fa1420a81eba7eeec4e661340b70e10cfc5a10237eafda82af0df11",
+      "rewrites": [
+        {
+          "line": 2,
+          "upstream": "import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from \"../client-info.js\";"
+        },
+        {
+          "line": 9,
+          "upstream": "} from \"../secret-ref-contract.js\";"
+        }
+      ]
+    },
+    "client-info.ts": {
+      "vendored": "116b92c2773b8eccfc9a672ee401b44174cf60f0302f8dc643da96ba9dc3490a",
+      "upstream": "254f65b17c0f1f5d14164d06ec2047302fb9c1ed6b79882f771c0b1aecbe2b08",
+      "rewrites": []
+    },
+    "secret-ref-contract.ts": {
+      "vendored": "d0ad1b4758468320b16803a219c26b1b8c9d433b168e26a535b53051d0163aa6",
+      "upstream": "5fecb3165cb5203f1a8fdce7fce5a175fd48a61307b569534071d6ca01f0472c",
+      "rewrites": []
+    }
+  }
+}

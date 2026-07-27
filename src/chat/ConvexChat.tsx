@@ -206,6 +206,7 @@ import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { parseChatReferenceCandidate } from "./chatReference";
 import { PromptBridgeContext, type PromptBridge } from "./promptBridge";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
+import { chatBannerKind } from "./chatBanner";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import type { ToolActivityPart } from "./toolActivityView";
 import {
@@ -1048,6 +1049,20 @@ function ChatThread({
   // and with no selection availNext === the chatId-only query, so the common case is
   // unchanged. Fail-open while unknown (undefined).
   const unavailable = availNext && !availNext.available ? availNext : null;
+  // The gateway runs a version NOBODY has put through the validation bench (W10/G7).
+  // The capability set is FROZEN at the last validated profile, so nothing breaks —
+  // but the reader deserves to know their gateway is beyond what we have exercised.
+  // Read from the chat's own compat row, the same source the capability gates use.
+  // Scoped to the NEXT send's target, exactly like `availNext` above: a per-turn
+  // selection to an instance beyond the validated range must say so BEFORE the send,
+  // and switching back must clear it.
+  const { beyondValidated, gatewayVersion: beyondVersion } =
+    useInstanceCapabilities(
+      chatId as ConvexId<"chats">,
+      selected
+        ? { instanceName: selected.instanceName, agentId: selected.agentId }
+        : null,
+    );
   const gatewayDegraded = avail?.available === true && avail.degraded === true;
   const gatewayDegradedNext =
     availNext?.available === true && availNext.degraded === true;
@@ -1058,6 +1073,12 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  const bannerKind = chatBannerKind({
+    readOnly,
+    unavailable: unavailable !== null,
+    degraded: gatewayDegradedNext,
+    beyondValidated,
+  });
   // Held-dictation dock chip: the REAL conversation title, from the TARGETED
   // getSessionMeta query (already subscribed here — Convex dedupes) rather
   // than the sidebar's bounded listChats window, which deliberately omits
@@ -1328,12 +1349,17 @@ function ChatThread({
           </ThreadPrimitive.ScrollToBottom>
         </ThreadPrimitive.If>
       </div>
-      {readOnly ? (
+      {/* WHICH notice, decided by a pure function (chatBanner.ts) so the priority
+          between the four is asserted by a test instead of being the shape of a
+          ternary chain. */}
+      {bannerKind === "read_only" ? (
         <ChatReadOnlyBanner />
-      ) : unavailable ? (
-        <BridgeUnavailableBanner reason={unavailable.reason} />
-      ) : gatewayDegradedNext ? (
+      ) : bannerKind === "unavailable" ? (
+        <BridgeUnavailableBanner reason={unavailable?.reason ?? null} />
+      ) : bannerKind === "degraded" ? (
         <GatewayDegradedBanner />
+      ) : bannerKind === "beyond_validated" ? (
+        <GatewayBeyondValidatedBanner version={beyondVersion} />
       ) : null}
       {/* Codex-style queue dock: the mid-turn messages parked in the outbox,
           as editable/cancellable cards right above the composer (renders null
@@ -1430,6 +1456,32 @@ function TurnActivityIndicator({
 // responding while the bridge itself is up. The composer stays usable (one gateway
 // must never lock everyone out — the failDispatch bubble backstops a failed send);
 // the banner just makes the outage visible instead of leaving spinners lying.
+/**
+ * The gateway is NEWER than any version we have benched (W10 / G7).
+ *
+ * Not an error and not a failure: the capability set is frozen at the last validated
+ * profile, so every control on screen is one we have actually exercised. What the
+ * reader is being told is that their gateway has moved past our validation, so an
+ * oddity is worth reporting rather than living with.
+ *
+ * PERMANENT, not dismissible (decided): the condition persists until somebody runs the
+ * bench on that version, and a dismissed banner would hide exactly the state an
+ * operator needs to see. It disappears on its own the moment the version is validated
+ * and `maxValidated` moves — which is the action it is asking for.
+ */
+function GatewayBeyondValidatedBanner({ version }: { version: string | null }) {
+  return (
+    <div className="oc-chat-banner oc-chat-banner--warn" role="status">
+      <CircleAlert size={16} aria-hidden />
+      <span>
+        {version === null
+          ? m.chat_beyond_validated_banner_unknown()
+          : m.chat_beyond_validated_banner({ version })}
+      </span>
+    </div>
+  );
+}
+
 function GatewayDegradedBanner() {
   return (
     <div className="oc-chat-banner oc-chat-banner--warn" role="status">
