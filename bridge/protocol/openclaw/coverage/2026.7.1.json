@@ -1,1569 +1,2065 @@
 {
-  "$comment": "Protocol coverage manifest (Inc 1 of docs/design/protocol-contract.md). Every schema exported by the vendored gateway-protocol modules (protocol/openclaw/<version>/) must be classified here — either whole-schema or field-by-field. The ratchet test (test/protocol-coverage.test.ts) walks the vendored TypeBox schemas and fails on any unclassified schema/field, so a validated-version bump that introduces new protocol surface stays RED until a human classifies it. statuses: handled (consumed/emitted by the bridge, `by` = where) | ignored (deliberate, `why` required) | gap (known-unsupported, `note` required). Seeded from the audit in docs/design/protocol-schema-coverage.md.",
-  "version": "2026.7.1",
-  "schemas": {
-    "ChatDeltaEvent": {
-      "fields": {
-        "runId": {
-          "status": "handled",
-          "by": "normalizer ownRunIds filter (isolation gate)"
-        },
-        "sessionKey": {
-          "status": "handled",
-          "by": "normalizer isolation gate (exact match)"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the connection is already session-scoped per agent (buildSessionKey)"
-        },
-        "spawnedBy": {
-          "status": "handled",
-          "by": "normalizer sub-agent admission -> handleSubAgent"
-        },
-        "seq": {
-          "status": "handled",
-          "by": "handleChat dedup key component; NOTE: no ordering/gap detection (ordered WS transport)"
-        },
-        "state": {
-          "status": "handled",
-          "by": "handleChat state routing (delta/final/error/aborted)"
-        },
-        "message": {
-          "status": "handled",
-          "by": "handleChat textFromMessage (snapshot precedence)"
-        },
-        "deltaText": {
-          "status": "handled",
-          "by": "handleChat applyVisible append path"
-        },
-        "replace": {
-          "status": "handled",
-          "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
-        },
-        "usage": {
-          "status": "ignored",
-          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
-        }
-      }
-    },
-    "ChatFinalEvent": {
-      "fields": {
-        "runId": {
-          "status": "handled",
-          "by": "normalizer ownRunIds filter"
-        },
-        "sessionKey": {
-          "status": "handled",
-          "by": "normalizer isolation gate"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "session-scoped connection per agent"
-        },
-        "spawnedBy": {
-          "status": "handled",
-          "by": "sub-agent admission"
-        },
-        "seq": {
-          "status": "handled",
-          "by": "dedup key component"
-        },
-        "state": {
-          "status": "handled",
-          "by": "handleChat final path (+ empty-final grace)"
-        },
-        "message": {
-          "status": "handled",
-          "by": "handleChat textFromMessage -> finalize"
-        },
-        "usage": {
-          "status": "ignored",
-          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
-        },
-        "stopReason": {
-          "status": "handled",
-          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
-          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
-        }
-      }
-    },
-    "ChatAbortedEvent": {
-      "fields": {
-        "runId": {
-          "status": "handled",
-          "by": "normalizer ownRunIds filter"
-        },
-        "sessionKey": {
-          "status": "handled",
-          "by": "normalizer isolation gate"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "session-scoped connection per agent"
-        },
-        "spawnedBy": {
-          "status": "handled",
-          "by": "sub-agent admission"
-        },
-        "seq": {
-          "status": "handled",
-          "by": "dedup key component"
-        },
-        "state": {
-          "status": "handled",
-          "by": "handleChat terminalizes aborted -> finalize(aborted)"
-        },
-        "message": {
-          "status": "ignored",
-          "why": "an aborted turn carries no reply to persist"
-        },
-        "stopReason": {
-          "status": "handled",
-          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
-          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
-        },
-        "errorMessage": {
-          "status": "gap",
-          "note": "NOT read. Corrected after review: the first classification claimed `handled` on the strength of the `payload.errorMessage` read in handleChat, but the `state === \"aborted\"` branch finalizes and RETURNS (normalizer.ts, `finalize(..., \"gateway_abort\")`) several lines BEFORE that read — which serves `state === \"error\"` only. Impact: an abort carries its cancellation reason and we drop it, so a coordinator- or timeout-initiated cancellation is indistinguishable from a user Stop; both render \"Interrompu\". Wiring it means capturing the text as a trace-only diagnostic, never as the message's error (an abort is not a failure to explain to the reader)."
-        }
-      }
-    },
-    "ChatErrorEvent": {
-      "fields": {
-        "runId": {
-          "status": "handled",
-          "by": "normalizer ownRunIds filter"
-        },
-        "sessionKey": {
-          "status": "handled",
-          "by": "normalizer isolation gate"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "session-scoped connection per agent"
-        },
-        "spawnedBy": {
-          "status": "handled",
-          "by": "sub-agent admission (child terminal errors)"
-        },
-        "seq": {
-          "status": "handled",
-          "by": "dedup key component"
-        },
-        "state": {
-          "status": "handled",
-          "by": "handleChat terminalizes error -> finalize(error, errorKind)"
-        },
-        "message": {
-          "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage)"
-        },
-        "errorMessage": {
-          "status": "handled",
-          "by": "handleChat -> message.final error -> message.error"
-        },
-        "errorKind": {
-          "status": "handled",
-          "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow)"
-        },
-        "usage": {
-          "status": "ignored",
-          "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
-        },
-        "stopReason": {
-          "status": "handled",
-          "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
-          "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
-        }
-      }
-    },
-    "AgentEvent": {
-      "fields": {
-        "runId": {
-          "status": "handled",
-          "by": "normalizer ownRunIds filter"
-        },
-        "seq": {
-          "status": "handled",
-          "by": "frame dedup/tally; no gap detection (ordered WS)"
-        },
-        "stream": {
-          "status": "handled",
-          "by": "handleAgent per-stream routing (lifecycle/tool/assistant/item/provenance)"
-        },
-        "ts": {
-          "status": "ignored",
-          "why": "the normalizer runs on an injected monotonic clock; frame timestamps unused"
-        },
-        "spawnedBy": {
-          "status": "handled",
-          "by": "sub-agent admission (child lane observation)"
-        },
-        "isHeartbeat": {
-          "status": "ignored",
-          "why": "keep-alive; any own frame already refreshes the recv budget (armRecv)"
-        },
-        "data": {
-          "status": "handled",
-          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14)"
-        }
-      }
-    },
-    "AgentInternalEvent": {
-      "status": "ignored",
-      "why": "the FORMAL announce contract (task_completion: childSessionKey/status/result/attachments) — but these are run INPUT params (AgentParams.internalEvents), invisible on the event stream by construction; the bridge reconstructs announce deliveries from the announce:v1 run's normal chat/assistant frames. Future structured source if the gateway ever surfaces them."
-    },
-    "AgentGeneratedAttachment": {
-      "status": "ignored",
-      "why": "carried inside AgentInternalEvent (run input params) — see AgentInternalEvent"
-    },
-    "ChatSendParams": {
-      "fields": {
-        "sessionKey": {
-          "status": "handled",
-          "by": "server.ts chat.send dispatch (buildSessionKey)"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "redundant with the agent baked into sessionKey"
-        },
-        "sessionId": {
-          "status": "ignored",
-          "why": "the gateway resolves the session from sessionKey"
-        },
-        "message": {
-          "status": "handled",
-          "by": "server.ts chat.send dispatch (+ rehydration prefix)"
-        },
-        "thinking": {
-          "status": "ignored",
-          "why": "reasoning level is set via sessions.patch (knob), not per-send"
-        },
-        "fastMode": {
-          "status": "ignored",
-          "why": "fast mode is set via sessions.patch (knob), not per-send"
-        },
-        "fastAutoOnSeconds": {
-          "status": "ignored",
-          "why": "auto fast-mode cutoff not exposed by Atrium"
-        },
-        "deliver": {
-          "status": "ignored",
-          "why": "Atrium consumes the event stream; channel delivery unused"
-        },
-        "originatingChannel": {
-          "status": "ignored",
-          "why": "no channel-mirroring semantics in Atrium sends"
-        },
-        "originatingTo": {
-          "status": "ignored",
-          "why": "no channel-mirroring semantics"
-        },
-        "originatingAccountId": {
-          "status": "ignored",
-          "why": "no channel-mirroring semantics"
-        },
-        "originatingThreadId": {
-          "status": "ignored",
-          "why": "no channel-mirroring semantics"
-        },
-        "attachments": {
-          "status": "handled",
-          "by": "server.ts inbound attachment path (inline/shared-fs)"
-        },
-        "timeoutMs": {
-          "status": "ignored",
-          "why": "turn timeouts are owned by the normalizer's recv deadlines"
-        },
-        "systemInputProvenance": {
-          "status": "ignored",
-          "why": "operator-injection provenance not applicable to user sends"
-        },
-        "systemProvenanceReceipt": {
-          "status": "ignored",
-          "why": "operator-injection provenance not applicable"
-        },
-        "suppressCommandInterpretation": {
-          "status": "ignored",
-          "why": "Atrium sends are user turns; command interpretation stays default"
-        },
-        "idempotencyKey": {
-          "status": "handled",
-          "by": "server.ts chat.send dispatch (retry-safe sends)"
-        },
-        "expectedSessionRoutingContract": {
-          "status": "gap",
-          "note": "NOT sent. It is upstream's own remedy for mis-routing (the gateway refuses the send when the session's routing no longer matches what the caller expected), so this is a capability we want, not one we dismiss. Blocked on the OUTBOUND ratchet (W10/G2): ChatSendParams is `additionalProperties:false`, so adding a field the FLOOR (2026.5.19) does not know makes every chat.send fail INVALID_REQUEST on older gateways. Ship it version-gated, the way upstream's own TUI does for preserveSideRuns (src/tui/gateway-chat.ts: send it, retry the shipped shape on rejection)."
-        }
-      }
-    },
-    "ChatAbortParams": {
-      "fields": {
-        "sessionKey": {
-          "status": "handled",
-          "by": "server.ts /abort route (buildSessionKey -> chat.abort over a dedicated operator connection)"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "redundant with the agent baked into sessionKey"
-        },
-        "runId": {
-          "status": "handled",
-          "by": "server.ts /abort route (targets the streaming message's exact run — immune to a queued follow-up's new run)"
-        },
-        "preserveSideRuns": {
-          "status": "gap",
-          "note": "NOT sent, so the stop button also kills a BTW side run in flight. Upstream semantics (server-methods/chat.ts): with the flag, runs whose `turnKind === \"btw\"` are SPARED from the abort — exactly the side-result runs Atrium already renders. Same floor constraint and same remedy as expectedSessionRoutingContract: version-gated, with the upstream TUI's send-then-retry fallback."
-        }
-      }
-    },
-    "ChatInjectParams": {
-      "status": "ignored",
-      "why": "operator-visible synthetic transcript injection — no Atrium feature maps to it"
-    },
-    "ChatHistoryParams": {
-      "status": "ignored",
-      "why": "history recovery uses sessions.get (bounded, keyed) instead of chat.history"
-    },
-    "ChatMetadataParams": {
-      "status": "ignored",
-      "why": "chat metadata listing unused; agent discovery goes through agents.list"
-    },
-    "ChatMessageGetParams": {
-      "status": "ignored",
-      "why": "single-message lookup unused (Convex is the message store)"
-    },
-    "ChatMessageGetResult": {
-      "status": "ignored",
-      "why": "result envelope of the unused chat.message.get"
-    },
-    "ChatEvent": {
-      "status": "ignored",
-      "why": "the union wrapper of the four chat event schemas classified field-by-field above"
-    },
-    "LogsTailParams": {
-      "status": "ignored",
-      "why": "dashboard log tailing — not an Atrium surface (SOC2: no raw gateway logs in-product)"
-    },
-    "LogsTailResult": {
-      "status": "ignored",
-      "why": "result of the unused logs.tail"
-    },
-    "MessageActionToolContext": {
-      "status": "ignored",
-      "why": "channel message-action tooling — Atrium is not a channel adapter"
-    },
-    "MessageActionParams": {
-      "status": "ignored",
-      "why": "channel message actions — not an Atrium surface"
-    },
-    "SendParams": {
-      "status": "ignored",
-      "why": "outbound channel sends (Telegram-style) — Atrium consumes the event stream instead"
-    },
-    "PollParams": {
-      "status": "ignored",
-      "why": "native channel polls — not an Atrium surface"
-    },
-    "AgentParams": {
-      "status": "ignored",
-      "why": "the direct agent-run RPC — the bridge dispatches turns via chat.send exclusively (session-keyed, idempotent)"
-    },
-    "AgentIdentityParams": {
-      "status": "ignored",
-      "why": "identity display comes from agents.list at discovery time"
-    },
-    "AgentIdentityResult": {
-      "status": "ignored",
-      "why": "result of the unused agent.identity"
-    },
-    "AgentWaitParams": {
-      "status": "ignored",
-      "why": "run completion is observed on the event stream, never polled"
-    },
-    "WakeParams": {
-      "status": "ignored",
-      "why": "external scheduler wake — not an Atrium surface"
-    },
-    "InputProvenance": {
-      "status": "ignored",
-      "why": "operator-injection provenance primitive — Atrium sends never set systemInputProvenance (see ChatSendParams)"
-    },
-    "GatewayClientId": {
-      "status": "ignored",
-      "why": "handshake client-id vocabulary — the bridge identifies via its own connect params, not this enum"
-    },
-    "GatewayClientMode": {
-      "status": "ignored",
-      "why": "handshake client-mode vocabulary — same as GatewayClientId"
-    },
-    "SecretRefSource": {
-      "status": "ignored",
-      "why": "secret-reference primitive for config schemas — the bridge never writes gateway config"
-    },
-    "SecretRef": {
-      "status": "ignored",
-      "why": "secret-reference primitive — the bridge never writes gateway config"
-    },
-    "SecretInput": {
-      "status": "ignored",
-      "why": "secret-input primitive — the bridge never writes gateway config"
-    },
-    "PluginControlUiDescriptor": {
-      "status": "ignored",
-      "why": "the Control UI's plugin descriptor — a surface of the gateway's own UI"
-    },
-    "PluginJsonValue": {
-      "status": "ignored",
-      "why": "vendored only as a transitive import of sessions.ts (PluginJsonValueSchema); Atrium exchanges no plugin payloads"
-    },
-    "PluginsSessionActionFailureResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "PluginsSessionActionParams": {
-      "status": "ignored",
-      "why": "plugin-defined session actions, an operator/Control-UI surface"
-    },
-    "PluginsSessionActionResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "PluginsSessionActionSuccessResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "PluginsUiDescriptorsParams": {
-      "status": "ignored",
-      "why": "plugins.* is the gateway's plugin administration; Atrium never calls it"
-    },
-    "PluginsUiDescriptorsResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionCompactionCheckpoint": {
-      "fields": {
-        "checkpointId": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: the stable id of a compaction event"
-        },
-        "sessionKey": {
-          "status": "ignored",
-          "why": "the caller already knows which session it asked about"
-        },
-        "sessionId": {
-          "status": "ignored",
-          "why": "internal gateway identity; Atrium correlates on sessionKey"
-        },
-        "createdAt": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: when the compaction happened"
-        },
-        "reason": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: WHY it happened — the cause the operator reads"
-        },
-        "tokensBefore": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: how much was condensed"
-        },
-        "tokensAfter": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: what remained"
-        },
-        "summary": {
-          "status": "ignored",
-          "why": "DELIBERATELY DROPPED: the checkpoint's summary is real conversation content, and the compaction history crosses an API that is metadata-only. Structural facts travel; the text does not"
-        },
-        "firstKeptEntryId": {
-          "status": "ignored",
-          "why": "transcript-internal cursor with no meaning outside the gateway's own store"
-        },
-        "preCompaction": {
-          "status": "ignored",
-          "why": "transcript reference (see SessionCompactionTranscriptReference) — file-level pointers into the gateway's disk, unusable and unwanted here"
-        },
-        "postCompaction": {
-          "status": "ignored",
-          "why": "same transcript-reference family"
-        }
-      }
-    },
-    "SessionCompactionCheckpointReason": {
-      "status": "ignored",
-      "why": "the reason vocabulary as a union. The bridge does not match this union: it BUCKETS the reason string it receives (bucketCompactionReason) at both the history shaper and the trace boundary, so a new upstream member collapses to `other` instead of breaking a turn or travelling verbatim onto a metadata-only surface. NOTE: that bucketing was ADDED on 2026-07-27 — classifying this schema is what revealed the history shaper was still passing the raw string through."
-    },
-    "SessionCompactionTranscriptReference": {
-      "fields": {
-        "sessionId": {
-          "status": "ignored",
-          "why": "gateway-internal transcript identity"
-        },
-        "sessionFile": {
-          "status": "ignored",
-          "why": "a PATH on the gateway host — never useful to Atrium and never safe to surface"
-        },
-        "leafId": {
-          "status": "ignored",
-          "why": "transcript-internal cursor"
-        },
-        "entryId": {
-          "status": "ignored",
-          "why": "transcript-internal cursor"
-        }
-      }
-    },
-    "SessionFileBrowserEntry": {
-      "status": "ignored",
-      "why": "vocabulary of the session-file lane"
-    },
-    "SessionFileBrowserResult": {
-      "status": "ignored",
-      "why": "vocabulary of the session-file lane"
-    },
-    "SessionFileEntry": {
-      "status": "ignored",
-      "why": "vocabulary of the session-file lane"
-    },
-    "SessionFileKind": {
-      "status": "ignored",
-      "why": "vocabulary of the session-file lane"
-    },
-    "SessionFileRelevance": {
-      "status": "ignored",
-      "why": "vocabulary of the session-file lane"
-    },
-    "SessionOperationEvent": {
-      "fields": {
-        "operationId": {
-          "status": "gap",
-          "note": "NOT RECEIVED. This event reaches only connections that called `sessions.subscribe`, which the bridge deliberately does NOT do on the turn socket (measured 2026-07-26: subscribing there cost announce frames and broke turn merging). Reading it needs a dedicated connection; `handleSessionOperation` in the normalizer is the ready, unfed reader."
-        },
-        "operation": {
-          "status": "gap",
-          "note": "same: unfed until the dedicated session-events connection exists"
-        },
-        "phase": {
-          "status": "gap",
-          "note": "same"
-        },
-        "sessionKey": {
-          "status": "gap",
-          "note": "same"
-        },
-        "agentId": {
-          "status": "gap",
-          "note": "same"
-        },
-        "ts": {
-          "status": "gap",
-          "note": "same"
-        },
-        "completed": {
-          "status": "gap",
-          "note": "same"
-        },
-        "reason": {
-          "status": "gap",
-          "note": "same — and this is the field that matters. CORRECTED after review: it is not the ONLY carrier of a compaction cause, as this note first claimed. `sessions.compaction.list` returns checkpoints whose `reason` the bridge already reads (fetchCompactionHistory), so the cause IS retrievable ON DEMAND, per session, off the turn path. What this event alone would give is the cause AT THE MOMENT it happens, attachable to the turn's own marker and trace, instead of a later lookup nobody performs."
-        }
-      }
-    },
-    "SessionsAbortParams": {
-      "status": "ignored",
-      "why": "the bridge aborts through chat.abort, the lane its turn state machine understands"
-    },
-    "SessionsCleanupParams": {
-      "status": "ignored",
-      "why": "sessions.cleanup is store maintenance an operator runs from the CLI (it prunes entries); a chat client must never prune another chat's session"
-    },
-    "SessionsCompactParams": {
-      "fields": {
-        "key": {
-          "status": "handled",
-          "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
-        },
-        "maxLines": {
-          "status": "ignored",
-          "why": "selects TRIMMING (drop the oldest lines) over summarising. Atrium wants the summary: the pre-send guard compacts to make a turn fit, and losing the head of the conversation outright is exactly what rehydration then has to undo"
-        }
-      }
-    },
-    "SessionsCompactionBranchParams": {
-      "status": "ignored",
-      "why": "branching from a checkpoint is a gateway-side history operation; Atrium's fork copies its OWN stored thread"
-    },
-    "SessionsCompactionBranchResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsCompactionGetParams": {
-      "status": "ignored",
-      "why": "compaction.get fetches ONE checkpoint including its summary text; Atrium lists them content-free and never needs the body"
-    },
-    "SessionsCompactionGetResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsCompactionListParams": {
-      "fields": {
-        "key": {
-          "status": "handled",
-          "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
-        }
-      }
-    },
-    "SessionsCompactionListResult": {
-      "fields": {
-        "ok": {
-          "status": "ignored",
-          "why": "the transport already surfaces failure; the bridge reads the payload only on a 2xx"
-        },
-        "key": {
-          "status": "ignored",
-          "why": "echo of what we sent"
-        },
-        "checkpoints": {
-          "status": "handled",
-          "by": "fetchCompactionHistory: shaped CONTENT-FREE into the compaction history the obs MCP serves"
-        }
-      }
-    },
-    "SessionsCompactionRestoreParams": {
-      "status": "ignored",
-      "why": "restoring a pre-compaction transcript rewrites gateway history under a live chat"
-    },
-    "SessionsCompactionRestoreResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsCreateParams": {
-      "status": "ignored",
-      "why": "sessions.create pre-creates a session; the bridge lets chat.send create it implicitly, which is the path every turn already exercises"
-    },
-    "SessionsDeleteParams": {
-      "status": "ignored",
-      "why": "deleting a gateway session is destructive and operator-owned; Atrium's /reset preserves the store"
-    },
-    "SessionsDescribeParams": {
-      "fields": {
-        "key": {
-          "status": "handled",
-          "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
-        },
-        "includeDerivedTitles": {
-          "status": "ignored",
-          "why": "Atrium titles its own chats; a gateway-derived title would fight the user's"
-        },
-        "includeLastMessage": {
-          "status": "ignored",
-          "why": "the describe runs on the turn path for counters and meta only — pulling the last message back would cost payload on every send for content Atrium already stores"
-        }
-      }
-    },
-    "SessionsFilesGetParams": {
-      "status": "ignored",
-      "why": "same session-file lane"
-    },
-    "SessionsFilesGetResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsFilesListParams": {
-      "status": "ignored",
-      "why": "sessions.files.* — the gateway's session-scoped file browser. Atrium's file surface is agents.files.*, a different lane"
-    },
-    "SessionsFilesListResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsListParams": {
-      "status": "ignored",
-      "why": "sessions.list enumerates the gateway's sessions; Atrium enumerates CHATS from its own store and resolves one session per chat"
-    },
-    "SessionsMessagesSubscribeParams": {
-      "status": "ignored",
-      "why": "declared NOT-TO-DO in the programme: an entire field surface to classify and a duplicate-delivery risk on visible runs, with no production complaint"
-    },
-    "SessionsMessagesUnsubscribeParams": {
-      "status": "ignored",
-      "why": "counterpart of a subscription the bridge does not open"
-    },
-    "SessionsPatchParams": {
-      "fields": {
-        "key": {
-          "status": "handled",
-          "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
-        },
-        "label": {
-          "status": "ignored",
-          "why": "Atrium names chats in its own store; the gateway label is not shown"
-        },
-        "category": {
-          "status": "ignored",
-          "why": "gateway-side session taxonomy Atrium does not model"
-        },
-        "archived": {
-          "status": "ignored",
-          "why": "Atrium's chat lifecycle lives in Convex; archiving a gateway session would desynchronise the two"
-        },
-        "pinned": {
-          "status": "ignored",
-          "why": "same: pinning is an Atrium sidebar concept"
-        },
-        "unread": {
-          "status": "ignored",
-          "why": "same: unread is computed from Atrium's own lastAssistantAt"
-        },
-        "thinkingLevel": {
-          "status": "handled",
-          "by": "applySessionSettings: the reasoning knob"
-        },
-        "fastMode": {
-          "status": "handled",
-          "by": "applySessionSettings — with a `!== undefined` presence check, so `false` (Standard speed) really applies"
-        },
-        "verboseLevel": {
-          "status": "handled",
-          "by": "performSend sends `verboseLevel:\"full\"` once per connection: without it the gateway withholds the tool/lifecycle detail the whole normalizer reads"
-        },
-        "traceLevel": {
-          "status": "ignored",
-          "why": "gateway-side log verbosity; Atrium's observability is its own trace pipeline"
-        },
-        "reasoningLevel": {
-          "status": "ignored",
-          "why": "superseded by thinkingLevel, which is the knob the UI exposes"
-        },
-        "responseUsage": {
-          "status": "ignored",
-          "why": "a per-reply usage FOOTER appended to the message text (off|tokens|full). Atrium reads usage from the terminal's diagnosticUsage and renders it in the gauge — a footer would inject telemetry into the conversation"
-        },
-        "elevatedLevel": {
-          "status": "ignored",
-          "why": "privilege escalation for the session — an operator decision, never a chat UI one"
-        },
-        "execHost": {
-          "status": "ignored",
-          "why": "exec policy is gateway configuration, deliberately not reachable from a chat"
-        },
-        "execSecurity": {
-          "status": "ignored",
-          "why": "same exec-policy family"
-        },
-        "execAsk": {
-          "status": "ignored",
-          "why": "same exec-policy family — and the approval surface is a declared product gap (see the approvals section)"
-        },
-        "execNode": {
-          "status": "ignored",
-          "why": "same exec-policy family"
-        },
-        "model": {
-          "status": "handled",
-          "by": "applySessionSettings: the user's per-chat model choice"
-        },
-        "spawnedBy": {
-          "status": "ignored",
-          "why": "sub-agent lineage the GATEWAY stamps when it spawns a child; a client writing it would forge provenance"
-        },
-        "spawnedWorkspaceDir": {
-          "status": "ignored",
-          "why": "same spawn-metadata family"
-        },
-        "spawnedCwd": {
-          "status": "ignored",
-          "why": "same spawn-metadata family"
-        },
-        "spawnDepth": {
-          "status": "ignored",
-          "why": "same spawn-metadata family"
-        },
-        "subagentRole": {
-          "status": "ignored",
-          "why": "same spawn-metadata family"
-        },
-        "subagentControlScope": {
-          "status": "ignored",
-          "why": "same spawn-metadata family"
-        },
-        "inheritedToolAllow": {
-          "status": "ignored",
-          "why": "tool entitlements come from the agent's gateway config; a per-session override from the chat would bypass the operator's policy"
-        },
-        "inheritedToolDeny": {
-          "status": "ignored",
-          "why": "same tool-entitlement family"
-        },
-        "sendPolicy": {
-          "status": "ignored",
-          "why": "cross-session send permissions — an operator policy, not a chat setting"
-        },
-        "groupActivation": {
-          "status": "ignored",
-          "why": "group-chat activation rules; Atrium is one-user-one-chat"
-        }
-      }
-    },
-    "SessionsPluginPatchParams": {
-      "status": "ignored",
-      "why": "per-session plugin configuration — operator surface"
-    },
-    "SessionsPluginPatchResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "SessionsPreviewParams": {
-      "status": "ignored",
-      "why": "sessions.preview renders a session excerpt for a picker Atrium does not have"
-    },
-    "SessionsResetParams": {
-      "fields": {
-        "key": {
-          "status": "handled",
-          "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
-        },
-        "reason": {
-          "status": "gap",
-          "note": "NOT sent, and CORRECTED after review: the first note claimed sending it would let the gateway's audit tell an Atrium reset from any other. It would not — the schema admits only `\"new\" | \"reset\"`, so every client's reset looks alike. What sending `\"reset\"` would actually buy is the distinction from `\"new\"` (a fresh session) inside the gateway's own lifecycle accounting. Minor, and Atrium keeps its own reset trace either way."
-        }
-      }
-    },
-    "SessionsResolveParams": {
-      "status": "ignored",
-      "why": "sessions.resolve maps a loose key to a canonical one; the bridge MINTS its keys (buildSessionKey) and never has a loose one to resolve"
-    },
-    "SessionsSendParams": {
-      "status": "ignored",
-      "why": "sessions.send is the session-scoped send; the bridge uses chat.send, whose idempotency and event lane the whole normalizer is built on"
-    },
-    "SessionsUsageParams": {
-      "status": "ignored",
-      "why": "session usage totals; Atrium reads usage per TURN from the terminal's diagnosticUsage and from consecutive describes"
-    },
-    "SessionWorktreeInfo": {
-      "status": "ignored",
-      "why": "the git worktree a session runs in (id/path/branch) — a gateway-host filesystem concern; Atrium never places or reads a worktree"
-    },
-    "SessionsCreateResult": {
-      "status": "ignored",
-      "why": "result of sessions.create, which the bridge never calls (chat.send creates the session implicitly)"
-    },
-    "CronAddParams": {
-      "status": "ignored",
-      "why": "creating a cron from Atrium is not offered — jobs are created by the agent or the operator"
-    },
-    "CronAddResult": {
-      "status": "ignored",
-      "why": "result of an add the bridge never performs"
-    },
-    "CronCompletionDestination": {
-      "status": "ignored",
-      "why": "delivery routing for a completed run — gateway-side"
-    },
-    "CronDeclarativeAddResult": {
-      "status": "ignored",
-      "why": "result of a declarative add the bridge never performs"
-    },
-    "CronDelivery": {
-      "status": "handled",
-      "by": "normalizeCronJobDetail reads `delivery.mode` (none|announce|webhook) — the detail says where a run's result goes. A UNION, classified whole: the bridge reads the shared discriminant rather than matching members."
-    },
-    "CronDeliveryPatch": {
-      "status": "ignored",
-      "why": "editing delivery routing is not offered"
-    },
-    "CronFailureAlert": {
-      "status": "ignored",
-      "why": "failure-alert routing, a gateway notification policy Atrium does not own"
-    },
-    "CronFailureDestination": {
-      "status": "ignored",
-      "why": "same failure-alert family"
-    },
-    "CronGetParams": {
-      "status": "handled",
-      "by": "cron-manage `get` sends `{id}` (the schema is a union of the id and legacy jobId arms; the bridge always uses `id`)"
-    },
-    "CronJob": {
-      "fields": {
-        "id": {
-          "status": "handled",
-          "by": "fetchCronJobs / normalizeCronJobDetail: the job identity every /cron-manage op is keyed on"
-        },
-        "declarationKey": {
-          "status": "ignored",
-          "why": "identity of a job DECLARED in gateway config; Atrium neither declares nor edits config-owned jobs"
-        },
-        "displayName": {
-          "status": "ignored",
-          "why": "a gateway-side alias; the tab shows `name`, and two names for one job would confuse more than help"
-        },
-        "owner": {
-          "status": "ignored",
-          "why": "the gateway-side owner tag; Atrium's ownership is its own user/agent policy"
-        },
-        "agentId": {
-          "status": "handled",
-          "by": "fetchCronJobs: the job's pinned agent — Convex applies the per-user agent policy on it"
-        },
-        "sessionKey": {
-          "status": "ignored",
-          "why": "the session a job runs in is the gateway's business; Atrium keys on the job id"
-        },
-        "name": {
-          "status": "handled",
-          "by": "fetchCronJobs: the job name shown in the Scheduled tab"
-        },
-        "description": {
-          "status": "ignored",
-          "why": "free-text description the Scheduled tab does not show"
-        },
-        "enabled": {
-          "status": "handled",
-          "by": "fetchCronJobs: drives the Paused state (the list is fetched with includeDisabled)"
-        },
-        "deleteAfterRun": {
-          "status": "ignored",
-          "why": "one-shot semantics set at creation, which Atrium does not do"
-        },
-        "createdAtMs": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail: shown in the job detail"
-        },
-        "updatedAtMs": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail: shown in the job detail"
-        },
-        "schedule": {
-          "status": "handled",
-          "by": "fetchCronJobs: rendered as a printable cadence (cron expr, --at, or {kind,everyMs})"
-        },
-        "trigger": {
-          "status": "ignored",
-          "why": "event triggers (script/once) — a job kind Atrium neither creates nor renders"
-        },
-        "sessionTarget": {
-          "status": "ignored",
-          "why": "which session the run targets; gateway-side placement"
-        },
-        "wakeMode": {
-          "status": "ignored",
-          "why": "how the run wakes the agent; gateway-side execution policy"
-        },
-        "payload": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail: what the job actually runs, shown in the detail"
-        },
-        "delivery": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail: where the result goes, shown read-only"
-        },
-        "failureAlert": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
-        },
-        "state": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail: the state block the detail summarises"
-        },
-        "nextRunAtMs": {
-          "status": "handled",
-          "by": "fetchCronJobs: the next occurrence the calendar view places"
-        },
-        "lastRunAtMs": {
-          "status": "ignored",
-          "why": "the detail shows the state block; this duplicate at job level is redundant"
-        },
-        "lastRunStatus": {
-          "status": "handled",
-          "by": "fetchCronJobs: the last outcome badge"
-        },
-        "lastRunError": {
-          "status": "ignored",
-          "why": "the raw error TEXT of the last run — free text on a surface Atrium renders; the status badge carries the signal"
-        },
-        "lastDelivered": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "lastDeliveryStatus": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "lastDeliveryError": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "lastFailureNotificationDelivered": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
-        },
-        "lastFailureNotificationDeliveryStatus": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
-        },
-        "lastFailureNotificationDeliveryError": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
-        }
-      }
-    },
-    "CronJobPatch": {
-      "fields": {
-        "agentId": {
-          "status": "ignored",
-          "why": "re-pinning a job to another agent is an entitlement decision, and Convex — not the bridge — owns the per-user agent policy"
-        },
-        "deleteAfterRun": {
-          "status": "ignored",
-          "why": "one-shot semantics belong to creation, which Atrium does not do"
-        },
-        "delivery": {
-          "status": "ignored",
-          "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
-        },
-        "description": {
-          "status": "ignored",
-          "why": "not shown in the tab, so not editable from it"
-        },
-        "displayName": {
-          "status": "ignored",
-          "why": "the tab edits `name`; a second display alias would drift from it"
-        },
-        "enabled": {
-          "status": "handled",
-          "by": "buildGatewayCronPatch: the Pause/Resume control"
-        },
-        "failureAlert": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway notification policy Atrium does not own"
-        },
-        "name": {
-          "status": "handled",
-          "by": "buildGatewayCronPatch: renaming a job from the Scheduled tab"
-        },
-        "payload": {
-          "status": "handled",
-          "by": "buildGatewayCronPatch: a new prompt, mapped onto the job's EXISTING payload kind (systemEvent or agentTurn) — an unknown kind fails CLOSED rather than guessing"
-        },
-        "schedule": {
-          "status": "handled",
-          "by": "buildGatewayCronPatch: the cadence editor (cron expr / every / at)"
-        },
-        "sessionKey": {
-          "status": "ignored",
-          "why": "which session a job runs in is gateway placement, not a user setting"
-        },
-        "sessionTarget": {
-          "status": "ignored",
-          "why": "same placement family"
-        },
-        "state": {
-          "status": "ignored",
-          "why": "the run state is the gateway's to write; patching it would forge history"
-        },
-        "trigger": {
-          "status": "ignored",
-          "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
-        },
-        "wakeMode": {
-          "status": "ignored",
-          "why": "how the run wakes the agent — gateway execution policy"
-        }
-      }
-    },
-    "CronJobState": {
-      "fields": {
-        "consecutiveErrors": {
-          "status": "gap",
-          "note": "NOT read. The counter says HOW MANY runs failed in a row — not why, and not whether the cause was the same one (corrected after review: the first note implied it did). What the Scheduled tab lacks is precisely that number: a job on its twentieth consecutive failure and a job that failed once show the identical badge, so nobody learns that a recurring job has stopped working."
-        },
-        "consecutiveSkipped": {
-          "status": "ignored",
-          "why": "skips are a gateway scheduling detail (overlap, not due) the tab does not model"
-        },
-        "lastDelivered": {
-          "status": "ignored",
-          "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
-        },
-        "lastDeliveryError": {
-          "status": "ignored",
-          "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
-        },
-        "lastDeliveryStatus": {
-          "status": "ignored",
-          "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
-        },
-        "lastDiagnosticSummary": {
-          "status": "ignored",
-          "why": "summary of that blob; the run list's own summary is what the detail shows"
-        },
-        "lastDiagnostics": {
-          "status": "ignored",
-          "why": "unbounded gateway diagnostic blob — never rendered"
-        },
-        "lastDurationMs": {
-          "status": "ignored",
-          "why": "duration is shown PER RUN in the history, where it is actionable"
-        },
-        "lastError": {
-          "status": "ignored",
-          "why": "raw error TEXT of the last run — the run list shows per-run errors already, and this one would put gateway prose in the job header"
-        },
-        "lastErrorReason": {
-          "status": "ignored",
-          "why": "a second error classification the detail does not show"
-        },
-        "lastFailureAlertAtMs": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway notification policy Atrium does not own"
-        },
-        "lastFailureNotificationDelivered": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway notification policy Atrium does not own"
-        },
-        "lastFailureNotificationDeliveryError": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway notification policy Atrium does not own"
-        },
-        "lastFailureNotificationDeliveryStatus": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway notification policy Atrium does not own"
-        },
-        "lastRunAtMs": {
-          "status": "ignored",
-          "why": "the run LIST carries per-run timestamps; the detail header shows the next run, not the last"
-        },
-        "lastRunStatus": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail reads it FIRST (falling back to the job-level copy): the outcome badge"
-        },
-        "lastStatus": {
-          "status": "handled",
-          "by": "fetchCronJobs (server.ts, the LIST path — not normalizeCronJobDetail): the outcome badge falls back state.lastRunStatus -> state.lastStatus -> job.lastRunStatus -> job.lastStatus, so a gateway that populates only the alias still shows a status. A review pass claimed this read did not exist because it looked only in cron-manage.ts; it is in the list normalizer."
-        },
-        "lastTriggerEvalAtMs": {
-          "status": "ignored",
-          "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
-        },
-        "lastTriggerFireAtMs": {
-          "status": "ignored",
-          "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
-        },
-        "nextRunAtMs": {
-          "status": "handled",
-          "by": "normalizeCronJobDetail reads it FIRST (falling back to the job-level copy): the next occurrence the detail and the calendar show"
-        },
-        "runningAtMs": {
-          "status": "ignored",
-          "why": "the tab has no live-running indicator for crons"
-        },
-        "triggerEvalCount": {
-          "status": "ignored",
-          "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
-        },
-        "triggerState": {
-          "status": "ignored",
-          "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
-        }
-      }
-    },
-    "CronListParams": {
-      "fields": {
-        "includeDisabled": {
-          "status": "handled",
-          "by": "fetchCronJobs sends `true`: the default listing hides disabled jobs, which would make every paused job invisible in the tab"
-        },
-        "limit": {
-          "status": "ignored",
-          "why": "the tab lists a user's jobs, a handful at most; paging would hide some with no control to reveal them"
-        },
-        "offset": {
-          "status": "ignored",
-          "why": "same paging family"
-        },
-        "query": {
-          "status": "ignored",
-          "why": "filtering happens in Atrium's own UI, over the list it already holds"
-        },
-        "enabled": {
-          "status": "ignored",
-          "why": "the tab shows paused jobs deliberately (see includeDisabled)"
-        },
-        "scheduleKind": {
-          "status": "ignored",
-          "why": "no filter surface in the tab"
-        },
-        "lastRunStatus": {
-          "status": "ignored",
-          "why": "no filter surface in the tab"
-        },
-        "sortBy": {
-          "status": "ignored",
-          "why": "the tab sorts client-side"
-        },
-        "sortDir": {
-          "status": "ignored",
-          "why": "the tab sorts client-side"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the bridge lists ALL jobs and lets Convex apply the user's agent policy; filtering here would hide the very jobs the policy must be able to refuse"
-        },
-        "compact": {
-          "status": "ignored",
-          "why": "the FULL response is required — the compact projection drops `agentId`, and Convex needs it to apply the per-user agent policy"
-        }
-      }
-    },
-    "CronPayload": {
-      "status": "handled",
-      "by": "normalizeCronJobDetail reads `kind` (the payload family the message editor must preserve) and the prompt text — `message` for an agentTurn, `text` for a systemEvent. A UNION, so it is classified whole: the bridge reads the members' shared fields rather than matching the union, and an unknown member degrades to a null prompt instead of breaking the detail."
-    },
-    "CronPayloadPatch": {
-      "status": "handled",
-      "by": "buildGatewayCronPatch SENDS one: editing a cron's prompt emits `{kind:\"systemEvent\", text}` or `{kind:\"agentTurn\", message}`, chosen from the job's CURRENT kind. An unknown current kind fails CLOSED (the update is refused) rather than guessing a member."
-    },
-    "CronRemoveParams": {
-      "status": "handled",
-      "by": "cron-manage `remove` sends `{id}`"
-    },
-    "CronRunLogEntry": {
-      "fields": {
-        "ts": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: when the run happened"
-        },
-        "jobId": {
-          "status": "ignored",
-          "why": "the caller asked for one job's runs"
-        },
-        "action": {
-          "status": "ignored",
-          "why": "gateway-internal action label"
-        },
-        "status": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: the run outcome"
-        },
-        "error": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: why it failed, shown in the run list"
-        },
-        "errorReason": {
-          "status": "ignored",
-          "why": "a second error classification the run list does not show; `error` carries the message"
-        },
-        "summary": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: the one-line result"
-        },
-        "diagnostics": {
-          "status": "ignored",
-          "why": "gateway-side diagnostic blob — unbounded shape, not rendered"
-        },
-        "delivered": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "deliveryStatus": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "deliveryError": {
-          "status": "ignored",
-          "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
-        },
-        "failureNotificationDelivery": {
-          "status": "ignored",
-          "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
-        },
-        "sessionId": {
-          "status": "ignored",
-          "why": "gateway-internal session identity"
-        },
-        "sessionKey": {
-          "status": "ignored",
-          "why": "the run's session; the tab is job-scoped"
-        },
-        "runId": {
-          "status": "ignored",
-          "why": "per-run identity the UI does not address"
-        },
-        "runAtMs": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: the scheduled instant"
-        },
-        "durationMs": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: how long it took"
-        },
-        "nextRunAtMs": {
-          "status": "ignored",
-          "why": "the job summary already carries the next occurrence"
-        },
-        "triggerFired": {
-          "status": "ignored",
-          "why": "event-trigger detail for a job kind Atrium does not render"
-        },
-        "model": {
-          "status": "handled",
-          "by": "normalizeCronRunEntries: which model ran it"
-        },
-        "provider": {
-          "status": "ignored",
-          "why": "which provider served the run — not shown"
-        },
-        "usage": {
-          "status": "gap",
-          "note": "NOT read. A cron run's token/cost usage is right here and Atrium shows nothing: the Scheduled tab reports duration and status but never what a recurring job COSTS, which is exactly the question a daily job raises after a month."
-        },
-        "jobName": {
-          "status": "ignored",
-          "why": "the caller already knows the job"
-        }
-      }
-    },
-    "CronRunParams": {
-      "status": "handled",
-      "by": "cron-manage `run` sends `{id, mode:\"force\"}`"
-    },
-    "CronRunsParams": {
-      "fields": {
-        "scope": {
-          "status": "ignored",
-          "why": "widens the query beyond one job — the detail is per job"
-        },
-        "id": {
-          "status": "handled",
-          "by": "cron-manage `runs`: the job whose history is shown"
-        },
-        "jobId": {
-          "status": "ignored",
-          "why": "alias of `id` for callers that hold the other identity; the bridge always has `id`"
-        },
-        "runId": {
-          "status": "ignored",
-          "why": "single-run lookup; the detail lists recent runs instead"
-        },
-        "limit": {
-          "status": "handled",
-          "by": "cron-manage `runs`: bounds the history the detail renders"
-        },
-        "statuses": {
-          "status": "ignored",
-          "why": "filtering happens in the UI over the returned list"
-        },
-        "status": {
-          "status": "ignored",
-          "why": "same filter family"
-        },
-        "deliveryStatuses": {
-          "status": "ignored",
-          "why": "delivery routing is not an Atrium concern"
-        },
-        "deliveryStatus": {
-          "status": "ignored",
-          "why": "same delivery family"
-        },
-        "query": {
-          "status": "ignored",
-          "why": "no free-text search surface in the detail"
-        },
-        "sortDir": {
-          "status": "ignored",
-          "why": "the detail shows newest-first as returned"
-        },
-        "offset": {
-          "status": "ignored",
-          "why": "paging past the bounded `limit` the detail requests; the run list shows the most recent, not a browsable archive"
-        }
-      }
-    },
-    "CronSchedule": {
-      "status": "handled",
-      "by": "READ by fetchCronJobs and normalizeCronJobDetail (kind / expr / at / everyMs, rendered into a printable cadence) and SENT by buildGatewayCronPatch when the user edits it. A UNION, classified whole: an unrecognised member degrades to text instead of breaking the tab."
-    },
-    "CronStatusParams": {
-      "status": "ignored",
-      "why": "cron.status is the declarative reconcile probe; Atrium never declares jobs from config"
-    },
-    "CronTrigger": {
-      "status": "ignored",
-      "why": "event triggers (script/once) — a job kind Atrium neither creates nor renders"
-    },
-    "CronUpdateParams": {
-      "status": "handled",
-      "by": "cron-manage `update` sends `{id, patch}` — the patch built by buildGatewayCronPatch"
-    },
-    "TaskLedgerStatus": {
-      "status": "handled",
-      "by": "SENT and READ: the reconciliation asks `tasks.list {status:[\"queued\",\"running\"]}` and /tasks-probe compares the status it gets back. A UNION, classified whole — the bridge compares the STRING rather than matching members, so a new upstream member cannot break the probe, but the values it sends are members of this union and a rename would silently return nothing."
-    },
-    "TaskSummary": {
-      "fields": {
-        "id": {
-          "status": "handled",
-          "by": "/tasks-probe and the tasks.list reconciliation: the task identity"
-        },
-        "kind": {
-          "status": "handled",
-          "by": "the FALLBACK tool family when sourceId is absent (pinned live: summary kind `image_generation`)"
-        },
-        "runtime": {
-          "status": "ignored",
-          "why": "which runtime executed it — gateway-side detail"
-        },
-        "status": {
-          "status": "handled",
-          "by": "/tasks-probe: whether the engagement is still live, so the indicator expires on FACT instead of a blind timeout"
-        },
-        "title": {
-          "status": "ignored",
-          "why": "Atrium shows the engagement from its OWN row, not the gateway's title"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the probe is already scoped to the session's agent"
-        },
-        "sessionKey": {
-          "status": "ignored",
-          "why": "the probe queries by session"
-        },
-        "childSessionKey": {
-          "status": "ignored",
-          "why": "sub-agent lineage; the sub-agent monitor owns that view"
-        },
-        "ownerKey": {
-          "status": "ignored",
-          "why": "gateway-side ownership tag"
-        },
-        "runId": {
-          "status": "ignored",
-          "why": "the run behind the task; the indicator keys on the task"
-        },
-        "taskId": {
-          "status": "handled",
-          "by": "same — the id the activity indicator holds"
-        },
-        "flowId": {
-          "status": "ignored",
-          "why": "TaskFlow grouping Atrium does not model"
-        },
-        "parentTaskId": {
-          "status": "ignored",
-          "why": "same TaskFlow family"
-        },
-        "sourceId": {
-          "status": "handled",
-          "by": "the tasks.list reconciliation derives the tool family from it (`image_generate:openai` -> `image_generate`), which is the chain key the activity indicator groups on"
-        },
-        "createdAt": {
-          "status": "ignored",
-          "why": "the Atrium row carries its own timestamps"
-        },
-        "updatedAt": {
-          "status": "ignored",
-          "why": "same"
-        },
-        "startedAt": {
-          "status": "ignored",
-          "why": "same"
-        },
-        "endedAt": {
-          "status": "ignored",
-          "why": "same"
-        },
-        "progressSummary": {
-          "status": "gap",
-          "note": "NOT read. A running task publishes a progress line and the activity indicator shows only a spinner — the user waiting on a four-hour job is told nothing about where it is."
-        },
-        "terminalSummary": {
-          "status": "handled",
-          "by": "/tasks-probe: the task's closing line"
-        },
-        "error": {
-          "status": "handled",
-          "by": "/tasks-probe: why a task ended badly"
-        }
-      }
-    },
-    "TasksCancelParams": {
-      "status": "ignored",
-      "why": "Atrium does not cancel gateway tasks — a running task is the agent's, and the user's stop acts on the TURN"
-    },
-    "TasksCancelResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
-    },
-    "TasksGetParams": {
-      "fields": {
-        "taskId": {
-          "status": "handled",
-          "by": "/tasks-probe: the engagement being verified"
-        }
-      }
-    },
-    "TasksGetResult": {
-      "fields": {
-        "task": {
-          "status": "handled",
-          "by": "/tasks-probe reads status/error/terminalSummary off it"
-        }
-      }
-    },
-    "TasksListParams": {
-      "fields": {
-        "status": {
-          "status": "handled",
-          "by": "filtered to queued+running: only live engagements matter for expiry"
-        },
-        "agentId": {
-          "status": "ignored",
-          "why": "the session key already scopes the agent"
-        },
-        "sessionKey": {
-          "status": "handled",
-          "by": "the reconciliation lists the tasks of THIS session"
-        },
-        "limit": {
-          "status": "handled",
-          "by": "bounded at 50 — a runaway list must not become the answer"
-        },
-        "cursor": {
-          "status": "ignored",
-          "why": "paging past 50 live tasks would mean a pathological session, not a page to fetch"
-        }
-      }
-    },
-    "TasksListResult": {
-      "fields": {
-        "tasks": {
-          "status": "handled",
-          "by": "the reconciliation reads the live task ids"
-        },
-        "nextCursor": {
-          "status": "ignored",
-          "why": "paging is deliberately not followed (see TasksListParams.cursor)"
-        }
-      }
+ "$comment": "Protocol coverage manifest (Inc 1 of docs/design/protocol-contract.md). Every schema exported by the vendored gateway-protocol modules (protocol/openclaw/<version>/) must be classified here — either whole-schema or field-by-field. The ratchet test (test/protocol-coverage.test.ts) walks the vendored TypeBox schemas and fails on any unclassified schema/field, so a validated-version bump that introduces new protocol surface stays RED until a human classifies it. statuses: handled (consumed/emitted by the bridge, `by` = where) | ignored (deliberate, `why` required) | gap (known-unsupported, `note` required). Seeded from the audit in docs/design/protocol-schema-coverage.md.",
+ "version": "2026.7.1",
+ "schemas": {
+  "ChatDeltaEvent": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "normalizer ownRunIds filter (isolation gate)"
+    },
+    "sessionKey": {
+     "status": "handled",
+     "by": "normalizer isolation gate (exact match)"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the connection is already session-scoped per agent (buildSessionKey)"
+    },
+    "spawnedBy": {
+     "status": "handled",
+     "by": "normalizer sub-agent admission -> handleSubAgent"
+    },
+    "seq": {
+     "status": "handled",
+     "by": "handleChat dedup key component; NOTE: no ordering/gap detection (ordered WS transport)"
+    },
+    "state": {
+     "status": "handled",
+     "by": "handleChat state routing (delta/final/error/aborted)"
+    },
+    "message": {
+     "status": "handled",
+     "by": "handleChat textFromMessage (snapshot precedence)"
+    },
+    "deltaText": {
+     "status": "handled",
+     "by": "handleChat applyVisible append path"
+    },
+    "replace": {
+     "status": "handled",
+     "by": "normalizer handleChat: replace:true on a bare deltaText takes the snapshot (replace) path"
+    },
+    "usage": {
+     "status": "ignored",
+     "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
     }
+   }
+  },
+  "ChatFinalEvent": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "normalizer ownRunIds filter"
+    },
+    "sessionKey": {
+     "status": "handled",
+     "by": "normalizer isolation gate"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "session-scoped connection per agent"
+    },
+    "spawnedBy": {
+     "status": "handled",
+     "by": "sub-agent admission"
+    },
+    "seq": {
+     "status": "handled",
+     "by": "dedup key component"
+    },
+    "state": {
+     "status": "handled",
+     "by": "handleChat final path (+ empty-final grace)"
+    },
+    "message": {
+     "status": "handled",
+     "by": "handleChat textFromMessage -> finalize"
+    },
+    "usage": {
+     "status": "ignored",
+     "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
+    },
+    "stopReason": {
+     "status": "handled",
+     "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+     "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
+    }
+   }
+  },
+  "ChatAbortedEvent": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "normalizer ownRunIds filter"
+    },
+    "sessionKey": {
+     "status": "handled",
+     "by": "normalizer isolation gate"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "session-scoped connection per agent"
+    },
+    "spawnedBy": {
+     "status": "handled",
+     "by": "sub-agent admission"
+    },
+    "seq": {
+     "status": "handled",
+     "by": "dedup key component"
+    },
+    "state": {
+     "status": "handled",
+     "by": "handleChat terminalizes aborted -> finalize(aborted)"
+    },
+    "message": {
+     "status": "ignored",
+     "why": "an aborted turn carries no reply to persist"
+    },
+    "stopReason": {
+     "status": "handled",
+     "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+     "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
+    },
+    "errorMessage": {
+     "status": "gap",
+     "note": "NOT read. Corrected after review: the first classification claimed `handled` on the strength of the `payload.errorMessage` read in handleChat, but the `state === \"aborted\"` branch finalizes and RETURNS (normalizer.ts, `finalize(..., \"gateway_abort\")`) several lines BEFORE that read — which serves `state === \"error\"` only. Impact: an abort carries its cancellation reason and we drop it, so a coordinator- or timeout-initiated cancellation is indistinguishable from a user Stop; both render \"Interrompu\". Wiring it means capturing the text as a trace-only diagnostic, never as the message's error (an abort is not a failure to explain to the reader)."
+    }
+   }
+  },
+  "ChatErrorEvent": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "normalizer ownRunIds filter"
+    },
+    "sessionKey": {
+     "status": "handled",
+     "by": "normalizer isolation gate"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "session-scoped connection per agent"
+    },
+    "spawnedBy": {
+     "status": "handled",
+     "by": "sub-agent admission (child terminal errors)"
+    },
+    "seq": {
+     "status": "handled",
+     "by": "dedup key component"
+    },
+    "state": {
+     "status": "handled",
+     "by": "handleChat terminalizes error -> finalize(error, errorKind)"
+    },
+    "message": {
+     "status": "handled",
+     "by": "handleChat error-reason fallback (textFromMessage)"
+    },
+    "errorMessage": {
+     "status": "handled",
+     "by": "handleChat -> message.final error -> message.error"
+    },
+    "errorKind": {
+     "status": "handled",
+     "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow)"
+    },
+    "usage": {
+     "status": "ignored",
+     "why": "never emitted by any validated gateway (live-verified 2026-07-03/04); real per-turn usage reaches the chat.gateway_pressure trace via sessions.describe (costUsd/totalTokens) and, when the gateway stamps it, the agent-event session metadata (inputTokens/outputTokens/estimatedCostUsd — consumed defensively by the normalizer)"
+    },
+    "stopReason": {
+     "status": "handled",
+     "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
+     "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
+    }
+   }
+  },
+  "AgentEvent": {
+   "fields": {
+    "runId": {
+     "status": "handled",
+     "by": "normalizer ownRunIds filter"
+    },
+    "seq": {
+     "status": "handled",
+     "by": "frame dedup/tally; no gap detection (ordered WS)"
+    },
+    "stream": {
+     "status": "handled",
+     "by": "handleAgent per-stream routing (lifecycle/tool/assistant/item/provenance)"
+    },
+    "ts": {
+     "status": "ignored",
+     "why": "the normalizer runs on an injected monotonic clock; frame timestamps unused"
+    },
+    "spawnedBy": {
+     "status": "handled",
+     "by": "sub-agent admission (child lane observation)"
+    },
+    "isHeartbeat": {
+     "status": "ignored",
+     "why": "keep-alive; any own frame already refreshes the recv budget (armRecv)"
+    },
+    "data": {
+     "status": "handled",
+     "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14)"
+    }
+   }
+  },
+  "AgentInternalEvent": {
+   "status": "ignored",
+   "why": "the FORMAL announce contract (task_completion: childSessionKey/status/result/attachments) — but these are run INPUT params (AgentParams.internalEvents), invisible on the event stream by construction; the bridge reconstructs announce deliveries from the announce:v1 run's normal chat/assistant frames. Future structured source if the gateway ever surfaces them."
+  },
+  "AgentGeneratedAttachment": {
+   "status": "ignored",
+   "why": "carried inside AgentInternalEvent (run input params) — see AgentInternalEvent"
+  },
+  "ChatSendParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "handled",
+     "by": "server.ts chat.send dispatch (buildSessionKey)"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "redundant with the agent baked into sessionKey"
+    },
+    "sessionId": {
+     "status": "ignored",
+     "why": "the gateway resolves the session from sessionKey"
+    },
+    "message": {
+     "status": "handled",
+     "by": "server.ts chat.send dispatch (+ rehydration prefix)"
+    },
+    "thinking": {
+     "status": "ignored",
+     "why": "reasoning level is set via sessions.patch (knob), not per-send"
+    },
+    "fastMode": {
+     "status": "ignored",
+     "why": "fast mode is set via sessions.patch (knob), not per-send"
+    },
+    "fastAutoOnSeconds": {
+     "status": "ignored",
+     "why": "auto fast-mode cutoff not exposed by Atrium"
+    },
+    "deliver": {
+     "status": "ignored",
+     "why": "Atrium consumes the event stream; channel delivery unused"
+    },
+    "originatingChannel": {
+     "status": "ignored",
+     "why": "no channel-mirroring semantics in Atrium sends"
+    },
+    "originatingTo": {
+     "status": "ignored",
+     "why": "no channel-mirroring semantics"
+    },
+    "originatingAccountId": {
+     "status": "ignored",
+     "why": "no channel-mirroring semantics"
+    },
+    "originatingThreadId": {
+     "status": "ignored",
+     "why": "no channel-mirroring semantics"
+    },
+    "attachments": {
+     "status": "handled",
+     "by": "server.ts inbound attachment path (inline/shared-fs)"
+    },
+    "timeoutMs": {
+     "status": "ignored",
+     "why": "turn timeouts are owned by the normalizer's recv deadlines"
+    },
+    "systemInputProvenance": {
+     "status": "ignored",
+     "why": "operator-injection provenance not applicable to user sends"
+    },
+    "systemProvenanceReceipt": {
+     "status": "ignored",
+     "why": "operator-injection provenance not applicable"
+    },
+    "suppressCommandInterpretation": {
+     "status": "ignored",
+     "why": "Atrium sends are user turns; command interpretation stays default"
+    },
+    "idempotencyKey": {
+     "status": "handled",
+     "by": "server.ts chat.send dispatch (retry-safe sends)"
+    },
+    "expectedSessionRoutingContract": {
+     "status": "gap",
+     "note": "NOT sent. It is upstream's own remedy for mis-routing (the gateway refuses the send when the session's routing no longer matches what the caller expected), so this is a capability we want, not one we dismiss. Blocked on the OUTBOUND ratchet (W10/G2): ChatSendParams is `additionalProperties:false`, so adding a field the FLOOR (2026.5.19) does not know makes every chat.send fail INVALID_REQUEST on older gateways. Ship it version-gated, the way upstream's own TUI does for preserveSideRuns (src/tui/gateway-chat.ts: send it, retry the shipped shape on rejection)."
+    }
+   }
+  },
+  "ChatAbortParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "handled",
+     "by": "server.ts /abort route (buildSessionKey -> chat.abort over a dedicated operator connection)"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "redundant with the agent baked into sessionKey"
+    },
+    "runId": {
+     "status": "handled",
+     "by": "server.ts /abort route (targets the streaming message's exact run — immune to a queued follow-up's new run)"
+    },
+    "preserveSideRuns": {
+     "status": "gap",
+     "note": "NOT sent, so the stop button also kills a BTW side run in flight. Upstream semantics (server-methods/chat.ts): with the flag, runs whose `turnKind === \"btw\"` are SPARED from the abort — exactly the side-result runs Atrium already renders. Same floor constraint and same remedy as expectedSessionRoutingContract: version-gated, with the upstream TUI's send-then-retry fallback."
+    }
+   }
+  },
+  "ChatInjectParams": {
+   "status": "ignored",
+   "why": "operator-visible synthetic transcript injection — no Atrium feature maps to it"
+  },
+  "ChatHistoryParams": {
+   "status": "ignored",
+   "why": "history recovery uses sessions.get (bounded, keyed) instead of chat.history"
+  },
+  "ChatMetadataParams": {
+   "status": "ignored",
+   "why": "chat metadata listing unused; agent discovery goes through agents.list"
+  },
+  "ChatMessageGetParams": {
+   "status": "ignored",
+   "why": "single-message lookup unused (Convex is the message store)"
+  },
+  "ChatMessageGetResult": {
+   "status": "ignored",
+   "why": "result envelope of the unused chat.message.get"
+  },
+  "ChatEvent": {
+   "status": "ignored",
+   "why": "the union wrapper of the four chat event schemas classified field-by-field above"
+  },
+  "LogsTailParams": {
+   "status": "ignored",
+   "why": "dashboard log tailing — not an Atrium surface (SOC2: no raw gateway logs in-product)"
+  },
+  "LogsTailResult": {
+   "status": "ignored",
+   "why": "result of the unused logs.tail"
+  },
+  "MessageActionToolContext": {
+   "status": "ignored",
+   "why": "channel message-action tooling — Atrium is not a channel adapter"
+  },
+  "MessageActionParams": {
+   "status": "ignored",
+   "why": "channel message actions — not an Atrium surface"
+  },
+  "SendParams": {
+   "status": "ignored",
+   "why": "outbound channel sends (Telegram-style) — Atrium consumes the event stream instead"
+  },
+  "PollParams": {
+   "status": "ignored",
+   "why": "native channel polls — not an Atrium surface"
+  },
+  "AgentParams": {
+   "status": "ignored",
+   "why": "the direct agent-run RPC — the bridge dispatches turns via chat.send exclusively (session-keyed, idempotent)"
+  },
+  "AgentIdentityParams": {
+   "status": "ignored",
+   "why": "identity display comes from agents.list at discovery time"
+  },
+  "AgentIdentityResult": {
+   "status": "ignored",
+   "why": "result of the unused agent.identity"
+  },
+  "AgentWaitParams": {
+   "status": "ignored",
+   "why": "run completion is observed on the event stream, never polled"
+  },
+  "WakeParams": {
+   "status": "ignored",
+   "why": "external scheduler wake — not an Atrium surface"
+  },
+  "InputProvenance": {
+   "status": "ignored",
+   "why": "operator-injection provenance primitive — Atrium sends never set systemInputProvenance (see ChatSendParams)"
+  },
+  "GatewayClientId": {
+   "status": "ignored",
+   "why": "handshake client-id vocabulary — the bridge identifies via its own connect params, not this enum"
+  },
+  "GatewayClientMode": {
+   "status": "ignored",
+   "why": "handshake client-mode vocabulary — same as GatewayClientId"
+  },
+  "SecretRefSource": {
+   "status": "ignored",
+   "why": "secret-reference primitive for config schemas — the bridge never writes gateway config"
+  },
+  "SecretRef": {
+   "status": "ignored",
+   "why": "secret-reference primitive — the bridge never writes gateway config"
+  },
+  "SecretInput": {
+   "status": "ignored",
+   "why": "secret-input primitive — the bridge never writes gateway config"
+  },
+  "PluginControlUiDescriptor": {
+   "status": "ignored",
+   "why": "the Control UI's plugin descriptor — a surface of the gateway's own UI"
+  },
+  "PluginJsonValue": {
+   "status": "ignored",
+   "why": "vendored only as a transitive import of sessions.ts (PluginJsonValueSchema); Atrium exchanges no plugin payloads"
+  },
+  "PluginsSessionActionFailureResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "PluginsSessionActionParams": {
+   "status": "ignored",
+   "why": "plugin-defined session actions, an operator/Control-UI surface"
+  },
+  "PluginsSessionActionResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "PluginsSessionActionSuccessResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "PluginsUiDescriptorsParams": {
+   "status": "ignored",
+   "why": "plugins.* is the gateway's plugin administration; Atrium never calls it"
+  },
+  "PluginsUiDescriptorsResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionCompactionCheckpoint": {
+   "fields": {
+    "checkpointId": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: the stable id of a compaction event"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "the caller already knows which session it asked about"
+    },
+    "sessionId": {
+     "status": "ignored",
+     "why": "internal gateway identity; Atrium correlates on sessionKey"
+    },
+    "createdAt": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: when the compaction happened"
+    },
+    "reason": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: WHY it happened — the cause the operator reads"
+    },
+    "tokensBefore": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: how much was condensed"
+    },
+    "tokensAfter": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: what remained"
+    },
+    "summary": {
+     "status": "ignored",
+     "why": "DELIBERATELY DROPPED: the checkpoint's summary is real conversation content, and the compaction history crosses an API that is metadata-only. Structural facts travel; the text does not"
+    },
+    "firstKeptEntryId": {
+     "status": "ignored",
+     "why": "transcript-internal cursor with no meaning outside the gateway's own store"
+    },
+    "preCompaction": {
+     "status": "ignored",
+     "why": "transcript reference (see SessionCompactionTranscriptReference) — file-level pointers into the gateway's disk, unusable and unwanted here"
+    },
+    "postCompaction": {
+     "status": "ignored",
+     "why": "same transcript-reference family"
+    }
+   }
+  },
+  "SessionCompactionCheckpointReason": {
+   "status": "ignored",
+   "why": "the reason vocabulary as a union. The bridge does not match this union: it BUCKETS the reason string it receives (bucketCompactionReason) at both the history shaper and the trace boundary, so a new upstream member collapses to `other` instead of breaking a turn or travelling verbatim onto a metadata-only surface. NOTE: that bucketing was ADDED on 2026-07-27 — classifying this schema is what revealed the history shaper was still passing the raw string through."
+  },
+  "SessionCompactionTranscriptReference": {
+   "fields": {
+    "sessionId": {
+     "status": "ignored",
+     "why": "gateway-internal transcript identity"
+    },
+    "sessionFile": {
+     "status": "ignored",
+     "why": "a PATH on the gateway host — never useful to Atrium and never safe to surface"
+    },
+    "leafId": {
+     "status": "ignored",
+     "why": "transcript-internal cursor"
+    },
+    "entryId": {
+     "status": "ignored",
+     "why": "transcript-internal cursor"
+    }
+   }
+  },
+  "SessionFileBrowserEntry": {
+   "status": "ignored",
+   "why": "vocabulary of the session-file lane"
+  },
+  "SessionFileBrowserResult": {
+   "status": "ignored",
+   "why": "vocabulary of the session-file lane"
+  },
+  "SessionFileEntry": {
+   "status": "ignored",
+   "why": "vocabulary of the session-file lane"
+  },
+  "SessionFileKind": {
+   "status": "ignored",
+   "why": "vocabulary of the session-file lane"
+  },
+  "SessionFileRelevance": {
+   "status": "ignored",
+   "why": "vocabulary of the session-file lane"
+  },
+  "SessionOperationEvent": {
+   "fields": {
+    "operationId": {
+     "status": "gap",
+     "note": "NOT RECEIVED. This event reaches only connections that called `sessions.subscribe`, which the bridge deliberately does NOT do on the turn socket (measured 2026-07-26: subscribing there cost announce frames and broke turn merging). Reading it needs a dedicated connection; `handleSessionOperation` in the normalizer is the ready, unfed reader."
+    },
+    "operation": {
+     "status": "gap",
+     "note": "same: unfed until the dedicated session-events connection exists"
+    },
+    "phase": {
+     "status": "gap",
+     "note": "same"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "same"
+    },
+    "agentId": {
+     "status": "gap",
+     "note": "same"
+    },
+    "ts": {
+     "status": "gap",
+     "note": "same"
+    },
+    "completed": {
+     "status": "gap",
+     "note": "same"
+    },
+    "reason": {
+     "status": "gap",
+     "note": "same — and this is the field that matters. CORRECTED after review: it is not the ONLY carrier of a compaction cause, as this note first claimed. `sessions.compaction.list` returns checkpoints whose `reason` the bridge already reads (fetchCompactionHistory), so the cause IS retrievable ON DEMAND, per session, off the turn path. What this event alone would give is the cause AT THE MOMENT it happens, attachable to the turn's own marker and trace, instead of a later lookup nobody performs."
+    }
+   }
+  },
+  "SessionsAbortParams": {
+   "status": "ignored",
+   "why": "the bridge aborts through chat.abort, the lane its turn state machine understands"
+  },
+  "SessionsCleanupParams": {
+   "status": "ignored",
+   "why": "sessions.cleanup is store maintenance an operator runs from the CLI (it prunes entries); a chat client must never prune another chat's session"
+  },
+  "SessionsCompactParams": {
+   "fields": {
+    "key": {
+     "status": "handled",
+     "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
+    },
+    "maxLines": {
+     "status": "ignored",
+     "why": "selects TRIMMING (drop the oldest lines) over summarising. Atrium wants the summary: the pre-send guard compacts to make a turn fit, and losing the head of the conversation outright is exactly what rehydration then has to undo"
+    }
+   }
+  },
+  "SessionsCompactionBranchParams": {
+   "status": "ignored",
+   "why": "branching from a checkpoint is a gateway-side history operation; Atrium's fork copies its OWN stored thread"
+  },
+  "SessionsCompactionBranchResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsCompactionGetParams": {
+   "status": "ignored",
+   "why": "compaction.get fetches ONE checkpoint including its summary text; Atrium lists them content-free and never needs the body"
+  },
+  "SessionsCompactionGetResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsCompactionListParams": {
+   "fields": {
+    "key": {
+     "status": "handled",
+     "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
+    }
+   }
+  },
+  "SessionsCompactionListResult": {
+   "fields": {
+    "ok": {
+     "status": "ignored",
+     "why": "the transport already surfaces failure; the bridge reads the payload only on a 2xx"
+    },
+    "key": {
+     "status": "ignored",
+     "why": "echo of what we sent"
+    },
+    "checkpoints": {
+     "status": "handled",
+     "by": "fetchCompactionHistory: shaped CONTENT-FREE into the compaction history the obs MCP serves"
+    }
+   }
+  },
+  "SessionsCompactionRestoreParams": {
+   "status": "ignored",
+   "why": "restoring a pre-compaction transcript rewrites gateway history under a live chat"
+  },
+  "SessionsCompactionRestoreResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsCreateParams": {
+   "status": "ignored",
+   "why": "sessions.create pre-creates a session; the bridge lets chat.send create it implicitly, which is the path every turn already exercises"
+  },
+  "SessionsDeleteParams": {
+   "status": "ignored",
+   "why": "deleting a gateway session is destructive and operator-owned; Atrium's /reset preserves the store"
+  },
+  "SessionsDescribeParams": {
+   "fields": {
+    "key": {
+     "status": "handled",
+     "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
+    },
+    "includeDerivedTitles": {
+     "status": "ignored",
+     "why": "Atrium titles its own chats; a gateway-derived title would fight the user's"
+    },
+    "includeLastMessage": {
+     "status": "ignored",
+     "why": "the describe runs on the turn path for counters and meta only — pulling the last message back would cost payload on every send for content Atrium already stores"
+    }
+   }
+  },
+  "SessionsFilesGetParams": {
+   "status": "ignored",
+   "why": "same session-file lane"
+  },
+  "SessionsFilesGetResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsFilesListParams": {
+   "status": "ignored",
+   "why": "sessions.files.* — the gateway's session-scoped file browser. Atrium's file surface is agents.files.*, a different lane"
+  },
+  "SessionsFilesListResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsListParams": {
+   "status": "ignored",
+   "why": "sessions.list enumerates the gateway's sessions; Atrium enumerates CHATS from its own store and resolves one session per chat"
+  },
+  "SessionsMessagesSubscribeParams": {
+   "status": "ignored",
+   "why": "declared NOT-TO-DO in the programme: an entire field surface to classify and a duplicate-delivery risk on visible runs, with no production complaint"
+  },
+  "SessionsMessagesUnsubscribeParams": {
+   "status": "ignored",
+   "why": "counterpart of a subscription the bridge does not open"
+  },
+  "SessionsPatchParams": {
+   "fields": {
+    "key": {
+     "status": "handled",
+     "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
+    },
+    "label": {
+     "status": "ignored",
+     "why": "Atrium names chats in its own store; the gateway label is not shown"
+    },
+    "category": {
+     "status": "ignored",
+     "why": "gateway-side session taxonomy Atrium does not model"
+    },
+    "archived": {
+     "status": "ignored",
+     "why": "Atrium's chat lifecycle lives in Convex; archiving a gateway session would desynchronise the two"
+    },
+    "pinned": {
+     "status": "ignored",
+     "why": "same: pinning is an Atrium sidebar concept"
+    },
+    "unread": {
+     "status": "ignored",
+     "why": "same: unread is computed from Atrium's own lastAssistantAt"
+    },
+    "thinkingLevel": {
+     "status": "handled",
+     "by": "applySessionSettings: the reasoning knob"
+    },
+    "fastMode": {
+     "status": "handled",
+     "by": "applySessionSettings — with a `!== undefined` presence check, so `false` (Standard speed) really applies"
+    },
+    "verboseLevel": {
+     "status": "handled",
+     "by": "performSend sends `verboseLevel:\"full\"` once per connection: without it the gateway withholds the tool/lifecycle detail the whole normalizer reads"
+    },
+    "traceLevel": {
+     "status": "ignored",
+     "why": "gateway-side log verbosity; Atrium's observability is its own trace pipeline"
+    },
+    "reasoningLevel": {
+     "status": "ignored",
+     "why": "superseded by thinkingLevel, which is the knob the UI exposes"
+    },
+    "responseUsage": {
+     "status": "ignored",
+     "why": "a per-reply usage FOOTER appended to the message text (off|tokens|full). Atrium reads usage from the terminal's diagnosticUsage and renders it in the gauge — a footer would inject telemetry into the conversation"
+    },
+    "elevatedLevel": {
+     "status": "ignored",
+     "why": "privilege escalation for the session — an operator decision, never a chat UI one"
+    },
+    "execHost": {
+     "status": "ignored",
+     "why": "exec policy is gateway configuration, deliberately not reachable from a chat"
+    },
+    "execSecurity": {
+     "status": "ignored",
+     "why": "same exec-policy family"
+    },
+    "execAsk": {
+     "status": "ignored",
+     "why": "same exec-policy family — and the approval surface is a declared product gap (see the approvals section)"
+    },
+    "execNode": {
+     "status": "ignored",
+     "why": "same exec-policy family"
+    },
+    "model": {
+     "status": "handled",
+     "by": "applySessionSettings: the user's per-chat model choice"
+    },
+    "spawnedBy": {
+     "status": "ignored",
+     "why": "sub-agent lineage the GATEWAY stamps when it spawns a child; a client writing it would forge provenance"
+    },
+    "spawnedWorkspaceDir": {
+     "status": "ignored",
+     "why": "same spawn-metadata family"
+    },
+    "spawnedCwd": {
+     "status": "ignored",
+     "why": "same spawn-metadata family"
+    },
+    "spawnDepth": {
+     "status": "ignored",
+     "why": "same spawn-metadata family"
+    },
+    "subagentRole": {
+     "status": "ignored",
+     "why": "same spawn-metadata family"
+    },
+    "subagentControlScope": {
+     "status": "ignored",
+     "why": "same spawn-metadata family"
+    },
+    "inheritedToolAllow": {
+     "status": "ignored",
+     "why": "tool entitlements come from the agent's gateway config; a per-session override from the chat would bypass the operator's policy"
+    },
+    "inheritedToolDeny": {
+     "status": "ignored",
+     "why": "same tool-entitlement family"
+    },
+    "sendPolicy": {
+     "status": "ignored",
+     "why": "cross-session send permissions — an operator policy, not a chat setting"
+    },
+    "groupActivation": {
+     "status": "ignored",
+     "why": "group-chat activation rules; Atrium is one-user-one-chat"
+    }
+   }
+  },
+  "SessionsPluginPatchParams": {
+   "status": "ignored",
+   "why": "per-session plugin configuration — operator surface"
+  },
+  "SessionsPluginPatchResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "SessionsPreviewParams": {
+   "status": "ignored",
+   "why": "sessions.preview renders a session excerpt for a picker Atrium does not have"
+  },
+  "SessionsResetParams": {
+   "fields": {
+    "key": {
+     "status": "handled",
+     "by": "server.ts sends `{key: sessionKey}` on every sessions.* call — the session identity the whole bridge is keyed on"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the session KEY already carries the agent (buildSessionKey); sending it again would be a second, divergent source of routing truth"
+    },
+    "reason": {
+     "status": "gap",
+     "note": "NOT sent, and CORRECTED after review: the first note claimed sending it would let the gateway's audit tell an Atrium reset from any other. It would not — the schema admits only `\"new\" | \"reset\"`, so every client's reset looks alike. What sending `\"reset\"` would actually buy is the distinction from `\"new\"` (a fresh session) inside the gateway's own lifecycle accounting. Minor, and Atrium keeps its own reset trace either way."
+    }
+   }
+  },
+  "SessionsResolveParams": {
+   "status": "ignored",
+   "why": "sessions.resolve maps a loose key to a canonical one; the bridge MINTS its keys (buildSessionKey) and never has a loose one to resolve"
+  },
+  "SessionsSendParams": {
+   "status": "ignored",
+   "why": "sessions.send is the session-scoped send; the bridge uses chat.send, whose idempotency and event lane the whole normalizer is built on"
+  },
+  "SessionsUsageParams": {
+   "status": "ignored",
+   "why": "session usage totals; Atrium reads usage per TURN from the terminal's diagnosticUsage and from consecutive describes"
+  },
+  "SessionWorktreeInfo": {
+   "status": "ignored",
+   "why": "the git worktree a session runs in (id/path/branch) — a gateway-host filesystem concern; Atrium never places or reads a worktree"
+  },
+  "SessionsCreateResult": {
+   "status": "ignored",
+   "why": "result of sessions.create, which the bridge never calls (chat.send creates the session implicitly)"
+  },
+  "CronAddParams": {
+   "status": "ignored",
+   "why": "creating a cron from Atrium is not offered — jobs are created by the agent or the operator"
+  },
+  "CronAddResult": {
+   "status": "ignored",
+   "why": "result of an add the bridge never performs"
+  },
+  "CronCompletionDestination": {
+   "status": "ignored",
+   "why": "delivery routing for a completed run — gateway-side"
+  },
+  "CronDeclarativeAddResult": {
+   "status": "ignored",
+   "why": "result of a declarative add the bridge never performs"
+  },
+  "CronDelivery": {
+   "status": "handled",
+   "by": "normalizeCronJobDetail reads `delivery.mode` (none|announce|webhook) — the detail says where a run's result goes. A UNION, classified whole: the bridge reads the shared discriminant rather than matching members."
+  },
+  "CronDeliveryPatch": {
+   "status": "ignored",
+   "why": "editing delivery routing is not offered"
+  },
+  "CronFailureAlert": {
+   "status": "ignored",
+   "why": "failure-alert routing, a gateway notification policy Atrium does not own"
+  },
+  "CronFailureDestination": {
+   "status": "ignored",
+   "why": "same failure-alert family"
+  },
+  "CronGetParams": {
+   "status": "handled",
+   "by": "cron-manage `get` sends `{id}` (the schema is a union of the id and legacy jobId arms; the bridge always uses `id`)"
+  },
+  "CronJob": {
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "fetchCronJobs / normalizeCronJobDetail: the job identity every /cron-manage op is keyed on"
+    },
+    "declarationKey": {
+     "status": "ignored",
+     "why": "identity of a job DECLARED in gateway config; Atrium neither declares nor edits config-owned jobs"
+    },
+    "displayName": {
+     "status": "ignored",
+     "why": "a gateway-side alias; the tab shows `name`, and two names for one job would confuse more than help"
+    },
+    "owner": {
+     "status": "ignored",
+     "why": "the gateway-side owner tag; Atrium's ownership is its own user/agent policy"
+    },
+    "agentId": {
+     "status": "handled",
+     "by": "fetchCronJobs: the job's pinned agent — Convex applies the per-user agent policy on it"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "the session a job runs in is the gateway's business; Atrium keys on the job id"
+    },
+    "name": {
+     "status": "handled",
+     "by": "fetchCronJobs: the job name shown in the Scheduled tab"
+    },
+    "description": {
+     "status": "ignored",
+     "why": "free-text description the Scheduled tab does not show"
+    },
+    "enabled": {
+     "status": "handled",
+     "by": "fetchCronJobs: drives the Paused state (the list is fetched with includeDisabled)"
+    },
+    "deleteAfterRun": {
+     "status": "ignored",
+     "why": "one-shot semantics set at creation, which Atrium does not do"
+    },
+    "createdAtMs": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail: shown in the job detail"
+    },
+    "updatedAtMs": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail: shown in the job detail"
+    },
+    "schedule": {
+     "status": "handled",
+     "by": "fetchCronJobs: rendered as a printable cadence (cron expr, --at, or {kind,everyMs})"
+    },
+    "trigger": {
+     "status": "ignored",
+     "why": "event triggers (script/once) — a job kind Atrium neither creates nor renders"
+    },
+    "sessionTarget": {
+     "status": "ignored",
+     "why": "which session the run targets; gateway-side placement"
+    },
+    "wakeMode": {
+     "status": "ignored",
+     "why": "how the run wakes the agent; gateway-side execution policy"
+    },
+    "payload": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail: what the job actually runs, shown in the detail"
+    },
+    "delivery": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail: where the result goes, shown read-only"
+    },
+    "failureAlert": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "state": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail: the state block the detail summarises"
+    },
+    "nextRunAtMs": {
+     "status": "handled",
+     "by": "fetchCronJobs: the next occurrence the calendar view places"
+    },
+    "lastRunAtMs": {
+     "status": "ignored",
+     "why": "the detail shows the state block; this duplicate at job level is redundant"
+    },
+    "lastRunStatus": {
+     "status": "handled",
+     "by": "fetchCronJobs: the last outcome badge"
+    },
+    "lastRunError": {
+     "status": "ignored",
+     "why": "the raw error TEXT of the last run — free text on a surface Atrium renders; the status badge carries the signal"
+    },
+    "lastDelivered": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "lastDeliveryStatus": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "lastDeliveryError": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "lastFailureNotificationDelivered": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryStatus": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryError": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    }
+   }
+  },
+  "CronJobPatch": {
+   "fields": {
+    "agentId": {
+     "status": "ignored",
+     "why": "re-pinning a job to another agent is an entitlement decision, and Convex — not the bridge — owns the per-user agent policy"
+    },
+    "deleteAfterRun": {
+     "status": "ignored",
+     "why": "one-shot semantics belong to creation, which Atrium does not do"
+    },
+    "delivery": {
+     "status": "ignored",
+     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+    },
+    "description": {
+     "status": "ignored",
+     "why": "not shown in the tab, so not editable from it"
+    },
+    "displayName": {
+     "status": "ignored",
+     "why": "the tab edits `name`; a second display alias would drift from it"
+    },
+    "enabled": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch: the Pause/Resume control"
+    },
+    "failureAlert": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+    },
+    "name": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch: renaming a job from the Scheduled tab"
+    },
+    "payload": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch: a new prompt, mapped onto the job's EXISTING payload kind (systemEvent or agentTurn) — an unknown kind fails CLOSED rather than guessing"
+    },
+    "schedule": {
+     "status": "handled",
+     "by": "buildGatewayCronPatch: the cadence editor (cron expr / every / at)"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "which session a job runs in is gateway placement, not a user setting"
+    },
+    "sessionTarget": {
+     "status": "ignored",
+     "why": "same placement family"
+    },
+    "state": {
+     "status": "ignored",
+     "why": "the run state is the gateway's to write; patching it would forge history"
+    },
+    "trigger": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "wakeMode": {
+     "status": "ignored",
+     "why": "how the run wakes the agent — gateway execution policy"
+    }
+   }
+  },
+  "CronJobState": {
+   "fields": {
+    "consecutiveErrors": {
+     "status": "gap",
+     "note": "NOT read. The counter says HOW MANY runs failed in a row — not why, and not whether the cause was the same one (corrected after review: the first note implied it did). What the Scheduled tab lacks is precisely that number: a job on its twentieth consecutive failure and a job that failed once show the identical badge, so nobody learns that a recurring job has stopped working."
+    },
+    "consecutiveSkipped": {
+     "status": "ignored",
+     "why": "skips are a gateway scheduling detail (overlap, not due) the tab does not model"
+    },
+    "lastDelivered": {
+     "status": "ignored",
+     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+    },
+    "lastDeliveryError": {
+     "status": "ignored",
+     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+    },
+    "lastDeliveryStatus": {
+     "status": "ignored",
+     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+    },
+    "lastDiagnosticSummary": {
+     "status": "ignored",
+     "why": "summary of that blob; the run list's own summary is what the detail shows"
+    },
+    "lastDiagnostics": {
+     "status": "ignored",
+     "why": "unbounded gateway diagnostic blob — never rendered"
+    },
+    "lastDurationMs": {
+     "status": "ignored",
+     "why": "duration is shown PER RUN in the history, where it is actionable"
+    },
+    "lastError": {
+     "status": "ignored",
+     "why": "raw error TEXT of the last run — the run list shows per-run errors already, and this one would put gateway prose in the job header"
+    },
+    "lastErrorReason": {
+     "status": "ignored",
+     "why": "a second error classification the detail does not show"
+    },
+    "lastFailureAlertAtMs": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDelivered": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryError": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryStatus": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+    },
+    "lastRunAtMs": {
+     "status": "ignored",
+     "why": "the run LIST carries per-run timestamps; the detail header shows the next run, not the last"
+    },
+    "lastRunStatus": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it FIRST (falling back to the job-level copy): the outcome badge"
+    },
+    "lastStatus": {
+     "status": "handled",
+     "by": "fetchCronJobs (server.ts, the LIST path — not normalizeCronJobDetail): the outcome badge falls back state.lastRunStatus -> state.lastStatus -> job.lastRunStatus -> job.lastStatus, so a gateway that populates only the alias still shows a status. A review pass claimed this read did not exist because it looked only in cron-manage.ts; it is in the list normalizer."
+    },
+    "lastTriggerEvalAtMs": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "lastTriggerFireAtMs": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "nextRunAtMs": {
+     "status": "handled",
+     "by": "normalizeCronJobDetail reads it FIRST (falling back to the job-level copy): the next occurrence the detail and the calendar show"
+    },
+    "runningAtMs": {
+     "status": "ignored",
+     "why": "the tab has no live-running indicator for crons"
+    },
+    "triggerEvalCount": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "triggerState": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    }
+   }
+  },
+  "CronListParams": {
+   "fields": {
+    "includeDisabled": {
+     "status": "handled",
+     "by": "fetchCronJobs sends `true`: the default listing hides disabled jobs, which would make every paused job invisible in the tab"
+    },
+    "limit": {
+     "status": "ignored",
+     "why": "the tab lists a user's jobs, a handful at most; paging would hide some with no control to reveal them"
+    },
+    "offset": {
+     "status": "ignored",
+     "why": "same paging family"
+    },
+    "query": {
+     "status": "ignored",
+     "why": "filtering happens in Atrium's own UI, over the list it already holds"
+    },
+    "enabled": {
+     "status": "ignored",
+     "why": "the tab shows paused jobs deliberately (see includeDisabled)"
+    },
+    "scheduleKind": {
+     "status": "ignored",
+     "why": "no filter surface in the tab"
+    },
+    "lastRunStatus": {
+     "status": "ignored",
+     "why": "no filter surface in the tab"
+    },
+    "sortBy": {
+     "status": "ignored",
+     "why": "the tab sorts client-side"
+    },
+    "sortDir": {
+     "status": "ignored",
+     "why": "the tab sorts client-side"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the bridge lists ALL jobs and lets Convex apply the user's agent policy; filtering here would hide the very jobs the policy must be able to refuse"
+    },
+    "compact": {
+     "status": "ignored",
+     "why": "the FULL response is required — the compact projection drops `agentId`, and Convex needs it to apply the per-user agent policy"
+    }
+   }
+  },
+  "CronPayload": {
+   "status": "handled",
+   "by": "normalizeCronJobDetail reads `kind` (the payload family the message editor must preserve) and the prompt text — `message` for an agentTurn, `text` for a systemEvent. A UNION, so it is classified whole: the bridge reads the members' shared fields rather than matching the union, and an unknown member degrades to a null prompt instead of breaking the detail."
+  },
+  "CronPayloadPatch": {
+   "status": "handled",
+   "by": "buildGatewayCronPatch SENDS one: editing a cron's prompt emits `{kind:\"systemEvent\", text}` or `{kind:\"agentTurn\", message}`, chosen from the job's CURRENT kind. An unknown current kind fails CLOSED (the update is refused) rather than guessing a member."
+  },
+  "CronRemoveParams": {
+   "status": "handled",
+   "by": "cron-manage `remove` sends `{id}`"
+  },
+  "CronRunLogEntry": {
+   "fields": {
+    "ts": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: when the run happened"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "the caller asked for one job's runs"
+    },
+    "action": {
+     "status": "ignored",
+     "why": "gateway-internal action label"
+    },
+    "status": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: the run outcome"
+    },
+    "error": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: why it failed, shown in the run list"
+    },
+    "errorReason": {
+     "status": "ignored",
+     "why": "a second error classification the run list does not show; `error` carries the message"
+    },
+    "summary": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: the one-line result"
+    },
+    "diagnostics": {
+     "status": "ignored",
+     "why": "gateway-side diagnostic blob — unbounded shape, not rendered"
+    },
+    "delivered": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "deliveryStatus": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "deliveryError": {
+     "status": "ignored",
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "failureNotificationDelivery": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "sessionId": {
+     "status": "ignored",
+     "why": "gateway-internal session identity"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "the run's session; the tab is job-scoped"
+    },
+    "runId": {
+     "status": "ignored",
+     "why": "per-run identity the UI does not address"
+    },
+    "runAtMs": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: the scheduled instant"
+    },
+    "durationMs": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: how long it took"
+    },
+    "nextRunAtMs": {
+     "status": "ignored",
+     "why": "the job summary already carries the next occurrence"
+    },
+    "triggerFired": {
+     "status": "ignored",
+     "why": "event-trigger detail for a job kind Atrium does not render"
+    },
+    "model": {
+     "status": "handled",
+     "by": "normalizeCronRunEntries: which model ran it"
+    },
+    "provider": {
+     "status": "ignored",
+     "why": "which provider served the run — not shown"
+    },
+    "usage": {
+     "status": "gap",
+     "note": "NOT read. A cron run's token/cost usage is right here and Atrium shows nothing: the Scheduled tab reports duration and status but never what a recurring job COSTS, which is exactly the question a daily job raises after a month."
+    },
+    "jobName": {
+     "status": "ignored",
+     "why": "the caller already knows the job"
+    }
+   }
+  },
+  "CronRunParams": {
+   "status": "handled",
+   "by": "cron-manage `run` sends `{id, mode:\"force\"}`"
+  },
+  "CronRunsParams": {
+   "fields": {
+    "scope": {
+     "status": "ignored",
+     "why": "widens the query beyond one job — the detail is per job"
+    },
+    "id": {
+     "status": "handled",
+     "by": "cron-manage `runs`: the job whose history is shown"
+    },
+    "jobId": {
+     "status": "ignored",
+     "why": "alias of `id` for callers that hold the other identity; the bridge always has `id`"
+    },
+    "runId": {
+     "status": "ignored",
+     "why": "single-run lookup; the detail lists recent runs instead"
+    },
+    "limit": {
+     "status": "handled",
+     "by": "cron-manage `runs`: bounds the history the detail renders"
+    },
+    "statuses": {
+     "status": "ignored",
+     "why": "filtering happens in the UI over the returned list"
+    },
+    "status": {
+     "status": "ignored",
+     "why": "same filter family"
+    },
+    "deliveryStatuses": {
+     "status": "ignored",
+     "why": "delivery routing is not an Atrium concern"
+    },
+    "deliveryStatus": {
+     "status": "ignored",
+     "why": "same delivery family"
+    },
+    "query": {
+     "status": "ignored",
+     "why": "no free-text search surface in the detail"
+    },
+    "sortDir": {
+     "status": "ignored",
+     "why": "the detail shows newest-first as returned"
+    },
+    "offset": {
+     "status": "ignored",
+     "why": "paging past the bounded `limit` the detail requests; the run list shows the most recent, not a browsable archive"
+    }
+   }
+  },
+  "CronSchedule": {
+   "status": "handled",
+   "by": "READ by fetchCronJobs and normalizeCronJobDetail (kind / expr / at / everyMs, rendered into a printable cadence) and SENT by buildGatewayCronPatch when the user edits it. A UNION, classified whole: an unrecognised member degrades to text instead of breaking the tab."
+  },
+  "CronStatusParams": {
+   "status": "ignored",
+   "why": "cron.status is the declarative reconcile probe; Atrium never declares jobs from config"
+  },
+  "CronTrigger": {
+   "status": "ignored",
+   "why": "event triggers (script/once) — a job kind Atrium neither creates nor renders"
+  },
+  "CronUpdateParams": {
+   "status": "handled",
+   "by": "cron-manage `update` sends `{id, patch}` — the patch built by buildGatewayCronPatch"
+  },
+  "TaskLedgerStatus": {
+   "status": "handled",
+   "by": "SENT and READ: the reconciliation asks `tasks.list {status:[\"queued\",\"running\"]}` and /tasks-probe compares the status it gets back. A UNION, classified whole — the bridge compares the STRING rather than matching members, so a new upstream member cannot break the probe, but the values it sends are members of this union and a rename would silently return nothing."
+  },
+  "TaskSummary": {
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "/tasks-probe and the tasks.list reconciliation: the task identity"
+    },
+    "kind": {
+     "status": "handled",
+     "by": "the FALLBACK tool family when sourceId is absent (pinned live: summary kind `image_generation`)"
+    },
+    "runtime": {
+     "status": "ignored",
+     "why": "which runtime executed it — gateway-side detail"
+    },
+    "status": {
+     "status": "handled",
+     "by": "/tasks-probe: whether the engagement is still live, so the indicator expires on FACT instead of a blind timeout"
+    },
+    "title": {
+     "status": "ignored",
+     "why": "Atrium shows the engagement from its OWN row, not the gateway's title"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the probe is already scoped to the session's agent"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "the probe queries by session"
+    },
+    "childSessionKey": {
+     "status": "ignored",
+     "why": "sub-agent lineage; the sub-agent monitor owns that view"
+    },
+    "ownerKey": {
+     "status": "ignored",
+     "why": "gateway-side ownership tag"
+    },
+    "runId": {
+     "status": "ignored",
+     "why": "the run behind the task; the indicator keys on the task"
+    },
+    "taskId": {
+     "status": "handled",
+     "by": "same — the id the activity indicator holds"
+    },
+    "flowId": {
+     "status": "ignored",
+     "why": "TaskFlow grouping Atrium does not model"
+    },
+    "parentTaskId": {
+     "status": "ignored",
+     "why": "same TaskFlow family"
+    },
+    "sourceId": {
+     "status": "handled",
+     "by": "the tasks.list reconciliation derives the tool family from it (`image_generate:openai` -> `image_generate`), which is the chain key the activity indicator groups on"
+    },
+    "createdAt": {
+     "status": "ignored",
+     "why": "the Atrium row carries its own timestamps"
+    },
+    "updatedAt": {
+     "status": "ignored",
+     "why": "same"
+    },
+    "startedAt": {
+     "status": "ignored",
+     "why": "same"
+    },
+    "endedAt": {
+     "status": "ignored",
+     "why": "same"
+    },
+    "progressSummary": {
+     "status": "gap",
+     "note": "NOT read. A running task publishes a progress line and the activity indicator shows only a spinner — the user waiting on a four-hour job is told nothing about where it is."
+    },
+    "terminalSummary": {
+     "status": "handled",
+     "by": "/tasks-probe: the task's closing line"
+    },
+    "error": {
+     "status": "handled",
+     "by": "/tasks-probe: why a task ended badly"
+    }
+   }
+  },
+  "TasksCancelParams": {
+   "status": "ignored",
+   "why": "Atrium does not cancel gateway tasks — a running task is the agent's, and the user's stop acts on the TURN"
+  },
+  "TasksCancelResult": {
+   "status": "ignored",
+   "why": "result of an RPC the bridge never calls"
+  },
+  "TasksGetParams": {
+   "fields": {
+    "taskId": {
+     "status": "handled",
+     "by": "/tasks-probe: the engagement being verified"
+    }
+   }
+  },
+  "TasksGetResult": {
+   "fields": {
+    "task": {
+     "status": "handled",
+     "by": "/tasks-probe reads status/error/terminalSummary off it"
+    }
+   }
+  },
+  "TasksListParams": {
+   "fields": {
+    "status": {
+     "status": "handled",
+     "by": "filtered to queued+running: only live engagements matter for expiry"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the session key already scopes the agent"
+    },
+    "sessionKey": {
+     "status": "handled",
+     "by": "the reconciliation lists the tasks of THIS session"
+    },
+    "limit": {
+     "status": "handled",
+     "by": "bounded at 50 — a runaway list must not become the answer"
+    },
+    "cursor": {
+     "status": "ignored",
+     "why": "paging past 50 live tasks would mean a pathological session, not a page to fetch"
+    }
+   }
+  },
+  "TasksListResult": {
+   "fields": {
+    "tasks": {
+     "status": "handled",
+     "by": "the reconciliation reads the live task ids"
+    },
+    "nextCursor": {
+     "status": "ignored",
+     "why": "paging is deliberately not followed (see TasksListParams.cursor)"
+    }
+   }
+  },
+  "ConfigGetParams": {
+   "status": "handled",
+   "by": "conf.ts sends `{}` before every patch (for the base hash) and after it (for the confirmed read-back), and server.ts polls it while the gateway restarts. The empty-object schema is pinned by the COVERAGE ratchet; the outbound ratchet (G2) currently captures only the chat.send lane, so these bodies are not yet validated against the vendored schema on the wire — declared, not implied"
+  },
+  "ConfigPatchParams": {
+   "fields": {
+    "raw": {
+     "status": "handled",
+     "by": "conf.ts:424 sends `JSON.stringify({agents:{defaults}})` — the ONLY config write Atrium performs"
+    },
+    "baseHash": {
+     "status": "handled",
+     "by": "conf.ts reads the pre-patch hash from `config.get` and sends it as the compare-and-set guard, retrying ONCE on a mismatch. It REFUSES to patch when the read carries no non-empty hash AND the snapshot says the config file exists — read from the deployed gateway: `requireConfigBaseHash` rejects an unguarded patch in exactly that case, so refusing locally replaces an INVALID_REQUEST round-trip with a clear message. When the file does NOT exist the gateway skips the requirement (nothing to lose) and so does the bridge, which is what keeps the guard from costing a first-run write"
+    },
+    "sessionKey": {
+     "status": "ignored",
+     "why": "no session originates a config write in Atrium: /config-defaults is an operator route, not a turn"
+    },
+    "deliveryContext": {
+     "status": "ignored",
+     "why": "channel delivery of the edit report — Atrium answers on its own HTTP route and has no gateway channel to notify"
+    },
+    "note": {
+     "status": "ignored",
+     "why": "free-form audit note for the gateway's own edit log; Atrium records the change in its trace instead"
+    },
+    "restartDelayMs": {
+     "status": "ignored",
+     "why": "Atrium never ASKS for a restart. It cannot prevent one either: bench-verified on 2026.6.5, `config.patch` can make the gateway restart on its own (`restartReason=config.patch`), killing the operator socket before the response is read even though the write applied — which is why conf.ts polls `config.get` and reports success only once `defaultsApplied` confirms the read-back. Sending a delay would mean Atrium scheduling gateway downtime, which is not its call"
+    },
+    "replacePaths": {
+     "status": "ignored",
+     "why": "the patch is a MERGE-patch of a minimal `{agents:{defaults:{…}}}` carrying only the provided fields, and `clear` deletes keys by null-merge — so path replacement is never needed. Naming paths would restate the same intent in a second, coarser vocabulary, and a path replaces everything beneath it"
+    }
+   }
+  },
+  "ConfigSetParams": {
+   "status": "ignored",
+   "why": "`config.set` replaces the WHOLE config; Atrium patches two agent defaults and must never be able to overwrite an operator's file"
+  },
+  "ConfigApplyParams": {
+   "status": "ignored",
+   "why": "`config.apply` is the restart-scheduling sibling of patch; see UpdateRunParams — Atrium does not restart its gateway"
+  },
+  "ConfigSchemaParams": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "ConfigSchemaLookupParams": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "ConfigUiHint": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "ConfigSchemaResponse": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "ConfigSchemaLookupChild": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "ConfigSchemaLookupResult": {
+   "status": "ignored",
+   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
+  },
+  "UpdateStatusParams": {
+   "status": "ignored",
+   "why": "the gateway's self-update / restart flow is operated on the gateway, never from Atrium — a bridge that could restart its own gateway mid-turn is a hazard, not a feature"
+  },
+  "UpdateRunParams": {
+   "status": "ignored",
+   "why": "the gateway's self-update / restart flow is operated on the gateway, never from Atrium — a bridge that could restart its own gateway mid-turn is a hazard, not a feature"
+  },
+  "AgentsListParams": {
+   "status": "handled",
+   "by": "server.ts:2075 sends `{}` on a short-lived operator connection — the agent-discovery call the whole roster cache is built on"
+  },
+  "AgentsListResult": {
+   "fields": {
+    "agents": {
+     "status": "handled",
+     "by": "server.ts:2078-2084 normalizes every entry through normalizeOpenClawAgent; `rawCount` (the length BEFORE normalization) lets the Convex poller tell a genuinely empty gateway from shape drift and fail closed"
+    },
+    "defaultId": {
+     "status": "handled",
+     "by": "server.ts:2086-2088: the LIST-level default marker, read because 6.1 stopped carrying a per-agent flag"
+    },
+    "mainKey": {
+     "status": "ignored",
+     "why": "the gateway's main session key; Atrium builds its own session keys (buildSessionKey) and must not inherit a second naming authority"
+    },
+    "scope": {
+     "status": "ignored",
+     "why": "per-sender vs global session scoping is a gateway-side channel concern; Atrium always addresses sessions by explicit key"
+    }
+   }
+  },
+  "AgentSummary": {
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "server.ts:2017 — the agent identity every binding, grant and session key is keyed on (falls back to `agentId` for older gateways)"
+    },
+    "name": {
+     "status": "handled",
+     "by": "server.ts:2023-2026 feeds displayName, after `identityName` and before `identity.name`"
+    },
+    "identity": {
+     "status": "handled",
+     "by": "server.ts:2019-2029 reads `identity.name` and `identity.emoji` for the sidebar label and avatar chip; `theme`, `avatar` and `avatarUrl` inside it are unread — Atrium renders the emoji, never a gateway-hosted image"
+    },
+    "model": {
+     "status": "handled",
+     "by": "server.ts:2030-2034 accepts both a bare string and `{primary}`; `fallbacks` is unread because the chip states what WILL run, not the escalation chain"
+    },
+    "workspace": {
+     "status": "ignored",
+     "why": "the agent's host filesystem path — a server detail with no business crossing to Convex, the same reason AgentsFileEntry.path is dropped"
+    },
+    "workspaceGit": {
+     "status": "ignored",
+     "why": "whether the workspace is a git checkout: an operator fact, invisible in every Atrium surface"
+    },
+    "agentRuntime": {
+     "status": "ignored",
+     "why": "read from the SESSION row instead (parseSessionMeta, server.ts:678), because the header chip must show what this session runs, not the agent default"
+    },
+    "thinkingLevels": {
+     "status": "ignored",
+     "why": "read from the SESSION row (server.ts:685-696): the knob must offer the levels of the session, and the agent default alone cannot express an override"
+    },
+    "thinkingOptions": {
+     "status": "ignored",
+     "why": "the richer option objects behind thinkingLevels; the session row already yields `{id,label}`, which is all the knob renders"
+    },
+    "thinkingDefault": {
+     "status": "ignored",
+     "why": "read from the SESSION row (server.ts:699) so the chip's \"inherited\" badge is computed against the same row as the effective level"
+    }
+   }
+  },
+  "ModelChoice": {
+   "fields": {
+    "id": {
+     "status": "handled",
+     "by": "dedupeModels (server.ts:779) — the identifier `sessions.patch {model}` sends"
+    },
+    "name": {
+     "status": "handled",
+     "by": "dedupeModels (server.ts:782-784) becomes the option label, falling back to the id"
+    },
+    "available": {
+     "status": "handled",
+     "by": "dedupeModels (server.ts) SKIPS an entry whose `available` is explicitly false, so the knob row never offers a model whose every entry says it cannot run. UNION semantics across duplicate ids, which is deliberate: one id can arrive from two providers, and a model available through either one is offerable. `=== false` and not `!== true` because the field is optional upstream — a guard must not cost a working choice. Three tests pin it: the unavailable entry, the omitted field, and the duplicate-id interaction in both orders"
+    },
+    "provider": {
+     "status": "ignored",
+     "why": "the picker groups nothing by provider; the session row carries `modelProvider` for the header chip, which is where provenance is shown"
+    },
+    "alias": {
+     "status": "ignored",
+     "why": "a convenience name for CLI users; two labels for one model would make the picker ambiguous"
+    },
+    "contextWindow": {
+     "status": "ignored",
+     "why": "the context gauge reads the SESSION row's token counts, which reflect the model actually in use including a per-session override"
+    },
+    "reasoning": {
+     "status": "ignored",
+     "why": "whether the model reasons is expressed to the user through the thinking knob's availability, which comes from the session row"
+    }
+   }
+  },
+  "ModelsListParams": {
+   "fields": {
+    "view": {
+     "status": "ignored",
+     "why": "omitted on purpose: server.ts:795 sends `{}` and takes the gateway's default view. `all` would list models the gateway is not configured for, which is exactly the kind of unusable option the picker must not show"
+    }
+   }
+  },
+  "ModelsListResult": {
+   "fields": {
+    "models": {
+     "status": "handled",
+     "by": "server.ts:796-797 hands the array to dedupeModels, which becomes `availableModels` on the session meta the knob row renders"
+    }
+   }
+  },
+  "AgentsFileEntry": {
+   "fields": {
+    "name": {
+     "status": "handled",
+     "by": "fileMeta (conf.ts:158) — the file identity the editor and every op key on"
+    },
+    "missing": {
+     "status": "handled",
+     "by": "fileMeta (conf.ts:159): a missing file is EDITABLE, so the editor opens it empty and a save creates it"
+    },
+    "size": {
+     "status": "handled",
+     "by": "fileMeta (conf.ts:160) — shown in the file list"
+    },
+    "updatedAtMs": {
+     "status": "handled",
+     "by": "fileMeta (conf.ts:161) AND the compare-and-set key: conf.ts:225 refuses a write whose `baseUpdatedAtMs` no longer matches, returning 409 CONFLICT"
+    },
+    "content": {
+     "status": "handled",
+     "by": "conf.ts returns it for the `get` op and captures the pre-write body for the `set` op's `before`. The field is OPTIONAL upstream, and an existing file that carries none is now REFUSED (502 UNREADABLE) on both the read and the write rather than presented as empty: the editor used to open a blank creatable document over real content, and saving it destroyed the file under a passing compare-and-set. A MISSING file still opens empty — that is the create path"
+    },
+    "path": {
+     "status": "ignored",
+     "why": "DELIBERATELY dropped: fileMeta never projects it, on get, list or set. It is a gateway filesystem path and has no business reaching Convex or a browser"
+    }
+   }
+  },
+  "AgentsFilesListParams": {
+   "fields": {
+    "agentId": {
+     "status": "handled",
+     "by": "conf.ts:175 sends `{agentId}`; the caller's entitlement to that agent is checked before the RPC"
+    }
+   }
+  },
+  "AgentsFilesListResult": {
+   "fields": {
+    "files": {
+     "status": "handled",
+     "by": "conf.ts:176-192 projects EVERY entry through fileMeta"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "echo of what we sent; trusting the echo over our own request would let a gateway answer for a different agent"
+    },
+    "workspace": {
+     "status": "ignored",
+     "why": "the agent's host path — same exclusion as AgentsFileEntry.path"
+    }
+   }
+  },
+  "AgentsFilesGetParams": {
+   "fields": {
+    "agentId": {
+     "status": "handled",
+     "by": "fileGet (conf.ts:146) sends `{agentId, name}`"
+    },
+    "name": {
+     "status": "handled",
+     "by": "fileGet (conf.ts:146) sends `{agentId, name}`"
+    }
+   }
+  },
+  "AgentsFilesGetResult": {
+   "fields": {
+    "file": {
+     "status": "handled",
+     "by": "fileGet (conf.ts:147-151) reads `payload.file` defensively and returns `{}` for any other shape"
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "echo of the request — see AgentsFilesListResult.agentId"
+    },
+    "workspace": {
+     "status": "ignored",
+     "why": "the agent's host path — same exclusion as AgentsFileEntry.path"
+    }
+   }
+  },
+  "AgentsFilesSetParams": {
+   "fields": {
+    "agentId": {
+     "status": "handled",
+     "by": "conf.ts:232 sends `{agentId, name, content}` after the CAS check passes"
+    },
+    "name": {
+     "status": "handled",
+     "by": "conf.ts:232 sends `{agentId, name, content}` after the CAS check passes"
+    },
+    "content": {
+     "status": "handled",
+     "by": "conf.ts:232 — the body the editor saved"
+    }
+   }
+  },
+  "AgentsFilesSetResult": {
+   "status": "ignored",
+   "why": "intentionally unread: conf.ts RE-READS the file with agents.files.get after the write, so the reported meta AND content are the gateway's confirmed post-write state rather than an echo of the request. When the re-read carries no content the response says `confirmed.content: null` and the revision row is marked `afterVerified: false` — unconfirmable is recorded as such, never dressed up as confirmed"
+  },
+  "AgentsCreateParams": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "AgentsCreateResult": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "AgentsUpdateParams": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "AgentsUpdateResult": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "AgentsDeleteParams": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "AgentsDeleteResult": {
+   "status": "ignored",
+   "why": "agent creation/update/deletion is done on the gateway; Atrium DISCOVERS agents (agents.list) and gates them by enablement, it never mutates the roster"
+  },
+  "SkillsStatusParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsBinsParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsBinsResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsUploadBeginParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsUploadChunkParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsUploadCommitParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsInstallParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsUpdateParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSearchParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSearchResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsDetailParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSecurityVerdictsParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsDetailResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSecurityVerdictsResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSkillCardParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsSkillCardResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalsListParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalsListResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalInspectParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalInspectResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalCreateParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalUpdateParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalReviseParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalRequestRevisionParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalRequestRevisionResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalActionParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalApplyResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsProposalRecordResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorStatusParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorStatusResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorActionParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorActionResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "ToolsCatalogParams": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsEffectiveParams": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsInvokeParams": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolCatalogProfile": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolCatalogEntry": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolCatalogGroup": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsCatalogResult": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsEffectiveEntry": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsEffectiveGroup": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsEffectiveNotice": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsEffectiveResult": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsInvokeError": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
+  },
+  "ToolsInvokeResult": {
+   "status": "ignored",
+   "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
   }
+ }
 }

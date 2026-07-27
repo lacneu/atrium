@@ -70,8 +70,8 @@ describe("performHermesAgentFilesOp (managed-files mapping)", () => {
       })),
     readAgentFile: async (name: string) =>
       name in files
-        ? { content: files[name]!.content, missing: false }
-        : { content: "", missing: true },
+        ? { content: files[name]!.content, missing: false, decoded: true }
+        : { content: "", missing: true, decoded: false },
     writeAgentFile: async (name: string, content: string) => {
       files[name] = { content, mtime: (files[name]?.mtime ?? 0) + 5_000 };
     },
@@ -98,6 +98,131 @@ describe("performHermesAgentFilesOp (managed-files mapping)", () => {
     expect((g.body as { file: { content: string } }).file.content).toBe("soul");
     const miss = await performHermesAgentFilesOp(cfg, regFor(f), { op: "get", agentId: "a", name: "AGENTS.md" }, NAMES);
     expect((miss.body as { file: { missing: boolean } }).file.missing).toBe(true);
+  });
+
+  it("get REFUSES to present an unreadable existing file as empty", async () => {
+    // An undecodable 200 used to arrive as `{content: "", missing: false}`, so the editor
+    // opened a blank document over a file that exists — and saving it, with the current
+    // mtime satisfying the compare-and-set, overwrote real content with nothing.
+    const f = mkFetcher({ "SOUL.md": { content: "soul", mtime: 111 } });
+    const unreadable = {
+      ...f,
+      readAgentFile: async () => ({ content: "", missing: false, decoded: false }),
+    };
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(unreadable), { op: "get", agentId: "a", name: "SOUL.md" }, NAMES,
+    );
+    expect(r.status).toBe(502);
+    expect(r.body).toMatchObject({ ok: false, error: { code: "UNREADABLE" } });
+    // A genuinely MISSING file is still the editable create path, not an error.
+    const missing = await performHermesAgentFilesOp(
+      cfg, regFor(f), { op: "get", agentId: "a", name: "AGENTS.md" }, NAMES,
+    );
+    expect(missing.status).toBe(200);
+  });
+
+  it("set REFUSES to overwrite an existing file it could not read", async () => {
+    // The `get` refusal alone was not enough: an admin action can call the write directly
+    // with an `updatedAtMs` obtained from `list`, never having read the file. The CAS
+    // would pass on a matching mtime and destroy real content, reporting `before: ""`.
+    const f = mkFetcher({ "SOUL.md": { content: "soul", mtime: 111_000 } });
+    let wrote = false;
+    const unreadable = {
+      ...f,
+      readAgentFile: async () => ({ content: "", missing: false, decoded: false }),
+      writeAgentFile: async () => {
+        wrote = true;
+      },
+    };
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(unreadable),
+      { op: "set", agentId: "a", name: "SOUL.md", content: "v2", baseUpdatedAtMs: 111_000 },
+      NAMES,
+    );
+    expect(r.status).toBe(502);
+    expect(wrote, "it must refuse BEFORE writing").toBe(false);
+  });
+
+  it("set still CREATES a file that does not exist yet", async () => {
+    // The refusal must not break the create path: a missing file has nothing to read.
+    const f = mkFetcher({});
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(f),
+      { op: "set", agentId: "a", name: "AGENTS.md", content: "v1", baseUpdatedAtMs: null },
+      NAMES,
+    );
+    expect(r.status).toBe(200);
+  });
+
+  it("set CONFIRMS the write from the filesystem, in the same shape as OpenClaw", async () =>{
+    // Convex decides whether a write landed from `confirmed.content` and `file.missing`
+    // (writeLanded). This path used to answer `missing: false` unconditionally and send
+    // no confirmation at all, so an acknowledged write that never landed read as a
+    // success — the editor showed "saved" and an approved curation purged its proposal.
+    // A guarantee that holds for one provider and not the other is not a guarantee.
+    const f = mkFetcher({ "SOUL.md": { content: "soul", mtime: 111_000 } });
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(f),
+      { op: "set", agentId: "a", name: "SOUL.md", content: "v2", baseUpdatedAtMs: 111_000 },
+      NAMES,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      ok: true,
+      before: { content: "soul" },
+      confirmed: { content: "v2" },
+      file: { name: "SOUL.md", missing: false },
+    });
+  });
+
+  it("set reports missing when the write did NOT land", async () => {
+    // A writer that silently drops the write: the response must SAY the file is absent
+    // rather than assert success.
+    const f = mkFetcher({});
+    const swallowed = { ...f, writeAgentFile: async () => {} };
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(swallowed),
+      { op: "set", agentId: "a", name: "AGENTS.md", content: "v1", baseUpdatedAtMs: null },
+      NAMES,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      file: { missing: true },
+      confirmed: { content: null },
+    });
+  });
+
+  it("an UNDECODABLE read-back is reported as unverifiable, not as an empty match", async () => {
+    // The Hermes read turns a malformed 200 into `content: ""`. That is
+    // indistinguishable from a genuinely empty file, so a write of "" used to confirm
+    // itself against a response that carried nothing at all — and Convex would mark the
+    // save (or an approved curation) as landed. `decoded: false` must yield NO
+    // confirmation: unverifiable, which is not the same as a match.
+    const f = mkFetcher({ "AGENTS.md": { content: "", mtime: 1 } });
+    // The PRE-write read decodes (else the write is refused outright, which is a
+    // different guard); only the POST-write read-back is undecodable.
+    let reads = 0;
+    const undecodable = {
+      ...f,
+      readAgentFile: async () => {
+        reads += 1;
+        return reads === 1
+          ? { content: "", missing: false, decoded: true }
+          : { content: "", missing: false, decoded: false };
+      },
+      listFilesStrict: async () => [
+        { name: "AGENTS.md", path: "/opt/data/AGENTS.md", mtime: 1, size: 0 },
+      ],
+    };
+    const r = await performHermesAgentFilesOp(
+      cfg, regFor(undecodable),
+      { op: "set", agentId: "a", name: "AGENTS.md", content: "", baseUpdatedAtMs: 1 },
+      NAMES,
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as { confirmed: { content: string | null } }).confirmed.content).toBe(
+      null,
+    );
   });
 
   it("set enforces compare-and-set on mtime (stale base -> 409)", async () => {

@@ -117,20 +117,43 @@ export class HermesFilesFetcher implements MediaFetcher {
     return this.rootPath;
   }
 
-  /** Read a root-level agent file: content (decoded) or missing. */
+  /** Read a root-level agent file: content (decoded) or missing.
+   *
+   *  `decoded` says whether the response actually CARRIED a parsable data URL. Without
+   *  it, a malformed 200 and a genuinely empty file were the same `content: ""` — so an
+   *  empty write "confirmed" itself against a response that contained nothing, and the
+   *  post-write check that reads this had no way to tell. Callers that make a decision
+   *  on the content must consult it; callers that only display it need not. */
   async readAgentFile(
     name: string,
-  ): Promise<{ content: string; missing: boolean }> {
+  ): Promise<{ content: string; missing: boolean; decoded: boolean }> {
     const root = await this.agentFilesRoot();
     const res = await this.authedGet(
       `/api/files/read?path=${encodeURIComponent(`${root}/${name}`)}`,
     );
-    if (res.status === 404) return { content: "", missing: true };
+    if (res.status === 404) return { content: "", missing: true, decoded: false };
     if (!res.ok) throw new Error(`files read -> HTTP ${res.status}`);
     const d = (await res.json()) as { data_url?: string };
     const m = /^data:[^;]*;base64,(.*)$/s.exec(d.data_url ?? "");
-    const content = m?.[1] ? Buffer.from(m[1], "base64").toString("utf8") : "";
-    return { content, missing: false };
+    if (m === null) return { content: "", missing: false, decoded: false };
+    // The PAYLOAD is validated, not just the prefix. `Buffer.from` accepts invalid
+    // base64 silently — `"%%%%"` decodes to an empty string — so matching the regex was
+    // enough to declare a read "decoded", and an empty write then confirmed itself
+    // against garbage. An EMPTY payload stays valid: that is a genuinely empty file.
+    const payload = (m[1] ?? "").replace(/\s+/g, "");
+    const wellFormed =
+      payload.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(payload);
+    if (!wellFormed) return { content: "", missing: false, decoded: false };
+    const bytes = Buffer.from(payload, "base64");
+    const text = bytes.toString("utf8");
+    // A LOSSY decode is not a read either. `toString("utf8")` replaces invalid byte
+    // sequences with U+FFFD without complaining, so bytes that are not text came back
+    // as a plausible string — and a post-write comparison against that string can
+    // "match" content the file does not hold. Round-tripping is the cheap proof.
+    if (!Buffer.from(text, "utf8").equals(bytes)) {
+      return { content: "", missing: false, decoded: false };
+    }
+    return { content: text, missing: false, decoded: true };
   }
 
   /** Write (create/overwrite) a root-level agent file. `retry` bounds the

@@ -34,8 +34,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { getActor, requireAdmin } from "./lib/access";
 import { resolveCuratorTarget } from "./agents";
 import {
+  afterStateFromSetResponse,
   postBridge,
   requireOkStatus,
+  writeLanded,
 } from "./agentFiles";
 import {
   clampCurationBudget,
@@ -516,20 +518,59 @@ export async function applyCurationProposal(
       });
       return { ok: false, reason: "bridge_error" };
     }
-    const before = (data as { before?: { content?: unknown } })?.before?.content;
-    // The durable before/after lives in agentFileRevisions (rollback source).
-    await ctx.runMutation(internal.agentFiles.recordFileRevision, {
-      instanceName: row.instanceName,
-      agentId: row.agentId,
-      name: row.name,
-      before: typeof before === "string" ? before : row.beforeContent ?? "",
-      after: proposed,
-    });
-    await ctx.runMutation(internal.agentFileCuration.markResolved, {
-      curationId,
-      status: "applied",
-    });
-    return { ok: true };
+    // Everything past the acknowledgement runs inside a claim. An unexpected throw
+    // here — a shape the bridge response was not supposed to have, a mutation that
+    // fails — used to leave the row in `applying`: not retryable, not rejectable, and
+    // invisible to the admin. One such throw was real (an explicit `confirmed: null`
+    // was dereferenced). The claim is released on ANY failure, so a defect costs a
+    // retry rather than the proposal.
+    try {
+      const before = (data as { before?: { content?: unknown } })?.before?.content;
+      // The durable before/after lives in agentFileRevisions (rollback source). The
+      // after-state comes from the SAME derivation the editor save uses: an approved
+      // curation used to file `after: proposed` unconditionally, so a gateway that
+      // acknowledged without applying left a revision asserting the proposal had landed.
+      const afterState = afterStateFromSetResponse(data, proposed);
+      await ctx.runMutation(internal.agentFiles.recordFileRevision, {
+        instanceName: row.instanceName,
+        agentId: row.agentId,
+        name: row.name,
+        before: typeof before === "string" ? before : row.beforeContent ?? "",
+        ...afterState.revision,
+      });
+      // A CONFIRMED read-back that disagrees with the proposal means the write did not
+      // land, whatever the acknowledgement said. Recording that faithfully in the
+      // revision and then declaring the curation "applied" would have been two
+      // contradictory statements in the same transaction — and the "applied" one purges
+      // `proposedContent`, so the admin loses the proposal to a write that never happened.
+      // The claim is released instead: the row returns to `proposed` with its content
+      // intact and the admin can retry or reject. Only a CONFIRMED disagreement counts;
+      // an unverifiable read-back is not evidence of failure.
+      if (!writeLanded(afterState, proposed)) {
+        await ctx.runMutation(internal.agentFileCuration.releaseApplyClaim, {
+          curationId,
+        });
+        console.error(
+          "[curation] gateway acknowledged the write but the read-back differs:",
+          `${row.instanceName}/${row.agentId}/${row.name}`,
+        );
+        return { ok: false, reason: "bridge_error" };
+      }
+      await ctx.runMutation(internal.agentFileCuration.markResolved, {
+        curationId,
+        status: "applied",
+      });
+      return { ok: true };
+    } catch (e) {
+      await ctx.runMutation(internal.agentFileCuration.releaseApplyClaim, {
+        curationId,
+      });
+      console.error(
+        "[curation] apply post-write failure:",
+        (e as Error)?.message ?? e,
+      );
+      return { ok: false, reason: "bridge_error" };
+    }
   }
 }
 

@@ -848,7 +848,18 @@ export default defineSchema({
     agentId: v.string(), // -> agents.agentId (on instanceName)
     name: v.string(), // workspace file name, e.g. "AGENTS.md"
     before: v.string(), // full content as read by the bridge BEFORE the write
-    after: v.string(), // full content written
+    after: v.string(), // full content AFTER the write
+    // Whether `after` is the gateway's CONFIRMED re-read or merely what we asked for.
+    // Absent on rows written before the bridge reported a confirmation. A revision
+    // that cannot say which of the two it holds is a claim about our intent dressed
+    // as a claim about the file.
+    afterVerified: v.optional(v.boolean()),
+    // The gateway's post-write read said the file was STILL ABSENT. A distinct fact from
+    // "unverified": recording the requested content with only `afterVerified: false`
+    // conflated a read we could not check with a read that PROVED the write had not
+    // landed, and an audit that cannot tell those apart cannot be used to answer
+    // "did this change happen".
+    afterMissing: v.optional(v.boolean()),
     byUserId: v.id("users"), // the REAL operator (impersonation-aware audit)
     at: v.number(),
   }).index("by_agent_file", ["instanceName", "agentId", "name"]),

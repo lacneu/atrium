@@ -775,9 +775,19 @@ export function dedupeModels(list: unknown): { id: string; label: string }[] {
   const seen = new Set<string>();
   if (Array.isArray(list)) {
     for (const m of list) {
-      const o = m as { id?: unknown; name?: unknown };
+      const o = m as { id?: unknown; name?: unknown; available?: unknown };
       const id = typeof o?.id === "string" ? o.id : "";
       if (!id || seen.has(id)) continue;
+      // A model the gateway declares UNAVAILABLE is not offered.
+      //
+      // `available` was dropped here, so the knob row rendered every returned model
+      // and picking an unavailable one patched the session to something that cannot
+      // run — the person found out from a failed turn instead of an absent option.
+      //
+      // `=== false` and not `!== true` on purpose: the field is OPTIONAL upstream, so
+      // a gateway that omits it (or an older one that never had it) must keep offering
+      // its models. A guard must never cost a choice that would have worked.
+      if (o?.available === false) continue;
       seen.add(id);
       const label =
         typeof o?.name === "string" && o.name.length > 0 ? o.name : id;

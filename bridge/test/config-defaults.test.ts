@@ -169,6 +169,89 @@ describe("performConfigDefaultsOp", () => {
     });
   });
 
+  it("REFUSES to patch when config.get carries no base hash", async () => {
+    // `baseHash` is OPTIONAL in the upstream schema, so a patch sent without it is
+    // applied UNCONDITIONALLY — the compare-and-set guard silently becomes no guard on
+    // the one call that can overwrite an operator's config file. Found by classifying
+    // ConfigPatchParams against the vendored schema (W10).
+    const { conn, calls } = mockGateway({
+      gets: [{ exists: true, config: { agents: { defaults: {} } } }], // no `hash`
+    });
+    await expect(
+      performConfigDefaultsOp(conn, {
+        op: "set",
+        instanceName: null,
+        thinkingDefault: "high",
+        fastModeDefault: null,
+      }),
+    ).rejects.toThrow(/no base hash/i);
+    // And it stopped BEFORE writing: the refusal must not be a post-hoc complaint.
+    expect(calls.map((c) => c.method)).toEqual(["config.get"]);
+  });
+
+  it("patches WITHOUT a hash when the gateway says the config file does not exist", async () => {
+    // The deployed gateway's `requireConfigBaseHash` returns early when the snapshot does
+    // not exist: there is no concurrent edit to lose, so it accepts an unguarded patch.
+    // Refusing there would cost a first-run write that would have succeeded — the same
+    // P6 invariant as everywhere else, on an operator surface.
+    const { conn, calls } = mockGateway({
+      gets: [{ exists: false, config: { agents: { defaults: {} } } }],
+    });
+    await performConfigDefaultsOp(conn, {
+      op: "set",
+      instanceName: null,
+      thinkingDefault: "high",
+      fastModeDefault: null,
+    });
+    expect(calls.map((c) => c.method)).toEqual([
+      "config.get",
+      "config.patch",
+      "config.get",
+    ]);
+    expect(calls[1]!.params).toEqual({
+      raw: JSON.stringify({ agents: { defaults: { thinkingDefault: "high" } } }),
+    });
+  });
+
+  it("an EMPTY hash counts as no hash (the schema says NonEmptyString)", async () => {
+    // `typeof === "string"` accepted "" and sent it, which the gateway rejects as an
+    // invalid request — a malformed read turned into a confusing protocol error instead
+    // of the clear refusal it should be.
+    const { conn, calls } = mockGateway({
+      gets: [{ exists: true, config: { agents: { defaults: {} } }, hash: "" }],
+    });
+    await expect(
+      performConfigDefaultsOp(conn, {
+        op: "set",
+        instanceName: null,
+        thinkingDefault: "high",
+        fastModeDefault: null,
+      }),
+    ).rejects.toThrow(/no base hash/i);
+    expect(calls.map((c) => c.method)).toEqual(["config.get"]);
+  });
+
+  it("a SECOND get without a hash is still a refusal, not a 'conflict persisted'", async () => {
+    // The retry path relabels anything matching /base ?hash/i as an OCC conflict, and
+    // the class check originally guarded only the first attempt. So: a real conflict on
+    // the first patch, then a second `config.get` carrying no hash — the refusal must
+    // survive as a refusal, because nothing conflicted the second time round.
+    const { conn, calls } = mockGateway({
+      gets: [PAYLOAD, { exists: true, config: { agents: { defaults: {} } } }], // no hash
+      patchErrors: ["gateway: base hash mismatch"],
+    });
+    await expect(
+      performConfigDefaultsOp(conn, {
+        op: "set",
+        instanceName: null,
+        thinkingDefault: "high",
+        fastModeDefault: null,
+      }),
+    ).rejects.toThrow(/no base hash/i);
+    // One patch attempted (and rejected), then the retry declined to write at all.
+    expect(calls.filter((c) => c.method === "config.patch").length).toBe(1);
+  });
+
   it("set with both fields patches both, response echoes the CONFIRMED state", async () => {
     const { conn, calls } = mockGateway({ gets: [PAYLOAD] });
     const res = await performConfigDefaultsOp(conn, {

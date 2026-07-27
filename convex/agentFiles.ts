@@ -258,6 +258,83 @@ export const checkChatOwnership = internalQuery({
 });
 
 /**
+ * Derive a revision's after-state from the bridge's `/agent-files` set response.
+ *
+ * Shared because there are TWO writers of the same revision row — the editor save
+ * here and the curation approval in agentFileCuration.ts — and the first version of
+ * this contract was applied to one of them only, so an approved curation still filed a
+ * revision claiming the proposed content had landed. A rule that must hold at every
+ * call site does not belong at any of them.
+ *
+ * `verified` distinguishes three real situations that must not be conflated: the
+ * bridge confirmed a re-read (use it), the bridge is older and sends no confirmation
+ * at all, or the re-read carried no content — the upstream field is optional and a
+ * still-missing file reads that way, which is exactly the case where the write may not
+ * have landed. The last two store the requested content because nothing truer exists,
+ * and the row SAYS the after-state is unverified.
+ */
+export function afterStateFromSetResponse(
+  data: unknown,
+  requested: string,
+): {
+  /** EXACTLY the revision-row fields, so a call site can spread this and nothing else
+   *  — the landing evidence below is not a column, and spreading it into the mutation
+   *  made the validator reject the write. */
+  revision: { after: string; afterVerified: boolean; afterMissing: boolean };
+} {
+  const d = data as
+    | { confirmed?: { content?: unknown }; file?: { missing?: unknown } }
+    | null;
+  const confirmed = d?.confirmed;
+  // `typeof confirmed?.content === "string"` and nothing weaker. `confirmed !== undefined`
+  // was true for an explicit `null`, and the very next expression dereferenced it — the
+  // response body arrives as `unknown` from an HTTP call, so that TypeError landed AFTER
+  // the curation had claimed the row and BEFORE it could release the claim, leaving the
+  // proposal stuck in `applying`: neither retryable nor rejectable.
+  const verified =
+    typeof confirmed === "object" &&
+    confirmed !== null &&
+    typeof confirmed.content === "string";
+  return {
+    revision: {
+      after: verified ? (confirmed!.content as string) : requested,
+      afterVerified: verified,
+      // The bridge's post-write re-read said the file IS STILL MISSING. That is not an
+      // unverifiable read — it is a positive statement that the write did not land, and
+      // the bridge knew it all along (`fileMeta(after).missing`) while this decision was
+      // being made without it. It rides INTO the revision row, because an audit trail
+      // that records the requested content and only "unverified" cannot distinguish
+      // "we could not check" from "the gateway says it is not there".
+      afterMissing: d?.file?.missing === true,
+    },
+  };
+}
+
+/**
+ * Did the write LAND? Read against the after-state a set response yielded.
+ *
+ * A confirmed read-back that disagrees with what we asked for means the write did not
+ * happen, whatever the acknowledgement said — and declaring success anyway costs the
+ * proposal, because the curation's "applied" transition purges its content copies.
+ *
+ * Only a CONFIRMED disagreement counts. An unverifiable read-back is not evidence of
+ * failure, and treating it as one would fail writes that did land against a gateway
+ * that simply does not echo content.
+ */
+export function writeLanded(
+  afterState: {
+    revision: { after: string; afterVerified: boolean; afterMissing?: boolean };
+  },
+  requested: string,
+): boolean {
+  // A file the gateway still reports as MISSING after the write did not get written,
+  // whatever else the response says — checked first, because this case also arrives
+  // with no content to compare and would otherwise pass as "unverifiable".
+  if (afterState.revision.afterMissing === true) return false;
+  return !afterState.revision.afterVerified || afterState.revision.after === requested;
+}
+
+/**
  * Record a successful agent-file write: FULL before/after revision row
  * (amendment A4 — rollback source) + the impersonation-aware audit entry, in
  * one transaction. `byUserId` is the REAL operator.
@@ -269,6 +346,8 @@ export const recordFileRevision = internalMutation({
     name: v.string(),
     before: v.string(),
     after: v.string(),
+    afterVerified: v.optional(v.boolean()),
+    afterMissing: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<null> => {
     const actor = await getActor(ctx);
@@ -278,6 +357,8 @@ export const recordFileRevision = internalMutation({
       name: args.name,
       before: args.before,
       after: args.after,
+      ...(args.afterVerified === undefined ? {} : { afterVerified: args.afterVerified }),
+      ...(args.afterMissing === undefined ? {} : { afterMissing: args.afterMissing }),
       byUserId: actor.realUserId,
       at: Date.now(),
     });
@@ -475,13 +556,32 @@ export const setAgentFile = action({
     // holds the FULL before/after pair (A4). Defensive: tolerate a missing echo.
     const before = (data as { before?: { content?: unknown } })?.before
       ?.content;
+    // The after-state is the bridge's CONFIRMED re-read, not the body we sent.
+    // Recording what we asked for made the revision a statement about our intent
+    // dressed as a statement about the file: a gateway that acknowledged the write
+    // without applying it left a revision asserting content that never existed.
+    //
+    // See afterStateFromSetResponse: the after-state is the gateway's re-read when it
+    // confirmed one, and the row records WHICH of the two it holds.
+    const afterState = afterStateFromSetResponse(data, content);
     await ctx.runMutation(internal.agentFiles.recordFileRevision, {
       instanceName,
       agentId,
       name,
       before: typeof before === "string" ? before : "",
-      after: content,
+      ...afterState.revision,
     });
+    // The revision is recorded FIRST — it is the truth about the file either way — and
+    // only then is the outcome reported. Both writers of that row hold the same
+    // evidence, and for a while only the curation path acted on it: the editor filed a
+    // faithful revision and still answered "saved", so the person saw a success toast
+    // and then watched the old content reload.
+    if (!writeLanded(afterState, content)) {
+      throw new Error(
+        "the gateway acknowledged the write but its read-back does not match — " +
+          "the file was not saved",
+      );
+    }
     return null;
   },
 });

@@ -167,6 +167,58 @@ describe("dedupeModels", () => {
     ]);
   });
 
+  it("does not offer a model the gateway declares UNAVAILABLE", () => {
+    // Found by classifying `ModelChoice` against the vendored schema (W10): the
+    // gateway says whether a model can actually be used and this function dropped
+    // the field, so KnobRow offered every entry. Selecting one patched the session to
+    // a model that cannot run, and the person learnt it from the failed turn.
+    expect(
+      dedupeModels([
+        { id: "runs", name: "Runs", available: true },
+        { id: "retired", name: "Retired", available: false },
+      ]),
+    ).toEqual([{ id: "runs", label: "Runs" }]);
+  });
+
+  it("KEEPS models when the gateway omits availability", () => {
+    // `available` is OPTIONAL upstream. Filtering on `!== true` would empty the
+    // picker against any gateway that does not send it — a guard must never cost a
+    // choice that would have worked.
+    expect(dedupeModels([{ id: "a", name: "A" }, { id: "b", available: true }])).toEqual([
+      { id: "a", label: "A" },
+      { id: "b", label: "b" },
+    ]);
+  });
+
+  it("a duplicate id is offered when EITHER entry is available, in both orders", () => {
+    // The filter sits next to the dedup, so the two interact and the interaction is a
+    // decision, not an accident: one id legitimately arrives from two providers (the
+    // dedup test above is exactly that case), and a model reachable through either one
+    // is offerable. Union semantics — pinned in both orders so a reordering of the two
+    // checks cannot silently turn it into "first entry wins".
+    expect(
+      dedupeModels([
+        { id: "dual", name: "Dual", available: false },
+        { id: "dual", name: "Dual", available: true },
+      ]),
+      "unavailable first",
+    ).toEqual([{ id: "dual", label: "Dual" }]);
+    expect(
+      dedupeModels([
+        { id: "dual", name: "Dual", available: true },
+        { id: "dual", name: "Dual", available: false },
+      ]),
+      "available first",
+    ).toEqual([{ id: "dual", label: "Dual" }]);
+    // …and an id whose EVERY entry is unavailable is not offered at all.
+    expect(
+      dedupeModels([
+        { id: "gone", name: "Gone", available: false },
+        { id: "gone", name: "Gone", available: false },
+      ]),
+    ).toEqual([]);
+  });
+
   it("drops entries with no valid id, and handles non-arrays", () => {
     expect(dedupeModels([{ name: "no id" }, { id: 7 }, { id: "ok" }])).toEqual([
       { id: "ok", label: "ok" },

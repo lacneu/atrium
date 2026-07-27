@@ -8,7 +8,7 @@
 // UI run before deploy), but every DB transition around it is.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -299,5 +299,122 @@ describe("correlateCuration reply -> proposal (codex round 5)", () => {
     expect(settled).toBe(false);
     const row = await t.run((ctx) => ctx.db.get(id));
     expect(row?.status).toBe("dispatched"); // NOT settled by a foreign reply
+  });
+});
+
+describe("approveCuration — the bridge-touching apply (W10)", () => {
+  // This path was previously not exercised here at all, on the grounds that it needs a
+  // live admin UI run. It does not: the only external edge is `fetch`, and stubbing it
+  // is what lets the two decisions below be pinned rather than described.
+  function stubBridge(respond: () => { status: number; json?: unknown }) {
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://bridge.test";
+    process.env.BRIDGE_SHARED_SECRET = "s3cret";
+    vi.stubGlobal("fetch", async () => {
+      const r = respond();
+      return new Response(JSON.stringify(r.json ?? {}), { status: r.status });
+    });
+    return {
+      restore: () => {
+        vi.unstubAllGlobals();
+        if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+        else process.env.BRIDGE_URL = prevUrl;
+        if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+        else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+      },
+    };
+  }
+
+  const seedApplyable = async (t: ReturnType<typeof convexTest>) => {
+    const { userId, as } = await seedAdmin(t);
+    const id = await seedCuration(t, userId, {
+      status: "proposed",
+      proposedContent: "# Curated",
+    });
+    return { id, as };
+  };
+
+  test("a CONTRADICTED read-back releases the claim and KEEPS the proposal", async () => {
+    // "applied" purges `proposedContent`. Declaring success on a write the gateway's own
+    // read-back contradicts would therefore destroy the proposal for nothing.
+    const t = convexTest(schema, modules);
+    const { id, as } = await seedApplyable(t);
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: {
+        ok: true,
+        before: { content: "# Old" },
+        confirmed: { content: "# Old" },
+        file: { missing: false },
+      },
+    }));
+    try {
+      const res = await as.action(api.agentFileCuration.approveCuration, {
+        curationId: id,
+      });
+      expect(res.ok).toBe(false);
+      const row = await t.run((ctx) => ctx.db.get(id));
+      expect(row?.status).toBe("proposed");
+      expect(row?.proposedContent).toBe("# Curated"); // survived
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a HOSTILE response body does not wedge the row in applying", async () => {
+    // The response JSON arrives as `unknown`. An explicit `confirmed: null` used to pass
+    // the presence check and then be dereferenced — a TypeError raised after the claim
+    // and before it could be released, leaving the proposal in `applying`: not
+    // retryable, not rejectable, invisible to the admin.
+    //
+    // This pins the PARSING, which is where the defect was. The catch-all now wrapping
+    // the post-write section is deliberately NOT pinned by a red test: with the shapes
+    // hardened there is no response body that reaches it, and inventing a throw to
+    // exercise a catch would test the mock rather than the code. It stays as a net,
+    // because the cost of being wrong here is a proposal nobody can act on.
+    for (const json of [
+      { ok: true, confirmed: null, file: null, before: null },
+      { ok: true, confirmed: "nope", file: "nope" },
+      { ok: true },
+    ]) {
+      const t = convexTest(schema, modules);
+      const { id, as } = await seedApplyable(t);
+      const bridge = stubBridge(() => ({ status: 200, json }));
+      try {
+        await as.action(api.agentFileCuration.approveCuration, { curationId: id });
+        const row = await t.run((ctx) => ctx.db.get(id));
+        expect(row?.status, `${JSON.stringify(json)} left the row stuck`).not.toBe(
+          "applying",
+        );
+      } finally {
+        bridge.restore();
+      }
+    }
+  });
+
+  test("a CONFIRMED matching write applies and purges the proposal", async () => {
+    const t = convexTest(schema, modules);
+    const { id, as } = await seedApplyable(t);
+    const bridge = stubBridge(() => ({
+      status: 200,
+      json: {
+        ok: true,
+        before: { content: "# Old" },
+        confirmed: { content: "# Curated" },
+        file: { missing: false },
+      },
+    }));
+    try {
+      const res = await as.action(api.agentFileCuration.approveCuration, {
+        curationId: id,
+      });
+      expect(res.ok).toBe(true);
+      const row = await t.run((ctx) => ctx.db.get(id));
+      expect(row?.status).toBe("applied");
+      expect(row?.proposedContent).toBeUndefined(); // purged on success
+    } finally {
+      bridge.restore();
+    }
   });
 });

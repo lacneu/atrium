@@ -744,6 +744,26 @@ export async function performHermesAgentFilesOp(
   }
   if (body.op === "get") {
     const f = await fetcher.readAgentFile(body.name);
+    // A file we could not READ must not be offered as an empty one to edit.
+    //
+    // An undecodable 200 used to arrive here as `{content: "", missing: false}`, so the
+    // editor opened a blank document over a file that exists — and saving it, with the
+    // current mtime satisfying the compare-and-set, overwrote real content with nothing.
+    // The same contract the write path relies on has to hold on the read.
+    if (!f.missing && !f.decoded) {
+      return {
+        status: 502,
+        body: {
+          ok: false,
+          error: {
+            code: "UNREADABLE",
+            message:
+              "the file exists but its contents could not be read — refusing to " +
+              "present it as empty",
+          },
+        },
+      };
+    }
     return {
       status: 200,
       body: {
@@ -754,6 +774,28 @@ export async function performHermesAgentFilesOp(
   }
   // set — compare-and-set on the file's mtime (null base = create-only).
   const beforeRead = await fetcher.readAgentFile(body.name);
+  // A file that EXISTS but cannot be read is not safely writable either.
+  //
+  // The `get` refusal alone was not enough: an admin action can call the write directly
+  // with an `updatedAtMs` obtained from `list`, never having read the file. The
+  // compare-and-set would pass on a matching mtime, the real content would be
+  // overwritten, and the response would report `before: ""` — a revision claiming the
+  // file was empty before a write that destroyed it. A create (missing file) is
+  // untouched: there is nothing to read and nothing to lose.
+  if (!beforeRead.missing && !beforeRead.decoded) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: {
+          code: "UNREADABLE",
+          message:
+            "the file exists but its current contents could not be read — refusing " +
+            "to overwrite it blind",
+        },
+      },
+    };
+  }
   const currentMs = byName.get(body.name)?.mtime ?? null;
   const conflict = (): { status: number; body: unknown } => ({
     status: 409,
@@ -773,19 +815,36 @@ export async function performHermesAgentFilesOp(
     return conflict();
   }
   await fetcher.writeAgentFile(body.name, body.content);
+  // Report what the FILESYSTEM now holds, in the same vocabulary as the OpenClaw
+  // path — `confirmed.content` plus an honest `missing`.
+  //
+  // This used to answer `missing: false` unconditionally and send no confirmation at
+  // all, so an acknowledged write that never landed read as success on the Convex side
+  // (`writeLanded` has nothing to contradict) — the editor showed "saved" and an
+  // approved curation purged its proposal. A guarantee that holds for one provider and
+  // not the other is not a guarantee: every feature here is built for BOTH.
   const after = await fetcher.listFilesStrict(root);
   const afterEntry = after.find((e) => e.name === body.name);
+  const afterRead = await fetcher.readAgentFile(body.name);
   return {
     status: 200,
     body: {
       ok: true,
       file: {
         name: body.name,
-        missing: false,
+        missing: afterEntry === undefined || afterRead.missing,
         size: afterEntry?.size ?? null,
         updatedAtMs: afterEntry?.mtime ?? null,
       },
       before: { content: beforeRead.missing ? null : beforeRead.content },
+      // A confirmation ONLY when the read-back actually decoded. A malformed 200 used
+      // to arrive as `content: ""`, indistinguishable from an empty file — so a write of
+      // "" confirmed itself against a response that carried nothing. `null` here means
+      // unverifiable, which the Convex side treats as "not evidence of failure" rather
+      // than as a match.
+      confirmed: {
+        content: afterRead.missing || !afterRead.decoded ? null : afterRead.content,
+      },
     },
   };
 }

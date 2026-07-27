@@ -212,6 +212,24 @@ describe("performAgentFilesOp — get", () => {
     });
   });
 
+  it("REFUSES an existing file whose content it could not read", async () => {
+    // It used to answer 200 with `content: null`, which Convex turned into a
+    // missing/empty file — so the editor opened a blank CREATABLE document over real
+    // content, and the save destroyed it. Symmetric with the write-path refusal and with
+    // the Hermes reader's `decoded: false`.
+    const { conn } = mockGateway({
+      gets: [{ name: "AGENTS.md", missing: false, size: 12, updatedAtMs: 1111 }],
+    });
+    const res = await performAgentFilesOp(conn, {
+      op: "get",
+      instanceName: null,
+      agentId: "a",
+      name: "AGENTS.md",
+    });
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({ ok: false, error: { code: "UNREADABLE" } });
+  });
+
   it("reports a missing file with EMPTY content (editable, save = create — P3-2)", async () => {
     const { conn } = mockGateway({
       gets: [{ name: "HEARTBEAT.md", missing: true }],
@@ -259,11 +277,57 @@ describe("performAgentFilesOp — set (compare-and-set)", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       ok: true,
-      // post-write CONFIRMED meta, content intentionally omitted
+      // post-write CONFIRMED meta
       file: { name: "AGENTS.md", missing: false, size: 11, updatedAtMs: 2222 },
       // pre-write content, for the Convex-side audit/rollback record
       before: { content: "old content" },
+      // post-write content AS THE GATEWAY HOLDS IT
+      confirmed: { content: "new content" },
     });
+  });
+
+  it("reports the gateway's content, NOT the body we sent", async () => {
+    // The revision history used to record the REQUESTED content as the after-state, on
+    // the reasoning that the caller already knows what it wrote — which is exactly the
+    // assumption a confirmation exists to test. A gateway that acknowledges the write
+    // without applying it then produced a revision asserting a file content that never
+    // existed. Here the re-read disagrees with the request, and the response must say so.
+    const stale = { ...FILE, size: 11, updatedAtMs: 2222, content: "old content" };
+    const { conn } = mockGateway({ gets: [FILE, stale] });
+    const res = await performAgentFilesOp(conn, setBody);
+    expect(res.status).toBe(200);
+    expect(
+      (res.body as { confirmed: { content: string | null } }).confirmed.content,
+      "the confirmed content must come from the re-read, not from setBody",
+    ).toBe("old content");
+  });
+
+  it("REFUSES to overwrite an existing file whose content it could not read", async () => {
+    // Symmetric with the Hermes `decoded: false` refusal: the CAS would pass on a
+    // matching updatedAtMs, the real content would be overwritten, and `before` would be
+    // recorded as "" — a revision claiming the file was empty before a destroying write.
+    const opaque = { name: "AGENTS.md", missing: false, size: 12, updatedAtMs: 1111 };
+    const { conn, calls } = mockGateway({ gets: [opaque] });
+    const res = await performAgentFilesOp(conn, setBody);
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({ ok: false, error: { code: "UNREADABLE" } });
+    expect(
+      calls.map((c) => c.method),
+      "it must refuse BEFORE writing",
+    ).toEqual(["agents.files.get"]);
+  });
+
+  it("still CREATES a file that does not exist yet", async () => {
+    const missing = { name: "HEARTBEAT.md", missing: true };
+    const created = { name: "HEARTBEAT.md", missing: false, size: 2, updatedAtMs: 7, content: "hi" };
+    const { conn } = mockGateway({ gets: [missing, created] });
+    const res = await performAgentFilesOp(conn, {
+      ...setBody,
+      name: "HEARTBEAT.md",
+      content: "hi",
+      baseUpdatedAtMs: null,
+    });
+    expect(res.status).toBe(200);
   });
 
   it("CONFLICT: a moved updatedAtMs -> 409 and agents.files.set is NEVER sent", async () => {

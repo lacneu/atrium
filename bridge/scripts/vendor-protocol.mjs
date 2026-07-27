@@ -53,6 +53,13 @@ const FILES = [
   // `tasks.*` (2 calls): the background-task reconciliation the activity indicator
   // uses before expiring an engagement.
   "schema/tasks.ts",
+  // `config.get` / `config.patch` (4 call sites): the ONLY place the bridge writes
+  // gateway configuration. `config.patch` carries a `baseHash` OCC guard, so a
+  // contract move here silently turns a guarded write into an unguarded one.
+  "schema/config.ts",
+  // `agents.list`, `models.list` and the `agents.files.*` trio share one module.
+  // The Files agent's whole CRUD surface lives behind `agents.files.set`.
+  "schema/agents-models-skills.ts",
   // Contracts the modules above import transitively; they must ride along for the
   // flat layout to typecheck. Explicit rather than an automatic import walk, which
   // would silently widen the reviewed surface.

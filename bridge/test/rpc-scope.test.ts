@@ -106,13 +106,10 @@ const UNCOVERED_SNAPSHOT = [
   // (server-methods/sessions.ts) and no `SessionsGetParamsSchema` exists. Uncovered by
   // CONSTRUCTION, not by omission — the same category as `usage.status` and `tts.*`.
   "sessions.get",
-  "agents.files.get",
-  "agents.files.list",
-  "agents.files.set",
-  "agents.list",
-  "config.get",
-  "config.patch",
-  "models.list",
+  // `config.*`, `agents.*` and `models.list` left this list on 2026-07-27 with
+  // schema/config.ts and schema/agents-models-skills.ts (76 more schemas classified).
+  // The classification found a real one: `ModelChoice.available` is dropped by
+  // `dedupeModels`, so the picker offers models the gateway says cannot run.
   "talk.client.create",
   "talk.client.toolCall",
   // The three `tts.*` methods the /tts passthrough can reach. Upstream schematizes
@@ -324,6 +321,14 @@ describe("RPC scope derivation (W10)", () => {
       "cron.runs",
       "tasks.get",
       "tasks.list",
+      // The config / agents / models families, added 2026-07-27.
+      "config.get",
+      "config.patch",
+      "agents.list",
+      "agents.files.get",
+      "agents.files.list",
+      "agents.files.set",
+      "models.list",
     ];
     // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
     // a method whose schema happens to be vendored — `cron.status`, say — would leave

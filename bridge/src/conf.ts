@@ -137,6 +137,14 @@ export function parseAgentFilesBody(raw: string): AgentFilesBody | null {
   return null; // unknown op
 }
 
+/** True when the gateway returned a file row that EXISTS but carries no readable
+ *  content. The same state the Hermes reader calls `decoded: false`: presenting it as
+ *  empty makes the editor offer a blank document over real content, and a save then
+ *  destroys it under a passing compare-and-set. Both providers refuse instead. */
+function existsButUnreadable(file: Record<string, unknown>): boolean {
+  return file.missing !== true && typeof file.content !== "string";
+}
+
 /** Fetch one workspace file row (`payload.file`), defensively typed. */
 async function fileGet(
   conn: GatewayRequester,
@@ -192,6 +200,26 @@ export async function performAgentFilesOp(
 
   if (body.op === "get") {
     const file = await fileGet(conn, body.agentId, body.name);
+    // An existing file with no readable content is REFUSED, not reported as empty.
+    //
+    // It used to answer 200 with `content: null`, which Convex turned into a
+    // missing/empty file — so the editor opened a blank creatable document over real
+    // content. Same refusal as the write path and as the Hermes reader's
+    // `decoded: false`: a file we could not read is not a file we can safely show.
+    if (existsButUnreadable(file)) {
+      return {
+        status: 502,
+        body: {
+          ok: false,
+          error: {
+            code: "UNREADABLE",
+            message:
+              "the file exists but its contents could not be read — refusing to " +
+              "present it as empty",
+          },
+        },
+      };
+    }
     // A missing (not-yet-created) file is reported with EMPTY content, not an
     // absence the app would treat as malformed: the editor opens it empty and
     // a save creates it (red-team P3-2).
@@ -220,6 +248,25 @@ export async function performAgentFilesOp(
   // file), so no legitimate edit sends null — fail-closed. The pre-set content is
   // returned as `before` for the Convex-side audit/rollback record.
   const before = await fileGet(conn, body.agentId, body.name);
+  // A file that EXISTS but whose content we could not read is not safely writable: the
+  // compare-and-set would pass on a matching updatedAtMs, the real content would be
+  // overwritten, and `before` would be recorded as "" — a revision claiming the file was
+  // empty before a write that destroyed it. A CREATE is untouched (nothing to lose).
+  // Symmetric with the Hermes path, which calls the same state `decoded: false`.
+  if (existsButUnreadable(before)) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: {
+          code: "UNREADABLE",
+          message:
+            "the file exists but its current contents could not be read — refusing " +
+            "to overwrite it blind",
+        },
+      },
+    };
+  }
   const currentUpdatedAtMs =
     typeof before.updatedAtMs === "number" ? before.updatedAtMs : null;
   if (currentUpdatedAtMs !== body.baseUpdatedAtMs) {
@@ -234,8 +281,14 @@ export async function performAgentFilesOp(
     15_000,
   );
   // Re-get so the reported meta is the gateway's CONFIRMED post-write state
-  // (size/updatedAtMs), never an optimistic guess. Content is intentionally
-  // omitted from `file` (the caller already has what it wrote).
+  // (size/updatedAtMs), never an optimistic guess.
+  //
+  // The re-read CONTENT rides back too. It used to be dropped, on the reasoning that
+  // "the caller already has what it wrote" — but that is precisely the assumption a
+  // confirmation exists to test. The revision history recorded the REQUESTED body as
+  // the after-state, so a gateway that acknowledged the write without applying it
+  // produced a revision asserting a file content that never existed. Reporting what
+  // the gateway actually holds costs one field and makes the record true.
   const after = await fileGet(conn, body.agentId, body.name);
   return {
     status: 200,
@@ -243,6 +296,9 @@ export async function performAgentFilesOp(
       ok: true,
       file: fileMeta(after),
       before: { content: typeof before.content === "string" ? before.content : null },
+      confirmed: {
+        content: typeof after.content === "string" ? after.content : null,
+      },
     },
   };
 }
@@ -382,7 +438,13 @@ export function defaultsApplied(
 /** Top-level `hash` from a `config.get` payload (bench-verified 6.5: the get
  *  payload is `{ config: {...}, hash: "..." }`). */
 function configHash(payload: Record<string, unknown> | undefined): string | null {
-  return typeof payload?.hash === "string" ? payload.hash : null;
+  // NON-EMPTY, because the vendored schema says `baseHash: NonEmptyString`: an empty
+  // string passed the old `typeof === "string"` check and was sent, which the gateway
+  // rejects as an invalid request — a malformed read turned into a confusing protocol
+  // error instead of the clear refusal it should be.
+  return typeof payload?.hash === "string" && payload.hash.length > 0
+    ? payload.hash
+    : null;
 }
 
 /** True when a gateway error is the optimistic-concurrency "base hash"
@@ -390,6 +452,16 @@ function configHash(payload: Record<string, unknown> | undefined): string | null
 function isBaseHashError(err: unknown): boolean {
   return /base ?hash/i.test((err as Error)?.message ?? "");
 }
+
+/** Our OWN refusal to write without a guard — distinct from the gateway's OCC
+ *  rejection above, which is detected by message text.
+ *
+ *  A dedicated class rather than a wording that dodges `/base ?hash/i`: the first
+ *  version of this refusal was worded naturally, matched that regex, and was RETRIED
+ *  as if it were a concurrency conflict — then reported as "conflict persisted after
+ *  one retry". A refusal that has to describe itself carefully to avoid being mistaken
+ *  for something else is one rename away from being mistaken again. */
+class MissingBaseHashError extends Error {}
 
 /**
  * Execute one `/config-defaults` op.
@@ -425,6 +497,23 @@ export async function performConfigDefaultsOp(
     const attempt = async (): Promise<void> => {
       const pre = await conn.request("config.get", {}, 10_000);
       const baseHash = configHash(pre.payload);
+      // NO HASH, NO WRITE — except where there is nothing to protect.
+      //
+      // We used to omit `baseHash` whenever the read carried none. Reading the DEPLOYED
+      // gateway settles what that meant: `requireConfigBaseHash` refuses a patch with no
+      // base hash whenever the config file EXISTS, so the omission bought an
+      // INVALID_REQUEST round-trip rather than an unguarded write — and refusing here
+      // turns a confusing protocol error into a clear local one. The exception is the
+      // gateway's own: when the config file does not exist yet it skips the requirement,
+      // because there is no concurrent edit to lose. Mirroring that exactly is what
+      // keeps this from costing a first-run write that would have succeeded.
+      const configExists = (pre.payload as { exists?: unknown } | undefined)?.exists;
+      if (baseHash === null && configExists !== false) {
+        throw new MissingBaseHashError(
+          "config.get returned no base hash for an existing config — refusing to patch " +
+            "without the compare-and-set guard (the gateway would reject it anyway)",
+        );
+      }
       await conn.request(
         "config.patch",
         { raw, ...(baseHash !== null ? { baseHash } : {}) },
@@ -434,12 +523,20 @@ export async function performConfigDefaultsOp(
     try {
       await attempt();
     } catch (err) {
+      // Our own refusal is terminal: there is nothing a second attempt would learn.
+      if (err instanceof MissingBaseHashError) throw err;
       if (!isBaseHashError(err)) throw err;
       // The config changed between our get and our patch: ONE retry on a
       // fresh hash, then a clear error (the caller maps it to 502).
       try {
         await attempt();
       } catch (err2) {
+        // The SECOND attempt can raise our own refusal too — its `config.get` may be
+        // the one that carries no hash. Without this the refusal was relabelled
+        // "conflict persisted after one retry", which is a different and wrong story:
+        // nothing conflicted, we declined to write unguarded. The class check has to
+        // guard BOTH attempts, not just the first.
+        if (err2 instanceof MissingBaseHashError) throw err2;
         if (isBaseHashError(err2)) {
           throw new Error(
             "config.patch base-hash conflict persisted after one retry (config changing concurrently)",

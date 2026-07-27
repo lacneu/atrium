@@ -144,10 +144,13 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * `protocol/openclaw/coverage/<newest version>.json`, which the coverage ratchet
  * pins against the vendored TypeBox schemas.
  *
- * Vendoring `sessions.ts` + `plugins.ts`, then `cron.ts` + `tasks.ts` (2026-07-27),
- * took the examined surface from 94 entries to 363: the `sessions.*` lane — 6 of the bridge's 26 RPC calls, the
- * busiest family after chat — is now under contract, and nine more gaps became
- * VISIBLE rather than merely absent.
+ * Vendoring `sessions.ts` + `plugins.ts`, then `cron.ts` + `tasks.ts`, then
+ * `config.ts` + `agents-models-skills.ts` (all 2026-07-27) took the examined surface
+ * from 94 entries to 475. Every RPC family the bridge calls is now under contract
+ * except `talk.*` and the handful upstream publishes no params schema for
+ * (`sessions.get`, `usage.status`, three `tts.*`). Each round of classification made
+ * gaps VISIBLE rather than merely absent — and each one found a real defect, which is
+ * the whole argument for reading a schema field by field instead of trusting a bench.
  *
  * Vendoring 2026.7.1 added three DECLARED gaps (W10): two outbound fields the bridge
  * does not send (`ChatSendParams`/`ChatAbortParams` are `additionalProperties:false`,
@@ -157,8 +160,8 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 107,
-  ignored: 241,
+  handled: 134,
+  ignored: 326,
   gaps: 15,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
   gapList: [
