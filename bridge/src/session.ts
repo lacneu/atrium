@@ -22,6 +22,7 @@ import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
+import { sessionsGetParams } from "./core/rpc-params.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
@@ -1044,7 +1045,7 @@ class Session implements BridgeSession {
     try {
       const raw = await this.connection.request(
         "sessions.get",
-        { key: this.sessionKey },
+        sessionsGetParams(this.sessionKey),
         10_000,
       );
       const payload =
@@ -1375,7 +1376,7 @@ export class SessionRegistry {
         cfg.deviceIdentity!,
       );
       try {
-        const raw = await conn.request("sessions.get", { key }, 10_000);
+        const raw = await conn.request("sessions.get", sessionsGetParams(key), 10_000);
         // request() resolves the response ENVELOPE; the transcript is .payload
         // (same unwrap as recoverDeliveredReply).
         return raw && typeof raw === "object" && "payload" in raw

@@ -20,10 +20,17 @@ export function sourceFiles(dir: URL = SRC, out: URL[] = []): URL[] {
 }
 
 /** Every `.request(` call site: the method name when it is a plain string literal,
- *  or the raw first-argument EXPRESSION when it is anything else. */
+ *  or the raw first-argument EXPRESSION when it is anything else — plus the raw text of
+ *  the PARAMS argument.
+ *
+ *  `params` exists so a gate can check WHERE a body comes from, not just that a method is
+ *  called. The outbound ratchet validates bodies built by exported pure builders; without
+ *  this, a handler rewritten to build its object inline would ship an unvalidated body
+ *  while the ratchet kept checking the now-unused builder (raised in review). */
 export function requestCallSites(): {
   method: string | null;
   expression?: string;
+  params?: string;
   file: string;
 }[] {
   // Two patterns over the same anchor. The literal one extracts the name; the ANY one
@@ -45,7 +52,45 @@ export function requestCallSites(): {
     "g",
   );
   const ANY = new RegExp(CALL, "g");
-  const sites: { method: string | null; expression?: string; file: string }[] = [];
+  /** The argument text starting at `from`, read with BRACE/PAREN/BRACKET BALANCE so an
+   *  object or a nested call is taken whole. A plain `split(",")` would cut
+   *  `{a, b}` in half and make every shape check meaningless. */
+  const argAt = (
+    source: string,
+    from: number,
+  ): { text: string; end: number } => {
+    let depth = 0;
+    for (let i = from; i < source.length; i += 1) {
+      const c = source[i]!;
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        if (depth === 0) return { text: source.slice(from, i).trim(), end: i };
+        depth -= 1;
+      } else if (c === "," && depth === 0) {
+        return { text: source.slice(from, i).trim(), end: i };
+      }
+    }
+    return { text: source.slice(from).trim(), end: source.length };
+  };
+  /** The text of the SECOND argument of a call whose argument list starts at `end`.
+   *
+   *  Walks from the first argument's real END INDEX, not from `start + text.length`: the
+   *  text is trimmed, so with a newline after `.request(` that arithmetic landed inside
+   *  the first argument and returned "" — which made the tts assertion fail on correct
+   *  code and would have made it pass on broken code just as easily. */
+  const secondArg = (source: string, end: number): string => {
+    let i = argAt(source, end).end;
+    if (source[i] !== ",") return "";
+    i += 1;
+    while (i < source.length && /\s/.test(source[i]!)) i += 1;
+    return argAt(source, i).text;
+  };
+  const sites: {
+    method: string | null;
+    expression?: string;
+    params?: string;
+    file: string;
+  }[] = [];
   for (const file of sourceFiles()) {
     const source = readFileSync(file, "utf-8");
     const name = file.pathname.split("/").pop()!;
@@ -53,16 +98,26 @@ export function requestCallSites(): {
     const all = [...source.matchAll(ANY)];
     // Match them by position: a literal call site starts where an ANY match starts.
     const literalStarts = new Set(literals.map((m) => m.index));
-    for (const m of literals) sites.push({ method: m[1]!, file: name });
+    for (const m of literals) {
+      sites.push({
+        method: m[1]!,
+        params: secondArg(source, m.index! + m[0].length - m[1]!.length - 2),
+        file: name,
+      });
+    }
     for (const m of all) {
       if (literalStarts.has(m.index)) continue;
       // The first argument's own text, up to the comma. Identifying an indirect site
       // by its EXPRESSION rather than by its file (raised in review): keyed by file,
       // a second indirect call in server.ts would have silently inherited the TTS
       // expansion and vanished from the derived surface.
-      const after = source.slice(m.index! + m[0].length);
-      const expression = (after.split(",")[0] ?? "").trim();
-      sites.push({ method: null, expression, file: name });
+      const expression = argAt(source, m.index! + m[0].length).text;
+      sites.push({
+        method: null,
+        expression,
+        params: secondArg(source, m.index! + m[0].length),
+        file: name,
+      });
     }
   }
   return sites;

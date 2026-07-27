@@ -1811,7 +1811,7 @@
   },
   "ConfigGetParams": {
    "status": "handled",
-   "by": "conf.ts sends `{}` before every patch (for the base hash) and after it (for the confirmed read-back), and server.ts polls it while the gateway restarts. The empty-object schema is pinned by the COVERAGE ratchet; the outbound ratchet (G2) currently captures only the chat.send lane, so these bodies are not yet validated against the vendored schema on the wire — declared, not implied"
+   "by": "conf.ts sends `{}` before every patch (for the base hash) and after it (for the confirmed read-back), and server.ts polls it while the gateway restarts. The empty-object schema is pinned by the coverage ratchet AND, since 2026-07-27, by the OUTBOUND ratchet: the operator lanes are now driven with a recording requester, so this body is validated against every vendored schema on the way out"
   },
   "ConfigPatchParams": {
    "fields": {

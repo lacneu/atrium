@@ -30,6 +30,15 @@ import {
 } from "./providers/openclaw/openclaw-client.js";
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import {
+  chatAbortParams,
+  sessionsGetParams,
+  talkClientCreateParams,
+  talkToolCallParams,
+  taskGetParams,
+  taskListParams,
+  ttsParams,
+} from "./core/rpc-params.js";
+import {
   REHYDRATION_MAX_FILL,
   composedPromptFits,
   sessionFill,
@@ -797,7 +806,7 @@ export function dedupeModels(list: unknown): { id: string; label: string }[] {
   return out;
 }
 
-async function ensureAvailableModels(
+export async function ensureAvailableModels(
   conn: BridgeSession["connection"],
 ): Promise<{ id: string; label: string }[]> {
   if (conn.availableModels !== null) return conn.availableModels;
@@ -1706,7 +1715,7 @@ async function performCompact(
  * tokens the compaction condensed. Checkpoint shape pinned on live capture
  * 2026-07-03 (reason "auto-threshold", tokensBefore 19698 → tokensAfter 1050).
  */
-async function fetchCompactionHistory(
+export async function fetchCompactionHistory(
   conn: OpenClawConnection,
   sessionKey: string,
 ): Promise<{
@@ -1773,7 +1782,7 @@ export interface CronJobSummary {
 /** OpenClaw `cron.list` → normalized summaries. FULL (non-compact) response so
  *  each job's agentId is present — the compact projection drops it. Read-only,
  *  never on the turn path. */
-async function fetchCronJobs(
+export async function fetchCronJobs(
   conn: OpenClawConnection,
 ): Promise<CronJobSummary[]> {
   // includeDisabled: the tab renders a "Paused" state — the default listing
@@ -1859,7 +1868,7 @@ async function fetchCronJobs(
  *  also the OWNERSHIP probe Convex runs before every mutation (the job's
  *  agentId decides whose job it is), so its detail shape is normalized and
  *  fail-closed on a malformed agent pin (see normalizeCronJobDetail). */
-async function performOpenClawCronManage(
+export async function performOpenClawCronManage(
   conn: OpenClawConnection,
   body: {
     op: string;
@@ -2056,7 +2065,7 @@ export function normalizeOpenClawAgent(
 // createBridgeServer time (module-level so the free function can reach it).
 let hermesTurnsRef: HermesTurnRegistry | undefined;
 
-async function discoverAgents(
+export async function discoverAgents(
   config: BridgeConfig,
   onHandshake?: (conn: OpenClawConnection) => void,
   onHermesVersion?: (version: string) => void,
@@ -2966,11 +2975,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           abortBundle.config,
           // With runId, the gateway cancels the NAMED run (immune to a newer
           // run having started on the session); without, the active one.
-          (conn) =>
-            conn.request("chat.abort", {
-              sessionKey,
-              ...(runId ? { runId } : {}),
-            }),
+          (conn) => conn.request("chat.abort", chatAbortParams(sessionKey, runId)),
           noteHandshakeFor(abortInstance),
         );
         sendJson(res, 200, { ok: true });
@@ -3127,7 +3132,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               try {
                 const rawT = await conn.request(
                   "sessions.get",
-                  { key: lcmSessionKey },
+                  sessionsGetParams(lcmSessionKey),
                   8_000,
                 );
                 const payload =
@@ -3151,7 +3156,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               await new Promise((r) => setTimeout(r, 1_500));
               const rawT = await conn.request(
                 "sessions.get",
-                { key: lcmSessionKey },
+                sessionsGetParams(lcmSessionKey),
                 8_000,
               );
               const payload =
@@ -3303,7 +3308,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                   try {
                     const r = await conn.request(
                       "tasks.get",
-                      { taskId },
+                      taskGetParams(taskId),
                       8_000,
                     );
                     const task = (
@@ -3372,11 +3377,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                   for (const key of discoverKeys.slice(0, 3)) {
                     const r = await conn.request(
                       "tasks.list",
-                      {
-                        sessionKey: key,
-                        status: ["queued", "running"],
-                        limit: 50,
-                      },
+                      taskListParams(key),
                       10_000,
                     );
                     const payload = r.payload as { tasks?: unknown[] } | null;
@@ -3733,7 +3734,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           (conn) =>
             conn.request(
               `tts.${method}`,
-              method === "convert" ? { text: ttsText } : {},
+              ttsParams(method, ttsText),
               method === "convert" ? 60_000 : 10_000,
             ),
           noteHandshakeFor(ttsInstance),
@@ -3860,11 +3861,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           (conn) =>
             conn.request(
               "talk.client.create",
-              {
-                transport: talkTransport,
-                ...(talkVoice !== null ? { voice: talkVoice } : {}),
-                ...(talkVad !== null ? { vadThreshold: talkVad } : {}),
-              },
+              talkClientCreateParams(talkTransport, talkVoice, talkVad),
               15_000,
             ),
           noteHandshakeFor(talkInstance),
@@ -3983,12 +3980,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             async (conn) => {
               const created = await conn.request(
                 "talk.client.toolCall",
-                {
-                  sessionKey: tcSessionKey,
-                  callId: tcCallId,
-                  name: "openclaw_agent_consult",
-                  args: tcArgs,
-                },
+                talkToolCallParams(tcSessionKey, tcCallId, tcArgs),
                 15_000,
               );
               const runId = (created.payload as { runId?: unknown } | undefined)
