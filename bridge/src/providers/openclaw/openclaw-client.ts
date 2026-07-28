@@ -35,6 +35,14 @@ import {
 // ground-truth material for building version-accurate fixtures + diagnosing how a
 // given OpenClaw version (e.g. 6.5) actually transports media. Best-effort and
 // LOCAL-ONLY: never set in prod, since raw frames can carry message content.
+//
+// ENVELOPED, not bare. The frame alone cannot be replayed faithfully: the normalizer
+// takes an injected clock, and every timeout and grace it implements (recv timeout,
+// empty-final grace, lifecycle-end grace, private-ack grace) is a function of the delay
+// BETWEEN frames. A capture without arrival times can only be replayed on a synthetic
+// clock, which never reaches any of those thresholds — a golden corpus built from one is
+// born blind to exactly the paths that decide whether a turn ends. `receivedAt` is the
+// bridge's own wall clock, not gateway data: no frame field is added or modified.
 const CAPTURE_FRAMES_PATH =
   typeof process !== "undefined"
     ? process.env?.OPENCLAW_CAPTURE_FRAMES
@@ -42,7 +50,10 @@ const CAPTURE_FRAMES_PATH =
 function captureFrame(frame: unknown): void {
   if (!CAPTURE_FRAMES_PATH) return;
   try {
-    appendFileSync(CAPTURE_FRAMES_PATH, JSON.stringify(frame) + "\n");
+    appendFileSync(
+      CAPTURE_FRAMES_PATH,
+      JSON.stringify({ receivedAt: Date.now(), frame }) + "\n",
+    );
   } catch {
     /* best-effort dev capture — never disturb the read loop */
   }
