@@ -336,7 +336,11 @@ export type ExceptionSite =
   /** The Hermes REST/SSE body decode, inside the normalizer. It swallowed a bad body and
    *  continued with `{}` — on a TERMINAL frame that finalized the turn as an empty
    *  success, which is a lost answer wearing a success badge. */
-  | "hermes-sse-parse";
+  | "hermes-sse-parse"
+  /** `prompt.submit` answered something other than the declared `{status:"streaming"}`.
+   *  Not a read failure but the same family: a wire answer this build cannot interpret,
+   *  and one the turn's recv deadline keys on. */
+  | "hermes-ws-ack";
 
 /** Per-PROCESS random salt for the unknown-state id.
  *

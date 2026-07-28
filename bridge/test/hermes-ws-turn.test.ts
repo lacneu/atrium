@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runHermesWsTurn, isHermesWsStoredSessionId } from "../src/providers/hermes/ws-turn.js";
 import type { HermesWsClient } from "../src/providers/hermes/ws-client.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
@@ -559,5 +559,285 @@ describe("WS failure-prose promotion + transient classification (codex P2)", () 
     expect(d.text).toBe(""); // prose never persisted as the reply
     expect(String(d.error)).toContain("API call failed after 3 retries");
     expect(d.errorKind).toBe("provider_internal");
+  });
+});
+
+describe("a silent provider settles the turn instead of hanging (lot 29)", () => {
+  // Until this deadline, `await turnDone` had NO bound: a dropped frame or a stalled
+  // gateway left the row `streaming` until Convex's stuck-stream watchdog reaped it —
+  // up to twelve minutes of "Réflexion…" for someone waiting on an answer already lost.
+
+  it("settles response_timeout after the silence budget, with a named cause", async () => {
+    vi.useFakeTimers();
+    try {
+      const { writer, calls } = spyWriter();
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({}),
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "hello",
+        },
+        () => () => {},
+      );
+      await run.accepted;
+      expect(calls.map(([n]) => n)).toContain("startAssistant");
+      // …and then nothing at all arrives.
+      await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+      await run.done;
+      const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+        | { status?: string; errorKind?: string }
+        | undefined;
+      expect(detail?.status).toBe("error");
+      expect(detail?.errorKind).toBe("response_timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ANY event re-arms it — a slow turn that keeps reporting is not a stalled one", async () => {
+    vi.useFakeTimers();
+    try {
+      const { writer, calls } = spyWriter();
+      let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({}),
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "hello",
+        },
+        (_sid, cb) => {
+          onEvent = cb;
+          return () => {};
+        },
+      );
+      await run.accepted;
+      // Three quarters of the budget, an event, three quarters again: a turn that would
+      // have died on a fixed timer survives on a re-armed one.
+      await vi.advanceTimersByTimeAsync(180_000);
+      onEvent("message.delta", { text: "still here" });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(calls.map(([n]) => n)).not.toContain("finalize");
+      // …and it still settles once the provider really goes quiet.
+      await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+      await run.done;
+      expect(calls.map(([n]) => n)).toContain("finalize");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT run during the pre-ACK staging — the prompt still goes out", async () => {
+    // The deadline used to be armed at SUBSCRIBE, before beginTurn, the attachment
+    // staging and prompt.submit — a sequence the code documents as able to take minutes.
+    // It would then finalize the bubble `response_timeout` and let the prompt go out
+    // anyway: the user told the turn failed while the gateway ran it, and a retry
+    // duplicating any side effect. Staging has its own budget (PRE_SEND_DEADLINE_MS);
+    // this deadline starts when the provider has accepted and owes us a reply.
+    vi.useFakeTimers();
+    try {
+      const { writer, calls } = spyWriter();
+      let releaseSubmit!: () => void;
+      const slowSubmit = new Promise<void>((res) => {
+        releaseSubmit = res;
+      });
+      const submitted: string[] = [];
+      const client = {
+        call: async (method: string, params?: Record<string, unknown>) => {
+          if (method === "session.create") {
+            return { session_id: "cc4ebdee", stored_session_id: "stored-1" };
+          }
+          if (method === "prompt.submit") {
+            await slowSubmit; // staging/upload takes "minutes"
+            submitted.push(String((params as { text?: string })?.text ?? ""));
+            return { status: "streaming" };
+          }
+          return {};
+        },
+      } as unknown as HermesWsClient;
+
+      const run = runHermesWsTurn(
+        {
+          client,
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "hello",
+        },
+        () => () => {},
+      );
+      // Far past the silence budget, while the submit is still in flight.
+      await vi.advanceTimersByTimeAsync(240_000 * 2);
+      expect(calls.map(([n]) => n)).not.toContain("finalize");
+      // …and the prompt is still delivered, not abandoned behind an error.
+      releaseSubmit();
+      await run.accepted;
+      expect(submitted).toEqual(["hello"]);
+      // Only NOW does the clock start.
+      await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+      await run.done;
+      const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+        | { errorKind?: string }
+        | undefined;
+      expect(detail?.errorKind).toBe("response_timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a PRE-ACK event cannot start the clock either", async () => {
+    // Arming after the ACK was not enough on its own: the callback re-arms on every
+    // frame, and a frame can land while `prompt.submit` is still in flight — the same
+    // divergence through the other door. The previous test could not see this one: its
+    // `registerSession` discarded the callback, so no pre-ACK event could be injected.
+    vi.useFakeTimers();
+    try {
+      const { writer, calls } = spyWriter();
+      let releaseSubmit!: () => void;
+      const slowSubmit = new Promise<void>((res) => {
+        releaseSubmit = res;
+      });
+      const client = {
+        call: async (method: string) => {
+          if (method === "session.create") {
+            return { session_id: "cc4ebdee", stored_session_id: "stored-1" };
+          }
+          if (method === "prompt.submit") {
+            await slowSubmit;
+            return { status: "streaming" };
+          }
+          return {};
+        },
+      } as unknown as HermesWsClient;
+      let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+      const run = runHermesWsTurn(
+        {
+          client,
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "hello",
+        },
+        (_sid, cb) => {
+          onEvent = cb;
+          return () => {};
+        },
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      onEvent("session.info", { model: "gpt-5.5" }); // arrives BEFORE the ACK
+      await vi.advanceTimersByTimeAsync(240_000 * 2);
+      expect(calls.map(([n]) => n)).not.toContain("finalize");
+      releaseSubmit();
+      await run.accepted;
+      await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+      await run.done;
+      const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+        | { errorKind?: string }
+        | undefined;
+      expect(detail?.errorKind).toBe("response_timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a non-conforming ACK is still BOUNDED, but never binds the session", async () => {
+    // Two separate questions, and conflating them was my own error: refusing to arm the
+    // clock on an unrecognised ACK left the turn awaiting its terminal with no deadline
+    // at all — the `finally` never ran, so the session stayed subscribed and the run
+    // held, per chat. Waiting forever leaks; a bounded wait that might be wrong at least
+    // ends. What the ACK decides is the session BIND: a prompt that may never have been
+    // delivered must not leave its session remembered as warm, or the next turn resumes
+    // a virgin session without re-carrying the history.
+    for (const ack of [{}, { status: "error" }, "streaming", null]) {
+      vi.useFakeTimers();
+      try {
+        const { writer, calls } = spyWriter();
+        const bound: string[] = [];
+        const interrupted: string[] = [];
+        const client = {
+          call: async (method: string, params?: Record<string, unknown>) => {
+            if (method === "session.create") {
+              return { session_id: "cc4ebdee", stored_session_id: "s1" };
+            }
+            if (method === "prompt.submit") return ack;
+            if (method === "session.interrupt") {
+              interrupted.push(String((params as { session_id?: string })?.session_id));
+            }
+            return {};
+          },
+        } as unknown as HermesWsClient;
+        const run = runHermesWsTurn(
+          {
+            client,
+            writer,
+            chatId: "c1",
+            sessionKey: "k",
+            providerChatId: null,
+            text: "hello",
+            onBoundSession: async (sid) => {
+              bound.push(sid);
+            },
+          },
+          () => () => {},
+        );
+        await run.accepted;
+        await vi.advanceTimersByTimeAsync(240_000 + 1_000);
+        await run.done;
+        const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+          | { errorKind?: string }
+          | undefined;
+        expect(detail?.errorKind, JSON.stringify(ack)).toBe("response_timeout");
+        expect(bound, JSON.stringify(ack)).toEqual([]);
+        // …and the provider is told, so a run that was actually alive stops.
+        expect(interrupted, JSON.stringify(ack)).toEqual(["cc4ebdee"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("a normal turn is untouched — no timer fires, no cause invented", async () => {
+    vi.useFakeTimers();
+    try {
+      const { writer, calls } = spyWriter();
+      let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({}),
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "hello",
+        },
+        (_sid, cb) => {
+          onEvent = cb;
+          return () => {};
+        },
+      );
+      await run.accepted;
+      for (const ev of capturedEvents()) onEvent(ev.type, ev.payload);
+      await run.done;
+      const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+        | { status?: string; errorKind?: string }
+        | undefined;
+      expect(detail?.status).toBe("complete");
+      expect(detail?.errorKind ?? null).toBeNull();
+      // The deadline must not fire on a settled turn. Counting timers would count the
+      // pre-existing late-child grace timer too (2 min, deliberate), so the check is
+      // behavioural: long past the budget, nothing else is written.
+      const before = calls.length;
+      await vi.advanceTimersByTimeAsync(240_000 * 3);
+      expect(calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -13,7 +13,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { decodeWsFrame } from "../src/providers/hermes/ws-client.js";
+import { decodeWsFrame, routeEventDecision } from "../src/providers/hermes/ws-client.js";
 import {
   decodeInboundFrame,
   protocolDrift,
@@ -114,6 +114,66 @@ describe("nested WS members are validated too", () => {
       expect(typeof inner === "object" && inner !== null && !Array.isArray(inner)).toBe(
         false,
       );
+    }
+  });
+});
+
+describe("routeEventDecision — what a corrupt frame does to the turn it names", () => {
+  const ok = (payload: unknown) => ({
+    type: "message.complete",
+    session_id: "sid-1",
+    payload,
+  });
+
+  it("passes a healthy event straight through", () => {
+    expect(routeEventDecision(ok({ text: "bonjour" }))).toEqual({
+      type: "message.complete",
+      sid: "sid-1",
+      payload: { text: "bonjour" },
+    });
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
+  it("turns a corrupt TERMINAL into an error for THAT session", () => {
+    // The frame still says whose turn it is. Dropping it left that turn waiting for a
+    // terminal that had already arrived broken — up to twelve minutes of "Réflexion…".
+    const d = routeEventDecision(ok(null));
+    expect(d?.type).toBe("error");
+    expect(d?.sid).toBe("sid-1");
+    expect(protocolDrift.report()[0]?.shape).toContain("hermes-ws-parse");
+  });
+
+  it("does NOT end a turn over a corrupt DELTA", () => {
+    // A lost delta is a lost delta. Ending the turn would trade a visible defect for a
+    // worse one.
+    const d = routeEventDecision({ type: "message.delta", session_id: "sid-1", payload: 7 });
+    expect(d?.type).toBe("message.delta");
+    expect(d?.payload).toEqual({});
+    expect(protocolDrift.report().length).toBe(1); // reported all the same
+  });
+
+  it("drops an event whose params are unreadable — nobody to tell", () => {
+    for (const params of [null, "x", [1], 3]) {
+      protocolDrift.resetForTests();
+      expect(routeEventDecision(params), JSON.stringify(params)).toBeNull();
+      expect(protocolDrift.report()[0]?.shape).toContain("hermes-ws-parse");
+    }
+  });
+
+  it("an ABSENT payload stays legitimate", () => {
+    const d = routeEventDecision({ type: "message.delta", session_id: "s" });
+    expect(d?.payload).toEqual({});
+    expect(protocolDrift.report()).toEqual([]);
+  });
+
+  it("the terminal set matches the reader's own settling cases", () => {
+    // Guessing this vocabulary is how a fix starts ending turns the reader would have
+    // continued. These are the three cases that call `settle()` in ws-turn.ts.
+    for (const t of ["message.complete", "error", "approval.request"]) {
+      expect(routeEventDecision({ type: t, session_id: "s", payload: null })?.type).toBe(
+        "error",
+      );
+      protocolDrift.resetForTests();
     }
   });
 });

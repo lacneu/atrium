@@ -56,6 +56,69 @@ interface Pending {
   timer: NodeJS.Timeout;
 }
 
+/** What ONE `event` notification means for the session it names — or null when it means
+ *  nothing this build can act upon.
+ *
+ *  Exported so the failure paths are testable without a socket. The outer frame being an
+ *  object says nothing about what is nested in it: `?? {}` turned a corrupt `params` or
+ *  `payload` into an empty object, so a `message.complete` whose payload was unreadable
+ *  read as a clean terminal and settled the turn on whatever text had accumulated.
+ *
+ *  Every unreadable shape is reported (W9/C4) — class and site only, never the body. What
+ *  differs is the CONSEQUENCE, and it follows from what the frame still tells us:
+ *   - `params` unreadable: we do not know whose turn this was. Report and drop; the turn's
+ *     own recv deadline is what bounds the loss.
+ *   - `payload` unreadable on a TERMINAL: we know the session. Hand that turn an error so
+ *     it settles now instead of waiting for a terminal that already arrived broken.
+ *   - `payload` unreadable on anything else: a lost delta. Report only — ending a turn
+ *     over a delta trades a visible defect for a worse one. */
+export function routeEventDecision(
+  rawParams: unknown,
+): { type: string; sid: string; payload: Record<string, unknown> } | null {
+  const params = asJsonObject(rawParams);
+  if (params === null) {
+    protocolDrift.observeException(
+      null,
+      new TypeError("WS event params is not a JSON object"),
+      "hermes-ws-parse",
+    );
+    return null;
+  }
+  const type = typeof params.type === "string" ? params.type : "";
+  const sid = typeof params.session_id === "string" ? params.session_id : "";
+  let payload: Record<string, unknown> = {};
+  let payloadUnreadable = false;
+  if (params.payload !== undefined) {
+    const parsed = asJsonObject(params.payload);
+    if (parsed === null) {
+      protocolDrift.observeException(
+        null,
+        new TypeError("WS event payload is not a JSON object"),
+        "hermes-ws-parse",
+      );
+      payloadUnreadable = true;
+    } else {
+      payload = parsed;
+    }
+  }
+  if (type === "") return null;
+  if (payloadUnreadable && WS_TERMINAL_EVENTS.has(type)) {
+    return {
+      type: "error",
+      sid,
+      payload: { message: "Hermes sent a terminal event this build could not read." },
+    };
+  }
+  return { type, sid, payload };
+}
+
+/** The event types that END a turn on this transport.
+ *
+ *  Taken from `ws-turn.ts`'s own switch — the cases that call `settle()` — rather than
+ *  guessed from the names: inventing a terminal vocabulary the reader does not share is
+ *  how a "fix" ends turns the reader would have continued. */
+const WS_TERMINAL_EVENTS = new Set(["message.complete", "error", "approval.request"]);
+
 /** A value that is a plain JSON object, or null. Used on the NESTED members of a frame:
  *  the shared decoder validates the envelope, and every `?? {}` below it was a place where
  *  a corrupt inner value became an empty one that read as valid. */
@@ -230,47 +293,8 @@ export class HermesWsClient {
     }
     // Event notification → fan out by session id.
     if (obj.method === "event") {
-      // The OUTER frame being an object says nothing about what is nested in it. `?? {}`
-      // turned a `params.payload` of `null` — or a primitive, or an array — into an empty
-      // object, so a `message.complete` whose payload was corrupt read as a clean terminal
-      // and settled the turn `complete` on whatever text had accumulated: a truncated or
-      // empty answer wearing a success badge, on the DEFAULT transport (raised in review).
-      // Same defect as the SSE body, one transport over, and it is refused the same way.
-      const params = asJsonObject(obj.params);
-      if (params === null) {
-        protocolDrift.observeException(
-          null,
-          new TypeError("WS event params is not a JSON object"),
-          "hermes-ws-parse",
-        );
-        return;
-      }
-      const type = typeof params.type === "string" ? params.type : "";
-      const sid = typeof params.session_id === "string" ? params.session_id : "";
-      // An ABSENT payload (missing key) is legitimate — several events carry none.
-      // Anything else that is not an object is REPORTED, and here the two failure modes
-      // pull in opposite directions: dropping the event risks a turn that never receives
-      // its terminal and hangs until the watchdog, while passing `{}` through risks a
-      // corrupt terminal settling as a clean, empty success. Both are real; only one can
-      // be chosen without evidence about what Hermes actually sends.
-      //
-      // Chosen: preserve today's behaviour (`{}`), and make the case VISIBLE so the next
-      // lot decides with measurements instead of a guess. That lot is already scoped —
-      // it owns the WS terminal handling and its live validation.
-      let payload: Record<string, unknown> = {};
-      if (params.payload !== undefined) {
-        const parsed = asJsonObject(params.payload);
-        if (parsed === null) {
-          protocolDrift.observeException(
-            null,
-            new TypeError("WS event payload is not a JSON object"),
-            "hermes-ws-parse",
-          );
-        } else {
-          payload = parsed;
-        }
-      }
-      if (type) this.onEvent(type, sid, payload);
+      const decision = routeEventDecision(obj.params);
+      if (decision !== null) this.onEvent(decision.type, decision.sid, decision.payload);
     }
   }
 

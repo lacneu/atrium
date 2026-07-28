@@ -220,6 +220,9 @@ const NON_CALL_REFERENCES: { file: string; text: string }[] = [
   { file: "conf.ts", text: "OpenClawConnection.request" },
   // A Hermes event NAME that happens to end in `.request`.
   { file: "ws-turn.ts", text: '"approval.request"' },
+  // …and the same name in the transport's TERMINAL set (lot 29): the client has to know
+  // which events end a turn, so the vocabulary now appears on both sides of the seam.
+  { file: "ws-client.ts", text: '"approval.request"' },
 ];
 
 describe("RPC scope derivation (W10)", () => {

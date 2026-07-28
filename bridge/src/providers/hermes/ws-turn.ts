@@ -43,6 +43,20 @@ export const HERMES_DELIVERY_DIR = "atrium-out";
 /** The standing delivery instruction spliced after the user text (mirrors the
  *  OpenClaw MEDIA:/outbound directive — tells the agent HOW to hand a file to
  *  the user; the post-turn scan picks it up). */
+/** How long this turn tolerates TOTAL silence from Hermes before settling itself.
+ *
+ *  Two relationships fix this number, neither of them arbitrary:
+ *   - it must sit well UNDER Convex's `STALE_STREAM_MS` (12 min), so the bridge settles
+ *     the turn with a named cause and the watchdog stays the backstop it was built to be
+ *     rather than the primary mechanism;
+ *   - it matches the OpenClaw normalizer's own silence budget (240 s), because the two
+ *     transports are answering the same question and a user has no reason to wait longer
+ *     on one provider than the other.
+ *
+ *  Re-armed by every event of this session, monitoring events included: a delegation
+ *  still reporting is not a stalled provider. */
+const WS_RECV_SILENCE_MS = 240_000;
+
 const DELIVERY_DIRECTIVE = `[Consigne de livraison : pour remettre un fichier genere a l'utilisateur, ecris-le dans le dossier ${HERMES_DELIVERY_DIR}/ (relatif a ton repertoire de travail). Ne colle pas le contenu du fichier dans ta reponse.]`;
 
 export interface HermesWsTurnOptions {
@@ -284,6 +298,7 @@ export function runHermesWsTurn(
     forceSettleRef = (writeAborted?: boolean) => {
       if (finalized) return;
       finalized = true;
+      disarmRecv();
       closeOpenTools();
       closeMoaAggregator("aborted");
       if (writeAborted) {
@@ -734,7 +749,90 @@ export function runHermesWsTurn(
           return;
       }
     };
-    const unsubscribe = registerSession(runtimeSid, onEvent);
+    // RECV DEADLINE. Until now this turn awaited its terminal with no bound at all: a
+    // dropped frame or a silent gateway left the row `streaming` until Convex's
+    // stuck-stream watchdog reaped it — up to STALE_STREAM_MS, twelve minutes of
+    // "Réflexion…" for someone waiting on an answer that had already been lost. The
+    // OpenClaw path has armed a recv deadline for exactly this since its own normalizer
+    // was written; this transport simply never grew one.
+    //
+    // Silence is silence: a lost frame and a stalled provider are indistinguishable from
+    // inside the bridge, and this covers both rather than only the case that prompted it.
+    // The deadline may only exist AFTER the provider accepted the prompt. Placing the
+    // first `armRecv()` post-ACK was not enough on its own: the event callback re-arms on
+    // every frame, and a frame can arrive while `prompt.submit` is still in flight — the
+    // same divergence, reached by the other door (raised in review). One barrier, checked
+    // by both.
+    let promptAccepted = false;
+    /** The provider explicitly said it is streaming — see the ACK check below. */
+    let ackedStreaming = false;
+    let recvTimer: ReturnType<typeof setTimeout> | null = null;
+    const disarmRecv = (): void => {
+      if (recvTimer !== null) {
+        clearTimeout(recvTimer);
+        recvTimer = null;
+      }
+    };
+    const armRecv = (): void => {
+      disarmRecv();
+      if (finalized || !promptAccepted) return;
+      recvTimer = setTimeout(() => {
+        if (finalized) return;
+        console.error(
+          `[hermes-ws-turn] no event for ${WS_RECV_SILENCE_MS} ms — settling ` +
+            `response_timeout chat=${opts.chatId}`,
+        );
+        finalized = true;
+        closeOpenTools();
+        closeMoaAggregator("aborted");
+        // TELL THE PROVIDER TOO. Silence here does not prove the run stopped there: the
+        // frames may simply have been lost while Hermes kept running tools and their side
+        // effects. Releasing the chat without interrupting leaves that run alive, out of
+        // the user's sight, and a later send can resume or race the same session (raised
+        // in review). Best-effort and off the critical path — the turn settles either way,
+        // and the abort path uses the same RPC.
+        void opts.client
+          .call("session.interrupt", { session_id: runtimeSid })
+          .catch((e) =>
+            console.error(
+              "[hermes-ws-turn] interrupt after timeout failed (best effort):",
+              (e as Error)?.message ?? e,
+            ),
+          );
+        apply([
+          {
+            type: EVENT_MESSAGE_FINAL,
+            text: replyText,
+            error: "Hermes stopped sending before the reply was complete.",
+            errorKind: "response_timeout",
+          },
+          {
+            type: EVENT_RUN_STATUS,
+            status: "error",
+            runId: runtimeSid,
+            message: "Hermes stopped sending before the reply was complete.",
+          },
+        ]);
+        settle();
+      }, WS_RECV_SILENCE_MS);
+      // Never hold the process open for a turn nobody is waiting on.
+      (recvTimer as { unref?: () => void }).unref?.();
+    };
+
+    const unsubscribe = registerSession(runtimeSid, (type, payload) => {
+      // RE-ARMED BY ANY EVENT of this session — including the monitoring ones that
+      // outlive the parent turn. Progress is progress: a delegation still reporting is
+      // not a stalled provider.
+      armRecv();
+      onEvent(type, payload);
+    });
+    // NOT armed here. Subscribing happens BEFORE `beginTurn`, the attachment staging and
+    // `prompt.submit` — a sequence the code itself documents as able to take minutes. An
+    // early deadline would finalize the bubble `response_timeout` and then let the prompt
+    // go out anyway: the user told the turn failed while the gateway runs it, and a retry
+    // duplicating any side effect (raised in review). Staging is bounded by
+    // `PRE_SEND_DEADLINE_MS`, which is what that budget is for. This deadline starts when
+    // the provider has ACCEPTED and owes us a reply — see the arm after the ACK below.
 
     try {
       // 3) Open the streaming row BEFORE resolving accepted (chat busy before
@@ -784,10 +882,34 @@ export function runHermesWsTurn(
         // can block for minutes, and past the deadline this dispatch is no longer
         // ours to submit (codex P1).
         assertBeforeSendDeadline(turnStartedMs, Date.now(), opts.dispatchAgeMs ?? 0);
-        await opts.client.call("prompt.submit", {
+        const ack = await opts.client.call("prompt.submit", {
           session_id: runtimeSid,
           text: promptParts.join("\n\n"),
         });
+        // The ACK is what makes "accepted" mean something, and the deadline below now
+        // keys on it — so a resolved RPC is not enough. The declared contract is
+        // `{status:"streaming"}` (live-captured, ws-capture.jsonl); anything else says
+        // the provider did NOT tell us it is streaming.
+        //
+        // NOT rejected, on purpose. Refusing an unrecognised ACK would turn a version
+        // variation into a failed turn for every user of it, and the only evidence we
+        // have is one capture of one version. What it does instead is REFUSE TO START
+        // THE CLOCK: an unknown acceptance state is exactly the state where a
+        // `response_timeout` would be a guess, and guessing wrong tells someone their
+        // turn failed while the answer is still coming. The turn then behaves as it did
+        // before this lot — bounded by the watchdog — and the deviation is reported so
+        // the next lot decides with data instead of a hunch.
+        ackedStreaming =
+          typeof ack === "object" &&
+          ack !== null &&
+          (ack as { status?: unknown }).status === "streaming";
+        if (!ackedStreaming) {
+          protocolDrift.observeException(
+            null,
+            new TypeError("prompt.submit did not ACK status=streaming"),
+            "hermes-ws-ack",
+          );
+        }
       } catch (err) {
         // The streaming row ALREADY exists (chat-busy contract), so the bridge
         // OWNS this failure: settle the row as an actionable error and resolve
@@ -818,7 +940,14 @@ export function runHermesWsTurn(
       // miss (the next turn mints a fresh session and re-carries the history),
       // never a turn failure; outbox serialization keeps the next send well
       // behind this write.
-      if (pendingBind && opts.onBoundSession) {
+      // …and only a CONFORMING ack binds the session. The failed-submit path above
+      // already states the rule — "the prompt was never delivered, so the next send must
+      // stay FRESH" — and an ACK that did not say `streaming` is the same uncertainty:
+      // remembering a possibly-virgin session as warm makes the NEXT turn resume it
+      // without re-carrying the history, so a prompt that never arrived is never
+      // recovered either (raised in review). Not binding costs at worst one redundant
+      // rehydration; binding wrongly costs the conversation.
+      if (pendingBind && ackedStreaming && opts.onBoundSession) {
         void opts.onBoundSession(pendingBind).catch((e) =>
           console.error(
             "[hermes-ws-turn] session bind failed (continuity miss):",
@@ -827,11 +956,25 @@ export function runHermesWsTurn(
         );
       }
       resolveAccepted();
+      // ACCEPTED: from here the provider owes us a reply, and silence is its silence.
+      // BOUNDED IN EVERY CASE. Refusing to arm on a non-conforming ACK was the wrong
+      // trade and the review named it: the turn then awaited `turnDone` with no deadline
+      // at all, so without a later event the `finally` never ran — the session stayed
+      // subscribed and the run held, per chat. Waiting forever leaks; a bounded wait that
+      // might be wrong at least ends. An unrecognised ACK makes a dead turn MORE likely,
+      // not less, so it is exactly the case that needs the clock. What the ACK still
+      // decides is the SESSION BIND below and the report above.
+      promptAccepted = true;
+      armRecv();
 
       // 5) Drain until the terminal event (or the socket dies — the client's
       // onClose finalizes via forceError below through the registry).
       await turnDone;
     } finally {
+      // Whatever settled this turn — terminal, abort, deadline — the timer goes. A live
+      // timer on a finished turn is a process that will not exit and a log line that
+      // makes no sense.
+      disarmRecv();
       // Late-child grace: keep the session lane subscribed ~2 min after the
       // turn settles so a delegation that finishes after the parent still
       // lands its terminal in the monitor (only monitoring events pass the
