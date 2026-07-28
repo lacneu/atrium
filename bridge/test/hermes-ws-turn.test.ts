@@ -15,6 +15,10 @@ import type { ConvexWriter } from "../src/convex-writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** The TRANSPORT-LOST callback of the turn under test (the registry's `onClose` fan-out
+ *  calls this one). Module-scoped: every harness below overwrites it as it subscribes. */
+let onTransportLost: (reason: string) => void = () => {};
+
 /** Replay the captured event stream (in-frames after the submit ACK). */
 function capturedEvents(): Array<{ type: string; sid: string; payload: Record<string, unknown> }> {
   const lines = readFileSync(join(__dirname, "fixtures/hermes/ws-capture.jsonl"), "utf8")
@@ -139,7 +143,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         },
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -186,7 +191,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "ls",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -227,7 +233,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "long",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -264,7 +271,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         },
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -316,7 +324,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "delegue",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -366,7 +375,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "think hard",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -396,7 +406,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "pourquoi le ciel est bleu ?",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -443,7 +454,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         text: "delegue",
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -506,7 +518,8 @@ describe("Hermes WS turn (live capture replay)", () => {
         onBoundSession: async () => {},
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -544,7 +557,8 @@ describe("WS failure-prose promotion + transient classification (codex P2)", () 
         onBoundSession: async () => {},
       },
       (_sid, cb) => {
-        onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
         return () => {};
       },
     );
@@ -563,6 +577,32 @@ describe("WS failure-prose promotion + transient classification (codex P2)", () 
 });
 
 describe("a silent provider settles the turn instead of hanging (lot 29)", () => {
+  /** Captures what `finalize` was told, including the session-drop flag. */
+  function flagWriter(finals: Array<{ status: string; clear?: string }>): ConvexWriter {
+    return {
+      startAssistant: async () => "msg-1",
+      appendDelta: async () => {},
+      setSnapshot: async () => true,
+      addPart: async () => {},
+      addToolPart: async () => {},
+      setPhase: () => {},
+      finalize: async (
+        _id: string,
+        status: string,
+        _t?: string,
+        _e?: string | null,
+        _k?: string | null,
+        opts?: { clearProviderSession?: string },
+      ) => {
+        finals.push({ status, clear: opts?.clearProviderSession });
+      },
+      reportSessionMeta: async () => {},
+      heartbeat: async () => {},
+      upsertSubAgent: async () => {},
+      getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+    } as unknown as ConvexWriter;
+  }
+
   // Until this deadline, `await turnDone` had NO bound: a dropped frame or a stalled
   // gateway left the row `streaming` until Convex's stuck-stream watchdog reaped it —
   // up to twelve minutes of "Réflexion…" for someone waiting on an answer already lost.
@@ -612,7 +652,8 @@ describe("a silent provider settles the turn instead of hanging (lot 29)", () =>
           text: "hello",
         },
         (_sid, cb) => {
-          onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+          onEvent = cb.onEvent;
           return () => {};
         },
       );
@@ -726,7 +767,8 @@ describe("a silent provider settles the turn instead of hanging (lot 29)", () =>
           text: "hello",
         },
         (_sid, cb) => {
-          onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+          onEvent = cb.onEvent;
           return () => {};
         },
       );
@@ -803,123 +845,102 @@ describe("a silent provider settles the turn instead of hanging (lot 29)", () =>
     }
   });
 
-  it("the timed-out session is dropped BEFORE the turn settles", async () => {
-    // The interrupt is best-effort and may still be in flight, so the next send must not
-    // be able to resume this session and race a run that never stopped. Ordering is the
-    // guarantee: while the handler runs the chat is still busy, so no later turn exists
-    // whose binding the epoch bump could land under.
+  it("the timed-out terminal CARRIES the session drop", async () => {
+    // It used to be a separate write ordered before the settle, with a retry and an
+    // in-memory quarantine to survive its failing on its own. Riding the terminal makes
+    // "before" a non-question: it is the same write, so either it lands or the turn does
+    // not settle at all. And what is asserted is what the WRITER received — asserting the
+    // call site would prove nothing about what reaches Convex.
     vi.useFakeTimers();
     try {
-      const { writer, calls } = spyWriter();
-      const order: string[] = [];
+      const finals: Array<{ status: string; clear?: string }> = [];
       const run = runHermesWsTurn(
         {
           client: fakeWsClient({}),
-          writer,
+          writer: flagWriter(finals),
           chatId: "c1",
           sessionKey: "k",
           providerChatId: null,
           text: "hello",
-          onSessionUntrusted: async () => {
-            order.push("untrusted");
-          },
         },
         () => () => {},
       );
       await run.accepted;
-      const finalizeAt = () => calls.findIndex(([n]) => n === "finalize");
       await vi.advanceTimersByTimeAsync(240_000 + 1_000);
       await run.done;
-      order.push("settled");
-      expect(order).toEqual(["untrusted", "settled"]);
-      expect(finalizeAt()).toBeGreaterThanOrEqual(0);
+      // The ID of the session THIS turn ran on, not a flag: the mutation drops the
+      // binding only while it is still that one, so a terminal landing after the chat
+      // moved on cannot wipe a newer turn's session.
+      expect(finals).toEqual([
+        { status: "error", clear: "20260706_212939_aee24e" },
+      ]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("a turn that ends NORMALLY never drops its session", async () => {
-    // Only silence is ambiguous. A delivered answer — or a delivered gateway error —
-    // says the run is over, and clearing there would cost a rehydration every time.
+  it("a DEAD SOCKET drops the session too — it is silence, reached faster", async () => {
+    // The socket dying is not something Hermes SAID. It used to finalize through an
+    // injected `error` event — the branch that means "the gateway delivered a failure" —
+    // so the turn kept its stored session while the run may well have carried on with its
+    // tools on the far side of the dead connection (raised in review). Worse than the
+    // silence case: there is no `session.interrupt` to send, because the socket it would
+    // travel on is exactly what died.
+    const finals: Array<{ status: string; clear?: string }> = [];
+    const forgotten: string[] = [];
+    let lost!: (reason: string) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer: flagWriter(finals),
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "hello",
+        onSessionForgotten: () => forgotten.push("c1"),
+      },
+      (_sid, cb) => {
+        lost = cb.onTransportLost;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    lost("Hermes WS connection lost.");
+    await run.done;
+    expect(finals).toEqual([
+      { status: "error", clear: "20260706_212939_aee24e" },
+    ]);
+    // BOTH halves: the durable slot rides the terminal, the in-process cache is told
+    // synchronously — the selector falls back to that cache exactly when the slot is null.
+    expect(forgotten).toEqual(["c1"]);
+  });
+
+  it("a turn that ends NORMALLY never carries the drop", async () => {
+    // Only silence is ambiguous. A delivered answer — or a delivered gateway error — says
+    // the run is over, and dropping there would cost a rehydration every time.
     vi.useFakeTimers();
     try {
-      const { writer } = spyWriter();
+      const finals: Array<{ status: string; clear?: string }> = [];
       let onEvent!: (type: string, payload: Record<string, unknown>) => void;
-      const dropped: string[] = [];
       const run = runHermesWsTurn(
         {
           client: fakeWsClient({}),
-          writer,
+          writer: flagWriter(finals),
           chatId: "c1",
           sessionKey: "k",
           providerChatId: null,
           text: "hello",
-          onSessionUntrusted: async () => {
-            dropped.push("x");
-          },
         },
         (_sid, cb) => {
-          onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+          onEvent = cb.onEvent;
           return () => {};
         },
       );
       await run.accepted;
       for (const ev of capturedEvents()) onEvent(ev.type, ev.payload);
       await run.done;
-      expect(dropped).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("a Stop landing DURING the invalidation still takes the turn", async () => {
-    // `finalized` is set LAST on purpose. Setting it first made a concurrent `/abort` a
-    // no-op — forceSettle returns early on `finalized` — so the abort answered, Convex
-    // finalized, and the next send could drain while the clear was still in flight; a
-    // late clear could then wipe THAT turn's binding.
-    vi.useFakeTimers();
-    try {
-      const finals: string[] = [];
-      const writer = {
-        startAssistant: async () => "msg-1",
-        appendDelta: async () => {},
-        setSnapshot: async () => true,
-        addPart: async () => {},
-        addToolPart: async () => {},
-        setPhase: () => {},
-        finalize: async (_id: string, status: string) => {
-          finals.push(status);
-        },
-        reportSessionMeta: async () => {},
-        heartbeat: async () => {},
-        upsertSubAgent: async () => {},
-        getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
-      } as unknown as ConvexWriter;
-      let releaseClear!: () => void;
-      const clearing = new Promise<void>((res) => {
-        releaseClear = res;
-      });
-      const run = runHermesWsTurn(
-        {
-          client: fakeWsClient({}),
-          writer,
-          chatId: "c1",
-          sessionKey: "k",
-          providerChatId: null,
-          text: "hello",
-          onSessionUntrusted: () => clearing,
-        },
-        () => () => {},
-      );
-      await run.accepted;
-      await vi.advanceTimersByTimeAsync(240_000 + 1_000);
-      // The invalidation is in flight and the turn is NOT finalized yet — a Stop can
-      // still take it, which is the whole point of the ordering.
-      run.forceSettle(true);
-      releaseClear();
-      await run.done;
-      // The user's abort wins; the timeout's own terminal stands down.
-      expect(finals).toEqual(["aborted"]);
+      expect(finals.some((f) => f.clear !== undefined)).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -940,7 +961,8 @@ describe("a silent provider settles the turn instead of hanging (lot 29)", () =>
           text: "hello",
         },
         (_sid, cb) => {
-          onEvent = cb;
+        onTransportLost = cb.onTransportLost;
+          onEvent = cb.onEvent;
           return () => {};
         },
       );

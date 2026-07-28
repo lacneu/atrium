@@ -401,9 +401,13 @@ export class HermesNormalizer {
   }
 
   /** Force-finalize (transport error / socket close before a terminal frame). */
-  endTurn(error: string | null = null, errorKind: string | null = null): BridgeEvent[] {
+  endTurn(
+    error: string | null = null,
+    errorKind: string | null = null,
+    clearProviderSession: string | null = null,
+  ): BridgeEvent[] {
     if (this.finalized) return [];
-    return this.finalize(error ? "error" : "complete", error, errorKind);
+    return this.finalize(error ? "error" : "complete", error, errorKind, clearProviderSession);
   }
 
   /** Finalize as ABORTED — used when a /reset cancels a live stream (Convex has
@@ -422,6 +426,9 @@ export class HermesNormalizer {
     status: "complete" | "error",
     error: string | null,
     errorKind: string | null = null,
+    /** The provider session id this turn was watching, when the turn cannot vouch for
+     *  its run. The ID, not a flag — see the mutation: a hop that drops it fails CLOSED. */
+    clearProviderSession: string | null = null,
   ): BridgeEvent[] {
     // ONE place, so a `complete` path added later cannot forget it: a turn that lost a
     // frame it could not read never settles as a success. An abort stays an abort — the
@@ -437,6 +444,8 @@ export class HermesNormalizer {
       // The STABLE failure class when the caller knows it — a free-text error alone
       // leaves the operator (and the diagnose path) matching on prose.
       ...(errorKind ? { errorKind } : {}),
+      // Rides the terminal so the drop and the settle are one write (lot 31).
+      ...(clearProviderSession ? { clearProviderSession } : {}),
     };
     const statusEvent: BridgeEvent = {
       type: EVENT_RUN_STATUS,

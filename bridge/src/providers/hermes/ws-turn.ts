@@ -20,7 +20,6 @@
 import { TurnSink } from "../../core/turn-sink.js";
 import {
   assertBeforeSendDeadline,
-  invalidateSession,
   RECV_SILENCE_MS,
 } from "../../core/dispatch-deadline.js";
 import {
@@ -83,10 +82,15 @@ export interface HermesWsTurnOptions {
   filesFetcher?: HermesFilesFetcher | null;
   /** Persist a NEWLY minted stored_session_id (turn 1 / after reset). */
   onBoundSession?: (storedSessionId: string) => Promise<void>;
-  /** The stored session must NOT be reused: this turn ended without knowing whether the
-   *  provider's run stopped. Supplied by dispatch, which owns the in-memory registry and
-   *  the reset-generation guard — the same trio `/reset` already performs. */
-  onSessionUntrusted?: () => Promise<void>;
+  /** Forget this chat's session in the bridge's IN-MEMORY cache.
+   *
+   *  The durable clear rides the finalize, and that is what survives a restart — but it
+   *  empties the Convex slot only. Within THIS process the registry still holds the id,
+   *  and the continuity selector falls back to it precisely when the durable field is
+   *  null: the next send would resume the very session the finalize just declared
+   *  untrusted (raised in review). No retry, no quarantine, no lift — one synchronous
+   *  forget of a cache entry, which is why it does not bring the old machinery back. */
+  onSessionForgotten?: () => void;
   /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
    *  acceptance counts as a downstream failure on its target. */
   onTurnError?: (code: string) => void;
@@ -106,6 +110,18 @@ export interface HermesWsTurnRun {
   forceSettle(writeAborted?: boolean): void;
 }
 
+/** What a turn hands the registry when it subscribes to its session's lane.
+ *
+ *  `onTransportLost` is a CALLBACK and not an injected `error` event on purpose: losing
+ *  the bridge→Hermes socket is not something Hermes said. Routing it through the event
+ *  lane would mean a wire frame could impersonate it, and would put a bridge-internal
+ *  name into the terminal vocabulary the reader's switch defines. */
+export interface HermesWsSessionHandlers {
+  onEvent: (type: string, payload: Record<string, unknown>) => void;
+  /** THIS instance's socket died while the turn was waiting. */
+  onTransportLost: (reason: string) => void;
+}
+
 /** A stored (persistent) Hermes WS session id: `YYYYMMDD_HHMMSS_hex`. Distinct
  *  from the REST session shape (`api_<ts>_<hex>`) — a chat that switches
  *  transport must NOT feed one transport's id to the other. */
@@ -123,7 +139,10 @@ function str(v: unknown): string {
  */
 export function runHermesWsTurn(
   opts: HermesWsTurnOptions,
-  registerSession: (runtimeSessionId: string, onEvent: (type: string, payload: Record<string, unknown>) => void) => () => void,
+  registerSession: (
+    runtimeSessionId: string,
+    handlers: HermesWsSessionHandlers,
+  ) => () => void,
 ): HermesWsTurnRun {
   // The /send handler's OWN entry when given (time lost before this turn started
   // counts too — codex P1); this turn's start otherwise.
@@ -804,17 +823,18 @@ export function runHermesWsTurn(
             (e as Error)?.message ?? e,
           ),
         );
-      // …and the stored session is dropped BEFORE anything settles, because the interrupt
-      // is best-effort: the next send must not be able to resume this session and race a
-      // run that never stopped.
+      // The stored session is dropped ATOMICALLY WITH THE TERMINAL below — see
+      // `clearProviderSession`. It used to be a separate write, guarded by a retry and an
+      // in-memory quarantine, because it could fail on its own while the turn settled
+      // anyway; riding the finalize removes that failure mode instead of compensating for
+      // it, and removes the quarantine with it.
       //
       // ONLY on silence. A delivered gateway error says the run is over; silence says we
       // do not know. Clearing on every failure would cost a rehydration each time.
-      await invalidateSession(opts.onSessionUntrusted, "hermes-ws-turn");
-      // A concurrent Stop may have taken the turn while that write was in flight — it was
-      // free to, precisely because `finalized` is still false here.
       if (finalized) return;
       finalized = true;
+      // The IN-PROCESS half of the drop; the durable half rides the terminal below.
+      opts.onSessionForgotten?.();
       closeOpenTools();
       closeMoaAggregator("aborted");
       apply([
@@ -823,6 +843,10 @@ export function runHermesWsTurn(
           text: replyText,
           error: "Hermes stopped sending before the reply was complete.",
           errorKind: "response_timeout",
+          // The ID we were watching, not a flag: this terminal can land AFTER a user
+          // Stop released the chat and a newer turn bound a session of its own, and the
+          // mutation drops the binding only while it is still this one.
+          ...(storedSid ? { clearProviderSession: storedSid } : {}),
         },
         {
           type: EVENT_RUN_STATUS,
@@ -834,12 +858,46 @@ export function runHermesWsTurn(
       settle();
     };
 
-    const unsubscribe = registerSession(runtimeSid, (type, payload) => {
-      // RE-ARMED BY ANY EVENT of this session — including the monitoring ones that
-      // outlive the parent turn. Progress is progress: a delegation still reporting is
-      // not a stalled provider.
-      armRecv();
-      onEvent(type, payload);
+    /** The socket carrying this turn died.
+     *
+     *  This is the SAME ignorance as silence, reached faster: the connection dying tells
+     *  us nothing about whether Hermes stopped the run, which keeps going with its tools
+     *  and their side effects. It used to finalize through an injected `error` event —
+     *  a DELIVERED failure, which is what that branch means — so the turn ended without
+     *  dropping the session, and the next send resumed the one nobody could vouch for.
+     *
+     *  Unlike the silence path there is no `session.interrupt`: the socket it would
+     *  travel on is exactly what just died. That makes the drop MORE necessary here,
+     *  not less. */
+    const onTransportLost = (reason: string): void => {
+      if (finalized) return;
+      finalized = true;
+      disarmRecv();
+      opts.onSessionForgotten?.();
+      closeOpenTools();
+      closeMoaAggregator("error");
+      const msg = reason || "Hermes WS connection lost.";
+      apply([
+        {
+          type: EVENT_MESSAGE_FINAL,
+          text: replyText,
+          error: msg,
+          ...(storedSid ? { clearProviderSession: storedSid } : {}),
+        },
+        { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
+      ]);
+      settle();
+    };
+
+    const unsubscribe = registerSession(runtimeSid, {
+      onEvent: (type, payload) => {
+        // RE-ARMED BY ANY EVENT of this session — including the monitoring ones that
+        // outlive the parent turn. Progress is progress: a delegation still reporting is
+        // not a stalled provider.
+        armRecv();
+        onEvent(type, payload);
+      },
+      onTransportLost,
     });
     // NOT armed here. Subscribing happens BEFORE `beginTurn`, the attachment staging and
     // `prompt.submit` — a sequence the code itself documents as able to take minutes. An

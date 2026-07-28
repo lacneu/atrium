@@ -23,6 +23,7 @@ import { writeTraceEvent } from "./observability";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
+import { providerSessionClearPatch } from "./lib/providerSession";
 
 /**
  * When the watchdog flips a stale streaming message, also release a documentary
@@ -224,6 +225,22 @@ export const reconcileChatStuckStreams = internalMutation({
         await releaseStuckCurate(ctx, chat);
       }
     }
+    // A stream released here also ended WITHOUT a terminal, so the provider session is
+    // as unknown as after any other reap — and this path is reachable on demand through
+    // the privileged reconcile-chat endpoint. Cleared BEFORE the drain, which is what
+    // releases the next send.
+    if (reconciled > 0) {
+      const reconciledChat = await ctx.db.get(id);
+      if (reconciledChat !== null) {
+        await ctx.db.patch(
+          id,
+          providerSessionClearPatch(
+            reconciledChat.openclawChatId,
+            reconciledChat.providerResetCount,
+          ),
+        );
+      }
+    }
     // Releasing a stuck stream/fetch ends that turn → drain any send queued behind it.
     if (reconciled > 0 || docReleased) await drainNextQueued(ctx, id);
     return { ok: true as const, reconciled };
@@ -278,6 +295,26 @@ export const reconcileStuckStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       await ctx.db.delete(row._id);
+      // A REAP means nobody settled this turn — no terminal, ever — so nothing is known
+      // about the provider's run. That is the same ignorance a silence timeout reports,
+      // and it is the case the timeout's own clear cannot cover: it rides the finalize,
+      // and here there IS no finalize. Without this, a bridge that crashed mid-turn left
+      // the stored session behind and the next send resumed a run nobody had stopped.
+      //
+      // Blast radius is bounded by the SHAPE guard, not by this call site: the slot is
+      // shared, and only a Hermes session id is dropped. An OpenClaw routing segment or a
+      // rotation nonce is left exactly where it is — clearing those would break routing to
+      // fix a session that was never stored there.
+      const reapedChat = await ctx.db.get(msg.chatId);
+      if (reapedChat !== null) {
+        await ctx.db.patch(
+          msg.chatId,
+          providerSessionClearPatch(
+            reapedChat.openclawChatId,
+            reapedChat.providerResetCount,
+          ),
+        );
+      }
       // SSE transport (Phase 1): GC the reaped message's stream chunks (no finalize ran).
       await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
         // Generation cutoff (by SEQ): an announce resume may reopen this
@@ -439,6 +476,19 @@ export const sweepInstanceStreams = internalMutation({
       // a boot sweep otherwise left pendingFetch/-Summarize/-Curate/-Convert
       // stuck forever).
       const sweptChat = await ctx.db.get(msg.chatId);
+      // SAME reasoning as the periodic reap: no finalize ever ran, so nothing is known
+      // about the provider's run. This path is the restart case specifically — the
+      // bridge's in-memory session cache is gone, so the next send reads the PERSISTED id
+      // and would resume an orphaned run outright (raised in review).
+      if (sweptChat !== null) {
+        await ctx.db.patch(
+          msg.chatId,
+          providerSessionClearPatch(
+            sweptChat.openclawChatId,
+            sweptChat.providerResetCount,
+          ),
+        );
+      }
       await releaseStuckDocumentaryFetch(ctx, sweptChat);
       await releaseStuckSummarize(ctx, sweptChat);
       await releaseStuckCurate(ctx, sweptChat);

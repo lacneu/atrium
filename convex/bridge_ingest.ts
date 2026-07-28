@@ -366,6 +366,16 @@ type IngestOp =
        *  Stop): stream.finalize re-parks the outbox row for one automatic
        *  re-dispatch (preemptRepark.ts). */
       gatewayPreempted?: boolean;
+      /** The provider session id this turn was watching, when it ended WITHOUT knowing
+       *  whether its run stopped (silence, a dead socket, a stream that just ended), so
+       *  the session must not be resumed. Carried ON the finalize so the drop is atomic
+       *  with the terminal (lot 31) — a separate write could fail on its own while the
+       *  turn settled anyway, handing the suspect session to the next send.
+       *
+       *  The ID, not a flag, and this relay is why: the value crosses five hops and a hop
+       *  that drops it must fail CLOSED. `true` is the LEGACY form of an older bridge
+       *  during a rolling deploy, relayed as-is for the mutation to log and honor. */
+      clearProviderSession?: boolean | string;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -1073,6 +1083,11 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
         ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+        ...(body.clearProviderSession === true ||
+        (typeof body.clearProviderSession === "string" &&
+          body.clearProviderSession !== "")
+          ? { clearProviderSession: body.clearProviderSession }
+          : {}),
       });
       // Trace only a REAL terminal transition. The bridge retries a finalize whose
       // response was lost, so the second call is an expected no-op — tracing it too
@@ -1090,6 +1105,9 @@ export const ingest = httpAction(async (ctx, request) => {
           // String lifecycle status lives in meta (the `status` column is numeric).
           finalizeStatus: body.status,
           ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+          // WHETHER the terminal dropped the session, never WHICH one: the trace answers
+          // the operator's question with a boolean and keeps the identifier out of it.
+          ...(body.clearProviderSession ? { clearProviderSession: true } : {}),
           textLen: body.text.length,
           // Whether an error was surfaced (boolean only — never the error text).
           hasError: body.error != null,

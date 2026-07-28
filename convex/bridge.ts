@@ -50,6 +50,7 @@ import {
 } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
+import { providerSessionClearPatch } from "./lib/providerSession";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -858,19 +859,9 @@ export const clearProviderChat = internalMutation({
     // The reset EPOCH bumps even when the slot is empty (nothing to clear):
     // an in-flight turn's late bind must see the mismatch and stand down —
     // the empty-slot case is exactly a not-yet-bound first turn (codex P1).
-    const bumped = { providerResetCount: (chat.providerResetCount ?? 0) + 1 };
-    // BOTH Hermes session shapes: REST (`api_<ts>_<hex>`) and WS
-    // (`YYYYMMDD_HHMMSS_<hex>`, the stored_session_id) — a reset must clear
-    // whichever transport persisted it (codex P1), never a routing segment.
-    if (
-      typeof cur === "string" &&
-      (/^api_[0-9]+_[0-9a-f]+$/i.test(cur) ||
-        /^[0-9]{8}_[0-9]{6}_[0-9a-f]+$/i.test(cur))
-    ) {
-      await ctx.db.patch(chatId, { openclawChatId: undefined, ...bumped });
-    } else {
-      await ctx.db.patch(chatId, bumped);
-    }
+    // The rule itself lives in `lib/providerSession.ts`: a turn that ended on silence
+    // needs the SAME clear, and two copies of "which shapes may be dropped" would drift.
+    await ctx.db.patch(chatId, providerSessionClearPatch(cur, chat.providerResetCount));
   },
 });
 

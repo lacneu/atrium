@@ -254,81 +254,62 @@ describe("performHermesAgentFilesOp (managed-files mapping)", () => {
   });
 });
 
-describe("a suspect session is quarantined until its clear is confirmed (lot 30)", () => {
-  // The in-memory forget is not enough: the send path prefers the PERSISTED
-  // `openclawChatId` over the registry, so between a timeout and a successful
-  // `clearProviderChat` — a window a concurrent Stop widens by releasing the chat — the
-  // next send would resume exactly the session whose run may never have stopped.
-
+describe("both transports share ONE continuity decision (lot 30)", () => {
   const TARGET = "inst\u0000agent\u0000c1";
 
-  it("a QUARANTINED chat gets a fresh session even with a persisted id", () => {
+  it("each transport continues only its OWN id shape", () => {
     const r = new HermesTurnRegistry();
-    r.rememberSession(TARGET, "api_1_dead");
-    const body = { chatId: "c1", openclawChatId: "api_1_dead" };
-    expect(selectPriorSession(r, body, TARGET)).toBe("api_1_dead");
-    r.quarantine("c1");
-    expect(selectPriorSession(r, body, TARGET)).toBeNull();
-    r.releaseQuarantine("c1");
-    expect(selectPriorSession(r, body, TARGET)).toBe("api_1_dead");
-  });
-
-  it("quarantine also overrides the in-memory fallback", () => {
-    const r = new HermesTurnRegistry();
-    r.rememberSession(TARGET, "api_2_beef");
-    const body = { chatId: "c1", openclawChatId: null };
-    expect(selectPriorSession(r, body, TARGET)).toBe("api_2_beef");
-    r.quarantine("c1");
-    expect(selectPriorSession(r, body, TARGET)).toBeNull();
-  });
-
-  it("the WS transport — the DEFAULT — obeys the quarantine too", () => {
-    // The first version hard-coded the REST validator, so the WS path kept its own copy
-    // of the selection and never consulted the quarantine at all. Same blind spot, third
-    // time in one programme.
-    const r = new HermesTurnRegistry();
-    const stored = "20260706_212939_aee24e"; // the WS stored_session_id shape
-    const body = { chatId: "c1", openclawChatId: stored };
-    expect(selectPriorSession(r, body, TARGET, isHermesWsStoredSessionId)).toBe(stored);
-    r.quarantine("c1");
-    expect(selectPriorSession(r, body, TARGET, isHermesWsStoredSessionId)).toBeNull();
-  });
-
-  it("neither transport continues the OTHER's id shape", () => {
-    const r = new HermesTurnRegistry();
+    const rest = "api_1_dead";
+    const ws = "20260706_212939_aee24e";
+    expect(selectPriorSession(r, { chatId: "c1", openclawChatId: rest }, TARGET)).toBe(rest);
     expect(
-      selectPriorSession(r, { chatId: "c1", openclawChatId: "api_1_dead" }, TARGET, isHermesWsStoredSessionId),
+      selectPriorSession(r, { chatId: "c1", openclawChatId: rest }, TARGET, isHermesWsStoredSessionId),
+    ).toBeNull();
+    expect(
+      selectPriorSession(r, { chatId: "c1", openclawChatId: ws }, TARGET, isHermesWsStoredSessionId),
+    ).toBe(ws);
+  });
+
+  it("a rotation nonce always means FRESH", () => {
+    const r = new HermesTurnRegistry();
+    r.rememberSession(TARGET, "api_9_cafe");
+    expect(
+      selectPriorSession(r, { chatId: "c1", openclawChatId: "summarize:x" }, TARGET),
     ).toBeNull();
   });
 
-  it("BOTH transports go through the shared selector — no second copy", () => {
-    // The tests above drive the FUNCTION. They stayed green when the WS call site was
-    // replaced by its own inline ternary, which is exactly how the blind spot survived
-    // the first time: a decision proven correct in isolation, and a caller that does not
-    // use it. This checks the wiring.
+  it("after a drop, the MEMORY cache cannot hand the session back", () => {
+    // The durable clear empties the Convex slot only. Inside the same bridge process the
+    // registry still held the id, and the selector falls back to it precisely when the
+    // durable field is null — so the next send resumed the very session the finalize had
+    // just declared untrusted.
+    const r = new HermesTurnRegistry();
+    r.rememberSession(TARGET, "api_1_dead");
+    // The durable clear has landed: Convex now reports no session.
+    const afterClear = { chatId: "c1", openclawChatId: null };
+    expect(selectPriorSession(r, afterClear, TARGET)).toBe("api_1_dead"); // the cache
+    r.forgetChat("c1"); // …which the turn must also drop
+    expect(selectPriorSession(r, afterClear, TARGET)).toBeNull();
+  });
+
+  it("BOTH transports call the cache drop on a silence timeout", () => {
+    // Wiring, not behaviour: the test above proves the registry forgets; this proves the
+    // turns ask it to. Both transports, because one of them missing it is invisible.
     const src = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), "../src/providers/hermes/dispatch.ts"),
       "utf8",
     );
-    const calls = src.split("selectPriorSession(").length - 1;
-    // one declaration + one call per transport
-    expect(calls).toBe(3);
-    // …and no hand-rolled continuity ternary survives anywhere else.
+    expect(src.split("onSessionForgotten:").length - 1).toBe(2);
+  });
+
+  it("BOTH transports go through the shared selector — no second copy", () => {
+    // A decision proven correct in isolation, and a caller that does not use it, is how
+    // the WS path missed the rule the REST path had. This checks the wiring.
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../src/providers/hermes/dispatch.ts"),
+      "utf8",
+    );
+    expect(src.split("selectPriorSession(").length - 1).toBe(3);
     expect(src).not.toMatch(/isHermes(Ws)?(Stored)?SessionId\(body\.openclawChatId\)\s*\n?\s*\?/);
-  });
-
-  it("the registry refuses a quarantined chat until released", () => {
-    const r = new HermesTurnRegistry();
-    expect(r.isQuarantined("c1")).toBe(false);
-    r.quarantine("c1");
-    expect(r.isQuarantined("c1")).toBe(true);
-    r.releaseQuarantine("c1");
-    expect(r.isQuarantined("c1")).toBe(false);
-  });
-
-  it("quarantine is per chat — one timeout does not blind the others", () => {
-    const r = new HermesTurnRegistry();
-    r.quarantine("c1");
-    expect(r.isQuarantined("c2")).toBe(false);
   });
 });

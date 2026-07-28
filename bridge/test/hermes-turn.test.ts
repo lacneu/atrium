@@ -9,7 +9,6 @@ import { runHermesTurn } from "../src/providers/hermes/turn.js";
 import type { HermesClient } from "../src/providers/hermes/client.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 import { HermesError } from "../src/providers/hermes/client.js";
-import { invalidateSession } from "../src/core/dispatch-deadline.js";
 
 function spyWriter() {
   const calls: string[] = [];
@@ -205,7 +204,11 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
   /** A writer that records what `finalize` was actually told — the shared spy above
    *  keeps only the call NAME, and the whole point here is the named cause. */
   function detailWriter(
-    finals: Array<{ status?: string; errorKind?: string }>,
+    finals: Array<{
+      status?: string;
+      errorKind?: string;
+      clearProviderSession?: string;
+    }>,
   ): ConvexWriter {
     return {
       startAssistant: async () => "msg-1",
@@ -220,8 +223,15 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
         _text?: string,
         _error?: string | null,
         errorKind?: string | null,
+        opts?: { clearProviderSession?: string },
       ) => {
-        finals.push({ status, errorKind: errorKind ?? undefined });
+        // The FLAG as the writer received it — asserting the call site passes it would
+        // prove nothing about what reaches Convex.
+        finals.push({
+          status,
+          errorKind: errorKind ?? undefined,
+          clearProviderSession: opts?.clearProviderSession,
+        });
       },
       reportSessionMeta: async () => {},
       getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
@@ -298,8 +308,11 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
   it("settles response_timeout, and drops the session BEFORE settling", async () => {
     vi.useFakeTimers();
     try {
-      const order: string[] = [];
-      const finals: Array<{ status?: string; errorKind?: string }> = [];
+      const finals: Array<{
+        status?: string;
+        errorKind?: string;
+        clearProviderSession?: string;
+      }> = [];
       const writer = detailWriter(finals);
       const run = runHermesTurn({
         client: silentClient({}),
@@ -308,15 +321,14 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
         sessionKey: "k",
         providerChatId: null,
         text: "hello",
-        onSessionUntrusted: async () => {
-          order.push("untrusted");
-        },
       });
       await run.accepted;
       await vi.advanceTimersByTimeAsync(240_000 + 1_000);
       await run.done;
-      order.push("settled");
-      expect(order).toEqual(["untrusted", "settled"]);
+      // The drop is no longer a separate write to order against the settle: it RIDES the
+      // terminal, so "before" is not a timing question any more — it is the same write.
+      // The session ID, so the drop names the binding it targets.
+      expect(finals[0]?.clearProviderSession).toBe("api_1_abcd");
       expect(finals).toHaveLength(1);
       expect(finals[0]?.status).toBe("error");
       expect(finals[0]?.errorKind).toBe("response_timeout");
@@ -325,12 +337,72 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
     }
   });
 
+  it("a stream that simply ENDS, with no terminal frame, drops the session too", async () => {
+    // Only the timeout path carried the drop at first — but an SSE body ending without a
+    // terminal frame is the commoner shape of the same ignorance (raised in review):
+    // Hermes never said the run was over, so it may still be going with its tools.
+    const finals: Array<{
+      status?: string;
+      clearProviderSession?: string;
+    }> = [];
+    const forgotten: string[] = [];
+    const run = runHermesTurn({
+      client: {
+        ensureSession: async () => "api_1_abcd",
+        openStream: async () => ({}) as Response,
+        // Clean EOF right after `run.started`: accepted, streamed, never terminated.
+        readStream: async (
+          _res: Response,
+          onFrame: (f: { event: string; data: string }) => void,
+        ) => {
+          onFrame({ event: "run.started", data: '{"run_id":"run-88"}' });
+        },
+      } as unknown as HermesClient,
+      writer: detailWriter(finals),
+      chatId: "c1",
+      sessionKey: "k",
+      providerChatId: null,
+      text: "hello",
+      onSessionForgotten: () => forgotten.push("c1"),
+    });
+    await run.accepted;
+    await run.done;
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.clearProviderSession).toBe("api_1_abcd");
+    expect(forgotten).toEqual(["c1"]);
+  });
+
+  it("a read failure drops it as well — our socket broke, the run's fate is unknown", async () => {
+    const finals: Array<{
+      status?: string;
+      clearProviderSession?: string;
+    }> = [];
+    const run = runHermesTurn({
+      client: {
+        ensureSession: async () => "api_1_abcd",
+        openStream: async () => ({}) as Response,
+        readStream: async () => {
+          throw new Error("socket hang up");
+        },
+      } as unknown as HermesClient,
+      writer: detailWriter(finals),
+      chatId: "c1",
+      sessionKey: "k",
+      providerChatId: null,
+      text: "hello",
+    });
+    await run.accepted;
+    await run.done;
+    // "Delivered error" describes what the USER sees, not what the provider told us.
+    expect(finals[0]?.status).toBe("error");
+    expect(finals[0]?.clearProviderSession).toBe("api_1_abcd");
+  });
+
   it("a user Stop stays an ABORT — the two share an AbortError and must not be confused", async () => {
     vi.useFakeTimers();
     try {
       const finals: Array<{ status?: string; errorKind?: string }> = [];
       const writer = detailWriter(finals);
-      const dropped: string[] = [];
       const external = new AbortController();
       const run = runHermesTurn({
         client: silentClient({}),
@@ -340,9 +412,6 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
         providerChatId: null,
         text: "hello",
         signal: external.signal,
-        onSessionUntrusted: async () => {
-          dropped.push("x");
-        },
       });
       await run.accepted;
       external.abort();
@@ -351,44 +420,9 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
       // A user Stop is Convex's to finalize (optimistic): the bridge writes no terminal
       // here, and it certainly does not throw the session away.
       expect(finals).toEqual([]);
-      expect(dropped).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
   });
 });
 
-describe("the invalidation must not fail quietly (lot 30)", () => {
-  it("retries once, and says so loudly when it still fails", async () => {
-    // The callback clears the PERSISTED binding, and the next send prefers that persisted
-    // value over the in-memory registry already forgotten. A swallowed failure therefore
-    // hands the suspect session back — the one outcome this path exists to prevent.
-    const attempts: number[] = [];
-    const errors: unknown[] = [];
-    const spy = console.error;
-    console.error = (...a: unknown[]) => errors.push(a[0]);
-    try {
-      await invalidateSession(async () => {
-        attempts.push(attempts.length + 1);
-        throw new Error("convex down");
-      }, "test");
-    } finally {
-      console.error = spy;
-    }
-    expect(attempts).toEqual([1, 2]);
-    expect(String(errors[errors.length - 1])).toContain("GIVING UP");
-  });
-
-  it("stops retrying as soon as it succeeds", async () => {
-    let calls = 0;
-    await invalidateSession(async () => {
-      calls++;
-      if (calls === 1) throw new Error("transient");
-    }, "test");
-    expect(calls).toBe(2);
-  });
-
-  it("does nothing when no callback is supplied", async () => {
-    await expect(invalidateSession(undefined, "test")).resolves.toBeUndefined();
-  });
-});

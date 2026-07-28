@@ -356,7 +356,14 @@ export interface ConvexWriter {
      *  gatewayPreempted: the gateway killed this REAL zero-content turn to run
      *  a delivery (never a user Stop) — Convex re-parks the outbox row for an
      *  automatic re-dispatch once the delivery settles (preemptRepark.ts). */
-    opts?: { discardStreamText?: boolean; gatewayPreempted?: boolean },
+    opts?: {
+      discardStreamText?: boolean;
+      gatewayPreempted?: boolean;
+      /** The provider session id this turn was watching — a STRING so that a hop
+       *  dropping it fails CLOSED (no clear) rather than clearing a binding that may
+       *  no longer be ours. */
+      clearProviderSession?: string;
+    },
   ): Promise<void>;
   /**
    * Session re-hydration: a bounded block of this chat's prior turns (excluding
@@ -667,6 +674,10 @@ type IngestOp =
       /** The streamed live text is protocol noise (NO_REPLY sentinel) — the
        *  finalize must not fall back to it. Atomic with the finalize. */
       discardStreamText?: boolean;
+      /** The provider session id this turn was watching, when it ended on SILENCE and so
+       *  cannot vouch for the run. Atomic with the finalize BY DESIGN — see the mutation.
+       *  The ID, not a flag: it narrows the drop to the binding this turn actually had. */
+      clearProviderSession?: string;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -1880,7 +1891,14 @@ export class HttpConvexWriter implements ConvexWriter {
     text: string,
     error: string | null,
     errorKind: string | null = null,
-    opts?: { discardStreamText?: boolean; gatewayPreempted?: boolean },
+    opts?: {
+      discardStreamText?: boolean;
+      gatewayPreempted?: boolean;
+      /** The provider session id this turn was watching — a STRING so that a hop
+       *  dropping it fails CLOSED (no clear) rather than clearing a binding that may
+       *  no longer be ours. */
+      clearProviderSession?: string;
+    },
   ): Promise<void> {
     try {
       await this.flushDelta(messageId); // never strand buffered deltas behind final
@@ -1894,6 +1912,10 @@ export class HttpConvexWriter implements ConvexWriter {
         errorKind,
         ...(opts?.discardStreamText === true ? { discardStreamText: true } : {}),
         ...(opts?.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+        ...(typeof opts?.clearProviderSession === "string" &&
+        opts.clearProviderSession !== ""
+          ? { clearProviderSession: opts.clearProviderSession }
+          : {}),
         ...this.genTag(messageId),
       });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its

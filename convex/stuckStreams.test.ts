@@ -433,3 +433,147 @@ describe("watchdog releases a stuck documentary fetch", () => {
     });
   });
 });
+
+describe("a reap drops the provider session (lot 31)", () => {
+  // A reap means NOBODY settled this turn — no terminal, ever — so nothing is known about
+  // the provider's run. The timeout's own clear rides its finalize, and here there is no
+  // finalize: this is the case that clear cannot reach. Without it, a bridge that crashed
+  // mid-turn left the stored session behind and the next send resumed a run nobody had
+  // stopped.
+
+  async function seedWithSession(t: T, stored: string | undefined) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        ...(stored === undefined ? {} : { openclawChatId: stored }),
+      });
+      const at = Date.now() - STALE;
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "webchat-run-1",
+        updatedAt: at,
+      });
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial",
+        updatedAt: at,
+      });
+      return chatId;
+    });
+  }
+
+  const sessionOf = async (t: T, chatId: unknown) =>
+    await t.run(async (ctx) => {
+      const c = await ctx.db.get(chatId as never);
+      return {
+        stored: (c as { openclawChatId?: string } | null)?.openclawChatId,
+        epoch: (c as { providerResetCount?: number } | null)?.providerResetCount,
+      };
+    });
+
+  test("a Hermes WS session id is dropped and the epoch bumps", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedWithSession(t, "20260706_212939_aee24e");
+    await t.mutation(internal.stuckStreams.reconcileStuckStreams, {});
+    expect(await sessionOf(t, chatId)).toEqual({ stored: undefined, epoch: 1 });
+  });
+
+  test("a Hermes REST session id is dropped too", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedWithSession(t, "api_1751830179_9f2c");
+    expect((await sessionOf(t, chatId)).stored).toBe("api_1751830179_9f2c");
+    await t.mutation(internal.stuckStreams.reconcileStuckStreams, {});
+    expect((await sessionOf(t, chatId)).stored).toBeUndefined();
+  });
+
+  test("an OpenClaw ROUTING SEGMENT is left exactly where it is", async () => {
+    // The slot is shared. Clearing a routing segment would break routing to fix a session
+    // that was never stored there — the shape guard, not the call site, is what bounds
+    // the blast radius.
+    const t = convexTest(schema, modules);
+    const chatId = await seedWithSession(t, "turn:nx7dt2mbcnsr3pvpghhtmndazh");
+    await t.mutation(internal.stuckStreams.reconcileStuckStreams, {});
+    const after = await sessionOf(t, chatId);
+    expect(after.stored).toBe("turn:nx7dt2mbcnsr3pvpghhtmndazh");
+    // …and the epoch still bumps: an in-flight bind must stand down either way.
+    expect(after.epoch).toBe(1);
+  });
+
+  test("an EMPTY slot still bumps the epoch", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedWithSession(t, undefined);
+    await t.mutation(internal.stuckStreams.reconcileStuckStreams, {});
+    expect((await sessionOf(t, chatId)).epoch).toBe(1);
+  });
+});
+
+describe("every path that releases a turn WITHOUT a terminal drops the session (lot 31)", () => {
+  // The periodic reap was the first one found. Two more release a chat the same way — the
+  // privileged reconcile-chat endpoint, and the bridge's own startup sweep, which is
+  // exactly the restart case where the in-memory cache is gone and only the persisted id
+  // remains. A fix that covers one of three reads, from every report, like a fix.
+
+  async function seedFor(t: T, stored: string, boundInstance?: string) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        openclawChatId: stored,
+        ...(boundInstance ? { instanceName: boundInstance } : {}),
+      });
+      const at = Date.now() - STALE;
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "hermes-run-1",
+        updatedAt: at,
+      });
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial",
+        updatedAt: at,
+        // The sweep selects by the per-turn stamp; the chat binding is the fallback.
+        ...(boundInstance ? { boundInstance } : {}),
+      });
+      return chatId;
+    });
+  }
+
+  const storedOf = async (t: T, chatId: unknown) =>
+    await t.run(async (ctx) => {
+      const c = await ctx.db.get(chatId as never);
+      // A REMOVED field crosses the convex-test boundary as `null`, not `undefined` —
+      // asserting on the raw value would be asserting on the harness.
+      return (c as { openclawChatId?: string } | null)?.openclawChatId ?? "«cleared»";
+    });
+
+  test("the reconcile-chat path clears it", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedFor(t, "api_1751830179_9f2c");
+    await t.mutation(internal.stuckStreams.reconcileChatStuckStreams, {
+      chatId: chatId as never,
+    });
+    expect(await storedOf(t, chatId)).toBe("«cleared»");
+  });
+
+  test("the startup sweep clears it — the restart case", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedFor(t, "20260706_212939_aee24e", "hermes");
+    await t.mutation(internal.stuckStreams.sweepInstanceStreams, {
+      instanceName: "hermes",
+    });
+    expect(await storedOf(t, chatId)).toBe("«cleared»");
+  });
+});

@@ -301,6 +301,9 @@ export class TurnSink {
   /** The provider marked the streamed live text as NOISE (promoted failure
    *  prose / sentinel): the finalize must not fall back to it. */
   private pendingDiscardStream = false;
+  /** A turn that ended on SILENCE cannot vouch for the provider's run: its stored session
+   *  must be dropped, and the drop must be atomic with this finalize. */
+  private pendingClearProviderSession: string | null = null;
   // Trace-only error class: set even when the turn finalizes COMPLETE (a
   // post-reply gateway failure keeps the delivered answer but its class must
   // still reach the gateway_pressure trace). Never sent to writer.finalize —
@@ -1257,6 +1260,14 @@ export class TurnSink {
               : null;
           this.pendingDiscardStream =
             (event as { discardStreamText?: unknown }).discardStreamText === true;
+          // Rides the SAME buffered final the flags above do, so it reaches the one
+          // finalize call rather than a second write that could fail on its own.
+          {
+            const cps = (event as { clearProviderSession?: unknown })
+              .clearProviderSession;
+            this.pendingClearProviderSession =
+              typeof cps === "string" && cps !== "" ? cps : null;
+          }
           this.pendingDiagErrorKind =
             typeof event.diagnosticErrorKind === "string" &&
             event.diagnosticErrorKind
@@ -1892,7 +1903,8 @@ export class TurnSink {
       sentinelOnly ||
         effectiveErrorKind === SILENT_RESPONSE_CODE ||
         this.pendingDiscardStream ||
-        gatewayPreempted
+        gatewayPreempted ||
+        this.pendingClearProviderSession
         ? {
             ...(sentinelOnly ||
             effectiveErrorKind === SILENT_RESPONSE_CODE ||
@@ -1900,6 +1912,9 @@ export class TurnSink {
               ? { discardStreamText: true }
               : {}),
             ...(gatewayPreempted ? { gatewayPreempted: true } : {}),
+            ...(this.pendingClearProviderSession !== null
+              ? { clearProviderSession: this.pendingClearProviderSession }
+              : {}),
           }
         : undefined,
     );

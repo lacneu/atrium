@@ -106,6 +106,7 @@ import {
   rehydrationBudgetChars,
 } from "./lib/rehydration";
 import { composeQuotedText, quotePreamble } from "./lib/quoteReply";
+import { providerSessionClearPatch } from "./lib/providerSession";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -1598,6 +1599,50 @@ export const streamPoll = internalQuery({
   },
 });
 
+/**
+ * Apply a finalize's `clearProviderSession` directive to the chat, if any.
+ *
+ * Shared by the two exits of `finalize` that must honor it: the normal terminal write,
+ * and the "already terminal" no-op — a turn that gave up on silence still has to drop the
+ * session it cannot vouch for, even when a user Stop finalized the bubble first and this
+ * finalize therefore transitions nothing. Missing that second exit left the drop tied to
+ * winning a race it does not need to win.
+ */
+async function dropUntrustedProviderSession(
+  ctx: { db: MutationCtx["db"] },
+  chatId: Id<"chats">,
+  directive: boolean | string | undefined,
+  /** TRUE when this finalize transitioned NOTHING (a retry, or a terminal that lost the
+   *  race to a user Stop). Such a writer is late and may only remove a binding it can
+   *  name — see `providerSessionClearPatch`. */
+  late = false,
+): Promise<void> {
+  if (directive === undefined || directive === false) return;
+  if (directive === true) {
+    // Legacy wire form (pre-id bridge, rolling deploy). Honored on the OWNING path, where
+    // it does exactly what it always did; inert on the late path, which needs an id to
+    // match. Logged so the window is visible rather than silently permanent.
+    console.log("[stream] clearProviderSession: legacy flag with no session id");
+  }
+  const chat = await ctx.db.get(chatId);
+  if (chat === null) return;
+  const patch = providerSessionClearPatch(
+    chat.openclawChatId,
+    chat.providerResetCount,
+    {
+      ...(typeof directive === "string" ? { expected: directive } : {}),
+      onlyExactMatch: late,
+    },
+  );
+  // An empty patch means this writer has no claim on the slot: a newer turn owns it, or
+  // a late writer cannot name what is there. Neither the binding nor the epoch moves.
+  if (Object.keys(patch).length === 0) {
+    console.log("[stream] clearProviderSession skipped: chat bound to a newer session");
+    return;
+  }
+  await ctx.db.patch(chatId, patch);
+}
+
 // Mark the assistant turn done (message.final). `status` is "complete" on a
 // clean finish, "error" when the normalizer surfaced an error, or "aborted".
 // Optional `text` lets the bridge set the final authoritative text (the
@@ -1633,6 +1678,26 @@ export const finalize = internalMutation({
     // never processed: re-park its outbox row for ONE automatic re-dispatch
     // once the delivery settles (preemptRepark.ts).
     gatewayPreempted: v.optional(v.boolean()),
+    // This turn ended without knowing whether the provider's run stopped (silence, not a
+    // delivered error), so its stored provider session must not be resumed.
+    //
+    // ATOMIC WITH THE FINALIZE, and that is the whole design: a separate clear could fail
+    // on its own while the turn settled anyway, handing the suspect session back to the
+    // next send — the bridge had to carry an in-memory quarantine to paper over exactly
+    // that, and the quarantine died with the process. Here the two outcomes are the only
+    // two possible: the finalize lands and the session is cleared, or it does not land
+    // and the turn is not settled, so the chat is never released and nothing can resume.
+    /** The provider session id this turn was watching, when the turn ended without
+     *  knowing whether its run stopped. A STRING, not a flag: this value crosses five
+     *  hops (turn → sink → writer → `/bridge/ingest` → here), and a hop that drops it
+     *  must fail CLOSED — no id means no clear, costing one rehydration. A boolean that
+     *  went missing would instead have to pick a default, and "clear unconditionally"
+     *  fails OPEN onto a binding that may no longer be ours.
+     *
+     *  `v.boolean()` is accepted for ONE release: during a rolling deploy an older
+     *  bridge still posts `true`, and rejecting it would fail the finalize and wedge the
+     *  turn in `streaming` — the very class of bug this field exists to close. */
+    clearProviderSession: v.optional(v.union(v.boolean(), v.string())),
     ...boundArg,
   },
   handler: async (
@@ -1647,6 +1712,7 @@ export const finalize = internalMutation({
       boundInstanceName,
       discardStreamText,
       gatewayPreempted,
+      clearProviderSession,
     },
   ) => {
     const message = await ctx.db.get(messageId);
@@ -1662,6 +1728,11 @@ export const finalize = internalMutation({
       console.log(
         "[stream] finalize skipped: message re-owned by another run (announce merge)",
       );
+      // …and `clearProviderSession` is skipped with it, deliberately, for a reason the
+      // id match does NOT cover: the announce run works on that VERY session, so the id
+      // would match and the clear would fire. Dropping it here would break a turn that is
+      // working, to protect against one that already lost its claim. The chat is not
+      // released by this path either, so nothing resumes in the meantime.
       return { transitioned: false as const };
     }
     // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
@@ -1675,6 +1746,18 @@ export const finalize = internalMutation({
     if (message.status !== "streaming") {
       console.log(
         `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
+      );
+      // …but the SESSION DROP still applies. A user Stop finalizes the bubble `aborted`
+      // in Convex while the bridge's own silence terminal is in flight; the bridge writes
+      // no terminal of its own on a Stop (`forceSettle(false)`), so if the drop rode only
+      // the transition it would vanish with the race — and the chat is released, so the
+      // next send reads the very slot this turn declared untrusted. The id match is what
+      // makes this late write safe (see `providerSessionClearPatch`).
+      await dropUntrustedProviderSession(
+        ctx,
+        message.chatId,
+        clearProviderSession,
+        true,
       );
       // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
       // so this no-op is expected — and the ingest route must not write a second
@@ -1839,6 +1922,10 @@ export const finalize = internalMutation({
         await maybeReparkPreemptedTurn(ctx, fresh, finalLen);
       }
     }
+    // DROP the provider session BEFORE the drain, for the same reason the bridge clears
+    // before it settles: the drain is what releases the next send, and a send that reads
+    // the slot after this point must not find a session whose run may never have stopped.
+    await dropUntrustedProviderSession(ctx, message.chatId, clearProviderSession);
     // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
     // any) — the engine of mid-turn message serialization (Phase 1).
     await drainNextQueued(ctx, message.chatId);

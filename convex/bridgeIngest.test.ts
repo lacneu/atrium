@@ -1305,3 +1305,89 @@ describe("a retried finalize does not inflate the ingest traces", () => {
     expect(afterRetry).toBe(1);
   });
 });
+
+describe("finalize relays the session-drop flag (lot 31)", () => {
+  // THE hop that was broken while every other test was green. Four hops carry this flag:
+  // the turn → the sink → `writer.finalize` → the posted op → **this endpoint** → the
+  // mutation. The bridge tests spy on the writer, the writer test reads the posted body,
+  // and `providerSessionClear.test.ts` calls the mutation directly — so a variant that
+  // did not declare the field, and a relay that did not forward it, sat exactly in the
+  // gap between them. In production the session was never cleared.
+
+  async function seedWithSession(t: T, stored: string) {
+    await seedAssistantMessage(t);
+    return await t.run(async (ctx) => {
+      const msg = await ctx.db
+        .query("messages")
+        .filter((q) => q.eq(q.field("status"), "streaming"))
+        .first();
+      if (msg === null) throw new Error("no streaming message seeded");
+      await ctx.db.patch(msg.chatId, { openclawChatId: stored });
+      return { chatId: msg.chatId, messageId: msg._id };
+    });
+  }
+
+  const chatState = async (t: T, chatId: Id<"chats">) =>
+    await t.run(async (ctx) => {
+      const c = await ctx.db.get(chatId);
+      return {
+        stored: c?.openclawChatId ?? "«cleared»",
+        epoch: c?.providerResetCount ?? 0,
+      };
+    });
+
+  test("a silence terminal clears the stored session end to end", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedWithSession(t, "20260706_212939_aee24e");
+    const res = await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "",
+      error: "Hermes stopped sending before the reply was complete.",
+      errorKind: "response_timeout",
+      clearProviderSession: "20260706_212939_aee24e",
+    });
+    expect(res.status).toBe(200);
+    expect(await chatState(t, chatId)).toEqual({ stored: "«cleared»", epoch: 1 });
+  });
+
+  test("the relay carries the ID, not a flag — a chat on a NEWER session is untouched", async () => {
+    // The companion of the test above, and the one that pins the SHAPE. If this hop ever
+    // degraded the id to a bare `true` — a plausible "simplification" — the clear would
+    // fire unconditionally and wipe a binding that works. That regression leaves the
+    // first test green and reddens only this one.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedWithSession(t, "20260707_101010_bbbbbb");
+    const res = await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "",
+      error: "Hermes stopped sending before the reply was complete.",
+      errorKind: "response_timeout",
+      clearProviderSession: "20260706_212939_aee24e", // the OLD turn's session
+    });
+    expect(res.status).toBe(200);
+    expect(await chatState(t, chatId)).toEqual({
+      stored: "20260707_101010_bbbbbb",
+      epoch: 0,
+    });
+  });
+
+  test("an ordinary terminal posted the same way leaves it alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedWithSession(t, "20260706_212939_aee24e");
+    const res = await post(t, {
+      op: "finalize",
+      messageId,
+      status: "complete",
+      text: "voilà",
+    });
+    expect(res.status).toBe(200);
+    expect(await chatState(t, chatId)).toEqual({
+      stored: "20260706_212939_aee24e",
+      epoch: 0,
+    });
+  });
+});

@@ -1387,3 +1387,42 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
     expect(attempts).toBe(1);
   });
 });
+
+describe("the session-drop flag reaches the WIRE, not just the method (lot 31)", () => {
+  // Three hops carry this flag: the turn hands it to the sink, the sink to
+  // `writer.finalize`, and the writer into the posted op. The turn-level tests spy on the
+  // WRITER and the Convex tests call the MUTATION — so a dropped line in between would
+  // leave both green while the session was never cleared. This is that middle hop.
+
+  test("finalize posts the session ID, not a flag", async () => {
+    const { fetchImpl, sent, release } = controlledFetch();
+    const w = writerWith(fetchImpl);
+    const done = w.finalize("m1", "error", "", "silence", "response_timeout", {
+      clearProviderSession: "20260706_212939_aee24e",
+    });
+    await tick(1);
+    release();
+    await done;
+    const op = sent.find((s) => s.op === "finalize") as
+      | { clearProviderSession?: string }
+      | undefined;
+    // The ID has to survive the hop INTACT: a hop that degraded it to `true` would make
+    // the mutation clear unconditionally, which is the failure-OPEN this shape exists to
+    // prevent.
+    expect(op?.clearProviderSession).toBe("20260706_212939_aee24e");
+  });
+
+  test("…and OMITS it otherwise — an ordinary terminal must not drop a session", async () => {
+    const { fetchImpl, sent, release } = controlledFetch();
+    const w = writerWith(fetchImpl);
+    const done = w.finalize("m1", "complete", "voilà", null);
+    await tick(1);
+    release();
+    await done;
+    const op = sent.find((s) => s.op === "finalize") as
+      | { clearProviderSession?: string }
+      | undefined;
+    expect(op).toBeDefined();
+    expect(op?.clearProviderSession).toBeUndefined();
+  });
+});

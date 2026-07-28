@@ -37,39 +37,6 @@ export const PRE_SEND_DEADLINE_MS = 8 * 60_000;
  */
 export const RECV_SILENCE_MS = 240_000;
 
-/** Drop a session the turn can no longer vouch for, and RETRY once.
- *
- *  A swallowed failure here is not a cosmetic loss: the callback clears the PERSISTED
- *  binding, and the next send prefers that persisted value over the in-memory registry we
- *  already forgot. So a Convex hiccup at exactly this moment made the suspect session
- *  reusable again — the one outcome this whole path exists to prevent (raised in review).
- *
- *  One retry, then LOUD. Refusing to settle the turn until the write succeeds would trade
- *  a reusable session for a wedged conversation, which is worse; what is not acceptable is
- *  failing quietly. The in-memory forget still applies either way. */
-export async function invalidateSession(
-  onSessionUntrusted: (() => Promise<void>) | undefined,
-  logPrefix: string,
-): Promise<void> {
-  if (!onSessionUntrusted) return;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      await onSessionUntrusted();
-      return;
-    } catch (e) {
-      const last = attempt === 2;
-      console.error(
-        `[${logPrefix}] session invalidation attempt ${attempt} failed${
-          last
-            ? " — GIVING UP: the persisted session may still be resumable by the next send"
-            : ", retrying"
-        }:`,
-        (e as Error)?.message ?? e,
-      );
-    }
-  }
-}
-
 /** The abort REASON a turn uses when IT gave up on silence — distinct from a user Stop,
  *  which arrives through the caller's own signal. Without it the two are the same
  *  `AbortError` and the turn cannot tell "the user cancelled" from "nobody answered". */

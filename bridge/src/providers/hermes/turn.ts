@@ -20,7 +20,6 @@ import type { ConvexWriter } from "../../convex-writer.js";
 import type { HermesClient } from "./client.js";
 import {
   assertBeforeSendDeadline,
-  invalidateSession,
   RECV_SILENCE_ABORT,
   RECV_SILENCE_MS,
 } from "../../core/dispatch-deadline.js";
@@ -46,9 +45,9 @@ export interface HermesTurnOptions {
   freshText?: () => Promise<string>;
   /** Persist a NEWLY minted session id back to Convex (turn 1 only). */
   onBoundSession?: (sessionId: string) => Promise<void>;
-  /** The stored session must NOT be reused: this turn ended without knowing whether the
-   *  provider's run stopped. Same callback and same contract as the WS path. */
-  onSessionUntrusted?: () => Promise<void>;
+  /** Forget this chat's session in the bridge's IN-MEMORY cache — see the WS path: the
+   *  durable clear rides the finalize and empties only the Convex slot. */
+  onSessionForgotten?: () => void;
   /** Aborts the in-flight SSE request (Stop button). */
   signal?: AbortSignal;
   pressure?: {
@@ -119,6 +118,12 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         );
       }
     }
+    /** The session id this turn runs on — the value the chat's slot holds (a resume) or
+     *  will hold (a fresh mint). Hoisted OUT of the send block because the paths that
+     *  must drop it live in the read block below, and a drop has to name the binding it
+     *  targets: a terminal can land after the chat was released and a newer turn bound a
+     *  session of its own. */
+    let boundSessionId: string | null = null;
     let recvTimer: ReturnType<typeof setTimeout> | null = null;
     const disarmRecv = (): void => {
       if (recvTimer !== null) {
@@ -135,6 +140,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
 
     try {
       let sessionId = await opts.client.ensureSession(opts.providerChatId);
+      boundSessionId = sessionId;
       // Whether THIS turn minted the session (turn 1, or the 404 recovery
       // below). The id is persisted only AFTER the gateway accepts the prompt:
       // binding earlier would make a failed first send look WARM on retry (a
@@ -160,6 +166,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         const status = (err as { status?: number })?.status;
         if (status === 404 && opts.providerChatId) {
           sessionId = await opts.client.ensureSession(null);
+          boundSessionId = sessionId;
           mintedFresh = true;
           // The REAL session is brand new despite the stored id — the prompt
           // must carry the rehydration history after all (freshText is
@@ -250,9 +257,18 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
       });
       if (!norm.isFinalized) {
         // Clean EOF, or accepted-but-streamed-nothing: settle honestly.
+        //
+        // And DROP THE SESSION. An SSE stream that ends without a terminal frame is the
+        // same ignorance as silence, not a delivered outcome: the provider never said the
+        // run was over, so it may still be running with its tools and their side effects.
+        // Only the timeout path carried this at first, which covered a stall but not the
+        // commoner case of the body simply ending (raised in review).
+        opts.onSessionForgotten?.();
         enqueue(
           norm.endTurn(
             stampedRunId ? null : "Hermes accepted the run but sent no response.",
+            null,
+            boundSessionId,
           ),
         );
       }
@@ -281,15 +297,16 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
                 ),
               );
           }
-          // Same ordering as the WS path: drop the session BEFORE settling, while the
-          // chat is still busy, so no later turn can resume a session whose run may
-          // never have stopped. Retried once — a swallowed failure here leaves the
-          // suspect session reusable, which is the one thing this path exists to stop.
-          await invalidateSession(opts.onSessionUntrusted, "hermes-turn");
+          // The stored session is dropped ATOMICALLY WITH THIS TERMINAL — see
+          // `clearProviderSession`. A separate write could fail on its own while the turn
+          // settled anyway, which is what the in-memory quarantine existed to paper over.
+          // The in-process cache is a different thing and still has to be told.
+          opts.onSessionForgotten?.();
           enqueue(
             norm.endTurn(
               "Hermes stopped sending before the reply was complete.",
               "response_timeout",
+              boundSessionId,
             ),
           );
         }
@@ -313,8 +330,12 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
           enqueue(norm.abortTurn());
         }
       } else if (!norm.isFinalized) {
-        // Stream died mid-generation → finalize a delivered error.
-        enqueue(norm.endTurn(messageOf(err)));
+        // Stream died mid-generation → finalize a delivered error. "Delivered" describes
+        // what the USER sees, not what the provider told us: a read failure is OUR socket
+        // breaking, so the run's fate is unknown and the session goes with it — the same
+        // reasoning the WS transport-lost path follows.
+        opts.onSessionForgotten?.();
+        enqueue(norm.endTurn(messageOf(err), null, boundSessionId));
       }
     }
     disarmRecv();

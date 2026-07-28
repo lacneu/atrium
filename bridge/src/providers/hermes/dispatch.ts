@@ -16,6 +16,7 @@ import {
   runHermesWsTurn,
   isHermesWsStoredSessionId,
   type HermesWsTurnRun,
+  type HermesWsSessionHandlers,
 } from "./ws-turn.js";
 
 /** Non-secret routed body fields the Hermes path needs (subset of the send body). */
@@ -116,7 +117,7 @@ export class HermesTurnRegistry {
   private filesFetchers = new Map<string, HermesFilesFetcher>();
   // Keyed by `<instance>\u0000<runtimeSessionId>` — one instance's events (or
   // its socket dying) must NEVER reach another instance's turns.
-  private wsSubscribers = new Map<string, (type: string, payload: Record<string, unknown>) => void>();
+  private wsSubscribers = new Map<string, HermesWsSessionHandlers>();
   private wsTurns = new Map<string, LiveHermesWsTurn>();
 
   /** One persistent WS client per instance (lazy; auto-reconnect on next use). */
@@ -129,16 +130,25 @@ export class HermesTurnRegistry {
       credential: cfg.openclawToken ?? "",
       onEvent: (type, sessionId, payload) => {
         const sub = this.wsSubscribers.get(`${key}\u0000${sessionId}`);
-        sub?.(type, payload);
+        sub?.onEvent(type, payload);
       },
       onClose: () => {
-        // THIS instance's socket died: its subscribed turns get a terminal
-        // error so no message is left streaming until the watchdog. Turns of
-        // OTHER instances are untouched. Next turn reconnects lazily.
+        // THIS instance's socket died: its subscribed turns settle so no message is
+        // left streaming until the watchdog. Turns of OTHER instances are untouched.
+        // Next turn reconnects lazily.
+        //
+        // Through the turn's own TRANSPORT-LOST callback, not an injected `error` event:
+        // that branch means "Hermes delivered a failure", and a turn taking this exit
+        // used to keep its stored session — which nobody can vouch for, since the run
+        // may still be going on the other side of the socket that just died.
+        //
+        // ONE heartbeat drops EVERY session of the instance. That is the honest scope:
+        // the socket is per-instance, so its death really does leave every turn on it
+        // unattributable. The cost is bounded — one rehydration each.
         for (const [k, sub] of this.wsSubscribers) {
           if (!k.startsWith(`${key}\u0000`)) continue;
           this.wsSubscribers.delete(k);
-          sub("error", { message: "Hermes WS connection lost." });
+          sub.onTransportLost("Hermes WS connection lost.");
         }
       },
     });
@@ -162,12 +172,15 @@ export class HermesTurnRegistry {
   subscribeWsSession(
     instanceName: string,
     runtimeSessionId: string,
-    onEvent: (type: string, payload: Record<string, unknown>) => void,
+    handlers: HermesWsSessionHandlers,
   ): () => void {
     const k = `${instanceName}\u0000${runtimeSessionId}`;
-    this.wsSubscribers.set(k, onEvent);
+    this.wsSubscribers.set(k, handlers);
     return () => {
-      if (this.wsSubscribers.get(k) === onEvent) {
+      // IDENTITY-checked: a later turn on the same runtime session must keep its own
+      // handlers when this turn's deferred unsubscribe fires. `onClose` already deleted
+      // the entry before notifying, so the double-fire is a no-op either way.
+      if (this.wsSubscribers.get(k) === handlers) {
         this.wsSubscribers.delete(k);
       }
     };
@@ -233,24 +246,6 @@ export class HermesTurnRegistry {
   rememberSession(targetKey: string, sessionId: string): void {
     this.sessions.set(targetKey, sessionId);
   }
-  /** Chats whose PERSISTED session must not be reused until a durable clear confirms it.
-   *
-   *  The in-memory forget alone does not close the hazard: the send path prefers the
-   *  PERSISTED `openclawChatId` over this registry, so between a timeout and a successful
-   *  `clearProviderChat` — a window a concurrent Stop can widen by releasing the chat —
-   *  the next send would resume exactly the session whose run may never have stopped
-   *  (raised in review). This flag is consulted BEFORE that persisted value and lifted
-   *  only when the clear has actually succeeded. */
-  private quarantined = new Set<string>();
-  quarantine(chatId: string): void {
-    this.quarantined.add(chatId);
-  }
-  releaseQuarantine(chatId: string): void {
-    this.quarantined.delete(chatId);
-  }
-  isQuarantined(chatId: string): boolean {
-    return this.quarantined.has(chatId);
-  }
   knownSession(targetKey: string): string | null {
     return this.sessions.get(targetKey) ?? null;
   }
@@ -305,21 +300,22 @@ const FRESH_SESSION_NONCE_RE = /^(summarize|documentary|curate):/i;
 /** WHICH session this send continues, or null for a fresh one.
  *
  *  Exported because it is a DECISION, and a decision that only exists inline is a decision
- *  no test can see change: a quarantine consulted here was added with a test that only
- *  exercised the registry, so removing this branch left the suite green — the shape this
- *  programme keeps paying for.
+ *  no test can see change — the two transports each kept their own copy until one of them
+ *  silently missed a rule the other had.
+ *
+ *  It briefly consulted an in-memory QUARANTINE, back when a timed-out turn cleared its
+ *  session in a separate write that could fail on its own. That write now rides the
+ *  finalize (lot 31), so by the time the chat is released the slot is already clear and
+ *  there is nothing left to quarantine.
  *
  *  Order matters:
- *   0. QUARANTINE — a previous turn timed out on silence and its durable clear is not
- *      confirmed, so nothing about this chat's stored session can be trusted yet. Checked
- *      FIRST, because the persisted id below is exactly what it must override.
  *   1. a persisted Hermes id (`api_…`) → reuse it;
  *   2. a rotation nonce (summarize:/documentary:/curate:) → fresh, no reuse (respect the
  *      utility chat's deliberate rotation);
  *   3. otherwise (null, or a `turn:` per-turn-routing segment) → the bridge's per-target
  *      memory, which survives a routing-segment clobber within this process. */
 export function selectPriorSession(
-  registry: Pick<HermesTurnRegistry, "isQuarantined" | "knownSession">,
+  registry: Pick<HermesTurnRegistry, "knownSession">,
   body: { chatId: string; openclawChatId: string | null },
   targetKey: string,
   /** Which id shape THIS transport may continue. Passed in rather than assumed: the two
@@ -330,7 +326,6 @@ export function selectPriorSession(
    *  decision, one place, or the same blind spot returns. */
   isOwnSessionId: (id: string | null) => boolean = isHermesSessionId,
 ): string | null {
-  if (registry.isQuarantined(body.chatId)) return null;
   if (isOwnSessionId(body.openclawChatId)) return body.openclawChatId;
   if (body.openclawChatId && FRESH_SESSION_NONCE_RE.test(body.openclawChatId)) return null;
   const known = registry.knownSession(targetKey);
@@ -382,8 +377,6 @@ export async function performHermesSend(
   // Reset-generation snapshot: gates the post-ACK session persistence below
   // AND the send itself across the history-fetch await.
   const resetGen = registry.generationOf(body.chatId);
-  /** The in-memory forget is idempotent; the durable clear is not. */
-  let sessionForgotten = false;
   // Branched/new chat on a FRESH Hermes session: carry the visible history to
   // the agent (parity with OpenClaw's rehydration — chatFork depends on it).
   const text = await promptWithFreshSessionHistory(
@@ -415,6 +408,10 @@ export async function performHermesSend(
     sendReceivedMs,
     dispatchAgeMs: body.dispatchAgeMs,
     onTurnError,
+    // In-process cache only: the DURABLE drop rides the terminal (lot 31). Without this
+    // the selector's memory fallback handed the suspect session straight back inside the
+    // same bridge process.
+    onSessionForgotten: () => registry.forgetChat(body.chatId),
     onBoundSession: async (sessionId) => {
       // A /reset that ran AFTER this turn started owns the slot now: a late
       // (post-ACK, fire-and-forget) bind must not resurrect the discarded
@@ -432,23 +429,6 @@ export async function performHermesSend(
     },
     // Same contract as the WS path — one callback, one meaning: this turn ended without
     // knowing whether the provider's run stopped, so its session must not be resumed.
-    onSessionUntrusted: async () => {
-      // The memory forget happens ONCE; the DURABLE clear is what gets retried. Doing
-      // both under the generation guard defeated the retry: `forgetChat` bumps the
-      // generation, so a second attempt found a mismatch, returned, and the helper read
-      // that no-op as success — the persisted session still resumable (raised in review).
-      if (!sessionForgotten) {
-        if (registry.generationOf(body.chatId) !== resetGen) return;
-        registry.forgetChat(body.chatId);
-        // Consulted BEFORE the persisted id on the next send, and lifted only by a
-        // CONFIRMED clear: a Stop can release the chat while this write is still in
-        // flight, and the next send must not resume the suspect session in that window.
-        registry.quarantine(body.chatId);
-        sessionForgotten = true;
-      }
-      await (writer.clearProviderChat?.(body.chatId) ?? Promise.resolve());
-      registry.releaseQuarantine(body.chatId);
-    },
   });
   const entry = { abort, run };
   registry.set(body.chatId, entry);
@@ -489,8 +469,6 @@ async function performHermesWsSend(
   // Reset-generation snapshot: gates the post-ACK session persistence below
   // AND the send itself across the history-fetch await.
   const wsResetGen = registry.generationOf(body.chatId);
-  /** The in-memory forget is idempotent; the durable clear is not. */
-  let sessionForgotten = false;
   // Same fresh-session history carry as the REST path (chatFork parity).
   const wsText = await promptWithFreshSessionHistory(
     writer,
@@ -522,6 +500,8 @@ async function performHermesWsSend(
       filesFetcher:
         cfg.mediaMode === "off" ? null : registry.filesFetcherFor(cfg),
       onTurnError,
+      // See the REST path: the durable drop rides the terminal, this is the cache.
+      onSessionForgotten: () => registry.forgetChat(body.chatId),
       onBoundSession: async (storedSid) => {
         // Same two-layer reset guard as the REST path: in-process generation
         // for the memory map + the Convex-side epoch for the atomic close.
@@ -532,33 +512,6 @@ async function performHermesWsSend(
           storedSid,
           body.providerResetCount ?? undefined,
         ) ?? Promise.resolve());
-      },
-      // The turn ended on SILENCE, so nobody knows whether the provider's run stopped.
-      // Same trio `/reset` performs when it decides a session is no longer ours — the
-      // interrupt happens in the turn, the two forgettings here, where the registry and
-      // the epoch live.
-      //
-      // The generation guard is the same one as above, and it covers LESS than it looks
-      // like it does: `generationOf` moves only on `/reset`, so it protects against a
-      // reset having taken the slot — not against a later turn. What protects against a
-      // later turn is the CALLER's ordering: this runs while the chat is still busy, so
-      // no later turn exists yet whose binding the epoch bump could land under.
-      onSessionUntrusted: async () => {
-        // The memory forget happens ONCE; the DURABLE clear is what gets retried. Doing
-        // both under the generation guard defeated the retry: `forgetChat` bumps the
-        // generation, so a second attempt found a mismatch, returned, and the helper read
-        // that no-op as success — the persisted session still resumable (raised in review).
-        if (!sessionForgotten) {
-          if (registry.generationOf(body.chatId) !== wsResetGen) return;
-          registry.forgetChat(body.chatId);
-          // Consulted BEFORE the persisted id on the next send, and lifted only by a
-          // CONFIRMED clear: a Stop can release the chat while this write is still in
-          // flight, and the next send must not resume the suspect session in that window.
-          registry.quarantine(body.chatId);
-          sessionForgotten = true;
-        }
-        await (writer.clearProviderChat?.(body.chatId) ?? Promise.resolve());
-        registry.releaseQuarantine(body.chatId);
       },
     },
     (sid, onEvent) =>
