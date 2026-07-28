@@ -284,7 +284,12 @@ describe("vendored protocol integrity", () => {
         // Present at all: the artifact exists on disk, so the record must exist too — an
         // unattributed derived file is the same hole as an unrecorded copied one.
         const onDisk = readdirSync(new URL(`${version}/`, PROTOCOL)).filter(
-          (f) => f.endsWith(".json") && f !== "PROVENANCE.json",
+          // BENCH.json is an ATTESTATION of a live run, not an artifact derived from
+          // upstream source: `bench-attestation.test.ts` owns it, and it is checked
+          // there against a re-hash of this very directory. Excluded here so the two
+          // ratchets stay about different things.
+          (f) =>
+            f.endsWith(".json") && f !== "PROVENANCE.json" && f !== "BENCH.json",
         );
         expect(Object.keys(derived).sort(), "derived artifacts vs the record").toEqual(
           onDisk.sort(),

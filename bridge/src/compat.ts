@@ -144,6 +144,51 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
   agentFiles: "0.18.0",
 };
 
+/**
+ * VERSION CLAIMS AND WHAT EARNS THEM (W11/G6).
+ *
+ * `validatedVersions` used to be a sentence somebody edited, with the bench run described
+ * in a prose comment beside it. A claim nobody can check is a claim nobody maintains, and
+ * `maxValidated` is not decoration: `withinSupport` returns true for every version at or
+ * above it, so an unearned bump silently declares support the bench never gave.
+ *
+ * The rule, enforced by `compat.test.ts`:
+ *
+ *   * `maxValidated`, and every version added from now on, MUST have a
+ *     `bridge/protocol/openclaw/<version>/BENCH.json` recording a GO run over the
+ *     complete catalogue.
+ *   * The six entries below `maxValidated` that predate this rule are GRANDFATHERED —
+ *     listed here, explicitly and dated. Re-running those gateways today would not tell
+ *     us whether the claim was true when it was made; it would manufacture evidence for a
+ *     past we cannot re-enter. What matters is that the exemption is finite, visible, and
+ *     cannot grow: the test asserts the grandfather set and the enforced set are
+ *     DISJOINT, so no future failure can be silenced by adding a name here.
+ *
+ * BENCH.json is a CONSISTENCY record, not a signature. The same hand runs the bench,
+ * writes the file and makes the commit, so it cannot prove authenticity — and saying it
+ * "signs" anything would be the self-attested-hash trap this program has already paid
+ * for. What it does prove is that the claim, the vendored surface and the repository
+ * state agree: the test RE-HASHES the vendored directory rather than trusting a number
+ * the file carries about itself.
+ */
+export const BENCH_GRANDFATHERED: Readonly<Record<string, readonly string[]>> = {
+  // Validated on the standing bench before BENCH.json existed (dates are the runs
+  // recorded in the release notes and the version-validation memory).
+  openclaw: [
+    "2026.5.19", // 2026-05 — first validated range floor
+    "2026.6.1",
+    "2026.6.5", // 2026-06-19 — full suite
+    "2026.6.10", // 2026-06-28 — full suite
+    "2026.6.11", // 2026-07-03 — full suite (announce fixtures captured here)
+    "2026.7.1-beta.2", // 2026-07-09 — RC bench
+    "2026.7.1-beta.5", // 2026-07-12 — GO 9/9
+  ],
+  // Hermes has no BENCH.json and will not get one in this program: no Hermes instance
+  // runs in production and W6/W7/W12 are deferred for that reason. The two entries stand
+  // on their 2026-07-11 WS-transport run.
+  hermes: ["0.18.0", "0.18.2"],
+};
+
 /** Transport-aware resolution for Hermes: the WS surface is a superset. */
 export function hermesCapabilitiesFor(
   transport: "ws" | "rest",

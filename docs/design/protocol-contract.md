@@ -47,6 +47,31 @@ bridge/protocol/openclaw/<version>/
 bridge/protocol/openclaw/coverage/<version>.json
 ```
 
+**What earns a version claim.** `validatedVersions` (and `maxValidated`, which decides
+whether a gateway is "within support") rests on an attestation the live bench writes into
+the vendored directory:
+
+```
+bridge/protocol/openclaw/<version>/BENCH.json
+  {
+    "kind": "atrium-bench-attestation",
+    "gatewayVersion": "<version>",     // must match the directory it sits in
+    "verdict": "GO",                   // only a GO earns a claim
+    "scenarios": ["basic-turn", …],    // the ids the run exercised
+    "providers": {"<id>": "openclaw"}, // which provider drove each one
+    "flags": [],                       // any --skip-* / --scenario given: must be empty
+    "atriumSha": "<40 hex>",           // the Atrium commit the run exercised
+    "vendoredSha256": "<64 hex>"       // hash of this directory, BENCH.json excluded
+  }
+```
+
+It is not a signature — the same hand runs the bench, writes the file and makes the
+commit, so authenticity is out of reach. It records CONSISTENCY, and the check that makes
+it load-bearing is that the test RE-COMPUTES `vendoredSha256` from the directory instead
+of trusting the number the file carries about itself. Versions validated before this rule
+existed are grandfathered by an explicit, dated list in `bridge/src/compat.ts`; the test
+asserts that list and the enforced set are disjoint, so the exemption cannot grow.
+
 **Derived artifacts.** Some of the surface is not in a schema at all: the
 gateway flattens the return shape of `buildSessionEventSnapshot` onto every
 agent event, and that shape lives in gateway source, not in the published

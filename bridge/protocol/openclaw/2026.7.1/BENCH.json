@@ -1,0 +1,37 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 1,
+  "gatewayVersion": "2026.7.1",
+  "verdict": "GO",
+  "at": "2026-07-28T13:19:11.869Z",
+  "scenarios": [
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "hermes-basic-turn",
+    "hermes-cron-list",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "tool-exec",
+    "update-plan"
+  ],
+  "providers": {
+    "basic-turn": "openclaw",
+    "tool-exec": "openclaw",
+    "update-plan": "openclaw",
+    "media-outbound": "openclaw",
+    "spawn-announce-merge": "openclaw",
+    "spawn-chain-merge": "openclaw",
+    "spawn-parallel-merge": "openclaw",
+    "async-task": "openclaw",
+    "cron-tool": "openclaw",
+    "hermes-basic-turn": "hermes",
+    "hermes-cron-list": "hermes"
+  },
+  "flags": [],
+  "atriumSha": "fcbb2712e8ba7ee7a1d48ddad1af11a1215553f3",
+  "bridgeVersion": "0.68.12",
+  "vendoredSha256": "d27d027fc15b77317d4a63e210c6ce821e7a3a401a98e4bb4c8b0eb4d7a2daea"
+}
