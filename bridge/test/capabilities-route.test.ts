@@ -166,7 +166,15 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
       validatedVersions: ["0.18.0", "0.18.2"],
-      capabilities: { abort: "0.18.0", agentsDiscovery: "0.18.0" },
+      // The TRANSPORT-INDEPENDENT surface: `agentFiles` and `mediaOutbound` are served
+      // over the managed-files HTTP API on `kind === "hermes"` alone (W11/G8). The WS
+      // overlay is applied per target by the server, not here.
+      capabilities: {
+        abort: "0.18.0",
+        agentsDiscovery: "0.18.0",
+        agentFiles: "0.18.0",
+        mediaOutbound: "0.18.0",
+      },
     });
     // No live gateway session in this test -> no targets.
     expect(body.targets).toEqual([]);
@@ -384,5 +392,42 @@ describe("GET /capabilities with a configured gateway-version fallback", () => {
       gatewayVersion: string | null;
     };
     expect(body.gatewayVersion).toBe("2026.6.5");
+  });
+});
+
+describe("a LIVE session resolves with its own provider (W11/G8)", () => {
+  test("a Hermes instance with a live session is not resolved as OpenClaw", async () => {
+    // `buildCapabilityTargets` took a `provider` argument and used it only for the
+    // no-session synthetic target: a live Hermes session was resolved with
+    // `resolveCapabilities("openclaw", …)`, so its 0.18.x version was compared against
+    // the OpenClaw support window and every capability came back off — with the synthetic
+    // Hermes target suppressed, because a live target already covered the instance. The
+    // panels stayed shut on a supported gateway.
+    const { buildCapabilityTargets } = await import("../src/server.js");
+    const live = [
+      {
+        canonical: "h1",
+        instanceName: "hermes",
+        agentId: "a1",
+        gatewayVersion: "0.18.2",
+      },
+    ];
+    const [target] = buildCapabilityTargets(live as never, "hermes", null, "hermes", "ws");
+    expect(target?.provider).toBe("hermes");
+    expect(target?.gatewayVersion).toBe("0.18.2");
+    expect(target?.capabilities.abort, "the version resolved against ITS window").toBe(true);
+    expect(target?.capabilities.agentFiles, "HTTP-served, transport-independent").toBe(true);
+    // …and the WS overlay reaches a live target too, not just an idle one.
+    expect(target?.capabilities.cronList, "the WS overlay applies to live targets").toBe(true);
+  });
+
+  test("the REST transport keeps its narrower surface on a live target", async () => {
+    const { buildCapabilityTargets } = await import("../src/server.js");
+    const live = [
+      { canonical: "h1", instanceName: "hermes", agentId: "a1", gatewayVersion: "0.18.2" },
+    ];
+    const [target] = buildCapabilityTargets(live as never, "hermes", null, "hermes", "rest");
+    expect(target?.capabilities.agentFiles, "still HTTP-served").toBe(true);
+    expect(target?.capabilities.inboundAttachments, "WS-only").toBeUndefined();
   });
 });

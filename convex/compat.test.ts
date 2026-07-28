@@ -40,7 +40,14 @@ const modules = import.meta.glob("./**/*.ts");
 // ---------------------------------------------------------------------------
 
 const MANIFEST = LIVE_CAPABILITIES_BODY.compat;
-const ALICE_TARGET = LIVE_CAPABILITIES_BODY.targets[0];
+// The OPENCLAW target, selected by provider: the fixture is regenerated from a live
+// bridge and now carries a Hermes target too, so an index is not a contract.
+const ALICE_TARGET = LIVE_CAPABILITIES_BODY.targets.find(
+  (t) => t.provider === "openclaw",
+)!;
+/** The gateway version the fixture was captured against — read, never hardcoded, so a
+ *  refresh moves the expectations with it instead of reddening them. */
+const FIXTURE_GATEWAY_VERSION = ALICE_TARGET.gatewayVersion;
 
 const NEW_CAPABILITIES_BODY = {
   ...LIVE_CAPABILITIES_BODY,
@@ -151,7 +158,7 @@ describe("normalizeCompatTarget (defensive parse)", () => {
     expect(t).toEqual({
       instanceName: "main",
       provider: "openclaw",
-      gatewayVersion: "2026.5.19",
+      gatewayVersion: FIXTURE_GATEWAY_VERSION,
       capabilities: ALICE_TARGET.capabilities,
       versionBeyondValidated: false,
     });
@@ -202,7 +209,7 @@ describe("normalizeCapabilitiesBody (new vs LEGACY bridge)", () => {
     expect(n.targets[0]).toMatchObject({
       instanceName: "main",
       provider: "openclaw",
-      gatewayVersion: "2026.5.19",
+      gatewayVersion: FIXTURE_GATEWAY_VERSION,
     });
   });
 
@@ -227,7 +234,11 @@ describe("resolveCapabilitiesFromManifest (Convex mirrors the bridge)", () => {
     expect(providerCapabilityTable(MANIFEST, "openclaw").agentFiles).toBe(
       "2026.6.5",
     );
-    expect(providerCapabilityTable(MANIFEST, "hermes")).toEqual({});
+    // A provider the manifest does not declare at all. Hermes used to serve as this
+    // example — it no longer can: it has a real capability table since the transport-
+    // independent surface was corrected (W11/G8), and a test whose premise has quietly
+    // become false proves nothing.
+    expect(providerCapabilityTable(MANIFEST, "nosuchprovider")).toEqual({});
     expect(providerCapabilityTable(null, "openclaw")).toEqual({});
     expect(providerCapabilityTable({ providers: 7 }, "openclaw")).toEqual({});
   });
@@ -272,7 +283,7 @@ describe("resolveCapabilitiesFromManifest (Convex mirrors the bridge)", () => {
   });
 
   test("a provider with no published range -> zero capabilities", () => {
-    const r = resolveCapabilitiesFromManifest(MANIFEST, "hermes", "2026.6.5");
+    const r = resolveCapabilitiesFromManifest(MANIFEST, "nosuchprovider", "2026.6.5");
     expect(r.capabilities).toEqual({});
     expect(r.versionBeyondValidated).toBe(false);
   });
@@ -313,7 +324,7 @@ describe("normalizeCapabilitiesBody — Convex attributes the served instance", 
     const n = normalizeCapabilitiesBody(body, "main");
     expect(n.targets).toHaveLength(1);
     // The LIVE target wins (its real captured version 5.19), no synthetic 6.5 dupe.
-    expect(n.targets[0]!.gatewayVersion).toBe("2026.5.19");
+    expect(n.targets[0]!.gatewayVersion).toBe(FIXTURE_GATEWAY_VERSION);
   });
 
   test("no servedInstance -> no synthesis (backward compatible)", () => {
@@ -379,12 +390,30 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
     expect(summarizeCompat(null).protocol).toBeNull();
   });
 
-  test("reads the openclaw window; hermes degrades to no range", () => {
+  test("reads each provider's window; an UNKNOWN provider degrades to no range", () => {
+    // Pinned to the window the fixture carries, deliberately: a support window is a
+    // CLAIM, and one changing under a fixture refresh is exactly the kind of event that
+    // should be read rather than absorbed. (Hermes used to be the "no range" example —
+    // it has had a published window since 0.18.0 was validated, so the example moved to
+    // a provider the manifest genuinely does not declare.)
     expect(providerSupport(MANIFEST, "openclaw")).toEqual({
-      range: { min: "2026.5.19", maxValidated: "2026.6.5" },
-      validatedVersions: ["2026.5.19", "2026.6.1", "2026.6.5"],
+      range: { min: "2026.5.19", maxValidated: "2026.7.1" },
+      validatedVersions: [
+        "2026.5.19",
+        "2026.6.1",
+        "2026.6.5",
+        "2026.6.10",
+        "2026.6.11",
+        "2026.7.1-beta.2",
+        "2026.7.1-beta.5",
+        "2026.7.1",
+      ],
     });
     expect(providerSupport(MANIFEST, "hermes")).toEqual({
+      range: { min: "0.18.0", maxValidated: "0.18.2" },
+      validatedVersions: ["0.18.0", "0.18.2"],
+    });
+    expect(providerSupport(MANIFEST, "nosuchprovider")).toEqual({
       range: null,
       validatedVersions: [],
     });
@@ -585,7 +614,7 @@ describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
     expect(doc?.targets[0]).toMatchObject({
       instanceName: "main",
       provider: "openclaw",
-      gatewayVersion: "2026.5.19",
+      gatewayVersion: FIXTURE_GATEWAY_VERSION,
       versionBeyondValidated: false,
     });
     expect(typeof doc?.fetchedAt).toBe("number");

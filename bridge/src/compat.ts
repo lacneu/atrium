@@ -121,6 +121,16 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
 const HERMES_CAPABILITIES: Record<string, string> = {
   abort: "0.18.0", // run_stop: POST /v1/runs/{id}/stop
   agentsDiscovery: "0.18.0", // GET /v1/models (one agent)
+  // Identity files are served by the gateway's MANAGED-FILES HTTP API
+  // (`GET /api/files/download`), and `/agent-files` routes a Hermes instance there on
+  // `config.kind` alone — explicitly "no operator socket". Declaring it WS-only hid a
+  // working tab from every REST-transport instance (W11/G8).
+  agentFiles: "0.18.0",
+  // The outbound-media seam is wired for ANY Hermes instance (`HermesFilesFetcher`,
+  // built on `kind === "hermes"`), so the capability was implemented and undeclared.
+  // The UI gates nothing on it — it is bridge-side — but a manifest that omits what the
+  // bridge does is a manifest nobody can trust for the things it does declare.
+  mediaOutbound: "0.18.0",
 };
 
 // The WS transport (`hermes serve` JSON-RPC) additionally stages inline
@@ -139,9 +149,6 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
   // activity (subagent.* / moa.*) which the bridge feeds into the sub-agent
   // monitor — so the monitor UI unlocks on this transport.
   subagents: "0.18.0",
-  // Identity files (SOUL.md, AGENTS.md, …) at the agent home root, served by
-  // the gateway's managed-files API (list/read/upload; mtime is the CAS base).
-  agentFiles: "0.18.0",
 };
 
 /**

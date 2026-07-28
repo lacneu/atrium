@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   CAPABILITY_KEYS,
+  NOT_CONSUMED_CAPABILITIES,
   LEGACY_CAPABILITIES,
   capabilityOf,
   instanceTabGate,
@@ -50,10 +51,9 @@ const FUTURE: Record<string, boolean> = {
 };
 
 describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
-  test("the frozen list matches the bridge manifest capability table EXACTLY", () => {
-    // DELIBERATE duplicate of atrium-bridge src/compat.ts
-    // OPENCLAW_CAPABILITIES (separate repos, separate release cycles). If this
-    // fails, the contract changed on ONE side: align both repos consciously.
+  test("the frozen list is what this UI consumes", () => {
+    // A repo-local pin: changing what the UI gates on must be CONSCIOUS. It says nothing
+    // about the bridge — the cross-repo direction is the partition test below.
     expect([...CAPABILITY_KEYS]).toEqual([
       "knobThinkingLevel",
       "knobModel",
@@ -69,26 +69,66 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       // Realtime voice (gateway-minted ephemeral browser session) — floor =
       // the 2026.7.1 release.
       "talk",
+      // Read from Convex (`scheduled.ts`) through the typed gate.
+      "cronList",
+      "cronManage",
     ]);
   });
 
-  test("every UI key exists in the LIVE bridge manifest (cross-repo anchor, P2-1)", () => {
-    // The two repo-local pins above are self-referential: they force a
-    // CONSCIOUS change per side but cannot see a rename on the OTHER side.
-    // This anchors the UI list against a body captured VERBATIM from a live
-    // bridge — a bridge-side key rename only reaches the app by refreshing the
-    // fixture, which makes this fail loudly instead of silently hiding a knob.
+  test("the contract PARTITIONS the live manifest exactly (cross-repo lockstep, G8)", () => {
+    // The direction that actually hurts. Inclusion — "every UI key exists in the
+    // manifest" — was blind BOTH ways: a bridge capability the app never hears about
+    // passed, and a RENAME turned a live gate into a permanently-false one while the old
+    // name simply vanished from a set nobody compared. The equality that means something
+    // is over the PARTITION: what the UI consumes, plus what it declares it does not,
+    // must be exactly the manifest. A renamed key then belongs to neither half.
     const manifestKeys = Object.keys(
       LIVE_CAPABILITIES_BODY.compat.providers.openclaw.capabilities,
-    );
+    ).sort();
+    const classified = [...CAPABILITY_KEYS, ...NOT_CONSUMED_CAPABILITIES].sort();
+    expect(classified, "a manifest capability is unclassified, or a UI key is gone").
+      toEqual(manifestKeys);
+    // …and the two halves do not overlap: a key cannot be both consumed and declared
+    // unused, which would let one hide a change to the other.
     for (const key of CAPABILITY_KEYS) {
-      expect(manifestKeys).toContain(key);
+      expect(NOT_CONSUMED_CAPABILITIES.has(key), `${key} is in both halves`).toBe(false);
     }
-    // The resolved per-target record covers the SAME table (no partial records
-    // out of the bridge — absent-key-means-false stays a UI-side policy only).
-    expect(
-      Object.keys(LIVE_CAPABILITIES_BODY.targets[0].capabilities).sort(),
-    ).toEqual(manifestKeys.sort());
+    expect(manifestKeys.length, "an empty manifest would satisfy any partition").
+      toBeGreaterThan(10);
+  });
+
+  test("EVERY provider's manifest is classified, not just OpenClaw's", () => {
+    // The partition above is over the OpenClaw table. A capability that exists only on
+    // another provider would be unclassified and invisible — and the UI gates on the
+    // capability RECORD, which is per-instance and provider-agnostic. Hermes' surface
+    // happens to be a subset today; asserting it is what keeps that true.
+    const classified = new Set<string>([
+      ...CAPABILITY_KEYS,
+      ...NOT_CONSUMED_CAPABILITIES,
+    ]);
+    const providers = LIVE_CAPABILITIES_BODY.compat.providers as Record<
+      string,
+      { capabilities?: Record<string, unknown> }
+    >;
+    const seen: string[] = [];
+    for (const [provider, entry] of Object.entries(providers)) {
+      for (const key of Object.keys(entry.capabilities ?? {})) {
+        seen.push(key);
+        expect(classified.has(key), `${provider}.${key} is unclassified`).toBe(true);
+      }
+    }
+    expect(seen.length, "no provider capability was examined at all").toBeGreaterThan(15);
+  });
+
+  test("the resolved OPENCLAW target covers the whole manifest", () => {
+    // Selected BY PROVIDER: an index is not a contract, and the live body carries a
+    // Hermes target too (whose version-less record is legitimately a subset).
+    const target = LIVE_CAPABILITIES_BODY.targets.find((t) => t.provider === "openclaw");
+    expect(target, "the fixture carries no openclaw target").toBeDefined();
+    const manifestKeys = Object.keys(
+      LIVE_CAPABILITIES_BODY.compat.providers.openclaw.capabilities,
+    ).sort();
+    expect(Object.keys(target!.capabilities).sort()).toEqual(manifestKeys);
   });
 
   test("LOCKSTEP: a key outside CAPABILITY_KEYS cannot unlock anything", () => {
@@ -129,6 +169,8 @@ describe("capabilityOf — capability x set matrix", () => {
         subagents: false, inboundAttachments: false,
         // talk is absent from every one of these sets -> false.
         talk: false,
+        cronList: false,
+        cronManage: false,
       },
     ],
     [
@@ -145,6 +187,8 @@ describe("capabilityOf — capability x set matrix", () => {
         subagents: true, inboundAttachments: true,
         // talk is absent from every one of these sets -> false.
         talk: false,
+        cronList: false,
+        cronManage: false,
       },
     ],
     [
@@ -162,6 +206,8 @@ describe("capabilityOf — capability x set matrix", () => {
         subagents: true, inboundAttachments: true,
         // talk is absent from every one of these sets -> false.
         talk: false,
+        cronList: false,
+        cronManage: false,
       },
     ],
     [
@@ -178,6 +224,8 @@ describe("capabilityOf — capability x set matrix", () => {
         subagents: false, inboundAttachments: false,
         // talk is absent from every one of these sets -> false.
         talk: false,
+        cronList: false,
+        cronManage: false,
       },
     ],
     [
@@ -194,6 +242,8 @@ describe("capabilityOf — capability x set matrix", () => {
         subagents: true, inboundAttachments: true,
         // talk is absent from every one of these sets -> false.
         talk: false,
+        cronList: false,
+        cronManage: false,
       },
     ],
   ];

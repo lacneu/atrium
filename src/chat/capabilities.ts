@@ -33,9 +33,41 @@ export const CAPABILITY_KEYS = [
   // (talk.client.create). Version-gated by the bridge manifest; whether a
   // realtime provider is CONFIGURED stays dynamic (checked at session create).
   "talk",
+  // Scheduled jobs. Consumed from CONVEX (`scheduled.ts` builds the per-instance target
+  // list the Settings ▸ Scheduled tab renders) — which is still this app consuming them.
+  // They reached the manifest through RAW STRING access, outside the typed gate, so a
+  // bridge-side rename would have turned both permanently false with nothing to notice
+  // it. That is the exact failure this contract exists to prevent.
+  "cronList",
+  "cronManage",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
+
+/**
+ * Manifest capabilities this app deliberately does NOT gate on — each with the reason.
+ *
+ * The point of the pair is the EQUALITY it makes possible: consumed ∪ not-consumed must
+ * equal the bridge manifest exactly (`capabilities.test.ts`). Inclusion alone — every UI
+ * key exists in the manifest — was blind in the direction that actually hurts: a bridge
+ * capability the app never hears about, or a RENAME that turns a live gate into a
+ * permanently-false one, both passed.
+ *
+ * This is not padding to satisfy a test: `CAPABILITY_KEYS` stays exactly "the keys this UI
+ * consumes", and a key listed here is a decision somebody wrote down, not an omission.
+ */
+export const NOT_CONSUMED_CAPABILITIES: ReadonlySet<string> = new Set([
+  // Bridge-internal: the bridge aborts a run on its own; no UI affordance is gated on it.
+  "abort",
+  // The agent picker is populated from Convex (`agents` table), not from a gateway probe.
+  "agentsDiscovery",
+  // Outbound media is a bridge-side pipeline: the UI renders whatever parts arrive and
+  // has nothing to unlock.
+  "mediaOutbound",
+  // A normalizer recovery path (message-tool args unreadable → transcript recovery). It
+  // changes what the bridge does, never what the UI offers.
+  "messageToolRecovery",
+]);
 
 const CAPABILITY_KEY_SET: ReadonlySet<string> = new Set(CAPABILITY_KEYS);
 

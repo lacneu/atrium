@@ -181,10 +181,21 @@ describe("COMPAT_MANIFEST shape", () => {
     expect(COMPAT_MANIFEST.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
       validatedVersions: ["0.18.0", "0.18.2"],
-      // ONLY what the OpenAI-compatible API server actually offers — everything
-      // else (thinking/model knobs, config-defaults, subagents, attachments)
-      // is deliberately absent so the UI gates it OFF automatically.
-      capabilities: { abort: "0.18.0", agentsDiscovery: "0.18.0" },
+      // ONLY what a Hermes instance actually offers WHATEVER its transport —
+      // everything transport-specific (attachments, cron, subagents) lives in the WS
+      // overlay, and everything absent (thinking/model knobs, config-defaults) is
+      // deliberately absent so the UI gates it OFF automatically.
+      //
+      // `agentFiles` and `mediaOutbound` moved here from the WS overlay / from nowhere
+      // (W11/G8): both are served over the managed-files HTTP API and are wired on
+      // `config.kind === "hermes"`, not on the transport. The manifest was hiding a
+      // working tab from every REST instance and omitting a capability the bridge has.
+      capabilities: {
+        abort: "0.18.0",
+        agentsDiscovery: "0.18.0",
+        agentFiles: "0.18.0",
+        mediaOutbound: "0.18.0",
+      },
     });
   });
 });
@@ -349,9 +360,16 @@ describe("resolveCapabilities — edges", () => {
     },
   );
 
-  test("hermes resolves to abort + discovery at a validated version, nothing else", () => {
+  test("hermes resolves its TRANSPORT-INDEPENDENT surface at a validated version", () => {
+    // The WS overlay is applied later, per target, by the server — this is the floor a
+    // REST instance gets, and it now includes the two HTTP-served capabilities.
     expect(resolveCapabilities("hermes", "0.18.0")).toEqual({
-      capabilities: { abort: true, agentsDiscovery: true },
+      capabilities: {
+        abort: true,
+        agentsDiscovery: true,
+        agentFiles: true,
+        mediaOutbound: true,
+      },
       versionBeyondValidated: false,
     });
   });

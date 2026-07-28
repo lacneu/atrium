@@ -14,6 +14,10 @@ import { ConvexError, v } from "convex/values";
 import { requireActive, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { enrichUserAgents } from "./agents";
+// The app's capability contract is a PURE module (no React, no i18n) and is the single
+// place a capability key may be spelled — importing it here is what puts this query
+// under the same lockstep as every UI gate.
+import { capabilityOf } from "../src/chat/capabilities";
 import { postBridge } from "./agentFiles";
 import { capabilitiesForInstance, type CompatTarget } from "./lib/compat";
 import {
@@ -93,8 +97,12 @@ export const myCronTargets = internalQuery({
         agentIds: entry.agentIds,
         defaultAgentId: gatewayDefault ?? null,
         bridgeUrl: inst.bridgeUrl ?? null,
-        supported: cap?.capabilities?.cronList === true,
-        manageSupported: cap?.capabilities?.cronManage === true,
+        // Through the TYPED gate, not by raw key access. Reading
+        // `cap?.capabilities?.cronList` spelled the contract in a string: a bridge-side
+        // rename left both silently false and the Scheduled tab quietly empty, with no
+        // test anywhere able to see it (W11/G8).
+        supported: capabilityOf(cap?.capabilities, "cronList"),
+        manageSupported: capabilityOf(cap?.capabilities, "cronManage"),
       });
     }
     return targets;

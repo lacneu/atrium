@@ -2209,6 +2209,25 @@ export interface CapabilityTarget {
  * by canonical (mono-gateway: every session shares the same gateway version
  * anyway; last live session wins). Pure — exported for tests.
  */
+/** Transport-aware overlay for Hermes: the WS surface adds capabilities the REST API
+ *  server does not have. Applied ONLY when the base resolution passed the version gate
+ *  (or no version is known → range floor) — a gateway BELOW the validated range must keep
+ *  its capabilities off (codex P2).
+ *
+ *  Shared by BOTH target paths. It used to live only in the no-session branch, so a live
+ *  Hermes session silently got a different capability set from an idle one. */
+function applyHermesTransportOverlay(
+  resolved: { capabilities: Record<string, boolean> },
+  version: string | null,
+  transport: "ws" | "rest",
+): void {
+  const versionGatePassed = version === null || resolved.capabilities.abort === true;
+  if (!versionGatePassed) return;
+  const caps = hermesCapabilitiesFor(transport);
+  for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
+  if (transport === "rest") delete resolved.capabilities.inboundAttachments;
+}
+
 export function buildCapabilityTargets(
   live: LiveTarget[],
   instanceName: string | null,
@@ -2227,11 +2246,17 @@ export function buildCapabilityTargets(
     // null.) This is what makes the fix hold even WITH a session live at the
     // poll, not just the no-session synthetic case below.
     const effectiveVersion = t.gatewayVersion ?? fallbackVersion;
-    const resolved = resolveCapabilities("openclaw", effectiveVersion);
+    // The instance's OWN provider, not a hardcoded "openclaw". A Hermes instance WITH a
+    // live session took this path and had its 0.18.x version resolved against the
+    // OpenClaw support window — every capability off, the panels gated shut, and the
+    // synthetic Hermes target below suppressed because a live target already covered the
+    // instance. The `provider` argument existed and only the no-session branch used it.
+    const resolved = resolveCapabilities(provider, effectiveVersion);
+    if (provider === "hermes") applyHermesTransportOverlay(resolved, effectiveVersion, transport);
     const target: CapabilityTarget = {
       key: t.canonical,
       instanceName,
-      provider: "openclaw",
+      provider,
       agentId: t.agentId,
       gatewayVersion: effectiveVersion,
       capabilities: resolved.capabilities,
@@ -2258,21 +2283,7 @@ export function buildCapabilityTargets(
     !targets.some((t) => t.instanceName === instanceName)
   ) {
     const resolved = resolveCapabilities(provider, fallbackVersion);
-    if (provider === "hermes") {
-      // Transport-aware overlay: the WS surface adds capabilities the REST API
-      // server does not have. Applied ONLY when the base resolution passed the
-      // version gate (or no version is known → range floor) — a gateway BELOW
-      // the validated range must keep its capabilities off (codex P2).
-      const versionGatePassed =
-        fallbackVersion === null || resolved.capabilities.abort === true;
-      if (versionGatePassed) {
-        const caps = hermesCapabilitiesFor(transport);
-        for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
-        if (transport === "rest") {
-          delete resolved.capabilities.inboundAttachments;
-        }
-      }
-    }
+    if (provider === "hermes") applyHermesTransportOverlay(resolved, fallbackVersion, transport);
     const synthetic: CapabilityTarget = {
       key: instanceName,
       instanceName,
