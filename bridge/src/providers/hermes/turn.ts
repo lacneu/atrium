@@ -18,7 +18,12 @@
 import { TurnSink } from "../../core/turn-sink.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import type { HermesClient } from "./client.js";
-import { assertBeforeSendDeadline } from "../../core/dispatch-deadline.js";
+import {
+  assertBeforeSendDeadline,
+  invalidateSession,
+  RECV_SILENCE_ABORT,
+  RECV_SILENCE_MS,
+} from "../../core/dispatch-deadline.js";
 import { HermesNormalizer } from "./normalizer.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
 
@@ -41,6 +46,9 @@ export interface HermesTurnOptions {
   freshText?: () => Promise<string>;
   /** Persist a NEWLY minted session id back to Convex (turn 1 only). */
   onBoundSession?: (sessionId: string) => Promise<void>;
+  /** The stored session must NOT be reused: this turn ended without knowing whether the
+   *  provider's run stopped. Same callback and same contract as the WS path. */
+  onSessionUntrusted?: () => Promise<void>;
   /** Aborts the in-flight SSE request (Stop button). */
   signal?: AbortSignal;
   pressure?: {
@@ -95,6 +103,36 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
 
   const done = (async () => {
     let res: Response;
+    // SILENCE WATCHDOG. The acceptance phase has its own bound inside `openStream`; the
+    // BODY was deliberately unbounded, and that decision predates the reasoning of lot 29
+    // — a provider that holds the connection open and says nothing left the turn waiting
+    // for the Convex watchdog, twelve minutes later. The stream is abortable, so the turn
+    // can give up on itself; the reason distinguishes it from a user Stop.
+    const silence = new AbortController();
+    if (opts.signal) {
+      if (opts.signal.aborted) silence.abort(opts.signal.reason);
+      else {
+        opts.signal.addEventListener(
+          "abort",
+          () => silence.abort(opts.signal?.reason),
+          { once: true },
+        );
+      }
+    }
+    let recvTimer: ReturnType<typeof setTimeout> | null = null;
+    const disarmRecv = (): void => {
+      if (recvTimer !== null) {
+        clearTimeout(recvTimer);
+        recvTimer = null;
+      }
+    };
+    const armRecv = (): void => {
+      disarmRecv();
+      if (silence.signal.aborted) return;
+      recvTimer = setTimeout(() => silence.abort(RECV_SILENCE_ABORT), RECV_SILENCE_MS);
+      (recvTimer as { unref?: () => void }).unref?.();
+    };
+
     try {
       let sessionId = await opts.client.ensureSession(opts.providerChatId);
       // Whether THIS turn minted the session (turn 1, or the 404 recovery
@@ -114,7 +152,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         opts.dispatchAgeMs ?? 0,
       );
       try {
-        res = await opts.client.openStream(sessionId, opts.text, opts.signal);
+        res = await opts.client.openStream(sessionId, opts.text, silence.signal);
       } catch (err) {
         // AUTO-RECOVER a vanished session: a REUSED session id can 404 if Hermes
         // dropped it (restart / eviction). Mint a fresh one and retry ONCE, so a
@@ -136,7 +174,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         Date.now(),
         opts.dispatchAgeMs ?? 0,
       );
-          res = await opts.client.openStream(sessionId, text, opts.signal);
+          res = await opts.client.openStream(sessionId, text, silence.signal);
         } else {
           throw err;
         }
@@ -196,7 +234,9 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
       chain = chain.then(() => sink.apply(events));
     };
     try {
+      armRecv();
       await opts.client.readStream(res, (frame) => {
+        armRecv(); // any frame is progress
         const events = norm.feed(frame);
         // Stamp the Hermes run id onto the message the FIRST time it is known,
         // so a later /abort for this turn matches it (codex P2). Best-effort.
@@ -217,6 +257,45 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         );
       }
     } catch (err) {
+      // OUR OWN give-up, not the user's. Both arrive as an `AbortError`, and telling them
+      // apart is the whole reason the silence abort carries its own reason: a user Stop
+      // must stay an abort, while nobody answering is a delivered `response_timeout`.
+      if (silence.signal.reason === RECV_SILENCE_ABORT) {
+        console.error(
+          `[hermes-turn] no SSE frame for ${RECV_SILENCE_MS} ms — settling ` +
+            `response_timeout chat=${opts.chatId}`,
+        );
+        if (!norm.isFinalized) {
+          // TELL THE PROVIDER, exactly as the abort path does: cancelling the HTTP read
+          // stops US reading, not Hermes running. Without this a silent run kept its
+          // tools and their side effects going after the turn was rendered in error
+          // (raised in review) — and the WS path had the same asymmetry until lot 29.
+          const rid = norm.currentRunId;
+          if (rid) {
+            void opts.client
+              .stopRun(rid)
+              .catch((e) =>
+                console.error(
+                  "[hermes-turn] stopRun after timeout failed (best effort):",
+                  (e as Error)?.message ?? e,
+                ),
+              );
+          }
+          // Same ordering as the WS path: drop the session BEFORE settling, while the
+          // chat is still busy, so no later turn can resume a session whose run may
+          // never have stopped. Retried once — a swallowed failure here leaves the
+          // suspect session reusable, which is the one thing this path exists to stop.
+          await invalidateSession(opts.onSessionUntrusted, "hermes-turn");
+          enqueue(
+            norm.endTurn(
+              "Hermes stopped sending before the reply was complete.",
+              "response_timeout",
+            ),
+          );
+        }
+        await chain.catch(() => {});
+        return;
+      }
       // C4 (W9), SECOND PROVIDER. The user does see this one — the turn settles with a
       // delivered error below — but the operator did not: nothing said which build could
       // not read which stream. An abort is the user's own doing and is not a read failure.
@@ -238,6 +317,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         enqueue(norm.endTurn(messageOf(err)));
       }
     }
+    disarmRecv();
     // Drain the queued writes. Swallow here: a Convex write failing (e.g.
     // beginTurn after acceptance) is a BACKGROUND error — `done` must resolve so
     // the registry cleanup runs and the caller never sees an unhandled reject.

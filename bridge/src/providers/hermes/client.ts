@@ -185,9 +185,14 @@ export class HermesClient {
   ): Promise<Response> {
     // Bound the ACCEPTANCE (headers) phase: a gateway that accepts the TCP
     // connection but never sends SSE headers must not hang /send forever (codex
-    // P2). The timer is cleared once headers arrive — the BODY stream (the
-    // generation) is then deliberately unbounded. External Stop still aborts
-    // the body via the same controller.
+    // P2). The timer is cleared once headers arrive.
+    //
+    // The BODY stream used to be deliberately unbounded, and that decision is now
+    // superseded: a provider that holds the connection open and says nothing left the
+    // turn waiting for the Convex watchdog twelve minutes later. The body's bound lives
+    // in the CALLER (`turn.ts`), which is where the frames are seen and so where silence
+    // can be told from progress — this function only sees a stream. Both the caller's
+    // silence give-up and an external Stop arrive through the signal below.
     const ctrl = new AbortController();
     const onExternal = () => ctrl.abort();
     if (signal) {

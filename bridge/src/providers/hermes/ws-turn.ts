@@ -18,7 +18,11 @@
 //   abort: session.interrupt {session_id}
 
 import { TurnSink } from "../../core/turn-sink.js";
-import { assertBeforeSendDeadline } from "../../core/dispatch-deadline.js";
+import {
+  assertBeforeSendDeadline,
+  invalidateSession,
+  RECV_SILENCE_MS,
+} from "../../core/dispatch-deadline.js";
 import {
   EVENT_CONTEXT_COMPACTION,
   EVENT_MESSAGE_DELTA,
@@ -43,19 +47,6 @@ export const HERMES_DELIVERY_DIR = "atrium-out";
 /** The standing delivery instruction spliced after the user text (mirrors the
  *  OpenClaw MEDIA:/outbound directive — tells the agent HOW to hand a file to
  *  the user; the post-turn scan picks it up). */
-/** How long this turn tolerates TOTAL silence from Hermes before settling itself.
- *
- *  Two relationships fix this number, neither of them arbitrary:
- *   - it must sit well UNDER Convex's `STALE_STREAM_MS` (12 min), so the bridge settles
- *     the turn with a named cause and the watchdog stays the backstop it was built to be
- *     rather than the primary mechanism;
- *   - it matches the OpenClaw normalizer's own silence budget (240 s), because the two
- *     transports are answering the same question and a user has no reason to wait longer
- *     on one provider than the other.
- *
- *  Re-armed by every event of this session, monitoring events included: a delegation
- *  still reporting is not a stalled provider. */
-const WS_RECV_SILENCE_MS = 240_000;
 
 const DELIVERY_DIRECTIVE = `[Consigne de livraison : pour remettre un fichier genere a l'utilisateur, ecris-le dans le dossier ${HERMES_DELIVERY_DIR}/ (relatif a ton repertoire de travail). Ne colle pas le contenu du fichier dans ta reponse.]`;
 
@@ -92,6 +83,10 @@ export interface HermesWsTurnOptions {
   filesFetcher?: HermesFilesFetcher | null;
   /** Persist a NEWLY minted stored_session_id (turn 1 / after reset). */
   onBoundSession?: (storedSessionId: string) => Promise<void>;
+  /** The stored session must NOT be reused: this turn ended without knowing whether the
+   *  provider's run stopped. Supplied by dispatch, which owns the in-memory registry and
+   *  the reset-generation guard — the same trio `/reset` already performs. */
+  onSessionUntrusted?: () => Promise<void>;
   /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
    *  acceptance counts as a downstream failure on its target. */
   onTurnError?: (code: string) => void;
@@ -777,46 +772,66 @@ export function runHermesWsTurn(
       disarmRecv();
       if (finalized || !promptAccepted) return;
       recvTimer = setTimeout(() => {
-        if (finalized) return;
-        console.error(
-          `[hermes-ws-turn] no event for ${WS_RECV_SILENCE_MS} ms — settling ` +
-            `response_timeout chat=${opts.chatId}`,
-        );
-        finalized = true;
-        closeOpenTools();
-        closeMoaAggregator("aborted");
-        // TELL THE PROVIDER TOO. Silence here does not prove the run stopped there: the
-        // frames may simply have been lost while Hermes kept running tools and their side
-        // effects. Releasing the chat without interrupting leaves that run alive, out of
-        // the user's sight, and a later send can resume or race the same session (raised
-        // in review). Best-effort and off the critical path — the turn settles either way,
-        // and the abort path uses the same RPC.
-        void opts.client
-          .call("session.interrupt", { session_id: runtimeSid })
-          .catch((e) =>
-            console.error(
-              "[hermes-ws-turn] interrupt after timeout failed (best effort):",
-              (e as Error)?.message ?? e,
-            ),
-          );
-        apply([
-          {
-            type: EVENT_MESSAGE_FINAL,
-            text: replyText,
-            error: "Hermes stopped sending before the reply was complete.",
-            errorKind: "response_timeout",
-          },
-          {
-            type: EVENT_RUN_STATUS,
-            status: "error",
-            runId: runtimeSid,
-            message: "Hermes stopped sending before the reply was complete.",
-          },
-        ]);
-        settle();
-      }, WS_RECV_SILENCE_MS);
+        void onSilence();
+      }, RECV_SILENCE_MS);
       // Never hold the process open for a turn nobody is waiting on.
       (recvTimer as { unref?: () => void }).unref?.();
+    };
+
+    /** The silence path, in the ONE order that survives concurrency.
+     *
+     *  `finalized` is set LAST, not first. Setting it up front made a concurrent `/abort`
+     *  a no-op — `forceSettle` returns early on `finalized` — so the abort answered,
+     *  Convex finalized the assistant, and the next send could drain while the clear was
+     *  still in flight; a late clear could then wipe THAT turn's binding (raised in
+     *  review). Leaving the turn un-finalized until the invalidation is done means a
+     *  concurrent Stop simply takes the turn normally, and the re-check below stands down.
+     */
+    const onSilence = async (): Promise<void> => {
+      if (finalized) return;
+      console.error(
+        `[hermes-ws-turn] no event for ${RECV_SILENCE_MS} ms — settling ` +
+          `response_timeout chat=${opts.chatId}`,
+      );
+      // TELL THE PROVIDER. Silence does not prove the run stopped: the frames may simply
+      // have been lost while Hermes kept running tools and their side effects. Releasing
+      // the chat without interrupting leaves that run alive, out of the user's sight.
+      void opts.client
+        .call("session.interrupt", { session_id: runtimeSid })
+        .catch((e) =>
+          console.error(
+            "[hermes-ws-turn] interrupt after timeout failed (best effort):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+      // …and the stored session is dropped BEFORE anything settles, because the interrupt
+      // is best-effort: the next send must not be able to resume this session and race a
+      // run that never stopped.
+      //
+      // ONLY on silence. A delivered gateway error says the run is over; silence says we
+      // do not know. Clearing on every failure would cost a rehydration each time.
+      await invalidateSession(opts.onSessionUntrusted, "hermes-ws-turn");
+      // A concurrent Stop may have taken the turn while that write was in flight — it was
+      // free to, precisely because `finalized` is still false here.
+      if (finalized) return;
+      finalized = true;
+      closeOpenTools();
+      closeMoaAggregator("aborted");
+      apply([
+        {
+          type: EVENT_MESSAGE_FINAL,
+          text: replyText,
+          error: "Hermes stopped sending before the reply was complete.",
+          errorKind: "response_timeout",
+        },
+        {
+          type: EVENT_RUN_STATUS,
+          status: "error",
+          runId: runtimeSid,
+          message: "Hermes stopped sending before the reply was complete.",
+        },
+      ]);
+      settle();
     };
 
     const unsubscribe = registerSession(runtimeSid, (type, payload) => {
