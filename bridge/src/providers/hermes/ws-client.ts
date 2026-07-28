@@ -23,6 +23,7 @@
 // "user:password" (a colon) → password flow; otherwise → static token.
 
 import WebSocket from "ws";
+import { decodeInboundFrame, protocolDrift } from "../openclaw/protocol-drift.js";
 
 export interface HermesWsOptions {
   /** The `hermes serve` base, e.g. "http://nas:9119". */
@@ -53,6 +54,23 @@ interface Pending {
   resolve: (v: Record<string, unknown>) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
+}
+
+/** A value that is a plain JSON object, or null. Used on the NESTED members of a frame:
+ *  the shared decoder validates the envelope, and every `?? {}` below it was a place where
+ *  a corrupt inner value became an empty one that read as valid. */
+function asJsonObject(v: unknown): Record<string, unknown> | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  return v as Record<string, unknown>;
+}
+
+/** The Hermes WS decode — the shared decoder with this transport's site.
+ *
+ *  Exported so the failure paths are testable without a socket, which is the point: the
+ *  bug this closes lived exactly here and a structural "the module calls the sensor" check
+ *  could not see it. */
+export function decodeWsFrame(raw: unknown): Record<string, unknown> | null {
+  return decodeInboundFrame(raw, "hermes-ws-parse");
 }
 
 export class HermesWsClient {
@@ -151,18 +169,21 @@ export class HermesWsClient {
       }, this.timeoutMs);
       let sawReady = false;
       ws.on("message", (raw) => {
-        let obj: Record<string, unknown>;
+        const obj = decodeWsFrame(raw);
+        if (obj === null) return; // unreadable frame: reported inside, then ignored
         try {
-          obj = JSON.parse(String(raw)) as Record<string, unknown>;
-        } catch {
-          return; // non-JSON frame: ignore
-        }
-        this.route(obj);
-        // The server emits gateway.ready right after accept — that's "open".
-        if (!sawReady && this.isReadyEvent(obj)) {
-          sawReady = true;
-          clearTimeout(timer);
-          resolve();
+          this.route(obj);
+          // The server emits gateway.ready right after accept — that's "open".
+          if (!sawReady && this.isReadyEvent(obj)) {
+            sawReady = true;
+            clearTimeout(timer);
+            resolve();
+          }
+        } catch (err) {
+          // Routing is the last unguarded step of this reader. It is SWALLOWED after
+          // reporting rather than rethrown: an unhandled throw in a socket callback can
+          // take the process down, and no single unreadable frame is worth the bridge.
+          protocolDrift.observeException(null, err, "hermes-ws-route");
         }
       });
       ws.on("close", (code) => {
@@ -209,10 +230,46 @@ export class HermesWsClient {
     }
     // Event notification → fan out by session id.
     if (obj.method === "event") {
-      const params = (obj.params ?? {}) as Record<string, unknown>;
+      // The OUTER frame being an object says nothing about what is nested in it. `?? {}`
+      // turned a `params.payload` of `null` — or a primitive, or an array — into an empty
+      // object, so a `message.complete` whose payload was corrupt read as a clean terminal
+      // and settled the turn `complete` on whatever text had accumulated: a truncated or
+      // empty answer wearing a success badge, on the DEFAULT transport (raised in review).
+      // Same defect as the SSE body, one transport over, and it is refused the same way.
+      const params = asJsonObject(obj.params);
+      if (params === null) {
+        protocolDrift.observeException(
+          null,
+          new TypeError("WS event params is not a JSON object"),
+          "hermes-ws-parse",
+        );
+        return;
+      }
       const type = typeof params.type === "string" ? params.type : "";
       const sid = typeof params.session_id === "string" ? params.session_id : "";
-      const payload = (params.payload ?? {}) as Record<string, unknown>;
+      // An ABSENT payload (missing key) is legitimate — several events carry none.
+      // Anything else that is not an object is REPORTED, and here the two failure modes
+      // pull in opposite directions: dropping the event risks a turn that never receives
+      // its terminal and hangs until the watchdog, while passing `{}` through risks a
+      // corrupt terminal settling as a clean, empty success. Both are real; only one can
+      // be chosen without evidence about what Hermes actually sends.
+      //
+      // Chosen: preserve today's behaviour (`{}`), and make the case VISIBLE so the next
+      // lot decides with measurements instead of a guess. That lot is already scoped —
+      // it owns the WS terminal handling and its live validation.
+      let payload: Record<string, unknown> = {};
+      if (params.payload !== undefined) {
+        const parsed = asJsonObject(params.payload);
+        if (parsed === null) {
+          protocolDrift.observeException(
+            null,
+            new TypeError("WS event payload is not a JSON object"),
+            "hermes-ws-parse",
+          );
+        } else {
+          payload = parsed;
+        }
+      }
       if (type) this.onEvent(type, sid, payload);
     }
   }

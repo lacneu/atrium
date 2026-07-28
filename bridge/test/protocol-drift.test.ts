@@ -414,3 +414,243 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
     ).toEqual([...expected].sort());
   });
 });
+
+describe("C4 — the reader threw on a frame (W9)", () => {
+  // A frame that makes the reader throw is a frame this build could not read AT ALL. It
+  // used to be a `console.error` and nothing else: no report, no product surface, no way
+  // for an operator to know a conversation broke on a shape we cannot parse.
+
+  class WeirdError extends Error {}
+
+  it("reports the error class, the site and the frame's protocol shape", () => {
+    protocolDrift.observeException(chatFrame(), new WeirdError("boom"), "feed");
+    expect(protocolDrift.report()).toEqual([
+      { shape: "«exception».WeirdError@feed.chat.delta", count: 1 },
+    ]);
+  });
+
+  it("keeps the two call sites apart", () => {
+    protocolDrift.observeException(chatFrame(), new WeirdError("a"), "feed");
+    protocolDrift.observeException(chatFrame(), new WeirdError("b"), "subagent-observe");
+    const shapes = protocolDrift.report().map((e) => e.shape);
+    expect(shapes).toContain("«exception».WeirdError@feed.chat.delta");
+    expect(shapes).toContain("«exception».WeirdError@subagent-observe.chat.delta");
+  });
+
+  it("the same shape recurring is COUNTED, not repeated", () => {
+    for (let i = 0; i < 5; i++) {
+      protocolDrift.observeException(chatFrame(), new WeirdError("x"), "feed");
+    }
+    expect(protocolDrift.report()).toEqual([
+      { shape: "«exception».WeirdError@feed.chat.delta", count: 5 },
+    ]);
+  });
+
+  it("names an agent frame by its own surface", () => {
+    protocolDrift.observeException(
+      { type: "event", event: "agent", payload: { stream: "lifecycle" } },
+      new TypeError("x"),
+      "feed",
+    );
+    expect(protocolDrift.report()[0]?.shape).toBe("«exception».TypeError@feed.agent");
+  });
+
+  it("survives frames that are not events at all", () => {
+    // The reader throws on whatever arrived: an RPC response, a malformed envelope, a
+    // null. Each has to land somewhere rather than crash the sensor.
+    protocolDrift.observeException(null, new TypeError("x"), "feed");
+    protocolDrift.observeException({ type: "response", id: 3 }, new TypeError("x"), "feed");
+    protocolDrift.observeException(
+      { type: "event", event: "chat" },
+      new TypeError("x"),
+      "feed",
+    );
+    const shapes = protocolDrift.report().map((e) => e.shape);
+    expect(shapes).toContain("«exception».TypeError@feed.«non-object»");
+    expect(shapes).toContain("«exception».TypeError@feed.«non-event»");
+    expect(shapes).toContain("«exception».TypeError@feed.chat.«no-payload»");
+  });
+
+  it("a non-Error throw is still reported", () => {
+    // `throw "string"` and `throw {}` are legal. `err.constructor.name` is unavailable or
+    // meaningless there, and losing the finding would be the silence this sensor removes.
+    protocolDrift.observeException(chatFrame(), "just a string", "feed");
+    expect(protocolDrift.report()[0]?.shape).toBe("«exception».string@feed.chat.delta");
+  });
+
+  it("never throws, whatever it is handed", () => {
+    const hostile = {
+      type: "event",
+      get event(): string {
+        throw new Error("getter");
+      },
+    };
+    expect(() => protocolDrift.observeException(hostile, new Error("x"), "feed")).not.toThrow();
+    // …and the failure is COUNTED rather than lost.
+    expect(protocolDrift.report()[0]?.shape).toBe("«detector-failure».ExceptionSensor");
+  });
+});
+
+describe("C4 — SOC2: no byte of frame content reaches the report", () => {
+  // The adversarial test W9 asks for: content injected in EVERY position an exception
+  // touches. The promise under test is about the REPORTED surface — `report()`, and so
+  // Convex and the UI — which is what leaves the process as data.
+  const SECRET = "AliceMartin-0612345678-secret";
+
+  it("not through a field name, a value, a state, an event, or the error message", () => {
+    protocolDrift.observeException(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          state: SECRET, // discriminant
+          [SECRET]: 1, // KEY position
+          deltaText: SECRET, // value position
+          runId: SECRET,
+        },
+      },
+      new Error(SECRET), // the error MESSAGE — the closest leak on this path
+      "feed",
+    );
+    protocolDrift.observeException(
+      { type: "event", event: SECRET, payload: {} }, // event position
+      new Error(SECRET),
+      "feed",
+    );
+    const serialized = JSON.stringify(protocolDrift.report());
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain("AliceMartin");
+    expect(serialized).not.toContain("0612345678");
+    // …and the findings ARE reported: a sensor that leaks nothing by reporting nothing
+    // would pass the assertions above.
+    expect(protocolDrift.report()).toHaveLength(2);
+    for (const e of protocolDrift.report()) {
+      expect(e.shape.startsWith("«exception».Error@feed.")).toBe(true);
+    }
+  });
+
+  it("an unknown state and an unknown event are DISTINGUISHED without being named", () => {
+    protocolDrift.observeException(
+      { type: "event", event: "chat", payload: { state: "alpha" } },
+      new Error("x"),
+      "feed",
+    );
+    protocolDrift.observeException(
+      { type: "event", event: "chat", payload: { state: "beta" } },
+      new Error("x"),
+      "feed",
+    );
+    const shapes = protocolDrift.report().map((e) => e.shape);
+    expect(new Set(shapes).size).toBe(2);
+    expect(shapes.every((s) => s.includes("«unknown-state»"))).toBe(true);
+    expect(shapes.some((s) => s.includes("alpha") || s.includes("beta"))).toBe(false);
+  });
+
+  it("the digest is SALTED — a guessed value cannot be confirmed", () => {
+    protocolDrift.observeException(
+      { type: "event", event: SECRET, payload: {} },
+      new Error("x"),
+      "feed",
+    );
+    expect(protocolDrift.report()[0]?.shape).not.toContain(unsaltedFnv1a(SECRET));
+  });
+});
+
+describe("C4 — the label survives the Convex boundary", () => {
+  it("even the longest possible exception shape fits PROTOCOL_MAX_STR", () => {
+    // `boundProtocolInfo` truncates a shape past 120 chars (adding a hash suffix to keep
+    // distinct names distinct). Truncation would not corrupt the report, but it would cut
+    // the tail — which is precisely the part an operator reads: the SITE and the frame's
+    // shape. Worth one assertion rather than one arithmetic in a comment.
+    const longestClass = `A${"a".repeat(47)}`; // the charset guard's ceiling
+    const longestSite = "subagent-observe";
+    const longestFrameShape = `chat.«unknown-state».${"f".repeat(8)}`;
+    const longest = `«exception».${longestClass}@${longestSite}.${longestFrameShape}`;
+    expect(longest.length).toBeLessThanOrEqual(120);
+  });
+
+  it("a hostile class name cannot smuggle length or content", () => {
+    class X extends Error {}
+    Object.defineProperty(X, "name", { value: "A".repeat(500) });
+    protocolDrift.observeException(chatFrame(), new X("x"), "feed");
+    const shape = protocolDrift.report()[0]?.shape ?? "";
+    // `constructor.name` is what is read, and it is guarded by the same charset rule the
+    // detector-failure path uses — an over-long or exotic name becomes the marker.
+    expect(shape.length).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("C4 — gateway noise cannot starve the exception signal", () => {
+  class Boom extends Error {}
+
+  it("a saturated FIELD registry still reports a reader exception in full", () => {
+    // The failure mode this budget exists for: a gateway jumps a version, unknown fields
+    // pour in and fill the registry, and the next unreadable frame becomes an untyped
+    // overflow tick — no class, no site, nothing to tie to the broken conversation.
+    for (let i = 0; i < 300; i++) {
+      protocolDrift.observe(chatFrame({ [`novel_field_${i}`]: 1 }));
+    }
+    expect(protocolDrift.overflowCount()).toBeGreaterThan(0); // the field budget IS full
+
+    protocolDrift.observeException(chatFrame(), new Boom("x"), "feed");
+    expect(protocolDrift.report().map((e) => e.shape)).toContain(
+      "«exception».Boom@feed.chat.delta",
+    );
+  });
+
+  it("the sensor budget is bounded too — it just cannot be spent by field drift", () => {
+    for (let i = 0; i < 300; i++) {
+      protocolDrift.observe(chatFrame({ [`novel_field_${i}`]: 1 }));
+    }
+    // 40 distinct sensor shapes against a 32 budget: bounded, and the overflow is
+    // reported rather than silent.
+    for (let i = 0; i < 40; i++) {
+      const Named = class extends Error {};
+      Object.defineProperty(Named, "name", { value: `Boom${i}` });
+      protocolDrift.observeException(chatFrame(), new Named("x"), "feed");
+    }
+    const sensorShapes = protocolDrift
+      .report()
+      .filter((e) => e.shape.startsWith("«exception»."));
+    expect(sensorShapes.length).toBe(32);
+    expect(protocolDrift.overflowCount()).toBeGreaterThan(0);
+  });
+});
+
+describe("C4 — the reservation has to survive the trip, not just the registry", () => {
+  class Boom extends Error {}
+
+  it("sensor shapes head the report, so a bounded consumer keeps them", () => {
+    // The Convex boundary keeps a bounded PREFIX. Reserving room in the registry and then
+    // appending the sensor shapes at the END undid the reservation one hop later.
+    for (let i = 0; i < 300; i++) {
+      protocolDrift.observe(chatFrame({ [`novel_field_${i}`]: 1 }));
+    }
+    protocolDrift.observeException(chatFrame(), new Boom("x"), "feed");
+    const head = protocolDrift.report()[0];
+    expect(head?.shape).toBe("«exception».Boom@feed.chat.delta");
+    // …and it is still first when the field counts are far larger than the sensor's.
+    for (let i = 0; i < 50; i++) protocolDrift.observe(chatFrame({ novel_field_0: 1 }));
+    expect(protocolDrift.report()[0]?.shape).toBe("«exception».Boom@feed.chat.delta");
+  });
+
+  it("one thrown error is ONE finding, however many guards rethrow it", () => {
+    // `feedInner` re-enters the public `feed()` to replay a stashed announce: the inner
+    // guard reports the inner frame, rethrows, and the outer guard used to report the
+    // same failure again — against the OUTER frame, which never broke.
+    const err = new Boom("one failure");
+    protocolDrift.observeException(chatFrame({ runId: "inner" }), err, "feed");
+    protocolDrift.observeException(chatFrame({ runId: "outer" }), err, "feed");
+    expect(protocolDrift.report()).toEqual([
+      { shape: "«exception».Boom@feed.chat.delta", count: 1 },
+    ]);
+  });
+
+  it("two DISTINCT failures are still two findings", () => {
+    protocolDrift.observeException(chatFrame(), new Boom("a"), "feed");
+    protocolDrift.observeException(chatFrame(), new Boom("b"), "feed");
+    expect(protocolDrift.report()).toEqual([
+      { shape: "«exception».Boom@feed.chat.delta", count: 2 },
+    ]);
+  });
+});

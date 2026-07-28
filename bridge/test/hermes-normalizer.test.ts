@@ -337,3 +337,84 @@ describe("Hermes runtime-failure prose promotion (text -> error detail)", () => 
     expect(final?.errorKind ?? null).toBeNull();
   });
 });
+
+describe("an UNREADABLE terminal is never an empty success (W9/C4)", () => {
+  // The worst shape this lot found: `run.completed` whose body did not parse was
+  // swallowed to `{}`, and the turn settled `complete` on whatever text had accumulated.
+  // A corrupted answer reached the user as a blank reply that looked deliberate — no
+  // error, no diagnostic, nothing for the operator either.
+
+  it("a completed frame with a broken body settles as an ERROR, not a blank reply", () => {
+    const n = new HermesNormalizer();
+    const events = n.feed({ event: "run.completed", data: '{"text": "trunca' });
+    const status = events.find((e) => e.type === "run.status") as
+      | { type: string; status: string }
+      | undefined;
+    expect(status?.status).toBe("error");
+  });
+
+  it("the stream-closed frame with a broken body settles as an ERROR too", () => {
+    // `done` normally carries no body at all, so an unreadable one is already anomalous.
+    const n = new HermesNormalizer();
+    const status = n
+      .feed({ event: "done", data: "not json at all" })
+      .find((e) => e.type === "run.status") as { status: string } | undefined;
+    expect(status?.status).toBe("error");
+  });
+
+  it("an EMPTY body is still a clean terminal — a bare done is normal", () => {
+    const n = new HermesNormalizer();
+    const status = n.feed({ event: "done", data: "" }).find(
+      (e) => e.type === "run.status",
+    ) as { status: string } | undefined;
+    expect(status?.status).toBe("complete");
+  });
+
+  it("a broken body on an event we do not act upon stays a keepalive", () => {
+    const n = new HermesNormalizer();
+    expect(n.feed({ event: "ping", data: ":keepalive" })).toEqual([]);
+    expect(n.isFinalized).toBe(false);
+  });
+});
+
+describe("corruption on ANY interpreted frame poisons the success (W9/C4)", () => {
+  // Gating only the terminal left the same hole one branch over: an unreadable
+  // `assistant.delta` was reported and then dropped, and a later clean `done` settled
+  // `complete` on whatever text survived — a short or empty answer that looks deliberate.
+
+  it("an unreadable DELTA makes the later clean terminal an error", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "assistant.delta", data: "{broken" });
+    const status = n.feed({ event: "done", data: "" }).find(
+      (e) => e.type === "run.status",
+    ) as { status: string } | undefined;
+    expect(status?.status).toBe("error");
+  });
+
+  it("an unreadable SNAPSHOT poisons a later run.completed too", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "assistant.completed", data: "{broken" });
+    const status = n
+      .feed({ event: "run.completed", data: '{"messages":[{"content":"hi"}]}' })
+      .find((e) => e.type === "run.status") as { status: string } | undefined;
+    expect(status?.status).toBe("error");
+  });
+
+  it("a keepalive on an UNINTERPRETED event never fails the turn", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "ping", data: ":still here" });
+    const status = n.feed({ event: "done", data: "" }).find(
+      (e) => e.type === "run.status",
+    ) as { status: string } | undefined;
+    expect(status?.status).toBe("complete");
+  });
+
+  it("a clean turn is untouched", () => {
+    const n = new HermesNormalizer();
+    n.feed({ event: "assistant.delta", data: '{"delta":"bon"}' });
+    const status = n.feed({ event: "done", data: "" }).find(
+      (e) => e.type === "run.status",
+    ) as { status: string } | undefined;
+    expect(status?.status).toBe("complete");
+  });
+});

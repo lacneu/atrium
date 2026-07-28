@@ -285,11 +285,58 @@ export interface DriftEntry {
 
 // Bounds: a pathological gateway must not grow memory or spam logs.
 const MAX_TRACKED_SHAPES = 100;
+/** …and a RESERVED budget for the sensors' own shapes, so gateway noise cannot exhaust
+ *  the room a reader exception needs. */
+const MAX_TRACKED_SENSOR_SHAPES = 32;
 
 /** Namespace for the detector's OWN failures. Not protocol vocabulary: the guillemets
  *  cannot appear in a field name (they fail the discriminant charset), so a gateway can
  *  never forge a shape that impersonates one. */
 const DETECTOR_FAILURE_PREFIX = "«detector-failure».";
+
+/** Namespace for frames the READER could not process at all — the C4 sensor.
+ *
+ *  Distinct from `«detector-failure».`, which is this module giving up on a frame the
+ *  reader handled fine. Same unforgeability: the guillemets fail the field-name charset,
+ *  so a gateway cannot mint a field that impersonates either namespace, and the two
+ *  prefixes cannot collide with each other. */
+const EXCEPTION_PREFIX = "«exception».";
+
+/** Where the reader threw. A UNION OF LITERALS on purpose: the site is passed by the
+ *  call site, never derived from `err.stack` — a stack frame can quote frame content,
+ *  and the compiler is what keeps a new call site from inventing a free-form label. */
+export type ExceptionSite =
+  | "feed"
+  | "pre-ack-replay"
+  | "subagent-observe"
+  | "subagent-anchor"
+  /** The HERMES stream reader. Same sensor, second provider: a finding that exists for
+   *  one provider only is a finding an operator will misread as "the other one is fine".
+   *  Its frames get no protocol classification here — the known-field sets above are
+   *  OpenClaw's — so the shape is the provider marker alone until W9's provider axis
+   *  gives it a field of its own. */
+  | "hermes-stream"
+  /** The Hermes WEBSOCKET event handler — the DEFAULT transport, and therefore the one
+   *  that matters most. Instrumented after a review found the sensor covering only the
+   *  REST path while the file-reading test called that "both providers". */
+  | "hermes-ws-event"
+  /** The WS transport's own JSON parse. It sits BEFORE the handler above and used to
+   *  drop an unparseable frame with a bare `return`, so the instrumented path never saw
+   *  it. Earlier than any reader: there is no frame to shape, only the fact of the loss. */
+  | "hermes-ws-parse"
+  /** Routing the parsed WS frame — the last unguarded step of that reader, where a frame
+   *  that parsed to `null` used to throw straight out of the socket callback. */
+  | "hermes-ws-route"
+  /** The OpenClaw operator socket's own decode — the SHARED connection every chat rides.
+   *  A frame that parses to `null` reached `frame.type` and threw straight out of the
+   *  socket callback: one unreadable frame could take the bridge down, unreported. */
+  | "openclaw-ws-parse"
+  /** …and the same decode during the handshake, before any session exists. */
+  | "openclaw-handshake-parse"
+  /** The Hermes REST/SSE body decode, inside the normalizer. It swallowed a bad body and
+   *  continued with `{}` — on a TERMINAL frame that finalized the turn as an empty
+   *  success, which is a lost answer wearing a success badge. */
+  | "hermes-sse-parse";
 
 /** Per-PROCESS random salt for the unknown-state id.
  *
@@ -315,8 +362,135 @@ function shortDigest(s: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** The PROTOCOL-LEVEL shape of a frame: which known surface judges it, and under which
+ *  label it is reported. `known === undefined` means the frame cannot be judged field by
+ *  field — the label is then the whole finding.
+ *
+ *  Shared by the unknown-field detector and the exception sensor SO THEY CANNOT DISAGREE:
+ *  two copies of "how do we name this frame" would eventually name the same frame two
+ *  ways, and an operator comparing the two reports would be reading a difference that
+ *  does not exist. */
+function classifyProtocolShape(
+  f: Record<string, unknown>,
+  p: Record<string, unknown>,
+): { known: ReadonlySet<string> | undefined; prefix: string } {
+  if (f.event === "chat") {
+    const state = typeof p.state === "string" ? p.state : "";
+    // `Object.hasOwn`, not a bare index: `state: "toString"` returned a FUNCTION from
+    // the prototype, `known.has` threw, and the observe-only catch swallowed it — so a
+    // frame with a prototype-named state produced no drift at all. A detector that can
+    // be silenced by the value it is inspecting is worse than none.
+    const perState = Object.hasOwn(KNOWN_CHAT_FIELDS_BY_STATE, state)
+      ? KNOWN_CHAT_FIELDS_BY_STATE[state]
+      : undefined;
+    if (perState === undefined) {
+      // DISTINGUISHED, not named. An unrecognised state has to be distinguishable — a
+      // single bucket hides whether one new state appeared or five — but it is an
+      // UNVALIDATED wire value, and this shape is stored and displayed. A charset
+      // filter was the first attempt and it proves nothing: `AliceMartin` passes it.
+      // A one-way digest keeps every property an operator needs (stable across frames,
+      // comparable across bridges, one id per distinct state) and carries no value, so
+      // the non-leak is structural rather than a promise about what a gateway sends.
+      // The name itself is recoverable where it belongs — the vendored schema diff of
+      // the version that introduced it.
+      return { known: undefined, prefix: `chat.«unknown-state».${shortDigest(state)}` };
+    }
+    return { known: perState, prefix: `chat.${state}` };
+  }
+  return { known: KNOWN_AGENT_FIELDS, prefix: "agent" };
+}
+
+/** Decode ONE inbound wire frame, or report why it could not be read (W9/C4).
+ *
+ *  The single decoder for every transport, and it exists because the same defect was
+ *  found twice in one review: `JSON.parse("null")` SUCCEEDS, and a cast to
+ *  `Record<string, unknown>` validates nothing at runtime — so the null flowed on to the
+ *  first property access and threw a TypeError straight out of a socket `message`
+ *  callback. Unreported, and on OpenClaw's SHARED operator connection one such frame
+ *  could take the bridge and every conversation on it down.
+ *
+ *  Every caller must go through this rather than parse for itself: a per-transport copy is
+ *  how the second provider was fixed while the first stayed broken.
+ *
+ *  Returns null for every unreadable shape, having reported it first. Only the error class
+ *  and the site travel — the raw text never leaves this function. */
+export function decodeInboundFrame(
+  raw: unknown,
+  site: ExceptionSite,
+): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(raw));
+  } catch (err) {
+    protocolDrift.observeException(null, err, site);
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    // A frame that parses to a non-object is unreadable in exactly the same way as one
+    // that does not parse at all — and far more dangerous, because it looks like success.
+    protocolDrift.observeException(
+      null,
+      new TypeError("wire frame is not a JSON object"),
+      site,
+    );
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** The frame's shape as the EXCEPTION sensor names it.
+ *
+ *  Wider input than `observe()`: the reader throws on whatever arrived, so this must name
+ *  an RPC response, a malformed envelope or a null just as safely as a chat event. Every
+ *  branch emits either a fixed marker or the shared classifier's label — never a wire
+ *  value, and never a key read off the frame.
+ *
+ *  An event type outside {chat, agent} is DIGESTED, not named: `event` is a wire string
+ *  like `state` was, and lot 23 settled that question — a charset filter is procedural
+ *  (`AliceMartin` passes it) while a salted digest keeps the one property an operator
+ *  needs, telling one unknown event apart from another. Naming them properly is the C1
+ *  sensor's job, once there is a known-event manifest to name them against. */
+function exceptionFrameShape(frame: unknown, site: ExceptionSite): string {
+  // The known surfaces this module holds are OpenClaw's; a Hermes frame judged against
+  // them would report "unknown" about a contract it never claimed to follow.
+  if (site.startsWith("hermes-")) return "«hermes»";
+  if (typeof frame !== "object" || frame === null) return "«non-object»";
+  const f = frame as Record<string, unknown>;
+  if (f.type !== "event") return "«non-event»";
+  if (f.event !== "chat" && f.event !== "agent") {
+    const ev = typeof f.event === "string" ? f.event : "";
+    return `«other-event».${shortDigest(ev)}`;
+  }
+  const payload = f.payload;
+  if (typeof payload !== "object" || payload === null) {
+    return `${f.event}.«no-payload»`;
+  }
+  return classifyProtocolShape(f, payload as Record<string, unknown>).prefix;
+}
+
+/** SENSOR shapes — this module's own findings (`«exception».`, `«detector-failure».`) as
+ *  opposed to gateway vocabulary. They get their OWN budget below. */
+function isSensorShape(shape: string): boolean {
+  return shape.startsWith(EXCEPTION_PREFIX) || shape.startsWith(DETECTOR_FAILURE_PREFIX);
+}
+
 class ProtocolDriftRegistry {
   private counters = new Map<string, number>();
+  /** SEPARATE budget for sensor shapes, and the reason is the failure mode itself: the
+   *  two share nothing but a cap, and a burst of unknown FIELDS — the common case when a
+   *  gateway jumps a version — would fill the registry first. The next unreadable frame
+   *  then became an untyped overflow tick: no class, no site, no shape, nothing to tie to
+   *  the conversation that broke (raised in review). A reader exception is the scarcer and
+   *  more serious finding of the two; it cannot be starved by the noisier one.
+   *
+   *  The sensor budget is small on purpose: its vocabulary is error classes × sites ×
+   *  frame shapes, so it is bounded in practice long before this cap. */
+  private sensorCounters = new Map<string, number>();
+  /** Errors already reported, by IDENTITY. A `WeakSet` so a long-lived registry never
+   *  holds an error alive; primitives thrown (`throw "x"`) cannot be tracked and are the
+   *  one case that could still double-count — vanishingly rare, and over-reporting a
+   *  reader failure is the safe direction. */
+  private observedErrors = new WeakSet<object>();
   private overflowed = false;
   private overflowCounter = 0;
 
@@ -334,36 +508,13 @@ class ProtocolDriftRegistry {
       // PER STATE for chat (the union hid cross-state fields, see above). An
       // unrecognised state cannot be judged field by field, so it is reported ONCE as
       // itself rather than as a wall of unknown fields.
-      let known: ReadonlySet<string>;
-      let prefix: string;
-      if (f.event === "chat") {
-        const state = typeof p.state === "string" ? p.state : "";
-        // `Object.hasOwn`, not a bare index: `state: "toString"` returned a FUNCTION from
-        // the prototype, `known.has` threw, and the observe-only catch swallowed it — so a
-        // frame with a prototype-named state produced no drift at all. A detector that can
-        // be silenced by the value it is inspecting is worse than none.
-        const perState = Object.hasOwn(KNOWN_CHAT_FIELDS_BY_STATE, state)
-          ? KNOWN_CHAT_FIELDS_BY_STATE[state]
-          : undefined;
-        if (perState === undefined) {
-          // DISTINGUISHED, not named. An unrecognised state has to be distinguishable — a
-          // single bucket hides whether one new state appeared or five — but it is an
-          // UNVALIDATED wire value, and this shape is stored and displayed. A charset
-          // filter was the first attempt and it proves nothing: `AliceMartin` passes it.
-          // A one-way digest keeps every property an operator needs (stable across frames,
-          // comparable across bridges, one id per distinct state) and carries no value, so
-          // the non-leak is structural rather than a promise about what a gateway sends.
-          // The name itself is recoverable where it belongs — the vendored schema diff of
-          // the version that introduced it.
-          this.bump(`chat.«unknown-state».${shortDigest(state)}`);
-          return;
-        }
-        known = perState;
-        prefix = `chat.${state}`;
-      } else {
-        known = KNOWN_AGENT_FIELDS;
-        prefix = "agent";
+      const cls = classifyProtocolShape(f, p);
+      if (cls.known === undefined) {
+        this.bump(cls.prefix);
+        return;
       }
+      const known = cls.known;
+      const prefix = cls.prefix;
       for (const key of Object.keys(p)) {
         if (known.has(key)) continue;
         this.bump(`${prefix}.${key}`);
@@ -385,6 +536,56 @@ class ProtocolDriftRegistry {
     }
   }
 
+  /** C4 — the READER threw on a frame (the priority sensor of W9).
+   *
+   *  A frame that makes `feed()` throw is a frame this build could not read AT ALL, which
+   *  is strictly worse than an unknown field: with an unknown field the turn still runs.
+   *  Until now it was a `console.error` in the container's stdout and nothing else — not
+   *  in any report, not in the product, invisible to the operator whose conversation it
+   *  broke. It rides the counters that lot 23 already bounded, carried and rendered, so
+   *  the finding reaches the same place the field drift does.
+   *
+   *  WHAT IS REPORTED, and nothing else: the error CLASS (`constructor.name`, charset
+   *  guarded), the call SITE (a compile-time literal — never `err.stack`, which quotes
+   *  frame content), and the frame's PROTOCOL-LEVEL shape through the same classifier the
+   *  field detector uses. Never `err.message`.
+   *
+   *  Scope of that promise, stated because the test asserts exactly it: the REPORTED
+   *  surface — `report()`, and therefore Convex and the UI — carries no frame content.
+   *  The pre-existing `console.error` at each call site still prints `err.message` to
+   *  bridge stdout, unchanged by this lot and consistent with the rest of the bridge;
+   *  that log is operator-local and is not what SOC2 governs here.
+   *
+   *  Never throws: a sensor that can break the feed path would be a worse bug than the
+   *  one it reports. */
+  observeException(frame: unknown, err: unknown, site: ExceptionSite): void {
+    try {
+      // ONE failure, ONE finding. `feedInner` re-enters the public `feed()` to replay a
+      // stashed announce, so a throw on the inner frame is reported there and then
+      // rethrown into the OUTER guard, which would report it a second time — against the
+      // wrong frame (raised in review). Identity, not shape: the rethrown object is the
+      // same one, whatever the nesting depth or the path it took.
+      if (typeof err === "object" && err !== null) {
+        if (this.observedErrors.has(err)) return;
+        this.observedErrors.add(err);
+      }
+      const cls = err instanceof Error ? err.constructor.name : typeof err;
+      // Same guard the detector-failure path uses: a class name is normally an
+      // identifier, but `constructor.name` is attacker-influenceable in principle
+      // (a thrown object from a dynamically named class), and this string is stored.
+      const safeClass = /^[a-zA-Z][a-zA-Z0-9._-]{0,47}$/.test(cls) ? cls : "«unprintable»";
+      this.bump(`${EXCEPTION_PREFIX}${safeClass}@${site}.${exceptionFrameShape(frame, site)}`);
+    } catch {
+      // The sensor itself failed. Count it as a detector failure rather than losing it,
+      // and never rethrow into the caller's catch block.
+      try {
+        this.bump(`${DETECTOR_FAILURE_PREFIX}ExceptionSensor`);
+      } catch {
+        /* nothing left to do */
+      }
+    }
+  }
+
   /** Count one shape, or count the OVERFLOW when the cap is reached.
    *
    *  `overflowCount` exists because the cap used to be a `console.error` in the container's
@@ -392,12 +593,15 @@ class ProtocolDriftRegistry {
    *  everything past 512 shapes. A bound is legitimate; a bound nobody downstream can see
    *  is the same silence the bound was supposed to replace. */
   private bump(shape: string): void {
-    const current = this.counters.get(shape);
+    const sensor = isSensorShape(shape);
+    const map = sensor ? this.sensorCounters : this.counters;
+    const cap = sensor ? MAX_TRACKED_SENSOR_SHAPES : MAX_TRACKED_SHAPES;
+    const current = map.get(shape);
     if (current !== undefined) {
-      this.counters.set(shape, current + 1);
+      map.set(shape, current + 1);
       return;
     }
-    if (this.counters.size >= MAX_TRACKED_SHAPES) {
+    if (map.size >= cap) {
       this.overflowCounter += 1;
       if (!this.overflowed) {
         this.overflowed = true;
@@ -410,12 +614,18 @@ class ProtocolDriftRegistry {
     // One log per NEW shape (field name only — never a value). A detector failure rides
     // the same counters but is NOT an unknown field: logging it under the drift wording
     // would send an operator looking for a gateway change that never happened.
+    // THREE findings ride these counters and they are not the same news. Logging an
+    // exception — or a detector failure — under the drift wording sends an operator
+    // looking for a gateway change that never happened; lot 23 fixed that for the
+    // detector's own failures and the exception sensor inherited the wrong branch.
     console.log(
       shape.startsWith(DETECTOR_FAILURE_PREFIX)
         ? `[protocol-drift] detector failed on a frame: ${shape} (error class only — the frame is unreadable to this build)`
-        : `[protocol-drift] unknown protocol field: ${shape} (gateway newer than vendored ${DRIFT_VENDORED_VERSION}?)`,
+        : shape.startsWith(EXCEPTION_PREFIX)
+          ? `[protocol-drift] the READER threw on a frame: ${shape} (error class + site only — this build could not process the frame at all)`
+          : `[protocol-drift] unknown protocol field: ${shape} (gateway newer than vendored ${DRIFT_VENDORED_VERSION}?)`,
     );
-    this.counters.set(shape, 1);
+    map.set(shape, 1);
   }
 
   /** How many observations fell past the tracked-shape cap. Reported, not just logged. */
@@ -425,14 +635,23 @@ class ProtocolDriftRegistry {
 
   /** Current drift, largest counts first (bounded by MAX_TRACKED_SHAPES). */
   report(): DriftEntry[] {
-    return [...this.counters.entries()]
-      .map(([shape, count]) => ({ shape, count }))
-      .sort((a, b) => b.count - a.count);
+    // SENSOR SHAPES FIRST, and this is not cosmetic. The reserved budget above only holds
+    // as far as this list travels: the Convex boundary keeps a bounded PREFIX of it, so a
+    // registry saturated with unknown fields pushed the exception off the end and turned
+    // it back into an anonymous `driftTruncated` tick — the reservation undone one hop
+    // downstream (raised in review). Ordering by count alone was never enough: a reader
+    // exception is a count of 1 on the day it matters most.
+    const byCount = (a: DriftEntry, b: DriftEntry): number => b.count - a.count;
+    return [
+      ...[...this.sensorCounters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+      ...[...this.counters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+    ];
   }
 
   /** Test seam. */
   resetForTests(): void {
     this.counters.clear();
+    this.sensorCounters.clear();
     this.overflowed = false;
     this.overflowCounter = 0;
   }

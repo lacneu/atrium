@@ -35,6 +35,7 @@ import type {
 } from "../../convex-writer.js";
 import type { HermesWsClient } from "./ws-client.js";
 import type { HermesFilesFetcher } from "./files-fetcher.js";
+import { protocolDrift } from "../openclaw/protocol-drift.js";
 
 /** The delivery folder (workspace-relative) the prompt directive names. */
 export const HERMES_DELIVERY_DIR = "atrium-out";
@@ -310,7 +311,21 @@ export function runHermesWsTurn(
       const call = () => Promise.resolve(opts.writer.setPhase?.(mid, phase));
       phaseChain = phaseChain.then(call, call);
     };
+    /** C4 (W9) on the DEFAULT Hermes transport. `providers/hermes/turn.ts` is the REST
+     *  path; this one is what `performHermesSend` picks unless told otherwise, so a
+     *  sensor covering only the other file is a sensor covering almost nothing — and a
+     *  test asserting "both providers are instrumented" by reading that file was green
+     *  for exactly that wrong reason. Reports and RETHROWS: whatever the dispatcher does
+     *  with a throwing handler today, it keeps doing. */
     const onEvent = (type: string, payload: Record<string, unknown>): void => {
+      try {
+        applyEvent(type, payload);
+      } catch (err) {
+        protocolDrift.observeException({ type, payload }, err, "hermes-ws-event");
+        throw err;
+      }
+    };
+    const applyEvent = (type: string, payload: Record<string, unknown>): void => {
       // Monitoring events (delegation / MoA) OUTLIVE the parent turn: a child
       // often completes AFTER the parent's message.complete (live-observed
       // order), and its terminal MUST still reach the monitor or the card

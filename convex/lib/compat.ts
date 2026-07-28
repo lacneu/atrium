@@ -301,6 +301,22 @@ function shortHash(s: string): string {
  *  (raised in review). A suffix derived from the WHOLE name keeps them apart everywhere.
  *  The suffix is derived from a field NAME, which is already what this surface displays —
  *  no value, no content (SOC2). */
+/** SENSOR shapes — the bridge's own findings (a reader that threw, the detector giving
+ *  up) — sort ahead of gateway vocabulary EVERYWHERE a bounded list is ordered.
+ *
+ *  Both bounds need it, and finding out why took two review passes. A reader exception is
+ *  a count of 1 on the day it matters most, so ordering by count buries it; and this
+ *  boundary must not lean on the bridge having sorted correctly, because not trusting the
+ *  bridge is the rule everywhere else here. The first bound slices a per-response list,
+ *  the fold re-sorts the union of all of them: two places, one rule.
+ *
+ *  Classified by PREFIX here rather than taken on faith. A bridge could mint a shape with
+ *  the prefix to buy itself a slot in a bounded list — that is our own code, and the cost
+ *  would be a reordering, not a leak. */
+function sensorFirst(shape: string): number {
+  return shape.startsWith("«exception».") || shape.startsWith("«detector-failure».") ? 0 : 1;
+}
+
 function boundShapeName(shape: string): string {
   if (shape.length <= PROTOCOL_MAX_STR) return shape;
   return `${shape.slice(0, PROTOCOL_MAX_STR - 9)}…${shortHash(shape)}`;
@@ -336,6 +352,17 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
   // BOUNDED BEFORE THE WALK (see PROTOCOL_MAX_RAW_DRIFT): the cap used to apply to the
   // stored list only, so a bridge could still make every poll map and index a million
   // entries. What is skipped here is counted as truncation like anything else.
+  // A PLAIN PREFIX here, deliberately, and it was challenged: a bridge sending 800
+  // ordinary drifts before its `«exception».` loses it at this cap, before `sensorFirst`
+  // ever runs. Scanning further to rescue it was implemented and then REVERTED, because
+  // it trades a real guard for a property that does not exist. The real guard is the one
+  // the test below pins: a hostile bridge must not make every poll walk a million
+  // entries, and finding a sensor shape at position 5000 means reading 5000 entries.
+  // The property that does not exist: against a hostile bridge, priority buys nothing —
+  // one that wants to hide a reader exception simply omits it. Priority protects an
+  // HONEST bridge's scarce signal from its own noise, and an honest bridge sends at most
+  // MAX_TRACKED_SHAPES + MAX_TRACKED_SENSOR_SHAPES entries, sensor-first, far inside this
+  // cap. What is skipped here is counted as truncation like anything else.
   const rawDrift = allRawDrift.slice(0, PROTOCOL_MAX_RAW_DRIFT);
   const unread = allRawDrift.length - rawDrift.length;
   // The ORIGINAL name is kept alongside the truncated one. Truncating first and then
@@ -404,10 +431,18 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
   for (const entry of byShape.values()) {
     collided += entry.originals.size - 1;
   }
-  const deduped = [...byShape.entries()].map(([shape, e]) => ({
-    shape,
-    count: e.count,
-  }));
+  const deduped = [...byShape.entries()]
+    .map(([shape, e]) => ({ shape, count: e.count }))
+    // …ordered BEFORE the slice below, and not left to the order the bridge happened to
+    // send: a well-behaved bridge puts its sensor findings first, but this side does not
+    // get to assume that, and a hundred ordinary drifts ahead of one `«exception».` used
+    // to drop it here — before the fold's sort ever ran (raised in review).
+    .sort(
+      (x, y) =>
+        sensorFirst(x.shape) - sensorFirst(y.shape) ||
+        y.count - x.count ||
+        (x.shape < y.shape ? -1 : x.shape > y.shape ? 1 : 0),
+    );
   const rejected = Math.max(0, rawDrift.length - drift.length) + collided;
   const driftTruncated = clampCount(
     incomingTruncated +
@@ -480,9 +515,21 @@ function mergeProtocolInfo(
   // bridges happened to be polled in — so with more distinct shapes than the cap, which
   // ones an operator sees changed with the poll order, and a given shape could stay
   // invisible run after run. The name breaks the tie: same input set, same 100 kept.
+  // SENSOR SHAPES FIRST, then by count. The bridge already orders its own report that
+  // way — a reader exception is a count of 1 on the day it matters most — but this fold
+  // re-sorted the UNION by count alone and undid it: 100 field drifts at ×2 from one
+  // bridge put a single `«exception»` at ×1 from another in 101st place, where the bound
+  // below turns it back into an anonymous `driftTruncated` (raised in review). The
+  // priority has to be re-stated wherever the order is re-decided.
+  //
   const all = [...merged.entries()]
     .map(([shape, count]) => ({ shape, count }))
-    .sort((x, y) => y.count - x.count || (x.shape < y.shape ? -1 : x.shape > y.shape ? 1 : 0));
+    .sort(
+      (x, y) =>
+        sensorFirst(x.shape) - sensorFirst(y.shape) ||
+        y.count - x.count ||
+        (x.shape < y.shape ? -1 : x.shape > y.shape ? 1 : 0),
+    );
   return {
     ...a,
     // NOT sliced here. Callers fold bridges SEQUENTIALLY (`acc = merge(acc, next)`), so

@@ -1002,6 +1002,7 @@ describe("forChat (active user, OWN chat only)", () => {
 });
 
 describe("boundProtocolInfo (protocol-contract section)", () => {
+
   test("picks + bounds a valid section", () => {
     const p = boundProtocolInfo({
       vendoredVersion: "2026.6.11",

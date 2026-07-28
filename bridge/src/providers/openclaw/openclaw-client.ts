@@ -29,6 +29,7 @@ import {
   type ConnectionEnd,
   type ShutdownNotice,
 } from "./connection-end.js";
+import { decodeInboundFrame } from "./protocol-drift.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
 // inbound gateway frame is appended (full, untruncated) as one JSON line — the
@@ -352,12 +353,11 @@ export class OpenClawConnection {
       let reqId = "";
 
       ws.on("message", (raw: RawData) => {
-        let frame: Record<string, unknown>;
-        try {
-          frame = JSON.parse(raw.toString());
-        } catch {
-          return; // ignore malformed frames during handshake
-        }
+        // One decoder for every transport (W9/C4). Parsing here meant a frame that
+        // parses to `null` flowed on to the first property read and threw out of this
+        // callback — during the handshake, before any session exists to absorb it.
+        const frame = decodeInboundFrame(raw, "openclaw-handshake-parse");
+        if (frame === null) return; // unreadable frame: reported inside, then ignored
         // Read a shutdown notice in EITHER phase, before anything else can reject
         // the frame: the gateway broadcasts it to every connection, including one
         // still shaking hands, and the close that follows must be named for what it
@@ -521,11 +521,11 @@ export class OpenClawConnection {
       typeof (raw as { length?: unknown }).length === "number"
         ? (raw as unknown as { length: number }).length
         : 0;
-    try {
-      frame = JSON.parse(raw.toString());
-    } catch {
-      return; // drop malformed frames
-    }
+    // THE SHARED SOCKET. Every chat rides this connection, so an unreadable frame that
+    // threw out of the callback took all of them with it — and said nothing.
+    const decoded = decodeInboundFrame(raw, "openclaw-ws-parse");
+    if (decoded === null) return; // unreadable frame: reported inside, then dropped
+    frame = decoded;
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).

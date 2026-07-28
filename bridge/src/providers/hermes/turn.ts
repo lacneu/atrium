@@ -20,6 +20,7 @@ import type { ConvexWriter } from "../../convex-writer.js";
 import type { HermesClient } from "./client.js";
 import { assertBeforeSendDeadline } from "../../core/dispatch-deadline.js";
 import { HermesNormalizer } from "./normalizer.js";
+import { protocolDrift } from "../openclaw/protocol-drift.js";
 
 /** Abort reason set by /reset (vs a user Stop) — tells the turn to FINALIZE the
  *  message as aborted (Convex's dispatchReset does not). */
@@ -216,7 +217,13 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         );
       }
     } catch (err) {
+      // C4 (W9), SECOND PROVIDER. The user does see this one — the turn settles with a
+      // delivered error below — but the operator did not: nothing said which build could
+      // not read which stream. An abort is the user's own doing and is not a read failure.
       const aborted = (err as { name?: string })?.name === "AbortError";
+      if (!aborted) {
+        protocolDrift.observeException(null, err, "hermes-stream");
+      }
       const reason = (opts.signal as { reason?: unknown } | undefined)?.reason;
       if (aborted) {
         // USER /abort: Convex already finalized the message `aborted` (writing

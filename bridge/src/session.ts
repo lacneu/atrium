@@ -26,6 +26,7 @@ import { sessionsGetParams } from "./core/rpc-params.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
+import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
@@ -645,6 +646,9 @@ class Session implements BridgeSession {
         try {
           await this.runManager.feed(winner.value, now);
         } catch (err) {
+          // NO sensor call here: `runManager.feed` reports the frame itself and rethrows
+          // (C4 lives on the reader, so the voice relay and the pre-ack replay are
+          // covered too). Reporting again would count one unreadable frame twice.
           console.error("session feed error:", (err as Error)?.message ?? err);
         }
         // POST-feed re-evaluation: a legitimately NEW runId admitted DURING
@@ -685,6 +689,11 @@ class Session implements BridgeSession {
             ),
           );
         } catch (err) {
+          // Same sensor, distinct site: the sub-agent observer reads the SAME frame on an
+          // independent path, so a throw here is a second way to lose a frame silently.
+          // Instrumenting only the feed would have covered one of two identical blind
+          // spots.
+          protocolDrift.observeException(winner.value, err, "subagent-observe");
           console.error(
             "session subagent observe error:",
             (err as Error)?.message ?? err,
@@ -712,6 +721,10 @@ class Session implements BridgeSession {
             );
           }
         } catch (err) {
+          // THIRD frame-path site. The programme named two; this one runs on the same
+          // arrived frame (anchor propagation for frames the observer never re-observes),
+          // so a throw here loses a frame exactly as silently as the other two.
+          protocolDrift.observeException(winner.value, err, "subagent-anchor");
           console.error(
             "session subagent anchor error:",
             (err as Error)?.message ?? err,

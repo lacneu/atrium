@@ -23,6 +23,7 @@ import {
   type BridgeEvent,
 } from "../../core/events.js";
 import type { SseFrame } from "./sse.js";
+import { protocolDrift } from "../openclaw/protocol-drift.js";
 
 /** Frame names bound to the LIVE captures (error path 2026-07-06 AM, success
  *  path 2026-07-06 PM — fixtures under test/fixtures/hermes/). The live success
@@ -85,6 +86,13 @@ const HERMES_EVENT_NAMES = {
   // Stream closed (always last; carries no content).
   done: new Set(["done"]),
 } as const;
+
+/** TRUE when the normalizer interprets this event name at all. An unreadable body on
+ *  anything else is a keepalive, and keepalives must not fail a turn. */
+function isKnownEvent(ev: string | undefined): boolean {
+  if (typeof ev !== "string") return false;
+  return Object.values(HERMES_EVENT_NAMES).some((names) => nameIn(names, ev));
+}
 
 /** Pull the delta text from any of the observed/documented delta shapes:
  *  `{delta:{content}}` (chat-completions), `{delta:"..."}`, `{text}`,
@@ -182,6 +190,11 @@ function nameIn(set: ReadonlySet<string>, event: string): boolean {
  * Emits the message.final + run.status PAIR the sink requires (the sink cannot
  * finalize on either alone). Idempotent after the terminal frame.
  */
+/** Shown to the USER when a terminal frame arrived unreadable. Content-free: it says
+ *  what happened, not what the frame contained. */
+const UNREADABLE_TERMINAL =
+  "The provider ended the turn with a message this build could not read.";
+
 export class HermesNormalizer {
   private runId: string | null = null;
   private text = "";
@@ -228,15 +241,40 @@ export class HermesNormalizer {
     return this.finalized;
   }
 
+  /** A frame this build could not read arrived on an event it acts upon. */
+  private corrupted = false;
+
   feed(frame: SseFrame): BridgeEvent[] {
     if (this.finalized) return [];
     let data: Record<string, unknown> = {};
+    // TRUE when a NON-EMPTY body could not be read. An empty body is normal (a bare
+    // `done`); an unreadable one on a frame we act upon is not, and the difference decides
+    // whether this turn may settle as a success below.
+    let unreadableBody = false;
     if (frame.data) {
       try {
         const parsed = JSON.parse(frame.data);
         if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
+        else unreadableBody = true;
       } catch {
-        // A non-JSON data line (keepalive text): ignore its body, keep the name.
+        // A non-JSON data line: a keepalive if the event means nothing to us, and a LOST
+        // TERMINAL if it does. Reported either way (W9/C4) — the class and the site only,
+        // never the body.
+        unreadableBody = true;
+      }
+      if (unreadableBody) {
+        protocolDrift.observeException(
+          null,
+          new TypeError("SSE data is not a JSON object"),
+          "hermes-sse-parse",
+        );
+        // Remembered for the whole turn, not just this frame. Gating only the TERMINAL
+        // left the same hole one branch over: an unreadable `assistant.delta` was reported
+        // and then dropped, and a later clean `done` settled `complete` on the text that
+        // survived — the user reads a short or empty answer that looks deliberate. Any
+        // frame we ACT upon counts; a body we would have ignored anyway (a keepalive on an
+        // event this build does not interpret) does not.
+        if (isKnownEvent(frame.event)) this.corrupted = true;
       }
     }
     // Learn the run id from any frame that carries it (envelope is uniform).
@@ -267,6 +305,13 @@ export class HermesNormalizer {
       return [];
     }
     if (nameIn(HERMES_EVENT_NAMES.completed, ev)) {
+      // A TERMINAL we could not read must not become an empty SUCCESS. Swallowing the
+      // parse error and continuing with `{}` finalized the turn `complete` on whatever
+      // text had accumulated — so a corrupted answer reached the user as a blank reply
+      // that looked deliberate, which is the loss this programme exists to end (raised in
+      // review). Settled as a delivered ERROR instead: the user is told, the operator has
+      // the C4 entry, and nothing is presented as an answer that never arrived.
+      if (unreadableBody) return this.finalize("error", UNREADABLE_TERMINAL);
       const finalText = extractFinalText(data);
       if (finalText) this.text = finalText;
       return this.finalize("complete", null);
@@ -274,6 +319,7 @@ export class HermesNormalizer {
     if (nameIn(HERMES_EVENT_NAMES.done, ev)) {
       // Stream closed. Success terminals precede it; if none did (clean close
       // with only deltas), settle complete on the accumulated text.
+      if (unreadableBody) return this.finalize("error", UNREADABLE_TERMINAL);
       return this.finalize("complete", null);
     }
     if (nameIn(HERMES_EVENT_NAMES.delta, ev)) {
@@ -373,6 +419,13 @@ export class HermesNormalizer {
   }
 
   private finalize(status: "complete" | "error", error: string | null): BridgeEvent[] {
+    // ONE place, so a `complete` path added later cannot forget it: a turn that lost a
+    // frame it could not read never settles as a success. An abort stays an abort — the
+    // user asked for that one.
+    if (status === "complete" && this.corrupted) {
+      status = "error";
+      error = error ?? UNREADABLE_TERMINAL;
+    }
     this.finalized = true;
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,

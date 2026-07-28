@@ -465,6 +465,10 @@ export class RunManager {
       return this.applyOrdered(() =>
         replayFailed ? [] : this.normalizer.feed(frame, frameNow),
       ).catch((err) => {
+        // The PRE-ACK path reaches the normalizer without going through `feed()` above,
+        // so it needs its own report — with the exact frame that failed, which is the
+        // only thing that tells an operator which shape broke the send.
+        protocolDrift.observeException(frame, err, "pre-ack-replay");
         replayFailed = true;
         throw err;
       });
@@ -503,6 +507,23 @@ export class RunManager {
    */
   /** Feed one raw gateway frame; apply the resulting events to Convex. */
   async feed(frame: unknown, now: number): Promise<void> {
+    // C4 (W9) SITS ON THE READER, not on the callers. Instrumenting catch blocks meant
+    // chasing call sites, and the chase was already losing: the programme named two, the
+    // session loop had three, and TWO MORE readers bypass that loop entirely — the
+    // pre-ack replay below and the voice relay in `server.ts` both call a feed directly,
+    // where a throw reached a bare `console.error`. One guard here covers every caller,
+    // present and future. It REPORTS AND RETHROWS: callers decide what a failed frame
+    // means (a /send rejects, the loop logs and continues); the sensor only refuses to
+    // let it vanish.
+    try {
+      await this.feedInner(frame, now);
+    } catch (err) {
+      protocolDrift.observeException(frame, err, "feed");
+      throw err;
+    }
+  }
+
+  private async feedInner(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).
     protocolDrift.observe(frame);
     if (!this.sink.active) {
