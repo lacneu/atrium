@@ -737,7 +737,20 @@ export class TurnSink {
       } else {
         // The run terminated with nothing user-visible (the NO_REPLY protocol
         // sentinel / an empty reply): no message was ever created — silence.
-        console.log("[announce] silent run discarded (no visible content)");
+        //
+        // IDENTIFIERS AND COUNTS, never content (SOC2): which run stayed silent, how
+        // many events were buffered and dropped with it, and the terminal that ended
+        // it — no text, no arguments, no message. The bare version of this
+        // line cost a full session of diagnosis on 2026-07-28 — a bench scenario went
+        // red on a parallel fan-out and nothing anywhere said WHICH run had chosen to
+        // stay silent, so the answer had to be reconstructed from a raw capture.
+        // Deliberately not an anomaly and never a bubble: a silent announce is the
+        // routine case (a parent waiting on a sibling child), not a failure.
+        console.log(
+          `[announce] silent run discarded (no visible content): run=${
+            (this.deferredRunId ?? this.turnRunId ?? "?").slice(0, 64)
+          } bufferedEvents=${this.deferredEvents.length} status=${status}`,
+        );
       }
       // Even a silent delivery means the background task FINISHED.
       await this.settleTaskDeliveryEngagement();
