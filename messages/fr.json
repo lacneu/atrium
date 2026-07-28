@@ -1093,6 +1093,7 @@
 	"bridge_protocol_section": "Protocole",
 	"bridge_protocol_ok_badge": "aligné",
 	"bridge_protocol_drift_badge": "{count} champ(s) inconnu(s)",
+	"bridge_protocol_drift_dropped_badge": "dérive au-delà du plafond",
 	"bridge_protocol_vendored": "Contrat embarqué : OpenClaw {version}",
 	"bridge_protocol_counts": "{handled} pris en charge · {ignored} ignorés délibérément · {gaps} lacunes",
 	"bridge_protocol_gaps_toggle": "Lacunes déclarées ({count})",
@@ -2120,5 +2121,6 @@
 	"docviewer_save_not_applied": "Non appliqué — les brouillons personnels sont désactivés pendant l'usurpation",
 	"runstatus_error_dispatch_unknown": "L'envoi de ce message n'a pas répondu à temps : nous avons arrêté d'attendre et libéré la conversation. Nous ne savons pas si l'agent l'a reçu — vérifiez si une réponse apparaît avant de renvoyer la même demande.",
 	"error_dispatch_stalled_label": "Dispatch bloqué (réconcilié)",
-	"error_dispatch_stalled_hint": "Ce dispatch est resté en attente bien plus longtemps qu'un dispatch vivant ne peut l'être : le réconciliateur l'a clos pour débloquer la conversation. Son action est morte avant de marquer la ligne, ou une reprise après préemption n'a jamais démarré — cherchez une action Convex plantée ou évincée à ce moment-là."
+	"error_dispatch_stalled_hint": "Ce dispatch est resté en attente bien plus longtemps qu'un dispatch vivant ne peut l'être : le réconciliateur l'a clos pour débloquer la conversation. Son action est morte avant de marquer la ligne, ou une reprise après préemption n'a jamais démarré — cherchez une action Convex plantée ou évincée à ce moment-là.",
+	"bridge_protocol_drift_dropped": "au-delà du plafond : {overflow} observation(s) non nommée(s) par le bridge, {truncated} forme(s) non conservée(s)"
 }

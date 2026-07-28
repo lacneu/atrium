@@ -39,6 +39,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { vendoredVersions } from "./helpers/vendored.js";
+// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
+import { deriveSnapshotFields } from "../scripts/lib/derive-snapshot.mjs";
 
 const PROTOCOL = new URL("../protocol/openclaw/", import.meta.url);
 
@@ -66,6 +68,13 @@ interface Provenance {
   upstreamTag: string;
   upstreamSha: string;
   files: Record<string, FileHashes>;
+  /** Artifacts DERIVED from upstream rather than copied from it (W9 / G-68): the field
+   *  names of a return shape, not bytes. Attributed by the sha256 of the source file they
+   *  were read from, so "this list came from that source" stays checkable. */
+  derived?: Record<
+    string,
+    { upstreamPath: string; upstream: string; fields: number }
+  >;
 }
 
 /** The header the vendoring script prepends. Derived from the file itself rather than
@@ -266,6 +275,85 @@ describe("vendored protocol integrity", () => {
           wrong,
           `the recorded upstream hash does not match v${version}'s real bytes for: ` +
             `${wrong.join(", ")}`,
+        ).toEqual([]);
+      });
+
+      it("attributes every DERIVED artifact to the upstream file it was read from", () => {
+        if (prov === null) return;
+        const derived = prov.derived ?? {};
+        // Present at all: the artifact exists on disk, so the record must exist too — an
+        // unattributed derived file is the same hole as an unrecorded copied one.
+        const onDisk = readdirSync(new URL(`${version}/`, PROTOCOL)).filter(
+          (f) => f.endsWith(".json") && f !== "PROVENANCE.json",
+        );
+        expect(Object.keys(derived).sort(), "derived artifacts vs the record").toEqual(
+          onDisk.sort(),
+        );
+        for (const [name, rec] of Object.entries(derived)) {
+          // A repo-root path, NOT under packages/gateway-protocol: this one is derived
+          // from gateway implementation, which is exactly why it is derived and not copied.
+          expect(rec.upstreamPath, name).toMatch(/^src\/.+\.ts$/);
+          expect(rec.upstream, name).toMatch(/^[0-9a-f]{64}$/);
+          expect(rec.fields, `${name} derived an empty list`).toBeGreaterThan(0);
+          // The artifact must AGREE with its record, so a hand-edited list is caught
+          // without needing a checkout.
+          const body = JSON.parse(
+            readFileSync(new URL(`${version}/${name}`, PROTOCOL), "utf-8"),
+          ) as { fields?: unknown[]; derivedFrom?: string; derivedFromSha256?: string };
+          expect(body.derivedFrom, name).toBe(rec.upstreamPath);
+          expect(body.derivedFromSha256, name).toBe(rec.upstream);
+          expect(body.fields?.length, name).toBe(rec.fields);
+        }
+      });
+
+      it("verifies a DERIVED artifact against the real upstream file when reachable", () => {
+        if (prov === null) return;
+        const roots = [
+          process.env.OPENCLAW_SRC_DIR,
+          `${process.env.HOME}/java/workspace_idea/openclaw-notes/atrium/upstream-src/openclaw-${version}`,
+        ].filter((r): r is string => typeof r === "string" && r.length > 0);
+        const root = roots.find((r) => existsSync(`${r}/package.json`));
+        if (root === undefined) {
+          console.warn(
+            `[vendor-integrity] ${version}: derived artifacts UNVERIFIED — no checkout.`,
+          );
+          return;
+        }
+        const wrong: string[] = [];
+        for (const [name, rec] of Object.entries(prov.derived ?? {})) {
+          const at = `${root}/${rec.upstreamPath}`;
+          if (!existsSync(at)) {
+            wrong.push(`${name}: ${rec.upstreamPath} absent upstream`);
+            continue;
+          }
+          const raw = readFileSync(at, "utf-8");
+          if (sha256(raw) !== rec.upstream) {
+            wrong.push(`${name}: source sha mismatch`);
+            continue;
+          }
+          // RE-DERIVE and compare the LIST, not the count.
+          //
+          // Checking the field COUNT was the hole: replacing every name with another name
+          // and aligning KNOWN_AGENT_FIELDS to match stayed green — which is exactly the
+          // hand-built list this whole lot exists to abolish, restored under a passing
+          // gate. The only honest check is to run the derivation again and compare.
+          const body = JSON.parse(
+            readFileSync(new URL(`${version}/${name}`, PROTOCOL), "utf-8"),
+          ) as { fields: string[] };
+          const rederived = (
+            deriveSnapshotFields as (source: string) => string[]
+          )(raw);
+          if (JSON.stringify(rederived) !== JSON.stringify(body.fields)) {
+            wrong.push(
+              `${name}: the stored list is not what the derivation produces ` +
+                `(+${rederived.filter((f) => !body.fields.includes(f)).join(",")} ` +
+                `-${body.fields.filter((f) => !rederived.includes(f)).join(",")})`,
+            );
+          }
+        }
+        expect(
+          wrong,
+          `a derived artifact does not match v${version}'s real source: ${wrong.join(", ")}`,
         ).toEqual([]);
       });
 

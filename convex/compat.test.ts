@@ -17,7 +17,7 @@ import {
   compareVersions,
   dedupeTargetsByInstance,
   boundProtocolInfo,
-  mergeProtocolInfo,
+  foldProtocolInfo,
   normalizeCapabilitiesBody,
   normalizeCompatTarget,
   parseVersion,
@@ -360,6 +360,12 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         { shape: "agent.spawnedCwd", count: 617 },
         { shape: "agent.label", count: 270 },
       ],
+      driftOverflow: 0,
+      // The junk entry IS counted. An earlier version of this expectation said it counted
+      // in neither number "because it never was a nameable shape" — that reasoning was
+      // wrong: the payload claimed three shapes and two survived, and an operator reading
+      // a list of two has a right to know a third was refused.
+      driftTruncated: 1,
     });
     // Absent/malformed stays null — a legacy bridge never breaks the payload.
     expect(
@@ -977,7 +983,209 @@ describe("boundProtocolInfo (protocol-contract section)", () => {
       vendoredVersion: "2026.6.11",
       coverage: { handled: 37, ignored: 47, gaps: 7, gapList: ["A.b", "C.d"] },
       drift: [{ shape: "chat.newField", count: 12 }],
+      // A bridge that predates the counters reports none: 0 is what we can say, and it is
+      // NOT the same statement as "no drift was dropped" — see the note on the type.
+      driftOverflow: 0,
+      driftTruncated: 0,
     });
+  });
+
+  test("a list longer than the cap SAYS how much it dropped", () => {
+    // The loss used to be a silent `.slice()`. An operator reading the badge saw a
+    // truncated list presented as the whole of it.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: Array.from({ length: 300 }, (_, i) => ({
+        shape: `chat.delta.f${i}`,
+        count: 1,
+      })),
+      driftOverflow: 9,
+    });
+    expect(p!.drift.length).toBeLessThan(300);
+    expect(p!.driftTruncated, "named shapes this boundary refused to store").toBe(
+      300 - p!.drift.length,
+    );
+    expect(p!.driftOverflow, "what the bridge itself could not name").toBe(9);
+  });
+
+  test("an INCOMING truncation survives a re-bound", () => {
+    // `summarizeCompat` re-bounds an already-merged document. Recomputing the count from
+    // the list length alone reset a merge's truncation to zero, so the third loss went
+    // silent again one function later.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [{ shape: "chat.delta.x", count: 1 }],
+      driftTruncated: 17,
+      driftOverflow: 4,
+    });
+    expect(p!.driftTruncated, "what an earlier boundary already dropped").toBe(17);
+    expect(p!.driftOverflow).toBe(4);
+  });
+
+  test("Infinity is CLAMPED here too, not rejected into silence", () => {
+    // The `isFinite` pre-filter ran BEFORE the clamp, so the clamp could never do the one
+    // thing it was added for. Same mistake, twice, in two functions.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [],
+      driftOverflow: Number.POSITIVE_INFINITY,
+      driftTruncated: Number.POSITIVE_INFINITY,
+    });
+    expect(p!.driftOverflow).toBe(Number.MAX_SAFE_INTEGER);
+    expect(p!.driftTruncated).toBe(Number.MAX_SAFE_INTEGER);
+    expect(Number.isSafeInteger(p!.driftTruncated)).toBe(true);
+  });
+
+  test("a capped count plus new drops stays a SAFE integer", () => {
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: Array.from({ length: 300 }, (_, i) => ({ shape: `c.d.f${i}`, count: 1 })),
+      driftTruncated: Number.MAX_SAFE_INTEGER,
+    });
+    expect(Number.isSafeInteger(p!.driftTruncated)).toBe(true);
+  });
+
+  test("a REJECTED drift entry is counted, not silently dropped", () => {
+    // Malformed entries were filtered out and nothing said so. Combined with the merge
+    // overflow, a named shape could vanish between two zeroes.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [
+        { shape: "chat.delta.x", count: 1 },
+        { junk: true },
+        { shape: "chat.delta.y", count: Number.POSITIVE_INFINITY },
+      ],
+    });
+    expect(p!.drift.length).toBe(1);
+    expect(p!.driftTruncated, "the two dropped entries are named as a loss").toBe(2);
+  });
+
+  test("two shapes sharing a long prefix stay DISTINCT after the cap", () => {
+    // They used to collapse into one summed entry. Counting that as a loss was honest but
+    // still a loss — and it only worked inside a single parse: the multi-bridge fold sees
+    // keys, never originals, so the same pair arriving from two bridges merged with
+    // nothing saying so. The bounded name now carries a suffix derived from the whole
+    // original, which keeps them apart at every layer instead of accounting for them.
+    const long = "chat.delta." + "x".repeat(200);
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [
+        { shape: `${long}A`, count: 3 },
+        { shape: `${long}B`, count: 7 },
+      ],
+    })!;
+    expect(p.drift.length, "two names in, two shapes out").toBe(2);
+    expect(new Set(p.drift.map((d) => d.shape)).size, "and they differ").toBe(2);
+    for (const d of p.drift) expect(d.shape.length).toBeLessThanOrEqual(120);
+    expect(p.drift.map((d) => d.count).sort(), "no observation moved").toEqual([3, 7]);
+    expect(p.driftTruncated, "nothing was lost, so nothing is reported").toBe(0);
+  });
+
+  test("the pair survives a FOLD across two bridges", () => {
+    // The layer the collision counter could never protect: by the time the fold runs, the
+    // originals are gone, so two bridges each reporting one of the pair produced a single
+    // summed entry and a `driftTruncated` of zero.
+    const long = "agent." + "y".repeat(200);
+    const bound = (shape: string, count: number) =>
+      boundProtocolInfo({
+        vendoredVersion: "2026.6.11",
+        coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+        drift: [{ shape, count }],
+      });
+    const folded = foldProtocolInfo([bound(`${long}A`, 3), bound(`${long}B`, 7)])!;
+    expect(folded.drift.length, "one shape per distinct name").toBe(2);
+    expect(folded.driftTruncated).toBe(0);
+  });
+
+  test("a NEGATIVE count is a rejected entry, not a shape observed zero times", () => {
+    // Clamping -1 to 0 kept the shape with an "× 0" that reads as "observed never" — a
+    // claim the payload never made — and it escaped the rejected tally too.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [
+        { shape: "agent.x", count: -1 },
+        { shape: "agent.y", count: 2 },
+      ],
+    });
+    expect(p!.drift.map((d) => d.shape)).toEqual(["agent.y"]);
+    expect(p!.driftTruncated).toBe(1);
+  });
+
+  test("a huge drift array is bounded BEFORE the walk, not after it", () => {
+    // The cap protected the stored document, not the poll that builds it: every entry of a
+    // million-entry answer was mapped, string-sliced and indexed before the slice applied.
+    // Counting the reads is the only way to see it — the resulting numbers are identical
+    // either way, which is exactly why the defect survived a count-based test.
+    const entries = Array.from({ length: 5000 }, (_, i) => ({
+      shape: `agent.f${i}`,
+      count: 1,
+    }));
+    let indexReads = 0;
+    const watched = new Proxy(entries, {
+      get(t, prop, recv) {
+        if (typeof prop === "string" && /^\d+$/.test(prop)) indexReads += 1;
+        return Reflect.get(t, prop, recv);
+      },
+    });
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: watched,
+    })!;
+    expect(indexReads, "only the bounded head is ever read").toBeLessThanOrEqual(1000);
+    // …and everything not read is still declared lost, not quietly forgotten.
+    expect(p.drift.length).toBe(100);
+    expect(p.driftTruncated, "5000 announced, 100 stored").toBe(4900);
+  });
+
+  test("a FRACTIONAL count is a rejected entry, not a shape observed zero times", () => {
+    // Accepted as merely "finite", then floored by the clamp — so 0.5 became the very
+    // "× 0" the negative-count branch exists to prevent, and being kept it escaped the
+    // rejected tally too. An observation count is an integer.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [
+        { shape: "agent.x", count: 0.5 },
+        { shape: "agent.y", count: 2 },
+      ],
+    });
+    expect(p!.drift.map((d) => d.shape)).toEqual(["agent.y"]);
+    expect(p!.driftTruncated).toBe(1);
+  });
+
+  test("FRACTIONAL coverage tallies are refused, not displayed", () => {
+    // Same contract, same failure: handled/ignored/gaps are counts, and a fractional one
+    // printed "1.5 handled" in the operator badge.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1.5, ignored: 2, gaps: 0, gapList: [] },
+      drift: [],
+    });
+    expect(p!.coverage, "a malformed tally yields no tally at all").toBeNull();
+  });
+
+  test("the SAME name twice is not a collision", () => {
+    // Truncating before looking for duplicates made two IDENTICAL names look like a lost
+    // distinction — the same phantom loss as at the merge, one layer up. Nothing is lost
+    // when a payload repeats a shape; its counts simply add.
+    const p = boundProtocolInfo({
+      vendoredVersion: "2026.6.11",
+      coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+      drift: [
+        { shape: "agent.x", count: 2 },
+        { shape: "agent.x", count: 3 },
+      ],
+    });
+    expect(p!.drift).toEqual([{ shape: "agent.x", count: 5 }]);
+    expect(p!.driftTruncated, "nothing was lost").toBe(0);
   });
 
   test("null on a pre-0.23 bridge (absent/foreign shapes)", () => {
@@ -1018,10 +1226,15 @@ describe("boundProtocolInfo (protocol-contract section)", () => {
   });
 });
 
-describe("mergeProtocolInfo (multi-bridge drift union)", () => {
+// The fold is the ONLY exported entry point: the pairwise union it is built on returns an
+// unbounded value on purpose (associativity) and is deliberately not exported, so no caller
+// can store a half-folded accumulator.
+describe("foldProtocolInfo (multi-bridge drift union)", () => {
   const base = {
     vendoredVersion: "2026.6.11",
     coverage: { handled: 37, ignored: 47, gaps: 7, gapList: [] as string[] },
+    driftOverflow: 0,
+    driftTruncated: 0,
   };
   test("drift unions across bridges (counts summed per shape) — never first-wins", () => {
     const a = { ...base, drift: [{ shape: "chat.x", count: 2 }] };
@@ -1032,16 +1245,125 @@ describe("mergeProtocolInfo (multi-bridge drift union)", () => {
         { shape: "agent.y", count: 1 },
       ],
     };
-    expect(mergeProtocolInfo(a, b)?.drift).toEqual([
+    expect(foldProtocolInfo([a, b])?.drift).toEqual([
       { shape: "chat.x", count: 5 },
       { shape: "agent.y", count: 1 },
     ]);
   });
+  test("the losses ADD UP across bridges instead of vanishing", () => {
+    // Three caps could shorten this list — each bridge's tracked-shape cap, each side's
+    // parse, and this fold — and all three used to be silent. An operator reading "here
+    // is the drift" was reading a number short for reasons nobody recorded.
+    const a = { ...base, drift: [{ shape: "chat.delta.x", count: 1 }], driftOverflow: 4 };
+    const b = {
+      ...base,
+      drift: [{ shape: "agent.y", count: 1 }],
+      driftOverflow: 7,
+      driftTruncated: 2,
+    };
+    const m = foldProtocolInfo([a, b]);
+    expect(m?.driftOverflow, "what the bridges could not name").toBe(11);
+    expect(m?.driftTruncated, "what the boundaries refused to store").toBe(2);
+  });
+
+  test("absurd counters are CLAMPED, never turned into silence", () => {
+    // Summing two `Number.MAX_VALUE` gave Infinity, which the final bound rejects as
+    // non-finite and replaces with 0 — so a bridge sending nonsense could make both
+    // counters DISAPPEAR. A capped number is meaningless; a zeroed one is a lie. The fold
+    // clamps as it sums AND survives its own closing bound.
+    const a = { ...base, drift: [], driftOverflow: Number.MAX_VALUE };
+    const b = { ...base, drift: [], driftOverflow: Number.MAX_VALUE };
+    const m = foldProtocolInfo([a, b])!;
+    expect(Number.isFinite(m.driftOverflow)).toBe(true);
+    expect(m.driftOverflow).toBeGreaterThan(0);
+  });
+
+  test("a merged COUNT cannot overflow the shape out of existence", () => {
+    const a = { ...base, drift: [{ shape: "chat.delta.x", count: Number.MAX_VALUE }] };
+    const b = { ...base, drift: [{ shape: "chat.delta.x", count: Number.MAX_VALUE }] };
+    const m = foldProtocolInfo([a, b])!;
+    expect(Number.isSafeInteger(m.drift[0]!.count)).toBe(true);
+    // …and the closing bound keeps the shape it used to reject as non-finite.
+    expect(m.drift.map((d) => d.shape)).toEqual(["chat.delta.x"]);
+  });
+
+  test("the SAME shape from two bridges is a union, never a reported loss", () => {
+    // A previous version counted every shared key as a truncation collision, which
+    // reported a loss for the most ordinary case there is: two bridges seeing the same
+    // unknown field. A phantom loss on an operator badge is worse than a missed one — it
+    // teaches people to ignore the number. Counting collisions belongs where the ORIGINAL
+    // names are still visible; by this layer they are already normalised.
+    const a = { ...base, drift: [{ shape: "chat.delta.x", count: 2 }] };
+    const b = { ...base, drift: [{ shape: "chat.delta.x", count: 3 }] };
+    const m = foldProtocolInfo([a, b])!;
+    expect(m.drift).toEqual([{ shape: "chat.delta.x", count: 5 }]);
+    expect(m.driftTruncated, "nothing was dropped, so nothing is reported").toBe(0);
+  });
+
+  test("a shape that grows on a LATER bridge keeps its full count", () => {
+    // The union used to be truncated at every pairwise step, which made the fold depend on
+    // the order bridges were polled in: a shape that was the smallest in the running
+    // accumulator was dropped at step 2 and came back at step 3 carrying only the LAST
+    // bridge's count — a number short by everything the earlier bridges had observed, next
+    // to a badge that named no loss for it. The union is carried whole and bounded once.
+    // Distinct filler counts make the closing cap's choice order-independent, so the
+    // permutation check below tests the fold and not a tie-break.
+    const filler = Array.from({ length: 100 }, (_, i) => ({
+      shape: `chat.delta.f${i}`,
+      count: 2 + i,
+    }));
+    const a = { ...base, drift: filler };
+    const b = { ...base, drift: [{ shape: "agent.x", count: 1 }] };
+    const c = { ...base, drift: [{ shape: "agent.x", count: 1000 }] };
+    const stored = foldProtocolInfo([a, b, c])!;
+    const x = stored.drift.find((d) => d.shape === "agent.x");
+    expect(x, "the shape survives the fold").toBeDefined();
+    expect(x!.count, "1 from bridge B + 1000 from bridge C").toBe(1001);
+    // The single cap still applies, and still names what it drops.
+    expect(stored.drift.length).toBe(100);
+    expect(stored.driftTruncated, "101 shapes, 100 stored").toBe(1);
+    // …and the result does not depend on the order the bridges answered in.
+    for (const order of [
+      [c, b, a],
+      [b, a, c],
+      [a, c, b],
+    ]) {
+      const other = foldProtocolInfo(order)!;
+      expect(new Map(other.drift.map((d) => [d.shape, d.count]))).toEqual(
+        new Map(stored.drift.map((d) => [d.shape, d.count])),
+      );
+      expect(other.driftTruncated).toBe(stored.driftTruncated);
+    }
+  });
+
+  test("EX ÆQUO shapes are cut deterministically, not by poll order", () => {
+    // The scenario above deliberately used distinct counts, and the cap's choice rode on
+    // `Map` insertion order — i.e. the order the bridges happened to answer in. With more
+    // equally-observed shapes than the cap, an operator saw a different hundred on every
+    // poll, and one shape could stay invisible run after run. The name is the tie-break.
+    const shapes = Array.from({ length: 101 }, (_, i) => `agent.f${String(i).padStart(3, "0")}`);
+    const bridges = [0, 1, 2].map((b) => ({
+      ...base,
+      drift: shapes.filter((_, i) => i % 3 === b).map((shape) => ({ shape, count: 1 })),
+    }));
+    const kept = (order: typeof bridges) =>
+      foldProtocolInfo(order)!.drift.map((d) => d.shape);
+    const first = kept(bridges);
+    expect(first.length).toBe(100);
+    for (const order of [
+      [bridges[2]!, bridges[0]!, bridges[1]!],
+      [bridges[1]!, bridges[2]!, bridges[0]!],
+    ]) {
+      expect(kept(order), "the same hundred, whatever the poll order").toEqual(first);
+    }
+  });
+
   test("null sides pass through", () => {
     const a = { ...base, drift: [] };
-    expect(mergeProtocolInfo(null, a)).toBe(a);
-    expect(mergeProtocolInfo(a, null)).toBe(a);
-    expect(mergeProtocolInfo(null, null)).toBeNull();
+    expect(foldProtocolInfo([null, a])).toEqual(a);
+    expect(foldProtocolInfo([a, null])).toEqual(a);
+    expect(foldProtocolInfo([null, null])).toBeNull();
+    expect(foldProtocolInfo([]), "no bridge answered").toBeNull();
   });
 });
 

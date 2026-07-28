@@ -31,7 +31,7 @@ import { PERMISSIONS } from "./lib/rbac";
 import { bridgeCompatTarget } from "./schema";
 import {
   capabilitiesForInstance,
-  mergeProtocolInfo,
+  foldProtocolInfo,
   normalizeCapabilitiesBody,
   summarizeCompat,
   type CompatSummary,
@@ -83,7 +83,9 @@ export const pollBridgeCompat = internalAction({
     let turnSessionEcho: boolean | null = null;
     let protocolVersion: number | null = null;
     let compat: NormalizedCapabilities["compat"] = null;
-    let protocolInfo: NormalizedCapabilities["protocol"] = null;
+    // COLLECTED, not folded in place: the union is bounded once, by foldProtocolInfo, so a
+    // shape that is small on an early bridge and large on a later one keeps its full count.
+    const protocolParts: NormalizedCapabilities["protocol"][] = [];
     let anyReachable = false;
     let lastError = "unreachable";
 
@@ -107,7 +109,7 @@ export const pollBridgeCompat = internalAction({
         if (turnSessionEcho === null) turnSessionEcho = n.turnSessionEcho;
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
         if (compat === null) compat = n.compat;
-        protocolInfo = mergeProtocolInfo(protocolInfo, n.protocol);
+        protocolParts.push(n.protocol);
         for (const t of n.targets) {
           // Dedupe across bridges by instance (first reachable wins). Stamp the
           // SERVING bridge's rehydration default onto its own targets so a
@@ -139,7 +141,7 @@ export const pollBridgeCompat = internalAction({
       turnSessionEcho,
       protocolVersion,
       compat,
-      protocol: protocolInfo,
+      protocol: foldProtocolInfo(protocolParts),
       targets: mergedTargets,
     });
   },

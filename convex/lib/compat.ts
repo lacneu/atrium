@@ -57,6 +57,11 @@ export type BridgeProtocolInfo = {
     gapList: string[];
   } | null;
   drift: { shape: string; count: number }[];
+  /** Drift observations the BRIDGE could not name (its tracked-shape cap). 0 on a bridge
+   *  that predates the field — absence is not zero drift, but it is all we can say. */
+  driftOverflow: number;
+  /** Named shapes THIS boundary refused to store (its own list cap). */
+  driftTruncated: number;
 };
 
 /** A provider's support window as read from the CompatManifest. */
@@ -262,6 +267,44 @@ export function boundCompatManifest(raw: unknown): unknown {
 // singleton doc): short strings, capped lists.
 const PROTOCOL_MAX_LIST = 100;
 const PROTOCOL_MAX_STR = 120;
+/** How many RAW drift entries this parse will even look at.
+ *
+ *  The stored list was capped, but the WORK was not: a bridge answering with a million
+ *  entries had every one of them mapped, string-sliced and indexed into a Map before the
+ *  cap applied, so the bound protected the document and not the poll that builds it.
+ *  A bound that only applies after the expensive part is not a bound.
+ *
+ *  Larger than the stored cap on purpose: the fold hands this function the union of every
+ *  polled bridge (up to PROTOCOL_MAX_LIST per bridge), and both the bridge's report and
+ *  the fold arrive sorted by count, so the first entries are the loudest ones. The margin
+ *  keeps deduplication from costing a stored slot in any realistic deployment. */
+const PROTOCOL_MAX_RAW_DRIFT = 8 * PROTOCOL_MAX_LIST;
+
+/** FNV-1a, 32 bits, hex. A DISAMBIGUATOR, not a security primitive: it only has to make
+ *  two different names that share a long prefix land on different keys. */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** Bound a shape name to PROTOCOL_MAX_STR **without merging distinct names**.
+ *
+ *  A plain `slice` made two different field names sharing their first 120 characters into
+ *  one key. That was accounted for as a collision INSIDE a single parse — but the fold
+ *  across bridges only ever sees keys, never originals, so two bridges each reporting one
+ *  of the pair produced a single summed entry and `driftTruncated: 0`: a distinct unknown
+ *  shape lost, silently, in the exact multi-bridge case the fold exists to preserve
+ *  (raised in review). A suffix derived from the WHOLE name keeps them apart everywhere.
+ *  The suffix is derived from a field NAME, which is already what this surface displays —
+ *  no value, no content (SOC2). */
+function boundShapeName(shape: string): string {
+  if (shape.length <= PROTOCOL_MAX_STR) return shape;
+  return `${shape.slice(0, PROTOCOL_MAX_STR - 9)}…${shortHash(shape)}`;
+}
 
 /** Defensive parse of the /capabilities `protocol` section. null on any
  *  missing/foreign shape (pre-0.23 bridge). */
@@ -273,8 +316,11 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
   let coverage: BridgeProtocolInfo["coverage"] = null;
   if (typeof o.coverage === "object" && o.coverage !== null) {
     const c = o.coverage as Record<string, unknown>;
+    // INTEGER, not merely finite. These are observation counts; `1.5 handled` is a
+    // malformed payload, and accepting it printed a fractional tally in the operator
+    // badge. Same rule as the drift counts below.
     const n = (v: unknown): number | null =>
-      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+      typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
     const handled = n(c.handled);
     const ignored = n(c.ignored);
     const gaps = n(c.gaps);
@@ -286,20 +332,98 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
       coverage = { handled, ignored, gaps, gapList };
     }
   }
-  const drift = (Array.isArray(o.drift) ? o.drift : [])
-    .map((d): { shape: string; count: number } | null => {
+  const allRawDrift = Array.isArray(o.drift) ? o.drift : [];
+  // BOUNDED BEFORE THE WALK (see PROTOCOL_MAX_RAW_DRIFT): the cap used to apply to the
+  // stored list only, so a bridge could still make every poll map and index a million
+  // entries. What is skipped here is counted as truncation like anything else.
+  const rawDrift = allRawDrift.slice(0, PROTOCOL_MAX_RAW_DRIFT);
+  const unread = allRawDrift.length - rawDrift.length;
+  // The ORIGINAL name is kept alongside the truncated one. Truncating first and then
+  // looking for duplicates made two IDENTICAL names look like a collision — the same
+  // phantom loss as at the merge, one layer up. Only two DIFFERENT originals converging on
+  // one key is a lost distinction.
+  const drift = rawDrift
+    .map((d): { shape: string; original: string; count: number } | null => {
       if (typeof d !== "object" || d === null) return null;
       const e = d as Record<string, unknown>;
       const shape = typeof e.shape === "string" ? e.shape : null;
+      // A NEGATIVE count is malformed, not zero. Clamping it to 0 kept the shape with an
+      // "× 0" that reads as "observed never" — a claim the payload never made — and it
+      // escaped the rejected tally too.
+      // A FRACTIONAL count is malformed for the same reason and used to fail the same way:
+      // accepted here as finite, then floored by `clampCount`, so `0.5` became the very
+      // "× 0" the negative branch above exists to prevent — and, being kept, it never
+      // reached the rejected tally either. An observation count is an integer.
       const count =
-        typeof e.count === "number" && Number.isFinite(e.count) ? e.count : null;
+        typeof e.count === "number" && Number.isInteger(e.count) && e.count >= 0
+          ? e.count
+          : null;
       return shape !== null && count !== null
-        ? { shape: shape.slice(0, PROTOCOL_MAX_STR), count }
+        ? { shape: boundShapeName(shape), original: shape, count }
         : null;
     })
-    .filter((d): d is { shape: string; count: number } => d !== null)
-    .slice(0, PROTOCOL_MAX_LIST);
-  return { vendoredVersion: vendored.slice(0, PROTOCOL_MAX_STR), coverage, drift };
+    .filter(
+      (d): d is { shape: string; original: string; count: number } => d !== null,
+    );
+  // The SECOND half of a double silent loss. The bridge caps its tracked shapes and
+  // reports how many it dropped; this side then sliced the list again and said nothing, so
+  // an operator reading the badge saw a number that was short twice over for two different
+  // reasons. Both are now named: `driftOverflow` is what the BRIDGE could not name,
+  // `driftTruncated` is what THIS boundary refused to store.
+  // The INCOMING count is carried, not recomputed from scratch. `boundProtocolInfo` runs
+  // again on an already-merged document (summarizeCompat re-bounds it), and recomputing
+  // from `drift.length` alone reset a merge's truncation to zero — the third loss became
+  // silent again one function later, which is the whole defect this lot is about.
+  // NO `isFinite` pre-filter. It ran BEFORE the clamp, so `Infinity` was rejected and
+  // replaced by 0 — the clamp could never do the one thing it was added for (raised in
+  // review, after I had already made this mistake once inside clampCount itself).
+  const incomingTruncated =
+    typeof o.driftTruncated === "number" ? clampCount(o.driftTruncated) : 0;
+  // Re-clamped: a capped value plus the newly dropped entries can exceed the cap again.
+  // A named shape DROPPED by this parse (malformed, or a non-finite count) is a loss like
+  // any other: it counts, rather than disappearing between two green numbers.
+  // Two DISTINCT shapes collapsing into one key is now prevented rather than accounted
+  // for (`boundShapeName` disambiguates a truncated name by a suffix of the whole
+  // original). The counter stays as the fail-safe for the residual case a 32-bit
+  // disambiguator allows, and is counted here, at the only place the originals are still
+  // visible — the fold downstream sees keys only.
+  // …and their COUNTS are summed, not dropped with the duplicate. Keeping only the first
+  // entry warned the operator of a collision and then under-reported the drift volume
+  // behind it (raised in review): the distinction is what was lost, not the observations.
+  const byShape = new Map<string, { count: number; originals: Set<string> }>();
+  for (const d of drift) {
+    const entry = byShape.get(d.shape) ?? { count: 0, originals: new Set<string>() };
+    entry.count = clampCount(entry.count + d.count);
+    entry.originals.add(d.original);
+    byShape.set(d.shape, entry);
+  }
+  // A collision is a lost DISTINCTION: two different names now indistinguishable. The same
+  // name twice is just the same shape twice, and reporting it as a loss would be the
+  // phantom the merge layer was already corrected for.
+  let collided = 0;
+  for (const entry of byShape.values()) {
+    collided += entry.originals.size - 1;
+  }
+  const deduped = [...byShape.entries()].map(([shape, e]) => ({
+    shape,
+    count: e.count,
+  }));
+  const rejected = Math.max(0, rawDrift.length - drift.length) + collided;
+  const driftTruncated = clampCount(
+    incomingTruncated +
+      rejected +
+      unread +
+      Math.max(0, deduped.length - PROTOCOL_MAX_LIST),
+  );
+  const driftOverflow =
+    typeof o.driftOverflow === "number" ? clampCount(o.driftOverflow) : 0;
+  return {
+    vendoredVersion: vendored.slice(0, PROTOCOL_MAX_STR),
+    coverage,
+    drift: deduped.slice(0, PROTOCOL_MAX_LIST),
+    driftOverflow,
+    driftTruncated,
+  };
 }
 
 /**
@@ -309,24 +433,97 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
  * aligned one. vendoredVersion/coverage keep the first bridge's values (one
  * image per deployment; a rolling-upgrade divergence is transient and does not
  * change the counts' meaning).
+ *
+ * The RESULT IS NOT BOUNDED (see `drift` below): pass the final value of the fold
+ * through `boundProtocolInfo` before storing it.
  */
-export function mergeProtocolInfo(
+/** A loss counter, bounded and finite.
+ *
+ *  `Infinity` clamps UP to the cap, not down to zero. The first version returned 0 for any
+ *  non-finite input — which reproduced the exact failure it was written to prevent: an
+ *  overflowing sum became "nothing was dropped". Only NaN and negatives are meaningless,
+ *  and those are the only inputs that yield 0. */
+function clampCount(n: number): number {
+  if (Number.isNaN(n) || n <= 0) return 0;
+  if (!Number.isFinite(n)) return Number.MAX_SAFE_INTEGER;
+  return Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER);
+}
+
+function mergeProtocolInfo(
   a: BridgeProtocolInfo | null,
   b: BridgeProtocolInfo | null,
 ): BridgeProtocolInfo | null {
   if (a === null) return b;
   if (b === null) return a;
-  const merged = new Map(a.drift.map((d) => [d.shape, d.count]));
+  // Counts are CLAMPED as they are summed. Two valid entries at `Number.MAX_VALUE` for the
+  // same shape gave Infinity, which the next parse rejects as non-finite — so the SHAPE
+  // itself vanished, with no counter naming the loss (raised in review). Same failure as
+  // the two loss counters had, on the list they were meant to account for.
+  const merged = new Map(a.drift.map((d) => [d.shape, clampCount(d.count)]));
+  // A shape present on BOTH sides is the normal union — the same unknown field seen by two
+  // bridges — and its counts are summed. It is NOT counted as a truncation collision.
+  //
+  // A correction of my own fix. A previous version counted every shared key as a
+  // collision, which reported a loss for the most ordinary case there is: two bridges
+  // seeing the same drift. A phantom loss on an operator badge is worse than a missed one
+  // — it teaches people to ignore the number.
+  //
+  // This layer sees keys only, never the originals, so it could never distinguish "same
+  // shape" from "two long names truncated alike" — which was a real, silent loss for
+  // exactly the multi-bridge case this function exists to serve (raised in review). It is
+  // fixed UPSTREAM, in `boundShapeName`: two different names can no longer produce one
+  // key, so summing a shared key here is unambiguously a union.
   for (const d of b.drift) {
-    merged.set(d.shape, (merged.get(d.shape) ?? 0) + d.count);
+    merged.set(d.shape, clampCount((merged.get(d.shape) ?? 0) + d.count));
   }
+  // TOTAL order, not just by count. Ties kept `Map` insertion order, i.e. the order the
+  // bridges happened to be polled in — so with more distinct shapes than the cap, which
+  // ones an operator sees changed with the poll order, and a given shape could stay
+  // invisible run after run. The name breaks the tie: same input set, same 100 kept.
+  const all = [...merged.entries()]
+    .map(([shape, count]) => ({ shape, count }))
+    .sort((x, y) => y.count - x.count || (x.shape < y.shape ? -1 : x.shape > y.shape ? 1 : 0));
   return {
     ...a,
-    drift: [...merged.entries()]
-      .map(([shape, count]) => ({ shape, count }))
-      .sort((x, y) => y.count - x.count)
-      .slice(0, PROTOCOL_MAX_LIST),
+    // NOT sliced here. Callers fold bridges SEQUENTIALLY (`acc = merge(acc, next)`), so
+    // truncating at every step made the fold non-associative: a shape dropped from the
+    // running accumulator because it was small at step 2 came back at step 3 with only the
+    // LAST bridge's count, silently under-reported next to a badge that showed no loss for
+    // it. The union is therefore carried whole and bounded ONCE, by `boundProtocolInfo`, on
+    // the final value — which carries `driftTruncated` forward and adds what it drops.
+    // Memory stays bounded: each operand is itself a bounded parse output, so the
+    // accumulator holds at most PROTOCOL_MAX_LIST × (number of polled bridges) entries.
+    drift: all,
+    // The THIRD place the same loss happened. Two bridges' shapes union here and the
+    // result was sliced silently, so merging could shorten a list nobody was told had
+    // been shortened. Everything dropped — by either bridge's cap, by either side's
+    // parse, or by the final bound — lands in one number an operator can read.
+    // CLAMPED. Two payloads carrying `Number.MAX_VALUE` summed to Infinity, which the next
+    // `boundProtocolInfo` rejects as non-finite and replaces with 0 — so a bridge could
+    // make both counters DISAPPEAR by sending absurd ones. A cap keeps the number
+    // meaningless-but-present rather than silently zero.
+    driftOverflow: clampCount(a.driftOverflow + b.driftOverflow),
+    driftTruncated: clampCount(a.driftTruncated + b.driftTruncated),
   };
+}
+
+/**
+ * Fold every polled bridge's protocol section into the ONE value that gets stored.
+ *
+ * The cap lives here and nowhere else. `mergeProtocolInfo` deliberately returns an
+ * unbounded union so the fold is associative, which leaves exactly one obligation —
+ * bound the final value — and a poller that merged in a loop and stored the accumulator
+ * could forget it. Making the whole fold a single call removes the chance: there is no
+ * intermediate value for a caller to store.
+ */
+export function foldProtocolInfo(
+  parts: Array<BridgeProtocolInfo | null>,
+): BridgeProtocolInfo | null {
+  let acc: BridgeProtocolInfo | null = null;
+  for (const p of parts) acc = mergeProtocolInfo(acc, p);
+  // `boundProtocolInfo` carries the incoming loss counters forward and adds whatever the
+  // cap drops here, so nothing the fold accumulated is lost without a number naming it.
+  return acc === null ? null : boundProtocolInfo(acc);
 }
 
 export function normalizeCapabilitiesBody(

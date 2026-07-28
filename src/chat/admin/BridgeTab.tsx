@@ -105,6 +105,11 @@ type BridgeProtocolView = {
     gapList: string[];
   } | null;
   drift: { shape: string; count: number }[];
+  /** Drift the BRIDGE could not name (its tracked-shape cap) and shapes a boundary
+   *  refused to store. Absent on an older bridge/Convex — rendered only when non-zero,
+   *  because "0 dropped" and "we cannot say" must not look the same. */
+  driftOverflow?: number;
+  driftTruncated?: number;
 };
 // Exported so the Instances tab can pass its own listInstances row to the shared
 // InstanceConfigDialog (same query → identical type).
@@ -500,6 +505,7 @@ function ProtocolSection({ protocol }: { protocol: BridgeProtocolView }) {
   const [gapsOpen, setGapsOpen] = useState(false);
   const cov = protocol.coverage;
   const drift = protocol.drift ?? [];
+  const dropped = (protocol.driftOverflow ?? 0) + (protocol.driftTruncated ?? 0);
   return (
     <>
       <h4 className="oc-bridge-provider__sub">
@@ -507,6 +513,20 @@ function ProtocolSection({ protocol }: { protocol: BridgeProtocolView }) {
         {drift.length > 0 ? (
           <Badge variant="destructive">
             {m.bridge_protocol_drift_badge({ count: drift.length })}
+          </Badge>
+        ) : dropped > 0 ? (
+          // Named shapes: none. Dropped observations: some. Showing "aligned" beside a
+          // line saying a shape was not kept was two statements contradicting each other
+          // on the same row (raised in review) — the badge follows the WORST of what is
+          // known, and "we dropped something" is not alignment.
+          //
+          // Its OWN wording, and no number. Reusing the unknown-field badge here read
+          // "1000 unknown field(s)" for what is a mix of two different units: overflow
+          // counts OBSERVATIONS (a single field seen a thousand times) and truncated
+          // counts SHAPES. Their sum is not a field count, and the hint line below states
+          // both numbers with their real meaning.
+          <Badge variant="destructive">
+            {m.bridge_protocol_drift_dropped_badge()}
           </Badge>
         ) : (
           <Badge variant="secondary">{m.bridge_protocol_ok_badge()}</Badge>
@@ -523,6 +543,17 @@ function ProtocolSection({ protocol }: { protocol: BridgeProtocolView }) {
             })
           : null}
       </p>
+      {dropped > 0 ? (
+        // The counts were computed and stored for two lots and shown nowhere: an admin
+        // read a list of named shapes with no way to know it had been cut. A bound the
+        // operator cannot see is the silence the bound was meant to replace.
+        <p className="oc-admin__hint">
+          {m.bridge_protocol_drift_dropped({
+            overflow: protocol.driftOverflow ?? 0,
+            truncated: protocol.driftTruncated ?? 0,
+          })}
+        </p>
+      ) : null}
       {drift.length > 0 ? (
         <ul className="oc-bridge-protocol__list" role="list">
           {drift.map((d) => (

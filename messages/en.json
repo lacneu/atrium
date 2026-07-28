@@ -1093,6 +1093,7 @@
 	"bridge_protocol_section": "Protocol",
 	"bridge_protocol_ok_badge": "aligned",
 	"bridge_protocol_drift_badge": "{count} unknown field(s)",
+	"bridge_protocol_drift_dropped_badge": "drift beyond the cap",
 	"bridge_protocol_vendored": "Vendored contract: OpenClaw {version}",
 	"bridge_protocol_counts": "{handled} handled · {ignored} deliberately ignored · {gaps} gaps",
 	"bridge_protocol_gaps_toggle": "Declared gaps ({count})",
@@ -2120,5 +2121,6 @@
 	"docviewer_save_not_applied": "Not applied — personal drafts are disabled while impersonating",
 	"runstatus_error_dispatch_unknown": "Sending this message did not report back in time, so we stopped waiting and freed the conversation. Whether the agent received it is unknown — check whether an answer appears before sending the same request again.",
 	"error_dispatch_stalled_label": "Dispatch stalled (reconciled)",
-	"error_dispatch_stalled_hint": "This dispatch stayed pending far longer than any live one could, so the reconciler settled it to unlock the conversation. Its action died before marking the row, or a preempt re-dispatch never fired — look for a crashed or evicted Convex action around that time."
+	"error_dispatch_stalled_hint": "This dispatch stayed pending far longer than any live one could, so the reconciler settled it to unlock the conversation. Its action died before marking the row, or a preempt re-dispatch never fired — look for a crashed or evicted Convex action around that time.",
+	"bridge_protocol_drift_dropped": "past the cap: {overflow} observation(s) the bridge could not name, {truncated} shape(s) not kept"
 }

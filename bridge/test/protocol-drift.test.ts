@@ -11,17 +11,31 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { promisedVersion } from "./helpers/vendored.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.7.1/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
+  AGENT_ROUTING_ENVELOPE_FIELDS,
   KNOWN_AGENT_FIELDS,
   KNOWN_CHAT_FIELDS,
+  KNOWN_CHAT_FIELDS_BY_STATE,
   protocolDrift,
 } from "../src/providers/openclaw/protocol-drift.js";
 
 afterEach(() => protocolDrift.resetForTests());
 
 const SESSION_KEY = "agent:alice:atrium:chat:olivier:driftchat";
+
+/** What the unknown-state id would be WITHOUT the per-process salt — the dictionary
+ *  attack a reader of the reported shape could run against a guessed value. */
+function unsaltedFnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
 
 function chatFrame(extra: Record<string, unknown> = {}): unknown {
   return {
@@ -47,7 +61,196 @@ describe("protocol drift detector", () => {
   it("an unknown chat payload field is counted by NAME (never a value)", () => {
     protocolDrift.observe(chatFrame({ steerHint: "secret content" }));
     protocolDrift.observe(chatFrame({ steerHint: "other content" }));
-    expect(protocolDrift.report()).toEqual([{ shape: "chat.steerHint", count: 2 }]);
+    // The shape is keyed PER STATE since W9: the union hid cross-state fields.
+    expect(protocolDrift.report()).toEqual([
+      { shape: "chat.delta.steerHint", count: 2 },
+    ]);
+  });
+
+  it("a field of ANOTHER state is drift — the union hid these", () => {
+    // `ChatEventSchema` is a discriminated union: `deltaText` belongs to `delta`, and an
+    // `aborted` frame carrying it is a contract deviation. Checked against the UNION, this
+    // reported zero — and it is precisely the shape that breaks a reader branching on
+    // `state`.
+    protocolDrift.observe({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "webchat-x",
+        sessionKey: SESSION_KEY,
+        seq: 1,
+        state: "aborted",
+        deltaText: "half a sentence",
+      },
+    });
+    expect(protocolDrift.report()).toEqual([
+      { shape: "chat.aborted.deltaText", count: 1 },
+    ]);
+  });
+
+  it("an UNRECOGNISED state is reported once, not as a wall of unknown fields", () => {
+    // A fifth state cannot be judged field by field: every field would look unknown, which
+    // is noise. The state itself is the finding.
+    protocolDrift.observe({
+      type: "event",
+      event: "chat",
+      payload: {
+        runId: "webchat-x",
+        sessionKey: SESSION_KEY,
+        seq: 1,
+        state: "paused",
+        message: "…",
+        somethingElse: 1,
+      },
+    });
+    const report = protocolDrift.report();
+    expect(report.length).toBe(1);
+    expect(report[0]!.count).toBe(1);
+    expect(report[0]!.shape).toMatch(/^chat\.«unknown-state»\.[0-9a-f]{8}$/);
+  });
+
+  it("two DIFFERENT unknown states are two findings, not one bucket", () => {
+    // Aggregating every unrecognised state under one key hides whether one new state
+    // appeared or five — which is the thing that has to be classified.
+    for (const state of ["paused", "resumed"]) {
+      protocolDrift.observe({
+        type: "event",
+        event: "chat",
+        payload: { runId: "r", sessionKey: SESSION_KEY, seq: 1, state },
+      });
+    }
+    expect(new Set(protocolDrift.report().map((d) => d.shape)).size).toBe(2);
+  });
+
+  it("the SAME unknown state is one finding across frames", () => {
+    // The id has to be stable, or an operator reads a new shape on every frame.
+    for (let i = 0; i < 3; i++) {
+      protocolDrift.observe({
+        type: "event",
+        event: "chat",
+        payload: { runId: "r", sessionKey: SESSION_KEY, seq: i, state: "paused" },
+      });
+    }
+    expect(protocolDrift.report().length).toBe(1);
+    expect(protocolDrift.report()[0]!.count).toBe(3);
+  });
+
+  it("a PROTOTYPE-named state cannot silence the detector", () => {
+    // `KNOWN_CHAT_FIELDS_BY_STATE["toString"]` returned a function from the prototype,
+    // `known.has` threw, and the observe-only catch swallowed it: the frame produced no
+    // drift at all. A detector a wire value can silence is worse than none.
+    for (const state of ["toString", "constructor", "__proto__"]) {
+      protocolDrift.resetForTests();
+      protocolDrift.observe({
+        type: "event",
+        event: "chat",
+        payload: { runId: "r", sessionKey: SESSION_KEY, seq: 1, state },
+      });
+      const report = protocolDrift.report();
+      expect(report.length, state).toBe(1);
+      expect(report[0]!.shape, state).toMatch(/^chat\.«unknown-state»\.[0-9a-f]{8}$/);
+    }
+  });
+
+  it("a state VALUE never reaches the shape key", () => {
+    // The state is an UNVALIDATED wire value on a surface that is stored and displayed.
+    // A charset filter was the first attempt and proved nothing — a name passes it. The
+    // digest is one-way, so the non-leak is structural rather than a promise about what a
+    // gateway sends. Content in ANY form: with spaces, and as a bare identifier.
+    for (const state of ["secret conversational content", "AliceMartin"]) {
+      protocolDrift.resetForTests();
+      protocolDrift.observe({
+        type: "event",
+        event: "chat",
+        payload: { runId: "r", sessionKey: SESSION_KEY, seq: 1, state },
+      });
+      const shape = protocolDrift.report()[0]!.shape;
+      expect(shape).toMatch(/^chat\.«unknown-state»\.[0-9a-f]{8}$/);
+      expect(shape.toLowerCase()).not.toContain(state.slice(0, 6).toLowerCase());
+      // …and it is not a plain digest of the value either: an unsalted one is one-way in
+      // form only, since anyone holding the shape can confirm a guess by hashing it.
+      expect(shape, "the id must not be derivable from the value").not.toContain(
+        unsaltedFnv1a(state),
+      );
+    }
+  });
+
+  it("the detector cannot fail SILENTLY", () => {
+    // Observe-only means "never break the feed", not "never say anything". The catch used
+    // to swallow the failure whole, so a frame the detector could not read at all produced
+    // the same report as a clean one — the detector's own blind spot, invisible in the very
+    // surface built to expose blind spots. It is counted as a shape, through the pipeline
+    // that is already bounded and rendered.
+    protocolDrift.observe({
+      type: "event",
+      event: "chat",
+      get payload(): unknown {
+        throw new TypeError("boom");
+      },
+    });
+    expect(protocolDrift.report()).toEqual([
+      { shape: "«detector-failure».TypeError", count: 1 },
+    ]);
+  });
+
+  it("a detector failure never carries the error MESSAGE", () => {
+    // `err.message` can quote the frame that caused it (SOC2): the class name is protocol
+    // vocabulary, the message is content.
+    protocolDrift.observe({
+      type: "event",
+      event: "chat",
+      get payload(): unknown {
+        throw new RangeError("secret conversational content");
+      },
+    });
+    const shapes = protocolDrift.report().map((d) => d.shape);
+    expect(shapes).toEqual(["«detector-failure».RangeError"]);
+    expect(shapes.join(" ")).not.toContain("secret");
+  });
+
+  it("the per-state sets EQUAL the vendored per-state schemas", async () => {
+    // Derived, not trusted: the agent list spent weeks as production observations, and this
+    // one must not repeat it. Every state's set is compared to its schema's own properties.
+    // A STATIC import: vitest cannot resolve a variable dynamic import here, and pinning
+    // the version in the path is fine precisely because the next test asserts that this is
+    // the version the detector claims to vendor.
+    const mod = vendoredChatSchemas as unknown as Record<
+      string,
+      { properties?: Record<string, unknown> }
+    >;
+    expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
+      "2026.7.1",
+    );
+    const bySchema: Record<string, string> = {
+      delta: "ChatDeltaEventSchema",
+      final: "ChatFinalEventSchema",
+      aborted: "ChatAbortedEventSchema",
+      error: "ChatErrorEventSchema",
+    };
+    expect(Object.keys(KNOWN_CHAT_FIELDS_BY_STATE).sort()).toEqual(
+      Object.keys(bySchema).sort(),
+    );
+    for (const [state, schemaName] of Object.entries(bySchema)) {
+      const props = Object.keys(mod[schemaName]?.properties ?? {});
+      expect(props.length, `${schemaName} has no properties`).toBeGreaterThan(3);
+      expect(
+        [...KNOWN_CHAT_FIELDS_BY_STATE[state]!].sort(),
+        `${state} drifted from ${schemaName}`,
+      ).toEqual(props.sort());
+    }
+  });
+
+  it("the tracked-shape OVERFLOW is counted, not just logged", () => {
+    // The cap used to be a console.error and nothing else: the report said "here is the
+    // drift" while omitting everything past it.
+    for (let i = 0; i < 600; i += 1) {
+      protocolDrift.observe(chatFrame({ [`f${i}`]: 1 }));
+    }
+    expect(protocolDrift.report().length).toBeLessThanOrEqual(512);
+    expect(
+      protocolDrift.overflowCount(),
+      "observations past the cap must be counted",
+    ).toBeGreaterThan(0);
   });
 
   it("agent frames are classified against their own surface", () => {
@@ -173,62 +376,41 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
     expect([...COVERAGE_SUMMARY.gapList].sort()).toEqual(gaps.sort());
   });
 
-  it("KNOWN_AGENT_FIELDS == AgentEvent manifest fields + the documented wire envelope", () => {
-    const manifest = new Set(
-      Object.keys(MANIFEST.schemas.AgentEvent?.fields ?? {}),
-    );
-    // The wire envelope the gateway stamps beyond AgentEventSchema (documented
-    // in protocol-drift.ts; pinned on the live capture):
-    for (const f of [
-      "sessionKey",
-      "sessionId",
-      "agentId",
-      // session/run metadata envelope (see protocol-drift.ts, live dev 2026-07-04)
-      "session",
-      "updatedAt",
-      "kind",
-      "channel",
-      "chatType",
-      "origin",
-      "deliveryContext",
-      "verboseLevel",
-      "systemSent",
-      "lastChannel",
-      "totalTokens",
-      "totalTokensFresh",
-      // config-dependent session metadata (emitted only when the gateway's chat
-      // defaults define them — live ataraxis 2026-07-06) + spawn statics on
-      // child frames (bench 2026.6.11): see protocol-drift.ts.
-      "thinkingLevel",
-      "fastMode",
-      "spawnedWorkspaceDir",
-      "spawnDepth",
-      "goal",
-      "estimatedCostUsd",
-      "modelProvider",
-      "model",
-      "status",
-      "startedAt",
-      "abortedLastRun",
-      "inputTokens",
-      "outputTokens",
-      "contextTokens",
-      // sub-agent metadata flattened onto agent events (live ataraxis 2026-07-10)
-      "subagentRole",
-      "subagentControlScope",
-      "parentSessionKey",
-      "runtimeMs",
-      "childSessions",
-      // 2026.7.1 session-config metadata (bench capture 2026-07-11, beta.2)
-      "effectiveResponseUsage",
-      // spawn/agent-identity statics (live ataraxis 2026-07-19, prod badge)
-      "spawnedCwd",
-      "label",
-      "displayName",
-      // run-registry terminal timestamp (live ataraxis 2026-07-22, prod badge)
-      "endedAt",
-    ])
-      manifest.add(f);
-    expect([...KNOWN_AGENT_FIELDS].sort()).toEqual([...manifest].sort());
+  it("KNOWN_AGENT_FIELDS == manifest fields + the DERIVED session snapshot + the envelope", () => {
+    // This assertion used to carry a forty-line hand-written list of "observed flattened
+    // fields", each with the date of the production badge that revealed it. The
+    // hand-maintenance it was supposed to replace had simply MOVED into the test: the
+    // runtime set and the list agreed because a human had typed both, and a field upstream
+    // added was missing from both at once. `lastTo` had been reported twenty-four times in
+    // production and appeared in neither.
+    //
+    // The envelope is now DERIVED: the vendored `session-event-snapshot.json` (the return
+    // shape of the gateway's own `buildSessionEventSnapshot`, extracted at vendoring time)
+    // plus the two-field routing envelope, which is declared ONCE in protocol-drift.ts
+    // because it appears in no schema and in no session row. Nothing here is typed twice.
+    const snapshot = JSON.parse(
+      readFileSync(
+        new URL(
+          `../protocol/openclaw/${DRIFT_VENDORED_VERSION}/session-event-snapshot.json`,
+          import.meta.url,
+        ),
+        "utf-8",
+      ),
+    ) as { fields: string[] };
+    expect(
+      snapshot.fields.length,
+      "the derived snapshot is empty — the extraction stopped working",
+    ).toBeGreaterThan(30);
+
+    const expected = new Set([
+      ...Object.keys(MANIFEST.schemas.AgentEvent?.fields ?? {}),
+      ...snapshot.fields,
+      ...AGENT_ROUTING_ENVELOPE_FIELDS,
+    ]);
+    expect(
+      [...KNOWN_AGENT_FIELDS].sort(),
+      "the known-field set no longer equals (manifest ∪ derived snapshot ∪ envelope) — " +
+        "re-run scripts/vendor-protocol.mjs and copy the derived list, deliberately",
+    ).toEqual([...expected].sort());
   });
 });

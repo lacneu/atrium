@@ -2609,6 +2609,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           vendoredVersion: DRIFT_VENDORED_VERSION,
           coverage: COVERAGE_SUMMARY,
           drift: protocolDrift.report(),
+          // ADDITIVE field: how many drift observations fell past the tracked-shape cap.
+          // Older consumers ignore it; without it the bound was invisible downstream.
+          driftOverflow: protocolDrift.overflowCount(),
         },
         targets,
       });

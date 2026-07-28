@@ -40,9 +40,23 @@ us as a runtime surprise (e.g. the announce runs this week).
 (the same range VCOMPAT names), vendor the protocol schema into the repo:
 
 ```
-bridge/protocol/openclaw/2026.6.10/   # generated JSON Schema or TypeBox source
-bridge/protocol/openclaw/coverage.json
+bridge/protocol/openclaw/<version>/
+  *.ts                          # TypeBox source, imported verbatim from upstream
+  PROVENANCE.json               # raw-upstream sha256 per file + the derived block
+  session-event-snapshot.json   # DERIVED artifact (see below)
+bridge/protocol/openclaw/coverage/<version>.json
 ```
+
+**Derived artifacts.** Some of the surface is not in a schema at all: the
+gateway flattens the return shape of `buildSessionEventSnapshot` onto every
+agent event, and that shape lives in gateway source, not in the published
+contract. The vendoring script extracts its field names from the upstream
+source with the TypeScript parser and writes them beside the schemas, with the
+source file's own hash in `PROVENANCE.json`. The bridge's known-field set is
+DERIVED from that artifact rather than maintained by hand — a hand-kept set is
+always one production incident behind. The vendoring refuses to run against a
+modified or unidentifiable checkout, and the integrity test re-derives the
+artifact and compares it field by field.
 
 **Author the coverage manifest once** (seeded from the audit): every leaf
 field of the event/params surface gets exactly one classification:

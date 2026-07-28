@@ -85,5 +85,12 @@
       "upstream": "d6b1abee5af4f0520e5a8cb28db3747f21a3ec7751f79322b1c36a0f2b39d010",
       "rewrites": []
     }
+  },
+  "derived": {
+    "session-event-snapshot.json": {
+      "upstreamPath": "src/gateway/server-chat.ts",
+      "upstream": "dcc1a80002b088a0edee132394b914617cebe35b2d90b9ad294509409a68c654",
+      "fields": 52
+    }
   }
 }

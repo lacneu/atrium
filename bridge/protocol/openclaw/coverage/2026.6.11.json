@@ -181,7 +181,7 @@
     },
     "seq": {
      "status": "handled",
-     "by": "frame dedup/tally; no gap detection (ordered WS)"
+     "by": "read by the normalizer as part of the DEDUP KEY, and load-bearing beyond that: `hasSeq` decides WHICH dedup rule applies — a seq-bearing frame gets the remembered key that closes an A,B,A replay, one without it keeps the adjacent-only rule so a legitimately repeated delta is not swallowed. CORRECTED after reading the code: the old note said \"frame dedup/tally; no gap detection (ordered WS)\" and both halves were wrong. `tallyFrame` does NOT include seq (its key is type/event/state), and gap detection EXISTS — but on the ENVELOPE `frame.seq` (frame-seq.ts, exposed as `missingTotal`), which is a different field from this one. What is genuinely absent is gap detection on the PAYLOAD seq, and it is stated HERE — deliberately not in the gap list, which is a mechanical recount of the manifest's `gap` fields and cannot hold a path that does not exist. Corrected after review: an earlier version of this note pointed at that list."
     },
     "stream": {
      "status": "handled",

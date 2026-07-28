@@ -25,6 +25,12 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import {
+  SNAPSHOT_FN,
+  SNAPSHOT_SOURCE,
+  deriveSnapshotFields,
+} from "./lib/derive-snapshot.mjs";
+
 /** Files to vendor, with their path RELATIVE to `packages/gateway-protocol/src/`.
  *  Stated per file because upstream keeps the schema modules in `schema/` and the
  *  shared contracts they import one level up — an assumed single directory made the
@@ -245,6 +251,20 @@ const header = (rel) =>
   `// re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.\n` +
   `// (Only change vs upstream: ../ imports rebased to ./ for the flat layout.)\n`;
 
+// DERIVED BEFORE ANYTHING IS WRITTEN.
+//
+// The derivation can REFUSE (an unreadable spread, a renamed function, a source the
+// parser doubts), and it used to run after every schema file had already been copied —
+// so a refusal left a half-vendored directory whose files no longer matched the
+// PROVENANCE.json beside them (raised in review). It depends only on the checkout, so
+// there is no reason for it to happen late: fail before the first byte is written.
+const snapshotPath = path.join(src, SNAPSHOT_SOURCE);
+if (!fs.existsSync(snapshotPath)) {
+  throw new Error(`upstream has no ${SNAPSHOT_SOURCE} at v${version}`);
+}
+const snapshotRaw = fs.readFileSync(snapshotPath, "utf-8");
+const snapshotFields = deriveSnapshotFields(snapshotRaw);
+
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
 for (const rel of FILES) {
@@ -318,6 +338,38 @@ for (const rel of FILES) {
   };
 }
 
+// --- DERIVED artifact: the session snapshot the gateway flattens onto agent events ----
+//
+// `KNOWN_AGENT_FIELDS` (protocol-drift.ts) used to be a list of PROD OBSERVATIONS: a
+// field appeared in the "N unknown fields" badge, someone patched the list, repeat. Twelve
+// fields of this snapshot were still missing when W9 was written, which is twelve future
+// badges for fields upstream demonstrably emits.
+//
+// The snapshot is built by `buildSessionEventSnapshot` in `src/gateway/server-chat.ts` —
+// NOT a protocol module, and not something to vendor: it is 1400+ lines of gateway
+// implementation and would have to be "classified" by a ratchet meant for schemas. What
+// IS vendored is its RETURN SHAPE, derived mechanically, so the drift detector's known-set
+// can be asserted against upstream instead of against memory.
+
+fs.writeFileSync(
+  path.join(OUT_DIR, "session-event-snapshot.json"),
+  `${JSON.stringify(
+    {
+      _about:
+        `Field names of ${SNAPSHOT_FN}'s return shape, DERIVED from ` +
+        `${SNAPSHOT_SOURCE} at v${version}. The gateway flattens these onto agent ` +
+        `events, so the drift detector's known-field set is asserted against this ` +
+        `instead of against production observations. Do not edit by hand: re-run ` +
+        `scripts/vendor-protocol.mjs.`,
+      derivedFrom: SNAPSHOT_SOURCE,
+      derivedFromSha256: createHash("sha256").update(snapshotRaw).digest("hex"),
+      fields: snapshotFields,
+    },
+    null,
+    2,
+  )}\n`,
+);
+
 fs.writeFileSync(
   path.join(OUT_DIR, "PROVENANCE.json"),
   `${JSON.stringify(
@@ -329,6 +381,15 @@ fs.writeFileSync(
       // No timestamp on purpose: re-running must produce a BYTE-IDENTICAL directory,
       // so a diff means the contract moved, never that the clock did.
       files,
+      // The DERIVED artifact, attributed like the copied ones: the sha256 of the upstream
+      // file it was read from, so "this list came from that source" is checkable.
+      derived: {
+        "session-event-snapshot.json": {
+          upstreamPath: SNAPSHOT_SOURCE,
+          upstream: createHash("sha256").update(snapshotRaw).digest("hex"),
+          fields: snapshotFields.length,
+        },
+      },
     },
     null,
     2,
