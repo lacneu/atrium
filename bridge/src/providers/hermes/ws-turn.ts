@@ -355,6 +355,14 @@ export function runHermesWsTurn(
       }
     };
     const applyEvent = (type: string, payload: Record<string, unknown>): void => {
+      // The QUEUED gate. Everything before our run's `message.start` belongs to the turn
+      // this prompt interrupted — its deltas, its tools, and above all its TERMINAL,
+      // which used to close this bubble with someone else's reply.
+      if (awaitingOurTurn) {
+        if (type !== "message.start") return;
+        awaitingOurTurn = false;
+        return;
+      }
       // Monitoring events (delegation / MoA) OUTLIVE the parent turn: a child
       // often completes AFTER the parent's message.complete (live-observed
       // order), and its terminal MUST still reach the monitor or the card
@@ -778,6 +786,27 @@ export function runHermesWsTurn(
     // same divergence, reached by the other door (raised in review). One barrier, checked
     // by both.
     let promptAccepted = false;
+    /** `queued`: the provider stashed our prompt and will run it as the next turn. Until
+     *  a `message.start` announces that turn's beginning, everything on this lane belongs
+     *  to the turn that was interrupted — and must NOT be applied to this bubble. */
+    let awaitingOurTurn = false;
+    let ackQueued = false;
+    let ackSteered = false;
+    /** Events can arrive on this lane BEFORE `prompt.submit` resolves — the socket is
+     *  already subscribed and the client routes notifications independently of the RPC
+     *  reply (raised in review). Judging them before the ACK is known is exactly the
+     *  mistake: a `queued` run's own `message.start` could land first, be treated as
+     *  someone else's, and then the gate would wait forever for a second one that never
+     *  comes — 240 s of "Réflexion…" and a healthy session dropped. So we HOLD them and
+     *  decide once the verdict is in. */
+    let ackPending = true;
+    const ackHeld: Array<[string, Record<string, unknown>]> = [];
+    /** Bounded, like every buffer in this bridge. The window is one RPC round trip, so
+     *  this is orders of magnitude above any real burst; overflowing means the provider
+     *  is behaving in a way we do not model, and holding more would trade a wrong
+     *  attribution for a memory leak. */
+    const ACK_HOLD_MAX = 512;
+    let ackHeldOverflowed = false;
     /** The provider explicitly said it is streaming — see the ACK check below. */
     let ackedStreaming = false;
     let recvTimer: ReturnType<typeof setTimeout> | null = null;
@@ -889,16 +918,46 @@ export function runHermesWsTurn(
       settle();
     };
 
-    const unsubscribe = registerSession(runtimeSid, {
+    // The lane can be REFUSED (a live turn already owns this runtime session). Nothing
+    // has been submitted and no row exists yet, so rejecting `accepted` is the clean
+    // exit: the dispatch fails by name and Convex owns the single error bubble. Sending
+    // anyway would put this turn's reply into someone else's message.
+    const laneHandlers: HermesWsSessionHandlers = {
       onEvent: (type, payload) => {
         // RE-ARMED BY ANY EVENT of this session — including the monitoring ones that
         // outlive the parent turn. Progress is progress: a delegation still reporting is
         // not a stalled provider.
         armRecv();
+        if (ackPending) {
+          if (ackHeld.length < ACK_HOLD_MAX) {
+            ackHeld.push([type, payload]);
+            return;
+          }
+          // Overflow FAILS CLOSED. Routing the surplus "because streaming is the common
+          // verdict" would have re-created the very defect this lot exists to close: an
+          // old turn can emit 512 deltas and then its `message.complete` during a slow
+          // ACK, and that terminal would have closed THIS bubble with someone else's
+          // reply (raised in review). Correlation is lost — say so, do not guess.
+          if (!ackHeldOverflowed) {
+            ackHeldOverflowed = true;
+            console.error(
+              `[hermes-ws-turn] more than ${ACK_HOLD_MAX} events before the ` +
+                `prompt.submit ACK — correlation lost chat=${opts.chatId}`,
+            );
+          }
+          return;
+        }
         onEvent(type, payload);
       },
       onTransportLost,
-    });
+    };
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = registerSession(runtimeSid, laneHandlers);
+    } catch (err) {
+      rejectAccepted(err);
+      return;
+    }
     // NOT armed here. Subscribing happens BEFORE `beginTurn`, the attachment staging and
     // `prompt.submit` — a sequence the code itself documents as able to take minutes. An
     // early deadline would finalize the bubble `response_timeout` and then let the prompt
@@ -972,11 +1031,22 @@ export function runHermesWsTurn(
         // turn failed while the answer is still coming. The turn then behaves as it did
         // before this lot — bounded by the watchdog — and the deviation is reported so
         // the next lot decides with data instead of a hunch.
-        ackedStreaming =
-          typeof ack === "object" &&
-          ack !== null &&
-          (ack as { status?: unknown }).status === "streaming";
-        if (!ackedStreaming) {
+        const ackStatus =
+          typeof ack === "object" && ack !== null
+            ? (ack as { status?: unknown }).status
+            : undefined;
+        ackedStreaming = ackStatus === "streaming";
+        // THREE acknowledgements, not one — read from the upstream handler, never
+        // guessed: `streaming` starts our run; `queued` means the session was BUSY, so
+        // ours is stashed in a single slot and drained as the very NEXT turn while the
+        // live one is interrupted; `steered` means our text was INJECTED into the live
+        // turn. Treating the last two as "not streaming, carry on" is the defect: the
+        // terminal that arrives next belongs to the OTHER turn, and applying it here put
+        // someone else's reply into this bubble — then, since lot 31, dropped a session
+        // that was perfectly fine.
+        ackQueued = ackStatus === "queued";
+        ackSteered = ackStatus === "steered";
+        if (!ackedStreaming && !ackQueued && !ackSteered) {
           protocolDrift.observeException(
             null,
             new TypeError("prompt.submit did not ACK status=streaming"),
@@ -988,6 +1058,11 @@ export function runHermesWsTurn(
         // OWNS this failure: settle the row as an actionable error and resolve
         // accepted (200). Rejecting here would 502 → Convex failDispatch would
         // add a SECOND error bubble for the same send (codex P2).
+        //
+        // Whatever was held waiting for an ACK that never came is not ours to apply:
+        // the prompt was never accepted, so nothing on this lane answers it.
+        ackPending = false;
+        ackHeld.length = 0;
         finalized = true;
         const msg = (err as Error)?.message ?? String(err);
         const sendKind = classifyProviderInternal(msg);
@@ -1038,7 +1113,94 @@ export function runHermesWsTurn(
       // not less, so it is exactly the case that needs the clock. What the ACK still
       // decides is the SESSION BIND below and the report above.
       promptAccepted = true;
+      // THE VERDICT IS IN — release what was held, interpreting it by that verdict.
+      ackPending = false;
+      const held = ackHeld.splice(0, ackHeld.length);
+      if (ackHeldOverflowed) {
+        // We cannot say which turn any of this belonged to, so we attribute NONE of it.
+        // The session goes with it: like a silence, we do not know whether the run we
+        // were watching ever stopped — the rule of lot 31.
+        held.length = 0;
+        if (!finalized) {
+          finalized = true;
+          disarmRecv();
+          void opts.client
+            .call("session.interrupt", { session_id: runtimeSid })
+            .catch(() => {});
+          closeOpenTools();
+          closeMoaAggregator("error");
+          const lostMsg =
+            "Hermes sent more events than this turn could attribute before " +
+            "acknowledging the prompt.";
+          opts.onSessionForgotten?.();
+          apply([
+            {
+              type: EVENT_MESSAGE_FINAL,
+              text: "",
+              error: lostMsg,
+              errorKind: "correlation_lost",
+              ...(storedSid ? { clearProviderSession: storedSid } : {}),
+            },
+            {
+              type: EVENT_RUN_STATUS,
+              status: "error",
+              runId: runtimeSid,
+              message: lostMsg,
+            },
+          ]);
+          settle();
+        }
+      } else if (ackSteered) {
+        // Our text joined the live turn: none of this was ever ours.
+        held.length = 0;
+      } else if (ackQueued) {
+        // Our run begins at the first `message.start`. If it already arrived while the
+        // ACK was in flight, the gate is ALREADY satisfied — arming it again would wait
+        // for a second start that never comes.
+        const start = held.findIndex(([t]) => t === "message.start");
+        if (start >= 0) {
+          awaitingOurTurn = false;
+          for (const [t, p] of held.slice(start + 1)) onEvent(t, p);
+        } else {
+          awaitingOurTurn = true;
+        }
+      } else {
+        for (const [t, p] of held) onEvent(t, p);
+      }
+      // QUEUED: the provider owes us a reply, but not yet — the interrupted turn's
+      // events come first, on this same lane. Gate the bubble until `message.start`
+      // announces the beginning of a run (emitted by the upstream prompt handler for
+      // every turn it starts, drained queued prompts included). The deadline is armed
+      // all the same: waiting for a start that never comes must still end.
       armRecv();
+      // STEERED: our text was injected into the LIVE turn, so there will be NO terminal
+      // of our own — ever. Waiting for one meant 240 s of "Réflexion…" and then a
+      // `response_timeout` that also dropped a healthy session. Settle it now, by name:
+      // the agent did receive the text, and its answer belongs to the turn it joined.
+      if (ackSteered && !finalized && !ackHeldOverflowed) {
+        finalized = true;
+        disarmRecv();
+        closeOpenTools();
+        closeMoaAggregator("error");
+        const steeredMsg =
+          "Hermes merged this message into the turn already running; " +
+          "its answer appears in that turn.";
+        apply([
+          {
+            type: EVENT_MESSAGE_FINAL,
+            text: "",
+            error: steeredMsg,
+            errorKind: "prompt_steered",
+          },
+          {
+            type: EVENT_RUN_STATUS,
+            status: "error",
+            runId: runtimeSid,
+            message: steeredMsg,
+          },
+        ]);
+        settle();
+      }
 
       // 5) Drain until the terminal event (or the socket dies — the client's
       // onClose finalizes via forceError below through the registry).

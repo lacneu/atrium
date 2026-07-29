@@ -91,6 +91,8 @@ function fakeWsClient(opts: {
   resumeError?: Error;
   /** Records every prompt.submit text (the recovery-rehydration contract). */
   submittedTexts?: string[];
+  /** The ACK status prompt.submit answers with. Upstream declares THREE. */
+  ackStatus?: string;
 }): HermesWsClient {
   return {
     call: async (method: string, params?: Record<string, unknown>) => {
@@ -109,7 +111,7 @@ function fakeWsClient(opts: {
           String((params as { text?: string })?.text ?? ""),
         );
         if (opts.submitError) throw opts.submitError;
-        return { status: "streaming" };
+        return { status: opts.ackStatus ?? "streaming" };
       }
       return {};
     },
@@ -983,5 +985,235 @@ describe("a silent provider settles the turn instead of hanging (lot 29)", () =>
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("prompt.submit answers THREE acknowledgements, not one (G-36)", () => {
+  function flagWriter(finals: Array<{ status: string; clear?: string; kind?: string }>): ConvexWriter {
+    return {
+      startAssistant: async () => "msg-1",
+      appendDelta: async () => {},
+      setSnapshot: async () => true,
+      addPart: async () => {},
+      addToolPart: async () => {},
+      setPhase: () => {},
+      finalize: async (
+        _id: string,
+        status: string,
+        _t?: string,
+        _e?: string | null,
+        kind?: string | null,
+        o?: { clearProviderSession?: string },
+      ) => {
+        finals.push({ status, clear: o?.clearProviderSession, kind: kind ?? undefined });
+      },
+      reportSessionMeta: async () => {},
+      heartbeat: async () => {},
+      upsertSubAgent: async () => {},
+      getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+    } as unknown as ConvexWriter;
+  }
+
+  it("QUEUED: the interrupted turn's terminal does NOT close this bubble", async () => {
+    // `queued` means the session was BUSY: our prompt is stashed and drained as the NEXT
+    // turn while the live one is interrupted. Everything arriving before our run begins
+    // belongs to that other turn — applying its terminal here published someone else's
+    // reply as the answer to this message, which is the whole of G-36.
+    const finals: Array<{ status: string; kind?: string }> = [];
+    const deltas: string[] = [];
+    const writer = flagWriter(finals) as ConvexWriter & {
+      appendDelta: (id: string, t: string) => Promise<void>;
+    };
+    (writer as { appendDelta: (id: string, t: string) => Promise<void> }).appendDelta =
+      async (_id, t) => {
+        deltas.push(t);
+      };
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({ ackStatus: "queued" }),
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "ma question",
+      },
+      (_sid, cb) => {
+        onEvent = cb.onEvent;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    // The INTERRUPTED turn now finishes on this same lane.
+    onEvent("message.delta", { text: "réponse de l'autre tour" });
+    onEvent("message.complete", { text: "réponse de l'autre tour", status: "interrupted" });
+    expect(finals, "the other turn's terminal must not settle us").toEqual([]);
+    expect(deltas, "nor may its text reach this bubble").toEqual([]);
+    // …then OUR turn begins, and only from here does the lane belong to us.
+    onEvent("message.start", {});
+    onEvent("message.delta", { text: "ma réponse" });
+    onEvent("message.complete", { text: "ma réponse", status: "complete" });
+    await run.done;
+    expect(deltas.join("")).toBe("ma réponse");
+    expect(finals.map((f) => f.status)).toEqual(["complete"]);
+  });
+
+  it("QUEUED: a message.start that RACES the ACK still opens our turn", async () => {
+    // The subscription is live during `prompt.submit`, and the client routes
+    // notifications independently of the RPC reply — so our drained run's `message.start`
+    // can land BEFORE the `queued` verdict. Judging events before the verdict meant that
+    // start was read as someone else's, the gate then waited for a second one that never
+    // comes, and the turn died at 240 s dropping a healthy session (raised in review).
+    const finals: Array<{ status: string; kind?: string }> = [];
+    const deltas: string[] = [];
+    const writer = flagWriter(finals);
+    (writer as { appendDelta: (id: string, t: string) => Promise<void> }).appendDelta =
+      async (_id, t) => {
+        deltas.push(t);
+      };
+    let onEvent!: (type: string, payload: Record<string, unknown>) => void;
+    let lane!: (type: string, payload: Record<string, unknown>) => void;
+    const client = {
+      call: async (method: string) => {
+        if (method === "session.create") {
+          return { session_id: "cc4ebdee", stored_session_id: "20260706_212939_aee24e" };
+        }
+        if (method === "prompt.submit") {
+          // The race, reproduced exactly: frames land WHILE the ACK is in flight.
+          lane("message.complete", { text: "autre tour", status: "interrupted" });
+          lane("message.start", {});
+          lane("message.delta", { text: "ma " });
+          return { status: "queued" };
+        }
+        return {};
+      },
+    } as unknown as HermesWsClient;
+    const run = runHermesWsTurn(
+      {
+        client,
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "ma question",
+      },
+      (_sid, cb) => {
+        onEvent = cb.onEvent;
+        lane = cb.onEvent;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    onEvent("message.delta", { text: "réponse" });
+    onEvent("message.complete", { text: "ma réponse", status: "complete" });
+    await run.done;
+    // The interrupted turn's terminal was dropped; OUR run's text — including the delta
+    // that arrived before the ACK — is intact, and the turn settled normally.
+    expect(deltas.join("")).toBe("ma réponse");
+    expect(finals.map((f) => f.status)).toEqual(["complete"]);
+  });
+
+  it("OVERFLOW before the ACK fails CLOSED — no foreign terminal closes this bubble", async () => {
+    // The hold is bounded, and what happens at the bound is the whole question. Routing
+    // the surplus "because streaming is the common verdict" re-created the defect: an old
+    // turn can emit 512 deltas and then its `message.complete` during a slow ACK, and
+    // that terminal would close THIS bubble with someone else's reply (raised in review).
+    const finals: Array<{ status: string; kind?: string; clear?: string }> = [];
+    const deltas: string[] = [];
+    const writer = flagWriter(finals);
+    (writer as { appendDelta: (id: string, t: string) => Promise<void> }).appendDelta =
+      async (_id, t) => {
+        deltas.push(t);
+      };
+    let lane!: (type: string, payload: Record<string, unknown>) => void;
+    const client = {
+      call: async (method: string) => {
+        if (method === "session.create") {
+          return { session_id: "cc4ebdee", stored_session_id: "20260706_212939_aee24e" };
+        }
+        if (method === "prompt.submit") {
+          // A slow ACK, and the OTHER turn talking through the whole of it.
+          for (let i = 0; i < 600; i += 1) lane("message.delta", { text: "x" });
+          lane("message.complete", { text: "réponse de l'autre tour", status: "complete" });
+          return { status: "streaming" };
+        }
+        return {};
+      },
+    } as unknown as HermesWsClient;
+    const run = runHermesWsTurn(
+      {
+        client,
+        writer,
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "ma question",
+      },
+      (_sid, cb) => {
+        lane = cb.onEvent;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    await run.done;
+    // The turn ends by NAME, not on the other turn's terminal…
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.kind).toBe("correlation_lost");
+    // …none of the foreign text became this reply…
+    expect(deltas.join("")).toBe("");
+    // …and the session is dropped: we cannot say whether the run we watched ever stopped.
+    expect(finals[0]?.clear).toBe("20260706_212939_aee24e");
+  });
+
+  it("STEERED: settles at once — no terminal of ours will EVER come", async () => {
+    // Our text was injected into the live turn, so its answer belongs to that turn's
+    // bubble. Waiting cost 240 s of "Réflexion…" and then a `response_timeout` that,
+    // since lot 31, also dropped a session that was in perfect health.
+    vi.useFakeTimers();
+    try {
+      const finals: Array<{ status: string; clear?: string; kind?: string }> = [];
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({ ackStatus: "steered" }),
+          writer: flagWriter(finals),
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "ma question",
+        },
+        () => () => {},
+      );
+      await run.accepted;
+      await run.done; // settles WITHOUT advancing the clock
+      expect(finals).toHaveLength(1);
+      expect(finals[0]?.kind).toBe("prompt_steered");
+      // …and the session is healthy: dropping it here would cost a rehydration for a
+      // provider that did exactly what it was asked.
+      expect(finals[0]?.clear).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a REFUSED lane fails the dispatch and submits NOTHING", async () => {
+    // The newcomer must not send: its reply would land in the bubble of the turn that
+    // owns the lane. Nothing was submitted, so the outbox can re-dispatch it cleanly.
+    const submitted: string[] = [];
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({ submittedTexts: submitted }),
+        writer: flagWriter([]),
+        chatId: "c1",
+        sessionKey: "k",
+        providerChatId: null,
+        text: "ma question",
+      },
+      () => {
+        throw new Error("Hermes session sid already has a live turn on this bridge.");
+      },
+    );
+    await expect(run.accepted).rejects.toThrow(/already has a live turn/);
+    await run.done;
+    expect(submitted).toEqual([]);
   });
 });

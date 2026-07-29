@@ -107,6 +107,31 @@ interface LiveHermesWsTurn {
  *  mixed-pool per-turn-routed chat — so a routed Hermes follow-up REUSES its
  *  server-side session instead of minting a fresh one (codex P2). Lost on
  *  restart → a fresh session then (benign continuity miss). */
+/** Two turns cannot share one runtime session's event lane — see `subscribeWsSession`.
+ *  A named class so the caller settles the bubble with a stable, actionable cause
+ *  instead of matching on prose. */
+/** Placeholder held between claiming a chat's turn seat and binding the run to it. */
+const WS_TURN_SEAT_RESERVED = Symbol("ws-turn-seat-reserved");
+
+/** The chat already has a live WS turn — its seat, and its `/abort` target, are taken. */
+export class HermesChatTurnBusyError extends Error {
+  readonly code = "chat_turn_busy";
+  constructor(chatId: string) {
+    super(`Chat ${chatId} already has a live Hermes WS turn on this bridge.`);
+    this.name = "HermesChatTurnBusyError";
+  }
+}
+
+export class HermesSessionLaneBusyError extends Error {
+  readonly code = "session_lane_busy";
+  constructor(runtimeSessionId: string) {
+    super(
+      `Hermes session ${runtimeSessionId} already has a live turn on this bridge.`,
+    );
+    this.name = "HermesSessionLaneBusyError";
+  }
+}
+
 export class HermesTurnRegistry {
   private turns = new Map<string, LiveHermesTurn>();
   private sessions = new Map<string, string>();
@@ -118,7 +143,7 @@ export class HermesTurnRegistry {
   // Keyed by `<instance>\u0000<runtimeSessionId>` — one instance's events (or
   // its socket dying) must NEVER reach another instance's turns.
   private wsSubscribers = new Map<string, HermesWsSessionHandlers>();
-  private wsTurns = new Map<string, LiveHermesWsTurn>();
+  private wsTurns = new Map<string, LiveHermesWsTurn | typeof WS_TURN_SEAT_RESERVED>();
 
   /** One persistent WS client per instance (lazy; auto-reconnect on next use). */
   wsClientFor(cfg: BridgeConfig): HermesWsClient {
@@ -175,6 +200,18 @@ export class HermesTurnRegistry {
     handlers: HermesWsSessionHandlers,
   ): () => void {
     const k = `${instanceName}\u0000${runtimeSessionId}`;
+    // REFUSE, never overwrite. A `set` here used to silently replace a live turn's
+    // handlers: turn N then received NOTHING and its terminal — its whole reply — was
+    // applied to turn N+1's bubble. The wire cannot save us after the fact either, and
+    // that is what settles the design: Hermes event frames carry ONLY `session_id`, with
+    // no per-turn correlation of any kind (verified against the live capture), so two
+    // Atrium turns sharing one runtime session are not demultiplexable. The honest move
+    // is to keep the lane its first owner has and let the newcomer fail by NAME, before
+    // it submits anything.
+    const held = this.wsSubscribers.get(k);
+    if (held !== undefined) {
+      throw new HermesSessionLaneBusyError(runtimeSessionId);
+    }
     this.wsSubscribers.set(k, handlers);
     return () => {
       // IDENTITY-checked: a later turn on the same runtime session must keep its own
@@ -186,16 +223,42 @@ export class HermesTurnRegistry {
     };
   }
 
-  setWsTurn(chatId: string, turn: LiveHermesWsTurn): void {
-    this.wsTurns.set(chatId, turn);
+  /** CLAIM the chat's single WS turn seat, before the turn exists.
+   *
+   *  The seat is what `/abort` targets — one per chat — so a newcomer taking it left the
+   *  turn the user is WATCHING impossible to stop. Refusing the seat alone was not
+   *  enough either: the run had already been built and went on to submit, so the chat
+   *  ended up with two live bubbles, one of them unabortable (raised in review). The
+   *  claim therefore happens BEFORE the run is created, and a refused claim means no
+   *  prompt is ever sent. */
+  claimWsTurnSeat(chatId: string): boolean {
+    if (this.wsTurns.has(chatId)) return false;
+    this.wsTurns.set(chatId, WS_TURN_SEAT_RESERVED);
+    return true;
+  }
+  /** Attach the run to a seat this caller has already claimed. */
+  bindWsTurn(chatId: string, turn: LiveHermesWsTurn): void {
+    if (this.wsTurns.get(chatId) === WS_TURN_SEAT_RESERVED) {
+      this.wsTurns.set(chatId, turn);
+    }
+  }
+  /** Give the seat back when the turn never started (pre-ACK failure). */
+  releaseWsTurnSeat(chatId: string): void {
+    if (this.wsTurns.get(chatId) === WS_TURN_SEAT_RESERVED) {
+      this.wsTurns.delete(chatId);
+    }
   }
   peekWsTurn(chatId: string): LiveHermesWsTurn | undefined {
-    return this.wsTurns.get(chatId);
+    const t = this.wsTurns.get(chatId);
+    // A merely RESERVED seat has no run to abort: nothing has been submitted yet.
+    return t === WS_TURN_SEAT_RESERVED ? undefined : t;
   }
   takeWsTurn(chatId: string): LiveHermesWsTurn | undefined {
     const t = this.wsTurns.get(chatId);
     this.wsTurns.delete(chatId);
-    return t;
+    // A reserved-but-unbound seat has no run: taking it frees the chat, and there is
+    // nothing to abort.
+    return t === WS_TURN_SEAT_RESERVED ? undefined : t;
   }
   deleteWsTurnIf(chatId: string, turn: LiveHermesWsTurn): void {
     if (this.wsTurns.get(chatId) === turn) this.wsTurns.delete(chatId);
@@ -455,6 +518,34 @@ async function performHermesWsSend(
   onTurnError?: (code: string) => void,
   sendReceivedMs: number = Date.now(),
 ): Promise<void> {
+  // CLAIM THE SEAT FIRST — before any session RPC, and above all before any
+  // `prompt.submit`. The chat has exactly one abortable turn, so a second one is a turn
+  // the user cannot stop; refusing the seat AFTER building the run was not enough,
+  // because the run went on to submit anyway (raised in review). Nothing is sent from
+  // here on a refusal.
+  if (!registry.claimWsTurnSeat(body.chatId)) {
+    throw new HermesChatTurnBusyError(body.chatId);
+  }
+  try {
+    await runClaimedWsSend(cfg, writer, body, registry, onTurnError, sendReceivedMs);
+  } finally {
+    // EVERY exit before the run is bound gives the seat back — not just a rejected
+    // `accepted`. The rehydration await and the reset-generation guard both throw in
+    // between, and a `/reset` landing there left the placeholder in place forever: every
+    // later send answered `chat_turn_busy` until the bridge restarted (raised in review).
+    // A no-op once the run owns the seat, by construction.
+    registry.releaseWsTurnSeat(body.chatId);
+  }
+}
+
+async function runClaimedWsSend(
+  cfg: BridgeConfig,
+  writer: ConvexWriter,
+  body: HermesSendBody,
+  registry: HermesTurnRegistry,
+  onTurnError?: (code: string) => void,
+  sendReceivedMs: number = Date.now(),
+): Promise<void> {
   const client = registry.wsClientFor(cfg);
   const targetKey = `${cfg.instanceName ?? ""}\u0000${body.agentId}\u0000${body.chatId}`;
   // Continuity: the persisted stored_session_id (WS shape only — never feed a
@@ -518,7 +609,7 @@ async function performHermesWsSend(
       registry.subscribeWsSession(cfg.instanceName ?? "", sid, onEvent),
   );
   const entry = { run };
-  registry.setWsTurn(body.chatId, entry);
+  registry.bindWsTurn(body.chatId, entry);
   run.done.catch(() => {}).finally(() => registry.deleteWsTurnIf(body.chatId, entry));
   await run.accepted;
 }
