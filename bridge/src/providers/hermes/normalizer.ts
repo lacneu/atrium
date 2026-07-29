@@ -82,6 +82,30 @@ export function isHermesSyntheticErrorText(
   );
 }
 
+/** The gateway's HISTORY-DESYNC warning, and nothing else.
+ *
+ *  Upstream sets it when its `history_version` moved under the turn: "History changed
+ *  during this turn — the response above is visible but was not saved to session history."
+ *  Acting on ANY non-empty `warning` was too broad — a future or benign warning would then
+ *  drop a healthy session, and re-carrying the history is bounded, so that false positive
+ *  is a real regression (raised in review). Matched on the two facts the sentence states,
+ *  not on the whole string: a reworded message must still be recognised, an unrelated
+ *  warning must not.
+ *
+ *  Shape-matched deliberately, and it is the weak point: upstream carries no structured
+ *  field for this. Named here so the next reader knows what to ask the gateway for. */
+export function isHermesHistoryDesyncWarning(warning: string): boolean {
+  const w = warning.trim().toLowerCase();
+  if (w === "" || w.length > 400) return false;
+  return (
+    (w.includes("history") || w.includes("historique")) &&
+    (w.includes("not saved") ||
+      w.includes("not written") ||
+      w.includes("pas saved") ||
+      w.includes("non sauv"))
+  );
+}
+
 export function classifyProviderInternal(error: string): string | null {
   return PROVIDER_INTERNAL_TEXT_RE.test(error) &&
     !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
@@ -266,6 +290,14 @@ export class HermesNormalizer {
     return this.finalized;
   }
 
+  /** TRUE when the gateway said this turn's reply was not written to session history.
+   *  The turn reads it to drop the binding: a session whose history is missing our own
+   *  reply cannot be resumed faithfully. */
+  private historyDesynced = false;
+  get historyDesync(): boolean {
+    return this.historyDesynced;
+  }
+
   /** USAGE as the gateway last reported it, or null.
    *
    *  The REST transport reported NONE of it: `run.completed` carries the same `usage`
@@ -331,6 +363,17 @@ export class HermesNormalizer {
     // every later turn resumed the ended parent — the agent restarting from the
     // pre-compaction transcript, which is the "it forgot what we just said" report.
     // Shape-guarded: this slot is shared, and only a REST session id belongs in it.
+    // HISTORY DESYNC on THIS transport too (G-45). The first cut handled only the WS
+    // terminal, so a REST chat kept resuming a session whose history is missing the reply
+    // the user is looking at — the very loss the lot exists to close, one file over. Three
+    // lots of this programme were already paid for fixing one transport and leaving the
+    // other.
+    if (
+      typeof data.warning === "string" &&
+      isHermesHistoryDesyncWarning(data.warning)
+    ) {
+      this.historyDesynced = true;
+    }
     const usageIn = data.usage;
     if (typeof usageIn === "object" && usageIn !== null && !Array.isArray(usageIn)) {
       this.usage = usageIn as Record<string, unknown>;

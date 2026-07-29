@@ -33,6 +33,7 @@ import {
 } from "../../core/events.js";
 import {
   classifyProviderInternal,
+  isHermesHistoryDesyncWarning,
   isHermesRuntimeFailureText,
   isHermesSyntheticErrorText,
 } from "./normalizer.js";
@@ -955,14 +956,48 @@ export function runHermesWsTurn(
           // deliberate. `aborted` is Atrium's existing word for a turn stopped mid-flight
           // and it KEEPS the partial text; it also does not schedule the zero-content
           // auto-retry, which is right — an interrupted turn must not silently re-run.
+          // HISTORY DESYNC. The gateway tells us, in its own words, that "the response
+          // above is visible but was not saved to session history" — its history_version
+          // moved under the turn. The reply is in the bubble and NOT in the session, so
+          // resuming that session means the agent has forgotten what it just said: the
+          // exact "il a oublié ce qu'on vient de dire" report, arriving pre-announced and
+          // thrown away.
+          //
+          // So the session is DROPPED rather than merely reported. That is not a
+          // workaround: a session whose history is missing our own reply cannot be resumed
+          // faithfully, and the next turn re-carries the history through `freshText`. Same
+          // machinery as lot 31, for the same reason — we cannot vouch for what is in
+          // there. Reported too, because a repair nobody can see is invisible in the
+          // health stats where it belongs.
+          const historyWarning = isHermesHistoryDesyncWarning(str(payload.warning));
           const rawStatus = str(payload.status);
+          if (historyWarning) {
+            console.error(
+              `[hermes-ws-turn] history desync chat=${opts.chatId} — dropping the ` +
+                "session so the next turn re-carries the history",
+            );
+            sessionUntrusted = true;
+            opts.onSessionForgotten?.();
+            // ONE health record per turn. An `error` terminal is already counted by the
+            // sink at finalize, with its own normalized code — signalling here too would
+            // book two failures for one turn AND let the later code overwrite this one
+            // (raised in review). The drop happens either way; only the counting differs.
+            if (rawStatus !== "error") opts.onTurnError?.("history_desync");
+          }
           const status =
             rawStatus === "error"
               ? "error"
               : rawStatus === "interrupted"
                 ? "aborted"
                 : "complete";
-          const finalEv: BridgeEvent = { type: EVENT_MESSAGE_FINAL, text };
+          const finalEv: BridgeEvent = {
+            type: EVENT_MESSAGE_FINAL,
+            text,
+            // The drop rides THIS terminal, atomically, exactly as the silence path does.
+            ...(historyWarning && boundStoredSid
+              ? { clearProviderSession: boundStoredSid }
+              : {}),
+          };
           const statusEv: BridgeEvent = {
             type: EVENT_RUN_STATUS,
             status,

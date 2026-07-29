@@ -271,6 +271,18 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         }
         enqueue(events);
       });
+      // HISTORY DESYNC (G-45): the gateway said the reply is visible but was not written
+      // to session history, so the binding cannot be resumed faithfully. Marked BEFORE the
+      // terminal below so the drop rides it, exactly as on the WS path.
+      if (norm.historyDesync && !sessionCleared) {
+        console.error(
+          `[hermes-turn] history desync chat=${opts.chatId} — dropping the session so ` +
+            "the next turn re-carries the history",
+        );
+        sessionCleared = true;
+        opts.onSessionForgotten?.();
+        opts.onTurnError?.("history_desync");
+      }
       if (!norm.isFinalized) {
         // Clean EOF, or accepted-but-streamed-nothing: settle honestly.
         //
