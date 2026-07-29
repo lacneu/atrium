@@ -241,6 +241,14 @@ export class HermesNormalizer {
     return this.finalized;
   }
 
+  /** The session id the gateway last named — the ROTATED one after an auto-compaction.
+   *  Read by the turn so the chat's binding follows the session that actually holds the
+   *  history. Same pattern as `currentRunId`, which the turn already consumes. */
+  private storedSessionId: string | null = null;
+  get currentStoredSessionId(): string | null {
+    return this.storedSessionId;
+  }
+
   /** A frame this build could not read arrived on an event it acts upon. */
   private corrupted = false;
 
@@ -280,6 +288,16 @@ export class HermesNormalizer {
     // Learn the run id from any frame that carries it (envelope is uniform).
     const rid = data.run_id;
     if (typeof rid === "string" && rid) this.runId = rid;
+    // …and the SESSION id, which the terminals carry as `effective_session_id`: an
+    // auto-compaction ENDS the current session and continues in a new one, so the id the
+    // turn started on can be dead by the time it finishes. Learning only `run_id` meant
+    // every later turn resumed the ended parent — the agent restarting from the
+    // pre-compaction transcript, which is the "it forgot what we just said" report.
+    // Shape-guarded: this slot is shared, and only a REST session id belongs in it.
+    const sidIn = data.session_id;
+    if (typeof sidIn === "string" && /^api_[0-9]+_[0-9a-f]+$/i.test(sidIn)) {
+      this.storedSessionId = sidIn;
+    }
 
     const ev = frame.event;
 

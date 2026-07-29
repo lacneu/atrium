@@ -212,6 +212,40 @@ export function runHermesWsTurn(
     // binding earlier would make a failed first send look WARM on retry (a
     // resume of a session that never received the history-carrying prompt).
     let storedSid: string | null = null;
+    /** The stored id this turn is bound to — what it resumed, or minted, or has since
+     *  been told it ROTATED to. The comparison reference for a rotation, written
+     *  explicitly rather than inferred: `session.info` also fires at turn start with the
+     *  current value, and binding on "any difference" would write for nothing. */
+    let boundStoredSid: string | null = null;
+    /** This turn declared its session unusable (silence, dead socket, lost correlation),
+     *  so the terminal cleared it. Nothing may bind afterwards. */
+    let sessionUntrusted = false;
+    /** Persistence of this turn's session bindings, SERIALIZED.
+     *
+     *  Two binds can be in flight at once — the freshly minted id, then a rotation
+     *  announced by an auto-compaction in the same turn — and both were fire-and-forget.
+     *  Nothing made the wire order match the decision order, so the mint could land AFTER
+     *  the rotation and durably restore the parent session the gateway had just closed
+     *  (raised in review). The chain makes the last decision the last write.
+     *
+     *  The untrusted check lives INSIDE the chain, so it is read at write time: a bind
+     *  still queued when the turn gives up is dropped rather than resurrecting a session
+     *  the terminal is clearing. One already on the network is covered by the reset epoch,
+     *  which the clear bumps and `bindProviderChat` compares atomically. */
+    let bindChain: Promise<void> = Promise.resolve();
+    const persistBinding = (sid: string): void => {
+      bindChain = bindChain
+        .then(async () => {
+          if (sessionUntrusted) return;
+          await opts.onBoundSession?.(sid);
+        })
+        .catch((e) =>
+          console.error(
+            "[hermes-ws-turn] session bind failed (continuity miss):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+    };
     let sessionCwd: string | null = null;
     let pendingBind: string | null = null;
     let effectiveText = opts.text;
@@ -236,12 +270,14 @@ export function runHermesWsTurn(
         noteCwd(r);
         runtimeSid = str(r.session_id) || null;
         storedSid = str(r.stored_session_id) || opts.providerChatId;
+        boundStoredSid = storedSid;
       }
       if (!runtimeSid) {
         const r = await opts.client.call("session.create", {});
         noteCwd(r);
         runtimeSid = str(r.session_id) || null;
         storedSid = str(r.stored_session_id) || null;
+        boundStoredSid = storedSid;
         if (!runtimeSid) {
           throw new Error("Hermes WS session.create returned no session_id");
         }
@@ -257,6 +293,7 @@ export function runHermesWsTurn(
           noteCwd(r);
           runtimeSid = str(r.session_id) || null;
           storedSid = str(r.stored_session_id) || null;
+          boundStoredSid = storedSid;
           if (runtimeSid && storedSid) pendingBind = storedSid;
           if (runtimeSid) await recoverText();
         } catch {
@@ -482,7 +519,13 @@ export function runHermesWsTurn(
       // stays "running" and the composer's hold-the-send never releases.
       const isMonitoring =
         type.startsWith("subagent.") || type.startsWith("moa.");
-      if (finalized && !isMonitoring) return;
+      // `session.info` OUTLIVES the turn too, and it has to: the gateway emits it in the
+      // turn's tail, AFTER `message.complete`, and that is the only announcement of a
+      // session id ROTATED by an auto-compaction. Dropping it here is why the rotation was
+      // never learned — the next turn then resumed a session the gateway had ENDED, so the
+      // agent restarted from the pre-compaction transcript. It carries session-scoped
+      // facts, never turn content, so admitting it late changes nothing about the reply.
+      if (finalized && !isMonitoring && type !== "session.info") return;
       switch (type) {
         case "message.delta": {
           const text = str(payload.text);
@@ -735,6 +778,24 @@ export function runHermesWsTurn(
           return;
         }
         case "session.info": {
+          // A ROTATED session id (auto-compaction ends the current session and continues
+          // in a new one — upstream `_sync_session_key_after_compress`). Learn it, or the
+          // next turn resumes a session that no longer exists and the agent starts from
+          // the transcript as it was BEFORE the compaction: the "it forgot what we just
+          // said" report, in its Hermes form.
+          const rotated = str(payload.stored_session_id);
+          if (
+            rotated &&
+            rotated !== boundStoredSid &&
+            isHermesWsStoredSessionId(rotated) &&
+            // A turn that declared its session untrusted (silence, dead socket, lost
+            // correlation) has just had it CLEARED. Binding here would write a session
+            // straight back into the slot that clearing exists to empty.
+            !sessionUntrusted
+          ) {
+            boundStoredSid = rotated;
+            persistBinding(rotated);
+          }
           // Model/provider/knobs — the same meta channel OpenClaw feeds.
           const meta: SessionMetaReport = {};
           if (str(payload.model)) meta.model = str(payload.model);
@@ -1082,6 +1143,7 @@ export function runHermesWsTurn(
       // do not know. Clearing on every failure would cost a rehydration each time.
       if (finalized) return;
       finalized = true;
+      sessionUntrusted = true;
       // The IN-PROCESS half of the drop; the durable half rides the terminal below.
       opts.onSessionForgotten?.();
       closeOpenTools();
@@ -1095,7 +1157,10 @@ export function runHermesWsTurn(
           // The ID we were watching, not a flag: this terminal can land AFTER a user
           // Stop released the chat and a newer turn bound a session of its own, and the
           // mutation drops the binding only while it is still this one.
-          ...(storedSid ? { clearProviderSession: storedSid } : {}),
+          // The CURRENT binding, not the one this turn started on: a rotation learned
+          // mid-turn moved it, and clearing the stale id would match nothing and leave
+          // the rotated session bound to a turn declared unusable (raised in review).
+          ...(boundStoredSid ? { clearProviderSession: boundStoredSid } : {}),
         },
         {
           type: EVENT_RUN_STATUS,
@@ -1121,6 +1186,7 @@ export function runHermesWsTurn(
     const onTransportLost = (reason: string): void => {
       if (finalized) return;
       finalized = true;
+      sessionUntrusted = true;
       disarmRecv();
       opts.onSessionForgotten?.();
       closeOpenTools();
@@ -1131,7 +1197,10 @@ export function runHermesWsTurn(
           type: EVENT_MESSAGE_FINAL,
           text: replyText,
           error: msg,
-          ...(storedSid ? { clearProviderSession: storedSid } : {}),
+          // The CURRENT binding, not the one this turn started on: a rotation learned
+          // mid-turn moved it, and clearing the stale id would match nothing and leave
+          // the rotated session bound to a turn declared unusable (raised in review).
+          ...(boundStoredSid ? { clearProviderSession: boundStoredSid } : {}),
         },
         { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
       ]);
@@ -1316,12 +1385,7 @@ export function runHermesWsTurn(
       // recovered either (raised in review). Not binding costs at worst one redundant
       // rehydration; binding wrongly costs the conversation.
       if (pendingBind && ackedStreaming && opts.onBoundSession) {
-        void opts.onBoundSession(pendingBind).catch((e) =>
-          console.error(
-            "[hermes-ws-turn] session bind failed (continuity miss):",
-            (e as Error)?.message ?? e,
-          ),
-        );
+        persistBinding(pendingBind);
       }
       resolveAccepted();
       // ACCEPTED: from here the provider owes us a reply, and silence is its silence.
@@ -1343,6 +1407,7 @@ export function runHermesWsTurn(
         held.length = 0;
         if (!finalized) {
           finalized = true;
+          sessionUntrusted = true;
           disarmRecv();
           void opts.client
             .call("session.interrupt", { session_id: runtimeSid })
@@ -1359,7 +1424,10 @@ export function runHermesWsTurn(
               text: "",
               error: lostMsg,
               errorKind: "correlation_lost",
-              ...(storedSid ? { clearProviderSession: storedSid } : {}),
+              // The CURRENT binding, not the one this turn started on: a rotation learned
+          // mid-turn moved it, and clearing the stale id would match nothing and leave
+          // the rotated session bound to a turn declared unusable (raised in review).
+          ...(boundStoredSid ? { clearProviderSession: boundStoredSid } : {}),
             },
             {
               type: EVENT_RUN_STATUS,

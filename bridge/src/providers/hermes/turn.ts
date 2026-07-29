@@ -124,6 +124,27 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
      *  targets: a terminal can land after the chat was released and a newer turn bound a
      *  session of its own. */
     let boundSessionId: string | null = null;
+    /** This turn declared its session unusable (silence, EOF with no terminal, read
+     *  failure), so its terminal cleared it. Nothing may bind afterwards. */
+    let sessionCleared = false;
+    /** Same serialization as the WS path: the minted bind and a rotation learned later in
+     *  the same turn were both fire-and-forget, so the wire order did not have to match
+     *  the decision order — the mint could land last and restore the closed parent
+     *  session (raised in review). The untrusted check is read at WRITE time. */
+    let bindChain: Promise<void> = Promise.resolve();
+    const persistBinding = (sid: string): void => {
+      bindChain = bindChain
+        .then(async () => {
+          if (sessionCleared) return;
+          await opts.onBoundSession?.(sid);
+        })
+        .catch((e) =>
+          console.error(
+            "[hermes-turn] session bind failed (continuity miss):",
+            (e as Error)?.message ?? e,
+          ),
+        );
+    };
     let recvTimer: ReturnType<typeof setTimeout> | null = null;
     const disarmRecv = (): void => {
       if (recvTimer !== null) {
@@ -194,12 +215,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
       // never a turn failure; the outbox serialization means the next send
       // dispatches long after this write settles.
       if (mintedFresh && opts.onBoundSession) {
-        void opts.onBoundSession(sessionId).catch((e) =>
-          console.error(
-            "[hermes-turn] session bind failed (continuity miss):",
-            (e as Error)?.message ?? e,
-          ),
-        );
+        persistBinding(sessionId);
       }
     } catch (err) {
       rejectAccepted(err);
@@ -263,6 +279,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         // run was over, so it may still be running with its tools and their side effects.
         // Only the timeout path carried this at first, which covered a stall but not the
         // commoner case of the body simply ending (raised in review).
+        sessionCleared = true;
         opts.onSessionForgotten?.();
         enqueue(
           norm.endTurn(
@@ -301,6 +318,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
           // `clearProviderSession`. A separate write could fail on its own while the turn
           // settled anyway, which is what the in-memory quarantine existed to paper over.
           // The in-process cache is a different thing and still has to be told.
+          sessionCleared = true;
           opts.onSessionForgotten?.();
           enqueue(
             norm.endTurn(
@@ -334,11 +352,29 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         // what the USER sees, not what the provider told us: a read failure is OUR socket
         // breaking, so the run's fate is unknown and the session goes with it — the same
         // reasoning the WS transport-lost path follows.
+        sessionCleared = true;
         opts.onSessionForgotten?.();
         enqueue(norm.endTurn(messageOf(err), null, boundSessionId));
       }
     }
     disarmRecv();
+    // A session the gateway ROTATED mid-turn (auto-compaction): follow it, or the next
+    // turn resumes an ended session and the agent restarts from the pre-compaction
+    // transcript. Skipped when this turn declared its session unusable — the terminal
+    // just cleared it, and binding here would write one straight back in.
+    const rotated = norm.currentStoredSessionId;
+    if (
+      rotated &&
+      rotated !== boundSessionId &&
+      !sessionCleared &&
+      opts.onBoundSession
+    ) {
+      boundSessionId = rotated;
+      persistBinding(rotated);
+    }
+    // The turn does not settle until its bindings have: releasing the chat first would let
+    // the next send read a slot that is still being written.
+    await bindChain;
     // Drain the queued writes. Swallow here: a Convex write failing (e.g.
     // beginTurn after acceptance) is a BACKGROUND error — `done` must resolve so
     // the registry cleanup runs and the caller never sees an unhandled reject.
