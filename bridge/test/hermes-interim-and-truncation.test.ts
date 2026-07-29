@@ -17,7 +17,9 @@
 //    message.complete replaces the streaming buffer". Atrium dropped it in the reader's
 //    default case, so exactly that loss happened.
 //
-// The interim segment is sealed as its own PART, never merged into the reply text. Merging
+// The interim segment is sealed as its own CONTENT part, never merged into the reply text.
+// It is deliberately NOT a tool card: the activity row is the analysis view and is off by
+// default, so the first cut of this fix stored the prose where nobody could see it. Merging
 // would need a containment test on prose, and the gateway re-renders its final text
 // (whitespace collapsed, directives stripped) — a false negative duplicates the prose in
 // the bubble, a false positive loses it. Both are visible to the client and neither is
@@ -53,8 +55,9 @@ async function wsTurn(
     },
     setSnapshot: async () => true,
     addPart: async () => {},
-    addToolPart: async (_id: string, part: unknown) => {
-      parts.push(part);
+    addToolPart: async () => {},
+    addReasoningPart: async (_id: string, text: string) => {
+      parts.push({ kind: "reasoning", text });
     },
     setPhase: () => {},
     finalize: async (_id: string, status: string, text?: string) => {
@@ -86,8 +89,11 @@ async function wsTurn(
   return { parts, finals, deltas };
 }
 
+/** The segments the turn sealed. A CONTENT part (`kind:"reasoning"`), not a tool card:
+ *  the activity row is the analysis view and is hidden by default, so a segment routed
+ *  there is stored and never seen. */
 const interimParts = (parts: unknown[]) =>
-  parts.filter((p) => (p as { name?: string }).name === "hermes.interim");
+  parts.filter((p) => (p as { kind?: string }).kind === "reasoning");
 
 describe("a run cut short is NOT presented as finished (G-44)", () => {
   it("WS: status `interrupted` settles the turn as aborted, keeping the partial text", async () => {
@@ -182,7 +188,7 @@ describe("interim assistant text is SEALED, not lost (G-43)", () => {
     expect(sealed, "the segment upstream sends precisely so it is not lost").toHaveLength(
       1,
     );
-    expect((sealed[0] as { output?: string }).output).toContain("configuration");
+    expect((sealed[0] as { text?: string }).text).toContain("configuration");
     // …and the reply text is left EXACTLY as the gateway rendered it. Merging the segment
     // in would require guessing whether the final already contains it.
     expect(finals[0]?.text).toBe("Réponse finale");

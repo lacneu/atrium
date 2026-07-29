@@ -1742,6 +1742,18 @@ button.oc-bmk-rail__count:hover {
 .oc-msg--user {
   justify-content: flex-end;
 }
+/* An assistant SEGMENT: prose from during the turn that is not the final reply
+   (Hermes `message.interim`). Set apart from the answer by a rule and muted colour, so
+   the reader can tell "what the agent said along the way" from "the answer" — but always
+   VISIBLE, because the Tools toggle gates the analysis view and is off by default. */
+.oc-msg__segment {
+  margin: 0 0 0.75rem;
+  padding: 0 0 0 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+}
+
 .oc-msg__bubble {
   /* Positioning context for the bookmark marker (portaled in). */
   position: relative;

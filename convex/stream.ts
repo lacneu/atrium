@@ -1198,6 +1198,17 @@ export const addPart = internalMutation({
     // survives finalize — the chat check alone would reopen terminal messages
     // to any routed instance).
     await assertMessageBound(ctx, message, boundInstanceName);
+    // A SEGMENT belongs to an assistant turn, and to nothing else. This op is generic —
+    // the bridge posts any part shape through it — so a mis-correlated `messageId` could
+    // otherwise attach assistant prose to a USER message, where it renders inside the
+    // user's own bubble as if they had written it (raised in review). Dropped rather than
+    // thrown: a badly addressed part must not fail the ingest, only fail to land.
+    if (part.kind === "reasoning" && message.role !== "assistant") {
+      console.log(
+        `[stream] addPart dropped: reasoning part addressed to a ${message.role} message`,
+      );
+      return;
+    }
     if (
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId

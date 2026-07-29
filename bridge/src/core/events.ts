@@ -25,6 +25,12 @@ export const EVENT_MESSAGE_SNAPSHOT = "message.snapshot";
 export const EVENT_MESSAGE_FINAL = "message.final"; // the turn's authoritative final `text`
 export const EVENT_RUN_STATUS = "run.status"; // {status, runId}
 export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId, toolCallId?, input?, output?}
+/** Assistant prose that is NOT the reply — a segment of the turn's own narrative.
+ *
+ *  Its home is the message BODY, not the activity row: the activity row is the analysis
+ *  view and is hidden by default, so a segment routed there is stored and never seen
+ *  (lot 34's unfinished half). `{text}` -> internal.stream.addPart(kind:"reasoning"). */
+export const EVENT_REASONING = "reasoning"; // {text}
 export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
 // {plan} — the agent's work plan from the NATIVE `stream:"plan"` agent event
 // (G-22), already normalized into the SAME PlanPart the `update_plan` tool path

@@ -2642,12 +2642,36 @@ function IconCheck() {
 // system turns intentionally do NOT: a user's literal input must not be
 // reinterpreted as markdown (typing `*foo*` must stay `*foo*`), so they keep the
 // default plain-text renderer.
+/** An assistant SEGMENT: prose the agent produced during the turn that is not the final
+ *  reply (Hermes `message.interim` — commentary alongside tool calls, or an answer it
+ *  attempted before a verification nudge). The gateway emits it precisely so the client
+ *  keeps it instead of losing it when the terminal replaces the streaming buffer.
+ *
+ *  Rendered in the BODY, and deliberately not behind the Tools toggle: that toggle gates
+ *  the ANALYSIS view (tool activity) and is off by default, so routing this prose there
+ *  stored it where nobody could see it. This is content, not activity. */
+function ReasoningSegment({ text }: { text?: string }) {
+  const body = (text ?? "").trim();
+  if (!body) return null;
+  return (
+    <div className="oc-msg__segment" role="note">
+      {body}
+    </div>
+  );
+}
+
 const plainComponents = {
   File: MediaPart as never,
 };
 const assistantComponents = {
   ...plainComponents,
   Text: MarkdownText,
+  // ASSISTANT ONLY. `plainComponents` also dresses the USER and SYSTEM turns, so
+  // registering the segment there let a `reasoning` part rendered inside a user's own
+  // bubble read as something the user wrote (raised in review). The seam is guarded on
+  // both sides: the mutation refuses the part on a non-assistant message, and it is not
+  // rendered here either.
+  Reasoning: ReasoningSegment as never,
   // DESIGN DECISION (user, 2026-07-19 — revises the earlier always-visible
   // plan): the Tools toggle gates the inline activity rows TOO. OFF = the
   // clean view, narrative only (the working label under the bubble keeps the

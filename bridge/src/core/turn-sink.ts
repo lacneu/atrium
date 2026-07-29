@@ -914,6 +914,16 @@ export class TurnSink {
           }
           break;
         }
+        case "reasoning": {
+          // Assistant prose that is NOT the reply — its own segment in the message BODY.
+          // Deliberately NOT a tool part: the activity row is the ANALYSIS view and is
+          // hidden by default, so routing a segment there stores it where nobody can see
+          // it (lot 34's unfinished half — the text was saved and still lost to the user).
+          const reasoningText = asString(event.text).trim();
+          if (!reasoningText) break;
+          await this.writer.addReasoningPart?.(messageId, reasoningText);
+          break;
+        }
         case "tool.status": {
           // Real tools arrive COALESCED (one completed/error event per call);
           // the message tool emits every phase — count it once, on its start.

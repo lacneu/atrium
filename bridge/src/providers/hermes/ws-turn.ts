@@ -27,6 +27,7 @@ import {
   EVENT_MESSAGE_DELTA,
   EVENT_MESSAGE_FINAL,
   EVENT_RUN_STATUS,
+  EVENT_REASONING,
   EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
@@ -350,8 +351,6 @@ export function runHermesWsTurn(
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
     let replyText = "";
-    /** Distinguishes successive interim segments so each is its own card. */
-    let interimSeq = 0;
     const apply = (events: BridgeEvent[]): void => {
       if (events.length === 0) return;
       chain = chain.then(() => sink.apply(events));
@@ -768,22 +767,16 @@ export function runHermesWsTurn(
           // directives stripped): a false negative duplicates the paragraph in the bubble,
           // a false positive loses it, and neither is decidable from here.
           //
+          // A CONTENT part, not a tool card. The first cut used a tool part and the
+          // segment was stored where nobody could see it — the activity row is the
+          // analysis view and is off by default (raised in review).
+          //
           // `already_streamed` does NOT decide whether to seal — it only says the text
           // also went out as deltas. The terminal replaces that buffer either way, which
           // is the whole reason this event exists.
           const interim = str(payload.text).trim();
           if (!interim) return;
-          interimSeq += 1;
-          apply([
-            {
-              type: EVENT_TOOL_STATUS,
-              name: "hermes.interim",
-              phase: "result",
-              runId: runtimeSid,
-              toolCallId: `hermes.interim:${interimSeq}`,
-              output: interim,
-            },
-          ]);
+          apply([{ type: EVENT_REASONING, text: interim, runId: runtimeSid }]);
           return;
         }
         case "message.complete": {

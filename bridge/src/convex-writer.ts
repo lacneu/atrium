@@ -229,6 +229,10 @@ export interface ConvexWriter {
   ): Promise<boolean>;
   /** tool.status -> internal.stream.addPart(kind:tool). */
   addToolPart(messageId: string, part: ToolPart): Promise<void>;
+  /** reasoning -> internal.stream.addPart(kind:reasoning): assistant prose that is not
+   *  the reply, rendered in the message BODY. Optional so lightweight test writers need
+   *  not implement it. */
+  addReasoningPart?(messageId: string, text: string): Promise<void>;
   /** A successful cron-tool mutation -> internal.stream.addPart(kind:cron).
    *  Optional so lightweight test writers need not implement it. */
   addCronPart?(messageId: string, part: CronPart): Promise<void>;
@@ -580,6 +584,7 @@ type IngestOp =
       messageId: string;
       part:
         | ToolPart
+        | ReasoningPart
         | CronPart
         | PlanPart
         | CompactionPart
@@ -1483,6 +1488,18 @@ export class HttpConvexWriter implements ConvexWriter {
       op: "addPart",
       messageId,
       part,
+      ...this.genTag(messageId),
+    });
+  }
+
+  async addReasoningPart(messageId: string, text: string): Promise<void> {
+    // Ordered behind the buffered deltas, like every other part: a segment must land
+    // where it happened in the narrative, not wherever the flush happened to be.
+    await this.flushDelta(messageId);
+    await this.post({
+      op: "addPart",
+      messageId,
+      part: { kind: "reasoning", text } satisfies ReasoningPart,
       ...this.genTag(messageId),
     });
   }
