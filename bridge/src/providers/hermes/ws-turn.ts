@@ -31,7 +31,11 @@ import {
   EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
-import { classifyProviderInternal, isHermesRuntimeFailureText } from "./normalizer.js";
+import {
+  classifyProviderInternal,
+  isHermesRuntimeFailureText,
+  isHermesSyntheticErrorText,
+} from "./normalizer.js";
 import type {
   ConvexWriter,
   SessionMetaReport,
@@ -955,10 +959,16 @@ export function runHermesWsTurn(
             // "API call failed after 3 retries: Connection error" WAS the
             // text while `error` fell back): promote it — it is not content,
             // and leaving it blocks the zero-content auto-retry.
+            // Two shapes, two burdens of proof. The runtime's log prefixes are evidence
+            // in themselves; `Error: …` is the gateway's SUBSTITUTE for a missing answer,
+            // written only when nothing visible was produced — so it is admitted only
+            // when nothing streamed. Otherwise a real partial answer starting that way
+            // would be erased from the bubble (raised in review).
             if (
               msg === "Hermes run failed." &&
               typeof finalEv.text === "string" &&
-              isHermesRuntimeFailureText(finalEv.text)
+              (isHermesRuntimeFailureText(finalEv.text) ||
+                isHermesSyntheticErrorText(finalEv.text, replyText))
             ) {
               msg = finalEv.text.trim();
               finalEv.text = "";
@@ -991,6 +1001,8 @@ export function runHermesWsTurn(
           // it would render a fake reply AND block the zero-content retry.
           let errText = replyText;
           let promoted = false;
+          // Only the runtime's own log prefixes here: this branch reads what STREAMED, so
+          // the "nothing was produced" evidence the synthetic shape needs cannot exist.
           if (isHermesRuntimeFailureText(errText)) {
             if (msg === "Hermes run failed.") msg = errText.trim();
             errText = "";

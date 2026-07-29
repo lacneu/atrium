@@ -57,6 +57,31 @@ export function isHermesRuntimeFailureText(text: string): boolean {
   return t.length > 0 && t.length <= 300 && HERMES_RUNTIME_FAILURE_PREFIX_RE.test(t);
 }
 
+/** The SYNTHETIC error text the gateway substitutes for a missing answer:
+ *  `raw = f"Error: {result.get('error')}"`, written ONLY when the backend produced no
+ *  visible response and reported a real error. Same shape on the compute-host path.
+ *
+ *  `Error:` alone is far too loose to act on — a genuine reply can start that way. What
+ *  makes it decidable is the condition upstream itself puts on writing it: **there was no
+ *  visible response**. So this predicate takes what actually STREAMED and refuses when
+ *  anything did. Without that, a real partial answer beginning "Error: …" would be erased
+ *  from the bubble, its already-displayed deltas discarded, and — if it happened to
+ *  contain a transient marker — re-sent automatically (raised in review). The two prefixes
+ *  above need no such guard: they are log formats the runtime streams, and matching them
+ *  is evidence in itself. */
+export const HERMES_SYNTHETIC_ERROR_PREFIX_RE = /^error\s*:/i;
+
+export function isHermesSyntheticErrorText(
+  text: string,
+  streamedText: string,
+): boolean {
+  if (streamedText.trim() !== "") return false;
+  const t = text.trim();
+  return (
+    t.length > 0 && t.length <= 300 && HERMES_SYNTHETIC_ERROR_PREFIX_RE.test(t)
+  );
+}
+
 export function classifyProviderInternal(error: string): string | null {
   return PROVIDER_INTERNAL_TEXT_RE.test(error) &&
     !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
