@@ -114,10 +114,10 @@ export function routeEventDecision(
 
 /** The event types that END a turn on this transport.
  *
- *  Taken from `ws-turn.ts`'s own switch — the cases that call `settle()` — rather than
+ *  DERIVED from `ws-turn.ts`'s own switch — the cases that call `settle()` — rather than
  *  guessed from the names: inventing a terminal vocabulary the reader does not share is
  *  how a "fix" ends turns the reader would have continued. */
-const WS_TERMINAL_EVENTS = new Set(["message.complete", "error", "approval.request"]);
+export const WS_TERMINAL_EVENTS = new Set(["message.complete", "error"]);
 
 /** A value that is a plain JSON object, or null. Used on the NESTED members of a frame:
  *  the shared decoder validates the envelope, and every `?? {}` below it was a place where

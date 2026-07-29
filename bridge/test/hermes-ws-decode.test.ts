@@ -13,7 +13,11 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { decodeWsFrame, routeEventDecision } from "../src/providers/hermes/ws-client.js";
+import {
+  decodeWsFrame,
+  routeEventDecision,
+  WS_TERMINAL_EVENTS,
+} from "../src/providers/hermes/ws-client.js";
 import {
   decodeInboundFrame,
   protocolDrift,
@@ -166,10 +170,13 @@ describe("routeEventDecision — what a corrupt frame does to the turn it names"
     expect(protocolDrift.report()).toEqual([]);
   });
 
-  it("the terminal set matches the reader's own settling cases", () => {
-    // Guessing this vocabulary is how a fix starts ending turns the reader would have
-    // continued. These are the three cases that call `settle()` in ws-turn.ts.
-    for (const t of ["message.complete", "error", "approval.request"]) {
+  it("promotes a corrupt payload to an error for EVERY terminal event", () => {
+    // Reads the transport's own set instead of repeating it. The literal list used to
+    // live here too, so the remembered fact had TWO copies to go stale — and it did, the
+    // day `approval.request` stopped ending the turn. What the set must equal is proved
+    // by derivation in `hermes-terminal-vocabulary.test.ts`; what this file proves is
+    // that the decoder honors it.
+    for (const t of WS_TERMINAL_EVENTS) {
       expect(routeEventDecision({ type: t, session_id: "s", payload: null })?.type).toBe(
         "error",
       );

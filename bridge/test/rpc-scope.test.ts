@@ -220,6 +220,19 @@ const NON_CALL_REFERENCES: { file: string; text: string }[] = [
   { file: "conf.ts", text: "OpenClawConnection.request" },
   // A Hermes event NAME that happens to end in `.request`.
   { file: "ws-turn.ts", text: '"approval.request"' },
+  // The four BLOCKING prompts (lot 33). Event names again, not calls — the calls that
+  // answer them are `clarify.respond` / `terminal.read.respond` / `approval.respond`,
+  // which the sweep sees as the RPCs they are. Declared one by one on purpose: this is
+  // the ratchet doing its job on genuinely new protocol vocabulary.
+  { file: "ws-turn.ts", text: '"clarify.request"' },
+  { file: "ws-turn.ts", text: '"terminal.read.request"' },
+  { file: "ws-turn.ts", text: '"secret.request"' },
+  { file: "ws-turn.ts", text: '"sudo.request"' },
+  // The same two names in the prose that explains WHY they are the exception (a
+  // credential prompt gets no answer invented by Atrium). Prose is where a reader looks
+  // first, so the rule must be allowed to name what it is about.
+  { file: "ws-turn.ts", text: "`secret.request`" },
+  { file: "ws-turn.ts", text: "`sudo.request`" },
   // …and the same name in the transport's TERMINAL set (lot 29): the client has to know
   // which events end a turn, so the vocabulary now appears on both sides of the seam.
   { file: "ws-client.ts", text: '"approval.request"' },

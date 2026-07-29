@@ -122,6 +122,55 @@ export interface HermesWsSessionHandlers {
   onTransportLost: (reason: string) => void;
 }
 
+/**
+ * The gateway's BLOCKING prompts, and the one rule that governs them.
+ *
+ * Upstream `_block(event, sid, payload, timeout)` emits a request carrying a
+ * `request_id` and then STOPS THE TURN until a matching `*.respond` arrives or the
+ * timeout expires. Atrium handled none of them: four fell through the reader's default
+ * case and the turn simply hung — 300 s for `clarify`/`secret`, 120 s for `sudo`, 30 s
+ * for `terminal.read` — which since the recv deadline means the turn dies at 240 s with a
+ * wrong cause and, since lot 31, drops a healthy session on the way out.
+ *
+ * THE RULE: never leave the gateway blocking on something this chat cannot answer.
+ *
+ * WITH ONE DELIBERATE EXCEPTION, and it is not an oversight — `secret.request` and
+ * `sudo.request` ask for a CREDENTIAL. Atrium answering "" would be a refusal *it*
+ * invented on the user's behalf, and it would suppress the `secret.expire` / `sudo.expire`
+ * the gateway emits when the prompt lapses (its own fail-closed, designed for exactly
+ * this). Those two are surfaced and left to expire; upstream's secret callback already
+ * treats an empty answer as a graceful skip.
+ *
+ * `approval.respond` is addressed by SESSION and resolves the oldest pending approval
+ * (FIFO); the other responders are addressed by `request_id`. Two call shapes in one
+ * family — written here because the asymmetry is upstream's, not a slip.
+ */
+const HERMES_PROMPT_RESPONDERS: Record<string, { method: string; key: string }> = {
+  "clarify.request": { method: "clarify.respond", key: "answer" },
+  "terminal.read.request": { method: "terminal.read.respond", key: "text" },
+};
+
+/** How long the gateway holds each prompt before giving up on it — the `timeout=` of its
+ *  own `_block` call, read from upstream and not guessed.
+ *
+ *  This exists because a turn waiting on a prompt is BLOCKED, not SILENT, and the recv
+ *  deadline cannot tell those apart on its own. `secret.request` is held for 300 s while
+ *  our deadline is 240 s, so the very design of "let the credential prompt expire" was
+ *  defeated by our own clock: the turn died a minute early, as a `response_timeout`, and
+ *  dropped a healthy session — the exact regression this lot claims to fix (raised in
+ *  review). The same applies whenever we could not answer at all: upstream WILL unblock
+ *  at its timeout and the agent carries on, so ending the turn first would be wrong. */
+const HERMES_PROMPT_TIMEOUT_MS: Record<string, number> = {
+  "clarify.request": 300_000,
+  "secret.request": 300_000,
+  "sudo.request": 120_000,
+  "terminal.read.request": 30_000,
+};
+
+/** Margin over the gateway's own timeout, so the deadline never fires in the same
+ *  instant the gateway is giving up — we want its `*.expire`, not our guess. */
+const PROMPT_GRACE_MARGIN_MS = 30_000;
+
 /** A stored (persistent) Hermes WS session id: `YYYYMMDD_HHMMSS_hex`. Distinct
  *  from the REST session shape (`api_<ts>_<hex>`) — a chat that switches
  *  transport must NOT feed one transport's id to the other. */
@@ -354,6 +403,69 @@ export function runHermesWsTurn(
         throw err;
       }
     };
+    /** Show a blocking prompt in the thread, as a tool card. The user must SEE what the
+     *  agent asked — a prompt answered (or left to expire) with nothing visible would
+     *  look like the agent went quiet for no reason. */
+    const surfacePrompt = (
+      name: string,
+      payload: Record<string, unknown>,
+      phase: "result" | "expired" = "result",
+    ): void => {
+      const detail =
+        str(payload.question) ||
+        str(payload.prompt) ||
+        str(payload.command) ||
+        str(payload.env_var) ||
+        "";
+      apply([
+        {
+          type: EVENT_TOOL_STATUS,
+          name,
+          phase: "result",
+          runId: runtimeSid,
+          toolCallId: `${name}:${str(payload.request_id) || "na"}`,
+          ...(detail ? { output: detail } : {}),
+          ...(phase === "expired" ? { input: "expired" } : {}),
+        },
+      ]);
+    };
+    /** Answer the gateway so the turn stops being held. Addressed by `request_id`, which
+     *  `_block` puts in the payload and is the ONLY address a responder accepts: without
+     *  a readable one there is nothing to answer, and saying so beats hanging. */
+    const respondToPrompt = (
+      type: string,
+      payload: Record<string, unknown>,
+    ): void => {
+      const responder = HERMES_PROMPT_RESPONDERS[type];
+      if (!responder) return;
+      const requestId = str(payload.request_id);
+      if (!requestId) {
+        // Named and bounded rather than ignored: the turn now rides its recv deadline
+        // instead of the provider's, and the operator learns which build could not
+        // answer which prompt.
+        protocolDrift.observeException(
+          { type, payload },
+          new TypeError(`${type} carried no request_id — cannot answer`),
+          "hermes-ws-event",
+        );
+        // Unanswerable, so the gateway holds the turn for its full timeout and THEN
+        // carries on (`_block` returns "" and the agent proceeds). Ending the turn here
+        // would kill one that is about to resume; the deadline stretches instead.
+        holdForPrompt(type);
+        return;
+      }
+      void opts.client
+        .call(responder.method, { request_id: requestId, [responder.key]: "" })
+        .catch((e) => {
+          console.error(
+            `[hermes-ws-turn] ${responder.method} failed (best effort):`,
+            (e as Error)?.message ?? e,
+          );
+          // The answer never landed: the gateway is still blocked, same as if we had no
+          // address at all. Same treatment — outlast its timeout rather than pre-empt it.
+          holdForPrompt(type);
+        });
+    };
     const applyEvent = (type: string, payload: Record<string, unknown>): void => {
       // The QUEUED gate. Everything before our run's `message.start` belongs to the turn
       // this prompt interrupted — its deltas, its tools, and above all its TERMINAL,
@@ -419,19 +531,57 @@ export function runHermesWsTurn(
           return;
         }
         case "approval.request": {
-          closeOpenTools();
-          closeMoaAggregator("error");
-          // The gateway is holding the tool run for a HUMAN approval Atrium
-          // cannot surface yet — settle actionably instead of hanging until
-          // the watchdog (live finding: the turn stalls silently otherwise).
-          finalized = true;
-          const msg =
-            "L'agent Hermes attend une approbation d'outil que ce chat ne peut pas donner. Configurez l'auto-approbation sur la passerelle (tools.<outil>.approval_policy: auto) ou approuvez depuis le dashboard Hermes.";
-          apply([
-            { type: EVENT_MESSAGE_FINAL, text: replyText, error: msg },
-            { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
-          ]);
-          settle();
+          // It used to KILL the turn — and tell the user to go approve on the Hermes
+          // dashboard, which is advice to work around our own defect. Worse, it never
+          // answered the gateway: Hermes went on blocking, denied itself ~60 s later, and
+          // PERSISTED that turn, so the next one resumed from a context this thread does
+          // not contain. Answer now, keep the turn alive, and show what was asked.
+          //
+          // The answer is a DENY, which is the same verdict upstream reaches on expiry —
+          // reached immediately instead of after a minute of dead air. The agent is told,
+          // so it can adapt or explain, rather than being cut off mid-thought.
+          surfacePrompt("hermes.approval", payload);
+          void opts.client
+            .call("approval.respond", { session_id: runtimeSid, choice: "deny" })
+            .catch((e) =>
+              console.error(
+                "[hermes-ws-turn] approval.respond failed (best effort):",
+                (e as Error)?.message ?? e,
+              ),
+            );
+          return;
+        }
+        case "clarify.request":
+        case "terminal.read.request": {
+          // Answered EMPTY, never composed. Writing something like "proceed with your
+          // best guess" would be Atrium answering the agent in the user's place. The
+          // question is surfaced instead, and the user replies on the next turn.
+          surfacePrompt(
+            type === "clarify.request" ? "hermes.clarify" : "hermes.terminal_read",
+            payload,
+          );
+          respondToPrompt(type, payload);
+          return;
+        }
+        case "secret.request":
+        case "sudo.request": {
+          // NOT answered — see HERMES_PROMPT_RESPONDERS. A credential prompt gets no
+          // reply invented by Atrium; the gateway's own expiry is the fail-closed, and
+          // answering would suppress the `*.expire` that announces it.
+          surfacePrompt(
+            type === "secret.request" ? "hermes.secret" : "hermes.sudo",
+            payload,
+          );
+          holdForPrompt(type);
+          return;
+        }
+        case "secret.expire":
+        case "sudo.expire": {
+          surfacePrompt(
+            type === "secret.expire" ? "hermes.secret" : "hermes.sudo",
+            payload,
+            "expired",
+          );
           return;
         }
         case "subagent.start":
@@ -816,12 +966,46 @@ export function runHermesWsTurn(
         recvTimer = null;
       }
     };
+    /** Until when the turn is legitimately BLOCKED on a gateway prompt we did not answer
+     *  — the gateway's own timeout plus a margin. 0 when nothing is pending. */
+    let promptGraceUntil = 0;
+    /** A prompt this turn will NOT answer (a credential, by design) or COULD not answer
+     *  (no address, or the responder RPC failed). Upstream unblocks at its own timeout,
+     *  so the recv deadline has to outlast it — otherwise the turn dies first, blames
+     *  silence, and drops a session that is perfectly healthy. */
+    const holdForPrompt = (type: string): void => {
+      const budget = HERMES_PROMPT_TIMEOUT_MS[type];
+      if (budget === undefined) return;
+      promptGraceUntil = Math.max(
+        promptGraceUntil,
+        Date.now() + budget + PROMPT_GRACE_MARGIN_MS,
+      );
+      armRecv();
+    };
     const armRecv = (): void => {
       disarmRecv();
       if (finalized || !promptAccepted) return;
+      // A blocked turn is not a silent turn: while a prompt we cannot answer is pending,
+      // the deadline stretches to cover the gateway's own timeout.
+      const graceLeft = promptGraceUntil - Date.now();
+      const stretched = graceLeft > RECV_SILENCE_MS;
+      const budget = stretched ? graceLeft : RECV_SILENCE_MS;
       recvTimer = setTimeout(() => {
+        if (stretched) {
+          // The BLOCK's budget elapsed — not the turn's. Upstream has given up on its own
+          // prompt by now and the agent carries on, and its first move may well be silent
+          // thinking. Killing the turn here would end one that just resumed (raised in
+          // review), so an ORDINARY deadline starts fresh instead.
+          //
+          // `promptGraceUntil` is deliberately NOT reset: it is compared, never
+          // remembered, so once it is in the past `graceLeft` goes negative and the
+          // branch below picks the ordinary budget on its own. Clearing it was a line no
+          // test could ever redden — dead code that reads like a guard.
+          armRecv();
+          return;
+        }
         void onSilence();
-      }, RECV_SILENCE_MS);
+      }, budget);
       // Never hold the process open for a turn nobody is waiting on.
       (recvTimer as { unref?: () => void }).unref?.();
     };
