@@ -249,6 +249,7 @@ import {
   type SessionMetaView,
   type SessionSettingsView,
   effectiveContextUsed,
+  contextPercentDivergence,
   contextSource,
   effectiveContextWindow,
 } from "./sessionKnobs";
@@ -1693,6 +1694,10 @@ function ContextMeter({
   }
   // Calm → escalating usage colors (universal meter language, theme-stable).
   const level = pct >= 90 ? "is-critical" : pct >= 75 ? "is-warn" : "is-ok";
+  // The GATEWAY's own reading of this same window, when it disagrees with ours. Two
+  // instruments measure it and Atrium now records both; a disagreement is a finding, and a
+  // finding nobody can see is not one.
+  const divergence = contextPercentDivergence(sm);
   return (
     <span
       className={`oc-meter ${level}`}
@@ -1704,6 +1709,11 @@ function ContextMeter({
         source === "budget_estimate"
           ? m.chat_context_source_estimate()
           : m.chat_context_source_usage()
+      }${
+        // Silent when the two agree, so the line appears exactly when it means something.
+        divergence
+          ? `\nHermes ${divergence.gateway}% — écart de ${divergence.delta} points`
+          : ""
       }`}
     >
       <span className="oc-meter__track">

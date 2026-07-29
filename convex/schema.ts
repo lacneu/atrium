@@ -1130,6 +1130,23 @@ export default defineSchema({
         activeTokensAt: v.optional(v.number()),
         contextTokens: v.optional(v.number()), // context window size
         estimatedCostUsd: v.optional(v.number()),
+        // Facts the HERMES gateway reports on its terminal and Atrium used to drop
+        // (G-50). `compactionCount` is the one that matters most: the gateway counts its
+        // own compactions, and that count rides the terminal — whereas the `status.update`
+        // marker is broadcast `dropIfSlow` upstream and a slow consumer simply never sees
+        // it. A count also distinguishes one compaction from five, which a marker cannot.
+        compactionCount: v.optional(v.number()),
+        // The gateway's OWN occupancy reading, kept BESIDE the two token counts the gauge
+        // is derived from rather than replacing them: when the two disagree, that is the
+        // finding, and overwriting one with the other would erase it.
+        contextPercent: v.optional(v.number()),
+        activeSubagents: v.optional(v.number()),
+        apiCalls: v.optional(v.number()),
+        // Observation watermark for the four fields above. They ride a turn's TERMINAL,
+        // off the ordered chain, so two reports can land inverted; the POINT-IN-TIME pair
+        // is ordered by this stamp (the two CUMULATIVE counters need none — they can only
+        // grow, so their own previous value is the floor).
+        terminalFactsAt: v.optional(v.number()),
         updatedAt: v.optional(v.number()),
       }),
     ),

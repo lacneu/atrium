@@ -266,6 +266,18 @@ export class HermesNormalizer {
     return this.finalized;
   }
 
+  /** USAGE as the gateway last reported it, or null.
+   *
+   *  The REST transport reported NONE of it: `run.completed` carries the same `usage`
+   *  block the WS terminal does — token counts, the compaction COUNT, the gateway's own
+   *  occupancy — and this normalizer read none of it, so a Hermes chat on REST had no
+   *  context gauge at all and no compaction ever reached its thread. Held here for the
+   *  turn to report, exactly like `currentRunId`: a normalizer has no writer. */
+  private usage: Record<string, unknown> | null = null;
+  get currentUsage(): Record<string, unknown> | null {
+    return this.usage;
+  }
+
   /** The session id the gateway last named — the ROTATED one after an auto-compaction.
    *  Read by the turn so the chat's binding follows the session that actually holds the
    *  history. Same pattern as `currentRunId`, which the turn already consumes. */
@@ -319,6 +331,10 @@ export class HermesNormalizer {
     // every later turn resumed the ended parent — the agent restarting from the
     // pre-compaction transcript, which is the "it forgot what we just said" report.
     // Shape-guarded: this slot is shared, and only a REST session id belongs in it.
+    const usageIn = data.usage;
+    if (typeof usageIn === "object" && usageIn !== null && !Array.isArray(usageIn)) {
+      this.usage = usageIn as Record<string, unknown>;
+    }
     const sidIn = data.session_id;
     if (typeof sidIn === "string" && /^api_[0-9]+_[0-9a-f]+$/i.test(sidIn)) {
       this.storedSessionId = sidIn;

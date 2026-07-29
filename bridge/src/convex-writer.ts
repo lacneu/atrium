@@ -512,6 +512,20 @@ export interface SessionMetaReport {
   estimatedPromptTokens?: number;
   promptBudgetBeforeReserve?: number;
   overflowTokens?: number;
+  /** COMPACTIONS SO FAR on this Hermes session (`usage.compressions`). The gateway keeps
+   *  the count itself, and it rides the TERMINAL — so unlike the `status.update` marker,
+   *  which upstream broadcasts `dropIfSlow`, it cannot be missed by a slow consumer. A
+   *  count is also strictly more than a marker: it says HOW MANY, so a reader can tell one
+   *  compaction from five. */
+  compactionCount?: number;
+  /** The gateway's OWN occupancy figure (`usage.context_percent`), kept beside the two
+   *  token counts Atrium derives its gauge from. Recorded rather than recomputed: when the
+   *  two disagree, the disagreement is the finding. */
+  contextPercent?: number;
+  /** Delegations the gateway considers live (`usage.active_subagents`). */
+  activeSubagents?: number;
+  /** Provider API calls this session (`usage.calls`). */
+  apiCalls?: number;
   // Bridge observation time: snapshots and per-turn stamps travel as
   // independent fire-and-forget POSTs — Convex orders them by this.
   observedAt?: number;

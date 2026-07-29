@@ -913,11 +913,34 @@ export function runHermesWsTurn(
             typeof usage.context_used === "number" ? usage.context_used : undefined;
           const windowMax =
             typeof usage.context_max === "number" ? usage.context_max : undefined;
-          if (used !== undefined || windowMax !== undefined) {
+          // …and the FACTS THE GATEWAY ALREADY COMPUTED, which Atrium dropped (G-50).
+          // `compressions` is the important one: the gateway counts its own compactions and
+          // the count rides THIS terminal, whereas the `status.update` marker Atrium relies
+          // on is broadcast `dropIfSlow` upstream — so a slow consumer sees a session that
+          // silently forgot half its history. A count also says HOW MANY, which a marker
+          // cannot.
+          const num = (v: unknown): number | undefined =>
+            typeof v === "number" && Number.isFinite(v) ? v : undefined;
+          const compactionCount = num(usage.compressions);
+          const contextPercent = num(usage.context_percent);
+          const activeSubagents = num(usage.active_subagents);
+          const apiCalls = num(usage.calls);
+          if (
+            used !== undefined ||
+            windowMax !== undefined ||
+            compactionCount !== undefined ||
+            contextPercent !== undefined ||
+            activeSubagents !== undefined ||
+            apiCalls !== undefined
+          ) {
             void opts.writer
               .reportSessionMeta(opts.chatId, {
                 totalTokens: used,
                 contextTokens: windowMax,
+                ...(compactionCount !== undefined ? { compactionCount } : {}),
+                ...(contextPercent !== undefined ? { contextPercent } : {}),
+                ...(activeSubagents !== undefined ? { activeSubagents } : {}),
+                ...(apiCalls !== undefined ? { apiCalls } : {}),
               })
               .catch((e) =>
                 console.error(

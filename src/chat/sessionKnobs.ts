@@ -134,6 +134,10 @@ interface ContextMeta {
    *  not shrink. A VERDICT, not a number — the counters above can read
    *  comfortable while this is true, which is the production symptom. */
   sessionOverfull?: boolean;
+  /** The HERMES gateway's OWN occupancy reading (`usage.context_percent`), recorded
+   *  BESIDE the token counts rather than instead of them. Kept because when the two
+   *  disagree the disagreement is the finding — and a finding nobody can see is not one. */
+  contextPercent?: number;
 }
 
 /** The number the context gauge should treat as "used window tokens", or null
@@ -307,4 +311,30 @@ export function agentLine(
     (p): p is string => typeof p === "string" && p.length > 0,
   );
   return kept.length > 0 ? kept.join(" · ") : null;
+}
+
+/** How far the GATEWAY's own occupancy reading differs from the one Atrium derives.
+ *
+ *  Two instruments measure the same window: Hermes reports `context_percent`, and Atrium
+ *  computes a percentage from the token counts. Recording both was deliberate — when they
+ *  disagree, that IS the finding — but a value stored and never rendered is a finding
+ *  nobody can act on, which is the same mistake as saving text no view shows.
+ *
+ *  Returns null when there is nothing to compare, or when the two agree within the
+ *  tolerance. The tolerance is not cosmetic: both sides ROUND, and a gauge that cried
+ *  divergence at one point of rounding would train the reader to ignore it. */
+export function contextPercentDivergence(
+  sm: ContextMeta | null | undefined,
+  tolerancePoints = 5,
+): { gateway: number; derived: number; delta: number } | null {
+  const gateway = sm?.contextPercent;
+  if (typeof gateway !== "number" || !Number.isFinite(gateway)) return null;
+  const used = effectiveContextUsed(sm);
+  const window = effectiveContextWindow(sm);
+  if (used === null || window === null) return null;
+  const derived = contextPct(used, window);
+  if (derived === null) return null;
+  const delta = Math.abs(gateway - derived);
+  if (delta <= tolerancePoints) return null;
+  return { gateway, derived, delta };
 }

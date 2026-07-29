@@ -362,6 +362,42 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     // turn resumes an ended session and the agent restarts from the pre-compaction
     // transcript. Skipped when this turn declared its session unusable — the terminal
     // just cleared it, and binding here would write one straight back in.
+    // USAGE — the REST transport reported none of it (G-50), so a Hermes chat on this
+    // transport had no context gauge and no compaction ever reached its thread. Same facts
+    // the WS terminal carries, read from `run.completed`.
+    const usage = norm.currentUsage;
+    if (usage !== null) {
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      const meta = {
+        ...(num(usage.context_used) !== undefined
+          ? { totalTokens: num(usage.context_used) }
+          : {}),
+        ...(num(usage.context_max) !== undefined
+          ? { contextTokens: num(usage.context_max) }
+          : {}),
+        ...(num(usage.compressions) !== undefined
+          ? { compactionCount: num(usage.compressions) }
+          : {}),
+        ...(num(usage.context_percent) !== undefined
+          ? { contextPercent: num(usage.context_percent) }
+          : {}),
+        ...(num(usage.active_subagents) !== undefined
+          ? { activeSubagents: num(usage.active_subagents) }
+          : {}),
+        ...(num(usage.calls) !== undefined ? { apiCalls: num(usage.calls) } : {}),
+      };
+      if (Object.keys(meta).length > 0) {
+        void opts.writer
+          .reportSessionMeta(opts.chatId, meta)
+          .catch((e) =>
+            console.error(
+              "[hermes-turn] usage meta failed:",
+              (e as Error)?.message ?? e,
+            ),
+          );
+      }
+    }
     const rotated = norm.currentStoredSessionId;
     if (
       rotated &&

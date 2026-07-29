@@ -1611,6 +1611,52 @@ export const streamPoll = internalQuery({
 });
 
 /**
+ * A compaction Atrium learned from the COUNTER, not from a live marker.
+ *
+ *  Hermes reports how many times it has compacted this session, on every terminal. The
+ *  live signal Atrium normally uses — a `status.update` of kind "compacting" — is broadcast
+ *  `dropIfSlow` upstream, so a slow consumer never receives it and the thread never
+ *  mentions that the session forgot half its history. When the count RISES past what the
+ *  chat had recorded, the compaction happened whether or not its marker arrived.
+ *
+ *  Attached to the chat's LAST assistant message, and only to a SETTLED one: a marker on a
+ *  still-streaming bubble would race that turn's own live marker and show one event twice.
+ *  The `phase` says where the knowledge came from — "we counted this" is a weaker claim
+ *  than "we watched it happen", and the reader deserves the difference.
+ */
+async function noteCountedCompactions(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  missed: number,
+): Promise<void> {
+  const last = await latestChatMessage(ctx, chatId);
+  if (last === null || last.role !== "assistant") return;
+  if (last.status === "streaming") return;
+  // ALREADY MARKED? The count POST travels off the ordered chain, so it can land AFTER the
+  // finalize — by which time the turn's own live marker may already sit on this very
+  // message. Inserting anyway wrote a second part for one event, and the renderer shows
+  // only the first, so the duplicate hid in the data rather than on screen (raised in
+  // review).
+  const existing = await ctx.db
+    .query("messageParts")
+    .withIndex("by_message", (q) => q.eq("messageId", last._id))
+    .collect();
+  if (existing.some((p) => (p.part as { kind?: string }).kind === "compaction")) return;
+  // Bounded: a counter that jumps by a thousand (a fresh session, a gateway that reset its
+  // own tally) must not write a thousand parts. ONE marker, whatever the jump.
+  const order = Date.now();
+  await ctx.db.insert("messageParts", {
+    messageId: last._id,
+    order,
+    part: {
+      kind: "compaction" as const,
+      phase: missed > 1 ? "counted-multiple" : "counted",
+      at: order,
+    },
+  });
+}
+
+/**
  * Apply a finalize's `clearProviderSession` directive to the chat, if any.
  *
  * Shared by the two exits of `finalize` that must honor it: the normal terminal write,
@@ -2130,8 +2176,25 @@ export const clearSessionStateAfterReset = internalMutation({
       activeTokens,
       activeTokensAt,
       estimatedCostUsd,
+      // SESSION-SCOPED COUNTERS, and the reset is exactly where they must go. They are
+      // floored by their own previous value in `setSessionMeta` — a deliberate guard
+      // against out-of-order terminals — so leaving them here meant the NEW session's low
+      // count stayed capped by the old session's maximum, and its compactions produced no
+      // marker until it overtook a tally that no longer describes anything (raised in
+      // review). The watermark goes with them: a fence that outlived its counters would
+      // reject the new session's first reading as stale.
+      compactionCount,
+      apiCalls,
+      contextPercent,
+      activeSubagents,
+      terminalFactsAt,
       ...rest
     } = chat.sessionMeta ?? {};
+    void compactionCount;
+    void apiCalls;
+    void contextPercent;
+    void activeSubagents;
+    void terminalFactsAt;
     void sessionOverfull;
     void sessionOverfullAt;
     void estimatedPromptTokens;
@@ -2286,6 +2349,13 @@ export const setSessionMeta = internalMutation({
       estimatedPromptTokens: v.optional(v.number()),
       promptBudgetBeforeReserve: v.optional(v.number()),
       overflowTokens: v.optional(v.number()),
+      // Hermes reports these on its terminal and Atrium used to drop them. The gauge is
+      // the user-visible consequence: a compaction the thread never mentions, and an
+      // occupancy figure the gateway computed that nobody compared with ours.
+      compactionCount: v.optional(v.number()),
+      contextPercent: v.optional(v.number()),
+      activeSubagents: v.optional(v.number()),
+      apiCalls: v.optional(v.number()),
       observedAt: v.optional(v.number()),
     }),
   },
@@ -2393,11 +2463,71 @@ export const setSessionMeta = internalMutation({
           // to win the ordering too.
           ...(metaAt !== undefined ? { estimateAt: metaAt } : {}),
         };
+    // TERMINAL FACTS, ordered and monotonic (G-50, raised in review).
+    //
+    // These four arrive on a turn's TERMINAL, off the ordered chain and un-awaited, so two
+    // reports can land inverted. Without a guard that walks `compactionCount` BACKWARDS —
+    // a session that compacted three times reported as having compacted twice — which is
+    // worse than not recording it at all, because it reads as authoritative.
+    //
+    // Two different kinds of fact, so two different rules:
+    //  * `compactionCount` / `apiCalls` are CUMULATIVE for the session: they can only
+    //    grow, so the floor is the previous value and no clock is needed.
+    //  * `contextPercent` / `activeSubagents` are POINT-IN-TIME: they legitimately fall,
+    //    so they take the observation watermark instead.
+    const prevFacts = prev ?? {};
+    const monotonic = <K extends "compactionCount" | "apiCalls">(k: K) => {
+      const incoming = (metaRest as Record<string, unknown>)[k];
+      const before = (prevFacts as Record<string, unknown>)[k];
+      if (typeof incoming !== "number") {
+        return before !== undefined ? { [k]: before } : {};
+      }
+      return { [k]: typeof before === "number" ? Math.max(before, incoming) : incoming };
+    };
+    const factsAt = prevFacts.terminalFactsAt;
+    const staleFacts =
+      metaAt !== undefined && factsAt !== undefined && metaAt < factsAt;
+    const pointInTime = <K extends "contextPercent" | "activeSubagents">(k: K) => {
+      // An older report keeps whatever the fresher one established.
+      const before = (prevFacts as Record<string, unknown>)[k];
+      const incoming = (metaRest as Record<string, unknown>)[k];
+      if (staleFacts) return before !== undefined ? { [k]: before } : {};
+      if (incoming !== undefined) return { [k]: incoming };
+      return before !== undefined ? { [k]: before } : {};
+    };
+    const terminalFacts = {
+      ...monotonic("compactionCount"),
+      ...monotonic("apiCalls"),
+      ...pointInTime("contextPercent"),
+      ...pointInTime("activeSubagents"),
+      // Kept even when this report carried none, for the same reason the estimate
+      // watermark is: a later ABSENCE must still be able to win the ordering.
+      ...(metaAt !== undefined && !staleFacts
+        ? { terminalFactsAt: metaAt }
+        : factsAt !== undefined
+          ? { terminalFactsAt: factsAt }
+          : {}),
+    };
+    // A RISE in the compaction count is a compaction the thread must SHOW. This is the
+    // whole reason the count is worth reading: Atrium's live marker rides a
+    // `status.update` that upstream broadcasts `dropIfSlow`, so a slow consumer never
+    // learns the session forgot half its history. Storing the number without acting on it
+    // would have been the same mistake as saving text nobody renders.
+    const before = (prevFacts as { compactionCount?: number }).compactionCount;
+    const after = (terminalFacts as { compactionCount?: number }).compactionCount;
+    if (
+      typeof after === "number" &&
+      typeof before === "number" &&
+      after > before
+    ) {
+      await noteCountedCompactions(ctx, chatId, after - before);
+    }
     await ctx.db.patch(chatId, {
       sessionMeta: {
         ...metaRest,
         ...keepActive,
         ...estimateFields,
+        ...terminalFacts,
         // The compaction VERDICT belongs to setSessionOverfull and to nothing
         // else: this meta refresh rebuilds the object from scratch, so without
         // carrying it forward an ordinary describe (every send) would erase the
