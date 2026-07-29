@@ -1375,6 +1375,54 @@ export default defineSchema({
     }),
 
   // Structured non-text content attached to a message, ordered for rendering.
+  // DURABLE protocol drift — the shapes a gateway emits that this build does not know.
+  //
+  // The bridge already detects them, but only IN MEMORY: the counters die with the
+  // process, and the compat poller stored the whole report as one `protocol` snapshot,
+  // OVERWRITTEN every five minutes. Nothing therefore recorded that a shape had ever been
+  // seen, when it first appeared, or whether a human had looked at it — so the programme's
+  // own exit indicator ("shapes still `new` after a week ⇒ 0") was not measurable at all.
+  //
+  // Content-free by construction: a shape is a FIELD NAME (`agent.lastTo`) or a sensor
+  // signature (`«exception».TypeError@site`). Never a value, never a payload.
+  protocolShapes: defineTable({
+    /** `chat.<field>` / `agent.<field>`, or a sensor signature. The identity. */
+    shape: v.string(),
+    /** How many times the CURRENT bridge process has seen it. Deliberately not a running
+     *  total: the bridge's counter resets on restart, so summing across polls would
+     *  invent traffic. This is "what the live bridge reports", and the pair of timestamps
+     *  below is what carries history. */
+    lastCount: v.number(),
+    firstSeenAt: v.number(),
+    lastSeenAt: v.number(),
+    /** Triage state. `new` until a human says otherwise — the whole point of persisting:
+     *  `handled` (the build now reads it), `ignored` (deliberately not read, with a note),
+     *  `new` (nobody has looked). */
+    status: v.union(
+      v.literal("new"),
+      v.literal("handled"),
+      v.literal("ignored"),
+    ),
+    /** Why it was classified that way. Operator prose, never gateway content. */
+    note: v.optional(v.string()),
+  }).index("by_shape", ["shape"]),
+
+  // How BLIND the ledger currently is. Separate from `bridgeCompat` on purpose: that
+  // singleton is fully overwritten on every poll, and the one thing this must survive is
+  // exactly that overwrite — "we could not name everything we saw" has to persist until
+  // a poll proves otherwise, or the exit indicator reads a clean table as clean truth.
+  protocolLedgerState: defineTable({
+    key: v.literal("singleton"),
+    /** Observations the LAST poll could not name (unknown grammar, or truncated away). */
+    unnamedLast: v.number(),
+    /** When the ledger first became incomplete and has stayed so. Cleared by a poll that
+     *  names everything — so a reader can say "complete since", not merely "complete". */
+    unnamedSince: v.optional(v.number()),
+    /** Did the last poll's bridge actually carry a readable `protocol` section? A legacy
+     *  or malformed bridge is UNOBSERVED, not clean, and the indicator must say so. */
+    reporting: v.optional(v.boolean()),
+  }).index("by_key", ["key"]),
+
   messageParts: defineTable({
     messageId: v.id("messages"),
     order: v.number(),

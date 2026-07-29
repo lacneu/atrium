@@ -17,9 +17,11 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
+  mutation,
   query,
   QueryCtx,
 } from "./_generated/server";
+import { requireAdmin } from "./lib/access";
 import { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import {
@@ -87,6 +89,8 @@ export const pollBridgeCompat = internalAction({
     // shape that is small on an early bridge and large on a later one keeps its full count.
     const protocolParts: NormalizedCapabilities["protocol"][] = [];
     let anyReachable = false;
+    /** Did EVERY bridge we reached carry a readable protocol section? */
+    let allBridgesReported = true;
     let lastError = "unreachable";
 
     for (const { name, url } of pollTargets) {
@@ -94,6 +98,10 @@ export const pollBridgeCompat = internalAction({
         const res = await fetch(`${url}/capabilities`, { method: "GET" });
         if (!res.ok) {
           lastError = `http_${res.status}`;
+          // A bridge we could not reach is a bridge we did not OBSERVE. Skipping it
+          // silently left `allBridgesReported` true, so one healthy bridge vouched for a
+          // fleet that was partly dark (raised in review).
+          allBridgesReported = false;
           continue; // this bridge is down this cycle; others may be up
         }
         const body: unknown = await res.json();
@@ -110,6 +118,17 @@ export const pollBridgeCompat = internalAction({
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
         if (compat === null) compat = n.compat;
         protocolParts.push(n.protocol);
+        // PER BRIDGE, and before the fold. The fold merges every reachable bridge into one
+        // value and drops the nulls, so a single modern bridge used to vouch for a legacy
+        // one standing next to it — an unobserved bridge hidden behind an observed one
+        // (raised in review). Coverage is only whole when EVERY reachable bridge reported.
+        if (
+          n.protocol === null ||
+          typeof n.protocol !== "object" ||
+          !Array.isArray(n.protocol.drift)
+        ) {
+          allBridgesReported = false;
+        }
         for (const t of n.targets) {
           // Dedupe across bridges by instance (first reachable wins). Stamp the
           // SERVING bridge's rehydration default onto its own targets so a
@@ -124,12 +143,24 @@ export const pollBridgeCompat = internalAction({
         }
       } catch {
         lastError = "unreachable";
+        // Same reasoning as the HTTP-error branch: unreachable is UNOBSERVED.
+        allBridgesReported = false;
       }
     }
 
     if (!anyReachable) {
       await ctx.runMutation(internal.compat.recordCompatFailure, {
         error: lastError,
+      });
+      // …and the LEDGER must hear about it too. Returning here left the previous poll's
+      // state standing, so after one clean cycle the indicator kept reading "reliable"
+      // while the whole fleet had gone dark (raised in review). The rows themselves are
+      // untouched — history is not what a failed poll invalidates; the CLAIM about
+      // coverage is.
+      await ctx.runMutation(internal.compat.recordProtocolShapes, {
+        shapes: [],
+        unnamed: 0,
+        reporting: false,
       });
       return;
     }
@@ -144,6 +175,161 @@ export const pollBridgeCompat = internalAction({
       protocol: foldProtocolInfo(protocolParts),
       targets: mergedTargets,
     });
+    // …and REMEMBER the drift, shape by shape. The snapshot above is overwritten every
+    // five minutes, so on its own it can answer "what is drifting right now" and nothing
+    // else: not when a shape first appeared, not whether anyone has looked at it. The
+    // programme's own exit indicator is stated in those terms, so without this the
+    // indicator was unmeasurable.
+    const folded = foldProtocolInfo(protocolParts);
+    // EVERY successful poll writes the ledger state, drift or none. Writing only when
+    // something drifted meant a legacy bridge, a malformed `protocol` section, or a clean
+    // poll all left the previous state standing — so the indicator could read "reliable"
+    // on a bridge sending no drift telemetry at all (raised in review).
+    const hasProtocol =
+      folded !== null && typeof folded === "object" && Array.isArray(folded.drift);
+    const drift = hasProtocol ? folded.drift : [];
+    const named = drift.filter((d) => isKnownShapeGrammar(d.shape));
+    await ctx.runMutation(internal.compat.recordProtocolShapes, {
+      shapes: named.map((d) => ({ shape: d.shape, count: d.count })),
+      // Everything OBSERVED that this ledger cannot name. Three sources, one meaning —
+      // the count below is a floor, never a total:
+      //   - shapes whose grammar we refuse to store;
+      //   - `driftTruncated`: entries the fold dropped at its own cap;
+      //   - `driftOverflow`: observations the BRIDGE could not name, which it reports
+      //     separately and which used to be ignored entirely here.
+      unnamed:
+        drift.length -
+        named.length +
+        (typeof folded?.driftTruncated === "number" ? folded.driftTruncated : 0) +
+        (typeof folded?.driftOverflow === "number" ? folded.driftOverflow : 0),
+      // A reachable bridge that reports NO protocol section is not a bridge with no
+      // drift: it is a bridge we cannot see. Said, rather than read as silence.
+      reporting: hasProtocol && allBridgesReported,
+    });
+  },
+});
+
+/** The shape vocabularies the bridge can legitimately produce, and nothing else.
+ *
+ *  `/capabilities` is a NETWORK input, and unlike the old snapshot this ledger keeps what
+ *  it is given FOREVER. So an arbitrary string in `shape` would turn a diagnostic table
+ *  into durable storage for whatever a compromised or broken bridge sends — the exact
+ *  opposite of the content-free promise (raised in review).
+ *
+ *  A charset filter would not do, and the bridge itself settled that argument at lot 28:
+ *  "a charset filter proves nothing — `AliceMartin` passes it". Which is why the bridge
+ *  never NAMES an unvalidated wire value; it digests it. So the grammar below is a
+ *  closed list of the forms its producers actually emit:
+ *    - `chat.<field>` / `agent.<field>` — schema vocabulary, derived from the vendoring;
+ *    - `chat.«unknown-state».<digest>` — a value the bridge deliberately did not name;
+ *    - `«exception».<Class>@<site>.<shape>` and `«detector-failure».<name>` — sensors.
+ *  Anything else is COUNTED, never stored: an unnameable observation is still an
+ *  observation, and hiding it would make the ledger lie by omission. */
+const SEGMENT = "[A-Za-z0-9_]{1,64}";
+const DIGEST = "[0-9a-f]{1,32}";
+/** A namespaced part the bridge emits INSTEAD of a wire value it refused to name. */
+const SENTINEL = `(?:«unknown-state»\\.${DIGEST}|«no-payload»)`;
+/** `chat…` / `agent…`, at most three segments deep — the producers emit
+ *  `<event>.<state>` and `<event>.<state>.<field>`, never an arbitrary path. */
+const BASE = `(?:chat|agent)(?:\\.(?:${SEGMENT}|${SENTINEL})){1,3}`;
+/** What `exceptionFrameShape` can return, term for term. It is a CLOSED set: the free
+ *  `.+` this started with let `«exception».TypeError@feed.<free text>` through, which is
+ *  exactly the arbitrary content the grammar exists to keep out (raised in review). */
+const EXC_SUFFIX = `(?:«hermes»|«non-object»|«non-event»|«other-event»\\.${DIGEST}|${BASE})`;
+const KNOWN_SHAPE_GRAMMAR = [
+  new RegExp(`^${BASE}$`),
+  new RegExp(`^«detector-failure»\\.${SEGMENT}$`),
+  new RegExp(`^«exception»\\.${SEGMENT}@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}$`),
+];
+
+export function isKnownShapeGrammar(shape: string): boolean {
+  // Bounded before matching: a pathological length must not reach the regexes.
+  if (shape === "" || shape.length > 200) return false;
+  return KNOWN_SHAPE_GRAMMAR.some((re) => re.test(shape));
+}
+
+/** How many DISTINCT shapes the ledger will ever name. A grammar keeps content out; it
+ *  does not keep VOLUME out — a bridge emitting fresh valid names every poll would grow
+ *  this table without end (raised in review). Past the cap, an observation is still
+ *  counted, just not named. */
+const MAX_LEDGER_SHAPES = 500;
+
+/** Fold today's drift into the durable shape ledger.
+ *
+ *  UPSERT, never replace: a shape that stops appearing (the gateway rolled back, or the
+ *  bridge restarted and has not seen it again yet) keeps its row and its history. Only
+ *  `lastSeenAt`/`lastCount` move. `status` is NEVER written here — it is the human's
+ *  column, and a poll that reset it would erase the triage it exists to record. */
+export const recordProtocolShapes = internalMutation({
+  args: {
+    shapes: v.array(v.object({ shape: v.string(), count: v.number() })),
+    /** Observations this poll could NOT name — an unknown grammar, or shapes the fold
+     *  truncated away. Recorded so a reader can tell "nothing is drifting" from "we
+     *  cannot see everything that is". */
+    unnamed: v.optional(v.number()),
+    /** FALSE when the bridge answered but carried no readable `protocol` section: it is
+     *  not drifting-free, it is unobserved. */
+    reporting: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { shapes, unnamed, reporting }) => {
+    const now = Date.now();
+    let created = 0;
+    const existingCount = (await ctx.db.query("protocolShapes").take(MAX_LEDGER_SHAPES))
+      .length;
+    let overCap = 0;
+    for (const { shape, count } of shapes) {
+      const existing = await ctx.db
+        .query("protocolShapes")
+        .withIndex("by_shape", (q) => q.eq("shape", shape))
+        .unique();
+      if (existing === null) {
+        // Past the cap a NEW identity is counted, not named — the ledger stops growing
+        // without pretending it saw nothing.
+        if (existingCount + created >= MAX_LEDGER_SHAPES) {
+          overCap += 1;
+          continue;
+        }
+        await ctx.db.insert("protocolShapes", {
+          shape,
+          lastCount: count,
+          firstSeenAt: now,
+          lastSeenAt: now,
+          status: "new" as const,
+        });
+        created += 1;
+        continue;
+      }
+      await ctx.db.patch(existing._id, { lastCount: count, lastSeenAt: now });
+    }
+    // RECORD THE BLINDNESS, always — including when it is zero. A ledger that only ever
+    // said "here is what I saw" would let a reader mistake "nothing is drifting" for
+    // "nothing was hidden from me" (raised in review).
+    const blind = (unnamed ?? 0) + overCap;
+    const state = await ctx.db
+      .query("protocolLedgerState")
+      .withIndex("by_key", (q) => q.eq("key", "singleton"))
+      .unique();
+    if (state === null) {
+      await ctx.db.insert("protocolLedgerState", {
+        key: "singleton" as const,
+        unnamedLast: blind,
+        reporting: reporting !== false,
+        ...(blind > 0 ? { unnamedSince: now } : {}),
+      });
+    } else {
+      await ctx.db.patch(state._id, {
+        unnamedLast: blind,
+        reporting: reporting !== false,
+        // Set on the FIRST blind poll and left alone while it lasts; cleared only by a
+        // poll that names everything.
+        ...(blind > 0
+          ? state.unnamedSince === undefined
+            ? { unnamedSince: now }
+            : {}
+          : { unnamedSince: undefined }),
+      });
+    }
+    return { created };
   },
 });
 
@@ -301,5 +487,87 @@ export const compatInternal = internalQuery({
   args: {},
   handler: async (ctx): Promise<CompatSummary> => {
     return summarizeCompat(await readDoc(ctx));
+  },
+});
+
+/** THE HUMAN'S END OF THE LEDGER — without it the table is write-only.
+ *
+ *  Persisting drift is half a mechanism: the programme's exit indicator is stated as
+ *  "shapes still `new` after a week ⇒ 0", which nobody can read, and nobody can move a
+ *  shape to `handled`/`ignored` either. The first cut of this lot shipped the storage
+ *  alone and its own triage test reached past the gap with a direct db write — the
+ *  clearest possible sign the surface was missing (raised in review).
+ *
+ *  Admin-only: this is operator diagnostics, and the notes are operator prose. */
+export const listProtocolShapes = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    // The read bound IS the write cap, deliberately. A smaller page made rows 201-500
+    // unreachable: `triageProtocolShape` needs an `_id`, so an admin could see that the
+    // list was truncated and still have no way to act on what it hid (raised in review).
+    // Equal bounds make truncation structurally impossible rather than merely reported.
+    const LIMIT = MAX_LEDGER_SHAPES;
+    const rows = await ctx.db.query("protocolShapes").take(LIMIT + 1);
+    const shapes = rows.slice(0, LIMIT);
+    const state = await ctx.db
+      .query("protocolLedgerState")
+      .withIndex("by_key", (q) => q.eq("key", "singleton"))
+      .unique();
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const staleNew = shapes.filter(
+      (r) => r.status === "new" && r.firstSeenAt < weekAgo,
+    ).length;
+    return {
+      shapes: shapes.map((r) => ({
+        _id: r._id,
+        shape: r.shape,
+        lastCount: r.lastCount,
+        firstSeenAt: r.firstSeenAt,
+        lastSeenAt: r.lastSeenAt,
+        status: r.status,
+        note: r.note,
+      })),
+      truncated: rows.length > LIMIT,
+      /** The exit indicator itself: `new` shapes older than a week. */
+      staleNew,
+      /** …and whether it can be TRUSTED. Non-zero blindness means the honest reading is
+       *  "at least this many", never "exactly". */
+      unnamedLast: state?.unnamedLast ?? 0,
+      unnamedSince: state?.unnamedSince,
+      /** TRUE only when the last poll named everything it saw, the list is whole, AND the
+       *  bridge actually reported a protocol section. Any of the three failing makes
+       *  `staleNew` a floor rather than a measurement. */
+      reporting: state?.reporting ?? false,
+      indicatorReliable:
+        state !== null &&
+        state.reporting === true &&
+        state.unnamedLast === 0 &&
+        rows.length <= LIMIT,
+    };
+  },
+});
+
+/** Triage a shape: the ONLY writer of `status`/`note`, and never the poller. */
+export const triageProtocolShape = mutation({
+  args: {
+    id: v.id("protocolShapes"),
+    status: v.union(
+      v.literal("new"),
+      v.literal("handled"),
+      v.literal("ignored"),
+    ),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, { id, status, note }) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(id);
+    if (row === null) throw new Error("triageProtocolShape: shape not found");
+    await ctx.db.patch(id, {
+      status,
+      // An `ignored` shape without a reason is a decision nobody can review later.
+      ...(note !== undefined ? { note: note.slice(0, 500) } : {}),
+    });
+    return { ok: true as const };
   },
 });
