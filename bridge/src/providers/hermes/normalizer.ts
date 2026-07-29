@@ -296,8 +296,21 @@ export class HermesNormalizer {
       // The assistant message's authoritative text (LIVE: {content}) — a
       // SNAPSHOT that replaces the delta accumulator; run.completed follows.
       const content = data.content;
+      if (typeof content === "string" && content) this.text = content;
+      // SAME FACT, OTHER TRANSPORT (G-44). This payload carries `interrupted` /
+      // `partial` / `completed` and Atrium read none of them, so a run cut short reached
+      // the user as the finished answer — exactly the WS defect, one file over. Three lots
+      // of this programme were paid for fixing one transport and leaving the other.
+      //
+      // Read INDEPENDENTLY of `content`. Gating it on non-empty content left the defect
+      // intact on its likeliest shape: a run interrupted before it wrote anything sends
+      // `content: ""`, and the `run.completed` behind it then settled `complete` on the
+      // deltas that had accumulated (raised in review). The flags describe the RUN, not
+      // the string.
+      if (data.interrupted === true || data.partial === true) {
+        return this.finalize("aborted", null);
+      }
       if (typeof content === "string" && content) {
-        this.text = content;
         return [
           { type: EVENT_MESSAGE_SNAPSHOT, text: content, runId: this.runId },
         ];
@@ -423,7 +436,7 @@ export class HermesNormalizer {
   }
 
   private finalize(
-    status: "complete" | "error",
+    status: "complete" | "error" | "aborted",
     error: string | null,
     errorKind: string | null = null,
     /** The provider session id this turn was watching, when the turn cannot vouch for
@@ -432,7 +445,7 @@ export class HermesNormalizer {
   ): BridgeEvent[] {
     // ONE place, so a `complete` path added later cannot forget it: a turn that lost a
     // frame it could not read never settles as a success. An abort stays an abort — the
-    // user asked for that one.
+    // user asked for that one, and so does a run the gateway reports as interrupted.
     if (status === "complete" && this.corrupted) {
       status = "error";
       error = error ?? UNREADABLE_TERMINAL;

@@ -350,6 +350,8 @@ export function runHermesWsTurn(
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
     let replyText = "";
+    /** Distinguishes successive interim segments so each is its own card. */
+    let interimSeq = 0;
     const apply = (events: BridgeEvent[]): void => {
       if (events.length === 0) return;
       chain = chain.then(() => sink.apply(events));
@@ -755,6 +757,35 @@ export function runHermesWsTurn(
           }
           return;
         }
+        case "message.interim": {
+          // SEALED AS ITS OWN SEGMENT — upstream's words. It emits this precisely "so the
+          // desktop can seal it as its own segment instead of losing it when
+          // message.complete replaces the streaming buffer", and Atrium dropped it in the
+          // default case, so that loss is exactly what happened.
+          //
+          // A PART, never merged into the reply text. Merging would need a containment
+          // test on prose, and the gateway re-renders its final (whitespace collapsed,
+          // directives stripped): a false negative duplicates the paragraph in the bubble,
+          // a false positive loses it, and neither is decidable from here.
+          //
+          // `already_streamed` does NOT decide whether to seal — it only says the text
+          // also went out as deltas. The terminal replaces that buffer either way, which
+          // is the whole reason this event exists.
+          const interim = str(payload.text).trim();
+          if (!interim) return;
+          interimSeq += 1;
+          apply([
+            {
+              type: EVENT_TOOL_STATUS,
+              name: "hermes.interim",
+              phase: "result",
+              runId: runtimeSid,
+              toolCallId: `hermes.interim:${interimSeq}`,
+              output: interim,
+            },
+          ]);
+          return;
+        }
         case "message.complete": {
           finalized = true;
           // The MoA aggregator (if any) finished with the reply it produced.
@@ -837,7 +868,19 @@ export function runHermesWsTurn(
                 ),
               );
           }
-          const status = str(payload.status) === "error" ? "error" : "complete";
+          // THREE outcomes upstream, not two. `interrupted` means the run was cut short:
+          // reading it as `complete` handed the user a half-sentence as the finished
+          // answer, with nothing marking it — the worst kind of loss, because it looks
+          // deliberate. `aborted` is Atrium's existing word for a turn stopped mid-flight
+          // and it KEEPS the partial text; it also does not schedule the zero-content
+          // auto-retry, which is right — an interrupted turn must not silently re-run.
+          const rawStatus = str(payload.status);
+          const status =
+            rawStatus === "error"
+              ? "error"
+              : rawStatus === "interrupted"
+                ? "aborted"
+                : "complete";
           const finalEv: BridgeEvent = { type: EVENT_MESSAGE_FINAL, text };
           const statusEv: BridgeEvent = {
             type: EVENT_RUN_STATUS,
