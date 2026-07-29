@@ -179,8 +179,8 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("hermes is a validated provider (0.18.x) with its small real surface", () => {
     expect(COMPAT_MANIFEST.providers.hermes).toEqual({
-      supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
-      validatedVersions: ["0.18.0", "0.18.2"],
+      supportedRange: { min: "0.18.0", maxValidated: "0.19.0" },
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0"],
       // ONLY what a Hermes instance actually offers WHATEVER its transport —
       // everything transport-specific (attachments, cron, subagents) lives in the WS
       // overlay, and everything absent (thinking/model knobs, config-defaults) is

@@ -1,0 +1,29 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 1,
+  "provider": "hermes",
+  "hermesVersion": "0.19.0",
+  "gatewayVersion": "2026.7.1",
+  "verdict": "GO",
+  "at": "2026-07-29T21:57:38.002Z",
+  "scenarios": [
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "hermes-basic-turn",
+    "hermes-cron-list",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "tool-exec",
+    "update-plan"
+  ],
+  "hermesScenarios": [
+    "hermes-basic-turn",
+    "hermes-cron-list"
+  ],
+  "flags": [],
+  "atriumSha": "91aea9bca0c537564163dc8470c240dcec93ad1d",
+  "bridgeVersion": "0.68.12"
+}

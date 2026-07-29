@@ -190,9 +190,12 @@ export const BENCH_GRANDFATHERED: Readonly<Record<string, readonly string[]>> = 
     "2026.7.1-beta.2", // 2026-07-09 — RC bench
     "2026.7.1-beta.5", // 2026-07-12 — GO 9/9
   ],
-  // Hermes has no BENCH.json and will not get one in this program: no Hermes instance
-  // runs in production and W6/W7/W12 are deferred for that reason. The two entries stand
-  // on their 2026-07-11 WS-transport run.
+  // Hermes: these TWO stand on their 2026-07-11 WS-transport run, from before any
+  // attestation existed. The note that used to sit here — "Hermes has no BENCH.json and
+  // will not get one in this program" — rested on a premise that is now dead: the wave was
+  // deferred because no Hermes instance served a client, and one does. Every Hermes
+  // version from 0.19.0 on is EARNED like an OpenClaw one, against
+  // `bridge/protocol/hermes/<version>/BENCH.json`.
   hermes: ["0.18.0", "0.18.2"],
 };
 
@@ -241,9 +244,11 @@ export const COMPAT_MANIFEST: CompatManifest = {
     // with NO validated range exposes zero capabilities.
     hermes: {
       // 0.18.2 live-validated 2026-07-11 (WS transport: send/continuity/tools/
-      // delegation/file delivery on the upgraded bench).
-      supportedRange: { min: "0.18.0", maxValidated: "0.18.2" },
-      validatedVersions: ["0.18.0", "0.18.2"],
+      // delegation/file delivery on the upgraded bench). 0.19.0 is the first Hermes
+      // version to EARN its claim: GO 11/11 on the local bench, 2026-07-29, attested at
+      // `bridge/protocol/hermes/0.19.0/BENCH.json`.
+      supportedRange: { min: "0.18.0", maxValidated: "0.19.0" },
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0"],
       capabilities: HERMES_CAPABILITIES,
     },
   },

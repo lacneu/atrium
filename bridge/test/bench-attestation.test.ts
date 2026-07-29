@@ -258,3 +258,104 @@ describe("the attestation agrees with the repository", () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// HERMES — the same rule, on the provider that now serves a client.
+// ---------------------------------------------------------------------------
+//
+// `providers.hermes.validatedVersions` decides real behaviour exactly like OpenClaw's:
+// `withinSupport` reads it, and beyond `maxValidated` the capability profile FREEZES at
+// it. Yet nothing could be pointed at to justify a Hermes claim — the bench gated on the
+// runtime version and then left no trace, so a promotion rested on someone's memory of a
+// terminal session. The note in `compat.ts` even said Hermes "will not get" an
+// attestation, on the premise that no Hermes instance served a client. One does.
+//
+// ONE ASYMMETRY, and it is the honest one: OpenClaw's attestation is checked against a
+// RE-HASHED vendored directory. Hermes has no vendored surface in this repo, so there is
+// nothing to re-hash and this suite must not pretend otherwise. What it checks instead is
+// that the run NAMED the runtime version it claims and actually EXERCISED Hermes — a GO
+// whose catalogue contains no Hermes scenario proves nothing about Hermes.
+const HERMES = COMPAT_MANIFEST.providers.hermes!;
+const HERMES_GRANDFATHERED = new Set(BENCH_GRANDFATHERED.hermes);
+const HERMES_ENFORCED = HERMES.validatedVersions.filter(
+  (v) => !HERMES_GRANDFATHERED.has(v),
+);
+
+/** The Hermes exemption, PINNED — same reasoning as `FROZEN_GRANDFATHER` above: the
+ *  disjointness of the two sets is true by construction, so only a second copy a reviewer
+ *  sees change actually freezes the list. */
+const FROZEN_HERMES_GRANDFATHER = ["0.18.0", "0.18.2"];
+
+const HERMES_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../protocol/hermes");
+
+function readHermesAttestation(version: string): Record<string, unknown> | null {
+  const f = join(HERMES_ROOT, version, "BENCH.json");
+  if (!existsSync(f)) return null;
+  return JSON.parse(readFileSync(f, "utf8")) as Record<string, unknown>;
+}
+
+describe("the Hermes exemption cannot grow", () => {
+  it("is exactly the pre-attestation pair", () => {
+    expect([...HERMES_GRANDFATHERED].sort()).toEqual(
+      [...FROZEN_HERMES_GRANDFATHER].sort(),
+    );
+  });
+
+  it("every grandfathered Hermes version is actually claimed", () => {
+    // An exemption for a version nobody claims is dead weight that hides the real list.
+    for (const version of HERMES_GRANDFATHERED) {
+      expect(HERMES.validatedVersions, `${version} is exempt but not claimed`).toContain(
+        version,
+      );
+    }
+  });
+
+  it("maxValidated is ENFORCED once anything is", () => {
+    // The teeth: the highest claim is the one that grants `withinSupport` to everything
+    // above it, so it is the one that must be earned. While only the grandfathered pair
+    // exists this is vacuous by design — and it stops being vacuous the moment a version
+    // is added, which is exactly when it matters.
+    const max = HERMES.supportedRange?.maxValidated ?? null;
+    expect(max, "hermes must declare a maxValidated").not.toBeNull();
+    if (HERMES_ENFORCED.length > 0) {
+      expect(
+        HERMES_ENFORCED,
+        `maxValidated ${max} must rest on an attestation`,
+      ).toContain(max!);
+    }
+  });
+});
+
+describe("an enforced Hermes claim rests on a GO attestation", () => {
+  for (const version of HERMES_ENFORCED) {
+    it(`${version}`, () => {
+      const att = readHermesAttestation(version);
+      expect(
+        att,
+        `${version} is claimed with no BENCH.json — run the live bench with ` +
+          `--expect-hermes-version ${version}`,
+      ).not.toBeNull();
+      expect(att!.kind).toBe("atrium-bench-attestation");
+      expect(att!.provider, "an OpenClaw attestation cannot vouch for Hermes").toBe(
+        "hermes",
+      );
+      // The RUNTIME version, and it must be the one the directory names: an attestation
+      // filed under the wrong version is the one mistake this whole file exists to catch.
+      expect(att!.hermesVersion, "the attestation names another runtime").toBe(version);
+      expect(att!.verdict, "only a GO earns a claim").toBe("GO");
+      expect(att!.flags, "a GO over a SUBSET is not a GO over the catalogue").toEqual([]);
+    });
+
+    it(`${version}: the run actually EXERCISED Hermes`, () => {
+      // Without this, a GO whose catalogue happened to contain no Hermes scenario would
+      // attest Hermes — the same empty claim the OpenClaw corpus check refuses.
+      const att = readHermesAttestation(version);
+      expect(att).not.toBeNull();
+      const exercised = att!.hermesScenarios as string[] | undefined;
+      expect(
+        exercised?.length ?? 0,
+        `${version} is claimed by a run that touched no Hermes scenario`,
+      ).toBeGreaterThan(0);
+    });
+  }
+});
