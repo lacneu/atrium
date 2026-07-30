@@ -1,0 +1,10 @@
+{
+ "$comment": "Provenance of the vendored Hermes surface. `sha256` is over the VERBATIM upstream excerpt (rest-contract.source.py), not over the parsed JSON — so vendor-integrity recomputation proves the snapshot still matches upstream bytes.",
+ "restContract": {
+  "upstreamCommit": "3ef6bbd201263d354fd83ec55b3c306ded2eb72a",
+  "upstreamTag": "v2026.7.20",
+  "source": "gateway/platforms/api_server.py",
+  "excerpt": "rest-contract.source.py",
+  "sha256": "130f19d870a212e40a88f2a63ceced94a5e1750668d933889582b540020b2216"
+ }
+}

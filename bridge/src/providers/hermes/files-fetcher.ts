@@ -8,6 +8,31 @@
 import { Readable } from "node:stream";
 import type { MediaFetcher, OpenResult } from "../../core/media-fetcher.js";
 
+/**
+ * The managed-files API is NOT DEPLOYED on this instance — not a fault to retry.
+ *
+ * It lives only in the dashboard web server (`hermes_cli/web_server.py:2131-2202`), which
+ * upstream supervises "if HERMES_DASHBOARD is set" (`hermes_cli/gateway.py:6607`), while
+ * `tui_gateway` mounts exactly one route, `/api/ws` (`tui_gateway/ws.py:19`). So a plain
+ * `hermes serve` answers every turn perfectly and 404s every agent-files operation.
+ *
+ * Its own CLASS rather than its own sentence: `classifyGatewayError` reads the type, the way
+ * it already does for `ContextBlockedError`, so a decision this code made cannot come undone
+ * because someone rephrased a string. Without it the 404 read as a generic upstream fault and
+ * the operator was invited to retry, forever, against a server that will never be there.
+ */
+export class HermesDashboardAbsentError extends Error {
+  readonly code = "dashboard_not_deployed";
+  constructor(readonly path: string) {
+    super(
+      `Hermes managed-files API not deployed on this instance (${path} -> HTTP 404). ` +
+        `That surface belongs to the dashboard web server, which the gateway starts only ` +
+        `when HERMES_DASHBOARD is set — the turn transport is unaffected.`,
+    );
+    this.name = "HermesDashboardAbsentError";
+  }
+}
+
 export interface HermesFilesFetcherOptions {
   baseUrl: string;
   /** Static token OR "user:password" (same convention as the WS client). */
@@ -71,6 +96,24 @@ export class HermesFilesFetcher implements MediaFetcher {
       .join("; ");
   }
 
+  /**
+   * RE-ASK whether the dashboard is there, after an ambiguous 404.
+   *
+   * Every 404 on this API means one of two things — the route is not mounted, or the path is
+   * not there — and only the no-path probe tells them apart. The root is CACHED, so after one
+   * success that probe is skipped and a server that goes away later would be reported as an
+   * ordinary fault forever (raised in review). Dropping the cache and re-asking costs one GET
+   * on a call that already failed, and it is the only way the ambiguity is resolved rather
+   * than assumed.
+   *
+   * Returns normally when the dashboard answers — the caller then keeps its ORIGINAL verdict,
+   * which for a read is the perfectly ordinary "this file does not exist".
+   */
+  private async assertDashboardStillThere(): Promise<void> {
+    this.rootPath = null;
+    await this.agentFilesRoot();
+  }
+
   /** STRICT list for ADMIN operations (/agent-files): a gateway failure THROWS
    *  so the caller returns a retryable 502 — an empty result must always mean
    *  "the directory really is empty", never a swallowed 500/timeout. */
@@ -80,6 +123,16 @@ export class HermesFilesFetcher implements MediaFetcher {
     const res = await this.authedGet(
       `/api/files?path=${encodeURIComponent(dirPath)}`,
     );
+    // NOT promoted here: this call CARRIES a path, and upstream answers `404 "Path not found"`
+    // for a directory that does not exist. Telling an operator to enable a server that is
+    // already running would be the same false diagnosis this lot exists to remove, mirrored.
+    //
+    // But a 404 IS worth re-asking about, because the root is CACHED: after one success the
+    // unambiguous no-path probe is skipped, so a dashboard that goes away later would be
+    // reported as a plain upstream fault forever (raised in review). Dropping the cache and
+    // re-probing costs one request on a path that already failed, and it is the only way the
+    // ambiguity gets resolved rather than assumed.
+    if (res.status === 404) await this.assertDashboardStillThere();
     if (!res.ok) throw new Error(`files list -> HTTP ${res.status}`);
     const d = (await res.json()) as { entries?: Array<Record<string, unknown>> };
     return (d.entries ?? [])
@@ -110,7 +163,20 @@ export class HermesFilesFetcher implements MediaFetcher {
 
   async agentFilesRoot(): Promise<string> {
     if (this.rootPath) return this.rootPath;
+    // NO path parameter, deliberately: the handler then resolves its OWN managed root, so a
+    // 404 here is the route being absent rather than a directory being missing. That is what
+    // makes this the unambiguous probe for `HermesDashboardAbsentError`.
     const res = await this.authedGet("/api/files");
+    if (res.status === 404) {
+      // …with one residual case named rather than assumed away: the managed root itself
+      // could be gone, and upstream says so in its body. Read it before claiming absence.
+      const detail = await res
+        .clone()
+        .json()
+        .then((b: unknown) => (b as { detail?: unknown } | null)?.detail)
+        .catch(() => undefined);
+      if (detail !== "Path not found") throw new HermesDashboardAbsentError("/api/files");
+    }
     if (!res.ok) throw new Error(`files root -> HTTP ${res.status}`);
     const d = (await res.json()) as { path?: string };
     this.rootPath = typeof d.path === "string" && d.path ? d.path : "/";
@@ -131,7 +197,13 @@ export class HermesFilesFetcher implements MediaFetcher {
     const res = await this.authedGet(
       `/api/files/read?path=${encodeURIComponent(`${root}/${name}`)}`,
     );
-    if (res.status === 404) return { content: "", missing: true, decoded: false };
+    if (res.status === 404) {
+      // Ambiguous: an absent FILE (the common case — the tab offers to create it) or an
+      // absent SERVER. Ask before answering, or a vanished dashboard is reported as an empty
+      // file the operator is invited to write to (raised in review).
+      await this.assertDashboardStillThere();
+      return { content: "", missing: true, decoded: false };
+    }
     if (!res.ok) throw new Error(`files read -> HTTP ${res.status}`);
     const d = (await res.json()) as { data_url?: string };
     const m = /^data:[^;]*;base64,(.*)$/s.exec(d.data_url ?? "");
@@ -188,6 +260,7 @@ export class HermesFilesFetcher implements MediaFetcher {
       await this.loginForWrite();
       return this.writeAgentFile(name, content, false);
     }
+    if (res.status === 404) await this.assertDashboardStillThere();
     if (!res.ok) throw new Error(`files upload -> HTTP ${res.status}`);
   }
 
@@ -204,7 +277,25 @@ export class HermesFilesFetcher implements MediaFetcher {
       const res = await this.authedGet(
         `/api/files/download?path=${encodeURIComponent(path)}`,
       );
-      if (res.status === 404) return { ok: false, reason: "not_found" };
+      if (res.status === 404) {
+        // Ambiguous, like every other 404 on this API — and here the wrong answer is the most
+        // expensive one: recording a file the agent PRODUCED as "not found" makes it vanish
+        // with a false reason in the media trace (raised in review). `route_absent` is the
+        // vocabulary's existing word for a route that is not there.
+        try {
+          await this.assertDashboardStillThere();
+        } catch (err) {
+          // ONLY the probe's own verdict names absence. A probe that 500s, 401s or never
+          // answers means the dashboard is there and unwell — reporting "not deployed" would
+          // send the operator to enable a server that is already running (raised in review).
+          return {
+            ok: false,
+            reason:
+              err instanceof HermesDashboardAbsentError ? "route_absent" : "fetch_error",
+          };
+        }
+        return { ok: false, reason: "not_found" };
+      }
       if (!res.ok || !res.body) return { ok: false, reason: "fetch_error" };
       const size = Number(res.headers.get("content-length") ?? "0") || undefined;
       if (size !== undefined && size > this.maxBytes) {

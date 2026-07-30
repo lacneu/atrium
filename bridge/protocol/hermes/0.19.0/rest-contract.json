@@ -1,0 +1,128 @@
+{
+ "$comment": "The Hermes API server's OWN published REST contract — the payload GET /v1/capabilities returns, extracted from the upstream source literal by scripts/vendor-hermes-rest.mjs. `features` are the gateway's self-declared feature flags; `endpoints` is the named method+path map. This is the API SERVER's surface only: Atrium also depends on the DASHBOARD web server (/api/files/*, /auth/*), which publishes no contract at all — see test/hermes-rest-surface.test.ts, which classifies every path the bridge constructs.",
+ "version": "0.19.0",
+ "upstreamTag": "v2026.7.20",
+ "verifiedIdenticalFor": [
+  "0.18.2"
+ ],
+ "identityProofs": {
+  "0.18.2": {
+   "tag": "v2026.7.7.2",
+   "commit": "9de9c25f620ff7f1ce0fd5457d596052d5159596"
+  }
+ },
+ "features": {
+  "chat_completions": true,
+  "chat_completions_streaming": true,
+  "responses_api": true,
+  "responses_streaming": true,
+  "run_submission": true,
+  "run_status": true,
+  "run_events_sse": true,
+  "run_stop": true,
+  "run_approval_response": true,
+  "tool_progress_events": true,
+  "approval_events": true,
+  "session_resources": true,
+  "session_chat": true,
+  "session_chat_streaming": true,
+  "session_fork": true,
+  "admin_config_rw": false,
+  "jobs_admin": false,
+  "memory_write_api": false,
+  "skills_api": true,
+  "audio_api": false,
+  "realtime_voice": false,
+  "session_continuity_header": "X-Hermes-Session-Id",
+  "session_key_header": "X-Hermes-Session-Key",
+  "cors": {
+   "dynamic": "self._cors_origins"
+  }
+ },
+ "endpoints": {
+  "health": {
+   "method": "GET",
+   "path": "/health"
+  },
+  "health_detailed": {
+   "method": "GET",
+   "path": "/health/detailed"
+  },
+  "models": {
+   "method": "GET",
+   "path": "/v1/models"
+  },
+  "chat_completions": {
+   "method": "POST",
+   "path": "/v1/chat/completions"
+  },
+  "responses": {
+   "method": "POST",
+   "path": "/v1/responses"
+  },
+  "runs": {
+   "method": "POST",
+   "path": "/v1/runs"
+  },
+  "run_status": {
+   "method": "GET",
+   "path": "/v1/runs/{run_id}"
+  },
+  "run_events": {
+   "method": "GET",
+   "path": "/v1/runs/{run_id}/events"
+  },
+  "run_approval": {
+   "method": "POST",
+   "path": "/v1/runs/{run_id}/approval"
+  },
+  "run_stop": {
+   "method": "POST",
+   "path": "/v1/runs/{run_id}/stop"
+  },
+  "skills": {
+   "method": "GET",
+   "path": "/v1/skills"
+  },
+  "toolsets": {
+   "method": "GET",
+   "path": "/v1/toolsets"
+  },
+  "sessions": {
+   "method": "GET",
+   "path": "/api/sessions"
+  },
+  "session_create": {
+   "method": "POST",
+   "path": "/api/sessions"
+  },
+  "session": {
+   "method": "GET",
+   "path": "/api/sessions/{session_id}"
+  },
+  "session_update": {
+   "method": "PATCH",
+   "path": "/api/sessions/{session_id}"
+  },
+  "session_delete": {
+   "method": "DELETE",
+   "path": "/api/sessions/{session_id}"
+  },
+  "session_messages": {
+   "method": "GET",
+   "path": "/api/sessions/{session_id}/messages"
+  },
+  "session_fork": {
+   "method": "POST",
+   "path": "/api/sessions/{session_id}/fork"
+  },
+  "session_chat": {
+   "method": "POST",
+   "path": "/api/sessions/{session_id}/chat"
+  },
+  "session_chat_stream": {
+   "method": "POST",
+   "path": "/api/sessions/{session_id}/chat/stream"
+  }
+ }
+}

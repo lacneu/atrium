@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
   BOOTSTRAP_MAX_CHARS,
@@ -7,6 +8,7 @@ import {
   formatKb,
   gaugePct,
   isConflictError,
+  isDashboardAbsentError,
   totalSize,
 } from "./agentFilesView";
 
@@ -92,5 +94,50 @@ describe("isConflictError", () => {
     );
     expect(isConflictError(new Error("bridge_error: HTTP 500"))).toBe(false);
     expect(isConflictError(undefined)).toBe(false);
+  });
+});
+
+// ── A cause that stops at the boundary helps nobody ──
+//
+// Raised in review, twice: the bridge minted `DASHBOARD_NOT_DEPLOYED`, Convex was then fixed
+// to forward it, and the TAB still swallowed it — `catch {}` with no variable, one generic
+// error state, and a Retry button offered for a server that is not deployed. Recognising the
+// code is what turns the diagnosis into something the operator can act on.
+
+describe("the dashboard-absent cause is recognised in the view", () => {
+  test("the bridge's stable code is matched wherever it sits in the message", () => {
+    // The shape Convex actually throws: `bridge_error: <op> -> HTTP <status> (<code>)`.
+    expect(
+      isDashboardAbsentError(
+        new Error("bridge_error: agent-files list -> HTTP 502 (DASHBOARD_NOT_DEPLOYED)"),
+      ),
+    ).toBe(true);
+  });
+
+  test("a plain bridge failure is NOT — it keeps its retry", () => {
+    // The discrimination is the point: a dashboard that is deployed and briefly unwell must
+    // still be retryable.
+    expect(
+      isDashboardAbsentError(new Error("bridge_error: agent-files list -> HTTP 502")),
+    ).toBe(false);
+    expect(isDashboardAbsentError(new Error("conflict: stale"))).toBe(false);
+  });
+
+  test("a non-Error rejection is handled, not thrown on", () => {
+    expect(isDashboardAbsentError("DASHBOARD_NOT_DEPLOYED")).toBe(true);
+    expect(isDashboardAbsentError(null)).toBe(false);
+  });
+
+  test("the tab renders the cause instead of a retry", () => {
+    // Read from the source: the defect was an ABSENT binding (`catch {}`) and a button that
+    // should not be there — neither is visible to a test of the helper alone, and that is
+    // exactly how it survived two review passes.
+    const src = readFileSync(
+      new URL("./AgentFilesTab.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(src).toMatch(/catch \(err\) \{\s*setListing\(\{\s*status: "error",\s*dashboardAbsent: isDashboardAbsentError\(err\)/);
+    expect(src).toContain("afiles_error_dashboard_absent");
+    expect(src).toMatch(/!listing\.dashboardAbsent && \(/);
   });
 });

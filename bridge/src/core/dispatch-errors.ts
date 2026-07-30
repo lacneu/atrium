@@ -11,6 +11,7 @@
 // Pure function over the thrown error's message -> unit-tested offline.
 
 import { ContextBlockedError } from "./presend-guard.js";
+import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 
 export type DispatchErrorCode =
   | "AGENT_NOT_FOUND" // configured agentId no longer exists on the gateway
@@ -24,6 +25,12 @@ export type DispatchErrorCode =
   | "ATTACHMENT_TOO_LARGE" // gateway refused an attachment over a size/staging cap
   | "ATTACHMENT_REJECTED" // gateway could not parse/stage the attachment (e.g. its base64 validator overflowed)
   | "INVALID_REQUEST" // gateway rejected the request shape
+  // A Hermes surface that is NOT DEPLOYED on this instance, as opposed to one that failed.
+  // The managed-files API lives only in the dashboard web server, which upstream starts
+  // when HERMES_DASHBOARD is set; `hermes serve` alone answers every turn and 404s every
+  // agent-files call. A DISTINCT code because it states a different fact — nothing is
+  // broken, and retrying will never help.
+  | "DASHBOARD_NOT_DEPLOYED"
   // The bridge's OWN pre-send guard withheld the send: the session was measured not
   // to fit and the mandatory compaction did not shrink it. A DISTINCT code from the
   // gateway's `context_length`, because it states a different fact — nothing ran and
@@ -106,6 +113,9 @@ export function classifyGatewayError(
   // The bridge's own withheld send, recognised by TYPE before any text rule: a
   // decision we made cannot be left to depend on how we phrased it.
   if (err instanceof ContextBlockedError) return "context_length_presend";
+  // Same rule, same reason: a surface the fetcher PROVED absent is recognised by type, so
+  // the class survives any rewording of the message.
+  if (err instanceof HermesDashboardAbsentError) return "DASHBOARD_NOT_DEPLOYED";
   const msg = (
     err instanceof Error ? err.message : String(err ?? "")
   ).toLowerCase();

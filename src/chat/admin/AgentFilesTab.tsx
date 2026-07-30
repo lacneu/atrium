@@ -42,6 +42,7 @@ import {
   formatKb,
   gaugePct,
   isConflictError,
+  isDashboardAbsentError,
   totalSize,
 } from "./agentFilesView";
 import { CURATABLE_FILES, isCurationCandidate } from "../../../convex/lib/curation";
@@ -154,7 +155,9 @@ export function AgentFilesTab() {
   const [listing, setListing] = useState<
     | { status: "idle" }
     | { status: "loading" }
-    | { status: "error" }
+    // `dashboardAbsent` is a DIFFERENT terminal state, not a flavour of error: the surface is
+    // not deployed, so the view must not offer a retry that cannot succeed.
+    | { status: "error"; dashboardAbsent: boolean }
     | { status: "done"; files: FileRow[] }
   >({ status: "idle" });
   // PRIMITIVE deps (not the `selected` object): the options array is rebuilt on
@@ -185,8 +188,11 @@ export function AgentFilesTab() {
         agentId: selAgent,
       });
       setListing({ status: "done", files: res.files });
-    } catch {
-      setListing({ status: "error" });
+    } catch (err) {
+      setListing({
+        status: "error",
+        dashboardAbsent: isDashboardAbsentError(err),
+      });
     }
   }, [listFiles, selInstance, selAgent]);
   useEffect(() => {
@@ -313,10 +319,14 @@ export function AgentFilesTab() {
         <p className="oc-admin__hint">{m.common_loading()}</p>
       ) : listing.status === "error" ? (
         <p className="oc-afiles__error" role="alert">
-          {m.afiles_error_bridge()}{" "}
-          <Button variant="outline" size="sm" onClick={() => void loadFiles()}>
-            {m.conf_retry()}
-          </Button>
+          {listing.dashboardAbsent
+            ? m.afiles_error_dashboard_absent()
+            : m.afiles_error_bridge()}{" "}
+          {!listing.dashboardAbsent && (
+            <Button variant="outline" size="sm" onClick={() => void loadFiles()}>
+              {m.conf_retry()}
+            </Button>
+          )}
         </p>
       ) : listing.files.length === 0 ? (
         <p className="oc-admin__hint">{m.afiles_empty()}</p>

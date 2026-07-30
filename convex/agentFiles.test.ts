@@ -20,7 +20,11 @@ import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
-import { afterStateFromSetResponse, writeLanded } from "./agentFiles";
+import {
+  afterStateFromSetResponse,
+  requireOkStatus,
+  writeLanded,
+} from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
 import { MAX_AGENT_FILE_CHARS } from "./agentFiles";
 
@@ -927,5 +931,45 @@ describe("writeLanded — did the write actually happen (W10)", () => {
     // absence of confirmation is not confirmation of absence.
     expect(writeLanded(st("new", false), "new")).toBe(true);
     expect(writeLanded(st("anything", false), "new")).toBe(true);
+  });
+});
+
+// ── The bridge's cause has to survive the trip to the operator ──
+//
+// Raised in review, and without it the corrective half of lot 47 corrected nothing anyone
+// could see. The bridge answers `{ok:false, error:{code:"DASHBOARD_NOT_DEPLOYED"}}` for a
+// Hermes instance running without its dashboard — but the three agent-files actions called
+// `requireOkStatus(status, op)` with no `data`, so the code was dropped and the operator got
+// `bridge_error: agent-files list -> HTTP 502`: the same "retry forever" the fix exists to
+// end. The `config-defaults` actions in the same file already passed `data`, so this was an
+// inconsistency the new code fell straight into.
+
+describe("a bridge error code reaches the operator", () => {
+  test("the dashboard-absent cause is named, not swallowed", () => {
+    expect(() =>
+      requireOkStatus(502, "agent-files list", {
+        ok: false,
+        error: { code: "DASHBOARD_NOT_DEPLOYED" },
+      }),
+    ).toThrow(/DASHBOARD_NOT_DEPLOYED/);
+  });
+
+  test("…and a body without one still fails, just without a cause", () => {
+    // The shape an older bridge sends. It must still throw — only the cause is missing.
+    expect(() => requireOkStatus(502, "agent-files list", { ok: false })).toThrow(
+      /agent-files list -> HTTP 502/,
+    );
+  });
+
+  test("every agent-files action passes the body it received", () => {
+    // Read from the source, because the defect was a MISSING ARGUMENT — no behavioural test
+    // of the actions themselves can see one, and that is exactly how it survived.
+    const src = readFileSync(
+      new URL("./agentFiles.ts", import.meta.url),
+      "utf8",
+    );
+    const calls = [...src.matchAll(/requireOkStatus\(status, "agent-files [a-z]+"([^)]*)\)/g)];
+    expect(calls.length).toBe(3);
+    for (const c of calls) expect(c[1]).toContain("data");
   });
 });

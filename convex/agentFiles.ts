@@ -449,7 +449,7 @@ export const listAgentFiles = action({
       undefined,
       bridgeUrl,
     );
-    requireOkStatus(status, "agent-files list");
+    requireOkStatus(status, "agent-files list", data);
     return { files: parseFileList(data) };
   },
 });
@@ -480,7 +480,7 @@ export const getAgentFile = action({
       undefined,
       bridgeUrl,
     );
-    requireOkStatus(status, "agent-files get");
+    requireOkStatus(status, "agent-files get", data);
     const file = (data as { file?: unknown })?.file as
       | Record<string, unknown>
       | undefined;
@@ -551,7 +551,7 @@ export const setAgentFile = action({
       // Stable, detectable CAS-conflict code (the editor re-gets + re-diffs).
       throw new Error("conflict: file changed since load");
     }
-    requireOkStatus(status, "agent-files set");
+    requireOkStatus(status, "agent-files set", data);
     // The bridge echoes the pre-write content (`before.content`) so the revision
     // holds the FULL before/after pair (A4). Defensive: tolerate a missing echo.
     const before = (data as { before?: { content?: unknown } })?.before

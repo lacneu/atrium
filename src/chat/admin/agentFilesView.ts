@@ -84,6 +84,21 @@ export function computeMiniDiff(before: string, after: string): MiniDiff {
   return { added, removed, sampleAdded, sampleRemoved };
 }
 
+/** True when the bridge said the Hermes DASHBOARD is not deployed on this instance.
+ *
+ *  The managed-files API lives only in the dashboard web server, which the gateway starts when
+ *  HERMES_DASHBOARD is set — so `hermes serve` alone answers every turn and 404s this tab. That
+ *  is not a transient fault, and offering Retry is advice that can never work (raised in
+ *  review). Matched on the STABLE code the bridge sends, the same way `isConflictError` matches
+ *  its own; the surrounding prose belongs to whoever wrote the message.
+ *
+ *  The code travels: bridge `classifyGatewayError` -> `{error:{code}}` -> Convex
+ *  `requireOkStatus(status, op, data)` -> ConvexError message. */
+export function isDashboardAbsentError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.includes("DASHBOARD_NOT_DEPLOYED");
+}
+
 /** True when an action error is the stable setAgentFile CAS-conflict code. */
 export function isConflictError(err: unknown): boolean {
   return err instanceof Error
