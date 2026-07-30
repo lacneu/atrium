@@ -82,9 +82,14 @@ describe("statusTone", () => {
     expect(statusTone("done")).toBe("done");
   });
 
-  it("maps BOTH error and aborted to the visible-failure tone", () => {
+  it("separates a STOPPED child from a broken one", () => {
+    // Revised deliberately. The old assertion locked `aborted` onto the failure tone, and
+    // it was right while `aborted` also carried TIMEOUTS. It no longer does: a Hermes
+    // timeout is an `error` carrying `providerStatus: "timeout"`, so `aborted` now means
+    // the run was STOPPED — usually by the user. Rendering that as a failure told them
+    // their own decision had broken something.
     expect(statusTone("error")).toBe("failed");
-    expect(statusTone("aborted")).toBe("failed");
+    expect(statusTone("aborted")).toBe("aborted");
   });
 });
 
@@ -139,10 +144,10 @@ describe("buildSubAgentActivityView", () => {
     expect(card.errorMessage).toBe(msg);
   });
 
-  it("treats an ABORTED child as a failure too", () => {
+  it("an ABORTED child is not flagged as a failure", () => {
     const card = buildSubAgentActivityView([row({ status: "aborted" })]).cards[0];
-    expect(card.tone).toBe("failed");
-    expect(card.failure).toBe(true);
+    expect(card.tone).toBe("aborted");
+    expect(card.failure, "a Stop the user asked for is not a breakage").toBe(false);
   });
 
   it("does NOT flag a running or done child as a failure", () => {
@@ -181,14 +186,18 @@ describe("subAgentProgressBadges (multi-sub-agent summary header)", () => {
     expect(subAgentProgressBadges(view)).toEqual([{ tone: "done", count: 2 }]);
   });
 
-  it("folds aborted into the failed tone and keeps the running,failed order", () => {
+  it("counts stopped children APART from failures, after them", () => {
+    // A summary that adds the two tells the reader their own Stop broke something. The
+    // order puts `aborted` last because it is the least alarming terminal state.
     const view = buildSubAgentActivityView([
-      row({ _id: "a", childSessionKey: "k:a", status: "aborted", createdAt: 2 }),
-      row({ _id: "b", childSessionKey: "k:b", status: "running", createdAt: 1 }),
+      row({ _id: "a", childSessionKey: "k:a", status: "aborted", createdAt: 3 }),
+      row({ _id: "b", childSessionKey: "k:b", status: "running", createdAt: 2 }),
+      row({ _id: "c", childSessionKey: "k:c", status: "error", createdAt: 1 }),
     ]);
     expect(subAgentProgressBadges(view)).toEqual([
       { tone: "running", count: 1 },
       { tone: "failed", count: 1 },
+      { tone: "aborted", count: 1 },
     ]);
   });
 });

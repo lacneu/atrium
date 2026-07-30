@@ -193,6 +193,16 @@ export const upsertSubAgent = internalMutation({
     bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()),
     status: STATUS,
+    providerStatus: v.optional(v.string()),
+    rollup: v.optional(
+      v.object({
+        inputTokens: v.optional(v.number()),
+        outputTokens: v.optional(v.number()),
+        reasoningTokens: v.optional(v.number()),
+        apiCalls: v.optional(v.number()),
+        durationSeconds: v.optional(v.number()),
+      }),
+    ),
     resultText: v.optional(v.string()),
     phase: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
@@ -286,6 +296,12 @@ export const upsertSubAgent = internalMutation({
         taskName: args.taskName,
         status: args.status,
         resultText: args.resultText,
+        // The gateway's own terminal word and the branch rollups. Inserted here as well as
+        // patched below: `subagent.complete` can be the FIRST event this row ever sees (a
+        // child that finished before its start relayed), and dropping them on that path
+        // meant the metrics existed nowhere (raised in review).
+        providerStatus: args.providerStatus,
+        rollup: args.rollup,
         phase: args.phase,
         errorMessage: args.errorMessage,
         // Same allowlist as the parent message's `errorCode` (G-11): one list,
@@ -313,6 +329,14 @@ export const upsertSubAgent = internalMutation({
     const patch: {
       status?: "running" | "done" | "error" | "aborted";
       resultText?: string;
+      providerStatus?: string;
+      rollup?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        reasoningTokens?: number;
+        apiCalls?: number;
+        durationSeconds?: number;
+      };
       phase?: string;
       errorMessage?: string;
       errorCode?: string;
@@ -388,6 +412,12 @@ export const upsertSubAgent = internalMutation({
     const recoveredToDone =
       existing.status === "error" && patch.status === "done";
     if (args.resultText !== undefined) patch.resultText = args.resultText;
+    // SUPPLIED-ONLY, like resultText above: these arrive on the terminal, and a later
+    // running-state refresh must not erase what the terminal established.
+    if (args.providerStatus !== undefined) {
+      patch.providerStatus = args.providerStatus;
+    }
+    if (args.rollup !== undefined) patch.rollup = args.rollup;
     if (args.errorMessage !== undefined) patch.errorMessage = args.errorMessage;
     if (args.errorCode !== undefined) {
       patch.errorCode = normalizeMessageErrorCode(args.errorCode) ?? undefined;

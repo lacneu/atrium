@@ -89,7 +89,7 @@ export type SubAgentRow = {
 /** Display tone, collapsing the two failure states into ONE visible-failure
  *  bucket: a card is `failed` whether the child errored or was aborted/timed
  *  out — both must read as "this went wrong, look here". */
-export type SubAgentTone = "running" | "done" | "failed";
+export type SubAgentTone = "running" | "done" | "failed" | "aborted";
 
 /** The view model for a single card. `failure` is the load-bearing flag: when
  *  true the card surfaces `errorMessage` PROMINENTLY (the user's headline pain is
@@ -141,6 +141,9 @@ export type SubAgentActivityView = {
   done: number;
   running: number;
   failed: number;
+  /** Children the run STOPPED — counted apart from failures, because a user's own Stop is
+   *  not a breakage and a summary that adds the two tells them it was. */
+  aborted: number;
 };
 
 /**
@@ -221,12 +224,23 @@ export function hasRunningSubAgent(rows: readonly SubAgentRow[]): boolean {
   return rows.some((r) => r.status === "running" && r.kind !== "task");
 }
 
-/** status -> display tone. error AND aborted both map to the visible-FAILURE
- *  tone (an aborted/timed-out child is a failure the user must see). */
+/** status -> display tone.
+ *
+ *  REVISED, with the reason. This used to fold `aborted` into the failure tone, and the
+ *  comment justified it: "an aborted/timed-out child is a failure the user must see". That
+ *  was correct while `aborted` also carried TIMEOUTS — Hermes' `interrupted` and `timeout`
+ *  both landed there. They no longer do: a timeout is an `error` carrying
+ *  `providerStatus: "timeout"`, so `aborted` now means what the word says — the run was
+ *  STOPPED, usually because the user stopped it.
+ *
+ *  Rendering that as a failure told the user their own decision had broken something,
+ *  which is the lie this lot exists to remove. `aborted` gets its own tone; `failure`
+ *  stays false for it. */
 export function statusTone(status: SubAgentStatus): SubAgentTone {
   if (status === "running") return "running";
   if (status === "done") return "done";
-  return "failed"; // error | aborted
+  if (status === "aborted") return "aborted";
+  return "failed";
 }
 
 /** A sub-agent can be REPORTED once it has reached a TERMINAL state — `done`
@@ -352,6 +366,7 @@ export function buildSubAgentActivityView(
     done: cards.filter((c) => c.tone === "done").length,
     running: cards.filter((c) => c.tone === "running").length,
     failed: cards.filter((c) => c.tone === "failed").length,
+    aborted: cards.filter((c) => c.tone === "aborted").length,
   };
 }
 
@@ -374,8 +389,11 @@ export function subAgentProgressBadges(
     done: view.done,
     running: view.running,
     failed: view.failed,
+    aborted: view.aborted,
   };
-  const order: SubAgentTone[] = ["done", "running", "failed"];
+  // `aborted` sits AFTER `failed`: a stopped child is the least alarming terminal state,
+  // and the order is what a reader scans first.
+  const order: SubAgentTone[] = ["done", "running", "failed", "aborted"];
   return order
     .filter((tone) => counts[tone] > 0)
     .map((tone) => ({ tone, count: counts[tone] }));

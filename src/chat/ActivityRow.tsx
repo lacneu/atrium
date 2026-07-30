@@ -12,7 +12,14 @@ import { ChevronRight } from "lucide-react";
 // sub-agent card OPEN THE RIGHT PANEL (caller passes `active`, the row highlights).
 // Each caller keeps its own onClick + aria semantics; this owns only the chrome.
 
-export type ActivityTone = "default" | "running" | "done" | "failed";
+export type ActivityTone =
+  | "default"
+  | "running"
+  | "done"
+  | "failed"
+  /** STOPPED, not broken — a sub-agent the run interrupted. Distinct from `failed` so a
+   *  user's own Stop is not dressed as a breakage. */
+  | "aborted";
 
 export interface ActivityRowProps {
   /** Leading lucide icon (rendered in the neutral icon slot, tinted by tone). */

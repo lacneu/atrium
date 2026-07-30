@@ -177,6 +177,17 @@ const HERMES_PROMPT_TIMEOUT_MS: Record<string, number> = {
  *  instant the gateway is giving up — we want its `*.expire`, not our guess. */
 const PROMPT_GRACE_MARGIN_MS = 30_000;
 
+/** A finite non-negative number, or undefined. Used wherever a gateway COUNT reaches
+ *  storage: a string or a NaN must be dropped, not coerced into a figure someone reads. */
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+/** The words `delegate_tool` can settle a child on, besides `completed`. An ENUM because
+ *  this value reaches storage: keeping the gateway's own word is worth doing, keeping an
+ *  arbitrary gateway-supplied string is not. */
+const CHILD_TERMINAL_WORDS = new Set(["interrupted", "failed", "timeout"]);
+
 /** A stored (persistent) Hermes WS session id: `YYYYMMDD_HHMMSS_hex`. Distinct
  *  from the REST session shape (`api_<ts>_<hex>`) — a chat that switches
  *  transport must NOT feed one transport's id to the other. */
@@ -694,13 +705,56 @@ export function runHermesWsTurn(
               record.tools = [{ name: toolName, status: "done" }];
             }
           } else if (type === "subagent.complete") {
+            // THREE outcomes upstream, not two. `delegate_tool` settles a child as
+            // `completed`, `interrupted` or `failed` (plus `timeout` on its own path), and
+            // Atrium mapped everything that was not `completed` onto `error` — so a child
+            // the user STOPPED was reported as one that broke, and a timeout was
+            // indistinguishable from a genuine failure.
+            const childStatus = str(payload.status);
             record.status =
-              str(payload.status) === "completed" ? "done" : "error";
+              childStatus === "completed"
+                ? "done"
+                : childStatus === "interrupted"
+                  ? "aborted"
+                  : "error";
+            // …and the gateway's own word is kept when the four-state enum cannot hold the
+            // distinction. ENUM-CHECKED, not free text: this reaches storage.
+            if (
+              childStatus !== "" &&
+              childStatus !== "completed" &&
+              CHILD_TERMINAL_WORDS.has(childStatus)
+            ) {
+              record.providerStatus = childStatus;
+            }
             const result = str(payload.summary) || str(payload.text);
             if (result) record.resultText = result;
             if (record.status === "error") {
               record.errorMessage = str(payload.text) || "Sub-agent failed.";
             }
+            // PER-BRANCH ROLLUPS: what the child cost and how long it took. Numbers only,
+            // and that is a decision — the same payload carries `files_read`/`files_written`
+            // (server PATHS) and `output_tail` (fragments of the child's output). Those are
+            // content by any reading, and the child's answer already reaches the thread
+            // through `resultText`, so taking them here would copy content into a row that
+            // exists to hold measurements.
+            const rollup = {
+              ...(num(payload.input_tokens) !== undefined
+                ? { inputTokens: num(payload.input_tokens) }
+                : {}),
+              ...(num(payload.output_tokens) !== undefined
+                ? { outputTokens: num(payload.output_tokens) }
+                : {}),
+              ...(num(payload.reasoning_tokens) !== undefined
+                ? { reasoningTokens: num(payload.reasoning_tokens) }
+                : {}),
+              ...(num(payload.api_calls) !== undefined
+                ? { apiCalls: num(payload.api_calls) }
+                : {}),
+              ...(num(payload.duration_seconds) !== undefined
+                ? { durationSeconds: num(payload.duration_seconds) }
+                : {}),
+            };
+            if (Object.keys(rollup).length > 0) record.rollup = rollup;
           }
           void opts.writer
             .upsertSubAgent?.(record)
@@ -1000,8 +1054,6 @@ export function runHermesWsTurn(
           // on is broadcast `dropIfSlow` upstream — so a slow consumer sees a session that
           // silently forgot half its history. A count also says HOW MANY, which a marker
           // cannot.
-          const num = (v: unknown): number | undefined =>
-            typeof v === "number" && Number.isFinite(v) ? v : undefined;
           const compactionCount = num(usage.compressions);
           const contextPercent = num(usage.context_percent);
           const activeSubagents = num(usage.active_subagents);

@@ -454,6 +454,18 @@ type IngestOp =
       bornOfRun?: string;
       taskName?: string;
       status: "running" | "done" | "error" | "aborted";
+      /** The gateway's own terminal word, when the four states cannot hold the
+       *  distinction (`timeout` vs `failed`). Enum-checked by the bridge. */
+      providerStatus?: string;
+      /** Per-branch rollups: numbers only — the same upstream payload also carries server
+       *  paths and output fragments, which belong to the thread, not to a measurement. */
+      rollup?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        reasoningTokens?: number;
+        apiCalls?: number;
+        durationSeconds?: number;
+      };
       resultText?: string;
       phase?: string;
       errorMessage?: string;
@@ -1232,6 +1244,8 @@ export const ingest = httpAction(async (ctx, request) => {
         bornOfRun: body.bornOfRun,
         taskName: body.taskName,
         status: body.status,
+        providerStatus: body.providerStatus,
+        rollup: body.rollup,
         resultText: body.resultText,
         phase: body.phase,
         errorMessage: body.errorMessage,

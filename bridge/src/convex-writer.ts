@@ -92,6 +92,19 @@ export interface SubAgentRecord {
   // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
   // monitor show WHY a sub-agent failed / why the parent is stuck.
   errorMessage?: string;
+  /** The gateway's OWN terminal word for the child, when Atrium's four-state enum cannot
+   *  hold the distinction: `timeout` and `failed` both land on `error`, and a reader who
+   *  cannot tell them apart cannot act on either. Enum-checked, never free text. */
+  providerStatus?: string;
+  /** Per-branch ROLLUPS the gateway reports when a child ends. Numbers only, on purpose —
+   *  see the emission site for what is deliberately NOT taken from that payload. */
+  rollup?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    apiCalls?: number;
+    durationSeconds?: number;
+  };
   /** The STABLE class of that reason, from the shared classifier (W2 / G-11):
    *  a child that died of a context overflow is now countable, not just
    *  readable. Allowlisted at the ingest boundary. */
@@ -733,6 +746,8 @@ type IngestOp =
   | {
       op: "upsertSubAgent";
       chatId: string;
+      providerStatus?: string;
+      rollup?: SubAgentRecord["rollup"];
       instanceName?: string;
       parentMessageId?: string | null;
       anchorExact?: boolean;
@@ -2101,6 +2116,10 @@ export class HttpConvexWriter implements ConvexWriter {
       bornOfRun: record.bornOfRun,
       taskName: record.taskName,
       status: record.status,
+      ...(record.providerStatus !== undefined
+        ? { providerStatus: record.providerStatus }
+        : {}),
+      ...(record.rollup !== undefined ? { rollup: record.rollup } : {}),
       resultText: record.resultText,
       phase: record.phase,
       errorMessage: record.errorMessage,

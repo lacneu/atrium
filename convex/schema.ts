@@ -1524,6 +1524,25 @@ export default defineSchema({
       v.literal("error"),
       v.literal("aborted"),
     ),
+    // The gateway's OWN terminal word, when the four states above cannot hold the
+    // distinction: `timeout` and `failed` both map to `error`, and a reader who cannot tell
+    // them apart cannot act on either. Enum-checked by the bridge, never free text.
+    providerStatus: v.optional(v.string()),
+    // Per-branch ROLLUPS reported when a child ends: what it cost and how long it took.
+    // NUMBERS ONLY, and that is a decision rather than an omission — the same payload also
+    // carries `files_read`/`files_written` (server PATHS) and `output_tail` (fragments of
+    // the child's output). Those are content by any reading, and the child's answer already
+    // reaches the thread through `resultText`, so taking them here would duplicate content
+    // into a place that exists to hold measurements.
+    rollup: v.optional(
+      v.object({
+        inputTokens: v.optional(v.number()),
+        outputTokens: v.optional(v.number()),
+        reasoningTokens: v.optional(v.number()),
+        apiCalls: v.optional(v.number()),
+        durationSeconds: v.optional(v.number()),
+      }),
+    ),
     resultText: v.optional(v.string()), // the child's final answer (server-paths stripped)
     errorMessage: v.optional(v.string()), // failure reason on error (paths stripped)
     // The STABLE failure class of that reason (W2 / G-11), from the shared
