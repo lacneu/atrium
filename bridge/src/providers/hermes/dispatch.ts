@@ -15,6 +15,7 @@ import { runHermesTurn, HERMES_RESET_ABORT, type HermesTurnRun } from "./turn.js
 import {
   runHermesWsTurn,
   isHermesWsStoredSessionId,
+  readHermesGatewayVersion,
   type HermesWsTurnRun,
   type HermesWsSessionHandlers,
 } from "./ws-turn.js";
@@ -288,6 +289,34 @@ export class HermesTurnRegistry {
   deleteIf(chatId: string, turn: LiveHermesTurn): void {
     if (this.turns.get(chatId) === turn) this.turns.delete(chatId);
   }
+  /** LAST OBSERVED gateway version, per instance. The WS transport can only learn it from
+   *  a `session.info` event, so it is only known once a turn has run — the discovery poll
+   *  of a freshly started bridge legitimately reports `null`, and that is the honest state
+   *  rather than a guess. Mirrors the per-instance `lastGatewayVersion` the OpenClaw path
+   *  keeps in `server.ts`: one gateway, one version, never shared between instances. */
+  private gatewayVersions = new Map<string, string | null>();
+  /** Record what a turn OBSERVED. `null` is a real observation — "a version arrived and it
+   *  is not one this build reads" — and it must be kept, because it has to retire whatever
+   *  was believed before: an upgrade to an unvalidated major otherwise keeps publishing the
+   *  previous version's capability set (raised in review). */
+  noteGatewayVersion(instanceName: string, version: string | null): void {
+    this.gatewayVersions.set(instanceName, version);
+  }
+  gatewayVersionFor(instanceName: string): string | null {
+    return this.gatewayVersions.get(instanceName) ?? null;
+  }
+  /** Has any turn on this instance looked yet, and what did it see? `seen: false` is the
+   *  cold start, where older sources (the discovery snapshot, the configured fallback) are
+   *  all there is; `seen: true` makes the live answer authoritative, `null` included. */
+  observedVersionFor(instanceName: string): {
+    seen: boolean;
+    version: string | null;
+  } {
+    return this.gatewayVersions.has(instanceName)
+      ? { seen: true, version: this.gatewayVersions.get(instanceName) ?? null }
+      : { seen: false, version: null };
+  }
+
   /** Per-chat RESET generation, bumped by forgetChat: a turn captures it at
    *  start and its post-ACK session persistence applies ONLY if unchanged —
    *  else a bind landing AFTER a user reset would rewrite the stale session id
@@ -591,6 +620,11 @@ async function runClaimedWsSend(
       filesFetcher:
         cfg.mediaMode === "off" ? null : registry.filesFetcherFor(cfg),
       onTurnError,
+      // The gateway version, observed on the only frame that carries it. Cached per
+      // INSTANCE (not per chat): one gateway, one version, and the /capabilities poll that
+      // reads it back has no chat of its own.
+      onGatewayVersion: (version) =>
+        registry.noteGatewayVersion(cfg.instanceName ?? "", version),
       // See the REST path: the durable drop rides the terminal, this is the cache.
       onSessionForgotten: () => registry.forgetChat(body.chatId),
       onBoundSession: async (storedSid) => {
@@ -1192,6 +1226,9 @@ export interface HermesDiscovered {
   }[];
   rawCount: number;
   gatewayVersion: string | null;
+  /** TRUE when this discovery actually got an answer about the version — so a refused or
+   *  absent version is a decision and not just a gap. See the REST branch. */
+  versionObserved: boolean;
 }
 
 /** Discover the Hermes instance's single agent (the gateway exposes ONE agent
@@ -1205,8 +1242,10 @@ export async function discoverHermesAgents(
 ): Promise<HermesDiscovered> {
   if ((cfg.transport ?? "ws") === "ws" && registry) {
     // WS transport: the gateway exposes ONE agent; model.options names the
-    // CURRENT provider/model. `hermes serve` has no /health — version stays
-    // null (the capability target is emitted regardless; range-floor rules).
+    // CURRENT provider/model. `hermes serve` has no /health, so the version cannot be
+    // asked for here — it is OBSERVED, from the `session.info` event of a turn, and read
+    // back from the registry. A bridge that has not run a turn yet therefore reports
+    // `null`, which is the honest answer and not the hard-coded one it used to be (G-55).
     const client = registry.wsClientFor(cfg);
     const r = await client.call("model.options", {});
     const providers = Array.isArray(r.providers)
@@ -1233,7 +1272,10 @@ export async function discoverHermesAgents(
         },
       ],
       rawCount: 1,
-      gatewayVersion: null,
+      // Read back from the registry, which the TURNS populate: on this transport the
+      // version arrives on `session.info`, never on a discovery RPC.
+      gatewayVersion: registry.gatewayVersionFor(cfg.instanceName ?? ""),
+      versionObserved: registry.observedVersionFor(cfg.instanceName ?? "").seen,
     };
   }
   const client = hermesClientFor(cfg);
@@ -1253,6 +1295,17 @@ export async function discoverHermesAgents(
   return {
     agents,
     rawCount: list.length,
-    gatewayVersion: health?.version ?? null,
+    // The SAME scheme rule the WS reader applies. `/health` is a second door onto the same
+    // manifest, and it used to be the lax one: a `/health` reporting the calendar tag
+    // (`2026.7.20`, the tag of 0.19.0) went straight through to the compat surface and its
+    // banner (raised in review).
+    gatewayVersion: readHermesGatewayVersion(health?.version, "health"),
+    // Did this poll get an ANSWER about the version? A reachable `/health` that reports a
+    // version we refuse is an observation and must retire what was believed; a `/health`
+    // that never answered is not, and must leave it alone. Without the distinction, a
+    // gateway that came back at an unreadable version kept its old entry in the server's
+    // cache — which the poll then declined to refresh, because it already had one (raised
+    // in review).
+    versionObserved: health !== null,
   };
 }

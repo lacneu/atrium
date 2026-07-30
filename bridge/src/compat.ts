@@ -219,6 +219,42 @@ export function hermesCapabilitiesFor(
   return transport === "ws" ? HERMES_WS_CAPABILITIES : HERMES_CAPABILITIES;
 }
 
+/** Hermes' supported range, named ONCE.
+ *
+ *  The transport overlay resolves the WS superset against the very same range the manifest
+ *  publishes: two copies of "which versions are supported" would drift, and the drift would
+ *  surface as capabilities appearing or vanishing for reasons nobody could trace back. */
+export const HERMES_RANGE: VersionRange = {
+  min: "0.18.0",
+  maxValidated: "0.19.0",
+};
+
+/**
+ * Is this string a version in the scheme the Hermes manifest is written in?
+ *
+ * Hermes publishes TWO version schemes for the same build: the semver in `pyproject`
+ * (`0.19.0`) and the git TAG (`v2026.7.20`). Both are real, and they are not comparable —
+ * a calendar major parses as a perfectly good semver and compares as astronomically newer
+ * than anything the manifest has validated. Left unchecked, an upstream change to whichever
+ * field feeds the version would silently republish the gateway as "beyond validated": the
+ * banner lights, the admin view reports a version the gateway is not running, and every
+ * future ratchet decision is made against a number from another scheme (G-57).
+ *
+ * The rule, and it is deliberately narrow: it must parse as semver AND its major must be
+ * one the manifest could plausibly be describing — the validated major, or the one after
+ * it. A calendar major fails. A genuine next-major Hermes passes and is reported honestly
+ * as beyond-validated, which is what the banner is for. A major further out fails CLOSED
+ * and resolves at the range floor: refusing to guess about a scheme we have never seen is
+ * the whole point of the ratchet.
+ */
+export function isHermesVersionScheme(version: string): boolean {
+  const parsed = parseVersion(version);
+  if (parsed === null) return false;
+  const ceiling = parseVersion(HERMES_RANGE.maxValidated);
+  if (ceiling === null) return false;
+  return (parsed[0] as number) <= (ceiling[0] as number) + 1;
+}
+
 export const COMPAT_MANIFEST: CompatManifest = {
   bridgeVersion: BRIDGE_VERSION,
   protocolVersion: PROTOCOL_VERSION,
@@ -260,7 +296,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // delegation/file delivery on the upgraded bench). 0.19.0 is the first Hermes
       // version to EARN its claim: GO 11/11 on the local bench, 2026-07-29, attested at
       // `bridge/protocol/hermes/0.19.0/BENCH.json`.
-      supportedRange: { min: "0.18.0", maxValidated: "0.19.0" },
+      supportedRange: HERMES_RANGE,
       validatedVersions: ["0.18.0", "0.18.2", "0.19.0"],
       capabilities: HERMES_CAPABILITIES,
     },

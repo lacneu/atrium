@@ -45,6 +45,36 @@ import type {
 import type { HermesWsClient } from "./ws-client.js";
 import type { HermesFilesFetcher } from "./files-fetcher.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
+import { isHermesVersionScheme } from "../../compat.js";
+
+/**
+ * Read a gateway version Hermes reported, or `null` when it is not one we can read.
+ *
+ * ONE rule, used at EVERY door: the `session.info` event on the WS transport and
+ * `/health` on the REST one. The rule lived only in the WS reader for one review pass, and
+ * the REST discovery branch — which returns `health.version` straight through — could
+ * publish the very calendar tag the WS side refuses (raised in review). A rule enforced at
+ * one of two doors is not a rule.
+ *
+ * A refusal is OBSERVED rather than swallowed: the operator has to be able to tell "no
+ * version seen" from "a version in a scheme this build does not read".
+ */
+export function readHermesGatewayVersion(
+  raw: unknown,
+  site: string,
+): string | null {
+  const value = typeof raw === "string" ? raw : "";
+  if (!value) return null;
+  if (isHermesVersionScheme(value)) return value;
+  protocolDrift.observeException(
+    { type: site, payload: { version: value } },
+    new TypeError(
+      `${site} carried a version in an unrecognized scheme — not published`,
+    ),
+    "hermes-ws-event",
+  );
+  return null;
+}
 
 /** The delivery folder (workspace-relative) the prompt directive names. */
 export const HERMES_DELIVERY_DIR = "atrium-out";
@@ -100,6 +130,18 @@ export interface HermesWsTurnOptions {
   /** Health-stats hook (TurnSink.onTurnError): a turn finalizing in error AFTER
    *  acceptance counts as a downstream failure on its target. */
   onTurnError?: (code: string) => void;
+  /** The gateway VERSION, learned from `session.info`.
+   *
+   *  This is the only place the WS transport can learn it: upstream fills
+   *  `info["version"] = __version__` in the `session.info` payload builder and exposes it
+   *  nowhere else on the RPC surface — `hermes serve` has no `/health`. Without this the
+   *  default transport reported an unknown version forever, so the compat manifest, the
+   *  beyond-validated banner and the version ratchet were all inert on it (G-55).
+   *
+   *  `null` means OBSERVED BUT UNREADABLE — a version in a scheme this build does not
+   *  recognize. It is reported, not dropped: it must retire whatever was believed before,
+   *  or an upgrade to an unvalidated major would keep the old version's capabilities. */
+  onGatewayVersion?: (version: string | null) => void;
 }
 
 export interface HermesWsTurnRun {
@@ -907,6 +949,33 @@ export function runHermesWsTurn(
           // 0.19.0 alike. So the recovery was dead code and delivered files were silently
           // lost whenever the resume reply carried no info block (G-48). `_session_info`
           // does carry `cwd`, and this event fires at turn START — before the scan.
+          // THE GATEWAY VERSION. Same frame, and the ONLY one that carries it on this
+          // transport (`onGatewayVersion`). Guarded by SCHEME, not by first character: the
+          // field is present-but-EMPTY whenever the version import fails upstream
+          // (`info["version"] = ""` is the literal default), and — the case that matters —
+          // Hermes also publishes a CALENDAR tag (`v2026.7.20`) for the very same build,
+          // which parses as a valid semver and compares as beyond everything ever
+          // validated. `isHermesVersionScheme` is where that rule lives, next to the range
+          // it is a rule about (raised in review).
+          // WHICH BUILDER SENT IT, not whether the field happens to be there — and the
+          // marker comes from the source rather than from taste.
+          //
+          // `session.info` has two upstream builders. `_session_info` is the full one and
+          // ALWAYS carries `version` (empty string when its version import fails, which is
+          // an answer: we no longer know). The LEAN ones — a session with no agent yet —
+          // send `{cwd, branch, project, lazy: true}` and say nothing about the version;
+          // `_session_info` never sets `lazy`, so the flag tells them apart exactly.
+          //
+          // Both directions are load-bearing. Retiring on a lean frame would drop a good
+          // observation several times per session; NOT retiring on a full frame that has
+          // stopped carrying the field would keep publishing a version the gateway no
+          // longer confirms — with its capability set, its banner and its gates (both
+          // raised in review, two passes apart).
+          if (payload.lazy !== true) {
+            opts.onGatewayVersion?.(
+              readHermesGatewayVersion(payload.version, "session.info"),
+            );
+          }
           const infoCwd = str(payload.cwd);
           if (infoCwd) {
             sessionCwd = infoCwd;

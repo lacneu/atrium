@@ -126,6 +126,7 @@ import {
   performHermesCronManage,
   discoverHermesAgents,
 } from "./providers/hermes/dispatch.js";
+import { readHermesGatewayVersion } from "./providers/hermes/ws-turn.js";
 import {
   buildGatewayCronPatch,
   normalizeCronJobDetail,
@@ -151,6 +152,8 @@ import {
   COMPAT_MANIFEST,
   PROTOCOL_VERSION,
   resolveCapabilities,
+  resolveCapabilitiesFor,
+  HERMES_RANGE,
 } from "./compat.js";
 import {
   COVERAGE_SUMMARY,
@@ -2082,6 +2085,14 @@ export async function discoverAgents(
     // poll's synthetic target exposes Hermes capabilities even when idle (codex
     // P2). Same return shape so every caller is provider-agnostic.
     const d = await discoverHermesAgents(config, hermesTurnsRef);
+    // An ANSWER about the version — including "one arrived and we refuse it" — is recorded
+    // on the Hermes observer, which is the single source `/capabilities` consults for this
+    // provider. Forwarding only a truthy version left a stale entry standing when a gateway
+    // came back at a version we cannot read, and the poll then declined to refresh it
+    // because it already had one (raised in review).
+    if (d.versionObserved && config.instanceName) {
+      hermesTurnsRef?.noteGatewayVersion(config.instanceName, d.gatewayVersion);
+    }
     if (d.gatewayVersion) onHermesVersion?.(d.gatewayVersion);
     return { agents: d.agents, rawCount: d.rawCount, usage: null };
   }
@@ -2217,17 +2228,44 @@ export interface CapabilityTarget {
  *  its capabilities off (codex P2).
  *
  *  Shared by BOTH target paths. It used to live only in the no-session branch, so a live
- *  Hermes session silently got a different capability set from an idle one. */
-function applyHermesTransportOverlay(
+ *  Hermes session silently got a different capability set from an idle one.
+ *
+ *  Each capability answers to its OWN `minVersion`, resolved against the manifest's own
+ *  Hermes range. It used to grant the whole set with a flat `true`, which — combined with
+ *  `abort` standing in as the version proxy, whose minimum IS the range floor — meant no
+ *  capability minimum decided anything on this provider. Nothing was mis-gated, because
+ *  every shipped Hermes minimum equals the floor; the mechanism was simply inert, and would
+ *  have kept granting the moment a capability was given a higher minimum. `table` is
+ *  injectable for the same reason `resolveCapabilitiesFor` is: only a table the shipped
+ *  manifest cannot express can tell flat-grant and per-minimum apart. */
+export function applyHermesTransportOverlay(
   resolved: { capabilities: Record<string, boolean> },
   version: string | null,
   transport: "ws" | "rest",
+  table: Record<string, string> = hermesCapabilitiesFor(transport),
 ): void {
   const versionGatePassed = version === null || resolved.capabilities.abort === true;
   if (!versionGatePassed) return;
-  const caps = hermesCapabilitiesFor(transport);
-  for (const key of Object.keys(caps)) resolved.capabilities[key] = true;
+  const overlay = resolveCapabilitiesFor(HERMES_RANGE, table, version);
+  for (const [key, granted] of Object.entries(overlay.capabilities)) {
+    resolved.capabilities[key] = granted;
+  }
   if (transport === "rest") delete resolved.capabilities.inboundAttachments;
+}
+
+/** The precedence between an instance's version sources, extracted so it has ONE
+ *  definition and can be exercised: the live observation, then the discovery snapshot, then
+ *  what the operator configured. See `versionForInstance` for why the order matters. */
+export function resolveInstanceVersion(
+  observed: { seen: boolean; version: string | null },
+  snapshot: string | null,
+  configured: string | null,
+): string | null {
+  // A turn that LOOKED is authoritative, including when it looked and could not read what
+  // it found: falling through to the older sources there would undo the retirement the live
+  // observation just decided (raised in review).
+  if (observed.seen) return observed.version;
+  return snapshot ?? configured ?? null;
 }
 
 export function buildCapabilityTargets(
@@ -2441,6 +2479,45 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     if (typeof v === "string" && v.length > 0)
       lastGatewayVersion.set(instanceName, v);
   };
+  /**
+   * The gateway version to resolve an instance's capabilities against — ONE answer, from
+   * the freshest source that has one.
+   *
+   * A Hermes instance has TWO observers and they are not equally current: `session.info`
+   * updates the turn registry the moment a turn runs, while `lastGatewayVersion` is only a
+   * SNAPSHOT taken by the `/agents` discovery poll. Reading the snapshot alone meant that
+   * after a gateway restart at a different version, `/capabilities` kept serving the old
+   * one — and its banner and gates with it — until the next poll happened to come round
+   * (raised in review). The live observation wins; the snapshot and the configured fallback
+   * remain for the cold start, when no turn has run yet.
+   *
+   * NOT invalidated when the socket closes: the last version observed is still the best
+   * information there is until a new turn reports otherwise, and dropping it would send
+   * `/capabilities` back to "unknown" — and to the range floor — on every reconnect.
+   */
+  const versionForInstance = (
+    instanceName: string,
+    bundle: InstanceBundle,
+  ): string | null => {
+    const isHermes = bundle.config.kind === "hermes";
+    const configured = bundle.config.gatewayVersionFallback ?? null;
+    return resolveInstanceVersion(
+      isHermes
+        ? hermesTurns.observedVersionFor(instanceName)
+        : { seen: false, version: null },
+      lastGatewayVersion.get(instanceName) ?? null,
+      // THE THIRD DOOR, and the one an operator is most likely to get wrong: the configured
+      // fallback takes the generic three-number grammar, so `2026.7.20` — the git TAG of
+      // 0.19.0, and the version anyone reads off the upstream repo — is accepted. On a cold
+      // Hermes instance that value went straight to `/capabilities`, lit the beyond-validated
+      // banner and resolved every gate against a scheme the manifest is not written in
+      // (raised in review). Same rule as `session.info` and `/health`.
+      isHermes && configured
+        ? readHermesGatewayVersion(configured, "config.gatewayVersionFallback")
+        : configured,
+    );
+  };
+
   const noteMaxPayload = (instanceName: string, n: number | null): void => {
     if (typeof n === "number" && n > 0) lastMaxPayload.set(instanceName, n);
   };
@@ -2580,9 +2657,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         buildCapabilityTargets(
           live.filter((t) => t.instanceName === name),
           name,
-          lastGatewayVersion.get(name) ??
-            bundle.config.gatewayVersionFallback ??
-            null,
+          versionForInstance(name, bundle),
           bundle.config.kind ?? "openclaw",
           bundle.config.transport ?? "ws",
         ),
@@ -2590,9 +2665,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const names = [...served.keys()];
       const soleName = names.length === 1 ? names[0] : null;
       const soleVersion = soleName
-        ? (lastGatewayVersion.get(soleName) ??
-          served.get(soleName)!.config.gatewayVersionFallback ??
-          null)
+        ? versionForInstance(soleName, served.get(soleName)!)
         : null;
       sendJson(res, 200, {
         instanceName: soleName,
