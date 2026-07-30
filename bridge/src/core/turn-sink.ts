@@ -121,6 +121,70 @@ export type OutboundScan = (
   runId: string | null,
 ) => Promise<{ candidates: string[]; host: () => Promise<void> }>;
 
+/** A well-formed `tool.output_risk` verdict, bounded before it reaches storage.
+ *
+ *  Content-free by construction upstream — a finding is a pattern identifier, never the
+ *  matched text — but the list is still gateway-supplied, so its SIZE is bounded here and
+ *  each entry is length-capped. A verdict is a label, not a payload. */
+function isRiskVerdict(
+  v: unknown,
+): v is { level: string; findings: string[]; redacted: boolean } {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as { level?: unknown; findings?: unknown; redacted?: unknown };
+  return (
+    typeof r.level === "string" &&
+    r.level !== "" &&
+    Array.isArray(r.findings) &&
+    typeof r.redacted === "boolean"
+  );
+}
+
+/** The two LABEL SHAPES upstream's scanner can produce, and nothing else.
+ *
+ *  A type check plus a length cap was not the promise the comment made: it let a divergent
+ *  or compromised gateway store sixteen arbitrary 64-character fragments under the word
+ *  "findings" (raised in review). Content-free has to be ENFORCED, not inherited — the
+ *  scanner appends a pattern identifier or an `invisible_unicode_U+XXXX` label, both of
+ *  which are describable, so anything else is refused rather than truncated.
+ *
+ *  A label that fails this is DROPPED and counted, never stored: keeping the count means
+ *  "a scan found things we could not name", which is honest, where keeping the string
+ *  would be storing exactly what the rule forbids. */
+const RISK_FINDING_RE = /^(?:[a-z][a-z0-9_]{1,62}|invisible_unicode_U\+[0-9A-F]{4,6})$/;
+/** Levels the gateway actually reports (`metadata.get("risk") or "low"`). */
+const RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);
+
+/** …and the bound itself, applied rather than merely promised: at most 16 findings, each
+ *  at most 64 characters. A pattern identifier is short by nature, so anything longer is a
+ *  gateway this build does not model — truncated instead of trusted. */
+function boundRisk(v: {
+  level: string;
+  findings: string[];
+  redacted: boolean;
+}): { level: string; findings: string[]; redacted: boolean } {
+  const kept: string[] = [];
+  let refused = 0;
+  for (const f of v.findings) {
+    if (kept.length >= 16) {
+      refused += 1;
+      continue;
+    }
+    if (typeof f === "string" && RISK_FINDING_RE.test(f)) kept.push(f);
+    else refused += 1;
+  }
+  return {
+    // An unknown level is reported as such rather than stored verbatim: a level is a
+    // small enum, so a value outside it is a gateway this build does not model.
+    level: RISK_LEVELS.has(v.level) ? v.level : "unknown",
+    // The refusals are COUNTED, not dropped in silence — "a scan found things we could
+    // not name" is a fact worth keeping; the strings themselves are exactly what the
+    // content-free rule forbids storing.
+    findings:
+      refused > 0 ? [...kept, `«unnamed»×${Math.min(refused, 999)}`] : kept,
+    redacted: v.redacted,
+  };
+}
+
 export class TurnSink {
   private readonly chatId: string;
   private readonly writer: ConvexWriter;
@@ -1023,6 +1087,10 @@ export class TurnSink {
             ...(anchorable ? { textOffset: this.visibleLineStart } : {}),
             ...(event.input !== undefined ? { input: event.input } : {}),
             ...(event.output !== undefined ? { output: event.output } : {}),
+            // The gateway's risk verdict on this tool's output, when it sent one. Rides
+            // the SAME part as the call it judges (upsert-keyed by toolCallId), so the
+            // reader sees the verdict on the card it is about.
+            ...(isRiskVerdict(event.risk) ? { risk: boundRisk(event.risk) } : {}),
           };
           // LAST-RESORT ANTI-SPINNER (W5 confinement): remember the cards that
           // are RUNNING so the turn's terminal can close any the gateway never

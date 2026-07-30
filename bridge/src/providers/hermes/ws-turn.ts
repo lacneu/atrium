@@ -862,6 +862,48 @@ export function runHermesWsTurn(
           }
           return;
         }
+        case "tool.output_risk": {
+          // THE GATEWAY SCANNED A TOOL'S OUTPUT and reached a verdict — a risk level, the
+          // pattern ids it matched, and whether it REDACTED something before the model saw
+          // it. Atrium dropped the whole event, so a redaction the gateway performed on the
+          // user's behalf was invisible and a high-risk result looked like any other.
+          //
+          // Carried on the SAME part as the call it judges: `toolCallId` is the upsert key,
+          // so the verdict lands on that card instead of opening a second one. Content-free
+          // by construction (a finding is a pattern identifier, never the matched text) —
+          // verified in the scanner, not assumed.
+          const nativeRiskId = str(payload.tool_id);
+          const riskName = str(payload.name);
+          if (!nativeRiskId || !riskName) return;
+          // THE SAME KEY the lifecycle uses. `tool.start`/`tool.complete` normalize the
+          // native id to `hws:<id>`, and Convex's upsert compares keys EXACTLY — so
+          // sending the raw id opened a SECOND completed card beside the one it judged
+          // (raised in review). My test could not see it: its fake writer collects parts
+          // instead of upserting them, which is precisely the "green for the wrong reason"
+          // this programme keeps paying for.
+          const riskToolId = `hws:${nativeRiskId}`;
+          apply([
+            {
+              type: EVENT_TOOL_STATUS,
+              name: riskName,
+              // NOT a lifecycle step: this rides the existing card, and inventing a phase
+              // would make a finished tool look like it started again.
+              phase: "completed",
+              runId: runtimeSid,
+              toolCallId: riskToolId,
+              risk: {
+                level: str(payload.risk) || "low",
+                findings: Array.isArray(payload.findings)
+                  ? payload.findings.filter(
+                      (f): f is string => typeof f === "string",
+                    )
+                  : [],
+                redacted: payload.redacted === true,
+              },
+            },
+          ]);
+          return;
+        }
         case "message.interim": {
           // SEALED AS ITS OWN SEGMENT — upstream's words. It emits this precisely "so the
           // desktop can seal it as its own segment instead of losing it when

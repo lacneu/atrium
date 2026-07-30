@@ -29,6 +29,10 @@ export interface ToolPart {
   /** UTF-16 offset into the turn's visible text when the sink emitted this
    *  part (narrative anchor). Omitted on delivery/announce runs. */
   textOffset?: number;
+  /** The gateway's RISK VERDICT on this tool's output (Hermes `tool.output_risk`).
+   *  Content-free by construction: a finding is a pattern identifier, never the matched
+   *  text. */
+  risk?: { level: string; findings: string[]; redacted: boolean };
 }
 
 /** Mirrors convex/schema.ts messagePart `reasoning` variant. */

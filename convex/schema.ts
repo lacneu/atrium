@@ -48,6 +48,21 @@ export const messagePart = v.union(
     // ChatGPT-style interleaved rendering). Absent = un-anchored (legacy /
     // delivery runs) -> grouped-block rendering.
     textOffset: v.optional(v.number()),
+    // THE GATEWAY'S RISK VERDICT on this tool's OUTPUT (Hermes `tool.output_risk`).
+    // Attached to the card the verdict is ABOUT rather than to a notice of its own, so a
+    // reader who looks at the tool sees what was found in its result.
+    //
+    // Content-free BY CONSTRUCTION, and verified rather than assumed: a "finding" is a
+    // pattern IDENTIFIER or an `invisible_unicode_U+XXXX` label — upstream's scanner
+    // appends `pid`, never the matched text. `redacted` says the gateway itself removed
+    // something before the model saw it.
+    risk: v.optional(
+      v.object({
+        level: v.string(),
+        findings: v.array(v.string()),
+        redacted: v.boolean(),
+      }),
+    ),
   }),
   v.object({
     kind: v.literal("media"),
