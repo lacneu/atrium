@@ -125,7 +125,12 @@ const HERMES_EVENT_NAMES = {
   // tool activity uses the same frame with a real tool_name.
   toolProgress: new Set(["tool.progress"]),
   toolStarted: new Set(["tool.started"]),
-  toolCompleted: new Set(["tool.completed"]),
+  // `tool.failed` is accepted alongside it, and the reason is written because it looks
+  // like speculation: the REST layer's own allowlist forwards that name
+  // (`api_server.py:2567` lists it), while no production path emits it today. Reading it
+  // costs nothing and closes the card either way; NOT reading it would leave the spinner
+  // spinning the day something starts emitting it.
+  toolCompleted: new Set(["tool.completed", "tool.failed"]),
   // The assistant message's AUTHORITATIVE text: {content: "..."} — a snapshot,
   // NOT a terminal (run.completed follows).
   assistantCompleted: new Set(["assistant.completed"]),
@@ -268,6 +273,27 @@ export class HermesNormalizer {
     queue.push({ id, fromProgress });
     this.openTools.set(name, queue);
     return id;
+  }
+
+  /** Settle every card still open, and forget them. Shared by EVERY terminal — a helper
+   *  rather than a block inside `finalize`, because `abortTurn` is a terminal too (the
+   *  `/reset` path) and it returned its pair without closing anything, leaving the very
+   *  spinner this guard exists to end (raised in review). */
+  private closeStrandedTools(): BridgeEvent[] {
+    const out: BridgeEvent[] = [];
+    for (const [name, queue] of this.openTools) {
+      for (const entry of queue) {
+        out.push({
+          type: EVENT_TOOL_STATUS,
+          name,
+          phase: "completed",
+          toolCallId: entry.id,
+          runId: this.runId,
+        });
+      }
+    }
+    this.openTools.clear();
+    return out;
   }
 
   private closeToolId(name: string): string | undefined {
@@ -531,7 +557,11 @@ export class HermesNormalizer {
   abortTurn(): BridgeEvent[] {
     if (this.finalized) return [];
     this.finalized = true;
+    // A TERMINAL LIKE ANY OTHER, and it did not behave like one: this path returned its
+    // pair while leaving every open card RUNNING, so a `/reset` in the middle of a tool
+    // left the spinner behind — the same symptom, one terminal over (raised in review).
     return [
+      ...this.closeStrandedTools(),
       { type: EVENT_MESSAGE_FINAL, text: this.text },
       { type: EVENT_RUN_STATUS, status: "aborted", runId: this.runId },
     ];
@@ -553,6 +583,12 @@ export class HermesNormalizer {
       error = error ?? UNREADABLE_TERMINAL;
     }
     this.finalized = true;
+    // CLOSE EVERY OPEN TOOL CARD, exactly as the WS path does. A tool whose `tool.completed`
+    // never arrived — a lost frame, a run that ended mid-call, an error terminal — left its
+    // card RUNNING forever on this transport: an eternal spinner, and one that also wedges
+    // the composer's hold-the-send until the 20-minute reaper. The WS path grew this guard
+    // and the SSE path never did (G-49).
+    const strandedTools = this.closeStrandedTools();
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,
       text: this.text,
@@ -591,7 +627,9 @@ export class HermesNormalizer {
       const kind = classifyProviderInternal(error);
       if (kind) finalEvent.errorKind = kind;
     }
-    return [finalEvent, statusEvent];
+    // Stranded cards FIRST: the sink applies in order, so they settle before the terminal
+    // pair rather than arriving after a message the client already considers finished.
+    return [...strandedTools, finalEvent, statusEvent];
   }
 }
 
