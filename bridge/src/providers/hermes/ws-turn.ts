@@ -252,6 +252,33 @@ export function runHermesWsTurn(
         );
     };
     let sessionCwd: string | null = null;
+    /** Resolver for a scan that is waiting on the cwd, or null when nobody waits. */
+    let resolveCwdWait: (() => void) | null = null;
+    /** Wait, BOUNDED, for a `session.info` that carries the working directory.
+     *
+     *  The gateway emits `session.info` twice: once at turn start and once in the turn's
+     *  TAIL, after `message.complete`. The terminal enqueues the outbound scan immediately,
+     *  so on the very path G-48 is about — a resume whose reply carried no info block — the
+     *  scan used to run while the cwd was still unknown and return empty, losing the file
+     *  even though the answer was arriving one frame later (raised in review). On 0.18.2
+     *  the turn-start `session.info` does not carry `cwd` at all (live capture), which
+     *  makes the tail one the only source there.
+     *
+     *  A short wait, not a long one: this delays the turn's own terminal, so the bound is
+     *  what keeps a gateway that never sends a cwd from holding every such turn open. When
+     *  it lapses the scan is skipped and SAYS so. */
+    const CWD_WAIT_MS = 2_000;
+    const awaitSessionCwd = async (): Promise<void> => {
+      if (sessionCwd) return;
+      await new Promise<void>((resolve) => {
+        resolveCwdWait = resolve;
+        const t = setTimeout(() => {
+          resolveCwdWait = null;
+          resolve();
+        }, CWD_WAIT_MS);
+        (t as { unref?: () => void }).unref?.();
+      });
+    };
     let pendingBind: string | null = null;
     let effectiveText = opts.text;
     const noteCwd = (r: Record<string, unknown>) => {
@@ -788,6 +815,19 @@ export function runHermesWsTurn(
           // next turn resumes a session that no longer exists and the agent starts from
           // the transcript as it was BEFORE the compaction: the "it forgot what we just
           // said" report, in its Hermes form.
+          // THE WORKING DIRECTORY, from the channel that actually carries it. The
+          // outbound scan needs it, and its old fallback asked `session.status` — which
+          // returns ONLY `{output: "<human-readable lines>"}`, no `cwd`, in 0.18.2 and
+          // 0.19.0 alike. So the recovery was dead code and delivered files were silently
+          // lost whenever the resume reply carried no info block (G-48). `_session_info`
+          // does carry `cwd`, and this event fires at turn START — before the scan.
+          const infoCwd = str(payload.cwd);
+          if (infoCwd) {
+            sessionCwd = infoCwd;
+            // Release a scan that is waiting for exactly this — see `awaitSessionCwd`.
+            resolveCwdWait?.();
+            resolveCwdWait = null;
+          }
           const rotated = str(payload.stored_session_id);
           if (
             rotated &&
@@ -868,24 +908,22 @@ export function runHermesWsTurn(
           if (opts.filesFetcher) {
             const fetcher = opts.filesFetcher;
             chain = chain.then(async () => {
-              // cwd can be missing after a resume/recovery whose reply carried
-              // no info block — recover it from session.status so delivered
-              // files are not silently lost (codex P2).
-              if (!sessionCwd && runtimeSid) {
-                try {
-                  const st = await opts.client.call("session.status", {
-                    session_id: runtimeSid,
-                  });
-                  noteCwd(st);
-                  const info = st as { cwd?: unknown };
-                  if (!sessionCwd && typeof info.cwd === "string" && info.cwd) {
-                    sessionCwd = info.cwd;
-                  }
-                } catch {
-                  /* no cwd → no scan (nothing to deliver from) */
-                }
+              // NO `session.status` FALLBACK. It used to sit here to recover a missing
+              // cwd, and it could never work: that RPC returns only
+              // `{output: "<human-readable lines>"}` — no `cwd` field in 0.18.2 or 0.19.0
+              // — so the branch was dead and delivered files were silently lost (G-48).
+              // The cwd now comes from `session.info`, which really carries it and fires
+              // at turn start; a scan with no cwd still returns, but that case is now the
+              // genuine "the gateway never told us" rather than a fallback that lied.
+              // The tail `session.info` may still be in flight — wait for it, briefly.
+              if (!sessionCwd) await awaitSessionCwd();
+              if (!sessionCwd) {
+                console.error(
+                  `[hermes-ws-turn] no session cwd chat=${opts.chatId} — outbound scan ` +
+                    "skipped; delivered files cannot be found",
+                );
+                return;
               }
-              if (!sessionCwd) return;
               const dir = `${sessionCwd}/${HERMES_DELIVERY_DIR}`;
               const entries = await fetcher.listFiles(dir);
               const fresh = entries.filter((e) => e.mtime >= turnStartMs - 2_000);
