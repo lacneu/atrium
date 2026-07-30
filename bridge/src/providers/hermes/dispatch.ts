@@ -769,6 +769,24 @@ async function performHermesWsAbort(
  *
  * Never throws: a handle the gateway has forgotten (the ordinary case after a restart) must
  * cost the next turn nothing.
+ *
+ * NOT VALIDATED LIVE, and the gap is here rather than in a note nobody reads. The local bench
+ * run of 2026-07-30 proved the whole OUTBOUND half in production conditions — the silence
+ * terminal writes the handle with every field, the dispatch carries it, and it is spent
+ * exactly once — but never got this function to return real text, because reproducing the
+ * precondition needs the gateway to FINISH a turn while Atrium stops seeing it:
+ *
+ *   * `docker pause` freezes the model call too (`⚡ Interrupted during API call.`), so the
+ *     turn never finishes and `inflight` holds nothing complete;
+ *   * interposing a TCP proxy would work, but the instance's gateway URL lives in Convex
+ *     behind an authenticated admin mutation;
+ *   * calling this directly needs the Hermes credential, which is an instance secret only the
+ *     bridge can decrypt.
+ *
+ * So the guards below rest on unit tests against the upstream payload shape (each one
+ * reddens when neutralized) and on the upstream source read for `_reuse_live_payload` and
+ * `_inflight_snapshot` — not on a live observation. Anyone who can cut the bridge↔gateway
+ * socket while the gateway keeps working should close that, and delete this paragraph.
  */
 export async function harvestLostReply(
   client: Pick<HermesWsClient, "call">,

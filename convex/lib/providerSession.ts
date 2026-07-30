@@ -12,6 +12,13 @@
  * session id only for Hermes chats. An OpenClaw routing segment (`turn:…`) or a rotation
  * nonce is left exactly where it is — clearing those would break routing to fix a session
  * that was never stored there.
+ *
+ * A CONSEQUENCE worth stating, observed on the local bench (2026-07-30): a chat using PER-TURN
+ * ROUTING keeps a `turn:…` segment in this slot, never the Hermes session id. So on those chats
+ * the durable clear is a deliberate no-op — the shape guard declines it — and what actually
+ * stops the next turn resuming an untrusted session is the bridge's in-process eviction
+ * (`registry.forgetChat`). The two layers are not redundant: which one does the work depends on
+ * the chat's routing mode.
  */
 
 /** The two Hermes session shapes: REST (`api_<ts>_<hex>`) and WS (`YYYYMMDD_HHMMSS_<hex>`,
