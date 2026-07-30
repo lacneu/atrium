@@ -26,6 +26,17 @@ export interface HermesSendBody {
   agentId: string;
   canonical: string;
   openclawChatId: string | null; // reused as the Hermes session id (providerChatId)
+  /** A session this chat LOST a reply on, for ONE read-only harvest before it is forgotten
+   *  (G-47). Deliberately NOT merged into `openclawChatId`: that slot decides what the turn
+   *  RESUMES, and this is precisely a session nobody may resume. */
+  recoverableSession?: {
+    session: string;
+    messageId: string;
+    /** The instance that PRODUCED the session. Session ids are gateway-local, so a handle
+     *  must never be replayed against another instance — a rebind or a per-turn routing
+     *  switch would otherwise ask B to resume A's id (raised in review). */
+    instanceName?: string | null;
+  } | null;
   text: string;
   /** Inline base64 attachments (WS transport stages them via file.attach /
    *  image.attach_bytes before the prompt; REST has no upload channel). */
@@ -586,9 +597,40 @@ async function runClaimedWsSend(
     targetKey,
     isHermesWsStoredSessionId,
   );
+  // BEFORE anything is minted or sent: read back a reply the previous turn lost (G-47).
+  // Best-effort by construction — a handle the gateway has forgotten, a session still
+  // running, a turn that was mid-production: each returns null and this turn proceeds
+  // exactly as it would have. The session is READ, never continued; whatever happens the
+  // turn below runs on a fresh one with the rehydrated history.
+  // The reset generation is captured BEFORE the harvest, not after. The seat is already
+  // claimed but no run is bound to it yet, so a `/reset` landing during the harvest's network
+  // wait has nothing to abort — and reading the generation afterwards would read the NEW one
+  // and let the very prompt the reset meant to stop go through (raised in review).
+  const preHarvestGen = registry.generationOf(body.chatId);
+  const lost = body.recoverableSession ?? null;
+  if (lost) {
+    const text = await harvestLostReply(client, lost.session);
+    // Posted EVEN when nothing was harvested. The mutation spends the handle before it
+    // judges the text, so this is what makes the read ONE-SHOT — and the refusals are the
+    // common case (a gateway that restarted has forgotten the session), so a handle left
+    // standing would make every later send pay another `session.resume` (raised in review).
+    await (writer
+      .recoverLostReply?.(body.chatId, lost.messageId, lost.session, text ?? "")
+      .catch((e) =>
+        console.error(
+          "[hermes-recover] the harvest could not be recorded:",
+          (e as Error)?.message ?? e,
+        ),
+      ) ?? Promise.resolve());
+  }
+  // A /reset landed DURING the harvest: refuse the send, exactly as the history-fetch guard
+  // below does for its own await.
+  if (registry.generationOf(body.chatId) !== preHarvestGen) {
+    throw new Error("chat reset during dispatch");
+  }
   // Reset-generation snapshot: gates the post-ACK session persistence below
   // AND the send itself across the history-fetch await.
-  const wsResetGen = registry.generationOf(body.chatId);
+  const wsResetGen = preHarvestGen;
   // Same fresh-session history carry as the REST path (chatFork parity).
   const wsText = await promptWithFreshSessionHistory(
     writer,
@@ -707,6 +749,52 @@ async function performHermesWsAbort(
   }
   forgetSessionIfUnhonoured(registry, chatId, interrupt);
   return { aborted: true, interrupt, providerSession };
+}
+
+/**
+ * READ a reply the gateway finished, from a session nobody may resume (G-47).
+ *
+ * The turn died from OUR side — a dead transport, a provider that went silent — so the
+ * terminal cleared the session it could not vouch for. But the gateway may well have gone on
+ * to FINISH the answer, and it keeps it in `inflight`. This reads it once and returns it;
+ * whatever happens, the caller mints a fresh session for the turn that follows. The session
+ * is read, never continued.
+ *
+ * Two guards, and both are upstream's OWN signals rather than inferences of ours:
+ *   * `running` — `session.resume` on a live session answers through `_reuse_live_payload`,
+ *     returning the live snapshot WITHOUT re-attaching. So this fires before any harm, which
+ *     is what makes reading a session lot 30 forbids RESUMING defensible at all.
+ *   * `inflight.streaming` — a turn still being produced holds a PARTIAL. Presenting that as
+ *     the finished reply is the failure lot 34 exists to prevent, arriving by another door.
+ *
+ * Never throws: a handle the gateway has forgotten (the ordinary case after a restart) must
+ * cost the next turn nothing.
+ */
+export async function harvestLostReply(
+  client: Pick<HermesWsClient, "call">,
+  session: string,
+): Promise<string | null> {
+  try {
+    const r = await client.call("session.resume", { session_id: session });
+    // The answer must be ABOUT the session we asked for: a rotation, or a stale handle, would
+    // otherwise attribute one conversation's text to another.
+    if (String((r as { stored_session_id?: unknown }).stored_session_id ?? "") !== session) {
+      return null;
+    }
+    if ((r as { running?: unknown }).running === true) return null;
+    const inflight = (r as { inflight?: unknown }).inflight;
+    if (typeof inflight !== "object" || inflight === null) return null;
+    const snap = inflight as { assistant?: unknown; streaming?: unknown };
+    if (snap.streaming === true) return null;
+    const text = typeof snap.assistant === "string" ? snap.assistant.trim() : "";
+    return text === "" ? null : text;
+  } catch (e) {
+    console.error(
+      "[hermes-recover] could not read the lost reply (non-fatal):",
+      (e as Error)?.message ?? e,
+    );
+    return null;
+  }
 }
 
 /** What an abort attempt learned, for the caller that has to act on it.

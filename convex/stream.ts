@@ -1673,6 +1673,14 @@ async function dropUntrustedProviderSession(
    *  race to a user Stop). Such a writer is late and may only remove a binding it can
    *  name — see `providerSessionClearPatch`. */
   late = false,
+  /** The message that LOST a reply on this session, when the cause is one the gateway may
+   *  have finished through (G-47). Recorded in the SAME patch as the clear: a handle written
+   *  separately could survive a clear that failed, and would then point at a session this
+   *  chat is still using. */
+  recoverFor: Id<"messages"> | null = null,
+  /** The instance the terminal came from — stamped so the handle can never be replayed
+   *  against another gateway (session ids are gateway-local). */
+  recoverInstance: string | undefined = undefined,
 ): Promise<void> {
   if (directive === undefined || directive === false) return;
   if (directive === true) {
@@ -1697,7 +1705,31 @@ async function dropUntrustedProviderSession(
     console.log("[stream] clearProviderSession skipped: chat bound to a newer session");
     return;
   }
-  await ctx.db.patch(chatId, patch);
+  // The recovery handle rides the SAME patch, and only when a session was actually NAMED and
+  // dropped: recorded beside a clear that did not happen, it would point at a session still
+  // in use.
+  const session = typeof directive === "string" ? directive : null;
+  await ctx.db.patch(chatId, {
+    ...patch,
+    ...(recoverFor !== null && session !== null
+      ? {
+          recoverableSession: {
+            session,
+            messageId: recoverFor,
+            at: Date.now(),
+            ...(recoverInstance !== undefined
+              ? { instanceName: recoverInstance }
+              : {}),
+            // The epoch the clear is SETTING — `providerSessionClearPatch` bumps it in this
+            // same patch, so the handle is stamped with the value the chat ends up holding.
+            resetCount:
+              typeof patch.providerResetCount === "number"
+                ? patch.providerResetCount
+                : (chat.providerResetCount ?? 0),
+          },
+        }
+      : {}),
+  });
 }
 
 // Mark the assistant turn done (message.final). `status` is "complete" on a
@@ -1706,6 +1738,109 @@ async function dropUntrustedProviderSession(
 // normalizer's final event carries the accumulated text). On an error turn the
 // bridge passes BOTH partial text and error (mirrors the lifecycle-error
 // fixture: final text "moitié" + error containing "Context overflow").
+/**
+ * Give a lost reply back to the message that lost it (G-47).
+ *
+ * The gateway had FINISHED the turn; only our view of it died. The terminal that settled the
+ * bubble in error recorded a read-only handle — the session it cleared, and the message it
+ * belonged to — and the bridge has now harvested `inflight.assistant` from that session
+ * without resuming it for anything else.
+ *
+ * Every guard here exists because the alternative is visible to the user:
+ *   * matched BY ID, both the session and the message, so a harvest from elsewhere or from a
+ *     conversation that has moved on cannot land — no "last message" guess, which is what
+ *     made the first attempt at this lot impossible;
+ *   * NEVER SHRINKS (lot 11): a terminal may already show a partial the user read, and
+ *     replacing it with something shorter is a regression they would see;
+ *   * refuses a row a NEWER run owns, and an EMPTY harvest — flipping a named failure into a
+ *     silent empty answer is worse than the error it replaced;
+ *   * spends the handle, so a retry is a no-op rather than a second write.
+ *
+ * Returns whether anything changed, so the bridge can say so in its log instead of guessing.
+ */
+export const recoverLostReply = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    messageId: v.id("messages"),
+    /** The session the text came from — must still be the one this chat recorded losing. */
+    session: v.string(),
+    text: v.string(),
+    ...boundArg,
+  },
+  handler: async (ctx, { chatId, messageId, session, text, boundInstanceName }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return false;
+    await assertChatBound(ctx, chatId, boundInstanceName);
+    const handle = chat.recoverableSession;
+    if (handle === undefined) return false;
+    if (handle.session !== session || handle.messageId !== messageId) {
+      console.log("[stream] recoverLostReply refused: the handle names another turn");
+      return false;
+    }
+    if (
+      handle.instanceName !== undefined &&
+      boundInstanceName !== undefined &&
+      handle.instanceName !== boundInstanceName
+    ) {
+      // A session id belongs to the gateway that minted it. A bridge asking to spend a
+      // handle another instance recorded is either a rebind or a routing switch, and the
+      // text it read cannot be about this message (raised in review). The handle is left
+      // ALONE, so the instance that owns it can still consume it.
+      console.log("[stream] recoverLostReply refused: handle belongs to another instance");
+      return false;
+    }
+    if (
+      handle.resetCount !== undefined &&
+      handle.resetCount !== (chat.providerResetCount ?? 0)
+    ) {
+      // The epoch moved since this handle was written: a `/reset`, or another untrusted
+      // clear. Either way the turn it belongs to has been discarded, and a reset that gave
+      // its reply back would be the opposite of a reset.
+      console.log("[stream] recoverLostReply refused: the handle predates a reset");
+      await ctx.db.patch(chatId, { recoverableSession: undefined });
+      return false;
+    }
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.chatId !== chatId) return false;
+
+    // SPEND the handle whatever follows: a harvest that is refused below is still a harvest
+    // that happened, and re-reading the same session on every later dispatch would keep
+    // paying for an answer already judged unusable.
+    await ctx.db.patch(chatId, { recoverableSession: undefined });
+
+    const harvested = text.trim();
+    if (message.status === "streaming") {
+      console.log("[stream] recoverLostReply refused: a newer run owns this message");
+      return false;
+    }
+    if (message.status === "aborted") {
+      // The user cancelled this turn. However a handle came to exist for it, undoing that is
+      // not ours to do — and this invariant is what survives a future clearing path
+      // forgetting the rule above (raised in review).
+      console.log("[stream] recoverLostReply refused: the user aborted this turn");
+      return false;
+    }
+    const current = (message.text ?? "").trim();
+    if (current.length >= harvested.length) {
+      // Includes the EQUAL case (nothing to gain, and a no-op write would still bump the row)
+      // and, by construction, the EMPTY harvest: `inflight.assistant` is "" for a turn that
+      // produced nothing, and no text is ever shorter than none. A separate empty check stood
+      // here until a neutralization proved it could not fail — dead code says a rule is
+      // enforced where nothing enforces it.
+      console.log("[stream] recoverLostReply refused: the message already holds as much");
+      return false;
+    }
+    await ctx.db.patch(messageId, {
+      status: "complete",
+      text: harvested,
+      error: undefined,
+      errorCode: undefined,
+      updatedAt: Date.now(),
+    });
+    return true;
+  },
+});
+
 export const finalize = internalMutation({
   args: {
     messageId: v.id("messages"),
@@ -1755,6 +1890,15 @@ export const finalize = internalMutation({
      *  bridge still posts `true`, and rejecting it would fail the finalize and wedge the
      *  turn in `streaming` — the very class of bug this field exists to close. */
     clearProviderSession: v.optional(v.union(v.boolean(), v.string())),
+    /** This terminal ended a turn the gateway may well have FINISHED — a dead transport, a
+     *  silent provider — so the session it is clearing is worth ONE read-only harvest before
+     *  it is forgotten (G-47). Set by the bridge, and only on those causes: a user Stop and a
+     *  `/reset` clear the session too and pass nothing, because the user cancelled.
+     *
+     *  Rides THIS mutation rather than a write of its own, for the reason lot 31 established:
+     *  a separate write can fail on its own while the turn settles anyway, and the handle
+     *  would then point at a session nobody recorded clearing. */
+    recoverableSession: v.optional(v.boolean()),
     ...boundArg,
   },
   handler: async (
@@ -1770,6 +1914,7 @@ export const finalize = internalMutation({
       discardStreamText,
       gatewayPreempted,
       clearProviderSession,
+      recoverableSession,
     },
   ) => {
     const message = await ctx.db.get(messageId);
@@ -1815,6 +1960,13 @@ export const finalize = internalMutation({
         message.chatId,
         clearProviderSession,
         true,
+        // NEVER on this branch. It exists for the race where a user Stop already settled the
+        // message and our terminal is still in flight — so the row is the user's
+        // CANCELLATION, and recording a handle for it would let the harvest flip it back to
+        // `complete` (raised in review). The drop still applies: the session is untrusted
+        // either way.
+        null,
+        boundInstanceName,
       );
       // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
       // so this no-op is expected — and the ingest route must not write a second
@@ -1982,7 +2134,14 @@ export const finalize = internalMutation({
     // DROP the provider session BEFORE the drain, for the same reason the bridge clears
     // before it settles: the drain is what releases the next send, and a send that reads
     // the slot after this point must not find a session whose run may never have stopped.
-    await dropUntrustedProviderSession(ctx, message.chatId, clearProviderSession);
+    await dropUntrustedProviderSession(
+      ctx,
+      message.chatId,
+      clearProviderSession,
+      false,
+      recoverableSession === true ? messageId : null,
+      boundInstanceName,
+    );
     // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
     // any) — the engine of mid-turn message serialization (Phase 1).
     await drainNextQueued(ctx, message.chatId);

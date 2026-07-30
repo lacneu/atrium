@@ -223,6 +223,14 @@ interface BodyRouting {
 interface SendBody extends BodyRouting {
   chatId: string;
   openclawChatId: string | null;
+  /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
+   *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
+   *  pass noticed this hop rebuilt the body without it. */
+  recoverableSession: {
+    session: string;
+    messageId: string;
+    instanceName?: string | null;
+  } | null;
   text: string;
   clientMessageId: string;
   /** The user message id for this turn (excluded from re-hydration history). */
@@ -416,6 +424,26 @@ export function parseSendBody(raw: string): SendBody | null {
     chatId: obj.chatId,
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    // Both ids REQUIRED and non-empty: a half-formed handle would send the bridge reading a
+    // session it cannot attribute, or writing back to a message it cannot name. Malformed →
+    // null, and the turn proceeds exactly as it would have.
+    recoverableSession: (() => {
+      const r = obj.recoverableSession;
+      if (typeof r !== "object" || r === null) return null;
+      const h = r as {
+        session?: unknown;
+        messageId?: unknown;
+        instanceName?: unknown;
+      };
+      if (typeof h.session !== "string" || h.session === "") return null;
+      if (typeof h.messageId !== "string" || h.messageId === "") return null;
+      return {
+        session: h.session,
+        messageId: h.messageId,
+        instanceName:
+          typeof h.instanceName === "string" ? h.instanceName : null,
+      };
+    })(),
     text: obj.text,
     clientMessageId: obj.clientMessageId,
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,

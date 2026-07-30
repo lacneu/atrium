@@ -376,6 +376,7 @@ type IngestOp =
        *  that drops it must fail CLOSED. `true` is the LEGACY form of an older bridge
        *  during a rolling deploy, relayed as-is for the mutation to log and honor. */
       clearProviderSession?: boolean | string;
+      recoverableSession?: boolean;
     }
   // Session meta mirrored from the gateway's `sessions.describe` (model,
   // reasoning level + enum, verbosity, context-usage counts) so the chat header
@@ -387,6 +388,13 @@ type IngestOp =
       providerChatId: string;
       // The reset epoch the turn started under (see bindProviderChat).
       resetCount?: number;
+    }
+  | {
+      op: "recoverLostReply";
+      chatId?: string;
+      messageId?: string;
+      session?: string;
+      text?: string;
     }
   | {
       op: "clearProviderChat";
@@ -1095,6 +1103,9 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
         ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+        ...(body.recoverableSession === true
+          ? { recoverableSession: true }
+          : {}),
         ...(body.clearProviderSession === true ||
         (typeof body.clearProviderSession === "string" &&
           body.clearProviderSession !== "")
@@ -1139,6 +1150,16 @@ export const ingest = httpAction(async (ctx, request) => {
         ...(typeof body.resetCount === "number"
           ? { resetCount: body.resetCount }
           : {}),
+      });
+      return json({ ok: true });
+    }
+    case "recoverLostReply": {
+      await ctx.runMutation(internal.stream.recoverLostReply, {
+        chatId: body.chatId as Id<"chats">,
+        messageId: body.messageId as Id<"messages">,
+        session: String(body.session ?? ""),
+        text: String(body.text ?? ""),
+        boundInstanceName,
       });
       return json({ ok: true });
     }

@@ -519,6 +519,23 @@ export const getChatRouting = internalQuery({
           : res.rebind
             ? null
             : (chat.openclawChatId ?? null),
+      // A session this chat LOST a reply on, for ONE read-only harvest before it is
+      // forgotten (G-47). Carried beside `openclawChatId` and never merged into it: that
+      // slot decides what the next turn RESUMES, and this is precisely a session nobody may
+      // resume. The bridge reads `inflight` from it, gives the text back to the message named
+      // here, and drops the handle.
+      // …and ONLY when the resolved target is the instance that produced it. Session ids are
+      // gateway-local, so carrying it across a rebind or a per-turn routing switch would ask
+      // another gateway to resume an id that is not its own (raised in review). The handle is
+      // kept on the chat: the instance that owns it can still spend it later.
+      recoverableSession:
+        chat.recoverableSession !== undefined &&
+        (chat.recoverableSession.instanceName === undefined ||
+          chat.recoverableSession.instanceName === target?.instanceName) &&
+        (chat.recoverableSession.resetCount === undefined ||
+          chat.recoverableSession.resetCount === (chat.providerResetCount ?? 0))
+          ? chat.recoverableSession
+          : null,
       // BRANCHED chat with its first-turn rehydration still pending: the
       // dispatch consumes the one-shot flag at the TRUE acceptance point (the
       // gateway ACK) — see consumeForkRehydration. OPENCLAW ONLY: an OpenClaw
@@ -1428,6 +1445,8 @@ export const dispatch = internalAction({
             switchedFromInstanceName: turnRouting?.switchedFromInstanceName ?? null,
             switchedFromAgentId: turnRouting?.switchedFromAgentId ?? null,
             openclawChatId: routing.openclawChatId,
+            // See getChatRouting: the read-only recovery handle, when this chat has one.
+            recoverableSession: routing.recoverableSession,
             // Resolved valve target (non-secret names): the bridge maps
             // instanceName -> gateway token/device identity from its env.
             instanceName: routing.target.instanceName,

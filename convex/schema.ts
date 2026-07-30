@@ -1066,6 +1066,39 @@ export default defineSchema({
     // concurrent /reset and resurrects the discarded session" race (Convex
     // mutations serialize; in-bridge clock comparisons cannot).
     providerResetCount: v.optional(v.number()),
+    /** A provider session this chat LOST a reply on, kept READ-ONLY so it can be harvested
+     *  once — never resumed (G-47).
+     *
+     *  Recorded by the same terminal that CLEARS the session, and only for the causes where
+     *  the gateway may well have finished the turn we stopped seeing: a dead transport, a
+     *  silent provider. A user Stop and a `/reset` clear too, and deliberately record
+     *  nothing — the user cancelled, so bringing their reply back would be the opposite of
+     *  the feature.
+     *
+     *  DISTINCT from `openclawChatId` on purpose: `selectPriorSession` reads that slot to
+     *  decide what to RESUME, and this session is precisely one nobody may resume. It names
+     *  the message that lost the reply, so the harvest lands by id rather than by a
+     *  "last message" guess — the heuristic that made the first attempt at this lot
+     *  impossible, `send` inserting the user row before dispatch. */
+    recoverableSession: v.optional(
+      v.object({
+        session: v.string(),
+        messageId: v.id("messages"),
+        at: v.number(),
+        /** The instance that PRODUCED the session. Session ids are gateway-LOCAL, so a
+         *  handle must never be replayed against another one: a rebind, or a per-turn
+         *  routing switch A→B, would otherwise ask B to resume A's id — leaking it to the
+         *  wrong target and, on a collision, attributing another conversation's text to
+         *  this message (raised in review). Optional for rows written before this field. */
+        instanceName: v.optional(v.string()),
+        /** The reset EPOCH this handle was written under. Any later bump — a `/reset`, a
+         *  second untrusted clear — retires it, so no future clearing path can forget to
+         *  revoke it and a reset can never bring back a reply the user discarded (raised in
+         *  review). Optional for rows written before this field. */
+        resetCount: v.optional(v.number()),
+      }),
+    ),
+
     sortKey: v.optional(v.number()), // fractional manual order (lower = higher)
     pinned: v.optional(v.boolean()), // pinned chats sort above unpinned
     color: v.optional(v.string()), // preset token name, list display only

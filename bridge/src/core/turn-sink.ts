@@ -368,6 +368,8 @@ export class TurnSink {
   /** A turn that ended on SILENCE cannot vouch for the provider's run: its stored session
    *  must be dropped, and the drop must be atomic with this finalize. */
   private pendingClearProviderSession: string | null = null;
+  /** Whether that same terminal's cause is one the gateway may have finished through. */
+  private pendingRecoverableSession = false;
   // Trace-only error class: set even when the turn finalizes COMPLETE (a
   // post-reply gateway failure keeps the delivered answer but its class must
   // still reach the gateway_pressure trace). Never sent to writer.finalize —
@@ -1345,6 +1347,11 @@ export class TurnSink {
               .clearProviderSession;
             this.pendingClearProviderSession =
               typeof cps === "string" && cps !== "" ? cps : null;
+            // Rides the SAME buffered final: the recovery handle must be recorded by the
+            // very write that clears the session, or it could outlive a clear that failed
+            // and point at a session still in use (G-47).
+            this.pendingRecoverableSession =
+              (event as { recoverableSession?: unknown }).recoverableSession === true;
           }
           this.pendingDiagErrorKind =
             typeof event.diagnosticErrorKind === "string" &&
@@ -1992,6 +1999,10 @@ export class TurnSink {
             ...(gatewayPreempted ? { gatewayPreempted: true } : {}),
             ...(this.pendingClearProviderSession !== null
               ? { clearProviderSession: this.pendingClearProviderSession }
+              : {}),
+            ...(this.pendingRecoverableSession &&
+            this.pendingClearProviderSession !== null
+              ? { recoverableSession: true }
               : {}),
           }
         : undefined,

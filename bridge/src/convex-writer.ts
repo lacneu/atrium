@@ -384,6 +384,7 @@ export interface ConvexWriter {
        *  dropping it fails CLOSED (no clear) rather than clearing a binding that may
        *  no longer be ours. */
       clearProviderSession?: string;
+      recoverableSession?: boolean;
     },
   ): Promise<void>;
   /**
@@ -429,6 +430,13 @@ export interface ConvexWriter {
   ): Promise<void>;
   /** Clear a persisted Hermes session id on reset (next turn starts fresh). */
   clearProviderChat?(chatId: string): Promise<void>;
+  /** Give a harvested reply back to the message that lost it (G-47). */
+  recoverLostReply?(
+    chatId: string,
+    messageId: string,
+    session: string,
+    text: string,
+  ): Promise<void>;
   /** Stamp the provider run id onto an already-created streaming message (Hermes
    *  learns it on run.started, after the message opened) so abort can target it. */
   updateRunId?(messageId: string, runId: string): Promise<void>;
@@ -714,6 +722,7 @@ type IngestOp =
        *  cannot vouch for the run. Atomic with the finalize BY DESIGN — see the mutation.
        *  The ID, not a flag: it narrows the drop to the binding this turn actually had. */
       clearProviderSession?: string;
+      recoverableSession?: boolean;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -738,6 +747,13 @@ type IngestOp =
       resetCount?: number;
     }
   | { op: "clearProviderChat"; chatId: string }
+  | {
+      op: "recoverLostReply";
+      chatId: string;
+      messageId: string;
+      session: string;
+      text: string;
+    }
   | { op: "updateRunId"; messageId: string; runId: string }
   | { op: "heartbeat"; messageId: string }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
@@ -1948,6 +1964,7 @@ export class HttpConvexWriter implements ConvexWriter {
        *  dropping it fails CLOSED (no clear) rather than clearing a binding that may
        *  no longer be ours. */
       clearProviderSession?: string;
+      recoverableSession?: boolean;
     },
   ): Promise<void> {
     try {
@@ -1962,6 +1979,7 @@ export class HttpConvexWriter implements ConvexWriter {
         errorKind,
         ...(opts?.discardStreamText === true ? { discardStreamText: true } : {}),
         ...(opts?.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+        ...(opts?.recoverableSession === true ? { recoverableSession: true } : {}),
         ...(typeof opts?.clearProviderSession === "string" &&
         opts.clearProviderSession !== ""
           ? { clearProviderSession: opts.clearProviderSession }
@@ -2057,6 +2075,15 @@ export class HttpConvexWriter implements ConvexWriter {
         );
       },
     );
+  }
+
+  async recoverLostReply(
+    chatId: string,
+    messageId: string,
+    session: string,
+    text: string,
+  ): Promise<void> {
+    await this.doPost({ op: "recoverLostReply", chatId, messageId, session, text });
   }
 
   async clearProviderChat(chatId: string): Promise<void> {

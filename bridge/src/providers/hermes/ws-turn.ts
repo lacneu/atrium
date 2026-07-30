@@ -1463,7 +1463,16 @@ export function runHermesWsTurn(
           // The CURRENT binding, not the one this turn started on: a rotation learned
           // mid-turn moved it, and clearing the stale id would match nothing and leave
           // the rotated session bound to a turn declared unusable (raised in review).
-          ...(boundStoredSid ? { clearProviderSession: boundStoredSid } : {}),
+          //
+          // …and this cause is RECOVERABLE (G-47): the gateway may well have FINISHED the
+          // reply we stopped seeing, so the id being dropped is kept as a read-only handle
+          // for exactly one harvest. Only the two causes where WE lost sight of a live turn
+          // get it — a user Stop and a `/reset` clear too and record nothing (the user
+          // cancelled), and `correlation_lost` is left out for now because a lane we could
+          // not attribute is weaker ground than a turn we simply stopped hearing.
+          ...(boundStoredSid
+            ? { clearProviderSession: boundStoredSid, recoverableSession: true }
+            : {}),
         },
         {
           type: EVENT_RUN_STATUS,
@@ -1503,7 +1512,16 @@ export function runHermesWsTurn(
           // The CURRENT binding, not the one this turn started on: a rotation learned
           // mid-turn moved it, and clearing the stale id would match nothing and leave
           // the rotated session bound to a turn declared unusable (raised in review).
-          ...(boundStoredSid ? { clearProviderSession: boundStoredSid } : {}),
+          //
+          // …and this cause is RECOVERABLE (G-47): the gateway may well have FINISHED the
+          // reply we stopped seeing, so the id being dropped is kept as a read-only handle
+          // for exactly one harvest. Only the two causes where WE lost sight of a live turn
+          // get it — a user Stop and a `/reset` clear too and record nothing (the user
+          // cancelled), and `correlation_lost` is left out for now because a lane we could
+          // not attribute is weaker ground than a turn we simply stopped hearing.
+          ...(boundStoredSid
+            ? { clearProviderSession: boundStoredSid, recoverableSession: true }
+            : {}),
         },
         { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
       ]);
