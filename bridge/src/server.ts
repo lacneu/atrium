@@ -118,6 +118,8 @@ import {
   HermesTurnRegistry,
   performHermesSend,
   performHermesAbort,
+  applyDurableSessionDrop,
+  hermesAbortResponseBody,
   performHermesReset,
   performHermesAgentFilesOp,
   performHermesCronList,
@@ -2953,7 +2955,20 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           hermesTurns,
           abortRunId,
         );
-        sendJson(res, 200, { ok: true, aborted: stopped });
+        // DURABLE FALLBACK, before the answer. The verdict's primary carrier is the
+        // response — it rides Convex's guaranteed settle, which makes the drop atomic with
+        // the aborted terminal (lot 31). But it is the ONLY carrier, and a response that
+        // never arrives takes the drop with it: the bridge has already interrupted (or
+        // failed to), the run may still be writing to the session, and Convex settles the
+        // bubble without ever hearing about it (raised in review). So the bridge also
+        // writes the clear itself.
+        //
+        // Applying twice is safe: the second clear finds an empty slot and only bumps the
+        // epoch. Unconditional is safe HERE specifically because a turn was found live,
+        // which means the message is still streaming and the chat still busy — the exact
+        // premise `providerSessionClearPatch` states for its unconditional callers.
+        await applyDurableSessionDrop(abortBundle.writer, abort.chatId, stopped);
+        sendJson(res, 200, hermesAbortResponseBody(stopped));
         return;
       }
       try {

@@ -119,7 +119,20 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
 // feature gate OFF automatically on a Hermes instance — the multi-provider
 // design's payoff (capability-driven UI, zero per-provider UI code).
 const HERMES_CAPABILITIES: Record<string, string> = {
-  abort: "0.18.0", // run_stop: POST /v1/runs/{id}/stop
+  // Stop WORKS from the user's side on both transports: the turn stops, the bubble
+  // finalizes, and a run the provider did not confirm stopping costs the chat its
+  // provider session rather than leaking a phantom reply into the next turn.
+  //
+  // What is NOT true — and what this line used to assert as `run_stop: POST
+  // /v1/runs/{id}/stop` — is that the server-side run always ends. On WS it does
+  // (`session.interrupt` calls the agent's own interrupt). On REST it CANNOT: the run id
+  // minted by `/api/sessions/{id}/chat/stream` is registered in neither map the stop
+  // handler consults, so that POST is a structural 404 — and the sibling routes that CAN
+  // interrupt (`/v1/chat/completions`, `/v1/responses`) do it through an `agent_ref` this
+  // route does not pass. A migration to `POST /v1/runs` is the real fix and is its own
+  // wave; declaring the capability here stays honest because the UI gates the Stop
+  // BUTTON on it, and the button does stop the user's turn.
+  abort: "0.18.0",
   agentsDiscovery: "0.18.0", // GET /v1/models (one agent)
   // Identity files are served by the gateway's MANAGED-FILES HTTP API
   // (`GET /api/files/download`), and `/agent-files` routes a Hermes instance there on

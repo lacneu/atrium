@@ -109,6 +109,18 @@ export interface HermesWsTurnRun {
   done: Promise<void>;
   /** The RUNTIME session id — session.interrupt's target. */
   runtimeSessionId(): string | null;
+  /** The stored session id CONVEX IS KNOWN TO HOLD for this chat — the id this turn
+   *  resumed, or the last one it successfully wrote. NOT simply what the turn believes:
+   *  a drop is matched by id, so naming a rotation whose write was dropped would match
+   *  nothing and clear nothing (raised in review). */
+  storedSessionId(): string | null;
+  /** Declare this turn's session unusable, so no binding it has queued is ever written.
+   *  An ABORT calls it: a turn being force-settled must not persist a session decided in
+   *  its dying moments, because nobody will verify that session again. */
+  markSessionUntrusted(): void;
+  /** Resolves once every binding write this turn had QUEUED has settled. An abort awaits
+   *  it (bounded) so `storedSessionId()` is read after the last write, not during it. */
+  settledBindings(): Promise<void>;
   /** Settle the turn. `writeAborted=false` (user Stop): NO terminal — Convex
    *  already finalized the message `aborted`. `writeAborted=true` (/reset):
    *  write the aborted terminal pair FIRST — dispatchReset does NOT finalize
@@ -214,7 +226,24 @@ export function runHermesWsTurn(
   // counts too — codex P1); this turn's start otherwise.
   const turnStartedMs = opts.sendReceivedMs ?? Date.now();
   let runtimeSid: string | null = null;
+  /** The stored id this turn is bound to — what it resumed, or minted, or has since been
+   *  told it ROTATED to. The comparison reference for a rotation, written explicitly
+   *  rather than inferred: `session.info` also fires at turn start with the current
+   *  value, and binding on "any difference" would write for nothing.
+   *
+   *  At TURN scope because the ABORT reads it from outside the drain: `session.interrupt`
+   *  targets the RUNTIME id, but the chat's binding holds the STORED one, so an abort
+   *  reporting the runtime id would name a session Convex has never heard of and the
+   *  drop would silently do nothing. */
+  let boundStoredSid: string | null = null;
+  /** The stored id CONVEX HOLDS: what this turn resumed, then whatever it has actually
+   *  managed to WRITE. Distinct from `boundStoredSid`, which is what the turn believes —
+   *  the two diverge whenever a rotation's write is dropped, and only this one can be
+   *  matched against the chat's slot. */
+  let convexBoundSid: string | null = opts.providerChatId ?? null;
   let forceSettleRef: ((writeAborted?: boolean) => void) | null = null;
+  let markUntrustedRef: (() => void) | null = null;
+  let settledBindingsRef: (() => Promise<void>) | null = null;
   let resolveAccepted!: () => void;
   let rejectAccepted!: (e: unknown) => void;
   const accepted = new Promise<void>((res, rej) => {
@@ -228,14 +257,12 @@ export function runHermesWsTurn(
     // binding earlier would make a failed first send look WARM on retry (a
     // resume of a session that never received the history-carrying prompt).
     let storedSid: string | null = null;
-    /** The stored id this turn is bound to — what it resumed, or minted, or has since
-     *  been told it ROTATED to. The comparison reference for a rotation, written
-     *  explicitly rather than inferred: `session.info` also fires at turn start with the
-     *  current value, and binding on "any difference" would write for nothing. */
-    let boundStoredSid: string | null = null;
     /** This turn declared its session unusable (silence, dead socket, lost correlation),
      *  so the terminal cleared it. Nothing may bind afterwards. */
     let sessionUntrusted = false;
+    markUntrustedRef = () => {
+      sessionUntrusted = true;
+    };
     /** Persistence of this turn's session bindings, SERIALIZED.
      *
      *  Two binds can be in flight at once — the freshly minted id, then a rotation
@@ -249,11 +276,16 @@ export function runHermesWsTurn(
      *  the terminal is clearing. One already on the network is covered by the reset epoch,
      *  which the clear bumps and `bindProviderChat` compares atomically. */
     let bindChain: Promise<void> = Promise.resolve();
+    settledBindingsRef = () => bindChain;
     const persistBinding = (sid: string): void => {
       bindChain = bindChain
         .then(async () => {
           if (sessionUntrusted) return;
           await opts.onBoundSession?.(sid);
+          // Record what CONVEX now holds, separately from what the turn believes: a
+          // rotation whose write was dropped leaves Convex on the previous id, and an
+          // abort naming the undropped one would match nothing and clear nothing.
+          convexBoundSid = sid;
         })
         .catch((e) =>
           console.error(
@@ -1716,6 +1748,9 @@ export function runHermesWsTurn(
     accepted,
     done,
     runtimeSessionId: () => runtimeSid,
+    storedSessionId: () => convexBoundSid,
+    markSessionUntrusted: () => markUntrustedRef?.(),
+    settledBindings: () => settledBindingsRef?.() ?? Promise.resolve(),
     forceSettle: (writeAborted?: boolean) => forceSettleRef?.(writeAborted),
   };
 }

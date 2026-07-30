@@ -148,6 +148,66 @@ export async function readErrorCode(
   return undefined;
 }
 
+/** Interrupt verdicts a bridge may report on `/abort`. Only `interrupted` means the
+ *  provider confirmed the run ended; the other two mean the session can no longer be
+ *  accounted for. Kept as a closed set so an unrecognized value reads as "no verdict"
+ *  rather than silently dropping a healthy session. */
+const HONOURED_INTERRUPT = "interrupted";
+const UNHONOURED_INTERRUPTS = new Set(["ineffective", "unknown"]);
+
+/**
+ * Which provider session — if any — this Stop left UNACCOUNTED FOR.
+ *
+ * The bridge answers `{ok, aborted, interrupt?, providerSession?}`. A verdict other than
+ * `interrupted` means the run may still be live: on the Hermes REST transport the
+ * server-side stop is a structural no-op (the run id from `/api/sessions/{id}/chat/stream`
+ * is registered in neither map the gateway's stop handler consults), and the agent thread
+ * runs to completion and PERSISTS its turn. Resuming that session would hand the user's
+ * next turn a reply they never saw and believe they cancelled.
+ *
+ * ABSENT means absent. A bridge that reports no verdict — an older image mid-rolling
+ * deploy, or the OpenClaw path, which has its own kill — changes nothing here. Reading a
+ * missing field as failure would drop the session of every Stop served by a bridge that
+ * has not been updated yet.
+ *
+ * DEPLOY ORDER (the other direction, raised in review). This reader is the ONLY consumer
+ * of the verdict, so a new bridge in front of an OLD Convex reports it to nobody and every
+ * Stop keeps the phantom session for the length of that window. Convex is a SEPARATE deploy
+ * step from the bridge image, so the order is not automatic: `npx convex deploy` first, the
+ * bridge image after. Fail-safe either way — the window is the pre-existing defect, never a
+ * new one — but it is a window, and rolling it out backwards means shipping nothing.
+ */
+export async function readUntrustedSessionAfterAbort(
+  response: Response,
+): Promise<string | null> {
+  try {
+    const body = (await response.json()) as {
+      interrupt?: unknown;
+      providerSession?: unknown;
+    };
+    const verdict = body?.interrupt;
+    if (typeof verdict !== "string" || verdict === HONOURED_INTERRUPT) return null;
+    if (!UNHONOURED_INTERRUPTS.has(verdict)) {
+      // A name this Convex does not know. Log rather than guess: a NEWER bridge inventing
+      // a verdict must not have it silently read as either outcome.
+      console.error(`bridge /abort: unrecognized interrupt verdict "${verdict}"`);
+      return null;
+    }
+    const session = body?.providerSession;
+    if (typeof session !== "string" || session === "") {
+      // A failed interrupt with nothing to name: the turn had no binding to drop.
+      return null;
+    }
+    console.error(
+      `bridge /abort: interrupt "${verdict}" — provider session dropped as untrusted`,
+    );
+    return session;
+  } catch {
+    // empty / non-JSON body -> no verdict; never throw on the Stop path
+    return null;
+  }
+}
+
 // Read a single outbox row (used by the dispatch action, which has no db
 // access of its own — actions read via queries).
 export const getOutbox = internalQuery({
@@ -1668,6 +1728,11 @@ export const dispatchAbort = internalAction({
     ctx,
     { chatId, userId, sessionKey, runId, finalizeMessageId, routedAgent },
   ) => {
+    /** The provider session the bridge asked to interrupt WITHOUT being able to confirm
+     *  it stopped. Set only from a verdict the bridge actually reported; it rides the
+     *  guaranteed settle below, because on a user Stop that finalize is the ONLY write
+     *  this path makes and the drop has to be atomic with it (lot 31). */
+    let untrusted: string | null = null;
     try {
       const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
       if (!sharedSecret) {
@@ -1712,6 +1777,8 @@ export const dispatchAbort = internalAction({
       });
       if (!response.ok) {
         console.error(`bridge POST /abort -> HTTP ${response.status}`);
+      } else {
+        untrusted = await readUntrustedSessionAfterAbort(response);
       }
     } catch (err) {
       console.error("bridge POST /abort failed:", err);
@@ -1735,6 +1802,11 @@ export const dispatchAbort = internalAction({
           // pins a runId-LESS legacy turn — a reopen always sets a runId, so
           // the mismatch still protects the new generation.
           expectedRunId: runId ?? null,
+          // The run may still be alive on the provider, writing this turn into the
+          // session transcript the NEXT turn would resume. Named by ID, so the clear
+          // only fires while the chat is still bound to what the bridge tried to stop —
+          // a turn that has since rotated or rebound is untouched.
+          ...(untrusted ? { clearProviderSession: untrusted } : {}),
         });
       }
     }

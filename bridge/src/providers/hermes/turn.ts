@@ -78,6 +78,18 @@ export interface HermesTurnRun {
   accepted: Promise<void>;
   done: Promise<void>;
   runId(): string | null;
+  /** The stored session id CONVEX IS KNOWN TO HOLD for this chat — the id this turn
+   *  resumed, or the last one it successfully wrote. NOT simply what the turn believes:
+   *  a drop is matched by id, so naming a rotation whose write was dropped would match
+   *  nothing and clear nothing (raised in review). */
+  storedSessionId(): string | null;
+  /** Declare this turn's session unusable, so no binding it has queued is ever written.
+   *  An ABORT calls it: a turn being cut must not persist a session decided in its dying
+   *  moments, because nobody will verify that session again. */
+  markSessionUntrusted(): void;
+  /** Resolves once every binding write this turn had QUEUED has settled. An abort awaits
+   *  it (bounded) so `storedSessionId()` is read after the last write, not during it. */
+  settledBindings(): Promise<void>;
 }
 
 function messageOf(err: unknown): string {
@@ -100,6 +112,20 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     rejectAccepted = rej;
   });
 
+  /** The session id this turn runs on — the value the chat's slot holds (a resume) or
+   *  will hold (a fresh mint). Lives at TURN scope, not inside the drain, because two
+   *  readers outside it need it: the paths that must DROP it (a drop has to name the
+   *  binding it targets — a terminal can land after the chat was released and a newer
+   *  turn bound a session of its own), and the ABORT, which reports to Convex which
+   *  binding it just declared unusable. */
+  let boundSessionId: string | null = null;
+  /** The id CONVEX HOLDS: what this turn resumed, then whatever it has actually managed to
+   *  WRITE. See the WS path — the two diverge when a write is dropped, and only this one
+   *  can be matched against the chat's slot. */
+  let convexBoundSid: string | null = opts.providerChatId ?? null;
+  let markUntrustedRef: (() => void) | null = null;
+  let settledBindingsRef: (() => Promise<void>) | null = null;
+
   const done = (async () => {
     let res: Response;
     // SILENCE WATCHDOG. The acceptance phase has its own bound inside `openStream`; the
@@ -118,25 +144,26 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         );
       }
     }
-    /** The session id this turn runs on — the value the chat's slot holds (a resume) or
-     *  will hold (a fresh mint). Hoisted OUT of the send block because the paths that
-     *  must drop it live in the read block below, and a drop has to name the binding it
-     *  targets: a terminal can land after the chat was released and a newer turn bound a
-     *  session of its own. */
-    let boundSessionId: string | null = null;
     /** This turn declared its session unusable (silence, EOF with no terminal, read
      *  failure), so its terminal cleared it. Nothing may bind afterwards. */
     let sessionCleared = false;
+    markUntrustedRef = () => {
+      sessionCleared = true;
+    };
     /** Same serialization as the WS path: the minted bind and a rotation learned later in
      *  the same turn were both fire-and-forget, so the wire order did not have to match
      *  the decision order — the mint could land last and restore the closed parent
      *  session (raised in review). The untrusted check is read at WRITE time. */
     let bindChain: Promise<void> = Promise.resolve();
+    settledBindingsRef = () => bindChain;
     const persistBinding = (sid: string): void => {
       bindChain = bindChain
         .then(async () => {
           if (sessionCleared) return;
           await opts.onBoundSession?.(sid);
+          // What Convex now holds — see the WS path for why this is tracked apart from
+          // what the turn believes.
+          convexBoundSid = sid;
         })
         .catch((e) =>
           console.error(
@@ -317,11 +344,25 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
           // (raised in review) — and the WS path had the same asymmetry until lot 29.
           const rid = norm.currentRunId;
           if (rid) {
+            // The verdict changes nothing HERE — this terminal drops the session either
+            // way, silence being reason enough. It is logged because it is the only
+            // record of whether the run was actually ended: on this transport the answer
+            // is a structural `ineffective`, which means the run kept going, kept
+            // billing, and kept running tools after the turn was rendered in error.
+            // Atrium cannot stop that; saying so beats a silent `.catch(() => {})`.
             void opts.client
               .stopRun(rid)
+              .then((verdict) => {
+                if (verdict !== "interrupted") {
+                  console.error(
+                    `[hermes-turn] stop after timeout did not take effect ` +
+                      `(${verdict}) chat=${opts.chatId} — the run may still be live`,
+                  );
+                }
+              })
               .catch((e) =>
                 console.error(
-                  "[hermes-turn] stopRun after timeout failed (best effort):",
+                  "[hermes-turn] stopRun after timeout failed:",
                   (e as Error)?.message ?? e,
                 ),
               );
@@ -431,5 +472,12 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     );
   })();
 
-  return { accepted, done, runId: () => norm.currentRunId };
+  return {
+    accepted,
+    done,
+    runId: () => norm.currentRunId,
+    storedSessionId: () => convexBoundSid,
+    markSessionUntrusted: () => markUntrustedRef?.(),
+    settledBindings: () => settledBindingsRef?.() ?? Promise.resolve(),
+  };
 }

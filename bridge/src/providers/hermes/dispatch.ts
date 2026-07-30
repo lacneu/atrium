@@ -7,7 +7,7 @@
 
 import type { BridgeConfig } from "../../config.js";
 import type { ConvexWriter } from "../../convex-writer.js";
-import { HermesClient } from "./client.js";
+import { HermesClient, type HermesInterruptVerdict } from "./client.js";
 import { HermesWsClient } from "./ws-client.js";
 import { HermesFilesFetcher } from "./files-fetcher.js";
 import { safeSessionPart } from "../openclaw/session-keys.js";
@@ -624,35 +624,208 @@ async function performHermesWsAbort(
   registry: HermesTurnRegistry,
   expectedRunId: string | null = null,
   cause: "user" | "reset" = "user",
-): Promise<boolean> {
+): Promise<HermesAbortResult> {
   const current = registry.peekWsTurn(chatId);
-  if (!current) return false;
+  if (!current) return NOT_ABORTED;
   const liveSid = current.run.runtimeSessionId();
-  if (expectedRunId && expectedRunId !== liveSid) return false;
+  if (expectedRunId && expectedRunId !== liveSid) return NOT_ABORTED;
   const turn = registry.takeWsTurn(chatId);
-  if (!turn) return false;
+  if (!turn) return NOT_ABORTED;
   const sid = turn.run.runtimeSessionId();
+  // FIRST, and regardless of how the interrupt turns out: a turn being cut must not persist
+  // a binding it decided in its dying moments. `session.info` can rotate the session in the
+  // turn's tail and queue that write (lot 36), and until now a user Stop let it land —
+  // putting a session nobody will ever verify back into the slot (raised in review).
+  turn.run.markSessionUntrusted();
+  // SECOND, the local settle — BEFORE any waiting or any network call. User Stop: NO
+  // terminal (Convex already finalized the message `aborted`). RESET: write the aborted
+  // terminal — dispatchReset does NOT finalize optimistically, so without it the row would
+  // stay streaming until the watchdog (codex P2).
+  //
+  // Its position is the point: settling after the bind wait left the reader consuming for
+  // up to two seconds, and a provider terminal landing there finalized the message
+  // `complete` — first-terminal-wins then made Convex's settle lose, so a Stop the user
+  // pressed rendered a finished answer (raised in review). Protecting the session must
+  // never cost the Stop.
+  turn.run.forceSettle(cause === "reset");
+  // THEN let the writes ALREADY in flight land, so the id below is the one Convex holds
+  // and not one it is about to hold.
+  await settleBindingsBounded(turn.run, chatId);
+  // The STORED id, not the runtime one: `session.interrupt` is routed by runtime session,
+  // but the chat's binding holds the stored id, so that is the only name a drop can match.
+  const providerSession = turn.run.storedSessionId();
+  let interrupt: HermesInterruptVerdict;
   if (sid) {
-    await registry
+    interrupt = await registry
       .wsClientFor(cfg)
       .call("session.interrupt", { session_id: sid })
-      .catch(() => {
-        // Best-effort: the interrupt is a courtesy; the local settle below
-        // guarantees the turn stops waiting either way.
-      });
+      .then<HermesInterruptVerdict>(() => "interrupted")
+      // NOT "ineffective": on this transport the interrupt genuinely works
+      // (`session.interrupt` calls `agent.interrupt()` and sets
+      // `_turn_cancel_requested`), so a lost RPC answer says nothing about whether it
+      // ran. Unknown state is still not resumed — that is lot 30's rule, not a new one.
+      .catch<HermesInterruptVerdict>(() => "unknown");
+  } else {
+    // No runtime session means nothing was even asked. The prompt was submitted, so a
+    // run may well be live on the other side; claiming otherwise is what left the
+    // session bound to it.
+    interrupt = "ineffective";
   }
-  // Settle locally. User Stop: NO terminal (Convex already finalized the
-  // message `aborted`). RESET: write the aborted terminal — dispatchReset does
-  // NOT finalize optimistically, so without it the row would stay streaming
-  // until the watchdog (codex P2).
-  turn.run.forceSettle(cause === "reset");
-  return true;
+  forgetSessionIfUnhonoured(registry, chatId, interrupt);
+  return { aborted: true, interrupt, providerSession };
+}
+
+/** What an abort attempt learned, for the caller that has to act on it.
+ *
+ *  `interrupt`/`providerSession` are null when NOTHING was aborted: there is no verdict
+ *  to give about a turn that was not there, and above all no session to drop — the chat
+ *  may be bound to a turn that is working. */
+export interface HermesAbortResult {
+  aborted: boolean;
+  interrupt: HermesInterruptVerdict | null;
+  providerSession: string | null;
+}
+
+const NOT_ABORTED: HermesAbortResult = {
+  aborted: false,
+  interrupt: null,
+  providerSession: null,
+};
+
+/**
+ * THE SECOND LAYER, without which the durable drop is decoration.
+ *
+ * Convex nulls `openclawChatId`, but `selectPriorSession` FALLS BACK to this registry's
+ * in-memory memory of the chat's session. So in the same bridge process the very next turn
+ * resumed the session that had just been declared untrusted — the first cut of this lot
+ * shipped the durable half only (raised in review). The rule is already stated at the
+ * `onSessionForgotten` call sites: the durable drop rides the terminal, THIS is the cache.
+ *
+ * `forgetChat` also bumps the chat's reset GENERATION, which is what both transports'
+ * `onBoundSession` guards compare against — so a bind still in flight at the dispatch
+ * layer is refused too, cache and durable write alike.
+ *
+ * Conditional on the verdict, unlike the turn-level marking: a CONFIRMED interrupt leaves
+ * a perfectly usable conversation behind, and evicting it would cost a rehydration for
+ * nothing.
+ */
+/** How long an abort waits for a binding write it found in flight. One Convex mutation,
+ *  no more: past that the Stop matters more than naming the slot exactly. */
+const ABORT_BIND_SETTLE_MS = 2_000;
+
+/**
+ * Let the turn's in-flight binding writes LAND before reading which session it holds.
+ *
+ * The race this closes, raised in review: a rotation A→B whose `bindProviderChat(B)` is
+ * already on the network when the Stop arrives. Reading the id then gave B while Convex
+ * still held A, so the clear found a mismatch — and a mismatch drops NOTHING and bumps no
+ * epoch, which is exactly what let the in-flight write land afterwards and put B back.
+ *
+ * Bounded, and failure is not fatal: on a timeout the id read is whatever Convex was last
+ * known to hold, which degrades to the previous behaviour rather than blocking the Stop.
+ */
+async function settleBindingsBounded(
+  run: { settledBindings(): Promise<void> },
+  chatId: string,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ABORT_BIND_SETTLE_MS);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    const outcome = await Promise.race([
+      run.settledBindings().then(() => "settled" as const),
+      bound,
+    ]);
+    if (outcome === "timeout") {
+      console.error(
+        `[hermes-abort] a session bind was still in flight after ` +
+          `${ABORT_BIND_SETTLE_MS} ms chat=${chatId} — naming the last known binding`,
+      );
+    }
+  } catch {
+    // `settledBindings` never rejects (the chain swallows its own errors); belt and
+    // braces, because a throw here would turn a Stop into a 502.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function forgetSessionIfUnhonoured(
+  registry: HermesTurnRegistry,
+  chatId: string,
+  interrupt: HermesInterruptVerdict,
+): void {
+  if (interrupt === "interrupted") return;
+  registry.forgetChat(chatId);
 }
 
 /**
- * Abort the in-flight Hermes turn for a chat: cancel the SSE request AND POST
- * the server-side run stop (best-effort). Returns true if a live turn was
- * found. Convex has already optimistically finalized the message as aborted.
+ * DROP the chat's provider session durably, from the BRIDGE, when the stop was not honoured.
+ *
+ * The verdict's primary carrier is the `/abort` response: it rides Convex's guaranteed
+ * settle, so the drop is atomic with the aborted terminal (lot 31's rule). But it is the
+ * ONLY carrier, and a response that never arrives takes the drop with it — the bridge has
+ * already tried to interrupt, the run may still be writing to the session, and Convex
+ * settles the bubble without ever hearing about it (raised in review). This is the second
+ * carrier, so the guarantee does not depend on one HTTP reply surviving.
+ *
+ * Applying twice is harmless: the later clear finds an empty slot and only bumps the epoch.
+ * A `null` verdict means no turn was aborted — nothing to drop, and the chat may well be
+ * bound to a turn that is working.
+ *
+ * Never throws: a failed durable write must not turn a Stop into a 502.
+ */
+export async function applyDurableSessionDrop(
+  writer: Pick<ConvexWriter, "clearProviderChat">,
+  chatId: string,
+  result: HermesAbortResult,
+): Promise<void> {
+  if (result.interrupt === null || result.interrupt === "interrupted") return;
+  try {
+    await (writer.clearProviderChat?.(chatId) ?? Promise.resolve());
+  } catch (e) {
+    console.error(
+      "[hermes-abort] durable session drop failed (the response still carries it):",
+      (e as Error)?.message ?? e,
+    );
+  }
+}
+
+/**
+ * The `/abort` JSON body. Extracted so the WIRE SHAPE has exactly one producer: its keys
+ * are read on the other side by `convex/bridge.ts` → `readUntrustedSessionAfterAbort`,
+ * and a rename on either side is a SILENT failure — Convex would read `undefined`, drop
+ * nothing, and the phantom-turn defect would be back with every test still green.
+ *
+ * Both verdict fields are OMITTED rather than nulled: their absence is what an older
+ * bridge sends mid-rolling-deploy, and it must read as "no verdict", never as "the stop
+ * failed" (which would drop a healthy session on every Stop).
+ */
+export function hermesAbortResponseBody(
+  result: HermesAbortResult,
+): Record<string, unknown> {
+  return {
+    ok: true,
+    aborted: result.aborted,
+    ...(result.interrupt ? { interrupt: result.interrupt } : {}),
+    ...(result.providerSession
+      ? { providerSession: result.providerSession }
+      : {}),
+  };
+}
+
+/**
+ * Abort the in-flight Hermes turn for a chat: cancel the SSE request AND ask the provider
+ * to stop the run. Convex has already optimistically finalized the message as aborted.
+ *
+ * The server-side stop is NOT a courtesy, and the comment that used to call it one hid
+ * the defect this returns a verdict for. Cancelling our read stops us reading; the run
+ * goes on, bills, keeps running tools, and — this is the user-visible part —
+ * `agent/turn_finalizer.py` persists its turn into the session transcript, so the NEXT
+ * turn inherits a reply the user never saw and believes was cancelled. Reporting whether
+ * the stop took effect is what lets Convex refuse to resume such a session.
  */
 export async function performHermesAbort(
   cfg: BridgeConfig,
@@ -660,7 +833,7 @@ export async function performHermesAbort(
   registry: HermesTurnRegistry,
   expectedRunId: string | null = null,
   cause: "user" | "reset" = "user",
-): Promise<boolean> {
+): Promise<HermesAbortResult> {
   if ((cfg.transport ?? "ws") === "ws") {
     return performHermesWsAbort(cfg, chatId, registry, expectedRunId, cause);
   }
@@ -669,30 +842,46 @@ export async function performHermesAbort(
   // newer turn — do NOT abort that one; codex P2). A null expectedRunId is a
   // legacy/best-effort abort of whatever is live.
   const current = registry.peek(chatId);
-  if (!current) return false;
+  if (!current) return NOT_ABORTED;
   const liveRunId = current.run.runId();
   // With a named target: abort ONLY on an EXACT match. If the live turn has no
   // run id yet (a newer turn that has not received run.started), it CANNOT be
   // the targeted old run — do NOT abort it (codex P2). A null expectedRunId is
   // a best-effort abort of whatever is live (e.g. Stop before run.started).
   if (expectedRunId && expectedRunId !== liveRunId) {
-    return false;
+    return NOT_ABORTED;
   }
   const turn = registry.take(chatId);
-  if (!turn) return false;
+  if (!turn) return NOT_ABORTED;
   const runId = turn.run.runId();
+  // Same three steps, same order, same reasons as the WS path: mark so no NEW binding can
+  // be written, CUT THE STREAM, and only then wait on the writes already in flight. The
+  // cut before the wait is what keeps a provider terminal from finishing a turn the user
+  // stopped.
+  turn.run.markSessionUntrusted();
   // A /reset abort tells the turn to FINALIZE the message (Convex has not);
   // a user Stop lets Convex own the aborted terminal.
   turn.abort.abort(cause === "reset" ? HERMES_RESET_ABORT : undefined);
-  if (runId) {
-    await hermesClientFor(cfg)
-      .stopRun(runId)
-      .catch(() => {
-        // Best-effort: the signal already cut the local stream; the server-side
-        // stop is a courtesy so Hermes doesn't keep billing the run.
-      });
+  await settleBindingsBounded(turn.run, chatId);
+  const providerSession = turn.run.storedSessionId();
+  // On this transport the answer is a STRUCTURAL 404: the run id comes from
+  // `/api/sessions/{id}/chat/stream`, which registers it in neither map
+  // `_handle_stop_run` consults. The call is still made rather than short-circuited —
+  // the verdict is measured, so it stays correct if upstream ever registers those ids,
+  // and a bridge that assumed the answer would be a bridge that lies again.
+  const interrupt: HermesInterruptVerdict = runId
+    ? await hermesClientFor(cfg).stopRun(runId)
+    : // Nothing to name, so nothing was asked — while the prompt WAS accepted, so a run
+      // may be live. Proven no-op, not an unknown.
+      "ineffective";
+  if (interrupt !== "interrupted") {
+    console.error(
+      `[hermes-abort] stop did not take effect (${interrupt}) chat=${chatId} — ` +
+        `dropping the provider session: the run may still be writing to it`,
+    );
   }
-  return true;
+  forgetSessionIfUnhonoured(registry, chatId, interrupt);
+  return { aborted: true, interrupt, providerSession };
 }
 
 /** Reset a Hermes chat: cancel any in-flight turn AND forget the persisted

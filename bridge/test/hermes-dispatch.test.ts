@@ -35,7 +35,14 @@ describe("HermesTurnRegistry abort targeting", () => {
     const reg = new HermesTurnRegistry();
     const mk = (rid: string | null) => ({
       abort: new AbortController(),
-      run: { accepted: Promise.resolve(), done: Promise.resolve(), runId: () => rid },
+      run: {
+        accepted: Promise.resolve(),
+        done: Promise.resolve(),
+        runId: () => rid,
+        storedSessionId: () => null,
+        markSessionUntrusted: () => {},
+        settledBindings: () => Promise.resolve(),
+      },
     });
     const t1 = mk("run-1");
     reg.set("c1", t1);

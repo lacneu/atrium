@@ -26,6 +26,24 @@ export interface HermesHealth {
   version?: string;
 }
 
+/**
+ * What the bridge LEARNED when it asked the provider to stop a run.
+ *
+ * THREE names, ONE consequence: only `interrupted` lets the chat keep its provider
+ * session; the other two drop it, because a run that may still be going owns server-side
+ * state nobody can account for (the rule lot 30 settled). They stay distinct anyway,
+ * because after the fact they answer different questions:
+ *
+ *   * `ineffective` — PROOF nothing was stopped (a 404 `run_not_found`, or no run id to
+ *     name, so nothing was even asked). On the REST transport this is STRUCTURAL and
+ *     therefore constant, not an incident.
+ *   * `unknown` — we could not learn. Network, timeout, 5xx. Rare, and on WS it does not
+ *     even mean the interrupt failed — only that its answer was lost.
+ *
+ * Collapsing them would make "your chat forgot after you pressed Stop" untriageable.
+ */
+export type HermesInterruptVerdict = "interrupted" | "ineffective" | "unknown";
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export class HermesError extends Error {
@@ -166,9 +184,31 @@ export class HermesClient {
     return id;
   }
 
-  /** Interrupt an in-flight run (POST /v1/runs/{id}/stop). Best-effort. */
-  async stopRun(runId: string): Promise<void> {
-    await this.json("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`);
+  /**
+   * Interrupt an in-flight run (POST /v1/runs/{id}/stop) and report WHAT HAPPENED.
+   *
+   * Not best-effort, and not a courtesy: cancelling our HTTP read stops US reading, so
+   * this call is the only thing that can end the run on the other side. The caller has
+   * to know whether it did, because a run still going owns a session nobody can vouch
+   * for — see `HermesInterruptVerdict`.
+   *
+   * The 404 is the load-bearing case. Upstream answers `run_not_found` when the id is in
+   * neither `_active_run_agents` nor `_active_run_tasks`, and the SSE transport this
+   * client drives (`/api/sessions/{id}/chat/stream`) registers its run id in neither. So
+   * on that transport the 404 is a CERTAINTY, and reading it is how the bridge stops
+   * assuming otherwise.
+   */
+  async stopRun(runId: string): Promise<HermesInterruptVerdict> {
+    try {
+      await this.json("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`);
+      return "interrupted";
+    } catch (err) {
+      // 404 = the gateway looked and has no such run: PROOF nothing was stopped.
+      // Anything else (network, timeout, 5xx, an unparseable body) leaves the question
+      // open — the gateway may well have interrupted before failing to say so.
+      if (err instanceof HermesError && err.status === 404) return "ineffective";
+      return "unknown";
+    }
   }
 
   /**
