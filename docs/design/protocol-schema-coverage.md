@@ -385,12 +385,32 @@ about the OpenClaw→normalized translation; Hermes may or may not expose
 equivalent signals, and the shared `context.compaction` / `run.status` event
 shapes are the contract any provider must satisfy — not the OpenClaw field names.
 
-**Corrected 2026-07-26 (W10/G-74).** The paragraph above is written in the future
-tense — "when the Hermes adapter lands", "structural placeholder with zero
-capabilities". That has been false since 0.38.0: the Hermes adapter SHIPPED, with two
-transports (REST and WS), its own normalizer under `providers/hermes/`, and a
-`supportedRange` of `0.18.0 … 0.18.2` in `compat.ts` — the placeholder row is gone.
-What is still true is the part that matters: Hermes has **no vendored schema and no
-coverage matrix of its own**, so nothing ratchets its wire contract. Every field-level
-verdict in §1–§4 remains OpenClaw-only, and a Hermes protocol change would land
-unannounced. That is a DECLARED gap (the program's W12), not a pending adapter.
+**Corrected 2026-07-26 (W10/G-74), and corrected again 2026-07-30 (lot 47).** The
+paragraph above is written in the future tense — "when the Hermes adapter lands",
+"structural placeholder with zero capabilities". That has been false since 0.38.0: the
+Hermes adapter SHIPPED, with two transports (REST and WS) and its own normalizer under
+`providers/hermes/`. `supportedRange` is now `0.18.0 … 0.19.0`, and 0.19.0 EARNED its
+claim against `protocol/hermes/0.19.0/BENCH.json`.
+
+The 2026-07-26 correction then said Hermes had "no vendored schema and no coverage
+matrix of its own, so nothing ratchets its wire contract". **That is no longer true
+either, and only partly so** — a document that overstates its own gaps misleads exactly
+as much as one that hides them. As of lot 47:
+
+* The API server's OWN published REST contract IS vendored, from the upstream source
+  literal, at `protocol/hermes/<version>/rest-contract.json` beside a verbatim excerpt
+  whose sha256 is recorded in `PROVENANCE.json` and re-checked against a reachable
+  upstream checkout.
+* A ratchet (`test/hermes-rest-surface.test.ts`) requires every absolute path the Hermes
+  provider constructs to be either in that published map or explicitly classified with
+  the upstream server it belongs to — which is how Atrium's dependency on THREE upstream
+  servers (api_server, tui_gateway, and the opt-in dashboard) became a recorded fact
+  instead of an assumption.
+
+**What genuinely remains uncovered**, and it is the larger half: the WS JSON-RPC surface
+has no vendored schema (it needs AST extraction, not a literal), there is no runtime
+drift detector for Hermes, and a capability lockstep against the gateway's own `features`
+flags cannot yet fire — measured, not assumed: the 8 capabilities Atrium declares and the
+5 features upstream reports false do not intersect. Every field-level verdict in §1–§4
+remains OpenClaw-only. That is a DECLARED gap (the program's W12/G-58), not a pending
+adapter.
