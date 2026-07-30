@@ -15,7 +15,14 @@ before making changes; read the per-area notes below before touching an area.
   perf), not narration.
 - **No work-tracking docs in this repo.** `docs/` and `compliance/` are for users
   and contributors. Plans, decision logs, retros, and "what we built" write-ups
-  belong in the maintainer's private notes, never here.
+  belong in the maintainer's private notes, never here. **One exception, and it
+  earned it**: `docs/design/stabilization-1.0.0/` holds the gap registry and the
+  per-lot notes of the 1.0.0 stabilization programme. Kept outside the repo, that
+  registry drifted — gaps closed by a lot stayed listed as open, and a state note
+  never re-derived from the source becomes a trap. It lives beside the code so it
+  is re-read and corrected with it. Everything in it is anonymized (see that
+  directory's README). This exception does not generalize: new plans and retros
+  still belong in private notes.
 
 ## Map
 
@@ -26,7 +33,7 @@ before making changes; read the per-area notes below before touching an area.
 | `bridge/` | Standalone Node/TypeScript package: holds the connection to an agent gateway (OpenClaw, or Hermes over its WebSocket or REST transport), normalizes the version-specific event stream, relays turns to/from Convex. One adapter per provider under `bridge/src/providers/`. Its own `package.json` + tests. |
 | `mcp/` | MCP server exposing the metadata-only observability API to agents/CLIs. |
 | `deploy/` | The deployment surface: `compose/` (Docker Compose + `bootstrap-env.sh`) and `helm/`. **The canonical deploy guide is `deploy/README.md`.** |
-| `docs/` | User/contributor documentation. |
+| `docs/` | User/contributor documentation. `docs/design/stabilization-1.0.0/` is the 1.0.0 gap registry and its per-lot notes — the one work-tracking exception, explained above. |
 | `messages/` + `project.inlang/` | i18n source (Paraglide). Compiled to the git-ignored `src/paraglide/`. |
 | `.github/` | CI (`build-and-push.yml`, `ci.yml`), issue/PR templates. |
 
