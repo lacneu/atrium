@@ -1,6 +1,27 @@
 # Changelog
 
+## [0.69.1] — The 0.69 release, actually released
+
+`0.69.0` was tagged and never published: the i18n literal ratchet failed, so the
+release workflow stopped at its test gate and `publish-npm` never ran. npm went
+straight from `0.68.12` to this version, and the tag `v0.69.0` is left pointing
+where it pointed rather than being moved under anyone who had already fetched it.
+
+Everything described under `0.69.0` below ships here, plus the fix that unblocked
+it:
+
+- **The context-divergence line is translated.** The Hermes gap shown under the
+  context meter was assembled in French in the source, so an English session read
+  a French sentence and the string could not be translated at all. It is now a
+  keyed message with `{gateway}` and `{delta}` parameters, and the English wording
+  says what the gap is measured against.
+
+Deploy: unchanged from `0.69.0` — `npx convex deploy` is REQUIRED (schema change),
+plus the bridge and frontend images.
+
 ## [0.69.0] — Hermes turns end honestly, and the gateway's own catalogue is read
+
+> Tagged but never published — see `0.69.1`.
 
 The bulk of the 1.0.0 stabilization work on the Hermes provider, plus the protocol
 observability that stops unhandled gateway vocabulary from being discovered by a
