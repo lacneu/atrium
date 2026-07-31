@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.69.2] — Sign-in stops being on a timer, and a chat opens where you left it
+
+Two corrections, one of which is a latent outage rather than an annoyance.
+
+- **A session's refresh-token chain no longer grows until nobody can sign in.**
+  `@convex-dev/auth` mints a refresh token on every session refresh and chains
+  them, and deleting a session's tokens reads the whole chain at once. Nothing
+  pruned it, so the count only ever went up — and past roughly four thousand the
+  read hit Convex's per-function limit. Because that read runs *inside* sign-in,
+  everyone on that session was locked out, with an error naming a library
+  internal rather than the cause. Found on a real backend, on one session holding
+  about five thousand tokens. An hourly job now trims each chain to the newest
+  few, with bounded batches so the cleanup can never hit the limit it exists to
+  prevent. Nothing to do on upgrade: the first run clears the backlog.
+- **Opening a conversation no longer scrolls through its whole history.** The
+  thread used to animate from the first message down to the last one on every
+  open. It now takes its position instantly and invisibly, then fades in — and it
+  lands on your most recent bookmark when the conversation has one, at the last
+  message otherwise. A `?m=` link still wins: it already says where to go.
+
+Deploy: `npx convex deploy` — the cron is a backend change — plus the bridge and
+frontend images.
+
 ## [0.69.1] — The 0.69 release, actually released
 
 `0.69.0` was tagged and never published: the i18n literal ratchet failed, so the
