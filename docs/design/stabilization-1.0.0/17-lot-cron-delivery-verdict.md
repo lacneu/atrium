@@ -30,7 +30,18 @@ exécution correctement livrée pour perdue.
 
 ## Le maillon qu'on oublie
 
-Le fait traverse **deux** normalisateurs successifs, et chacun re-type ce qu'il garde :
+Le fait traverse **cinq** maillons successifs, et chacun re-type ce qu'il garde :
+`normalizeCronJobDetail` et `fetchCronJobs` côté bridge, puis `detailFrom`,
+`parseCronListResponse` et `listCronRuns` côté Convex — ces trois derniers **jettent
+tout ce qu'ils ne nomment pas**.
+
+La première version de ce lot en a corrigé deux, a écrit dans son propre message de
+commit que « le maillon qu'on oublie » était le danger, et s'est arrêtée avant la
+**liste** — l'unique écran qu'un opérateur balaie. Une tâche dont le compte rendu
+s'était perdu y affichait toujours « OK ». L'historique d'exécutions avait le même
+trou, hérité d'un lot antérieur. Énoncer la leçon ne l'applique pas.
+
+Ce qui suit décrit les deux premiers maillons, et chacun re-type ce qu'il garde :
 `normalizeCronJobDetail` côté bridge, puis `detailFrom` côté Convex, qui **jette tout
 ce qu'il ne nomme pas**. Un champ transporté fidèlement par le premier meurt
 silencieusement dans le second. C'est exactement la leçon du lot G-70 : *une chaîne ne
@@ -39,6 +50,23 @@ fait que la longueur des maillons que quelqu'un a vérifiés*.
 La branche Hermes épelle les quatre champs à `null` explicitement : cette passerelle
 n'a pas de `cron.get` par tâche et son listing ne porte aucun état de livraison. Les
 laisser absents aurait laissé un champ manquant se lire comme un verdict.
+
+## Le motif brut de la passerelle : jugement assumé
+
+La revue croisée a signalé `lastDeliveryError` comme une voie de fuite possible : c'est
+une chaîne libre (`Type.String` au contrat, sans classification), et un fournisseur
+pourrait y glisser une destination ou un identifiant.
+
+Vérifié plutôt que supposé : ce champ **n'atteint ni les traces ni les anomalies** — les
+surfaces où la règle « jamais de contenu, seulement des comptes, des longueurs et des
+noms de champs » s'applique. Il ne vit que sur les écrans cron, qui affichent déjà le
+**prompt de la tâche elle-même** (jusqu'à 4000 caractères) : ce sont des surfaces de
+contenu du propriétaire, pas des surfaces de métadonnées, et le listing est cadré aux
+agents auxquels l'appelant a droit.
+
+Le motif est par ailleurs la seule partie **actionnable** : « non livré » sans cause ne
+donne rien à corriger. Il est borné à 400 caractères aux deux étages. Décision : on le
+garde tel quel sur ces écrans, et on ne le laisse pas migrer vers l'observabilité.
 
 ## À FAIRE — l'atterrissage lui-même
 
