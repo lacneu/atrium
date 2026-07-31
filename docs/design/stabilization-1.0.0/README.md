@@ -41,6 +41,7 @@ constats de revue, et — systématiquement — les limites qui restent.
 - [14-lot-48-lost-reply.md](14-lot-48-lost-reply.md) — rendre au tour perdu sa réponse
 - [15-lot-g70-announced-surface.md](15-lot-g70-announced-surface.md) — lire ce que la passerelle annonce sur elle-même
 - [16-lot-agent-dead-end.md](16-lot-agent-dead-end.md) — sortir d'une conversation ouverte sur une passerelle en panne ; **à faire** : précondition de liaison sur le premier envoi
+- [17-lot-cron-delivery-verdict.md](17-lot-cron-delivery-verdict.md) — une tâche porte le verdict de livraison de sa dernière exécution ; **à faire** : l'atterrissage du compte rendu
 
 ## Conventions
 

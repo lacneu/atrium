@@ -271,6 +271,15 @@ export type CronJobDetailView = {
   agentId: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** The LAST run's moment and delivery verdict, carried from the scheduler's own
+   *  job state. A run can succeed and still reach NOBODY — that is precisely how a
+   *  user watched a weekly cycle fail in silence — so `lastRunStatus` alone is not
+   *  the whole truth about the last run. `lastDelivered: null` = the gateway said
+   *  nothing, never "it failed". */
+  lastRunAtMs: number | null;
+  lastDelivered: boolean | null;
+  lastDeliveryError: string | null;
+  lastDeliveryStatus: string | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
 };
@@ -328,6 +337,13 @@ function detailFrom(data: unknown): CronJobDetailView | null {
     agentId: j.agentId as string | null,
     nextRunAtMs: detailNum(j.nextRunAtMs),
     lastRunStatus: detailStr(j.lastRunStatus),
+    lastRunAtMs: detailNum(j.lastRunAtMs),
+    // STRICT boolean, like the bridge: silence stays null. This projection RE-TYPES
+    // every field and drops what it does not name, so a fact carried faithfully by
+    // the bridge still dies here unless it is listed — the hop nobody checks.
+    lastDelivered: typeof j.lastDelivered === "boolean" ? j.lastDelivered : null,
+    lastDeliveryError: detailStr(j.lastDeliveryError),
+    lastDeliveryStatus: detailStr(j.lastDeliveryStatus),
     createdAtMs: detailNum(j.createdAtMs),
     updatedAtMs: detailNum(j.updatedAtMs),
   };
@@ -407,6 +423,13 @@ async function requireOwnedCronJob(
       messageTruncated: false,
       payloadKind: null,
       deliveryMode: null,
+      // Hermes has no per-job get and its listing carries no delivery state: these
+      // are UNKNOWN here, not "delivered". Spelling them null keeps the Hermes path
+      // honest instead of letting a missing field read as a verdict.
+      lastRunAtMs: null,
+      lastDelivered: null,
+      lastDeliveryError: null,
+      lastDeliveryStatus: null,
       agentId: summary.effectiveAgentId,
       nextRunAtMs: summary.nextRunAtMs,
       lastRunStatus: summary.lastRunStatus,

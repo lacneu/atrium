@@ -33,6 +33,24 @@ export interface CronJobDetail {
   ownerSessionKey: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** When the job LAST ran, per the scheduler's own state. Pairs with the three
+   *  fields below: without it, "the last report reached nobody" is a fact with no
+   *  moment attached, and nothing downstream can tell a fresh miss from an old one. */
+  lastRunAtMs: number | null;
+  /** Did the LAST run's report reach anyone? The scheduler maintains this on the job
+   *  itself (`state.lastDelivered`), so ONE `cron.list` answers "which jobs failed to
+   *  deliver" without walking every job's run history.
+   *
+   *  `null` = the payload said nothing, NOT a failure — the same rule as
+   *  `CronRunEntry.delivered`, and for the same reason: a job that delivers nowhere on
+   *  purpose must never be flagged, or the signal becomes noise and gets ignored. */
+  lastDelivered: boolean | null;
+  /** The scheduler's own words for why it did not arrive (e.g. a channel resolved with
+   *  no target). Kept verbatim and capped: an operator seeing "not delivered" with no
+   *  reason has nothing to act on. */
+  lastDeliveryError: string | null;
+  /** The delivery status enum the scheduler reports alongside it, when stated. */
+  lastDeliveryStatus: string | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
 }
@@ -179,6 +197,14 @@ export function normalizeCronJobDetail(raw: unknown): CronJobDetail {
           : "__invalid__",
     nextRunAtMs: num(state.nextRunAtMs) ?? num(job.nextRunAtMs),
     lastRunStatus: str(state.lastRunStatus) ?? str(job.lastRunStatus),
+    lastRunAtMs: num(state.lastRunAtMs) ?? num(job.lastRunAtMs),
+    // STRICT boolean. `undefined` (the gateway said nothing) must stay null, never
+    // coerce to false — reading silence as "not delivered" would invent a failure on
+    // every build that does not report delivery at all.
+    lastDelivered:
+      typeof state.lastDelivered === "boolean" ? state.lastDelivered : null,
+    lastDeliveryError: str(state.lastDeliveryError, 400),
+    lastDeliveryStatus: str(state.lastDeliveryStatus),
     createdAtMs: num(job.createdAtMs),
     updatedAtMs: num(job.updatedAtMs),
   };

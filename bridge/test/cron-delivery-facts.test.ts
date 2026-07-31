@@ -144,3 +144,57 @@ describe("a job knows which conversation created it", () => {
     expect(normalizeCronJobDetail({ id: "x" }).ownerSessionKey).toBeNull();
   });
 });
+
+// ONE `cron.list` must answer "which jobs failed to deliver their last report".
+//
+// The scheduler maintains that verdict on the JOB (`state.lastDelivered`), not only
+// inside the run history — so detecting an undelivered report costs one call per
+// instance instead of walking every job's runs. Atrium kept `lastRunStatus` from that
+// same state block and dropped the delivery fields sitting next to it, which is why
+// the only way to notice Fabien's lost report was to open the run history by hand.
+describe("a job carries its LAST run's delivery outcome", () => {
+  it("an undelivered last run is readable from the job alone", () => {
+    const job = normalizeCronJobDetail({
+      id: "abcfe3bd",
+      name: "Cycle hebdomadaire complet",
+      state: {
+        lastRunAtMs: 1785359238866,
+        lastRunStatus: "ok",
+        lastDelivered: false,
+        lastDeliveryStatus: "unknown",
+        lastDeliveryError: "Delivering to Telegram requires target <chatId>",
+      },
+    });
+    expect(job.lastDelivered).toBe(false);
+    expect(job.lastRunAtMs).toBe(1785359238866);
+    expect(job.lastDeliveryError).toContain("requires target");
+    expect(job.lastRunStatus, "the run itself still reads ok").toBe("ok");
+  });
+
+  it("SILENCE stays null — it is not a failure", () => {
+    // A gateway build that reports nothing about delivery must not make every job
+    // look broken. Same rule as CronRunEntry.delivered, same reason.
+    const job = normalizeCronJobDetail({ id: "x", state: { lastRunStatus: "ok" } });
+    expect(job.lastDelivered).toBeNull();
+    expect(job.lastDeliveryError).toBeNull();
+    expect(job.lastRunAtMs).toBeNull();
+  });
+
+  it("a non-boolean lastDelivered is refused, not coerced", () => {
+    // `"false"`, `0` and `null` are all truthiness traps; only a real boolean is a
+    // verdict. Coercing would flag a delivered run as lost.
+    for (const bogus of ["false", 0, null, {}]) {
+      expect(
+        normalizeCronJobDetail({ id: "x", state: { lastDelivered: bogus } })
+          .lastDelivered,
+      ).toBeNull();
+    }
+  });
+
+  it("a DELIVERED last run says so", () => {
+    expect(
+      normalizeCronJobDetail({ id: "x", state: { lastDelivered: true } })
+        .lastDelivered,
+    ).toBe(true);
+  });
+});
