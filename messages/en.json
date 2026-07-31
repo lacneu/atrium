@@ -123,6 +123,7 @@
   "cron_delete_confirm": "Delete",
   "cron_runs_recent": "Recent runs",
   "cron_run_ok": "OK",
+  "cron_run_undelivered": "This report reached nobody (channel: {channel}).",
   "cron_run_error": "Failed",
   "cron_col_result": "Last result",
   "cron_result_ok": "OK",

@@ -104,6 +104,43 @@ describe("what is NOT an undelivered run", () => {
     expect(run?.deliveryChannel).toBeNull();
   });
 
+  it("the CONTRACT's top-level shape is read too, not just the nested block", () => {
+    // `CronRunLogEntry.delivered` / `.deliveryError` are declared on the ENTRY in the
+    // vendored schema; the `delivery` block is the richer form the live gateway also
+    // sends. Reading only the block turned a conformant response into "unsaid" — the
+    // same top-level-versus-nested miss this lot already fixed one layer up.
+    const [run] = normalizeCronRunEntries({
+      entries: [
+        {
+          ts: 1,
+          status: "ok",
+          summary: "s",
+          delivered: false,
+          deliveryStatus: "failed",
+          deliveryError: "no target configured",
+        },
+      ],
+    });
+    expect(run?.delivered).toBe(false);
+    expect(run?.deliveryError).toContain("no target");
+  });
+
+  it("the nested block still WINS where both are present", () => {
+    // The block carries the resolution that produced the verdict; the top-level
+    // field is a summary of it and has been seen to disagree.
+    const [run] = normalizeCronRunEntries({
+      entries: [
+        {
+          ts: 1,
+          status: "ok",
+          delivered: true,
+          delivery: { intended: { channel: "last" }, delivered: false },
+        },
+      ],
+    });
+    expect(run?.delivered).toBe(false);
+  });
+
   it("a DELIVERED run is marked delivered", () => {
     const [run] = normalizeCronRunEntries({
       entries: [

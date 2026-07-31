@@ -64,6 +64,11 @@ interface CronRunEntryView {
   error: string | null;
   durationMs: number | null;
   model: string | null;
+  /** Did THIS run's report reach anyone? A run can be `status: "ok"` and have gone
+   *  nowhere — that pair is the whole incident. `null` = unsaid, not a failure. */
+  delivered: boolean | null;
+  deliveryChannel: string | null;
+  deliveryError: string | null;
 }
 interface CronCaps {
   canEdit: boolean;
@@ -428,6 +433,22 @@ export function CronDetailContent({
               ) : null}
               {r.error !== null ? (
                 <div className="oc-cronpanel__run-error">{r.error}</div>
+              ) : null}
+              {/* The run SUCCEEDED and reached nobody. Without this line the history
+                  showed the incident's own run as a plain success — which is exactly
+                  how it stayed invisible while a user asked three times where his
+                  report was. Explicit `false` only. */}
+              {r.delivered === false ? (
+                <div className="oc-cronpanel__run-undelivered">
+                  {m.cron_run_undelivered({
+                    channel: r.deliveryChannel ?? "—",
+                  })}
+                  {r.deliveryError !== null ? (
+                    <span className="oc-cronpanel__plain">
+                      {r.deliveryError}
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           ))}

@@ -112,6 +112,11 @@ type RunEntry = {
   error: string | null;
   durationMs: number | null;
   model: string | null;
+  /** Did THIS run's report reach anyone? `status: "ok"` + `false` is the pair the
+   *  history used to render as a plain success. `null` = unsaid, not a failure. */
+  delivered: boolean | null;
+  deliveryChannel: string | null;
+  deliveryError: string | null;
 };
 
 type EditState = {
@@ -1005,6 +1010,21 @@ export function ScheduledTab() {
                   ) : null}
                   {r.error !== null ? (
                     <div className="oc-cronpanel__run-error">{r.error}</div>
+                  ) : null}
+                  {/* Same line as the thread's cron panel: a run can succeed and
+                      reach nobody, and this history is where someone goes to find
+                      out what happened. Explicit `false` only. */}
+                  {r.delivered === false ? (
+                    <div className="oc-cronpanel__run-undelivered">
+                      {m.cron_run_undelivered({
+                        channel: r.deliveryChannel ?? "—",
+                      })}
+                      {r.deliveryError !== null ? (
+                        <span className="oc-cronpanel__plain">
+                          {r.deliveryError}
+                        </span>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               ))}

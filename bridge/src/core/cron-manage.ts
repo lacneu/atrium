@@ -239,8 +239,12 @@ export function normalizeCronRunEntries(raw: unknown): CronRunEntry[] {
     const intended = d !== null && isRecord(d.intended) ? d.intended : null;
     // Only a job that MEANT to deliver can fail to. `mode: "none"` is a deliberate
     // choice, and flagging it would fill the surface with non-events.
+    // A top-level-only entry carries no `intended`, so "did it MEAN to deliver?"
+    // falls back to "did it say anything about delivery at all?" — either shape.
     const meantToDeliver =
-      intended === null ? d !== null : str(intended.channel) !== "none";
+      intended === null
+        ? d !== null || typeof e.delivered === "boolean"
+        : str(intended.channel) !== "none";
     out.push({
       ts: num(e.ts),
       runAtMs: num(e.runAtMs),
@@ -249,12 +253,23 @@ export function normalizeCronRunEntries(raw: unknown): CronRunEntry[] {
       error: str(e.error, ERROR_CAP),
       durationMs: num(e.durationMs),
       model: str(e.model),
+      // TWO shapes, and the vendored contract declares the TOP-LEVEL one:
+      // `CronRunLogEntry.delivered` / `.deliveryError` sit on the entry itself, while
+      // the `delivery` block is the richer form the live gateway also sends. Reading
+      // only the block turned a contract-conformant response into `null` — the same
+      // state-versus-top-level miss this lot already fixed one layer up, repeated
+      // here (codex). The BLOCK still wins where present: it carries the resolution
+      // that produced the verdict.
       delivered:
         d !== null && typeof d.delivered === "boolean" && meantToDeliver
           ? d.delivered
-          : null,
+          : typeof e.delivered === "boolean" && meantToDeliver
+            ? e.delivered
+            : null,
       deliveryChannel: resolved !== null ? str(resolved.channel) : null,
-      deliveryError: resolved !== null ? str(resolved.error, ERROR_CAP) : null,
+      deliveryError:
+        (resolved !== null ? str(resolved.error, ERROR_CAP) : null) ??
+        str(e.deliveryError, ERROR_CAP),
     });
     if (out.length >= RUNS_LIMIT_MAX) break;
   }
