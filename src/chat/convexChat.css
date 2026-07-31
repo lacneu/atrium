@@ -491,7 +491,9 @@
      event reads as juddering (user report). Smooth-scroll the follow, and
      ease the dock reserve so the thread glides instead of snapping. */
   scroll-behavior: smooth;
-  transition: padding-bottom 200ms ease;
+  transition:
+    padding-bottom 200ms ease,
+    opacity 160ms ease;
   /* --oc-dock-pad: set by QueuedDock (its measured height) so the queued
      cards never mask the end of the in-flight reply — auto-scroll keeps the
      bottom visible ABOVE the frosted cards; manual scroll still slides the
@@ -502,6 +504,19 @@
   align-items: center;
   gap: 1.75rem;
 }
+/* LANDING (user report: opening a chat scrolled visibly from the first message to the
+   last). The smooth scroll above is for FOLLOWING new content; applied to the initial
+   positioning it turns a jump into a guided tour of the whole history.
+
+   While `data-oc-landing` is set the viewport positions itself instantly and stays
+   invisible, so what the user sees is the arrival, never the journey. `threadLanding.ts`
+   removes the attribute once the thread stops growing — on a deadline too, because an
+   invisible thread is a worse failure than a visible jump. */
+.oc-thread__viewport[data-oc-landing] {
+  scroll-behavior: auto;
+  opacity: 0;
+}
+
 
 /* ── Chat-header "spotted strip" (CHAT_UX_DESIGN Part 3) ───────────────────
    A thin, low-emphasis bar above the transcript. Left: chat title (meaning
@@ -3198,6 +3213,11 @@ button.oc-bmk-rail__count:hover {
   .oc-thread__viewport {
     scroll-behavior: auto;
     transition: none;
+  }
+  /* The landing still positions instantly (that is the fix), but it is revealed without
+     a fade — the motion preference applies to the transition, not to the correctness. */
+  .oc-thread__viewport[data-oc-landing] {
+    opacity: 1;
   }
   .oc-empty-answer__ants rect.oc-ants-accent {
     /* static accent at the pill's start — the pre-animation look (the old

@@ -236,6 +236,7 @@ import { MarkdownText, AgentMarkdown } from "./MarkdownText";
 import { FeedbackButton } from "./FeedbackDialog";
 import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
+import { useThreadLanding } from "./useThreadLanding";
 import {
   DocumentViewerContent,
   DocumentViewerContext,
@@ -1001,6 +1002,23 @@ function ChatLoadingSkeleton() {
   );
 }
 
+
+/** Positions the thread on open. Rendered INSIDE `BookmarksProvider` because that is
+ *  where the marks live, and as a component rather than a hook call in the parent for the
+ *  same reason: the provider has to be mounted first. */
+function ThreadLanding(props: {
+  chatId: ConvexId<"chats">;
+  ready: boolean;
+  focusMessageId: string | null;
+}) {
+  useThreadLanding({
+    chatId: props.chatId,
+    ready: props.ready,
+    focusMessageId: props.focusMessageId,
+  });
+  return null;
+}
+
 function ChatThread({
   chatId,
   showTools,
@@ -1315,6 +1333,11 @@ function ChatThread({
       <ChatHeader chatId={chatId} />
       <ThreadAnnouncer chatId={chatId} />
       {initialLoading ? <ChatLoadingSkeleton /> : null}
+      <ThreadLanding
+        chatId={chatId}
+        ready={!initialLoading}
+        focusMessageId={focusMessageId}
+      />
       <ThreadPrimitive.Viewport
         className="oc-thread__viewport"
         style={initialLoading ? { display: "none" } : undefined}
