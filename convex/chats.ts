@@ -231,7 +231,25 @@ export const rebindChatAgent = mutation({
       instanceName,
       agentId,
     });
-    await ctx.db.patch(chatId, { updatedAt: Date.now() });
+    // CLEAR THE PER-TURN ROUTING RESIDUE. `bindChatTarget` moves the binding; it
+    // does not touch `perTurnRouting`/`lastRouted*`/`routingSegment`, and rightly so
+    // — the dispatch calls it MID-conversation, where that history is real.
+    //
+    // Here it is not. A thread can reach "no messages" by having its first turn
+    // DELETED (the truncation removes them all) while those four fields survive on
+    // the chat. Rebind such a chat to B and: the composer's default selection falls
+    // back to the persisted lastRouted A, so the chip shows A; turn 1 goes to B (it
+    // carries no routedAgent); and turn 2 — with `perTurnRouting` still set — is
+    // stamped explicitly for A. The user moved the conversation and their messages
+    // quietly go back to the old agent. An empty thread has no routing history, so
+    // carrying one is simply false.
+    await ctx.db.patch(chatId, {
+      updatedAt: Date.now(),
+      perTurnRouting: undefined,
+      lastRoutedInstanceName: undefined,
+      lastRoutedAgentId: undefined,
+      routingSegment: undefined,
+    });
     await auditImpersonated(ctx, actor, "chat.rebind", {
       resource: "chat",
       resourceId: chatId,

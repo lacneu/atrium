@@ -114,6 +114,45 @@ describe("a chat that has said nothing can change agent", () => {
   });
 });
 
+describe("a rebind leaves no routing history behind", () => {
+  test("an emptied multi-agent chat does not keep routing to its old agent", async () => {
+    // A thread reaches "no messages" by having its first turn DELETED — the
+    // truncation removes them all — while `perTurnRouting` and `lastRouted*` survive
+    // on the chat. Without this clear: the composer's default falls back to the
+    // persisted lastRouted, so the chip shows the OLD agent; turn 1 goes to the new
+    // binding (it carries no routedAgent); and turn 2, still perTurnRouting, is
+    // stamped explicitly for the old one. The user moves the conversation and their
+    // messages quietly go back.
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUser(t, ["down", "healthy"]);
+    const chatId = await mkChat("down");
+    await t.run((ctx) =>
+      ctx.db.patch(chatId, {
+        perTurnRouting: true,
+        lastRoutedInstanceName: "prod",
+        lastRoutedAgentId: "down",
+        routingSegment: "turn:old",
+      }),
+    );
+    await as.mutation(api.chats.rebindChatAgent, {
+      chatId,
+      instanceName: "prod",
+      agentId: "healthy",
+    });
+    const after = await t.run((ctx) => ctx.db.get(chatId));
+    expect(after?.agentId).toBe("healthy");
+    expect(
+      after?.lastRoutedAgentId ?? null,
+      "the old agent must not remain the composer's default",
+    ).toBeNull();
+    expect(
+      after?.perTurnRouting ?? null,
+      "turn 2 would be stamped for the old agent",
+    ).toBeNull();
+    expect(after?.routingSegment ?? null).toBeNull();
+  });
+});
+
 describe("what a rebind may not do", () => {
   test("a thread that already holds a message is REFUSED", async () => {
     // The guard is "no message at all", not "no user turn": a message with no
