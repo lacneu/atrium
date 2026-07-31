@@ -30,8 +30,13 @@ const CSS = readFileSync(
 );
 
 /**
- * Every `data-slot` in `src/components/ui/**` whose element also carries the `z-50`
+ * Every `data-slot` in `src/components/ui/**` whose element also carries a z-index
  * utility — i.e. every surface shadcn intends to float.
+ *
+ * BOTH spellings: `z-50` and Tailwind's arbitrary `z-[N]`. Matching only the first
+ * left a hole the size of the whole directory — the arbitrary-form scanner below
+ * deliberately skips `components/ui`, so a component regenerated with `z-[50]` would
+ * have been invisible to BOTH halves of this guard (codex pass 4).
  *
  * The association is positional: in these components `data-slot` always precedes
  * `className` on the same element, so each `z-50` belongs to the nearest `data-slot`
@@ -42,7 +47,7 @@ function floatingSlots(): string[] {
   const slots = new Set<string>();
   for (const file of readdirSync(UI_DIR).filter((f) => f.endsWith(".tsx"))) {
     const src = readFileSync(join(UI_DIR, file), "utf-8");
-    for (const match of src.matchAll(/z-50/g)) {
+    for (const match of src.matchAll(/\bz-50\b|\bz-\[\d+\]/g)) {
       const before = src.slice(0, match.index);
       const slot = [...before.matchAll(/data-slot="([a-z-]+)"/g)].pop();
       if (slot) slots.add(slot[1]);
@@ -52,8 +57,8 @@ function floatingSlots(): string[] {
 }
 
 describe("the shared overlay layer covers every floating shadcn surface", () => {
-  test("the components DO ship z-50 — the premise still holds", () => {
-    // If shadcn ever stops shipping `z-50`, the override below becomes dead weight
+  test("the components DO ship a z-index — the premise still holds", () => {
+    // If shadcn ever stops shipping one, the override below becomes dead weight
     // and this whole guard is measuring nothing. Fail here rather than pass hollow.
     expect(floatingSlots().length).toBeGreaterThan(0);
   });

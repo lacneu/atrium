@@ -3961,11 +3961,14 @@ function StopTurnButton() {
 function ComposerAgentSelect({
   chatId,
   gate,
+  rebinding = false,
   onRebindingChange,
 }: {
   chatId: ConvexId<"chats">;
   /** Resolved by the chat view — see resolveAgentSelectorGate. */
   gate: AgentSelectorGate;
+  /** A rebind this control started is still in flight. */
+  rebinding?: boolean;
   /** Raised while a REBIND is in flight, so the composer can hold the send. A
    *  send that commits first would take the turn to the agent the user just moved
    *  away from — and then make the rebind fail, since the thread is no longer
@@ -3990,7 +3993,13 @@ function ComposerAgentSelect({
   const { selected, setSelected } = routing;
   // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
   // an unreachable gateway never closes it — that is the state it exists to escape.
-  const { disabled, mode } = gate;
+  // A rebind in flight SERIALIZES the control. Two quick picks would run two
+  // mutations, and the first to settle would clear the send hold while the second
+  // was still travelling — reopening the exact window the hold exists to close, and
+  // leaving which pick wins up to server ordering (codex pass 4). The control reads
+  // as busy for one round-trip, which is honest; it is not closed.
+  const disabled = gate.disabled || rebinding;
+  const { mode } = gate;
   // A pick on a thread that has not spoken REBINDS the chat; the per-turn selection
   // would be discarded by the send-rule on turn 1, so it would light up and do
   // nothing. The chip then follows the new binding reactively — no local echo that
@@ -5005,6 +5014,7 @@ function Composer({
           <ComposerAgentSelect
             chatId={chatId}
             gate={agentGate}
+            rebinding={rebinding}
             onRebindingChange={setRebinding}
           />
         </div>

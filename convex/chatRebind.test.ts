@@ -191,6 +191,32 @@ describe("what a rebind may not do", () => {
     ).rejects.toThrow(/not assigned/);
   });
 
+  test("an agent DELETED on its gateway is refused", async () => {
+    // The picker disables these rows, so the UI never offers one — but entitlement
+    // alone would have let a stale client or a direct call bind a chat to an agent
+    // no dispatch can reach. The server refuses what the picker refuses.
+    const t = convexTest(schema, modules);
+    const { as, mkChat } = await seedUser(t, ["down", "healthy"]);
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", "prod").eq("agentId", "healthy"),
+        )
+        .first();
+      if (row !== null) await ctx.db.patch(row._id, { presentInLastOk: false });
+    });
+    const chatId = await mkChat("down");
+    await expect(
+      as.mutation(api.chats.rebindChatAgent, {
+        chatId,
+        instanceName: "prod",
+        agentId: "healthy",
+      }),
+    ).rejects.toThrow(/deleted on its gateway/);
+    expect((await bindingOf(t, chatId)).agentId).toBe("down");
+  });
+
   test("another user's chat is refused", async () => {
     const t = convexTest(schema, modules);
     const { as } = await seedUser(t, ["down", "healthy"]);

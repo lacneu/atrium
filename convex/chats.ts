@@ -178,6 +178,21 @@ export const rebindChatAgent = mutation({
     const { userId, actor } = await requireActive(ctx);
     await requireOwnedChat(ctx, userId, chatId);
     await requireAgentMembership(ctx, userId, instanceName, agentId);
+    // Entitlement is not the whole predicate. `requireAgentMembership` accepts an
+    // agent the gateway has DELETED (`presentInLastOk: false`) — the picker renders
+    // those as disabled rows, so the UI never offers one, but a stale client or a
+    // direct call would bind a chat to an agent no dispatch can reach: the first
+    // turn then fails `no_agent`, or silently falls back to a DIFFERENT agent than
+    // the one the user was shown. The server must refuse what the picker refuses.
+    const target = await ctx.db
+      .query("agents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .first();
+    if (target !== null && target.presentInLastOk === false) {
+      throw new Error("Invalid: agent is deleted on its gateway");
+    }
     const firstMessage = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
