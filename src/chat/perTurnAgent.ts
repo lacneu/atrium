@@ -232,7 +232,10 @@ export function resolveAgentSelectorGate(params: {
   readOnly: boolean;
   /** The user has MORE THAN ONE entitled agent (getChatAgent's flag). */
   multiAgent: boolean;
-  /** Size of the entitled pool. Zero means there is nothing to offer at all. */
+  /** Count of SELECTABLE agents in the entitled pool — a gateway-deleted agent does
+   *  NOT count, since the picker renders it as a disabled row. Counting rows instead
+   *  would light the escape hatch up over a list where nothing can be clicked: an
+   *  active control with no possible action, which is the same lie in a new place. */
   poolSize: number;
 }): AgentSelectorGate {
   const { hasUserTurn, emptyThread, readOnly, multiAgent, poolSize } = params;

@@ -507,6 +507,14 @@ describe("resolveAgentSelectorGate — when the control is rendered at all", () 
     );
   });
 
+  test("a pool of only DELETED agents renders nothing", () => {
+    // `poolSize` counts SELECTABLE agents. Counting rows instead would light the
+    // escape hatch up over a picker whose every option is disabled.
+    expect(gate({ emptyThread: true, multiAgent: false, poolSize: 0 }).hidden).toBe(
+      true,
+    );
+  });
+
   test("an EMPTY pool renders nothing — there is nothing to offer", () => {
     expect(gate({ emptyThread: true, multiAgent: false, poolSize: 0 }).hidden).toBe(
       true,

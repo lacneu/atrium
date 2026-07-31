@@ -1106,7 +1106,11 @@ function ChatThread({
     unavailable: unavailable !== null,
     readOnly,
     multiAgent: routing?.multiAgent === true,
-    poolSize: routing?.pool.length ?? 0,
+    // SELECTABLE agents, not pool size. The picker renders a gateway-deleted agent
+    // as a disabled row, so a pool made only of those would light the escape hatch
+    // up with nothing behind it (codex pass 3) — an active control with no possible
+    // action, which is the same lie in a new place.
+    poolSize: (routing?.pool ?? []).filter((a) => a.state !== "deleted").length,
   });
   // Is switching agent actually OFFERED to this reader? The gate answers BOTH halves
   // (rendered at all, and usable) — reading `multiAgent` here again is what let the

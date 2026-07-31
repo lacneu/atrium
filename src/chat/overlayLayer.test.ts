@@ -97,6 +97,9 @@ describe("the shared overlay layer covers every floating shadcn surface", () => 
   });
 
   test("no APP component floats on a raw z-50, outside the layer entirely", () => {
+    // Matches BOTH spellings: Tailwind's named `z-50` and its arbitrary form
+    // `z-[50]`, which compiles to the same `z-index: 50` and would otherwise walk
+    // straight past a guard that only knew the first (codex pass 3).
     // The second way to be buried, and the one the first guard missed: an overlay
     // built from RAW Radix parts (the message "more actions" menu, the admin
     // time-range panel) carries `z-50` in its own className and no shadcn
@@ -111,7 +114,10 @@ describe("the shared overlay layer covers every floating shadcn surface", () => 
           if (full.endsWith("components/ui")) continue; // regenerable; data-slot rule
           walk(full);
         } else if (entry.name.endsWith(".tsx")) {
-          if (/\bz-50\b/.test(readFileSync(full, "utf-8"))) offenders.push(full);
+          const src = readFileSync(full, "utf-8");
+          if (/\bz-50\b/.test(src) || /\bz-\[\d+\]/.test(src)) {
+            offenders.push(full);
+          }
         }
       }
     };
@@ -122,16 +128,35 @@ describe("the shared overlay layer covers every floating shadcn surface", () => 
     ).toEqual([]);
   });
 
-  test("no bare z-index above the sidebar layer is left in the stylesheet", () => {
+  test("no bare z-index above the sidebar layer, in ANY app stylesheet", () => {
     // Bare numbers are how the scale drifted in the first place: each new panel
     // picked one larger than the last, and the shared overlays were never in the
     // comparison. Low values (stacking-context fixes inside a card) are not layers
     // and are left alone.
-    const bare = [...CSS.matchAll(/z-index:\s*(\d+)\s*;/g)]
-      .map((m) => Number(m[1]))
-      .filter((n) => n > 5);
+    //
+    // EVERY stylesheet under `src`, not just this one: the layer scale is an
+    // application-wide claim, and a panel declared in another sheet paints on the
+    // same screen. Checking one file would have been the same too-narrow scan that
+    // let two raw-Radix menus stay at 50.
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".css")) {
+          for (const m of readFileSync(full, "utf-8").matchAll(
+            /z-index:\s*(\d+)\s*;/g,
+          )) {
+            if (Number(m[1]) > 5) {
+              offenders.push(`${full.replace(`${process.cwd()}/`, "")}: ${m[1]}`);
+            }
+          }
+        }
+      }
+    };
+    walk(join(process.cwd(), "src"));
     expect(
-      bare,
+      offenders,
       "declare a --oc-layer-* variable in the scale instead of a bare number",
     ).toEqual([]);
   });
