@@ -45,14 +45,27 @@ const CSS = readFileSync(
  */
 function floatingSlots(): string[] {
   const slots = new Set<string>();
-  for (const file of readdirSync(UI_DIR).filter((f) => f.endsWith(".tsx"))) {
-    const src = readFileSync(join(UI_DIR, file), "utf-8");
-    for (const match of src.matchAll(/\bz-50\b|\bz-\[\d+\]/g)) {
-      const before = src.slice(0, match.index);
-      const slot = [...before.matchAll(/data-slot="([a-z-]+)"/g)].pop();
-      if (slot) slots.add(slot[1]);
+  // RECURSIVE. The doc above says `ui/**` and a flat `readdirSync` said `ui/*` — a
+  // component dropped in a subdirectory would have been checked by NEITHER guard,
+  // since the app-wide scanner skips `components/ui` entirely. There are no
+  // subdirectories today, which is exactly why the claim could sit there untrue.
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith(".tsx")) continue;
+      const src = readFileSync(full, "utf-8");
+      for (const match of src.matchAll(/\bz-50\b|\bz-\[\d+\]/g)) {
+        const before = src.slice(0, match.index);
+        const slot = [...before.matchAll(/data-slot="([a-z-]+)"/g)].pop();
+        if (slot) slots.add(slot[1]);
+      }
     }
-  }
+  };
+  walk(UI_DIR);
   return [...slots].sort();
 }
 
