@@ -147,6 +147,83 @@ export const createChat = mutation({
   },
 });
 
+/**
+ * Move a chat that has said NOTHING yet onto another agent.
+ *
+ * PRODUCTION REPORT (2026-07-31). A chat is bound to its agent at creation, and the
+ * send-rule never routes turn 1 (`resolveRoutedAgentToSend`), so on a brand-new chat
+ * the composer's per-turn selector is not merely disabled — it would be a LIE if it
+ * were enabled, since the turn goes to the binding regardless. When the agent picked
+ * at creation sits on a gateway that is down, that left exactly one way out of the
+ * conversation: delete it. Changing the binding is the only thing that changes where
+ * turn 1 lands, so this is the mutation the selector calls in `rebind` mode.
+ *
+ * THE GUARD IS "NO MESSAGE AT ALL", not "no user turn". Message attribution falls
+ * back to the chat's primary agent for any message carrying no explicit routing
+ * stamp (`resolveMessageAgents`), so rebinding a thread that already holds messages
+ * could silently re-label who said what. An empty thread has nothing to re-label.
+ * A chat with assistant-only content (a spontaneous announce) is therefore REFUSED
+ * here and stays locked — a known gap, kept narrow on purpose.
+ *
+ * Authorization is `requireAgentMembership`, the same gate `createChat` applies:
+ * this reaches the same field by the same right, so it must not be an easier door.
+ */
+export const rebindChatAgent = mutation({
+  args: {
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { chatId, instanceName, agentId }) => {
+    const { userId, actor } = await requireActive(ctx);
+    await requireOwnedChat(ctx, userId, chatId);
+    await requireAgentMembership(ctx, userId, instanceName, agentId);
+    const firstMessage = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .first();
+    if (firstMessage !== null) {
+      throw new Error("Invalid: chat already has messages");
+    }
+    // Delegate the WRITE rather than patching here: `bindChatTarget` also drops the
+    // stale provider conversation id, which belonged to the previous agent. An empty
+    // chat rarely holds one, but duplicating the rule is how the two copies drift.
+    //
+    // THE EMPTINESS CHECK ABOVE AND THIS WRITE ARE ATOMIC. `ctx.runMutation` from a
+    // MUTATION runs "within the same transaction […] in a sub-transaction" (convex
+    // `GenericMutationCtx.runMutation`); it is from an ACTION that "each runMutation
+    // call is a separate write transaction". A reviewer read the action contract onto
+    // this call and reported a race where a concurrent first message slips between the
+    // read and the write — it cannot, and Convex's OCC would abort this mutation
+    // anyway, the `messages` read being in its read set. Moving this handler into an
+    // action, or splitting it in two, WOULD open that race.
+    //
+    // What is NOT atomic is the CLIENT's two round-trips (rebind, then send): the
+    // composer holds the send while a rebind is in flight for exactly that reason.
+    //
+    // KNOWN GAP, stated rather than implied. That hold is LOCAL to one composer, so
+    // it does not cover two surfaces on the same empty chat: tab B fires its first
+    // send toward agent A, tab A rebinds to B while that request is still in transit,
+    // and the send lands afterwards. Turn 1 deliberately carries no `routedAgent`
+    // (see resolveRoutedAgentToSend — routing turn 1 would flip the chat to
+    // multi-agent), so it resolves against the CURRENT binding and is answered by the
+    // new agent, with nothing shown to the sender. Closing it properly means giving
+    // `sendMessage` a precondition — the binding generation the client displayed —
+    // and refusing atomically when it no longer matches. That is a change to the
+    // hottest path in the app and does not belong in this lot.
+    await ctx.runMutation(internal.bridge.bindChatTarget, {
+      chatId,
+      instanceName,
+      agentId,
+    });
+    await ctx.db.patch(chatId, { updatedAt: Date.now() });
+    await auditImpersonated(ctx, actor, "chat.rebind", {
+      resource: "chat",
+      resourceId: chatId,
+    });
+  },
+});
+
 export const renameChat = mutation({
   args: { chatId: v.id("chats"), title: v.string() },
   handler: async (ctx, { chatId, title }) => {

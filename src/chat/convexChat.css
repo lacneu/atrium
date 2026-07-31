@@ -5541,7 +5541,20 @@ button.oc-bmk-rail__count:hover {
    composer itself creates a STACKING CONTEXT that traps the ambient torch (the
    `::before`, z-index:-1) ON the card surface instead of behind it. Dimming the
    direct children keeps the "disabled" cue without that side effect. */
-.oc-composer--disabled > * {
+/* A composer that cannot send is dimmed — EXCEPT the agent selector, which is the
+   control that changes WHERE the send goes. Greying it out made a conversation
+   opened on a down gateway a dead end (production report, 2026-07-31).
+   The dimming is applied SIBLING BY SIBLING rather than on a common ancestor: CSS
+   opacity groups its whole subtree, so a child can never be brighter than its
+   parent — an ancestor rule could not be lifted back on the selector. */
+.oc-composer--disabled > *:not(.oc-composer__bar),
+.oc-composer--disabled .oc-composer__bar > *:not(.oc-composer__group),
+.oc-composer--disabled .oc-composer__group > *:not(.oc-composer__agent) {
+  opacity: 0.65;
+}
+/* Still greyed when the selector itself is genuinely closed (a read-only chat that
+   already has turns) — the affordance must never look brighter than it is. */
+.oc-composer--disabled .oc-composer__agent:disabled {
   opacity: 0.65;
 }
 .oc-composer--disabled .oc-composer__input {

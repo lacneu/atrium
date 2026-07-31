@@ -5,6 +5,7 @@ import {
   findAgentDisplay,
   isFirstTurn,
   lastRoutedAgent,
+  resolveAgentSelectorGate,
   resolveDefaultSelection,
   resolveEffectiveSelection,
   resolveMessageAgents,
@@ -403,5 +404,67 @@ describe("resolveEffectiveSelection (canRoute gate + loading preservation)", () 
         canRoute: true,
       }),
     ).toEqual(alice);
+  });
+});
+
+// The escape hatch (production report, 2026-07-31). A chat opened on an agent whose
+// gateway was down had NO way back: the composer greyed out and took the agent
+// selector with it, so the conversation could only be deleted. What is pinned below
+// is that neither of the two "you cannot send" conditions may close the one control
+// that changes WHERE the send goes.
+describe("resolveAgentSelectorGate", () => {
+  const gate = (o: Partial<Parameters<typeof resolveAgentSelectorGate>[0]>) =>
+    resolveAgentSelectorGate({
+      hasUserTurn: false,
+      emptyThread: false,
+      unavailable: false,
+      readOnly: false,
+      ...o,
+    });
+
+  test("an UNREACHABLE gateway does not close the selector — it is the way out", () => {
+    expect(gate({ hasUserTurn: true, unavailable: true })).toEqual({
+      disabled: false,
+      mode: "route",
+    });
+  });
+
+  test("a brand-new chat on an unreachable gateway can still change agent", () => {
+    // The reported case, exactly: zero messages, target down. Both locks at once.
+    expect(gate({ emptyThread: true, unavailable: true })).toEqual({
+      disabled: false,
+      mode: "rebind",
+    });
+  });
+
+  test("an EMPTY thread rebinds — it does NOT make a per-turn pick", () => {
+    // Turn 1 goes to the chat's binding whatever the selector shows
+    // (resolveRoutedAgentToSend returns undefined on the first turn), so a `route`
+    // mode here would light up a control that changes nothing and let the send land
+    // on the agent the user just moved away from.
+    expect(gate({ emptyThread: true }).mode).toBe("rebind");
+  });
+
+  test("a started conversation ROUTES — it does not rewrite its own binding", () => {
+    expect(gate({ hasUserTurn: true }).mode).toBe("route");
+  });
+
+  test("a read-only chat WITH turns stays closed (a pick would lift nothing)", () => {
+    // Known gap, stated rather than papered over: read-only is computed from the
+    // chat's binding, so a per-turn pick leaves the composer locked.
+    expect(gate({ hasUserTurn: true, readOnly: true }).disabled).toBe(true);
+  });
+
+  test("an empty read-only chat CAN be rebound — that is what lifts the lock", () => {
+    expect(gate({ emptyThread: true, readOnly: true })).toEqual({
+      disabled: false,
+      mode: "rebind",
+    });
+  });
+
+  test("assistant-only (announce, no user turn) stays closed", () => {
+    // Pre-existing gap: a rebind could re-attribute messages carrying no routing
+    // stamp. Asserted so that widening it later is a DECISION, not a slip.
+    expect(gate({ hasUserTurn: false, emptyThread: false }).disabled).toBe(true);
   });
 });

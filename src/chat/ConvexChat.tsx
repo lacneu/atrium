@@ -65,6 +65,7 @@ import {
 import {
   agentRefEquals,
   findAgentDisplay,
+  resolveAgentSelectorGate,
   type AgentRef,
 } from "./perTurnAgent";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
@@ -1398,6 +1399,7 @@ function ChatThread({
         showTools={showTools}
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
+        readOnly={readOnly}
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
@@ -3912,8 +3914,33 @@ function StopTurnButton() {
 // styling. Hidden for a single-agent user (nothing to choose). Disabled until the
 // chat has a first turn: the agent is bound at creation, so turn 1 is never
 // re-routable — matching the single-agent-path rule (never route the first turn).
-function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean }) {
+/**
+ * The composer's agent control — and, on a chat that has not spoken yet, the way OUT
+ * of a conversation opened on the wrong agent.
+ *
+ * It is deliberately NOT disabled by `unavailable`/`readOnly`: those are the very
+ * conditions it exists to resolve (production report, 2026-07-31 — a chat created on
+ * a down gateway could only be deleted). `resolveAgentSelectorGate` owns that rule so
+ * it is assertable without a DOM; here we only obey it.
+ */
+function ComposerAgentSelect({
+  chatId,
+  unavailable = false,
+  readOnly = false,
+  onRebindingChange,
+}: {
+  chatId: ConvexId<"chats">;
+  unavailable?: boolean;
+  readOnly?: boolean;
+  /** Raised while a REBIND is in flight, so the composer can hold the send. A
+   *  send that commits first would take the turn to the agent the user just moved
+   *  away from — and then make the rebind fail, since the thread is no longer
+   *  empty (codex adversarial review). */
+  onRebindingChange?: (busy: boolean) => void;
+}) {
   const routing = useChatRouting();
+  const rebindChatAgent = useMutation(api.chats.rebindChatAgent);
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const pool = routing?.pool ?? [];
@@ -3926,10 +3953,33 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
     [pool],
   );
   if (!routing || !routing.multiAgent) return null;
-  const { selected, setSelected, hasUserTurn } = routing;
-  // Disabled until the chat has a first turn (the agent is bound at creation), or
-  // when the composer is unavailable (bridge down / read-only — nothing to send).
-  const disabled = !hasUserTurn || unavailable;
+  const { selected, setSelected, hasUserTurn, emptyThread } = routing;
+  // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
+  // an unreachable gateway never closes it — that is the state it exists to escape.
+  const { disabled, mode } = resolveAgentSelectorGate({
+    hasUserTurn,
+    emptyThread,
+    unavailable,
+    readOnly,
+  });
+  // A pick on a thread that has not spoken REBINDS the chat; the per-turn selection
+  // would be discarded by the send-rule on turn 1, so it would light up and do
+  // nothing. The chip then follows the new binding reactively — no local echo that
+  // could survive a refused mutation.
+  const pick = (a: AgentRef) => {
+    if (mode === "rebind") {
+      onRebindingChange?.(true);
+      void rebindChatAgent({
+        chatId: chatId as Id<"chats">,
+        instanceName: a.instanceName,
+        agentId: a.agentId,
+      })
+        .catch(() => toast.error(m.chat_agent_rebind_failed()))
+        .finally(() => onRebindingChange?.(false));
+      return;
+    }
+    setSelected({ instanceName: a.instanceName, agentId: a.agentId });
+  };
   const display = findAgentDisplay(pool, selected);
   const currentName =
     display?.displayName ?? selected?.agentId ?? m.chat_agent_select_label();
@@ -3946,11 +3996,20 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
           className="oc-composer__agent"
           disabled={disabled}
           title={
-            hasUserTurn
-              ? m.chat_agent_select_title()
-              : m.chat_agent_select_firstturn_hint()
+            disabled
+              ? m.chat_agent_select_firstturn_hint()
+              : mode === "rebind"
+                ? // Nothing has been said yet, so the pick moves the conversation
+                  // itself — the tooltip has to say that, not promise a next-message
+                  // route the send-rule would discard.
+                  m.chat_agent_select_rebind_title()
+                : m.chat_agent_select_title()
           }
-          aria-label={m.chat_agent_select_aria()}
+          aria-label={
+            mode === "rebind"
+              ? m.chat_agent_select_rebind_aria()
+              : m.chat_agent_select_aria()
+          }
         >
           {display?.emoji ? (
             <span className="oc-composer__agent-emoji" aria-hidden>
@@ -4012,10 +4071,7 @@ function ComposerAgentSelect({ unavailable = false }: { unavailable?: boolean })
                         : undefined
                     }
                     onClick={() => {
-                      setSelected({
-                        instanceName: a.instanceName,
-                        agentId: a.agentId,
-                      });
+                      pick(a);
                       setOpen(false);
                       setQ("");
                     }}
@@ -4402,6 +4458,7 @@ function Composer({
   showTools,
   onToggleTools,
   unavailable = false,
+  readOnly = false,
   subAgentBusy = false,
 }: {
   chatId: ConvexId<"chats">;
@@ -4409,8 +4466,15 @@ function Composer({
   chatTitle?: string;
   showTools: boolean;
   onToggleTools: () => void;
-  /** Bridge down: disable input + send so no un-sendable turn is persisted. */
+  /** Bridge down: disable input + send so no un-sendable turn is persisted.
+   *  MERGES two facts (gateway unreachable OR read-only chat) — deliberately, since
+   *  every send-side control treats them alike. The agent selector does NOT: it
+   *  takes `readOnly` separately, because which of the two it is decides whether
+   *  changing agent can help. */
   unavailable?: boolean;
+  /** The chat is bound to an agent the user is no longer entitled to. Split out of
+   *  `unavailable` for the agent selector only (see resolveAgentSelectorGate). */
+  readOnly?: boolean;
   /** A sub-agent this chat spawned is still running: hold the next send (queue) and
    *  SHOW the hold, exactly like an in-flight turn. */
   subAgentBusy?: boolean;
@@ -4623,6 +4687,10 @@ function Composer({
   // SR-only announcement of a routed paste (visually silent — codex P2 a11y).
   const [pasteAnnouncement, setPasteAnnouncement] = useState("");
   const pasteAttaching = pasteAttachCount > 0;
+  // A REBIND (the agent selector on a chat that has not spoken) is in flight. Holds
+  // the send exactly like an in-flight paste: the two are separate round-trips, and
+  // a send that landed first would be answered by the agent the user just left.
+  const [rebinding, setRebinding] = useState(false);
   const onInputPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // A clipboard carrying FILES (e.g. an image + text from an office app) is
     // the built-in handler's job — preventDefault here would silently drop
@@ -4743,8 +4811,10 @@ function Composer({
       .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
   };
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Hold submit while a routed paste's attachment is still being added.
-    if (pasteAttaching && e.key === "Enter" && !e.shiftKey) {
+    // Hold submit while a routed paste's attachment is still being added, or while
+    // the chat is being REBOUND to another agent — turn 1 goes to the binding, so a
+    // send that wins the race would be answered by the agent just moved away from.
+    if ((pasteAttaching || rebinding) && e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -4891,7 +4961,12 @@ function Composer({
           </button>
           {/* MULTI-AGENT: per-turn agent selector (self-hides for a single-agent
               user; disabled until the chat has a first turn, or when unavailable). */}
-          <ComposerAgentSelect unavailable={unavailable} />
+          <ComposerAgentSelect
+            chatId={chatId}
+            unavailable={unavailable}
+            readOnly={readOnly}
+            onRebindingChange={setRebinding}
+          />
         </div>
         <div className="oc-composer__group">
           {/* PIN / release: detach the composer as a floating panel that
@@ -4922,8 +4997,14 @@ function Composer({
                 title={m.chat_composer_pin()}
                 aria-label={m.chat_composer_pin()}
                 onClick={dictation.hold}
-                disabled={!dictation.canPin || pasteAttaching}
-                tabIndex={!dictation.canPin || pasteAttaching ? -1 : 0}
+                // `rebinding` alongside `pasteAttaching`, for the same reason and by
+                // the same idiom: the PINNED dock owns its own Send, which does not
+                // read this composer's state — pinning mid-rebind would carry the
+                // draft to a surface where the hold does not apply (codex pass 2).
+                disabled={!dictation.canPin || pasteAttaching || rebinding}
+                tabIndex={
+                  !dictation.canPin || pasteAttaching || rebinding ? -1 : 0
+                }
               >
                 <Pin size={16} aria-hidden />
               </button>
@@ -4992,7 +5073,7 @@ function Composer({
             <ComposerPrimitive.Send
               className="oc-composer__send"
               aria-label={m.chat_send()}
-              disabled={pasteAttaching}
+              disabled={pasteAttaching || rebinding}
             >
               <ArrowUp size={18} aria-hidden />
             </ComposerPrimitive.Send>

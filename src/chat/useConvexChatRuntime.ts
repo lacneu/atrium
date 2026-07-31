@@ -356,6 +356,12 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     () => (messages ?? []).some((mm) => mm.role === "user"),
     [messages],
   );
+  // Has the thread said NOTHING at all? Gates the selector's REBIND mode: on such a
+  // chat the agent selector replaces the chat's binding instead of routing a turn,
+  // because turn 1 always goes to the binding. LOADING (`undefined`) is NOT empty —
+  // offering a rebind on a thread we have not read yet could move the binding under
+  // messages that exist, which is exactly what the server-side guard refuses.
+  const emptyThread = messages !== undefined && messages.length === 0;
 
   // onNew / queueSend run from memoized closures; read the live routing inputs via
   // refs so a selection change never has to rebuild the runtime adapter.
@@ -749,6 +755,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       multiAgent,
       perTurnRouting,
       hasUserTurn,
+      emptyThread,
       primary,
       selected: effectiveSelected,
       setSelected: setSelectedAgent,
@@ -763,6 +770,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       multiAgent,
       perTurnRouting,
       hasUserTurn,
+      emptyThread,
       primary,
       effectiveSelected,
       messageAgents,

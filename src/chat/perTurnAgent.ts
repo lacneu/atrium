@@ -173,6 +173,60 @@ export function resolveEffectiveSelection(params: {
   return resolveDefaultSelection({ lastRouted: desired, primary, pool });
 }
 
+/**
+ * What a click on the composer's agent selector DOES — and whether it is offered.
+ *
+ *  - `route`  : the pick rides on the NEXT turn (`resolveRoutedAgentToSend`). Only
+ *    meaningful once the chat has a user turn; before that the send-rule ignores it.
+ *  - `rebind` : the pick REPLACES the chat's own binding (`rebindChatAgent`). The
+ *    only honest mode on a chat with no turn yet, where the agent is bound at
+ *    creation and turn 1 goes to that binding whatever the selector shows.
+ */
+export type AgentSelectorMode = "route" | "rebind";
+
+/**
+ * Is the agent selector offered, and in which mode?
+ *
+ * WHY THIS EXISTS (production report, 2026-07-31). A user opened a new chat on an
+ * agent whose gateway happened to be down. The composer greyed out — correctly — but
+ * the agent selector greyed out WITH it, so the only way out of the dead conversation
+ * was to delete it. The selector is the ESCAPE HATCH from a bad target; disabling it
+ * on the very condition it exists to resolve is the deadlock.
+ *
+ * `unavailable` and `readOnly` are therefore taken as inputs and DELIBERATELY do not
+ * disable a usable mode — passing them makes that decision assertable instead of
+ * implicit (re-adding `|| unavailable` at the call site is what the tests neutralize).
+ *
+ * The two locks, and why each branch reads the way it does:
+ *
+ *  - EMPTY thread (no message at all) → `rebind`, always enabled. Nothing has been
+ *    said yet, so replacing the binding cannot re-attribute anything, and it is the
+ *    ONLY thing that changes where turn 1 goes.
+ *  - Has a user turn, not read-only → `route`, always enabled. A per-turn pick to a
+ *    healthy agent re-scopes the availability query and un-greys the composer.
+ *  - Has a user turn, READ-ONLY → disabled. A per-turn pick would not lift the
+ *    read-only lock (it is computed from the chat's BINDING, not the selection), so
+ *    the affordance would light up and change nothing. KNOWN GAP: rebinding a
+ *    read-only chat that already has turns is not offered anywhere.
+ *  - No user turn but the thread is NOT empty (assistant-only, e.g. a spontaneous
+ *    announce) → disabled. A rebind there could re-attribute messages that carry no
+ *    explicit routing stamp. KNOWN GAP, and a pre-existing one.
+ */
+export function resolveAgentSelectorGate(params: {
+  hasUserTurn: boolean;
+  /** The thread carries NO message at all (loaded, not merely loading). */
+  emptyThread: boolean;
+  /** This chat's next send target is unreachable. Never a reason to disable. */
+  unavailable: boolean;
+  /** The chat is bound to an agent the user is no longer entitled to. */
+  readOnly: boolean;
+}): { disabled: boolean; mode: AgentSelectorMode } {
+  const { hasUserTurn, emptyThread, readOnly } = params;
+  if (emptyThread) return { disabled: false, mode: "rebind" };
+  if (hasUserTurn && !readOnly) return { disabled: false, mode: "route" };
+  return { disabled: true, mode: "route" };
+}
+
 /** Look up an agent ref's display (name/emoji) in the user's entitled pool. Null
  *  when the ref is null OR no longer in the pool (e.g. entitlement narrowed). */
 export function findAgentDisplay(
