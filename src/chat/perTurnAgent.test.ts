@@ -419,11 +419,14 @@ describe("resolveAgentSelectorGate", () => {
       emptyThread: false,
       unavailable: false,
       readOnly: false,
+      multiAgent: true,
+      poolSize: 2,
       ...o,
     });
 
   test("an UNREACHABLE gateway does not close the selector — it is the way out", () => {
     expect(gate({ hasUserTurn: true, unavailable: true })).toEqual({
+      hidden: false,
       disabled: false,
       mode: "route",
     });
@@ -432,6 +435,7 @@ describe("resolveAgentSelectorGate", () => {
   test("a brand-new chat on an unreachable gateway can still change agent", () => {
     // The reported case, exactly: zero messages, target down. Both locks at once.
     expect(gate({ emptyThread: true, unavailable: true })).toEqual({
+      hidden: false,
       disabled: false,
       mode: "rebind",
     });
@@ -457,6 +461,7 @@ describe("resolveAgentSelectorGate", () => {
 
   test("an empty read-only chat CAN be rebound — that is what lifts the lock", () => {
     expect(gate({ emptyThread: true, readOnly: true })).toEqual({
+      hidden: false,
       disabled: false,
       mode: "rebind",
     });
@@ -466,5 +471,55 @@ describe("resolveAgentSelectorGate", () => {
     // Pre-existing gap: a rebind could re-attribute messages carrying no routing
     // stamp. Asserted so that widening it later is a DECISION, not a slip.
     expect(gate({ hasUserTurn: false, emptyThread: false }).disabled).toBe(true);
+  });
+});
+
+// What the pure gate could not see until it owned the render decision. The first
+// version of this feature let the COMPONENT hide itself on `multiAgent`, and that
+// check silently discarded a gate that said "enabled" — so an empty chat locked
+// read-only on a revoked binding, for a user narrowed to ONE agent, still had no way
+// out. Found by cross-provider review, not by these tests, which is why the decision
+// now lives here.
+describe("resolveAgentSelectorGate — when the control is rendered at all", () => {
+  const gate = (o: Partial<Parameters<typeof resolveAgentSelectorGate>[0]>) =>
+    resolveAgentSelectorGate({
+      hasUserTurn: false,
+      emptyThread: false,
+      unavailable: false,
+      readOnly: false,
+      multiAgent: true,
+      poolSize: 2,
+      ...o,
+    });
+
+  test("a SINGLE-agent user can still move an empty read-only chat off its binding", () => {
+    // The reported dead end: an admin narrows someone to one agent, their empty chat
+    // locks on the old binding, and a `multiAgent` self-hide would render nothing.
+    expect(
+      gate({ emptyThread: true, readOnly: true, multiAgent: false, poolSize: 1 }),
+    ).toEqual({ hidden: false, disabled: false, mode: "rebind" });
+  });
+
+  test("a single-agent user gets NO selector on a started conversation", () => {
+    // There, it really would be a pick between agents — and there is only one.
+    expect(gate({ hasUserTurn: true, multiAgent: false, poolSize: 1 }).hidden).toBe(
+      true,
+    );
+  });
+
+  test("an EMPTY pool renders nothing — there is nothing to offer", () => {
+    expect(gate({ emptyThread: true, multiAgent: false, poolSize: 0 }).hidden).toBe(
+      true,
+    );
+  });
+
+  test("a closed control is not rendered as a dead chip", () => {
+    // Announce-only thread, single-agent user: no mode is usable, so nothing shows.
+    expect(gate({ multiAgent: false, poolSize: 1 }).hidden).toBe(true);
+  });
+
+  test("a multi-agent user keeps the selector in every usable mode", () => {
+    expect(gate({ hasUserTurn: true }).hidden).toBe(false);
+    expect(gate({ emptyThread: true }).hidden).toBe(false);
   });
 });

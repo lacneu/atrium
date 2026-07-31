@@ -1105,11 +1105,13 @@ function ChatThread({
     emptyThread: routing?.emptyThread === true,
     unavailable: unavailable !== null,
     readOnly,
+    multiAgent: routing?.multiAgent === true,
+    poolSize: routing?.pool.length ?? 0,
   });
-  // Is switching agent actually OFFERED to this reader? A single-agent user never
-  // sees the selector at all (it self-hides), so the banner must not promise it.
-  const agentSwitchOffered =
-    routing?.multiAgent === true && !agentGate.disabled;
+  // Is switching agent actually OFFERED to this reader? The gate answers BOTH halves
+  // (rendered at all, and usable) — reading `multiAgent` here again is what let the
+  // component and the banner disagree.
+  const agentSwitchOffered = !agentGate.hidden && !agentGate.disabled;
   const bannerKind = chatBannerKind({
     readOnly,
     unavailable: unavailable !== null,
@@ -2307,7 +2309,7 @@ function IconArrowDown() {
 // (which needs raw Radix parts — see the comment inside AssistantMoreMenu).
 // Keep in sync with components/ui/dropdown-menu.tsx.
 const MSG_MENU_CONTENT_CLS =
-  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
+  "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 oc-overlay-layer min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border p-1 shadow-md";
 const MSG_MENU_ITEM_CLS =
   "focus:bg-accent focus:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
@@ -3980,7 +3982,7 @@ function ComposerAgentSelect({
     () => new Set(pool.map((a) => a.instanceName)).size > 1,
     [pool],
   );
-  if (!routing || !routing.multiAgent) return null;
+  if (!routing || gate.hidden) return null;
   const { selected, setSelected } = routing;
   // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
   // an unreachable gateway never closes it — that is the state it exists to escape.
@@ -4003,9 +4005,13 @@ function ComposerAgentSelect({
     }
     setSelected({ instanceName: a.instanceName, agentId: a.agentId });
   };
-  const display = findAgentDisplay(pool, selected);
+  // `selected` is null for a single-agent user (resolveEffectiveSelection refuses a
+  // per-turn pick there), so a rebind-only selector would show no name at all — fall
+  // back to the chat's own agent, which is precisely what the pick would replace.
+  const shown = selected ?? (mode === "rebind" ? routing.primary : null);
+  const display = findAgentDisplay(pool, shown);
   const currentName =
-    display?.displayName ?? selected?.agentId ?? m.chat_agent_select_label();
+    display?.displayName ?? shown?.agentId ?? m.chat_agent_select_label();
   return (
     <Popover
       open={open}
@@ -4042,15 +4048,15 @@ function ComposerAgentSelect({
             <Bot size={15} aria-hidden />
           )}
           <span className="oc-composer__agent-name">{currentName}</span>
-          {multiInstance && selected ? (
+          {multiInstance && shown ? (
             <span
               className="oc-composer__agent-instance"
               title={m.chat_agent_instance_title({
-                instance: selected.instanceName,
+                instance: shown.instanceName,
               })}
             >
               <Server size={11} aria-hidden />
-              {selected.instanceName}
+              {shown.instanceName}
             </span>
           ) : null}
           <ChevronDown size={13} className="oc-chip__chev" aria-hidden />

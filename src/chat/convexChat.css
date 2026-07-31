@@ -44,6 +44,14 @@
    because the first version of this rule was typed from six files chosen by eye and
    silently omitted `alert-dialog`, whose confirmation opens INSIDE an already-raised
    dialog and would have stayed buried. */
+/* App-side portaled overlays that are NOT shadcn components (raw Radix parts, e.g.
+   the message "more actions" menu and the admin time-range panel). They used to
+   carry Tailwind's `z-50` directly and so slipped past the rule below, which keys on
+   `data-slot` — a second way to be buried. They join the layer by name instead. */
+.oc-overlay-layer {
+  z-index: var(--oc-layer-overlay);
+}
+
 [data-slot="alert-dialog-overlay"],
 [data-slot="alert-dialog-content"],
 [data-slot="popover-content"],

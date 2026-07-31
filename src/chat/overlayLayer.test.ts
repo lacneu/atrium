@@ -96,6 +96,32 @@ describe("the shared overlay layer covers every floating shadcn surface", () => 
     expect(layer("lightbox")).toBeGreaterThan(layer("toast"));
   });
 
+  test("no APP component floats on a raw z-50, outside the layer entirely", () => {
+    // The second way to be buried, and the one the first guard missed: an overlay
+    // built from RAW Radix parts (the message "more actions" menu, the admin
+    // time-range panel) carries `z-50` in its own className and no shadcn
+    // `data-slot`, so the rule above never reaches it. Scanning only
+    // `src/components/ui` declared victory while two menus stayed at 50.
+    // App code joins the layer by class (`oc-overlay-layer`) instead.
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (full.endsWith("components/ui")) continue; // regenerable; data-slot rule
+          walk(full);
+        } else if (entry.name.endsWith(".tsx")) {
+          if (/\bz-50\b/.test(readFileSync(full, "utf-8"))) offenders.push(full);
+        }
+      }
+    };
+    walk(join(process.cwd(), "src"));
+    expect(
+      offenders.map((f) => f.replace(`${process.cwd()}/`, "")),
+      "use the `oc-overlay-layer` class instead of a raw `z-50` utility",
+    ).toEqual([]);
+  });
+
   test("no bare z-index above the sidebar layer is left in the stylesheet", () => {
     // Bare numbers are how the scale drifted in the first place: each new panel
     // picked one larger than the last, and the shared overlays were never in the

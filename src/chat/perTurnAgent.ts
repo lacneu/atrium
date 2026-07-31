@@ -184,8 +184,12 @@ export function resolveEffectiveSelection(params: {
  */
 export type AgentSelectorMode = "route" | "rebind";
 
-/** The selector's resolved verdict: offered or not, and what a pick does. */
+/** The selector's resolved verdict: rendered at all, offered or not, and what a
+ *  pick does. `hidden` lives here rather than as a JSX condition because the
+ *  component's own `multiAgent` check once discarded a gate that said "enabled" —
+ *  a dead end the pure tests could not see. */
 export interface AgentSelectorGate {
+  hidden: boolean;
   disabled: boolean;
   mode: AgentSelectorMode;
 }
@@ -226,11 +230,28 @@ export function resolveAgentSelectorGate(params: {
   unavailable: boolean;
   /** The chat is bound to an agent the user is no longer entitled to. */
   readOnly: boolean;
+  /** The user has MORE THAN ONE entitled agent (getChatAgent's flag). */
+  multiAgent: boolean;
+  /** Size of the entitled pool. Zero means there is nothing to offer at all. */
+  poolSize: number;
 }): AgentSelectorGate {
-  const { hasUserTurn, emptyThread, readOnly } = params;
-  if (emptyThread) return { disabled: false, mode: "rebind" };
-  if (hasUserTurn && !readOnly) return { disabled: false, mode: "route" };
-  return { disabled: true, mode: "route" };
+  const { hasUserTurn, emptyThread, readOnly, multiAgent, poolSize } = params;
+  const verdict: Omit<AgentSelectorGate, "hidden"> = emptyThread
+    ? { disabled: false, mode: "rebind" }
+    : hasUserTurn && !readOnly
+      ? { disabled: false, mode: "route" }
+      : { disabled: true, mode: "route" };
+  // Nothing to offer, or a closed control: never render it.
+  //
+  // `multiAgent` is the normal test — a per-turn pick between agents is meaningless
+  // when there is only one. But a REBIND is not a pick between agents: it is moving
+  // an empty chat OFF a binding, and that is a real choice even for a single-agent
+  // user. Hiding it there re-creates exactly the dead end this gate exists to
+  // remove — an admin narrows someone to one agent, their empty chat locks
+  // read-only on the old binding, and no control is rendered to move it.
+  const rebindable = verdict.mode === "rebind" && !verdict.disabled;
+  const hidden = poolSize === 0 || (!multiAgent && !rebindable);
+  return { hidden, ...verdict };
 }
 
 /** Look up an agent ref's display (name/emoji) in the user's entitled pool. Null
