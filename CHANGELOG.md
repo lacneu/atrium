@@ -1,12 +1,39 @@
 # Changelog
 
-## [0.69.3] — A scheduled run that reached nobody stops looking like a success
+## [0.69.3] — A way out of a stuck conversation, and an end to silent failures
+
+Corrective release. No breaking changes, nothing to migrate.
 
 `0.69.2` was tagged and never published: its build failed on a type error in a test,
 so the release stopped at its gate. The tag is left where it is rather than moved
 under anyone who already fetched it, and everything described under `0.69.2` below
 ships here, plus:
 
+- **A conversation opened on an agent whose gateway is down is no longer a dead
+  end.** Reported from production: a chat was created from the agent picker without
+  knowing that agent was unreachable, and the whole composer greyed out — including
+  the control for choosing a different agent. Deleting the conversation was the only
+  way out. The agent selector now stays available in exactly the situations it
+  exists to resolve, and on a conversation that has not spoken yet it *moves* the
+  chat to the agent you pick, rather than offering a choice the first message would
+  have ignored. It also stays available when your access has been narrowed to a
+  single agent, which is precisely when being stuck costs the most. The banner no
+  longer advises waiting when switching is possible, and no longer suggests
+  switching when the control is closed.
+- **A menu opened from the full-page composer is no longer painted underneath it.**
+  Clicking the agent selector in focus mode appeared to do nothing; the list was in
+  fact open and hidden behind the panel. Every shared menu, dropdown, dialog and
+  tooltip was affected the same way wherever it was opened from a floating panel,
+  including the realtime-voice controls. The whole stacking order is now written
+  down in one place instead of each panel picking a number larger than the last.
+- **The "Tools" toggle no longer appears in the full-page composer.** It switches
+  the *conversation* between the clean and analysis views, and the conversation is
+  what the panel covers — so it worked, changed nothing you could see, and read as
+  broken.
+- **A long-running task now says what it is doing, not just that it is doing
+  something.** When an agent reports progress on a multi-step job, that line
+  replaces the generic "working…" label. If a check-in carries no update, the last
+  one stays put rather than blinking back to nothing.
 - **A scheduled task whose report was delivered nowhere no longer shows as
   successful.** Reported from production: a weekly cycle was launched, the user was
   told he could close his laptop, and then nothing came — he asked three times where
@@ -18,13 +45,22 @@ ships here, plus:
   Both are kept now, and a run that delivered nothing is no longer presented as a
   success. A task deliberately configured to deliver nowhere is untouched — that is
   a choice, not a failure.
+- **Scheduled tasks say so on every screen, not just one.** The list in Settings,
+  the task panel in a conversation and both run histories now show when a report
+  reached nobody, with the channel it was resolved to and the gateway's own reason.
+  A task also carries the verdict of its last run, so noticing a lost report no
+  longer means opening histories one by one. Nothing is flagged when the gateway
+  says nothing about delivery, or when a task is configured to deliver nowhere on
+  purpose.
 - **A test type error that had turned the build red is fixed.**
 
 Still to come, and promised to the reporter: an undelivered report should land by
 itself in the conversation that created it. Today it becomes visible instead of
 silent, which is what made the rest possible.
 
-Deploy: `npx convex deploy` plus the bridge and frontend images.
+Deploy: `npx convex deploy` plus the frontend image, **and the bridge** — the
+scheduled-task screens above read facts only the new bridge sends, so on an older
+one they simply stay as they were.
 
 ## [0.69.2] — Sign-in stops being on a timer, and a chat opens where you left it
 
