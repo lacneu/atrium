@@ -6,11 +6,13 @@
 // abort only means anything for a turn live in THIS process.
 
 import type { BridgeConfig } from "../../config.js";
+import { CLASSIFIED_HERMES_CAPABILITIES } from "./classified-capabilities.js";
 import type { ConvexWriter } from "../../convex-writer.js";
 import { HermesClient, type HermesInterruptVerdict } from "./client.js";
 import { HermesWsClient } from "./ws-client.js";
 import { HermesFilesFetcher } from "./files-fetcher.js";
 import { safeSessionPart } from "../openclaw/session-keys.js";
+import { protocolDrift } from "../openclaw/protocol-drift.js";
 import { runHermesTurn, HERMES_RESET_ABORT, type HermesTurnRun } from "./turn.js";
 import {
   runHermesWsTurn,
@@ -1342,10 +1344,68 @@ export interface HermesDiscovered {
  *  /agents poll the OpenClaw path uses — so the app's agent cache + bind
  *  whitelist work identically. Hermes has no per-provider subscription-usage
  *  RPC (unlike OpenClaw's usage.status), so no usage ride-along here. */
+
+/** ONE probe in flight per instance, reused until it settles.
+ *
+ *  Overwriting a single `lastCapabilityProbe` kept the latency promise but nothing else:
+ *  a `/v1/capabilities` that pends means every concurrent discovery opens ANOTHER request
+ *  that lives for the client's full timeout, so a degraded gateway accumulates sockets and
+ *  duplicate counts while the older promises keep running unobserved (review pass 8).
+ *  Keyed by instance because the bridge serves several gateways. */
+const capabilityProbes = new Map<string, Promise<void>>();
+/** Test seam: forget in-flight probes, so one suite's hanging gateway does not make the
+ *  next suite wait on it. Deduplication is what makes this necessary — in production a
+ *  probe always settles and the entry clears itself. */
+export function resetCapabilityProbesForTests(): void {
+  capabilityProbes.clear();
+}
+
+/** Test seam: resolves when every in-flight capability probe has settled. */
+export function capabilityProbeSettled(): Promise<void> {
+  return Promise.all([...capabilityProbes.values()]).then(() => undefined);
+}
+
+/** Read the surface Hermes PUBLISHES about itself, and feed the ledger (G-70).
+ *
+ *  FIRE AND FORGET, and both halves of that were review findings. It is launched on EVERY
+ *  transport because `/v1/capabilities` is an HTTP surface that has nothing to do with
+ *  whether turns run over WS — the first version only ran on the REST path, which is not
+ *  the default, so no real deployment would ever have produced the observation (pass 7).
+ *  And it is never awaited: `HermesClient.json()` gives up after 15 s, so a hanging or
+ *  absent route would have added that to EVERY agent poll an operator waits on. A
+ *  diagnostic may cost a discovery poll nothing at all — not "nothing when it fails
+ *  fast".
+ */
+function probeAnnouncedCapabilities(cfg: BridgeConfig): void {
+  const key = cfg.instanceName ?? "";
+  if (capabilityProbes.has(key)) return; // one in flight is enough
+  const probe = hermesClientFor(cfg)
+    .capabilities()
+    .then((caps) => {
+      protocolDrift.observeAnnouncedCapabilities(
+        (caps as { features?: unknown } | null)?.features,
+        CLASSIFIED_HERMES_CAPABILITIES,
+      );
+    })
+    .catch(() => {
+      // No `/v1/capabilities` (a `hermes serve` deployment), a 500, a timeout: an absence
+      // of answer is not an observation, and it must leave the ledger exactly as it was.
+    })
+    .finally(() => {
+      // Only if this is still OUR entry: a later probe must not be evicted by an older
+      // one settling late.
+      if (capabilityProbes.get(key) === probe) capabilityProbes.delete(key);
+    });
+  capabilityProbes.set(key, probe);
+}
+
 export async function discoverHermesAgents(
   cfg: BridgeConfig,
   registry?: HermesTurnRegistry,
 ): Promise<HermesDiscovered> {
+  // Before the transport fork: the probe belongs to the INSTANCE, not to how its turns
+  // travel, and the WS branch returns early.
+  probeAnnouncedCapabilities(cfg);
   if ((cfg.transport ?? "ws") === "ws" && registry) {
     // WS transport: the gateway exposes ONE agent; model.options names the
     // CURRENT provider/model. `hermes serve` has no /health, so the version cannot be

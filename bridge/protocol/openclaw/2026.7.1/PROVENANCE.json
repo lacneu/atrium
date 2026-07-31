@@ -91,6 +91,13 @@
       "upstreamPath": "src/gateway/server-chat.ts",
       "upstream": "dcc1a80002b088a0edee132394b914617cebe35b2d90b9ad294509409a68c654",
       "fields": 52
+    },
+    "event-catalogue.json": {
+      "upstreamPath": "src/gateway/server-methods-list.ts",
+      "upstream": "9348fde016ca0c804f63892e2ce3649e50510662d1a09e47eb506fbf14e349fd",
+      "constantsPath": "src/gateway/events.ts",
+      "constants": "55d573fb4d1f487d26fa1d7a4d83fbcde1fe8d05c4e8f5a1c8c079856921a87e",
+      "events": 30
     }
   }
 }

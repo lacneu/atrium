@@ -39,6 +39,7 @@ constats de revue, et — systématiquement — les limites qui restent.
 - [12-lot-46-version-awareness.md](12-lot-46-version-awareness.md) — le transport par défaut apprend sa version
 - [13-lot-47-rest-surface.md](13-lot-47-rest-surface.md) — trois serveurs amont, un seul publie un contrat
 - [14-lot-48-lost-reply.md](14-lot-48-lost-reply.md) — rendre au tour perdu sa réponse
+- [15-lot-g70-announced-surface.md](15-lot-g70-announced-surface.md) — lire ce que la passerelle annonce sur elle-même
 
 ## Conventions
 

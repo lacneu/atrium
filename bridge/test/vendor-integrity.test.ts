@@ -41,6 +41,8 @@ import { describe, expect, it } from "vitest";
 import { vendoredVersions } from "./helpers/vendored.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { deriveSnapshotFields } from "../scripts/lib/derive-snapshot.mjs";
+// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
+import { deriveEventCatalogue } from "../scripts/lib/derive-event-catalogue.mjs";
 
 const PROTOCOL = new URL("../protocol/openclaw/", import.meta.url);
 
@@ -73,7 +75,14 @@ interface Provenance {
    *  were read from, so "this list came from that source" stays checkable. */
   derived?: Record<
     string,
-    { upstreamPath: string; upstream: string; fields: number }
+    {
+      upstreamPath: string;
+      upstream: string;
+      fields?: number;
+      events?: number;
+      constantsPath?: string;
+      constants?: string;
+    }
   >;
 }
 
@@ -299,15 +308,23 @@ describe("vendored protocol integrity", () => {
           // from gateway implementation, which is exactly why it is derived and not copied.
           expect(rec.upstreamPath, name).toMatch(/^src\/.+\.ts$/);
           expect(rec.upstream, name).toMatch(/^[0-9a-f]{64}$/);
-          expect(rec.fields, `${name} derived an empty list`).toBeGreaterThan(0);
-          // The artifact must AGREE with its record, so a hand-edited list is caught
-          // without needing a checkout.
+          // The count key names WHAT was derived (`fields` of a return shape, `events` of
+          // a catalogue). Exactly one must be present: reading a fixed key meant a second
+          // artifact silently compared `undefined` and the whole assertion evaporated.
           const body = JSON.parse(
             readFileSync(new URL(`${version}/${name}`, PROTOCOL), "utf-8"),
-          ) as { fields?: unknown[]; derivedFrom?: string; derivedFromSha256?: string };
+          ) as Record<string, unknown>;
+          const countKeys = (["fields", "events"] as const).filter(
+            (k) => typeof rec[k] === "number",
+          );
+          expect(countKeys, `${name}: exactly one count key expected`).toHaveLength(1);
+          const key = countKeys[0] as "fields" | "events";
+          expect(rec[key], `${name} derived an empty list`).toBeGreaterThan(0);
+          // The artifact must AGREE with its record, so a hand-edited list is caught
+          // without needing a checkout.
           expect(body.derivedFrom, name).toBe(rec.upstreamPath);
           expect(body.derivedFromSha256, name).toBe(rec.upstream);
-          expect(body.fields?.length, name).toBe(rec.fields);
+          expect((body[key] as unknown[] | undefined)?.length, name).toBe(rec[key]);
         }
       });
 
@@ -344,15 +361,42 @@ describe("vendored protocol integrity", () => {
           // gate. The only honest check is to run the derivation again and compare.
           const body = JSON.parse(
             readFileSync(new URL(`${version}/${name}`, PROTOCOL), "utf-8"),
-          ) as { fields: string[] };
-          const rederived = (
-            deriveSnapshotFields as (source: string) => string[]
-          )(raw);
-          if (JSON.stringify(rederived) !== JSON.stringify(body.fields)) {
+          ) as { fields?: string[]; events?: string[] };
+          // Dispatch on the ARTIFACT, never one hardcoded deriver. There are two derived
+          // artifacts now and they read different upstream modules; running the snapshot
+          // deriver over the event catalogue reported "buildSessionEventSnapshot not
+          // found", which reads as an upstream rename and is nothing of the sort. An
+          // artifact this test does not know how to re-derive must FAIL here rather than
+          // be skipped, or adding a third one would silently opt out of verification.
+          let rederived: string[];
+          let stored: string[];
+          if (name === "session-event-snapshot.json") {
+            rederived = (deriveSnapshotFields as (s: string) => string[])(raw);
+            stored = body.fields ?? [];
+          } else if (name === "event-catalogue.json") {
+            const constantsAt = `${root}/${rec.constantsPath ?? ""}`;
+            if (rec.constantsPath === undefined || !existsSync(constantsAt)) {
+              wrong.push(`${name}: constants source absent upstream`);
+              continue;
+            }
+            const constRaw = readFileSync(constantsAt, "utf-8");
+            if (sha256(constRaw) !== rec.constants) {
+              wrong.push(`${name}: constants sha mismatch`);
+              continue;
+            }
+            rederived = (
+              deriveEventCatalogue as (r: string, c: string) => string[]
+            )(raw, constRaw);
+            stored = body.events ?? [];
+          } else {
+            wrong.push(`${name}: no re-derivation is wired for this artifact`);
+            continue;
+          }
+          if (JSON.stringify(rederived) !== JSON.stringify(stored)) {
             wrong.push(
               `${name}: the stored list is not what the derivation produces ` +
-                `(+${rederived.filter((f) => !body.fields.includes(f)).join(",")} ` +
-                `-${body.fields.filter((f) => !rederived.includes(f)).join(",")})`,
+                `(+${rederived.filter((f) => !stored.includes(f)).join(",")} ` +
+                `-${stored.filter((f) => !rederived.includes(f)).join(",")})`,
             );
           }
         }

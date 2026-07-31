@@ -30,6 +30,12 @@ import {
   SNAPSHOT_SOURCE,
   deriveSnapshotFields,
 } from "./lib/derive-snapshot.mjs";
+import {
+  CATALOGUE_CONST_SOURCE,
+  CATALOGUE_SOURCE,
+  CATALOGUE_SYMBOL,
+  deriveEventCatalogue,
+} from "./lib/derive-event-catalogue.mjs";
 
 /** Files to vendor, with their path RELATIVE to `packages/gateway-protocol/src/`.
  *  Stated per file because upstream keeps the schema modules in `schema/` and the
@@ -265,6 +271,23 @@ if (!fs.existsSync(snapshotPath)) {
 const snapshotRaw = fs.readFileSync(snapshotPath, "utf-8");
 const snapshotFields = deriveSnapshotFields(snapshotRaw);
 
+// Same rule for the announced event catalogue (G-70): derive it BEFORE anything is
+// written, and let an unresolvable entry abort the whole vendoring. A catalogue that
+// is one entry short is worse than none — the ratchet would bless the shortfall.
+const cataloguePath = path.join(src, CATALOGUE_SOURCE);
+const catalogueConstPath = path.join(src, CATALOGUE_CONST_SOURCE);
+for (const [label, p] of [
+  [CATALOGUE_SOURCE, cataloguePath],
+  [CATALOGUE_CONST_SOURCE, catalogueConstPath],
+]) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`upstream has no ${label} at v${version}`);
+  }
+}
+const catalogueRaw = fs.readFileSync(cataloguePath, "utf-8");
+const catalogueConstRaw = fs.readFileSync(catalogueConstPath, "utf-8");
+const catalogueEvents = deriveEventCatalogue(catalogueRaw, catalogueConstRaw);
+
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
 for (const rel of FILES) {
@@ -370,6 +393,36 @@ fs.writeFileSync(
   )}\n`,
 );
 
+// --- DERIVED artifact: the event catalogue the gateway announces about ITSELF ---------
+//
+// `hello-ok.features.events` is populated from this array, so it is upstream's own
+// statement of what it emits — not an inference of ours. Vendoring it lets a CI ratchet
+// assert that every announced family is CLASSIFIED (read, or deliberately not read with
+// a reason), instead of Atrium discovering an unhandled family when a user trips on it.
+//
+// Recorded as a resolved JSON list rather than a verbatim copy because one entry is an
+// imported identifier; see lib/derive-event-catalogue.mjs.
+
+fs.writeFileSync(
+  path.join(OUT_DIR, "event-catalogue.json"),
+  `${JSON.stringify(
+    {
+      _about:
+        `Event names announced by the gateway in \`hello-ok.features.events\`, DERIVED ` +
+        `from ${CATALOGUE_SYMBOL} in ${CATALOGUE_SOURCE} at v${version} (imported ` +
+        `constants resolved from ${CATALOGUE_CONST_SOURCE}). Do not edit by hand: ` +
+        `re-run scripts/vendor-protocol.mjs.`,
+      derivedFrom: CATALOGUE_SOURCE,
+      derivedFromSha256: createHash("sha256").update(catalogueRaw).digest("hex"),
+      constantsFrom: CATALOGUE_CONST_SOURCE,
+      constantsSha256: createHash("sha256").update(catalogueConstRaw).digest("hex"),
+      events: catalogueEvents,
+    },
+    null,
+    2,
+  )}\n`,
+);
+
 fs.writeFileSync(
   path.join(OUT_DIR, "PROVENANCE.json"),
   `${JSON.stringify(
@@ -388,6 +441,15 @@ fs.writeFileSync(
           upstreamPath: SNAPSHOT_SOURCE,
           upstream: createHash("sha256").update(snapshotRaw).digest("hex"),
           fields: snapshotFields.length,
+        },
+        "event-catalogue.json": {
+          upstreamPath: CATALOGUE_SOURCE,
+          upstream: createHash("sha256").update(catalogueRaw).digest("hex"),
+          // The constants module is attributed too: resolving an entry reads it, so a
+          // change there can move the catalogue without touching the array itself.
+          constantsPath: CATALOGUE_CONST_SOURCE,
+          constants: createHash("sha256").update(catalogueConstRaw).digest("hex"),
+          events: catalogueEvents.length,
         },
       },
     },

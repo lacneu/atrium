@@ -29,7 +29,7 @@ import {
   type ConnectionEnd,
   type ShutdownNotice,
 } from "./connection-end.js";
-import { decodeInboundFrame } from "./protocol-drift.js";
+import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
 // inbound gateway frame is appended (full, untruncated) as one JSON line — the
@@ -473,6 +473,13 @@ export class OpenClawConnection {
             policy.maxBufferedBytes > 0
               ? policy.maxBufferedBytes
               : null;
+          // The gateway ANNOUNCES what it emits (G-70). Read before the reader is
+          // attached, and read defensively: `features` is a closed object upstream, but
+          // this is the connect path and a diagnostic must never be able to fail it.
+          // The sensor itself total-catches; this guard only keeps a malformed payload
+          // from throwing on property access.
+          const features = (payload.features ?? {}) as Record<string, unknown>;
+          protocolDrift.observeAnnouncedEvents(features.events);
           connection.attachReader();
           resolve(connection);
           return;

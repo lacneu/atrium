@@ -1,0 +1,149 @@
+{
+  "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.1/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 7.1: 30 announced, 4 actually FED, 26 not (review pass 4 corrected `session.operation`: its reader exists but nothing delivers the event). This file is the honest inventory of the 26 that are not — it does NOT claim they are all deliberate. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose.",
+  "version": "2026.7.1",
+  "catalogue": "event-catalogue.json",
+  "counts": {
+    "total": 30,
+    "handled": 4,
+    "gap": 9,
+    "ignored": 17
+  },
+  "events": {
+    "connect.challenge": {
+      "status": "handled",
+      "by": "openclaw-client.ts handshake — the auth challenge that precedes hello-ok",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "frame.event !== \"connect.challenge\""
+      }
+    },
+    "agent": {
+      "status": "handled",
+      "by": "normalizer + run-manager — the run/tool/activity stream a turn is built from",
+      "anchor": {
+        "file": "src/providers/openclaw/run-manager.ts",
+        "token": "f.event !== \"agent\""
+      }
+    },
+    "chat": {
+      "status": "handled",
+      "by": "normalizer — the reply content stream (delta/snapshot/final/aborted)",
+      "anchor": {
+        "file": "src/providers/openclaw/normalizer.ts",
+        "token": "eventType !== \"chat\""
+      }
+    },
+    "session.operation": {
+      "status": "gap",
+      "note": "The reader exists, is correct and is covered by tests — but it is NEVER FED (`normalizer.ts`, \"NOT CURRENTLY FED\"). The event reaches only connections that called `sessions.subscribe`, and subscribing on the turn-serving socket cost conversation frames, proven by bisect on the live bench. Real cost: a GATEWAY-decided compaction has no observable cause; only the compactions Atrium performs label themselves. To be fed by the dedicated session-events connection when that is built."
+    },
+    "shutdown": {
+      "status": "handled",
+      "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
+      "anchor": {
+        "file": "src/providers/openclaw/connection-end.ts",
+        "token": "f.event !== \"shutdown\""
+      }
+    },
+    "cron": {
+      "status": "gap",
+      "note": "Atrium ships cron management and a cron calendar, but it reconstructs cron facts from a TOOL completion on the agent stream (core/cron-part.ts matches name===\"cron\" && phase===\"completed\") rather than reading this broadcast. Deriving state from a tool's output is strictly weaker than reading the event the gateway emits for it: a cron that changes outside a tool call is invisible."
+    },
+    "task": {
+      "status": "gap",
+      "note": "Async task engagements are derived from run-id shapes on the agent stream (`<tool>:<taskId>:ok`), not from this broadcast. A task whose lifecycle the agent stream does not narrate is not observed at all."
+    },
+    "talk.mode": {
+      "status": "gap",
+      "note": "Atrium has a realtime talk mode, driven entirely through RPC methods (`talk.client.*`). The gateway's own mode broadcast is not consumed, so a mode change made anywhere else is not reflected."
+    },
+    "talk.event": {
+      "status": "gap",
+      "note": "Same surface as talk.mode: the talk feature exists but its event feed is unread."
+    },
+    "exec.approval.requested": {
+      "status": "gap",
+      "note": "A turn blocked on an exec approval is, from Atrium's side, a turn that has gone quiet. W5 deliberately limits itself to suspending the budget and NAMING the wait, and the approval UI is explicitly out of scope — but the request event itself is what would let Atrium name it, and it is not read."
+    },
+    "exec.approval.resolved": {
+      "status": "gap",
+      "note": "The other half of the above: nothing tells Atrium the wait ended."
+    },
+    "plugin.approval.requested": {
+      "status": "gap",
+      "note": "Same class as exec.approval.requested, for plugin trust prompts."
+    },
+    "plugin.approval.resolved": {
+      "status": "gap",
+      "note": "Same class as exec.approval.resolved."
+    },
+    "session.message": {
+      "status": "ignored",
+      "why": "Message history is Convex-authoritative in Atrium; the reply content a turn depends on arrives on the `chat` stream. Reading this too would duplicate a record Atrium already owns."
+    },
+    "session.tool": {
+      "status": "ignored",
+      "why": "Tool phases a turn depends on arrive on the `agent` stream (tool.status). This broadcast feeds the upstream sessions view, not a turn."
+    },
+    "sessions.changed": {
+      "status": "ignored",
+      "why": "Session-list housekeeping for the upstream client's own list. Atrium drives its chat list from Convex and never renders the gateway's."
+    },
+    "presence": {
+      "status": "ignored",
+      "why": "Channel presence for chat surfaces (who is online). Atrium is not a chat client and no turn depends on it."
+    },
+    "tick": {
+      "status": "ignored",
+      "why": "Periodic clock broadcast carrying no turn state."
+    },
+    "health": {
+      "status": "ignored",
+      "why": "Gateway self-report. Atrium's own health surface polls `/health` on its schedule rather than following a broadcast, so liveness does not depend on frames arriving."
+    },
+    "heartbeat": {
+      "status": "ignored",
+      "why": "Turn liveness is enforced by the bridge's own recv deadline (lot 29) and by heartbeat RUNS, which the normalizer already refuses as answers. The broadcast adds nothing a turn depends on."
+    },
+    "node.pair.requested": {
+      "status": "ignored",
+      "why": "Node pairing is gateway-operator business, performed outside Atrium."
+    },
+    "node.pair.resolved": {
+      "status": "ignored",
+      "why": "See node.pair.requested."
+    },
+    "node.invoke.request": {
+      "status": "ignored",
+      "why": "Node-to-node invocation. Atrium is a client of one gateway and never services these."
+    },
+    "device.pair.requested": {
+      "status": "ignored",
+      "why": "Device pairing is gateway-operator business, performed outside Atrium."
+    },
+    "device.pair.resolved": {
+      "status": "ignored",
+      "why": "See device.pair.requested."
+    },
+    "voicewake.changed": {
+      "status": "ignored",
+      "why": "Wake-word configuration for a local voice surface Atrium does not host."
+    },
+    "voicewake.routing.changed": {
+      "status": "ignored",
+      "why": "See voicewake.changed."
+    },
+    "terminal.data": {
+      "status": "ignored",
+      "why": "The gateway's terminal surface is a separate product feature; Atrium exposes no terminal and would have nowhere to render this."
+    },
+    "terminal.exit": {
+      "status": "ignored",
+      "why": "See terminal.data."
+    },
+    "update.available": {
+      "status": "ignored",
+      "why": "Gateway self-update notice. Atrium's version awareness comes from the handshake's `server.version` and its own compat manifest, not from an update prompt."
+    }
+  }
+}

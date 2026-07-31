@@ -34,7 +34,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { BENCH_GRANDFATHERED, COMPAT_MANIFEST } from "../src/compat.js";
+import {
+  BENCH_GRANDFATHERED,
+  COMPAT_MANIFEST,
+  parseVersion,
+} from "../src/compat.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import * as contractLib from "../scripts/lib/hermes-rest-contract.mjs";
 
@@ -60,8 +64,19 @@ interface RestContract {
 }
 
 function vendoredVersions(): string[] {
+  // A CONTRACT directory is one that HOLDS a contract. Three shapes of this same bug
+  // were fixed in one evening, and this door was the third: an exclusion list
+  // (`!== "coverage"`) missed a new sibling; a name test (`parseVersion`) then SKIPPED
+  // IN SILENCE any directory the parser did not accept, and the vendoring script takes
+  // its version argument freely — so a contract under `0.20.0+build.1/` would have every
+  // endpoint, provenance and re-derivation check here quietly bypassed while CI stayed
+  // green. The marker is a property of the directory, not of its name.
   return readdirSync(PROTOCOL, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter(
+      (e) =>
+        e.isDirectory() &&
+        existsSync(new URL(`${e.name}/rest-contract.json`, PROTOCOL)),
+    )
     .map((e) => e.name);
 }
 

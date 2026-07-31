@@ -399,10 +399,15 @@ describe("resolveCapabilities — edges", () => {
 describe("every claimed version has an examined contract (W10)", () => {
   const PROTOCOL_DIR = resolve(__dirname, "../protocol/openclaw");
 
-  /** Vendored directories present on disk, newest-first is irrelevant here. */
+  /** Vendored directories present on disk, newest-first is irrelevant here.
+   *
+   *  Selected by "the name parses as a version", not by excluding the sibling directories
+   *  someone remembered. The exclusion list was `!== "coverage"`, and adding a second
+   *  sibling (`events/`, lot G-70) made this read it as a vendored version — the bijection
+   *  then demanded a coverage manifest for a directory that is not a contract. */
   function vendoredVersions(): string[] {
     return readdirSync(PROTOCOL_DIR, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name !== "coverage")
+      .filter((e) => e.isDirectory() && parseVersion(e.name) !== null)
       .map((e) => e.name);
   }
 

@@ -3,7 +3,7 @@
   "version": 1,
   "gatewayVersion": "2026.7.1",
   "verdict": "GO",
-  "at": "2026-07-30T23:22:40.593Z",
+  "at": "2026-07-31T02:57:42.458Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -31,7 +31,7 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "fe37d018a3ff08cbc5f6cee95f61850607e2444b",
+  "atriumSha": "bbc25fca3c3d625fbf033239f938293d0f865964",
   "bridgeVersion": "0.68.12",
-  "vendoredSha256": "d27d027fc15b77317d4a63e210c6ce821e7a3a401a98e4bb4c8b0eb4d7a2daea"
+  "vendoredSha256": "64edf6d35d51b59876d25f2a1002e6767cd9944c4ba52a5bc0cef5bba9c9caf0"
 }

@@ -28,6 +28,7 @@ import {
   withinSupport,
   type CompatTarget,
 } from "./lib/compat";
+import { isKnownShapeGrammar } from "./compat";
 import { LIVE_CAPABILITIES_BODY } from "../src/chat/bridgeCapabilitiesFixture";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -1440,4 +1441,81 @@ describe("capability policy — the shared table (bridge <-> convex)", () => {
       expect(resolved.versionBeyondValidated).toBe(c.beyond);
     });
   }
+});
+
+// ── An ANNOUNCEMENT survives the bounded fold (G-70, review pass 8) ────────────
+//
+// The bridge reserves a budget for what a gateway announces and never handles, and sorts
+// it ahead of ordinary field drift. That reservation is worth exactly as much as the next
+// hop honours it: this boundary re-sorts the union of every bridge's report and slices it,
+// and it knew only the `«exception».` / `«detector-failure».` prefixes. So a hundred
+// unknown FIELDS at a higher count buried the single new announcement under the cap, and
+// the operator saw `driftTruncated` instead of the name. The same "reservation undone one
+// hop downstream" the exception sensor already suffered, inherited by a new prefix.
+
+describe("a gateway announcement is never truncated away by ordinary drift", () => {
+  test("it survives a flood of higher-count unknown fields", () => {
+    const flood = Array.from({ length: 120 }, (_, i) => ({
+      shape: `chat.delta.filler${i}`,
+      count: 50,
+    }));
+    const folded = foldProtocolInfo([
+      {
+        vendoredVersion: "2026.7.1",
+        coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+        driftOverflow: 0,
+        driftTruncated: 0,
+        drift: [...flood, { shape: "«unanticipated-event».brand.new", count: 1 }],
+      },
+    ]);
+    const names = (folded?.drift ?? []).map((d: { shape: string }) => d.shape);
+    expect(
+      names,
+      "the announcement must be kept, not counted into driftTruncated",
+    ).toContain("«unanticipated-event».brand.new");
+  });
+
+  test("a reader EXCEPTION still outranks an announcement", () => {
+    const folded = foldProtocolInfo([
+      {
+        vendoredVersion: "2026.7.1",
+        coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+        driftOverflow: 0,
+        driftTruncated: 0,
+        drift: [
+          { shape: "«unanticipated-capability».brand_new", count: 99 },
+          { shape: "«exception».TypeError@feed.chat", count: 1 },
+        ],
+      },
+    ]);
+    const names = (folded?.drift ?? []).map((d: { shape: string }) => d.shape);
+    expect(names[0]).toBe("«exception».TypeError@feed.chat");
+  });
+});
+
+// ── An announcement must survive the POLLER, not just the fold (G-70, pass 13) ──
+//
+// The bridge names what a gateway announces and never handles; the fold keeps it ahead of
+// ordinary drift. Both were pointless while the poller's closed grammar rejected the shape
+// before `recordProtocolShapes` ever saw it: the operator got a blind `unnamedLast` tick
+// and no row to triage. Three hops now — reservation, sort, grammar — each of which had to
+// be taught the same thing. That is the lesson worth keeping: a chain is only as long as
+// the hops someone actually checked.
+
+describe("the poller keeps an ANNOUNCED shape as a triable name", () => {
+  test("both announcement families pass the closed grammar", () => {
+    expect(isKnownShapeGrammar("«unanticipated-event».terminal.data")).toBe(true);
+    expect(isKnownShapeGrammar("«unanticipated-capability».brand_new_thing")).toBe(true);
+    // The sentinel the bridge substitutes for a hostile name must survive too, or the one
+    // case where containment fired would be the one case that loses its row.
+    expect(isKnownShapeGrammar("«unanticipated-event».«unprintable»")).toBe(true);
+  });
+
+  test("a name the bridge's sensor could NOT have produced is still refused", () => {
+    // The grammar mirrors the sensor's containment instead of widening to "anything after
+    // the prefix": a shape this boundary accepts must be one that sensor can emit.
+    expect(isKnownShapeGrammar("«unanticipated-event».../../etc/passwd")).toBe(false);
+    expect(isKnownShapeGrammar("«unanticipated-event».")).toBe(false);
+    expect(isKnownShapeGrammar(`«unanticipated-event».${"a".repeat(200)}`)).toBe(false);
+  });
 });

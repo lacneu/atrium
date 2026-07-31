@@ -1,0 +1,134 @@
+{
+  "$comment": "Atrium's classification of the capability surface Hermes PUBLISHES about itself (`GET /v1/capabilities`, vendored as ../0.19.0/rest-contract.json). `hermes-features-coverage.test.ts` asserts the BIJECTION with that contract, so a version declaring a new capability turns CI red until someone says what Atrium does with it. ASYMMETRY WITH OPENCLAW, stated rather than smoothed over: OpenClaw announces an EVENT catalogue at handshake and Atrium used to drop it (G-70); Hermes announces BOOLEAN capabilities and Atrium already reads them at runtime — what was missing here was never the reading, it was the classification. The tallies live in `counts` below, DERIVED and asserted by the ratchet.",
+  "version": "0.19.0",
+  "contract": "rest-contract.json",
+  "counts": {
+    "total": 24,
+    "handled": 6,
+    "gap": 12,
+    "ignored": 6,
+    "offered": 19
+  },
+  "features": {
+    "chat_completions": {
+      "status": "gap",
+      "note": "Declared and unread. Nothing in the bridge builds `/v1/chat/completions`; the REST transport posts to `/api/sessions/{id}/chat/stream`, which is `session_chat_streaming`. The earlier `handled` here confused session-chat with the announced chat-completions API, so a drift or a removal of that real surface would raise nothing (review pass 5)."
+    },
+    "chat_completions_streaming": {
+      "status": "gap",
+      "note": "Same confusion as chat_completions: the streaming Atrium consumes is session-chat's, not this API's."
+    },
+    "responses_api": {
+      "status": "gap",
+      "note": "The Responses-style surface is declared and Atrium calls none of it: the REST transport speaks chat-completions only. Not a defect today — the turn works — but it means a capability the gateway offers is invisible to the compat manifest, so nothing would notice if it became the supported path."
+    },
+    "responses_streaming": {
+      "status": "gap",
+      "note": "Same surface as responses_api: declared, unused, unrepresented in the manifest."
+    },
+    "run_submission": {
+      "status": "gap",
+      "note": "Atrium submits turns through session chat, never the run-submission surface. Declared and unused; a deployment that only offered runs would fail with no diagnostic naming this."
+    },
+    "run_status": {
+      "status": "gap",
+      "note": "Declared and unread. The Hermes client builds this URL family only for `POST /v1/runs/{id}/stop`; there is no status GET anywhere in client, turn or dispatch. A lost stream is settled through `session.resume` on the WS surface instead, so the REST recovery this capability offers is unused — and the earlier `handled` claim here was simply false (review pass 4)."
+    },
+    "run_events_sse": {
+      "status": "gap",
+      "note": "The SSE event stream is declared and unused: the default transport is WS and the alternate REST path reads its own stream. This is the surface a future REST-only deployment would need, and nothing tracks it."
+    },
+    "run_stop": {
+      "status": "handled",
+      "by": "the Stop path (`client.ts stopRun`, called from `dispatch.ts` and `turn.ts`). STATED LIMIT, and it is upstream's: run ids minted by `/api/sessions/{id}/chat/stream` are registered in neither map `/v1/runs/{id}/stop` consults, so on the REST transport the call is a STRUCTURAL 404. Lot 45 exists so Atrium reports that as `ineffective` instead of pretending the turn was stopped. Kept `handled` rather than `gap` because Atrium does call it — marking it `gap` would claim the opposite — and the incompatibility is named here rather than hidden behind the verdict (review pass 5).",
+      "anchor": {
+        "file": "src/providers/hermes/client.ts",
+        "token": "/v1/runs/"
+      }
+    },
+    "run_approval_response": {
+      "status": "handled",
+      "by": "the blocking-prompt answers of lot 33 (approval.respond)",
+      "anchor": {
+        "file": "src/providers/hermes/ws-turn.ts",
+        "token": "\"approval.respond\""
+      }
+    },
+    "tool_progress_events": {
+      "status": "handled",
+      "by": "tool phases the normalizer turns into tool.status",
+      "anchor": {
+        "file": "src/providers/hermes/normalizer.ts",
+        "token": "\"tool.progress\""
+      }
+    },
+    "approval_events": {
+      "status": "handled",
+      "by": "the blocking prompts lot 33 refuses to leave unanswered",
+      "anchor": {
+        "file": "src/providers/hermes/ws-turn.ts",
+        "token": "case \"approval.request\""
+      }
+    },
+    "session_resources": {
+      "status": "gap",
+      "note": "Declared and unread. Agent files reach Atrium through the dashboard's /api/files* surface (lot 47), which `hermes serve` alone does not deploy — so a resource surface the API server DOES publish is going unused while the feature it would serve degrades to a named 404."
+    },
+    "session_chat": {
+      "status": "handled",
+      "by": "the WS transport's turn dispatch — `ws-turn.ts` submits the prompt with `prompt.submit`, the default path. (The earlier anchor pointed at `session.resume` inside `harvestLostReply`, a RECOVERY path: it satisfied the rule while citing the wrong mechanism — review pass 6.)",
+      "anchor": {
+        "file": "src/providers/hermes/ws-turn.ts",
+        "token": "call(\"prompt.submit\""
+      }
+    },
+    "session_chat_streaming": {
+      "status": "handled",
+      "by": "the WS delta stream (ws-turn.ts)",
+      "anchor": {
+        "file": "src/providers/hermes/client.ts",
+        "token": "/chat/stream"
+      }
+    },
+    "session_fork": {
+      "status": "gap",
+      "note": "Declared and unread. Atrium's chat branching copies the transcript and starts a FRESH session (`promptWithFreshSessionHistory`); nothing posts to the gateway's fork endpoint. The application-level fork may well stay the intended behaviour, but calling it a consumption of this capability hid the endpoint from drift detection."
+    },
+    "admin_config_rw": {
+      "status": "ignored",
+      "why": "declared FALSE by this build, and Atrium never administers a gateway's config"
+    },
+    "jobs_admin": {
+      "status": "ignored",
+      "why": "declared FALSE by this build; job administration is operator business outside Atrium"
+    },
+    "memory_write_api": {
+      "status": "ignored",
+      "why": "declared FALSE by this build; agent memory is the agent's own, never written by Atrium"
+    },
+    "skills_api": {
+      "status": "gap",
+      "note": "Declared TRUE and read by nothing. Atrium surfaces agents, models and skills for OpenClaw; the Hermes equivalent is offered and unused, so the two providers are not at parity on a surface the UI already has."
+    },
+    "audio_api": {
+      "status": "ignored",
+      "why": "declared FALSE by this build; Atrium's voice surface is browser-side (TTS + dictation)"
+    },
+    "realtime_voice": {
+      "status": "ignored",
+      "why": "declared FALSE by this build; the realtime talk mode is an OpenClaw surface today"
+    },
+    "session_continuity_header": {
+      "status": "gap",
+      "note": "Declared and unsent. Continuity is carried by session IDS in the URL and in WS RPCs; the REST headers the client builds are Authorization, Content-Type and Accept only. Calling this handled asserted a consumption that does not exist (review pass 5)."
+    },
+    "session_key_header": {
+      "status": "gap",
+      "note": "Declared and unsent, like session_continuity_header. Per-chat isolation is enforced by the session key embedded in the identifiers, never by this header."
+    },
+    "cors": {
+      "status": "ignored",
+      "why": "a browser concern; the bridge is a server-side client and never issues cross-origin requests"
+    }
+  }
+}

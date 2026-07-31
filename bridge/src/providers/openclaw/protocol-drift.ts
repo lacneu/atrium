@@ -126,6 +126,52 @@ export const KNOWN_CHAT_FIELDS: ReadonlySet<string> = new Set(
  *  adds turns the ratchet red at vendoring time instead of appearing in a customer's
  *  badge. The literal stays because this runs on the turn path and must not read a file.
  */
+/** Event families Atrium has CLASSIFIED — read, or deliberately not read with a reason.
+ *
+ *  Kept as a literal here, like `KNOWN_AGENT_FIELDS` and for the same reason: the bridge
+ *  runs from `dist/` in a container where `protocol/` is not on disk, so a runtime read of
+ *  the coverage manifest would be a file that is present in tests and absent in production.
+ *  `events-coverage.test.ts` asserts this set EQUALS the manifest for the vendored version,
+ *  so it cannot drift from the classification it mirrors.
+ *
+ *  This is NOT "events we handle" — most of these are classified `ignored` or `gap`. It is
+ *  "families someone has looked at". A gateway announcing something ABSENT from this set is
+ *  announcing something the vendored contract never anticipated, which is the one thing
+ *  worth waking a human for.
+ */
+export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
+  "agent",
+  "chat",
+  "connect.challenge",
+  "cron",
+  "device.pair.requested",
+  "device.pair.resolved",
+  "exec.approval.requested",
+  "exec.approval.resolved",
+  "health",
+  "heartbeat",
+  "node.invoke.request",
+  "node.pair.requested",
+  "node.pair.resolved",
+  "plugin.approval.requested",
+  "plugin.approval.resolved",
+  "presence",
+  "session.message",
+  "session.operation",
+  "session.tool",
+  "sessions.changed",
+  "shutdown",
+  "talk.event",
+  "talk.mode",
+  "task",
+  "terminal.data",
+  "terminal.exit",
+  "tick",
+  "update.available",
+  "voicewake.changed",
+  "voicewake.routing.changed",
+]);
+
 export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
   // Stamped on every broadcast, in no schema and in no session row.
   "sessionKey",
@@ -288,6 +334,14 @@ const MAX_TRACKED_SHAPES = 100;
 /** …and a RESERVED budget for the sensors' own shapes, so gateway noise cannot exhaust
  *  the room a reader exception needs. */
 const MAX_TRACKED_SENSOR_SHAPES = 32;
+/** Announcements get their OWN budget, not a share of the sensor one.
+ *
+ *  Review pass 5: a gateway announcing 32 unknown families at handshake — a newer build,
+ *  or a hostile one — filled the sensor budget, and the next READER EXCEPTION was folded
+ *  into `overflowCount` instead of being named. That inverts lot 28's whole point. The
+ *  two signals now cannot compete for slots: a flood of announcements can exhaust this
+ *  budget and nothing else. */
+const MAX_TRACKED_ANNOUNCE_SHAPES = 32;
 
 /** Namespace for the detector's OWN failures. Not protocol vocabulary: the guillemets
  *  cannot appear in a field name (they fail the discriminant charset), so a gateway can
@@ -301,6 +355,10 @@ const DETECTOR_FAILURE_PREFIX = "«detector-failure».";
  *  so a gateway cannot mint a field that impersonates either namespace, and the two
  *  prefixes cannot collide with each other. */
 const EXCEPTION_PREFIX = "«exception».";
+/** A family the LIVE gateway announces that the vendored contract never anticipated. */
+const UNANTICIPATED_PREFIX = "«unanticipated-event».";
+/** Same idea on a provider that announces CAPABILITIES rather than event names. */
+const UNANTICIPATED_CAP_PREFIX = "«unanticipated-capability».";
 
 /** Where the reader threw. A UNION OF LITERALS on purpose: the site is passed by the
  *  call site, never derived from `err.stack` — a stack frame can quote frame content,
@@ -475,7 +533,15 @@ function exceptionFrameShape(frame: unknown, site: ExceptionSite): string {
 /** SENSOR shapes — this module's own findings (`«exception».`, `«detector-failure».`) as
  *  opposed to gateway vocabulary. They get their OWN budget below. */
 function isSensorShape(shape: string): boolean {
-  return shape.startsWith(EXCEPTION_PREFIX) || shape.startsWith(DETECTOR_FAILURE_PREFIX);
+  return (
+    shape.startsWith(EXCEPTION_PREFIX) ||
+    shape.startsWith(DETECTOR_FAILURE_PREFIX) ||
+    // An unanticipated announcement is a count of ONE on the day it matters, exactly like
+    // a reader exception: it belongs in the reserved budget, not in the field counters a
+    // flood of unknown fields can push off the end of the bounded report.
+    shape.startsWith(UNANTICIPATED_PREFIX) ||
+    shape.startsWith(UNANTICIPATED_CAP_PREFIX)
+  );
 }
 
 class ProtocolDriftRegistry {
@@ -490,6 +556,14 @@ class ProtocolDriftRegistry {
    *  The sensor budget is small on purpose: its vocabulary is error classes × sites ×
    *  frame shapes, so it is bounded in practice long before this cap. */
   private sensorCounters = new Map<string, number>();
+  /** Announced-but-unclassified EVENT families (OpenClaw). Kept apart so they cannot
+   *  starve the sensor budget above. */
+  private announceCounters = new Map<string, number>();
+  /** Announced-but-unclassified CAPABILITIES (Hermes). A separate budget again: the
+   *  bridge serves several gateways, and one Hermes instance announcing 32 unknown
+   *  capabilities used to push another instance's new OpenClaw event into the anonymous
+   *  overflow. Prefixes stop key collisions, not competition for capacity (pass 8). */
+  private announceCapCounters = new Map<string, number>();
   /** Errors already reported, by IDENTITY. A `WeakSet` so a long-lived registry never
    *  holds an error alive; primitives thrown (`throw "x"`) cannot be tracked and are the
    *  one case that could still double-count — vanishingly rare, and over-reporting a
@@ -590,6 +664,69 @@ class ProtocolDriftRegistry {
     }
   }
 
+  /** Read the catalogue the gateway announces about ITSELF (`hello-ok.features.events`).
+   *
+   *  G-70: upstream publishes the list of families it emits, and Atrium used to drop it,
+   *  so an unhandled family was always discovered by a user hitting it first. Every
+   *  announced name is compared against `CLASSIFIED_EVENTS`; only what is absent from the
+   *  classification ENTIRELY is counted — "a live gateway announces something the vendored
+   *  contract never anticipated". Announced-but-`ignored` and announced-but-`gap` are
+   *  already accounted for in the coverage manifest and must NOT flood the ledger, or the
+   *  exit indicator ("shapes in `status:new` ⇒ 0") would be red for 25 known entries and
+   *  get weakened within the week.
+   *
+   *  Total-catch, like every other sensor here: this runs on the handshake path, and a
+   *  diagnostic that can break `connect` is worse than the blindness it cures.
+   */
+  observeAnnouncedEvents(announced: unknown): void {
+    try {
+      if (!Array.isArray(announced)) return;
+      for (const name of announced) {
+        if (typeof name !== "string" || name === "") continue;
+        if (CLASSIFIED_EVENTS.has(name)) continue;
+        // Same containment as the exception sensor: this string is stored and travels to
+        // Convex, and it came off the wire.
+        const safe = /^[a-zA-Z][a-zA-Z0-9._-]{0,63}$/.test(name) ? name : "«unprintable»";
+        this.bump(`${UNANTICIPATED_PREFIX}${safe}`);
+      }
+    } catch {
+      try {
+        this.bump(`${DETECTOR_FAILURE_PREFIX}AnnouncedEventSensor`);
+      } catch {
+        /* nothing left to do */
+      }
+    }
+  }
+
+  /** The capability half of the same rule, for a provider that publishes NAMES OF
+   *  CAPABILITIES instead of event families (Hermes, `GET /v1/capabilities`).
+   *
+   *  The classified set is passed IN rather than imported: this module is OpenClaw's, and
+   *  the Hermes vocabulary has no business in it. Same containment, same total-catch, same
+   *  reserved budget.
+   */
+  observeAnnouncedCapabilities(
+    declared: unknown,
+    classified: ReadonlySet<string>,
+  ): void {
+    try {
+      if (typeof declared !== "object" || declared === null) return;
+      for (const [name, value] of Object.entries(declared as Record<string, unknown>)) {
+        // `false` is "not offered": nothing to classify and nothing to report.
+        if (value === false) continue;
+        if (classified.has(name)) continue;
+        const safe = /^[a-zA-Z][a-zA-Z0-9._-]{0,63}$/.test(name) ? name : "«unprintable»";
+        this.bump(`${UNANTICIPATED_CAP_PREFIX}${safe}`);
+      }
+    } catch {
+      try {
+        this.bump(`${DETECTOR_FAILURE_PREFIX}AnnouncedCapabilitySensor`);
+      } catch {
+        /* nothing left to do */
+      }
+    }
+  }
+
   /** Count one shape, or count the OVERFLOW when the cap is reached.
    *
    *  `overflowCount` exists because the cap used to be a `console.error` in the container's
@@ -597,9 +734,22 @@ class ProtocolDriftRegistry {
    *  everything past 512 shapes. A bound is legitimate; a bound nobody downstream can see
    *  is the same silence the bound was supposed to replace. */
   private bump(shape: string): void {
-    const sensor = isSensorShape(shape);
-    const map = sensor ? this.sensorCounters : this.counters;
-    const cap = sensor ? MAX_TRACKED_SENSOR_SHAPES : MAX_TRACKED_SHAPES;
+    const announceEvent = shape.startsWith(UNANTICIPATED_PREFIX);
+    const announceCap = shape.startsWith(UNANTICIPATED_CAP_PREFIX);
+    const sensor = !announceEvent && !announceCap && isSensorShape(shape);
+    const map = announceEvent
+      ? this.announceCounters
+      : announceCap
+        ? this.announceCapCounters
+        : sensor
+          ? this.sensorCounters
+          : this.counters;
+    const cap =
+      announceEvent || announceCap
+        ? MAX_TRACKED_ANNOUNCE_SHAPES
+        : sensor
+          ? MAX_TRACKED_SENSOR_SHAPES
+          : MAX_TRACKED_SHAPES;
     const current = map.get(shape);
     if (current !== undefined) {
       map.set(shape, current + 1);
@@ -618,16 +768,23 @@ class ProtocolDriftRegistry {
     // One log per NEW shape (field name only — never a value). A detector failure rides
     // the same counters but is NOT an unknown field: logging it under the drift wording
     // would send an operator looking for a gateway change that never happened.
-    // THREE findings ride these counters and they are not the same news. Logging an
+    // FOUR findings ride these counters and they are not the same news. Logging an
     // exception — or a detector failure — under the drift wording sends an operator
     // looking for a gateway change that never happened; lot 23 fixed that for the
     // detector's own failures and the exception sensor inherited the wrong branch.
+    // The announced-catalogue sensor (G-70) is the fourth, and it is the ONLY one that
+    // says something about a frame nobody has received: the gateway declared a family
+    // at handshake time. Calling that an "unknown protocol field" would send an operator
+    // hunting through traffic for something that has not arrived yet.
     console.log(
       shape.startsWith(DETECTOR_FAILURE_PREFIX)
         ? `[protocol-drift] detector failed on a frame: ${shape} (error class only — the frame is unreadable to this build)`
         : shape.startsWith(EXCEPTION_PREFIX)
           ? `[protocol-drift] the READER threw on a frame: ${shape} (error class + site only — this build could not process the frame at all)`
-          : `[protocol-drift] unknown protocol field: ${shape} (gateway newer than vendored ${DRIFT_VENDORED_VERSION}?)`,
+          : shape.startsWith(UNANTICIPATED_PREFIX) ||
+              shape.startsWith(UNANTICIPATED_CAP_PREFIX)
+            ? `[protocol-drift] the gateway ANNOUNCES something this build never classified: ${shape} (declared by the gateway — no frame of it has been seen)`
+            : `[protocol-drift] unknown protocol field: ${shape} (gateway newer than vendored ${DRIFT_VENDORED_VERSION}?)`,
     );
     map.set(shape, 1);
   }
@@ -648,6 +805,10 @@ class ProtocolDriftRegistry {
     const byCount = (a: DriftEntry, b: DriftEntry): number => b.count - a.count;
     return [
       ...[...this.sensorCounters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+      // Announcements sit BETWEEN the two: ahead of field drift (a count of one on the
+      // day it matters), behind reader exceptions (which outrank everything here).
+      ...[...this.announceCounters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+      ...[...this.announceCapCounters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
       ...[...this.counters.entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
     ];
   }
@@ -656,6 +817,8 @@ class ProtocolDriftRegistry {
   resetForTests(): void {
     this.counters.clear();
     this.sensorCounters.clear();
+    this.announceCounters.clear();
+    this.announceCapCounters.clear();
     this.overflowed = false;
     this.overflowCounter = 0;
   }

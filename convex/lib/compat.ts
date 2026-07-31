@@ -314,7 +314,24 @@ function shortHash(s: string): string {
  *  the prefix to buy itself a slot in a bounded list — that is our own code, and the cost
  *  would be a reordering, not a leak. */
 function sensorFirst(shape: string): number {
-  return shape.startsWith("«exception».") || shape.startsWith("«detector-failure».") ? 0 : 1;
+  // THREE tiers, not two, and the third was added because its absence defeated a feature
+  // end to end (G-70, review pass 8). The bridge reserves a budget for what a gateway
+  // ANNOUNCES and never handles, and puts it ahead of ordinary field drift — but this
+  // boundary re-sorted the union and knew only the first two prefixes, so 100 unknown
+  // fields at a higher count buried the single new announcement under the cap. The
+  // operator would have seen `driftTruncated` and never the NAME. That is exactly the
+  // "reservation undone one hop downstream" this comment already warned about for reader
+  // exceptions; a new prefix inherited the old blind spot.
+  if (shape.startsWith("«exception».") || shape.startsWith("«detector-failure».")) {
+    return 0;
+  }
+  if (
+    shape.startsWith("«unanticipated-event».") ||
+    shape.startsWith("«unanticipated-capability».")
+  ) {
+    return 1;
+  }
+  return 2;
 }
 
 function boundShapeName(shape: string): string {

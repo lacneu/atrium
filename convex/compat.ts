@@ -236,10 +236,24 @@ const BASE = `(?:chat|agent)(?:\\.(?:${SEGMENT}|${SENTINEL})){1,3}`;
  *  `.+` this started with let `«exception».TypeError@feed.<free text>` through, which is
  *  exactly the arbitrary content the grammar exists to keep out (raised in review). */
 const EXC_SUFFIX = `(?:«hermes»|«non-object»|«non-event»|«other-event»\\.${DIGEST}|${BASE})`;
+/** A family or capability NAME as the bridge's announced-surface sensor contains it:
+ *  `/^[a-zA-Z][a-zA-Z0-9._-]{0,63}$/`, or the sentinel it substitutes for anything else.
+ *  Mirrored here rather than widened, so a name this boundary accepts is one that sensor
+ *  can actually have produced. */
+const ANNOUNCED_NAME = "(?:[A-Za-z][A-Za-z0-9._-]{0,63}|«unprintable»)";
+
 const KNOWN_SHAPE_GRAMMAR = [
   new RegExp(`^${BASE}$`),
   new RegExp(`^«detector-failure»\\.${SEGMENT}$`),
   new RegExp(`^«exception»\\.${SEGMENT}@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}$`),
+  // G-70. Without these two the poller dropped every announcement BEFORE
+  // `recordProtocolShapes`, so a gateway declaring a family nobody had classified bumped
+  // the blind `unnamedLast` counter and produced no triable row — the probe → ledger chain
+  // disarmed at its last hop, which is the whole point of the lot (review pass 13). Third
+  // time a downstream hop defeated this feature: the reservation, the sort, and now the
+  // grammar. A chain is only as long as the hops someone checked.
+  new RegExp(`^«unanticipated-event»\\.${ANNOUNCED_NAME}$`),
+  new RegExp(`^«unanticipated-capability»\\.${ANNOUNCED_NAME}$`),
 ];
 
 export function isKnownShapeGrammar(shape: string): boolean {

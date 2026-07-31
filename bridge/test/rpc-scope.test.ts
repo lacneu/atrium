@@ -236,6 +236,10 @@ const NON_CALL_REFERENCES: { file: string; text: string }[] = [
   // …and the same name in the transport's TERMINAL set (lot 29): the client has to know
   // which events end a turn, so the vocabulary now appears on both sides of the seam.
   { file: "ws-client.ts", text: '"approval.request"' },
+  // An OpenClaw EVENT family the gateway announces about itself (`CLASSIFIED_EVENTS`,
+  // lot G-70), not a method Atrium calls. Node-to-node invocation is classified
+  // `ignored`: Atrium is a client of one gateway and never services these.
+  { file: "protocol-drift.ts", text: '"node.invoke.request"' },
 ];
 
 describe("RPC scope derivation (W10)", () => {
