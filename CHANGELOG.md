@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.69.0] — Hermes turns end honestly, and the gateway's own catalogue is read
+
+The bulk of the 1.0.0 stabilization work on the Hermes provider, plus the protocol
+observability that stops unhandled gateway vocabulary from being discovered by a
+user. Every defect below was established against the restored upstream sources at
+the supported gateway versions, given a test proven failing before its fix, and
+verified on a live local gateway (bench GO 11/11 on both providers).
+
+**Deploy: `npx convex deploy` is REQUIRED** — this release adds a schema change
+(a recovery handle on chats, and the durable protocol-shape ledger) — plus the
+bridge and frontend images.
+
+- **A Stop the gateway did not honour no longer leaves the turn in limbo.** The
+  REST transport mints run ids the gateway's stop endpoint does not know, so the
+  call answers a structural 404: Atrium reported the turn as stopped while the
+  run, its tools and its transcript writing carried on. The interrupt now returns
+  a verdict — interrupted, ineffective, or unknown — and a session whose run was
+  never actually stopped is dropped instead of resumed on the next turn.
+- **A reply the gateway finished is no longer lost with the connection.** When a
+  turn's transport dropped, Atrium settled the bubble in error and purged the
+  session; the gateway had often completed the answer and kept it. The next send
+  reads it back and writes it to the message it belongs to, once, guarded by the
+  gateway's own liveness signals so a turn still in production is never taken for
+  a finished one.
+- **No more eternal spinner on the REST transport.** A turn whose stream went
+  silent had no deadline at all and could sit in "Thinking…" indefinitely.
+- **A delegated child that was STOPPED is no longer reported as broken**, and the
+  gateway's risk verdict on a tool is shown on the tool it judges rather than
+  discarded.
+- **Files the gateway delivered stop disappearing** into a fallback path that
+  could not have worked, and a session the gateway says it did not save now
+  repairs its continuity instead of silently starting over.
+- **The default Hermes transport learns its gateway version** from the session it
+  opens, and that version decides which capabilities are offered — a gateway
+  reporting a version Atrium has not validated no longer inherits the previous
+  one's permissions. Hermes 0.19.0 is validated and claimed; the claim is earned
+  against a recorded bench attestation, not asserted.
+- **Agent files against a gateway without its dashboard now say so.** `hermes
+  serve` alone does not deploy the file surface, so every file operation answered
+  a generic error that invited infinite retries; the cause is named instead.
+- **Sign-in accepts the claim shapes Entra actually sends** (#4).
+
+For operators, two additions that change how the next defect is found rather than
+fixing one:
+
+- **Protocol drift is durable and triable.** What the bridge observes on the wire
+  used to live in memory and die with the process; it is now a ledger with a
+  triage state, and it reports what it could NOT name rather than presenting an
+  incomplete list as a clean one.
+- **The catalogue each gateway publishes about itself is read.** Both gateways
+  announce what they offer, and Atrium ignored it — so an unhandled event family
+  was always discovered by whoever hit it first. Every announced family and
+  capability is now classified in-repo, a CI gate keeps that inventory exhaustive
+  as versions move, and a live gateway announcing something the vendored contract
+  never anticipated is recorded under its own name. The inventory is honest about
+  what it does NOT cover: 21 gaps, each with the cost of leaving it open.
+
 ## [0.68.12] — Tool cards stop lying, and a failed compaction says so
 
 First lot of the 1.0.0 stabilization work: the gateway's own frame vocabulary,
