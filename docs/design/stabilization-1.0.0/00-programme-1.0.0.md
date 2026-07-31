@@ -23,8 +23,8 @@ cinq vagues livrées ne l'étaient pas — seules W2 et W10 portaient un bandeau
 | W10 | Cliquet de version, fin du fail-open | **TERMINÉE** — lots 14 à 22 (G0, G1, **G2 sur 26 méthodes**, G3, G7, Q21, Q24 ; toute la surface RPC sous contrat, **596 entrées** classées, 6 défauts réels corrigés) |
 | W6 | Tours Hermes bornés | **TERMINÉE** — lots 29, 30, 31, atteints comme reports en chaîne du lot 28 et non comme vague planifiée. G-37 (tour zombie 12 min, fuite d'abonné) est fermée sur les DEUX transports ; G-40 (sortie amont sans terminal) est couverte par l'échéance. **W6 TERMINÉE** : G-36 au lot 32, G-38 **et G-39** au lot 33, G-41 au lot 45, G-42 au lot 37. Le report « Stop pendant le silence », ouvert au lot 31, est fermé au lot 45 — même mécanisme que G-41 |
 | W7 | Contenu et continuité de session Hermes | **TERMINÉE** — G-43 (lots 34+35), G-44 (34), G-45 (38), G-46 (36), G-48 (41), G-49 (44), G-50 (39), G-51 (42), G-52 (43). G-47 fermée au **lot 48**, en refonte : la première tentative avait été ANNULÉE avant commit, ses tests étant verts sur un état initial que la production ne produit jamais — et la faute est revenue par une autre porte à la 3ᵉ passe de revue du lot 48 (`parseSendBody` reconstruisait le corps sans la poignée) |
-| W12 | Conscience de version Hermes | **au périmètre depuis la décision produit du 28/07** — le motif du report (« aucune instance Hermes en production ») est mort : Hermes tourne sur le VPS client. État réel : **G-55 fermée au lot 46** (la version arrive par `session.info`, une règle de schéma unique aux trois portes, l'overlay résout chaque capacité à son propre minimum). **Restent G-56, G-58 (tranches 2+ : surface WS par AST, détecteur de drift à l'exécution, lockstep features) et G-74** ; G-57 est traitée en pratique par la règle de schéma du lot 46 plus (`maxValidated` est à 0.19.0 avec attestation). Le seul artefact Hermes sous `bridge/protocol/` est `hermes/0.19.0/BENCH.json` — pas de contrat vendored, pas de coverage, pas de cliquet, pas de détecteur de drift |
-| W9 | Auto-découverte des trames non traitées | **tranches 1 et 2a livrées** — lots 23 et 28 (points 6 et 8 : `KNOWN_AGENT_FIELDS` dérivé du vendoring, drift par état, débordements comptés bout en bout, auto-échec du détecteur ; puis le capteur d'exception C4 sur les sept lecteurs). **Reste la tranche 2b** : points 1, 3, 4, 5, 7, 9, 10 |
+| W12 | Conscience de version Hermes | **au périmètre depuis la décision produit du 28/07** — le motif du report (« aucune instance Hermes en production ») est mort : Hermes tourne sur le VPS client. État réel : **G-55 fermée au lot 46** (la version arrive par `session.info`, une règle de schéma unique aux trois portes, l'overlay résout chaque capacité à son propre minimum). **Restent G-56 et G-58 (tranches 2+ : surface WS par AST, détecteur de drift à l'exécution, lockstep features)** ; G-57 est traitée en pratique par la règle de schéma du lot 46 plus (`maxValidated` est à 0.19.0 avec attestation). **G-56 est mesurée SANS MORDANT (30/07)** : Atrium n'utilise rien au-delà du palier 2 de `DESKTOP_BACKEND_CONTRACT`, déjà déclaré par 0.17.0 — une garde ne pourrait pas se déclencher. **G-74 est fermée** : les deux affirmations fausses de `docs/design/protocol-schema-coverage.md` portent leur correction datée (26/07 pour la justification « ordered WS », 30/07 pour « structural placeholder with zero capabilities »), et `/capabilities` expose bien pour Hermes un provider, une version et des capacités résolues avec l'overlay de transport. **Correction du 30/07** : la phrase qui suivait affirmait que le seul artefact Hermes sous `bridge/protocol/` était `BENCH.json` — c'est faux depuis le lot 47. L'état réel est `hermes/0.19.0/` = `BENCH.json`, `rest-contract.json`, `rest-contract.source.py`, `PROVENANCE.json`, plus un cliquet de chemins. Restent absents, et c'est le périmètre de G-58 : pas d'artefact de coverage, pas de détecteur de drift |
+| W9 | Auto-découverte des trames non traitées | **tranches 1 et 2a livrées** — lots 23 et 28 (points 6 et 8 : `KNOWN_AGENT_FIELDS` dérivé du vendoring, drift par état, débordements comptés bout en bout, auto-échec du détecteur ; puis le capteur d'exception C4 sur les sept lecteurs). **Le point 4 est livré au lot 38** — la table `protocolShapes` existe (`convex/schema.ts:1453`), le registre des formes est durable et triable. **Reste la tranche 2b** : points 1, 3, 5, 7, 9, 10 |
 | W11 | Corpus doré, banc attesté, lockstep | **TERMINÉE** — lots 24, 25 et 26 (corpus doré rejouable + garde de fidélité ; `validatedVersions` adossé à une attestation ; partition front ⟷ manifeste + fixture régénérée, un défaut de résolution Hermes en prod corrigé au passage) |
 
 **MESURE DU 30/07 — G-56 n'a pas de dents aujourd'hui, et c'est un fait, pas un avis.**
@@ -96,14 +96,22 @@ un handle de récupération DISTINCT, en lecture seule, séparé de `openclawCha
 Règle ajoutée : *avant d'écrire une assertion, dire quelle séquence de production
 amène le système dans cet état.*
 
-**PROCHAIN LOT PRÊT (W9 tranche 2b, point 4) — non bloqué.** Aujourd'hui la dérive
-protocole est un **instantané** : le bridge la tient en mémoire, `convex/compat.ts`
-la plie et la range en `protocol: v.any()` sur la ligne compat, écrasée à chaque
-sondage. Elle meurt avec le processus et personne ne la trie. Le lot crée la table
-`protocolShapes` (forme, provider, instance, première/dernière vue, compte, `status`
-de triage) alimentée par le sondage existant — ce qui rend enfin MESURABLE
+**~~PROCHAIN LOT PRÊT (W9 tranche 2b, point 4)~~ — LIVRÉ au lot 38.** La dérive
+protocole était un **instantané** : le bridge la tenait en mémoire, `convex/compat.ts`
+la pliait et la rangeait en `protocol: v.any()` sur la ligne compat, écrasée à chaque
+sondage. Elle mourait avec le processus et personne ne la triait. Le lot 38 a créé la
+table `protocolShapes` (forme, provider, instance, première/dernière vue, compte,
+`status` de triage) alimentée par le sondage existant, ce qui rend MESURABLE
 l'indicateur de sortie n° 3 du programme (« `protocolShapes` en `status:"new"` non
-triées ⇒ 0 après une semaine »).
+triées ⇒ 0 après une semaine »). Le registre dit désormais aussi ce qu'il n'a **pas**
+vu, et non seulement ce qu'il a rencontré.
+
+**PROCHAIN LOT PRÊT (W9 tranche 2b, point 7 — G-70) — non bloqué.** La passerelle
+**publie déjà** le catalogue de ce qu'elle émet (`hello-ok.features.events` côté
+OpenClaw, `/v1/capabilities` côté Hermes) et Atrium ne le lit pas : il découvre les
+formes en les subissant. Lire ce catalogue à la connexion transforme la découverte
+de **réactive** en **proactive** — une forme annoncée mais jamais traitée devient une
+lacune connue AVANT qu'un utilisateur la rencontre, au lieu d'après.
 
 **Correction de cap, à dire plutôt qu'à laisser filer (28/07)** : les lots 29 à 31 ont
 été ouverts comme reports en chaîne du lot 28 et se trouvent être du **W6**, la vague
@@ -328,7 +336,7 @@ même `TurnSink` en parallèle de cette boucle.
 | ~~G-55~~ **FERMÉE (lot 46)** | Hermes : `gatewayVersion: null` **en dur** sur le transport par défaut ⇒ tout le manifeste compat Hermes est du code mort, alors que la version est **sur le fil** | **C** | 2 | `hermes/dispatch.ts:824` **(V)** ; défaut WS `:794` ; politique plancher `bridge/src/compat.ts:284-300` ; source disponible `$HE/tui_gateway/server.py:3849-3851` (chaque `session.info`) ; seconde source `$HE/hermes_cli/web_server.py:2935-2936` | W12 |
 | G-56 **(garde NON constructible aujourd'hui — mesuré le 30/07)** | `DESKTOP_BACKEND_CONTRACT`, passé de **2 à 4** entre 0.18.2 et 0.19.0, totalement ignoré — là où le client officiel **refuse** un backend en skew | **C** | 2 | `$HE/tui_gateway/server.py:3726`, sémantique `:3719-3725` ; historique par tags (v2026.7.7.2 = 2, v2026.7.20 = 4) ; garde du client officiel `apps/desktop/src/store/updates.ts:90-95` ; émis dans 3 réponses déjà reçues `$HE/…/server.py:3828`, `:5910`, `:6060` ; Atrium `hermes/ws-turn.ts:141-152`, `:521-528` | W12 |
 | G-57 | Hermes a changé de schéma de version (tag `v2026.7.20` vs `pyproject` `0.19.0`) : selon la chaîne qui alimente la version, `2026 > 0` ⇒ **beyond validated ⇒ toutes capacités à `true`** | H | 7 | `bridge/src/compat.ts:193` (`maxValidated: "0.18.2"`) **(V)** ; `parseVersion` `:211-224` ; politique fail-open `:310-316` **(V)** ; **NON PROUVÉ** sous quel format Hermes reporte au bridge : lire `hermes/client.ts`, `ws-client.ts`, `server.ts:1533` (`onHermesVersion`) | W12 |
-| G-58 **(tranche 1 livrée, lot 47)** | Aucun contrat Hermes vendored, aucun coverage, aucun ratchet, aucun détecteur de drift (asymétrie totale) | **C** | 2, 4 | `ls bridge/protocol/` → `openclaw` seul **(V)** ; `ls bridge/src/providers/hermes/` → pas de `protocol-drift.ts` **(V)** ; mais 3 artefacts machine exploitables existent (contrat entier monotone, `/v1/capabilities` 33 booléens `$HE/…/api_server.py:2004-2070`, `session.info.version`) et la surface est extractible par AST | W12 |
+| G-58 **(tranche 1 livrée, lot 47)** | Aucun contrat Hermes vendored, aucun coverage, aucun ratchet, aucun détecteur de drift (asymétrie totale) | **C** | 2, 4 | **au 26/07** : `ls bridge/protocol/` → `openclaw` seul **(V)** ; `ls bridge/src/providers/hermes/` → pas de `protocol-drift.ts` **(V)**. **Au 30/07 (lot 47)** la première moitié est levée — `bridge/protocol/hermes/0.19.0/` porte `rest-contract.json`, `rest-contract.source.py`, `PROVENANCE.json` et un cliquet de chemins ; la seconde tient toujours, il n'y a **ni coverage ni détecteur de drift** Hermes. Trois artefacts machine exploitables existent (contrat entier monotone, `/v1/capabilities` 33 booléens `$HE/…/api_server.py:2004-2070`, `session.info.version`) et la surface est extractible par AST | W12 |
 | G-59 | Vendored figé à `2026.6.11` alors que `maxValidated: "2026.7.1"` ⇒ **le ratchet CI est un no-op** ; 5 additions de contrat 7.1 non triées, dont `ChatAbortedEvent.errorMessage` (motif d'abort jeté) | **C** | 7 | `bridge/protocol/openclaw/2026.6.11/` = 5 fichiers **(V)** ; `compat.ts:167` **(V)** ; `protocol-coverage.test.ts:23-27` (version en dur) ; exigence non tenue `docs/design/protocol-contract.md:39-45` ; skill sans étape de re-vendorisation `<hors-dépôt>/skills/add-gateway-version/SKILL.md:80-87` ; commentaire factuellement faux `protocol-drift.ts:20-24` | W10 |
 | G-60 | Les paramètres RPC **sortants** ne sont jamais validés contre la version **PLANCHER** du range ⇒ ajouter un champ 7.1 casserait durement tous les gateways < 7.1 (`additionalProperties:false`) | **C** | 7 | schémas stricts `bridge/protocol/openclaw/2026.6.11/logs-chat.ts` ; l'amont le confirme `$UP/src/tui/gateway-chat.ts:243-245` (« Protocol v4 peers reject unknown fields ») ; une seule forme émise `server.ts:1055`, `:2407-2410` ; le banc ne rejoue jamais le plancher `SKILL.md:60-74` | W10 |
 | G-61 | Ratchet sur **3 modules de schéma sur 31** ⇒ 15 des 20 méthodes RPC appelées (cron, sessions, tasks, config, models) sans aucun garde-fou ; même trou dans la watchlist du diff amont | **C** | 7 | `protocol-coverage.test.ts:23-25` ; inventaire des 20 RPC `07-version-process.md:221-233` ; `<hors-dépôt>/live-bench/upstream-watchlist.txt` (22 fichiers, aucun cron/sessions/tasks/config) ; `sessions.get`, réellement appelé, n'a **aucun** schéma amont (`$UP/src/gateway/server-methods/sessions.ts:2513-2527`, params validés à la main) | W10 |
@@ -338,7 +346,7 @@ même `TurnSink` en parallèle de cette boucle.
 | G-65 | **6 features majeures** couvertes par le seul banc live manuel ; **2** (`talk`, `announce×queue`) dans **aucune** suite exécutée | H | 7 | `<hors-dépôt>/live-bench/scenarios.mjs:70-85`, `:86-102`, `:103-228`, `:229-264`, `:265-288` ; `announce-queue-race.mjs` et `probe-talk.mjs` hors suite | W11 |
 | G-73 | Le diff d'interprétation amont est **explicitement non bloquant** et compare depuis une base différente du ratchet (le signal a été émis puis ignoré) | M | 7 | `upstream-diff.sh:14-17`, base `:31-35` ; rapport existant `<hors-dépôt>/bench-runs/upstream-diff-2026.6.11-vs-2026.7.1/report.md` (« 15 changed », « Anchors: 15 ok ») | W10 |
 | G-71 | Trois familles d'événements sont émises **hors du catalogue annoncé** par `hello-ok` (`chat.send_timing`, `chat.side_result`, `plugin.*`) | B | 1 | catalogue `$UP/src/gateway/server-methods-list.ts:39-70` renvoyé `$UP/src/gateway/server.impl.ts:1581` ; gardes de scope présentes `$UP/src/gateway/server-broadcast.ts:26`, `:27`, `:77-84` | W9 (doc) |
-| G-74 | Le contrat de conception affirme des choses non tenues : `docs/design/protocol-schema-coverage.md:299-311` décrit encore Hermes comme « structural placeholder with zero capabilities » ; `protocol-schema-coverage.md:264-268` justifie l'absence de détection de perte par « ordered WS » (raison falsifiée par le code amont) | M | 3, 4, 7 | fichiers cités ; **NON PROUVÉ** que `/capabilities` déclare honnêtement `none-published` pour Hermes (lire `bridge/src/server.ts:2040-2070`) | W10/W12 (doc) |
+| G-74 **(FERMÉE — 26/07 puis lot 47 le 30/07)** | Le contrat de conception affirmait des choses non tenues : `docs/design/protocol-schema-coverage.md` décrivait Hermes comme « structural placeholder with zero capabilities » et justifiait l'absence de détection de perte par « ordered WS » (raison falsifiée par le code amont — l'amont **jette des trames exprès** via `dropIfSlow`, en avançant le `clientSeq`). | M | 3, 4, 7 | Les deux passages portent leur correction **datée**, laissée en place plutôt que réécrite : un document qui efface ses erreurs n'apprend pas à s'en méfier. Le « NON PROUVÉ » sur `/capabilities` est levé : les cibles Hermes y portent provider, version résolue et capacités avec l'overlay de transport (`bridge/src/server.ts:2238-2246`, `applyHermesTransportOverlay`) — le placeholder à zéro capacité n'existe plus. | W10/W12 (doc) |
 
 ---
 
@@ -1816,7 +1824,9 @@ appelées n'ont aucun garde-fou, et la politique au-delà de `maxValidated` est
    `docs/design/upstream-interpretation-comparison.md` n'a pas été mis à jour ET
    qu'un scénario de `openclaw_upstream_frames.json` de la zone n'a pas été
    **ré-extrait** (le test vérifie que `upstream_tag` == la version cible).
-6. **Honnêteté documentaire** (G-74) : corriger `protocol-schema-coverage.md:264-268`
+6. **Honnêteté documentaire** (G-74) — **FAIT** : les trois affirmations portent leur
+   correction datée (26/07, puis lot 47 le 30/07 pour la section Hermes), laissée en
+   place plutôt que réécrite. Détail de ce qui était faux : corriger `protocol-schema-coverage.md:264-268`
    (la justification « ordered WS » est falsifiée par
    `$UP/src/gateway/server-broadcast.ts:174-179`), `protocol-drift.ts:20-24`
    (« exactly one addition » est faux) et la section Hermes
@@ -2147,7 +2157,7 @@ ou groupés en une release corrective unique.
 | Q21 | `compat.test.ts` refuse un `maxValidated` sans répertoire vendored | G-59 | W10 | `bridge/test/compat.test.ts` |
 | Q22 | `capabilities.test.ts` : ÉGALITÉ d'ensembles au lieu de l'inclusion | G-64 | W11 | `src/chat/capabilities.test.ts:84-87` |
 | Q23 | Politique fail-**closed** au-delà de `maxValidated` + bannière | G-62 | W10 | `bridge/src/compat.ts:310-316`, `src/chat/admin/compatView.ts:41` |
-| Q24 | Corriger les trois affirmations fausses des docs de design | G-74 | W10 | `docs/design/protocol-schema-coverage.md:264-268`, `:299-311`, `protocol-drift.ts:20-24` |
+| Q24 **(FAIT — 26/07 puis lot 47)** | Corriger les trois affirmations fausses des docs de design | G-74 | W10 | `docs/design/protocol-schema-coverage.md:264-268`, `:299-311`, `protocol-drift.ts:20-24` |
 
 **Note P7** : Q1-Q3, Q5-Q12, Q15-Q20 sont des **correctifs** (comportement faux →
 comportement juste), donc éligibles à une release. Q8 et Q14 sont de
