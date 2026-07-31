@@ -4971,18 +4971,25 @@ function Composer({
               <Plus size={18} aria-hidden />
             </ComposerPrimitive.AddAttachment>
           ) : null}
-          <button
-            type="button"
-            className={`oc-composer__tools${showTools ? " is-on" : ""}`}
-            onClick={onToggleTools}
-            aria-pressed={showTools}
-            title={
-              showTools ? m.chat_tools_hide() : m.chat_tools_show()
-            }
-          >
-            <SlidersHorizontal size={15} aria-hidden />
-            {m.chat_tools()}
-          </button>
+          {/* NOT in focus mode. This toggle switches the THREAD between the clean
+              and the analysis view (tool activity, model chip, context meter) —
+              everything it changes is behind the focus panel's backdrop. It worked
+              (aria-pressed flipped, the preference persisted) and looked broken,
+              which is worse than absent: a control whose whole effect is covered is
+              a control that lies. Focus mode is for writing a prompt; the thread's
+              view is chosen from the thread. */}
+          {composerExpanded ? null : (
+            <button
+              type="button"
+              className={`oc-composer__tools${showTools ? " is-on" : ""}`}
+              onClick={onToggleTools}
+              aria-pressed={showTools}
+              title={showTools ? m.chat_tools_hide() : m.chat_tools_show()}
+            >
+              <SlidersHorizontal size={15} aria-hidden />
+              {m.chat_tools()}
+            </button>
+          )}
           {/* MULTI-AGENT: per-turn agent selector (self-hides for a single-agent
               user; disabled until the chat has a first turn, or when unavailable). */}
           <ComposerAgentSelect

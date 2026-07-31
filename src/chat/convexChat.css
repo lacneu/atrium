@@ -1,6 +1,54 @@
 /* Styles for the Convex + assistant-ui chat surface (new components only).
    Import once from main.tsx (or your entry) alongside styles.css. */
 
+/* =============================================================================
+   LAYER SCALE — the ONE ordered list of what paints above what.
+   ==========================================================================
+   FOUND THE HARD WAY (2026-07-31). Opening the composer in full-page mode and
+   clicking the agent selector did nothing visible. The popover was in fact OPEN
+   with real geometry — it was simply painted UNDERNEATH: every shadcn overlay
+   (popover, dropdown, dialog, sheet, select, tooltip) ships `z-50`, and the app's
+   own fixed panels had been given 60, 61 and 70 as they were added, each one
+   picking a number bigger than the last without anyone stating the order. So the
+   shared overlay family ended up BELOW three of the app's own surfaces, and any
+   menu opened from one of them was invisible.
+
+   The rule, in one place so the next fixed panel cannot silently repeat it:
+   an OVERLAY always paints above the PANEL that opened it. Toasts and the
+   lightbox stay above overlays — a toast must remain readable over an open menu,
+   and the lightbox is the deliberate full-takeover.
+
+   Add a new fixed panel? Use a variable below `--oc-layer-overlay`. Never a bare
+   number, and never one that jumps the overlay layer. */
+:root {
+  --oc-layer-sidebar-backdrop: 40;
+  --oc-layer-sidebar-drawer: 50;
+  --oc-layer-dev-fab: 60;
+  --oc-layer-focus-backdrop: 60;
+  --oc-layer-focus-panel: 61;
+  --oc-layer-detached-composer: 70;
+  --oc-layer-overlay: 80;
+  --oc-layer-toast: 100;
+  --oc-layer-lightbox: 200;
+}
+
+/* The shared overlay family, raised as ONE. Keyed on the `data-slot` attributes
+   shadcn emits rather than edited in `src/components/ui/*` — those files are
+   regenerable, and a regenerated component would silently restore `z-50` and this
+   defect with it. `convexChat.css` is imported UNLAYERED (main.tsx), and unlayered
+   rules beat anything inside an `@layer`, so this wins over Tailwind's utility
+   without needing `!important`. */
+[data-slot="popover-content"],
+[data-slot="dropdown-menu-content"],
+[data-slot="select-content"],
+[data-slot="tooltip-content"],
+[data-slot="dialog-overlay"],
+[data-slot="dialog-content"],
+[data-slot="sheet-overlay"],
+[data-slot="sheet-content"] {
+  z-index: var(--oc-layer-overlay);
+}
+
 .oc-boot,
 .oc-empty {
   display: grid;
@@ -4959,7 +5007,7 @@ button.oc-bmk-rail__count:hover {
   top: 0;
   bottom: 0;
   left: 0;
-  z-index: 50;
+  z-index: var(--oc-layer-sidebar-drawer);
   width: min(86vw, 320px);
   box-shadow: 2px 0 18px rgb(0 0 0 / 0.22);
   animation: oc-drawer-in 180ms ease;
@@ -4969,7 +5017,7 @@ button.oc-bmk-rail__count:hover {
 .oc-sidebar-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: var(--oc-layer-sidebar-backdrop);
   background: rgb(0 0 0 / 0.45);
   animation: oc-backdrop-in 180ms ease;
 }
@@ -6129,7 +6177,7 @@ button.oc-bmk-rail__count:hover {
    Fixed bottom-right stack of non-blocking notifications. Auto-dismiss + manual
    close. On tokens, except the destructive accent stripe (hex, like statuses). */
 .oc-toast__viewport {
-  position: fixed; bottom: 1rem; right: 1rem; z-index: 100;
+  position: fixed; bottom: 1rem; right: 1rem; z-index: var(--oc-layer-toast);
   display: flex; flex-direction: column; gap: 0.5rem;
   max-width: min(24rem, calc(100vw - 2rem)); pointer-events: none;
 }
@@ -6671,7 +6719,7 @@ button.oc-bmk-rail__count:hover {
 /* ── DEV user switcher (dev-only floating affordance) ───────────────────────── */
 .oc-devfab {
   /* Sits ABOVE the TanStack Router devtools toggle (also fixed bottom-right in dev). */
-  position: fixed; right: 0.85rem; bottom: 2.9rem; z-index: 60;
+  position: fixed; right: 0.85rem; bottom: 2.9rem; z-index: var(--oc-layer-dev-fab);
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.3rem 0.55rem; border-radius: 999px; cursor: pointer;
   font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
@@ -7750,7 +7798,7 @@ button.oc-bmk-rail__count:hover {
 .oc-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--oc-layer-lightbox);
   background: rgba(0, 0, 0, 0.82);
   display: flex;
   flex-direction: column;
@@ -8910,7 +8958,7 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--oc-layer-focus-backdrop);
   background: color-mix(in srgb, var(--background) 55%, transparent);
   backdrop-filter: blur(3px);
   animation: oc-backdrop-in 180ms ease;
@@ -8924,7 +8972,7 @@ button.oc-bmk-rail__count:hover {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  z-index: 61;
+  z-index: var(--oc-layer-focus-panel);
   /* A GENEROUS workspace on big screens (dictation comfort), still bounded for
      line readability. Fills most of the height so a long dictated prompt is
      visible at once; small screens fall back to the viewport and scroll. */
@@ -8998,7 +9046,7 @@ button.oc-bmk-rail__count:hover {
    ========================================================================== */
 .oc-detach {
   position: fixed;
-  z-index: 70;
+  z-index: var(--oc-layer-detached-composer);
   display: flex;
   flex-direction: column;
   /* Yield to a sub-minimum viewport so the panel never overflows the screen
