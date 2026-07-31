@@ -26,6 +26,11 @@ export interface CronJobDetail {
   payloadKind: string | null; // "agentTurn" | "systemEvent" | ...
   deliveryMode: string | null; // "none" | "announce" | "webhook"
   agentId: string | null;
+  /** The session that OWNS the job — `agent:<id>:atrium:chat:<canonical>:<chatId>` when
+   *  it was created from a conversation. Carried because it is the only thing that can
+   *  answer "where should this job's report have landed?", and the gateway sends it on
+   *  every job. Dropping it is why an undelivered report had nowhere to go. */
+  ownerSessionKey: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
   createdAtMs: number | null;
@@ -40,6 +45,22 @@ export interface CronRunEntry {
   error: string | null;
   durationMs: number | null;
   model: string | null;
+  /** Did the run's report REACH anyone? (production report, 2026-07-30.)
+   *
+   *  The gateway computes this and Atrium threw it away, so a run whose summary was
+   *  delivered NOWHERE showed up as `status: "ok"` — which is how a user watched a
+   *  scheduled cycle fail in silence, asked three times where it was, and got nothing:
+   *  the cycle had stopped for a stated reason, its report resolved to a channel with no
+   *  target, `delivered: false`, and every surface still said the run was fine.
+   *
+   *  `null` means the payload said nothing about delivery — NOT that it failed. A run
+   *  whose job delivers nowhere on purpose (`delivery.mode: "none"`) is not a failure and
+   *  must never be flagged as one, or the signal becomes noise and gets ignored. */
+  delivered: boolean | null;
+  /** Where it was actually resolved to (`telegram`, `announce`, …), when stated. */
+  deliveryChannel: string | null;
+  /** Why the delivery could not happen, as the gateway phrased it. */
+  deliveryError: string | null;
 }
 
 /** The ONLY fields a client may change — a raw patch passthrough would let a
@@ -122,6 +143,7 @@ export function normalizeCronJobDetail(raw: unknown): CronJobDetail {
   const job = isRecord(raw) ? raw : {};
   const payload = isRecord(job.payload) ? job.payload : {};
   const delivery = isRecord(job.delivery) ? job.delivery : {};
+  const owner = isRecord(job.owner) ? job.owner : {};
   const state = isRecord(job.state) ? job.state : {};
   const sched = printableSchedule(job.schedule);
   const rawMessage =
@@ -139,6 +161,7 @@ export function normalizeCronJobDetail(raw: unknown): CronJobDetail {
     messageTruncated: rawMessage !== null && rawMessage.length > MESSAGE_CAP,
     payloadKind: str(payload.kind),
     deliveryMode: str(delivery.mode),
+    ownerSessionKey: str(owner.sessionKey, 400),
     // Fail closed like the list path: a malformed agent pin must NOT read as
     // "default agent" (null) — surface a sentinel the Convex side rejects.
     // TRUNCATING an over-long id could collide with a legitimate agent id
@@ -171,6 +194,17 @@ export function normalizeCronRunEntries(raw: unknown): CronRunEntry[] {
   const out: CronRunEntry[] = [];
   for (const e of list) {
     if (!isRecord(e)) continue;
+    // The gateway states delivery in TWO places that can disagree: a coarse
+    // `deliveryStatus` (seen as `"unknown"` on a run that definitely failed to deliver)
+    // and the precise `delivery` block. The block wins — it carries the resolution that
+    // produced the verdict, while the coarse field is a summary of it.
+    const d = isRecord(e.delivery) ? e.delivery : null;
+    const resolved = d !== null && isRecord(d.resolved) ? d.resolved : null;
+    const intended = d !== null && isRecord(d.intended) ? d.intended : null;
+    // Only a job that MEANT to deliver can fail to. `mode: "none"` is a deliberate
+    // choice, and flagging it would fill the surface with non-events.
+    const meantToDeliver =
+      intended === null ? d !== null : str(intended.channel) !== "none";
     out.push({
       ts: num(e.ts),
       runAtMs: num(e.runAtMs),
@@ -179,6 +213,12 @@ export function normalizeCronRunEntries(raw: unknown): CronRunEntry[] {
       error: str(e.error, ERROR_CAP),
       durationMs: num(e.durationMs),
       model: str(e.model),
+      delivered:
+        d !== null && typeof d.delivered === "boolean" && meantToDeliver
+          ? d.delivered
+          : null,
+      deliveryChannel: resolved !== null ? str(resolved.channel) : null,
+      deliveryError: resolved !== null ? str(resolved.error, ERROR_CAP) : null,
     });
     if (out.length >= RUNS_LIMIT_MAX) break;
   }
