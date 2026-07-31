@@ -240,10 +240,16 @@ export function normalizeCronRunEntries(raw: unknown): CronRunEntry[] {
     // Only a job that MEANT to deliver can fail to. `mode: "none"` is a deliberate
     // choice, and flagging it would fill the surface with non-events.
     // A top-level-only entry carries no `intended`, so "did it MEAN to deliver?"
-    // falls back to "did it say anything about delivery at all?" — either shape.
+    // reads the contract's own answer: `deliveryStatus: "not-requested"` IS the
+    // top-level spelling of `mode: "none"`. The first version of this fallback
+    // treated any boolean `delivered` as intent, which would have flagged a job
+    // that delivers nowhere ON PURPOSE — the exact noise the rule two lines up
+    // exists to prevent, reintroduced by the fix for a different shape (codex).
     const meantToDeliver =
       intended === null
-        ? d !== null || typeof e.delivered === "boolean"
+        ? str(e.deliveryStatus) === "not-requested"
+          ? false
+          : d !== null || typeof e.delivered === "boolean"
         : str(intended.channel) !== "none";
     out.push({
       ts: num(e.ts),

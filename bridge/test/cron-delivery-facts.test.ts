@@ -125,6 +125,18 @@ describe("what is NOT an undelivered run", () => {
     expect(run?.deliveryError).toContain("no target");
   });
 
+  it("`not-requested` is the top-level spelling of \"delivers nowhere on purpose\"", () => {
+    // The contract's own enum. Without this, the top-level fallback flagged a job
+    // that never meant to deliver — the same noise `mode: "none"` is guarded
+    // against, reintroduced through the other shape.
+    const [run] = normalizeCronRunEntries({
+      entries: [
+        { ts: 1, status: "ok", delivered: false, deliveryStatus: "not-requested" },
+      ],
+    });
+    expect(run?.delivered, "a deliberate no-delivery is not a failure").toBeNull();
+  });
+
   it("the nested block still WINS where both are present", () => {
     // The block carries the resolution that produced the verdict; the top-level
     // field is a summary of it and has been seen to disagree.
