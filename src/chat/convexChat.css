@@ -8853,6 +8853,12 @@ button.oc-bmk-rail__count:hover {
     transition: none;
   }
 }
+/* "The last report reached nobody" — a WARNING tone, not an error one: the run
+   itself may well have succeeded, and colouring it destructive would say the job
+   failed when it did not. Rendered only on an explicit `false`. */
+.oc-cronpanel__undelivered {
+  color: var(--destructive);
+}
 .oc-cronpanel__plain {
   display: block;
   font-size: 12px;

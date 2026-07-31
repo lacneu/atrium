@@ -104,6 +104,8 @@
   "cron_field_next_run": "Prochaine exécution",
   "cron_field_agent": "Agent",
   "cron_field_delivery": "Livraison",
+  "cron_field_last_delivery": "Dernier compte rendu",
+  "cron_last_delivery_failed": "N'a été livré à personne.",
   "cron_field_message": "Message du cron",
   "cron_action_run_now": "Lancer maintenant",
   "cron_action_pause": "Désactiver",

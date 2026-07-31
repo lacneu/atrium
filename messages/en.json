@@ -104,6 +104,8 @@
   "cron_field_next_run": "Next run",
   "cron_field_agent": "Agent",
   "cron_field_delivery": "Delivery",
+  "cron_field_last_delivery": "Last report",
+  "cron_last_delivery_failed": "Reached nobody.",
   "cron_field_message": "Cron message",
   "cron_action_run_now": "Run now",
   "cron_action_pause": "Disable",

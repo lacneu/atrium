@@ -48,6 +48,12 @@ interface CronJobDetailView {
   agentId: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** The LAST run's delivery verdict. A run can succeed and still reach NOBODY —
+   *  which is exactly how a user watched a weekly cycle fail in silence — so the
+   *  status alone is not the whole truth about it. `null` = the gateway said
+   *  nothing, and nothing is shown. */
+  lastDelivered: boolean | null;
+  lastDeliveryError: string | null;
   updatedAtMs: number | null;
 }
 interface CronRunEntryView {
@@ -213,6 +219,8 @@ export function CronDetailContent({
     agentId: part.agentId ?? null,
     nextRunAtMs: part.nextRunAtMs ?? null,
     lastRunStatus: null,
+    lastDelivered: null,
+    lastDeliveryError: null,
     updatedAtMs: null,
   };
 
@@ -279,6 +287,25 @@ export function CronDetailContent({
           <>
             <dt>{m.cron_field_delivery()}</dt>
             <dd>{shown.deliveryMode}</dd>
+          </>
+        ) : null}
+        {/* A run that SUCCEEDED and reached nobody. Shown only on an explicit
+            `false`: silence from the gateway says nothing, and a job that delivers
+            nowhere on purpose is not a failure — flagging either would make this
+            line noise, and a line that is always on stops being read. The
+            gateway's own reason rides along, because "not delivered" with no
+            cause gives an operator nothing to act on. */}
+        {shown.lastDelivered === false ? (
+          <>
+            <dt>{m.cron_field_last_delivery()}</dt>
+            <dd className="oc-cronpanel__undelivered">
+              {m.cron_last_delivery_failed()}
+              {shown.lastDeliveryError !== null ? (
+                <span className="oc-cronpanel__plain">
+                  {shown.lastDeliveryError}
+                </span>
+              ) : null}
+            </dd>
           </>
         ) : null}
       </dl>
