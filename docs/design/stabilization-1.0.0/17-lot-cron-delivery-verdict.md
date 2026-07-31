@@ -41,11 +41,10 @@ commit que « le maillon qu'on oublie » était le danger, et s'est arrêtée av
 s'était perdu y affichait toujours « OK ». L'historique d'exécutions avait le même
 trou, hérité d'un lot antérieur. Énoncer la leçon ne l'applique pas.
 
-Ce qui suit décrit les deux premiers maillons, et chacun re-type ce qu'il garde :
-`normalizeCronJobDetail` côté bridge, puis `detailFrom` côté Convex, qui **jette tout
-ce qu'il ne nomme pas**. Un champ transporté fidèlement par le premier meurt
-silencieusement dans le second. C'est exactement la leçon du lot G-70 : *une chaîne ne
-fait que la longueur des maillons que quelqu'un a vérifiés*.
+Un champ transporté fidèlement par un maillon meurt silencieusement dans le suivant.
+C'est exactement la leçon du lot G-70 : *une chaîne ne fait que la longueur des maillons
+que quelqu'un a vérifiés* — et il aura fallu la revue croisée pour que la leçon soit
+appliquée plutôt que citée.
 
 La branche Hermes épelle les quatre champs à `null` explicitement : cette passerelle
 n'a pas de `cron.get` par tâche et son listing ne porte aucun état de livraison. Les
