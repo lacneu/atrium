@@ -1,6 +1,34 @@
 # Changelog
 
+## [0.69.3] — A scheduled run that reached nobody stops looking like a success
+
+`0.69.2` was tagged and never published: its build failed on a type error in a test,
+so the release stopped at its gate. The tag is left where it is rather than moved
+under anyone who already fetched it, and everything described under `0.69.2` below
+ships here, plus:
+
+- **A scheduled task whose report was delivered nowhere no longer shows as
+  successful.** Reported from production: a weekly cycle was launched, the user was
+  told he could close his laptop, and then nothing came — he asked three times where
+  it was. The cycle had in fact stopped on its own after about eighty seconds for a
+  reason it recorded, and its failure report was routed to a channel with no
+  recipient, so it reached no one. Every screen still showed the run as fine, which
+  is why nothing warned anybody while he waited. The gateway had computed all of
+  this; Atrium was discarding it, along with the conversation the task belonged to.
+  Both are kept now, and a run that delivered nothing is no longer presented as a
+  success. A task deliberately configured to deliver nowhere is untouched — that is
+  a choice, not a failure.
+- **A test type error that had turned the build red is fixed.**
+
+Still to come, and promised to the reporter: an undelivered report should land by
+itself in the conversation that created it. Today it becomes visible instead of
+silent, which is what made the rest possible.
+
+Deploy: `npx convex deploy` plus the bridge and frontend images.
+
 ## [0.69.2] — Sign-in stops being on a timer, and a chat opens where you left it
+
+> Tagged but never published — its build failed at the test gate; see `0.69.3`.
 
 Two corrections, one of which is a latent outage rather than an annoyance.
 
