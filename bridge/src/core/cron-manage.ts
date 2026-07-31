@@ -201,10 +201,20 @@ export function normalizeCronJobDetail(raw: unknown): CronJobDetail {
     // STRICT boolean. `undefined` (the gateway said nothing) must stay null, never
     // coerce to false — reading silence as "not delivered" would invent a failure on
     // every build that does not report delivery at all.
+    // SAME state→job fallback as `lastRunAtMs`/`lastRunStatus` above: older gateway
+    // shapes carry these top-level, and reading only `state` would turn a real
+    // `false` into `null` — the panel then stays silent in exactly the drift case
+    // this normalizer exists to absorb (codex).
     lastDelivered:
-      typeof state.lastDelivered === "boolean" ? state.lastDelivered : null,
-    lastDeliveryError: str(state.lastDeliveryError, 400),
-    lastDeliveryStatus: str(state.lastDeliveryStatus),
+      typeof state.lastDelivered === "boolean"
+        ? state.lastDelivered
+        : typeof job.lastDelivered === "boolean"
+          ? job.lastDelivered
+          : null,
+    lastDeliveryError:
+      str(state.lastDeliveryError, 400) ?? str(job.lastDeliveryError, 400),
+    lastDeliveryStatus:
+      str(state.lastDeliveryStatus) ?? str(job.lastDeliveryStatus),
     createdAtMs: num(job.createdAtMs),
     updatedAtMs: num(job.updatedAtMs),
   };

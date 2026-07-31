@@ -126,6 +126,7 @@
   "cron_run_error": "Échec",
   "cron_col_result": "Dernier résultat",
   "cron_result_ok": "OK",
+  "cron_result_undelivered": "Non livré",
   "cron_result_error": "Échec",
   "cron_result_running": "En cours",
   "cron_result_never": "Jamais exécuté",

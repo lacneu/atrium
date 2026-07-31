@@ -128,6 +128,8 @@ export const listMyCrons = action({
         schedule: string | null;
         nextRunAtMs: number | null;
         lastRunStatus: string | null;
+        lastDelivered: boolean | null;
+        lastDeliveryError: string | null;
         agentId: string;
       }[];
     }[]
@@ -190,6 +192,8 @@ export const listMyCrons = action({
               schedule: j.schedule,
               nextRunAtMs: j.nextRunAtMs,
               lastRunStatus: j.lastRunStatus,
+              lastDelivered: j.lastDelivered,
+              lastDeliveryError: j.lastDeliveryError,
               agentId: j.effectiveAgentId,
             })),
           };
@@ -499,6 +503,9 @@ export const listCronRuns = action({
       error: string | null;
       durationMs: number | null;
       model: string | null;
+      delivered: boolean | null;
+      deliveryChannel: string | null;
+      deliveryError: string | null;
     }[]
   > => {
     const { target } = await requireOwnedCronJob(ctx as never, instanceName, jobId);
@@ -525,6 +532,9 @@ export const listCronRuns = action({
       error: string | null;
       durationMs: number | null;
       model: string | null;
+      delivered: boolean | null;
+      deliveryChannel: string | null;
+      deliveryError: string | null;
     }[] = [];
     for (const e of raw) {
       if (typeof e !== "object" || e === null) continue;
@@ -537,6 +547,12 @@ export const listCronRuns = action({
         error: detailStr(r.error, 400),
         durationMs: detailNum(r.durationMs),
         model: detailStr(r.model, 120),
+        // The run's OWN delivery verdict. The bridge started carrying these and
+        // this re-typing dropped them, so the history kept showing the lost run as
+        // a plain success — the same hop, one surface over (codex).
+        delivered: typeof r.delivered === "boolean" ? r.delivered : null,
+        deliveryChannel: detailStr(r.deliveryChannel, 40),
+        deliveryError: detailStr(r.deliveryError, 400),
       });
       if (out.length >= 50) break;
     }

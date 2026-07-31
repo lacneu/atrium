@@ -1807,6 +1807,12 @@ export interface CronJobSummary {
   schedule: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** Did the LAST report reach anyone? A run can be `lastRunStatus: "ok"` and have
+   *  been delivered NOWHERE — that pair is exactly how a weekly cycle failed in
+   *  silence. `null` = the gateway said nothing, never "it failed". */
+  lastDelivered: boolean | null;
+  /** The gateway's own reason, when stated. */
+  lastDeliveryError: string | null;
   /** The job's pinned agent id; null = the gateway's default agent (OpenClaw)
    *  or the instance's single agent (Hermes). Convex applies the policy. */
   agentId: string | null;
@@ -1891,6 +1897,19 @@ export async function fetchCronJobs(
         str(state.lastStatus) ??
         str(job.lastRunStatus) ??
         str(job.lastStatus),
+      // Did the LAST report reach anyone? The LIST is the supervision surface —
+      // stopping the verdict at the detail panel left a job whose report was lost
+      // reading "OK" in the one place an operator actually scans (codex).
+      // STRICT boolean with the SAME state→job fallback the fields above use, since
+      // older shapes carry these top-level too; silence stays null, never false.
+      lastDelivered:
+        typeof state.lastDelivered === "boolean"
+          ? state.lastDelivered
+          : typeof job.lastDelivered === "boolean"
+            ? job.lastDelivered
+            : null,
+      lastDeliveryError:
+        str(state.lastDeliveryError) ?? str(job.lastDeliveryError),
       agentId,
     });
   }

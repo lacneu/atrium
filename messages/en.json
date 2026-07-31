@@ -126,6 +126,7 @@
   "cron_run_error": "Failed",
   "cron_col_result": "Last result",
   "cron_result_ok": "OK",
+  "cron_result_undelivered": "Not delivered",
   "cron_result_error": "Failed",
   "cron_result_running": "Running",
   "cron_result_never": "Never run",

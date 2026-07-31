@@ -18,6 +18,8 @@ function job(over: Partial<CronJobSummary>): CronJobSummary {
     schedule: "0 9 * * 1",
     nextRunAtMs: 1_800_000_000_000,
     lastRunStatus: "ok",
+    lastDelivered: null,
+    lastDeliveryError: null,
     agentId: null,
     ...over,
   };
@@ -85,6 +87,8 @@ describe("parseCronListResponse", () => {
         schedule: "0 9 * * 1",
         nextRunAtMs: 123,
         lastRunStatus: "ok",
+        lastDelivered: null,
+        lastDeliveryError: null,
         agentId: "alice",
       },
     ]);
@@ -102,6 +106,8 @@ describe("parseCronListResponse", () => {
         schedule: null,
         nextRunAtMs: null,
         lastRunStatus: null,
+        lastDelivered: null,
+        lastDeliveryError: null,
         agentId: null,
       },
     ]);
@@ -134,5 +140,42 @@ describe("parseCronListResponse", () => {
     const parsed = parseCronListResponse({ jobs: [null, "x", job({})] });
     expect(parsed).toHaveLength(1);
     expect(parsed?.[0]?.id).toBe("j1");
+  });
+});
+
+// The verdict must survive THIS parser too. It re-types every field and drops what
+// it does not name, and it is the third such hop in the same chain: the bridge
+// detail, the Convex detail, and this one. Twice already the fact was carried
+// faithfully into a normalizer that silently swallowed it.
+describe("parseCronListResponse — the delivery verdict survives", () => {
+  test("an ok run delivered NOWHERE keeps both facts", () => {
+    const out = parseCronListResponse({
+      jobs: [
+        {
+          id: "j1",
+          name: "Cycle hebdomadaire",
+          enabled: true,
+          schedule: "0 6 * * 5",
+          agentId: "fabien",
+          lastRunStatus: "ok",
+          lastDelivered: false,
+          lastDeliveryError: "Delivering to Telegram requires target <chatId>",
+        },
+      ],
+    });
+    expect(out?.[0]?.lastRunStatus, "the run itself still reads ok").toBe("ok");
+    expect(out?.[0]?.lastDelivered).toBe(false);
+    expect(out?.[0]?.lastDeliveryError).toContain("requires target");
+  });
+
+  test("silence stays null and a non-boolean is refused", () => {
+    const out = parseCronListResponse({
+      jobs: [
+        { id: "j1", agentId: null, lastRunStatus: "ok" },
+        { id: "j2", agentId: null, lastDelivered: "false" },
+      ],
+    });
+    expect(out?.[0]?.lastDelivered).toBeNull();
+    expect(out?.[1]?.lastDelivered, "a string is not a verdict").toBeNull();
   });
 });

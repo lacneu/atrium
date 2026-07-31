@@ -89,6 +89,11 @@ type CronJob = {
   schedule: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** Did the LAST report reach anyone? `lastRunStatus: "ok"` + `false` is the pair
+   *  that let a weekly cycle fail in silence while this very table said "OK".
+   *  `null` = unsaid, and nothing is shown. */
+  lastDelivered: boolean | null;
+  lastDeliveryError: string | null;
   agentId: string;
 };
 type CronGroup = {
@@ -333,7 +338,14 @@ export function ScheduledTab() {
     }
   };
 
-  const openEdit = async (instanceName: string, job: CronJob) => {
+  // Takes only what it READS (`id`), not a whole `CronJob`. Demanding the full
+  // projection here forced the calendar's job shape to carry fields the calendar
+  // never plots — a type widening that would have made the delivery verdict look
+  // like calendar data.
+  const openEdit = async (
+    instanceName: string,
+    job: { id: string | null; name: string | null },
+  ) => {
     if (job.id === null) return;
     const gen = ++editGen.current;
     setEdit({
@@ -747,6 +759,22 @@ export function ScheduledTab() {
                         </TableCell>
                         <TableCell>
                           <ResultBadge status={j.lastRunStatus} />
+                          {/* Shown only on an explicit `false`: a run can succeed
+                              and reach nobody, and this table is where an operator
+                              scans. Silence and a deliberate no-delivery are NOT
+                              failures — flagging them would make the badge
+                              permanent, and a permanent badge stops being read. */}
+                          {j.lastDelivered === false ? (
+                            <Badge
+                              variant="destructive"
+                              title={
+                                j.lastDeliveryError ??
+                                m.cron_last_delivery_failed()
+                              }
+                            >
+                              {m.cron_result_undelivered()}
+                            </Badge>
+                          ) : null}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {j.id === null ? (

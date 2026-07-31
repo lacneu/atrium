@@ -13,6 +13,10 @@ export interface CronJobSummary {
   schedule: string | null;
   nextRunAtMs: number | null;
   lastRunStatus: string | null;
+  /** Did the LAST report reach anyone? `ok` + `false` is the pair that let a
+   *  weekly cycle fail in silence; `null` = unsaid, never "it failed". */
+  lastDelivered: boolean | null;
+  lastDeliveryError: string | null;
   agentId: string | null;
 }
 
@@ -93,6 +97,11 @@ export function parseCronListResponse(data: unknown): CronJobSummary[] | null {
       schedule: str(job.schedule),
       nextRunAtMs: num(job.nextRunAtMs),
       lastRunStatus: str(job.lastRunStatus),
+      // STRICT boolean: silence stays null. This parser re-types and drops what it
+      // does not name — the same hop that already swallowed the verdict twice.
+      lastDelivered:
+        typeof job.lastDelivered === "boolean" ? job.lastDelivered : null,
+      lastDeliveryError: str(job.lastDeliveryError),
       agentId,
     });
   }
