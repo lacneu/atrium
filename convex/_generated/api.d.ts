@@ -17,6 +17,7 @@ import type * as anomalies from "../anomalies.js";
 import type * as apiKeys from "../apiKeys.js";
 import type * as apiRateLimit from "../apiRateLimit.js";
 import type * as auth from "../auth.js";
+import type * as authPrune from "../authPrune.js";
 import type * as bridge from "../bridge.js";
 import type * as bridgeAuth from "../bridgeAuth.js";
 import type * as bridgeHealth from "../bridgeHealth.js";
@@ -144,6 +145,7 @@ declare const fullApi: ApiFromModules<{
   apiKeys: typeof apiKeys;
   apiRateLimit: typeof apiRateLimit;
   auth: typeof auth;
+  authPrune: typeof authPrune;
   bridge: typeof bridge;
   bridgeAuth: typeof bridgeAuth;
   bridgeHealth: typeof bridgeHealth;

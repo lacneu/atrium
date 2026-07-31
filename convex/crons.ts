@@ -27,6 +27,18 @@ crons.cron(
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 
+// Prune expired auth refresh tokens. `@convex-dev/auth` deletes a session's tokens
+// on every refresh WITHOUT pagination, so past ~4k rows that delete hits Convex's
+// read limit and SIGN-IN STOPS WORKING for everyone — observed on a long-lived
+// backend, with an error naming a library internal rather than the cause. Nothing
+// else prunes the table, so the fuse is lit by ordinary usage. Hourly and bounded.
+crons.cron(
+  "prune auth refresh-token chains",
+  "17 * * * *",
+  internal.authPrune.pruneRefreshTokenChains,
+  {},
+);
+
 // One-shot rollout: grandfather existing present agents to enabled (opt-in
 // enablement). Guarded by an appMeta flag → a cheap no-op after the first run
 // (never re-enables a later newly-discovered agent). Runs soon after deploy so
