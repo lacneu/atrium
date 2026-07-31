@@ -37,7 +37,15 @@
    regenerable, and a regenerated component would silently restore `z-50` and this
    defect with it. `convexChat.css` is imported UNLAYERED (main.tsx), and unlayered
    rules beat anything inside an `@layer`, so this wins over Tailwind's utility
-   without needing `!important`. */
+   without needing `!important`.
+
+   THE LIST IS NOT MAINTAINED BY HAND. `overlayLayer.test.ts` derives it from the
+   components themselves — every `z-50` in `src/components/ui/**` must appear here —
+   because the first version of this rule was typed from six files chosen by eye and
+   silently omitted `alert-dialog`, whose confirmation opens INSIDE an already-raised
+   dialog and would have stayed buried. */
+[data-slot="alert-dialog-overlay"],
+[data-slot="alert-dialog-content"],
 [data-slot="popover-content"],
 [data-slot="dropdown-menu-content"],
 [data-slot="select-content"],
