@@ -11,7 +11,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
-import { getEffectiveGrants } from "./agents";
+import { enrichUserAgents, getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
 import { isChatBusy } from "./lib/outboxQueue";
@@ -179,18 +179,23 @@ export const rebindChatAgent = mutation({
     await requireOwnedChat(ctx, userId, chatId);
     await requireAgentMembership(ctx, userId, instanceName, agentId);
     // Entitlement is not the whole predicate. `requireAgentMembership` accepts an
-    // agent the gateway has DELETED (`presentInLastOk: false`) — the picker renders
-    // those as disabled rows, so the UI never offers one, but a stale client or a
-    // direct call would bind a chat to an agent no dispatch can reach: the first
-    // turn then fails `no_agent`, or silently falls back to a DIFFERENT agent than
-    // the one the user was shown. The server must refuse what the picker refuses.
-    const target = await ctx.db
-      .query("agents")
-      .withIndex("by_instance_agent", (q) =>
-        q.eq("instanceName", instanceName).eq("agentId", agentId),
-      )
-      .first();
-    if (target !== null && target.presentInLastOk === false) {
+    // agent the gateway has DELETED — the picker renders those as disabled rows, so
+    // the UI never offers one, but a stale client or a direct call would bind a chat
+    // to an agent no dispatch can reach: the first turn then fails `no_agent`, or
+    // silently falls back to a DIFFERENT agent than the one the user was shown.
+    //
+    // Read the state from `enrichUserAgents`, the SAME source the picker renders
+    // from, rather than re-deriving it. The first attempt here tested
+    // `presentInLastOk === false` and missed the other half: a grant whose `agents`
+    // row is GONE after a successful discovery is also "deleted". Two spellings of
+    // one rule is how they drift — and this one drifted before it had shipped.
+    // `unknown`/`stale` (discovery absent or failing) deliberately still pass: the
+    // agent may be perfectly fine and we simply cannot see it.
+    const entitled = await enrichUserAgents(ctx, userId);
+    const target = entitled.find(
+      (a) => a.instanceName === instanceName && a.agentId === agentId,
+    );
+    if (target?.state === "deleted") {
       throw new Error("Invalid: agent is deleted on its gateway");
     }
     const firstMessage = await ctx.db

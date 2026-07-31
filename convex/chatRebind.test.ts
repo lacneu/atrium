@@ -256,6 +256,42 @@ describe("what a rebind may not do", () => {
     expect((await bindingOf(t, chatId)).agentId).toBe("down");
   });
 
+  test("a residual grant whose agent ROW is gone is refused too", async () => {
+    // The picker calls this "deleted" as well: a grant that survived while the
+    // agents row disappeared under a SUCCESSFUL discovery. The first version of the
+    // server guard tested only `presentInLastOk === false` and let this through —
+    // two spellings of one rule, drifting before the rule had even shipped.
+    const t = convexTest(schema, modules);
+    const { userId, as, mkChat } = await seedUser(t, ["down", "healthy"]);
+    await t.run(async (ctx) => {
+      // A successful discovery is what makes "row absent" mean "deleted" rather
+      // than "we cannot see".
+      await ctx.db.insert("instanceDiscovery", {
+        instanceName: "prod",
+        lastPollAt: 1,
+        lastPollOk: true,
+        lastOkAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: "prod",
+        agentId: "ghost",
+        isDefault: false,
+        source: "manual",
+        createdAt: 9,
+      });
+    });
+    const chatId = await mkChat("down");
+    await expect(
+      as.mutation(api.chats.rebindChatAgent, {
+        chatId,
+        instanceName: "prod",
+        agentId: "ghost",
+      }),
+    ).rejects.toThrow(/deleted on its gateway/);
+    expect((await bindingOf(t, chatId)).agentId).toBe("down");
+  });
+
   test("another user's chat is refused", async () => {
     const t = convexTest(schema, modules);
     const { as } = await seedUser(t, ["down", "healthy"]);
