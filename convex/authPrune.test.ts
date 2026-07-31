@@ -16,7 +16,7 @@
 // unindexed with `.take()`, freed thousands of unrelated expired rows, reported
 // success and never touched the session that was blocking).
 
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
 
 import { internal } from "./_generated/api";
@@ -25,9 +25,14 @@ import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
-/** A session with `n` refresh tokens chained to it. */
+/** A session with `n` refresh tokens chained to it.
+ *
+ *  `TestConvex<typeof schema>`, NOT `ReturnType<typeof convexTest>`: the bare return type
+ *  loses the schema, so `ctx.db.query("authRefreshTokens")` resolves against the SYSTEM
+ *  tables and the index name fails to type. The same note already exists in
+ *  `compat.test.ts` — I did not read it, and shipped a red `tsc -p convex` to main. */
 async function seedChain(
-  t: ReturnType<typeof convexTest>,
+  t: TestConvex<typeof schema>,
   n: number,
 ): Promise<Id<"authSessions">> {
   return await t.run(async (ctx) => {
@@ -47,7 +52,7 @@ async function seedChain(
 }
 
 const chainLength = async (
-  t: ReturnType<typeof convexTest>,
+  t: TestConvex<typeof schema>,
   sessionId: Id<"authSessions">,
 ): Promise<number> =>
   await t.run(async (ctx) => {
