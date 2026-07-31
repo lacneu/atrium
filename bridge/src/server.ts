@@ -3454,6 +3454,18 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                         typeof task?.terminalSummary === "string"
                           ? task.terminalSummary.slice(0, 600)
                           : null,
+                      // WHERE A RUNNING TASK IS. `terminalSummary` only exists once the
+                      // task is over, so while the user waits — the one moment he is
+                      // actually asking — Atrium had nothing to say and showed a bare
+                      // spinner. A user watching a multi-hour job asked three times
+                      // "où ça en est ?" and got silence (production report, 2026-07-30).
+                      // Same 600-char cap as the terminal summary: this is model-authored
+                      // prose reaching chat chrome, and one cap is easier to trust than
+                      // two.
+                      progressSummary:
+                        typeof task?.progressSummary === "string"
+                          ? task.progressSummary.slice(0, 600)
+                          : null,
                       error:
                         typeof task?.error === "string"
                           ? task.error.slice(0, 400)

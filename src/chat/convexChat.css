@@ -2292,6 +2292,18 @@ button.oc-bmk-rail__count:hover {
   color: var(--muted-foreground);
   font-size: 0.85rem;
 }
+/* The running work's own progress line, in place of the generic label. It is the
+   AGENT's prose, so it is treated as untrusted length: one line, ellipsised, with the
+   full text on hover. Letting it wrap would push the composer around every 30 seconds
+   as the line changes — the indicator must stay the same height whatever it says. */
+.oc-turn-activity__progress {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
 /* Elapsed clock for the delegated treatment — same muted voice as the label,
    slightly receded; tabular digits so the ticking never jitters the row. */
 .oc-turn-activity__clock {

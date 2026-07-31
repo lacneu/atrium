@@ -354,6 +354,8 @@ const TurnActivityAnchorContext = createContext<{
   messageId: string;
   running: boolean;
   workingSince: number | null;
+  /** The running work's own progress line, when it publishes one. */
+  progressSummary: string | null;
 } | null>(null);
 
 // Mid-turn QUEUE (Phase 1): the composer reads this to send a follow-up WHILE a
@@ -1222,17 +1224,14 @@ function ChatThread({
   // sees a settled reply and NOTHING while the sub-agent still works (or while
   // the gateway composes the follow-up delivery). Hidden whenever a message is
   // actively streaming (that bubble already carries its own dots).
+  // NO `as` cast here on purpose. This used to restate the query's return shape by
+  // hand, which meant the compiler stopped checking it: the copy silently went stale the
+  // moment the query grew a field, and `progressSummary` was invisible to the client
+  // even though the server sent it. A hand-kept mirror of a derivable type is the same
+  // defect as a hand-kept list — it is correct until someone changes the source.
   const turnActivity = useQuery(api.subAgents.turnActivity, {
     chatId: chatId as Id<"chats">,
-  }) as
-    | {
-        running: boolean;
-        runningTtlRemainingMs: number | null;
-        deliveringSince: number | null;
-        workingSince: number | null;
-        anchorMessageId: string | null;
-      }
-    | undefined;
+  });
   const liveRows = useQuery(api.messages.getStreamingText, { chatId }) as
     | unknown[]
     | undefined;
@@ -1322,6 +1321,9 @@ function ChatThread({
           messageId: anchorId,
           running: runningLive,
           workingSince: turnActivity?.workingSince ?? null,
+          // Carried to the ANCHORED indicator too: the same signal must read the same
+          // whether it renders under the thread or on the bubble it belongs to.
+          progressSummary: turnActivity?.progressSummary ?? null,
         }
       : null;
   useFocusMessage(chatId, focusMessageId);
@@ -1356,6 +1358,7 @@ function ChatThread({
           <TurnActivityIndicator
             running={runningLive}
             since={turnActivity?.workingSince ?? null}
+            progress={turnActivity?.progressSummary ?? null}
           />
         ) : null}
       </ThreadPrimitive.Viewport>
@@ -1416,10 +1419,20 @@ function TurnActivityIndicator({
   running,
   since = null,
   anchored = false,
+  progress = null,
 }: {
   running: boolean;
   since?: number | null;
   anchored?: boolean;
+  /** What the running work says it is doing, when it publishes it
+   *  (`TaskSummary.progressSummary`). REPLACES the generic label rather than sitting
+   *  under it: a user watching a long job wants to know where it is, and "un sous-agent
+   *  travaille" plus a real progress line is the same sentence twice.
+   *
+   *  It is the AGENT'S OWN PROSE — everything else on this surface is a count or a
+   *  translated string. Capped at the source (600 chars, the same cap the terminal
+   *  summary uses) and rendered as text, never markup. */
+  progress?: string | null;
 }) {
   const anchor = useRef<{
     key: number;
@@ -1464,9 +1477,19 @@ function TurnActivityIndicator({
           would make screen readers re-announce the whole status. role="timer"
           is implicitly aria-live=off, so the clock stays readable on demand
           without chattering. */}
-      <span role="status">
+      {/* The live region announces the STATE, not the narration: `progress` refreshes
+          on every probe (~30s) and putting it here would make a screen reader re-read
+          the whole status each time — the same reasoning that keeps the ticking clock
+          out of it. The translated label stays the announced text in every locale, so
+          no language ends up with a French-only indicator. */}
+      <span role="status" className={progress !== null ? "oc-sr-only" : undefined}>
         {running ? m.turn_subagent_working() : m.turn_result_incoming()}
       </span>
+      {progress !== null ? (
+        <span className="oc-turn-activity__progress" title={progress}>
+          {progress}
+        </span>
+      ) : null}
       {clock !== null ? (
         <span className="oc-turn-activity__clock" role="timer">
           {clock}
@@ -3526,6 +3549,7 @@ function AssistantMessage() {
             <TurnActivityIndicator
               running={anchoredHere.running}
               since={anchoredHere.workingSince}
+              progress={anchoredHere.progressSummary ?? null}
               anchored
             />
           ) : null}

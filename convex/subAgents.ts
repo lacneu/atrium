@@ -636,6 +636,8 @@ export const turnActivity = query({
     // (the turnClockView pattern) — never subtracted live from the browser
     // clock (skew). Null when nothing is working.
     workingSince: number | null;
+    // The running work's own progress line, or null when it published none.
+    progressSummary: string | null;
     // Where the signal should RENDER: the message the live row is anchored
     // to (its bubble already carries the sub-agent card), so the thread can
     // place the indicator UNDER the working turn instead of at the bottom —
@@ -833,6 +835,11 @@ export const turnActivity = query({
       deliveringSince,
       workingSince,
       anchorMessageId,
+      // WHAT the running work is doing, when the gateway published it. Taken from the
+      // SAME row the clock is anchored on, so the line and the elapsed time always
+      // describe one piece of work — two rows would let the indicator show one task's
+      // progress next to another's duration.
+      progressSummary: runningRow?.progressSummary ?? null,
     };
   },
 });
@@ -1225,8 +1232,17 @@ export const adoptDiscoveredTask = internalMutation({
 /** Refresh a poll-confirmed STILL-RUNNING engagement so the stale-row reaper
  *  (SUBAGENT_STALE_TTL_MS) never falsely errors a long legitimate task. */
 export const refreshTaskEngagement = internalMutation({
-  args: { chatId: v.id("chats"), taskId: v.string() },
-  handler: async (ctx, { chatId, taskId }) => {
+  args: {
+    chatId: v.id("chats"),
+    taskId: v.string(),
+    /** WHERE the task currently is, in the agent's own words (`TaskSummary.
+     *  progressSummary`). Optional because an older gateway does not send it and a
+     *  task may simply not have published one yet — and because ABSENCE MUST NOT
+     *  ERASE: a poll that returns nothing has learned nothing, so the last known line
+     *  stays rather than blinking back to a bare spinner every 30 s. */
+    progressSummary: v.optional(v.string()),
+  },
+  handler: async (ctx, { chatId, taskId, progressSummary }) => {
     const row = await ctx.db
       .query("subAgents")
       .withIndex("by_child", (q) => q.eq("childSessionKey", `task:${taskId}`))
@@ -1242,7 +1258,18 @@ export const refreshTaskEngagement = internalMutation({
       const owner = await ctx.db.get(row.chatId);
       if (owner !== null) ownerFill = { userId: owner.userId };
     }
-    await ctx.db.patch(row._id, { updatedAt: Date.now(), ...ownerFill });
+    // Only write the line when the poll actually carried one. Patching `undefined`
+    // over a known value would make the indicator flicker between the real progress
+    // and nothing at all, on a 30-second beat.
+    const progressFill =
+      typeof progressSummary === "string" && progressSummary.trim() !== ""
+        ? { progressSummary: progressSummary.slice(0, 600) }
+        : {};
+    await ctx.db.patch(row._id, {
+      updatedAt: Date.now(),
+      ...ownerFill,
+      ...progressFill,
+    });
     return null;
   },
 });
@@ -1378,6 +1405,9 @@ export async function runTaskReconcile(
         await ctx.runMutation(internal.subAgents.refreshTaskEngagement, {
           chatId,
           taskId,
+          ...(typeof r.progressSummary === "string" && r.progressSummary !== ""
+            ? { progressSummary: r.progressSummary.slice(0, 600) }
+            : {}),
         });
         continue;
       }

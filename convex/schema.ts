@@ -1551,6 +1551,15 @@ export default defineSchema({
     // anchor through the ENGAGEMENT row this points to.
     bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
+    /** WHERE a running task currently is, in the agent's own words. Refreshed by the
+     *  task probe (~30s) while the task runs; the terminal summary replaces it when the
+     *  task ends.
+     *
+     *  NOT in the observability projection on purpose (`dev.ts` names its fields one by
+     *  one, so a new column is not exposed by default): this is model-authored prose
+     *  about the conversation, legitimate on the user's own thread and out of bounds for
+     *  a trace surface. */
+    progressSummary: v.optional(v.string()),
     status: v.union(
       v.literal("running"),
       v.literal("done"),
