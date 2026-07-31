@@ -67,6 +67,7 @@ import {
   findAgentDisplay,
   resolveAgentSelectorGate,
   type AgentRef,
+  type AgentSelectorGate,
 } from "./perTurnAgent";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import {
@@ -1095,6 +1096,20 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  // The agent selector's verdict, resolved HERE and passed down — not re-derived in
+  // the composer. Two consumers read it (the selector itself, and the unreachable
+  // banner, whose copy points at the selector and must not point at a control the
+  // gate has closed), and two copies of this rule would drift.
+  const agentGate = resolveAgentSelectorGate({
+    hasUserTurn: routing?.hasUserTurn === true,
+    emptyThread: routing?.emptyThread === true,
+    unavailable: unavailable !== null,
+    readOnly,
+  });
+  // Is switching agent actually OFFERED to this reader? A single-agent user never
+  // sees the selector at all (it self-hides), so the banner must not promise it.
+  const agentSwitchOffered =
+    routing?.multiAgent === true && !agentGate.disabled;
   const bannerKind = chatBannerKind({
     readOnly,
     unavailable: unavailable !== null,
@@ -1383,7 +1398,10 @@ function ChatThread({
       {bannerKind === "read_only" ? (
         <ChatReadOnlyBanner />
       ) : bannerKind === "unavailable" ? (
-        <BridgeUnavailableBanner reason={unavailable?.reason ?? null} />
+        <BridgeUnavailableBanner
+          reason={unavailable?.reason ?? null}
+          canSwitchAgent={agentSwitchOffered}
+        />
       ) : bannerKind === "degraded" ? (
         <GatewayDegradedBanner />
       ) : bannerKind === "beyond_validated" ? (
@@ -1399,7 +1417,7 @@ function ChatThread({
         showTools={showTools}
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
-        readOnly={readOnly}
+        agentGate={agentGate}
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
@@ -1543,13 +1561,24 @@ function GatewayDegradedBanner() {
 // Standardized, user-facing "chat unavailable" notice shown above a greyed-out
 // composer. Generic on purpose (the technical reason is admin-only, in Settings →
 // Health / Traces); the user just needs to know not to type and to retry.
-function BridgeUnavailableBanner({ reason }: { reason: string | null }) {
+function BridgeUnavailableBanner({
+  reason,
+  canSwitchAgent,
+}: {
+  reason: string | null;
+  /** The agent selector is open to this reader. Decides whether the copy may point
+   *  at it: telling someone to pick another agent when the control is closed (a
+   *  single-agent user, or an announce-only thread) is advice they cannot follow. */
+  canSwitchAgent: boolean;
+}) {
   // A per-INSTANCE outage (the chat's gateway is unreachable while the bridge
   // and other instances are up) gets its own copy — the user should know it is
   // THIS agent's gateway, not the whole app.
   const label =
     reason === "instance_unreachable"
-      ? m.chat_instance_unreachable_banner()
+      ? canSwitchAgent
+        ? m.chat_instance_unreachable_banner_switchable()
+        : m.chat_instance_unreachable_banner()
       : m.chat_unavailable_banner();
   return (
     <div className="oc-chat-banner oc-chat-banner--error" role="status">
@@ -3925,13 +3954,12 @@ function StopTurnButton() {
  */
 function ComposerAgentSelect({
   chatId,
-  unavailable = false,
-  readOnly = false,
+  gate,
   onRebindingChange,
 }: {
   chatId: ConvexId<"chats">;
-  unavailable?: boolean;
-  readOnly?: boolean;
+  /** Resolved by the chat view — see resolveAgentSelectorGate. */
+  gate: AgentSelectorGate;
   /** Raised while a REBIND is in flight, so the composer can hold the send. A
    *  send that commits first would take the turn to the agent the user just moved
    *  away from — and then make the rebind fail, since the thread is no longer
@@ -3953,15 +3981,10 @@ function ComposerAgentSelect({
     [pool],
   );
   if (!routing || !routing.multiAgent) return null;
-  const { selected, setSelected, hasUserTurn, emptyThread } = routing;
+  const { selected, setSelected } = routing;
   // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
   // an unreachable gateway never closes it — that is the state it exists to escape.
-  const { disabled, mode } = resolveAgentSelectorGate({
-    hasUserTurn,
-    emptyThread,
-    unavailable,
-    readOnly,
-  });
+  const { disabled, mode } = gate;
   // A pick on a thread that has not spoken REBINDS the chat; the per-turn selection
   // would be discarded by the send-rule on turn 1, so it would light up and do
   // nothing. The chip then follows the new binding reactively — no local echo that
@@ -4458,7 +4481,7 @@ function Composer({
   showTools,
   onToggleTools,
   unavailable = false,
-  readOnly = false,
+  agentGate,
   subAgentBusy = false,
 }: {
   chatId: ConvexId<"chats">;
@@ -4472,9 +4495,10 @@ function Composer({
    *  takes `readOnly` separately, because which of the two it is decides whether
    *  changing agent can help. */
   unavailable?: boolean;
-  /** The chat is bound to an agent the user is no longer entitled to. Split out of
-   *  `unavailable` for the agent selector only (see resolveAgentSelectorGate). */
-  readOnly?: boolean;
+  /** The agent selector's verdict, resolved by the chat view from the UNMERGED facts
+   *  (see resolveAgentSelectorGate) — deliberately not re-derived from `unavailable`,
+   *  which merges "gateway down" with "read-only chat". */
+  agentGate: AgentSelectorGate;
   /** A sub-agent this chat spawned is still running: hold the next send (queue) and
    *  SHOW the hold, exactly like an in-flight turn. */
   subAgentBusy?: boolean;
@@ -4963,8 +4987,7 @@ function Composer({
               user; disabled until the chat has a first turn, or when unavailable). */}
           <ComposerAgentSelect
             chatId={chatId}
-            unavailable={unavailable}
-            readOnly={readOnly}
+            gate={agentGate}
             onRebindingChange={setRebinding}
           />
         </div>

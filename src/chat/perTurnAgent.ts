@@ -184,6 +184,12 @@ export function resolveEffectiveSelection(params: {
  */
 export type AgentSelectorMode = "route" | "rebind";
 
+/** The selector's resolved verdict: offered or not, and what a pick does. */
+export interface AgentSelectorGate {
+  disabled: boolean;
+  mode: AgentSelectorMode;
+}
+
 /**
  * Is the agent selector offered, and in which mode?
  *
@@ -220,7 +226,7 @@ export function resolveAgentSelectorGate(params: {
   unavailable: boolean;
   /** The chat is bound to an agent the user is no longer entitled to. */
   readOnly: boolean;
-}): { disabled: boolean; mode: AgentSelectorMode } {
+}): AgentSelectorGate {
   const { hasUserTurn, emptyThread, readOnly } = params;
   if (emptyThread) return { disabled: false, mode: "rebind" };
   if (hasUserTurn && !readOnly) return { disabled: false, mode: "route" };
