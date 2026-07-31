@@ -1712,7 +1712,10 @@ function ContextMeter({
       }${
         // Silent when the two agree, so the line appears exactly when it means something.
         divergence
-          ? `\nHermes ${divergence.gateway}% — écart de ${divergence.delta} points`
+          ? `\n${m.chat_context_divergence({
+              gateway: divergence.gateway,
+              delta: divergence.delta,
+            })}`
           : ""
       }`}
     >

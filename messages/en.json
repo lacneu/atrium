@@ -413,6 +413,7 @@
   "chat_context_used": "Context used: {pct}% ({used} / {total} tokens)",
   "chat_context_source_estimate": "The gateway's own estimate of the assembled prompt (the most faithful source).",
   "chat_context_source_usage": "Last-call counter — it does not include everything added to the prompt; read it as a minimum.",
+  "chat_context_divergence": "Hermes reports {gateway}% — a {delta}-point gap with this counter.",
   "chat_context_unknown": "Context fill unknown: the gateway provides no reliable measure for this session.",
   "chat_usage_label": "{pct}% left",
   "chat_usage_tooltip": "Provider subscription usage — quota windows: {detail}",

@@ -413,6 +413,7 @@
   "chat_context_used": "Contexte utilisé : {pct}% ({used} / {total} tokens)",
   "chat_context_source_estimate": "Estimation de la passerelle sur l'invite assemblée (la source la plus fidèle).",
   "chat_context_source_usage": "Compteur du dernier appel — il n'inclut pas tout ce qui est ajouté à l'invite ; à prendre comme un minimum.",
+  "chat_context_divergence": "Hermes annonce {gateway}% — écart de {delta} points avec ce compteur.",
   "chat_context_unknown": "Remplissage du contexte inconnu : la passerelle ne fournit pas de mesure fiable pour cette session.",
   "chat_usage_label": "{pct} % restant",
   "chat_usage_tooltip": "Utilisation de l'abonnement du fournisseur — fenêtres de quota : {detail}",
