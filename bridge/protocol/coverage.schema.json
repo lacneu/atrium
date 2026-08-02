@@ -1,0 +1,90 @@
+{
+ "$comment": "Meta-schema of the coverage manifests (bridge/protocol/<provider>/coverage/<version>.json). This file DOCUMENTS the shape; coverage-truth.test.ts ENFORCES it (the enums below are asserted equal to the test's own constants, so the two cannot drift apart). Statuses: handled = the bridge consumes/emits the field, and the entry must say where (by) — once the field is under the truth ratchet, `anchor` and `proof` become mandatory; ignored = deliberately not used, `why` must not describe a breakage; gap = known, not yet handled, `note` states the impact. `knownReaders` declares code that TOUCHES the field without the data flowing (a ready-but-unfed reader, a projection nobody consumes): the truth scan requires every reader it finds to be declared here, so the manifest and the code agree explicitly, including on that intermediate state.",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "type": "object",
+ "required": ["version", "schemas"],
+ "properties": {
+  "$comment": { "type": "string" },
+  "version": { "type": "string", "minLength": 1 },
+  "schemas": {
+   "type": "object",
+   "additionalProperties": { "$ref": "#/$defs/schemaEntry" }
+  }
+ },
+ "$defs": {
+  "status": { "enum": ["handled", "ignored", "gap"] },
+  "proofKind": { "enum": ["golden-corpus", "live-bench", "deterministic-test"] },
+  "schemaEntry": {
+   "type": "object",
+   "properties": {
+    "status": { "$ref": "#/$defs/status" },
+    "by": { "type": "string" },
+    "why": { "type": "string" },
+    "fields": {
+     "type": "object",
+     "additionalProperties": { "$ref": "#/$defs/fieldEntry" }
+    }
+   }
+  },
+  "fieldEntry": {
+   "type": "object",
+   "required": ["status"],
+   "properties": {
+    "status": { "$ref": "#/$defs/status" },
+    "by": { "type": "string" },
+    "why": { "type": "string" },
+    "note": { "type": "string" },
+    "anchor": {
+     "$comment": "Where the bridge really consumes/emits the field. Bridge-relative path under src/, token asserted present in the COMMENT-STRIPPED source (the Hermes features mechanism, generalized). Only `handled` may carry one.",
+     "type": "object",
+     "required": ["file", "token"],
+     "properties": {
+      "file": { "type": "string", "pattern": "^src/[A-Za-z0-9_./-]+\\.ts$" },
+      "token": { "type": "string", "minLength": 3 }
+     },
+     "additionalProperties": false
+    },
+    "knownReaders": {
+     "type": "array",
+     "items": {
+      "$comment": "Repo-relative (bridge/src/…, convex/…, src/…). Declares code that touches the field while the entry stays gap/ignored — the explicit spelling of 'reader exists, flow does not'.",
+      "type": "object",
+      "required": ["file", "token", "note"],
+      "properties": {
+       "file": { "type": "string", "pattern": "^(bridge/src|convex|src)/[A-Za-z0-9_./-]+\\.tsx?$" },
+       "token": { "type": "string", "minLength": 3 },
+       "note": { "type": "string", "minLength": 10 }
+      },
+      "additionalProperties": false
+     }
+    },
+    "proof": {
+     "$comment": "What demonstrated the field arriving and being interpreted. golden-corpus / live-bench name a scenario of a full-catalogue GO run; deterministic-test names a test file and must justify (note) why a live proof is pending or impossible.",
+     "type": "object",
+     "required": ["kind", "ref"],
+     "properties": {
+      "kind": { "$ref": "#/$defs/proofKind" },
+      "ref": { "type": "string", "minLength": 3 },
+      "note": { "type": "string" }
+     },
+     "additionalProperties": false
+    },
+    "verifiedVersions": {
+     "$comment": "Gateway versions where the proof was earned on the live bench. Always a subset of the provider's validatedVersions; empty = not yet bench-verified.",
+     "type": "array",
+     "items": { "type": "string" }
+    },
+    "contrib": {
+     "$comment": "Ids from bridge/protocol/contrib/registry.json linked to this field.",
+     "type": "array",
+     "items": { "type": "string" }
+    },
+    "dossier": {
+     "$comment": "The instruction record: who writes the field upstream (at the pinned tag), what resets it, what upstream itself does with it, how it reaches the wire, and its value for Atrium. Free-shaped but non-empty; required by process (frame-discovery skill) for every status change.",
+     "type": "object",
+     "minProperties": 1
+    }
+   }
+  }
+ }
+}

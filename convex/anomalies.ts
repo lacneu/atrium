@@ -65,6 +65,16 @@ const API_ERROR_RATIO_CRITICAL = 0.5;
 const DISPATCH_FAIL_WARN = 1;
 const DISPATCH_FAIL_CRITICAL = 10;
 
+// atrium.internal_work_failures: Atrium's OWN hidden work failing to dispatch
+// (summary, document fetch, curation, conversion). NOT 1 — nobody is waiting on
+// these, and this class DOES auto-resolve (it is not turn-costing), so a threshold
+// of 1 would flap open and closed on every isolated blip until it stopped being
+// read. 3 in the window is the shape of "this job is not getting through", which is
+// the thing worth waking someone for: a summary that can NEVER be built is a real
+// malfunction that would otherwise be invisible, since no user ever sees it fail.
+const INTERNAL_WORK_WARN = 3;
+const INTERNAL_WORK_CRITICAL = 15;
+
 // assistant.stream_errors: REAL error finalizes in the window. WARN at 2
 // (operator decision 2026-07-09, mirroring the dispatch rationale: an errored
 // zero-reply turn = a user who got no answer): the live incident that opened
@@ -112,6 +122,14 @@ export const ANOMALY_KINDS = {
   // lost turn — classing it as turn-costing would leave an alert open forever for
   // something that clears by itself.
   STOP_BURSTS: "assistant.stop_bursts",
+  // Atrium's OWN hidden work failing to dispatch — building a conversation summary,
+  // fetching a document, curating, converting. Split out from DISPATCH_FAILURES the
+  // same way STOP_BURSTS was split from STREAM_ERRORS, and for the mirror reason:
+  // nobody is waiting on these, so classing them as turn-costing would pin an alert
+  // open for something no user felt. But they are NOT nothing — a summary that can
+  // never be built is a real malfunction, and it would go completely unnoticed if
+  // the only choice were "user-facing alarm" or "silence".
+  INTERNAL_WORK_FAILURES: "atrium.internal_work_failures",
 } as const;
 
 /**
@@ -214,6 +232,22 @@ function streamFailureCode(row: Doc<"traceEvents">): string | undefined {
   }
 }
 
+/** The hidden-chat kind this dispatch belonged to, or null for a real conversation.
+ *
+ *  ABSENT COUNTS AS USER-FACING, deliberately. Every trace written before this field
+ *  existed lacks it, and so does the one branch that fails before the chat is read.
+ *  Defaulting those to "internal" would quietly downgrade real lost turns — the one
+ *  direction that must never happen. */
+function dispatchChatKind(row: Doc<"traceEvents">): string | null {
+  if (row.meta === undefined) return null;
+  try {
+    const m = JSON.parse(row.meta) as { chatKind?: unknown };
+    return typeof m.chatKind === "string" && m.chatKind !== "" ? m.chatKind : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Is this `openclaw.dispatch` row a failed dispatch? (meta.dispatchStatus) */
 function isDispatchFailure(row: Doc<"traceEvents">): boolean {
   if (row.kind !== "openclaw.dispatch" || row.meta === undefined) return false;
@@ -264,6 +298,13 @@ type WindowAgg = {
   // recent failed-turn correlationId, for a one-click drill-down into Traces.
   dispatchCodes: Record<string, number>;
   dispatchSampleCorrelation?: string;
+  /** Failed dispatches to Atrium's own hidden chats, counted apart. */
+  internalFailures: number;
+  internalCodes: Record<string, number>;
+  /** Which hidden job failed, by chat kind — this is what makes the alert say
+   *  "summaries are not being built" instead of naming a bare count. */
+  internalJobs: Record<string, number>;
+  internalSampleCorrelation?: string;
   // REAL error finalizes vs user Stops (aborted) — weighed differently (see
   // STREAM_ERROR_WARN). Sample correlationId = drill-down anchor, like dispatch.
   streamErrors: number;
@@ -280,6 +321,7 @@ type WindowAgg = {
   latestKey: {
     api?: string;
     dispatch?: string;
+    internal?: string;
     streamError?: string;
     streamAbort?: string;
     ingest?: string;
@@ -289,6 +331,7 @@ type WindowAgg = {
   latestAt: {
     api?: number;
     dispatch?: number;
+    internal?: number;
     /** Newest real ERROR finalize — the only thing that is a new observation for
      *  the turn-costing class. A user Stop must not advance it (codex P2). */
     streamError?: number;
@@ -579,6 +622,9 @@ export const detectAnomalies = internalMutation({
       apiErrors: 0,
       dispatchFailures: 0,
       dispatchCodes: {},
+      internalFailures: 0,
+      internalCodes: {},
+      internalJobs: {},
       streamErrors: 0,
       streamCauses: {},
       streamCauseCorrelation: {},
@@ -620,8 +666,22 @@ export const detectAnomalies = internalMutation({
         }
         case "openclaw.dispatch": {
           if (isDispatchFailure(row)) {
-            agg.dispatchFailures += 1;
             const code = dispatchFailureCode(row) ?? "UNKNOWN";
+            const hiddenKind = dispatchChatKind(row);
+            if (hiddenKind !== null) {
+              // Atrium's own housekeeping. NOBODY lost a turn — but the job did not
+              // run, and that is what this class exists to say out loud.
+              agg.internalFailures += 1;
+              agg.internalCodes[code] = (agg.internalCodes[code] ?? 0) + 1;
+              agg.internalJobs[hiddenKind] =
+                (agg.internalJobs[hiddenKind] ?? 0) + 1;
+              if (row.correlationId)
+                agg.internalSampleCorrelation = row.correlationId;
+              agg.latestAt.internal = row.at;
+              agg.latestKey.internal = row._id;
+              break;
+            }
+            agg.dispatchFailures += 1;
             agg.dispatchCodes[code] = (agg.dispatchCodes[code] ?? 0) + 1;
             // rows are scanned oldest -> newest, so the last write wins = the most
             // recent failed turn (the one an admin most likely wants to inspect).
@@ -724,6 +784,38 @@ export const detectAnomalies = internalMutation({
         latestEventKey: agg.latestKey.dispatch,
       });
       detected.push(ANOMALY_KINDS.DISPATCH_FAILURES);
+    }
+
+    // 2b) Atrium's own hidden work failing to reach the gateway. Same evidence shape
+    //     as the user-facing class — dominant cause + a sample correlationId — plus
+    //     WHICH job failed, because "summaries are not being built" is actionable and
+    //     "2 dispatch failures" is not.
+    if (agg.internalFailures >= INTERNAL_WORK_WARN) {
+      const severity: Severity =
+        agg.internalFailures >= INTERNAL_WORK_CRITICAL ? "critical" : "warn";
+      const dominantJob = topKey(agg.internalJobs);
+      const dominantCode = topKey(agg.internalCodes);
+      await upsertDetectorAnomaly(ctx, {
+        kind: ANOMALY_KINDS.INTERNAL_WORK_FAILURES,
+        severity,
+        message: `Atrium internal work failing: ${agg.internalFailures} over ${windowMin}m${
+          dominantJob ? ` — mostly ${dominantJob}` : ""
+        }${dominantCode ? ` (${dominantCode})` : ""}. No user turn was lost.`,
+        evidence: {
+          internalFailures: agg.internalFailures,
+          dominantJob,
+          jobCounts: agg.internalJobs,
+          dominantCode,
+          codeCounts: agg.internalCodes,
+          sampleCorrelationId: agg.internalSampleCorrelation,
+          windowMs: DETECT_WINDOW_MS,
+          warnThreshold: INTERNAL_WORK_WARN,
+          criticalThreshold: INTERNAL_WORK_CRITICAL,
+        },
+        latestEventAt: agg.latestAt.internal,
+        latestEventKey: agg.latestKey.internal,
+      });
+      detected.push(ANOMALY_KINDS.INTERNAL_WORK_FAILURES);
     }
 
     // 3) assistant.stream failures. REAL errors trip the WARN (threshold 2 —

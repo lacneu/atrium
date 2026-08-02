@@ -1326,3 +1326,126 @@ describe("anomaly management RBAC contract", () => {
     );
   });
 });
+
+// Atrium's OWN hidden work is a DIFFERENT malfunction, not a lesser one.
+//
+// FOUND BY ANALYSING A LIVE ALERT (2026-07-31). The anomalies page showed
+// "OpenClaw dispatch failures: 1 — GATEWAY_TIMEOUT", open and un-clearable, and it
+// read like a user had been left without a reply. Tracing it showed the failed send
+// went to a `summarizer` chat — a hidden conversation Atrium creates to write a
+// summary. Nobody was waiting. The operator's conclusion: that is not the alarm its
+// text claims — AND it must still be raised, because a summary that can never be
+// built is a real problem precisely BECAUSE no user ever sees it fail.
+//
+// So the class is SPLIT, not silenced. The rule that decides which side a failure
+// lands on is the chat's kind, carried on the trace itself.
+describe("a failed dispatch to Atrium's own hidden work is counted apart", () => {
+  test("a hidden-chat failure does NOT raise the user-facing alarm", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i += 1) {
+        await seedTrace(ctx, {
+          kind: "openclaw.dispatch",
+          at: now - 1000 - i,
+          correlationId: `hidden${i}:outbox${i}`,
+          meta: {
+            dispatchStatus: "failed",
+            errorCode: "GATEWAY_TIMEOUT",
+            chatKind: "summarizer",
+          },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(
+      r.detected,
+      "no user lost a turn — this must not read as one",
+    ).not.toContain("openclaw.dispatch_failures");
+    expect(r.detected).toContain("atrium.internal_work_failures");
+  });
+
+  test("it NAMES the job that failed, not just a count", async () => {
+    // "2 dispatch failures" is not actionable; "summaries are not being built" is.
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i += 1) {
+        await seedTrace(ctx, {
+          kind: "openclaw.dispatch",
+          at: now - 1000 - i,
+          correlationId: `hidden${i}:outbox${i}`,
+          meta: {
+            dispatchStatus: "failed",
+            errorCode: "GATEWAY_TIMEOUT",
+            chatKind: "summarizer",
+          },
+        });
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "atrium.internal_work_failures"),
+        )
+        .first(),
+    );
+    expect(row).not.toBeNull();
+    const ev = JSON.parse(row!.evidence!) as {
+      dominantJob: string;
+      dominantCode: string;
+      sampleCorrelationId: string;
+    };
+    expect(ev.dominantJob).toBe("summarizer");
+    expect(ev.dominantCode).toBe("GATEWAY_TIMEOUT");
+    expect(
+      ev.sampleCorrelationId,
+      "a sample is what turns the alert into one traces lookup",
+    ).toBeTruthy();
+  });
+
+  test("an ABSENT chat kind still counts as user-facing", async () => {
+    // Every trace written before this field existed lacks it, and so does the one
+    // dispatch branch that fails before the chat is read. Reading absence as
+    // "internal" would quietly downgrade real lost turns — the one direction that
+    // must never happen.
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "openclaw.dispatch",
+        at: now - 1000,
+        correlationId: "chat9:outbox9",
+        meta: { dispatchStatus: "failed", errorCode: "GATEWAY_TIMEOUT" },
+      });
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("openclaw.dispatch_failures");
+    expect(r.detected).not.toContain("atrium.internal_work_failures");
+  });
+
+  test("ONE isolated internal blip does not raise anything", async () => {
+    // The internal class auto-resolves (nothing was lost), so a threshold of 1 would
+    // flap open and closed forever and stop being read. Three in the window is the
+    // shape of "this job is not getting through".
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "openclaw.dispatch",
+        at: now - 1000,
+        correlationId: "hidden1:outbox1",
+        meta: {
+          dispatchStatus: "failed",
+          errorCode: "GATEWAY_TIMEOUT",
+          chatKind: "summarizer",
+        },
+      });
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).not.toContain("atrium.internal_work_failures");
+    expect(r.detected).not.toContain("openclaw.dispatch_failures");
+  });
+});

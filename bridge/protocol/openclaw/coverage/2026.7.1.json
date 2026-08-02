@@ -124,7 +124,14 @@
     },
     "errorMessage": {
      "status": "gap",
-     "note": "NOT read. Corrected after review: the first classification claimed `handled` on the strength of the `payload.errorMessage` read in handleChat, but the `state === \"aborted\"` branch finalizes and RETURNS (normalizer.ts, `finalize(..., \"gateway_abort\")`) several lines BEFORE that read — which serves `state === \"error\"` only. Impact: an abort carries its cancellation reason and we drop it, so a coordinator- or timeout-initiated cancellation is indistinguishable from a user Stop; both render \"Interrompu\". Wiring it means capturing the text as a trace-only diagnostic, never as the message's error (an abort is not a failure to explain to the reader)."
+     "note": "NOT read. Corrected after review: the first classification claimed `handled` on the strength of the `payload.errorMessage` read in handleChat, but the `state === \"aborted\"` branch finalizes and RETURNS (normalizer.ts, `finalize(..., \"gateway_abort\")`) several lines BEFORE that read — which serves `state === \"error\"` only. Impact: an abort carries its cancellation reason and we drop it, so a coordinator- or timeout-initiated cancellation is indistinguishable from a user Stop; both render \"Interrompu\". Wiring it means capturing the text as a trace-only diagnostic, never as the message's error (an abort is not a failure to explain to the reader).",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "errorMessage",
+       "note": "the read serves state===error only; the aborted branch finalizes and returns before it"
+      }
+     ]
     }
    }
   },
@@ -541,15 +548,36 @@
     },
     "operation": {
      "status": "gap",
-     "note": "same: unfed until the dedicated session-events connection exists"
+     "note": "same: unfed until the dedicated session-events connection exists",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "handleSessionOperation",
+       "note": "ready reader, never fed - no dedicated session-events subscription (measured 2026-07-26: subscribing on the turn socket broke merging)"
+      }
+     ]
     },
     "phase": {
      "status": "gap",
-     "note": "same"
+     "note": "same",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "handleSessionOperation",
+       "note": "same unfed reader"
+      }
+     ]
     },
     "sessionKey": {
      "status": "gap",
-     "note": "same"
+     "note": "same",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "handleSessionOperation",
+       "note": "same unfed reader"
+      }
+     ]
     },
     "agentId": {
      "status": "gap",
@@ -561,11 +589,25 @@
     },
     "completed": {
      "status": "gap",
-     "note": "same"
+     "note": "same",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "handleSessionOperation",
+       "note": "same unfed reader"
+      }
+     ]
     },
     "reason": {
      "status": "gap",
-     "note": "same — and this is the field that matters. CORRECTED after review: it is not the ONLY carrier of a compaction cause, as this note first claimed. `sessions.compaction.list` returns checkpoints whose `reason` the bridge already reads (fetchCompactionHistory), so the cause IS retrievable ON DEMAND, per session, off the turn path. What this event alone would give is the cause AT THE MOMENT it happens, attachable to the turn's own marker and trace, instead of a later lookup nobody performs."
+     "note": "same — and this is the field that matters. CORRECTED after review: it is not the ONLY carrier of a compaction cause, as this note first claimed. `sessions.compaction.list` returns checkpoints whose `reason` the bridge already reads (fetchCompactionHistory), so the cause IS retrievable ON DEMAND, per session, off the turn path. What this event alone would give is the cause AT THE MOMENT it happens, attachable to the turn's own marker and trace, instead of a later lookup nobody performs.",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "handleSessionOperation",
+       "note": "same unfed reader"
+      }
+     ]
     }
    }
   },
@@ -1140,16 +1182,46 @@
      "why": "skips are a gateway scheduling detail (overlap, not due) the tab does not model"
     },
     "lastDelivered": {
-     "status": "ignored",
-     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+     "status": "handled",
+     "by": "cron-list summary + cron-manage detail -> the Scheduled screens' 'reached nobody' verdict on the job itself",
+     "anchor": {
+      "file": "src/server.ts",
+      "token": "lastDelivered"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "lastDeliveryError": {
-     "status": "ignored",
-     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+     "status": "handled",
+     "by": "normalizeCronJobDetail (state->job fallback) -> the gateway's own reason on every cron surface",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "lastDeliveryError"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "lastDeliveryStatus": {
-     "status": "ignored",
-     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
+     "status": "handled",
+     "by": "normalizeCronJobDetail -> Convex detailFrom -> cron panel",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "lastDeliveryStatus"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "lastDiagnosticSummary": {
      "status": "ignored",
@@ -1188,8 +1260,18 @@
      "why": "failure-alert routing — a gateway notification policy Atrium does not own"
     },
     "lastRunAtMs": {
-     "status": "ignored",
-     "why": "the run LIST carries per-run timestamps; the detail header shows the next run, not the last"
+     "status": "handled",
+     "by": "normalizeCronJobDetail -> the moment the delivery verdict is about",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "lastRunAtMs"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "lastRunStatus": {
      "status": "handled",
@@ -1464,16 +1546,46 @@
      "why": "gateway-side diagnostic blob — unbounded shape, not rendered"
     },
     "delivered": {
-     "status": "ignored",
-     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+     "status": "handled",
+     "by": "normalizeCronRunEntries (nested block wins, contract top-level fallback) -> both run histories",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "delivered"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "deliveryStatus": {
-     "status": "ignored",
-     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+     "status": "handled",
+     "by": "normalizeCronRunEntries: 'not-requested' = deliberate no-delivery, never flagged",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "deliveryStatus"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "deliveryError": {
-     "status": "ignored",
-     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+     "status": "handled",
+     "by": "normalizeCronRunEntries -> run histories, verbatim capped reason",
+     "anchor": {
+      "file": "src/core/cron-manage.ts",
+      "token": "deliveryError"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/cron-delivery-facts.test.ts",
+      "note": "the real incident payload (2026-07-30) replayed verbatim; the cron-tool golden scenario does not exercise delivery loss, so a live proof waits for a scenario that loses one"
+     },
+     "verifiedVersions": []
     },
     "failureNotificationDelivery": {
      "status": "ignored",
@@ -1736,8 +1848,18 @@
      "why": "same"
     },
     "progressSummary": {
-     "status": "gap",
-     "note": "NOT read. A running task publishes a progress line and the activity indicator shows only a spinner — the user waiting on a four-hour job is told nothing about where it is."
+     "status": "handled",
+     "by": "tasks-probe projection (server.ts) -> Convex refreshTaskEngagement -> TurnActivityIndicator: the line REPLACES the generic working label",
+     "anchor": {
+      "file": "src/server.ts",
+      "token": "progressSummary"
+     },
+     "proof": {
+      "kind": "deterministic-test",
+      "ref": "bridge/test/task-probe-projection.test.ts",
+      "note": "the BRIDGE hop (probe projection: keep, 600-char cap, absent->null); Convex persistence + UI rule proven by convex/taskProgress.test.ts; the async-task golden fixture already carries the field in real frames — probe elicitation on the live bench still owed"
+     },
+     "verifiedVersions": []
     },
     "terminalSummary": {
      "status": "handled",
@@ -2381,7 +2503,14 @@
     },
     "expiresAt": {
      "status": "gap",
-     "note": "projected by convex/lib/talk.ts and read by NOBODY. CORRECTED after review: the first note claimed the browser uses it to know when the credential dies. It does not — the UI discovers expiry only from an HTTP 401 on the SDP offer, which it surfaces as `talk_secret_expired`. So a person whose secret expires while they were deciding learns it by a failed connection instead of a session that never opened stale. The value is already on hand; nothing consumes it."
+     "note": "projected by convex/lib/talk.ts and read by NOBODY. CORRECTED after review: the first note claimed the browser uses it to know when the credential dies. It does not — the UI discovers expiry only from an HTTP 401 on the SDP offer, which it surfaces as `talk_secret_expired`. So a person whose secret expires while they were deciding learns it by a failed connection instead of a session that never opened stale. The value is already on hand; nothing consumes it.",
+     "knownReaders": [
+      {
+       "file": "convex/lib/talk.ts",
+       "token": "expiresAt",
+       "note": "projected to the client and read by nobody downstream; expiry is discovered via HTTP 401 on the SDP offer"
+      }
+     ]
     },
     "websocketUrl": {
      "status": "ignored",

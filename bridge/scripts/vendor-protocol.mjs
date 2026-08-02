@@ -90,6 +90,19 @@ const FILES = [
   // flat layout must typecheck, and CLASSIFIED like any other module — an unread
   // schema in the manifest is worse than an absent one.
   "schema/plugins.ts",
+  // New transitive imports as of 2026.7.2-beta.5: upstream split `sessions.ts` into
+  // sub-modules (frames / sessions-create / sessions-row / sessions-sharing-values /
+  // snapshot), added a `closedObject` helper every schema module now imports, and
+  // `sessions.ts` reads `SESSION_AGENT_ATTENTION_ICON_IDS` from `session-icon.ts`.
+  // They ride along for the same reason as the three above, and the ones that export
+  // schemas are classified like any other module.
+  "schema/closed-object.ts",
+  "schema/frames.ts",
+  "schema/sessions-create.ts",
+  "schema/sessions-row.ts",
+  "schema/sessions-sharing-values.ts",
+  "schema/snapshot.ts",
+  "session-icon.ts",
 ];
 
 /** The one repository these bytes may be attributed to. */

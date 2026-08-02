@@ -1,0 +1,110 @@
+{
+ "$comment": "Fields whose manifest declaration is TRUTH-ENFORCED against the code by coverage-truth.test.ts: a `handled` here must anchor real consumption and carry a proof; a `gap`/`ignored` here must not be consumed (scan: true \u2014 the qualified token is distinctive enough to sweep bridge/src for), or must declare every reader the sweep finds (knownReaders). The list only grows \u2014 its floor is frozen inside the test, so shrinking it is a visible review event, never a quiet edit. Lives BESIDE coverage/, not inside it: that directory is a version<->manifest bijection enforced by compat.test.ts, and this file is not a version. Seeded 2026-07-31 with the 18 declared gaps plus the 8 fields whose declarations had silently gone false (progressSummary implemented but still 'gap'; seven cron delivery fields consumed but still 'ignored') and one coherent control sample.",
+ "version": 1,
+ "fields": [
+  {
+   "path": "ChatAbortedEvent.errorMessage",
+   "scan": false
+  },
+  {
+   "path": "ChatSendParams.expectedSessionRoutingContract",
+   "scan": true
+  },
+  {
+   "path": "ChatAbortParams.preserveSideRuns",
+   "scan": true
+  },
+  {
+   "path": "SessionOperationEvent.operationId",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.operation",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.phase",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.sessionKey",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.agentId",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.ts",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.completed",
+   "scan": false
+  },
+  {
+   "path": "SessionOperationEvent.reason",
+   "scan": false
+  },
+  {
+   "path": "SessionsResetParams.reason",
+   "scan": false
+  },
+  {
+   "path": "CronJobState.consecutiveErrors",
+   "scan": true
+  },
+  {
+   "path": "CronRunLogEntry.usage",
+   "scan": false
+  },
+  {
+   "path": "TaskSummary.progressSummary",
+   "scan": true
+  },
+  {
+   "path": "TalkClientToolCallResult.idempotencyKey",
+   "scan": false
+  },
+  {
+   "path": "TalkClientCreateResult.expiresAt",
+   "scan": false
+  },
+  {
+   "path": "TalkClientCreateResult.offerHeaders",
+   "scan": true
+  },
+  {
+   "path": "CronJobState.lastDelivered",
+   "scan": true
+  },
+  {
+   "path": "CronJobState.lastDeliveryStatus",
+   "scan": true
+  },
+  {
+   "path": "CronJobState.lastDeliveryError",
+   "scan": true
+  },
+  {
+   "path": "CronJobState.lastRunAtMs",
+   "scan": true
+  },
+  {
+   "path": "CronRunLogEntry.delivered",
+   "scan": false
+  },
+  {
+   "path": "CronRunLogEntry.deliveryStatus",
+   "scan": true
+  },
+  {
+   "path": "CronRunLogEntry.deliveryError",
+   "scan": true
+  },
+  {
+   "path": "TaskSummary.startedAt",
+   "scan": false
+  }
+ ]
+}

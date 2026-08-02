@@ -86,6 +86,11 @@ async function traceDispatch(
   args: {
     outboxId: Id<"outbox">;
     chatId?: string;
+    /** The chat's kind for a HIDDEN chat (`summarizer`, `documentary`, `curator`,
+     *  `converter`); omitted for a real conversation, and omitted by any call site
+     *  that fails before the chat is read. See the counting rule in `anomalies.ts`:
+     *  ABSENT deliberately counts as user-facing. */
+    chatKind?: string | null;
     dispatchStatus: "sent" | "failed";
     target?: { instanceName?: string; agentId?: string };
     reason?: string;
@@ -113,6 +118,10 @@ async function traceDispatch(
         agentId: args.target?.agentId,
         ...(args.reason ? { reason: args.reason } : {}),
         ...(args.errorCode ? { errorCode: args.errorCode } : {}),
+        // Written on EVERY dispatch, not just failures: reading "was this internal?"
+        // out of the trace is what turns a future analysis into one `list_traces`
+        // call instead of a second round-trip to ask what the chat was.
+        ...(args.chatKind ? { chatKind: args.chatKind } : {}),
       }),
     });
   } catch {
@@ -500,6 +509,13 @@ export const getChatRouting = internalQuery({
     // texts sent to the bridge (an admin override always wins as-is).
     const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
     return {
+      // The chat's KIND — `summarizer` | `documentary` | `curator` | `converter` for
+      // Atrium's own hidden work, absent for a real conversation. An ENUM, so it is
+      // safe on a trace (no content, no identifiers). Reported here because the
+      // dispatch has already read the chat: a failed send to a hidden chat costs
+      // NOBODY a turn, but it is still a malfunction — a summary that can never be
+      // built must not go unnoticed just because no one was waiting for it.
+      chatKind: chat.kind ?? null,
       // On a REBIND (unbound/legacy chat, or the bound agent was revoked/deleted)
       // the stored openclawChatId belongs to the OLD agent's provider conversation
       // — sending it with the NEW target would resume/reset the wrong agent's
@@ -1178,6 +1194,9 @@ export const dispatch = internalAction({
         outboxId,
         reason: "not_configured",
       });
+      // NO `chatKind`: this branch fails before the chat is ever read. Absent
+      // deliberately counts as USER-FACING in the detector — the loud direction, so
+      // a misconfiguration can never be quietly filed as internal housekeeping.
       await traceDispatch(ctx, {
         outboxId,
         chatId: row.chatId,
@@ -1254,6 +1273,7 @@ export const dispatch = internalAction({
       await traceDispatch(ctx, {
         outboxId,
         chatId: row.chatId,
+        chatKind: routing.chatKind,
         dispatchStatus: "failed",
         reason,
         errorCode: reason === "agent_restricted" ? "AGENT_RESTRICTED" : "NO_AGENT",
@@ -1276,6 +1296,7 @@ export const dispatch = internalAction({
       await traceDispatch(ctx, {
         outboxId,
         chatId: row.chatId,
+        chatKind: routing.chatKind,
         dispatchStatus: "failed",
         reason: "not_configured",
         errorCode: "NOT_CONFIGURED",
@@ -1592,6 +1613,7 @@ export const dispatch = internalAction({
     await traceDispatch(ctx, {
       outboxId,
       chatId: row.chatId,
+      chatKind: routing.chatKind,
       dispatchStatus: ok ? "sent" : "failed",
       // Non-secret valve target names (instanceName -> token mapping is the
       // bridge's job; only names cross this boundary).

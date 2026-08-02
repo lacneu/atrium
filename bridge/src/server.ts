@@ -499,6 +499,37 @@ export function parseReferenceAttachments(raw: unknown): InboundReference[] {
   return out;
 }
 
+/** The tasks-probe projection of ONE gateway task, as a pure (testable) function.
+ *
+ *  WHERE A RUNNING TASK IS. `terminalSummary` only exists once the task is over, so
+ *  while the user waits — the one moment he is actually asking — Atrium had nothing
+ *  to say and showed a bare spinner. A user watching a multi-hour job asked three
+ *  times "où ça en est ?" and got silence (production report, 2026-07-30).
+ *  `progressSummary` fills that window. Same 600-char cap as the terminal summary:
+ *  this is model-authored prose reaching chat chrome, and one cap is easier to trust
+ *  than two. Extracted from the probe's connection closure so the projection — the
+ *  bridge hop of this field's chain — is testable without a gateway.
+ */
+export function projectTaskProbe(task: Record<string, unknown> | undefined): {
+  status: string | null;
+  summary: string | null;
+  progressSummary: string | null;
+  error: string | null;
+} {
+  return {
+    status: typeof task?.status === "string" ? task.status.slice(0, 40) : null,
+    summary:
+      typeof task?.terminalSummary === "string"
+        ? task.terminalSummary.slice(0, 600)
+        : null,
+    progressSummary:
+      typeof task?.progressSummary === "string"
+        ? task.progressSummary.slice(0, 600)
+        : null,
+    error: typeof task?.error === "string" ? task.error.slice(0, 400) : null,
+  };
+}
+
 /**
  * Whether to re-hydrate prior turns onto a chat.send, as a pure (testable)
  * decision. Off entirely under `OPENCLAW_REHYDRATION=off`; otherwise needed only on
@@ -3463,33 +3494,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                     const task = (
                       r.payload as { task?: Record<string, unknown> }
                     )?.task;
-                    return {
-                      taskId,
-                      status:
-                        typeof task?.status === "string"
-                          ? task.status.slice(0, 40)
-                          : null,
-                      summary:
-                        typeof task?.terminalSummary === "string"
-                          ? task.terminalSummary.slice(0, 600)
-                          : null,
-                      // WHERE A RUNNING TASK IS. `terminalSummary` only exists once the
-                      // task is over, so while the user waits — the one moment he is
-                      // actually asking — Atrium had nothing to say and showed a bare
-                      // spinner. A user watching a multi-hour job asked three times
-                      // "où ça en est ?" and got silence (production report, 2026-07-30).
-                      // Same 600-char cap as the terminal summary: this is model-authored
-                      // prose reaching chat chrome, and one cap is easier to trust than
-                      // two.
-                      progressSummary:
-                        typeof task?.progressSummary === "string"
-                          ? task.progressSummary.slice(0, 600)
-                          : null,
-                      error:
-                        typeof task?.error === "string"
-                          ? task.error.slice(0, 400)
-                          : null,
-                    };
+                    return { taskId, ...projectTaskProbe(task) };
                   } catch (err) {
                     // DISTINGUISH the registry's explicit "task not found"
                     // (pinned: INVALID_REQUEST `task not found: <id>`) from a

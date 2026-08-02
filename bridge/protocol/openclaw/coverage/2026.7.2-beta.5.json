@@ -1,6 +1,6 @@
 {
  "$comment": "Protocol coverage manifest (Inc 1 of docs/design/protocol-contract.md). Every schema exported by the vendored gateway-protocol modules (protocol/openclaw/<version>/) must be classified here — either whole-schema or field-by-field. The ratchet test (test/protocol-coverage.test.ts) walks the vendored TypeBox schemas and fails on any unclassified schema/field, so a validated-version bump that introduces new protocol surface stays RED until a human classifies it. statuses: handled (consumed/emitted by the bridge, `by` = where) | ignored (deliberate, `why` required) | gap (known-unsupported, `note` required). Seeded from the audit in docs/design/protocol-schema-coverage.md.",
- "version": "2026.6.11",
+ "version": "2026.7.2-beta.5",
  "schemas": {
   "ChatDeltaEvent": {
    "fields": {
@@ -84,6 +84,10 @@
      "status": "handled",
      "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
      "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
+    },
+    "yielded": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -121,6 +125,17 @@
      "status": "handled",
      "by": "bridge/src/providers/openclaw/normalizer.ts (terminal stopReason -> diagnostic channel -> chat.gateway_pressure trace)",
      "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
+    },
+    "errorMessage": {
+     "status": "gap",
+     "note": "NOT read. Corrected after review: the first classification claimed `handled` on the strength of the `payload.errorMessage` read in handleChat, but the `state === \"aborted\"` branch finalizes and RETURNS (normalizer.ts, `finalize(..., \"gateway_abort\")`) several lines BEFORE that read — which serves `state === \"error\"` only. Impact: an abort carries its cancellation reason and we drop it, so a coordinator- or timeout-initiated cancellation is indistinguishable from a user Stop; both render \"Interrompu\". Wiring it means capturing the text as a trace-only diagnostic, never as the message's error (an abort is not a failure to explain to the reader).",
+     "knownReaders": [
+      {
+       "file": "bridge/src/providers/openclaw/normalizer.ts",
+       "token": "errorMessage",
+       "note": "the read serves state===error only; the aborted branch finalizes and returns before it"
+      }
+     ]
     }
    }
   },
@@ -205,14 +220,6 @@
     }
    }
   },
-  "AgentInternalEvent": {
-   "status": "ignored",
-   "why": "the FORMAL announce contract (task_completion: childSessionKey/status/result/attachments) — but these are run INPUT params (AgentParams.internalEvents), invisible on the event stream by construction; the bridge reconstructs announce deliveries from the announce:v1 run's normal chat/assistant frames. Future structured source if the gateway ever surfaces them."
-  },
-  "AgentGeneratedAttachment": {
-   "status": "ignored",
-   "why": "carried inside AgentInternalEvent (run input params) — see AgentInternalEvent"
-  },
   "ChatSendParams": {
    "fields": {
     "sessionKey": {
@@ -286,6 +293,26 @@
     "idempotencyKey": {
      "status": "handled",
      "by": "server.ts chat.send dispatch (retry-safe sends)"
+    },
+    "expectedSessionRoutingContract": {
+     "status": "gap",
+     "note": "NOT sent. It is upstream's own remedy for mis-routing (the gateway refuses the send when the session's routing no longer matches what the caller expected), so this is a capability we want, not one we dismiss. Blocked on the OUTBOUND ratchet (W10/G2): ChatSendParams is `additionalProperties:false`, so adding a field the FLOOR (2026.5.19) does not know makes every chat.send fail INVALID_REQUEST on older gateways. Ship it version-gated, the way upstream's own TUI does for preserveSideRuns (src/tui/gateway-chat.ts: send it, retry the shipped shape on rejection)."
+    },
+    "expectedLeafEntryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "queueMode": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "replyToId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "toolBindings": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -302,6 +329,10 @@
     "runId": {
      "status": "handled",
      "by": "server.ts /abort route (targets the streaming message's exact run — immune to a queued follow-up's new run)"
+    },
+    "preserveSideRuns": {
+     "status": "gap",
+     "note": "NOT sent, so the stop button also kills a BTW side run in flight. Upstream semantics (server-methods/chat.ts): with the flag, runs whose `turnKind === \"btw\"` are SPARED from the abort — exactly the side-result runs Atrium already renders. Same floor constraint and same remedy as expectedSessionRoutingContract: version-gated, with the upstream TUI's send-then-retry fallback."
     }
    }
   },
@@ -336,10 +367,6 @@
   "LogsTailResult": {
    "status": "ignored",
    "why": "result of the unused logs.tail"
-  },
-  "MessageActionToolContext": {
-   "status": "ignored",
-   "why": "channel message-action tooling — Atrium is not a channel adapter"
   },
   "MessageActionParams": {
    "status": "ignored",
@@ -384,10 +411,6 @@
   "GatewayClientMode": {
    "status": "ignored",
    "why": "handshake client-mode vocabulary — same as GatewayClientId"
-  },
-  "SecretRefSource": {
-   "status": "ignored",
-   "why": "secret-reference primitive for config schemas — the bridge never writes gateway config"
   },
   "SecretRef": {
    "status": "ignored",
@@ -474,30 +497,6 @@
     "postCompaction": {
      "status": "ignored",
      "why": "same transcript-reference family"
-    }
-   }
-  },
-  "SessionCompactionCheckpointReason": {
-   "status": "ignored",
-   "why": "the reason vocabulary as a union. The bridge does not match this union: it BUCKETS the reason string it receives (bucketCompactionReason) at both the history shaper and the trace boundary, so a new upstream member collapses to `other` instead of breaking a turn or travelling verbatim onto a metadata-only surface. NOTE: that bucketing was ADDED on 2026-07-27 — classifying this schema is what revealed the history shaper was still passing the raw string through."
-  },
-  "SessionCompactionTranscriptReference": {
-   "fields": {
-    "sessionId": {
-     "status": "ignored",
-     "why": "gateway-internal transcript identity"
-    },
-    "sessionFile": {
-     "status": "ignored",
-     "why": "a PATH on the gateway host — never useful to Atrium and never safe to surface"
-    },
-    "leafId": {
-     "status": "ignored",
-     "why": "transcript-internal cursor"
-    },
-    "entryId": {
-     "status": "ignored",
-     "why": "transcript-internal cursor"
     }
    }
   },
@@ -734,6 +733,22 @@
      "status": "ignored",
      "why": "Atrium names chats in its own store; the gateway label is not shown"
     },
+    "category": {
+     "status": "ignored",
+     "why": "gateway-side session taxonomy Atrium does not model"
+    },
+    "archived": {
+     "status": "ignored",
+     "why": "Atrium's chat lifecycle lives in Convex; archiving a gateway session would desynchronise the two"
+    },
+    "pinned": {
+     "status": "ignored",
+     "why": "same: pinning is an Atrium sidebar concept"
+    },
+    "unread": {
+     "status": "ignored",
+     "why": "same: unread is computed from Atrium's own lastAssistantAt"
+    },
     "thinkingLevel": {
      "status": "handled",
      "by": "applySessionSettings: the reasoning knob"
@@ -782,30 +797,6 @@
      "status": "handled",
      "by": "applySessionSettings: the user's per-chat model choice"
     },
-    "spawnedBy": {
-     "status": "ignored",
-     "why": "sub-agent lineage the GATEWAY stamps when it spawns a child; a client writing it would forge provenance"
-    },
-    "spawnedWorkspaceDir": {
-     "status": "ignored",
-     "why": "same spawn-metadata family"
-    },
-    "spawnedCwd": {
-     "status": "ignored",
-     "why": "same spawn-metadata family"
-    },
-    "spawnDepth": {
-     "status": "ignored",
-     "why": "same spawn-metadata family"
-    },
-    "subagentRole": {
-     "status": "ignored",
-     "why": "same spawn-metadata family"
-    },
-    "subagentControlScope": {
-     "status": "ignored",
-     "why": "same spawn-metadata family"
-    },
     "inheritedToolAllow": {
      "status": "ignored",
      "why": "tool entitlements come from the agent's gateway config; a per-session override from the chat would bypass the operator's policy"
@@ -821,6 +812,42 @@
     "groupActivation": {
      "status": "ignored",
      "why": "group-chat activation rules; Atrium is one-user-one-chat"
+    },
+    "attention": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "boardFace": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "completionOwnerSessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "expectedLifecycleRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "expectedSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "icon": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "inheritedToolPolicyVersion": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "statusNote": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ttlMinutes": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -864,13 +891,25 @@
    "status": "ignored",
    "why": "session usage totals; Atrium reads usage per TURN from the terminal's diagnosticUsage and from consecutive describes"
   },
+  "SessionWorktreeInfo": {
+   "status": "ignored",
+   "why": "the git worktree a session runs in (id/path/branch) — a gateway-host filesystem concern; Atrium never places or reads a worktree"
+  },
+  "SessionsCreateResult": {
+   "status": "ignored",
+   "why": "result of sessions.create, which the bridge never calls (chat.send creates the session implicitly)"
+  },
   "CronAddParams": {
    "status": "ignored",
    "why": "creating a cron from Atrium is not offered — jobs are created by the agent or the operator"
   },
-  "CronCompletionDestination": {
+  "CronAddResult": {
    "status": "ignored",
-   "why": "delivery routing for a completed run — gateway-side"
+   "why": "result of an add the bridge never performs"
+  },
+  "CronDeclarativeAddResult": {
+   "status": "ignored",
+   "why": "result of a declarative add the bridge never performs"
   },
   "CronDelivery": {
    "fields": {
@@ -908,18 +947,6 @@
     }
    }
   },
-  "CronDeliveryPatch": {
-   "status": "ignored",
-   "why": "editing delivery routing is not offered"
-  },
-  "CronFailureAlert": {
-   "status": "ignored",
-   "why": "failure-alert routing, a gateway notification policy Atrium does not own"
-  },
-  "CronFailureDestination": {
-   "status": "ignored",
-   "why": "same failure-alert family"
-  },
   "CronGetParams": {
    "fields": {
     "id": {
@@ -937,6 +964,18 @@
     "id": {
      "status": "handled",
      "by": "fetchCronJobs / normalizeCronJobDetail: the job identity every /cron-manage op is keyed on"
+    },
+    "declarationKey": {
+     "status": "ignored",
+     "why": "identity of a job DECLARED in gateway config; Atrium neither declares nor edits config-owned jobs"
+    },
+    "displayName": {
+     "status": "ignored",
+     "why": "a gateway-side alias; the tab shows `name`, and two names for one job would confuse more than help"
+    },
+    "owner": {
+     "status": "ignored",
+     "why": "the gateway-side owner tag; Atrium's ownership is its own user/agent policy"
     },
     "agentId": {
      "status": "handled",
@@ -974,6 +1013,10 @@
      "status": "handled",
      "by": "fetchCronJobs: rendered as a printable cadence (cron expr, --at, or {kind,everyMs})"
     },
+    "trigger": {
+     "status": "ignored",
+     "why": "event triggers (script/once) — a job kind Atrium neither creates nor renders"
+    },
     "sessionTarget": {
      "status": "ignored",
      "why": "which session the run targets; gateway-side placement"
@@ -997,62 +1040,58 @@
     "state": {
      "status": "handled",
      "by": "normalizeCronJobDetail: the state block the detail summarises"
-    }
-   }
-  },
-  "CronJobPatch": {
-   "fields": {
-    "agentId": {
-     "status": "ignored",
-     "why": "re-pinning a job to another agent is an entitlement decision, and Convex — not the bridge — owns the per-user agent policy"
     },
-    "deleteAfterRun": {
-     "status": "ignored",
-     "why": "one-shot semantics belong to creation, which Atrium does not do"
-    },
-    "delivery": {
-     "status": "ignored",
-     "why": "delivery routing of a run's result — configured on the gateway, shown read-only at job level, never edited from Atrium"
-    },
-    "description": {
-     "status": "ignored",
-     "why": "not shown in the tab, so not editable from it"
-    },
-    "enabled": {
+    "nextRunAtMs": {
      "status": "handled",
-     "by": "buildGatewayCronPatch: the Pause/Resume control"
+     "by": "fetchCronJobs: the next occurrence the calendar view places"
     },
-    "failureAlert": {
+    "lastRunAtMs": {
      "status": "ignored",
-     "why": "failure-alert routing — a gateway notification policy Atrium does not own"
+     "why": "the detail shows the state block; this duplicate at job level is redundant"
     },
-    "name": {
+    "lastRunStatus": {
      "status": "handled",
-     "by": "buildGatewayCronPatch: renaming a job from the Scheduled tab"
+     "by": "fetchCronJobs: the last outcome badge"
     },
-    "payload": {
-     "status": "handled",
-     "by": "buildGatewayCronPatch: a new prompt, mapped onto the job's EXISTING payload kind (systemEvent or agentTurn) — an unknown kind fails CLOSED rather than guessing"
-    },
-    "schedule": {
-     "status": "handled",
-     "by": "buildGatewayCronPatch: the cadence editor (cron expr / every / at)"
-    },
-    "sessionKey": {
+    "lastRunError": {
      "status": "ignored",
-     "why": "which session a job runs in is gateway placement, not a user setting"
+     "why": "the raw error TEXT of the last run — free text on a surface Atrium renders; the status badge carries the signal"
     },
-    "sessionTarget": {
+    "lastDelivered": {
      "status": "ignored",
-     "why": "same placement family"
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
     },
-    "state": {
+    "lastDeliveryStatus": {
      "status": "ignored",
-     "why": "the run state is the gateway's to write; patching it would forge history"
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
     },
-    "wakeMode": {
+    "lastDeliveryError": {
      "status": "ignored",
-     "why": "how the run wakes the agent — gateway execution policy"
+     "why": "cron DELIVERY routing (which channel the result is sent to) is configured on the gateway; Atrium reads a job's delivery only to display it, never to set it"
+    },
+    "lastFailureNotificationDelivered": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryStatus": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "lastFailureNotificationDeliveryError": {
+     "status": "ignored",
+     "why": "failure-alert routing — a gateway-side notification policy Atrium does not own"
+    },
+    "configRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pacing": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "scheduledToolPolicy": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1166,6 +1205,14 @@
      "status": "handled",
      "by": "fetchCronJobs (server.ts, the LIST path — not normalizeCronJobDetail): the outcome badge falls back state.lastRunStatus -> state.lastStatus -> job.lastRunStatus -> job.lastStatus, so a gateway that populates only the alias still shows a status. A review pass claimed this read did not exist because it looked only in cron-manage.ts; it is in the list normalizer."
     },
+    "lastTriggerEvalAtMs": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "lastTriggerFireAtMs": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
     "nextRunAtMs": {
      "status": "handled",
      "by": "normalizeCronJobDetail reads it FIRST (falling back to the job-level copy): the next occurrence the detail and the calendar show"
@@ -1173,6 +1220,50 @@
     "runningAtMs": {
      "status": "ignored",
      "why": "the tab has no live-running indicator for crons"
+    },
+    "triggerEvalCount": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "triggerState": {
+     "status": "ignored",
+     "why": "event-trigger bookkeeping for a job kind Atrium neither creates nor renders"
+    },
+    "streamCoalescedBatches": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamConsecutiveFailures": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamDroppedBatches": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamError": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamLastExitAtMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamLastStartedAtMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamRestartExhausted": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamSourceIdentity": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "streamStatus": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1221,142 +1312,10 @@
     "compact": {
      "status": "ignored",
      "why": "the FULL response is required — the compact projection drops `agentId`, and Convex needs it to apply the per-user agent policy"
-    }
-   }
-  },
-  "CronPayload": {
-   "fields": {
-    "kind": {
-     "status": "handled",
-     "by": "normalizeCronJobDetail reads it — the payload family the message editor must preserve, and buildGatewayCronPatch refuses an unknown one rather than guessing"
     },
-    "message": {
-     "status": "handled",
-     "by": "normalizeCronJobDetail reads it as the prompt of an agentTurn job"
-    },
-    "text": {
-     "status": "handled",
-     "by": "normalizeCronJobDetail reads it as the prompt of a systemEvent job"
-    },
-    "allowUnsafeExternalContent": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "argv": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "cwd": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "env": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "fallbacks": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "input": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "lightContext": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "model": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "noOutputTimeoutSeconds": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "outputMaxBytes": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "thinking": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "timeoutSeconds": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "toolsAllow": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    }
-   }
-  },
-  "CronPayloadPatch": {
-   "fields": {
-    "kind": {
-     "status": "handled",
-     "by": "buildGatewayCronPatch SENDS it, chosen from the job's CURRENT kind; an unknown current kind fails CLOSED (the update is refused)"
-    },
-    "message": {
-     "status": "handled",
-     "by": "buildGatewayCronPatch sends it for an agentTurn job"
-    },
-    "text": {
-     "status": "handled",
-     "by": "buildGatewayCronPatch sends it for a systemEvent job"
-    },
-    "allowUnsafeExternalContent": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "argv": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "cwd": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "env": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "fallbacks": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "input": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "lightContext": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "model": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "noOutputTimeoutSeconds": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "outputMaxBytes": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "thinking": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "timeoutSeconds": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
-    },
-    "toolsAllow": {
-     "status": "ignored",
-     "why": "cron EXECUTION policy — sandbox, model, tools, timeouts, output caps. Configured on the gateway when the job is created; the Scheduled tab edits the prompt and the cadence, never the execution envelope, and a bridge that could widen `toolsAllow` or drop a timeout from a web form would be an unaudited privilege surface"
+    "includeDeliveryPreviews": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1476,6 +1435,10 @@
      "status": "ignored",
      "why": "the job summary already carries the next occurrence"
     },
+    "triggerFired": {
+     "status": "ignored",
+     "why": "event-trigger detail for a job kind Atrium does not render"
+    },
     "model": {
      "status": "handled",
      "by": "normalizeCronRunEntries: which model ran it"
@@ -1507,6 +1470,10 @@
     "jobId": {
      "status": "ignored",
      "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    },
+    "expectedProcessInstanceId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1559,38 +1526,10 @@
     "offset": {
      "status": "ignored",
      "why": "paging past the bounded `limit` the detail requests; the run list shows the most recent, not a browsable archive"
-    }
-   }
-  },
-  "CronSchedule": {
-   "fields": {
-    "kind": {
-     "status": "handled",
-     "by": "printableSchedule (cron-manage.ts) discriminates on it, and buildGatewayCronPatch passes the edited schedule through with its kind"
     },
-    "expr": {
-     "status": "handled",
-     "by": "printableSchedule reads it (with a `cron`/`expr` fallback) for the cron cadence"
-    },
-    "at": {
-     "status": "handled",
-     "by": "printableSchedule reads it for a one-shot job"
-    },
-    "everyMs": {
-     "status": "handled",
-     "by": "printableSchedule reads it for an interval job"
-    },
-    "tz": {
-     "status": "handled",
-     "by": "printableSchedule renders it beside the expression — `cron <expr> (<tz>)` — so a job scheduled in another timezone does not read as if it ran in the viewer's"
-    },
-    "anchorMs": {
-     "status": "ignored",
-     "why": "gateway-side scheduling detail the Scheduled tab does not model: it renders a printable cadence from kind/expr/at/everyMs and edits those alone"
-    },
-    "staggerMs": {
-     "status": "ignored",
-     "why": "gateway-side scheduling detail the Scheduled tab does not model: it renders a printable cadence from kind/expr/at/everyMs and edits those alone"
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1611,12 +1550,12 @@
     "jobId": {
      "status": "ignored",
      "why": "the schema is a UNION of the `id` and legacy `jobId` arms; the bridge always sends `id`, so `jobId` is the arm it deliberately does not use — sending both would be two names for one job"
+    },
+    "expectedConfigRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
-  },
-  "TaskLedgerStatus": {
-   "status": "handled",
-   "by": "SENT and READ: the reconciliation asks `tasks.list {status:[\"queued\",\"running\"]}` and /tasks-probe compares the status it gets back. A UNION, classified whole — the bridge compares the STRING rather than matching members, so a new upstream member cannot break the probe, but the values it sends are members of this union and a rename would silently return nothing."
   },
   "TaskSummary": {
    "fields": {
@@ -1713,6 +1652,18 @@
     "error": {
      "status": "handled",
      "by": "/tasks-probe: why a task ended badly"
+    },
+    "lastToolName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "prompt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "toolUseCount": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1828,15 +1779,7 @@
    "status": "ignored",
    "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
   },
-  "ConfigUiHint": {
-   "status": "ignored",
-   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
-  },
   "ConfigSchemaResponse": {
-   "status": "ignored",
-   "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
-  },
-  "ConfigSchemaLookupChild": {
    "status": "ignored",
    "why": "the generated config-schema UI (schema/uiHints/reloadKind trees) is a Control-UI feature; Atrium edits exactly two agent defaults through /config-defaults and exposes no schema browser"
   },
@@ -1898,6 +1841,10 @@
      "status": "ignored",
      "why": "the agent's host filesystem path — a server detail with no business crossing to Convex, the same reason AgentsFileEntry.path is dropped"
     },
+    "workspaceGit": {
+     "status": "ignored",
+     "why": "whether the workspace is a git checkout: an operator fact, invisible in every Atrium surface"
+    },
     "agentRuntime": {
      "status": "ignored",
      "why": "read from the SESSION row instead (parseSessionMeta, server.ts:678), because the header chip must show what this session runs, not the agent default"
@@ -1913,6 +1860,10 @@
     "thinkingDefault": {
      "status": "ignored",
      "why": "read from the SESSION row (server.ts:699) so the chip's \"inherited\" badge is computed against the same row as the effective level"
+    },
+    "kind": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1945,6 +1896,18 @@
     "reasoning": {
      "status": "ignored",
      "why": "whether the model reasons is expressed to the user through the thinking knob's availability, which comes from the session row"
+    },
+    "agentRuntime": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "apiKeySupported": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "input": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1953,6 +1916,10 @@
     "view": {
      "status": "ignored",
      "why": "omitted on purpose: server.ts:795 sends `{}` and takes the gateway's default view. `all` would list models the gateway is not configured for, which is exactly the kind of unusable option the picker must not show"
+    },
+    "includeProviderCapabilities": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -1989,6 +1956,10 @@
     "path": {
      "status": "ignored",
      "why": "DELIBERATELY dropped: fileMeta never projects it, on get, list or set. It is a gateway filesystem path and has no business reaching Convex or a browser"
+    },
+    "expectedAbsent": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -2200,6 +2171,22 @@
    "status": "ignored",
    "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
   },
+  "SkillsCuratorStatusParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorStatusResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorActionParams": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
+  "SkillsCuratorActionResult": {
+   "status": "ignored",
+   "why": "skills are installed, proposed and curated ON THE GATEWAY; Atrium neither lists nor edits them. The Files agent reaches an agent's workspace files through agents.files.* instead, which is a narrower surface on purpose: file CRUD with a compare-and-set guard, not an installer"
+  },
   "ToolsCatalogParams": {
    "status": "ignored",
    "why": "the tool catalogue and direct tools.invoke are Control-UI surfaces. In Atrium a tool always runs INSIDE an agent turn — the agent does the work — so a bridge that could invoke tools out of band would be a second, unaudited execution path"
@@ -2297,6 +2284,14 @@
     "brain": {
      "status": "ignored",
      "why": "which component answers inside the realtime session; Atrium always routes the substance to an agent turn via toolCall, so the brain choice is not its call"
+    },
+    "capabilities": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "voiceSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -2368,6 +2363,10 @@
     "initialMessage": {
      "status": "ignored",
      "why": "a first utterance the session may carry. Atrium opens a voice session on an existing conversation and lets the person speak first; injecting a message would put words in the turn nobody said"
+    },
+    "voiceSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -2392,6 +2391,10 @@
     "relaySessionId": {
      "status": "ignored",
      "why": "only meaningful when the GATEWAY relays the audio; Atrium's browser holds the session, so there is no relay id to quote"
+    },
+    "voiceSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     }
    }
   },
@@ -2475,18 +2478,6 @@
    "status": "ignored",
    "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
   },
-  "ChannelAccountSnapshot": {
-   "status": "ignored",
-   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
-  },
-  "ChannelUiMeta": {
-   "status": "ignored",
-   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
-  },
-  "ChannelEventLoopHealth": {
-   "status": "ignored",
-   "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
-  },
   "ChannelsStatusResult": {
    "status": "ignored",
    "why": "channel accounts (WhatsApp, Telegram, …) are configured, started, stopped and logged out ON THE GATEWAY. Atrium is itself one channel among them; it neither lists nor operates the others, and a bridge that could stop a channel would be an unaudited admin surface"
@@ -2538,6 +2529,2114 @@
   "TalkSpeakResult": {
    "status": "ignored",
    "why": "Talk provider selection, voices and defaults live in the gateway config and Atrium reads none of it: the voice capability it exposes is a per-instance yes/no. CORRECTED after review: an earlier note claimed a gateway with no realtime provider yields a classified \"not ready\" — `classifyGatewayError` has no such code and returns UPSTREAM_ERROR for an unrecognised message, so the user sees the generic voice error. Worth improving, but it is not what this classification rests on"
+  },
+  "TtsSpeakParams": {
+   "status": "ignored",
+   "why": "the /tts passthrough reaches `tts.status`/`providers`/`convert`, which upstream does NOT schematize — only `tts.speak`, which Atrium never calls. Vendored here as part of the module and classified like the rest; the three the bridge does reach stay uncoverable BY CONSTRUCTION, and that is stated in the RPC scope snapshot"
+  },
+  "TtsSpeakResult": {
+   "status": "ignored",
+   "why": "the /tts passthrough reaches `tts.status`/`providers`/`convert`, which upstream does NOT schematize — only `tts.speak`, which Atrium never calls. Vendored here as part of the module and classified like the rest; the three the bridge does reach stay uncoverable BY CONSTRUCTION, and that is stated in the RPC scope snapshot"
+  },
+  "ConversationListParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "limit": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "query": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationListItem": {
+   "fields": {
+    "accountId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "firstSeenAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "kind": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "label": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastSeenAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "target": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "threadId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationListResult": {
+   "fields": {
+    "conversations": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationSendParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "message": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "operationId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sourceSessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationSendResult": {
+   "fields": {
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "messageId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "queueId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationTurnParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "message": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sourceSessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "timeoutMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "turnId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationTurnCancelParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "turnId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationTurnCancelResult": {
+   "fields": {
+    "cancelled": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationTurnReply": {
+   "fields": {
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "messageId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "replyToId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "text": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "threadId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "timestamp": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "transcriptArtifactId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "transcriptMessageId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConversationTurnResult": {
+   "fields": {
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "conversationRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "correlationPersisted": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "messageId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "reply": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "AgentKind": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "ModelsAuthStatusParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "refresh": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ModelsAuthLogoutParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "profileIds": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "provider": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ModelsProbeParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "profileId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "provider": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "timeoutMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "AuthProbeStatus": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "ModelsProbeTargetResult": {
+   "fields": {
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "label": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "latencyMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "profileId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ModelsProbeResult": {
+   "fields": {
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "latencyMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "provider": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "results": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "TalkClientTranscriptParams": {
+   "fields": {
+    "entryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "role": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "text": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "timestamp": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "voiceSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "TalkClientCloseParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "voiceSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "TalkClientMutationResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronPacing": {
+   "fields": {
+    "max": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "min": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronScratch": {
+   "fields": {
+    "content": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "revision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updatedAtMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronScratchGetParams": {
+   "fields": {
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "jobId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronScratchGetResult": {
+   "fields": {
+    "currentRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "maxBytes": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "scratch": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronScratchSetParams": {
+   "fields": {
+    "content": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "expectedRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "jobId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "CronScratchSetResult": {
+   "fields": {
+    "currentRevision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "maxBytes": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "reason": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "scratch": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "TickEvent": {
+   "fields": {
+    "ts": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ShutdownEvent": {
+   "fields": {
+    "reason": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "restartExpectedMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ConnectParams": {
+   "fields": {
+    "auth": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "caps": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "client": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "commands": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "device": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "locale": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "maxProtocol": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "minProtocol": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pathEnv": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "permissions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "role": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "scopes": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "userAgent": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "HelloOk": {
+   "fields": {
+    "auth": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "controlUiTabs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "controlUiWidgetKinds": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "deviceAuthMigration": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "features": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pluginSurfaceUrls": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "policy": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "protocol": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "server": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "snapshot": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ErrorShape": {
+   "fields": {
+    "code": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "details": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "message": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "retryAfterMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "retryable": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "RequestFrame": {
+   "fields": {
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "method": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "params": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ResponseFrame": {
+   "fields": {
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "payload": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "EventFrame": {
+   "fields": {
+    "event": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "payload": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "seq": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "stateVersion": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "GatewayFrame": {
+   "fields": {
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "event": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "method": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "params": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "payload": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "seq": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "stateVersion": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ChatToolTitlesParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "items": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ChatToolTitlesResult": {
+   "fields": {
+    "disabled": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "titles": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "ChatAttachments": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "ChatRunStartupPhase": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "ChatStatusEvent": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "phase": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "runId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "seq": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "spawnedBy": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "state": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginCatalogClawHubInstall": {
+   "fields": {
+    "packageName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "source": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginCatalogOfficialInstall": {
+   "fields": {
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "source": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginCatalogInstallAction": {
+   "fields": {
+    "packageName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "source": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginCatalogEntry": {
+   "fields": {
+    "category": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "description": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "enabled": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "featured": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "featuredAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "hasIcon": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "install": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "installed": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "kind": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "name": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "order": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "origin": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "packageName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "removable": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "state": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "version": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsListParams": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "PluginsListResult": {
+   "fields": {
+    "diagnostics": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "mutationAllowed": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "plugins": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsSearchParams": {
+   "fields": {
+    "limit": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "query": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginSearchPackage": {
+   "fields": {
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "displayName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "downloads": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "family": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "isOfficial": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "latestVersion": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "name": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "runtimeId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "summary": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "verificationTier": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginSearchResultEntry": {
+   "fields": {
+    "package": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "score": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsSearchResult": {
+   "fields": {
+    "results": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsInstallParams": {
+   "fields": {
+    "acknowledgeClawHubRisk": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "packageName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "source": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "version": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsInstallResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "plugin": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "restartRequired": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "warnings": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsRefreshParams": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "PluginsRefreshResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsUninstallParams": {
+   "fields": {
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsUninstallResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "removed": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "restartRequired": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "warnings": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsSetEnabledParams": {
+   "fields": {
+    "enabled": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pluginId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "PluginsSetEnabledResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "plugin": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "restartRequired": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "warnings": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionCreatedActor": {
+   "fields": {
+    "id": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "label": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "type": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionRow": {
+   "fields": {
+    "activeLeafEntryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "archived": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "archivedAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "archivedBy": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "boardFace": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "channel": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "chatType": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "childSessions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "contextTokens": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "controlOwnerSessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "createdActor": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "createdAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "createdVia": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "derivedTitle": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "displayName": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "estimatedCostUsd": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "execCwd": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "execNode": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "forkSource": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "forkedFromParent": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "icon": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "incognito": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "inputTokens": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "key": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "kind": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "label": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastActivityAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastInteractionAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastMessagePreview": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastReadAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastRunError": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "model": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "modelProvider": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "outputTokens": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "parentSessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pinned": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "pinnedAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "previousSessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sharingRole": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "spawnDepth": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "spawnedBy": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "spawnedCwd": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "spawnedWorkspaceDir": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "subagentControlScope": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "subagentRole": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "swarmGroupId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "totalTokens": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "totalTokensFresh": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "unread": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updatedAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "visibility": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "worktree": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionVisibility": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "SessionSharingRole": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "SessionObserverHealth": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "SessionObserverPlanProgress": {
+   "fields": {
+    "completed": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "total": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionObserverDigest": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "assessment": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "headline": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "health": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "planProgress": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "revision": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "runId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updatedAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsObserverVisibilityParams": {
+   "fields": {
+    "visible": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsObserverVisibilityResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionCompanionExchange": {
+   "fields": {
+    "answer": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "question": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ts": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionAskParams": {
+   "fields": {
+    "question": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionAskResult": {
+   "fields": {
+    "answer": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ts": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionStateParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionStateResult": {
+   "fields": {
+    "exchanges": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionResetParams": {
+   "fields": {
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsCompanionResetResult": {
+   "fields": {
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsFilesSetParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "content": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "expectedHash": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "path": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsFilesSetResult": {
+   "fields": {
+    "file": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "root": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsFilesRevealParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "key": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsFilesRevealResult": {
+   "fields": {
+    "error": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "path": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionDiffFileStatus": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "SessionDiffFile": {
+   "fields": {
+    "additions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "binary": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "deletions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "oldPath": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "patch": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "path": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "status": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "truncated": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "untracked": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsDiffParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsDiffResult": {
+   "fields": {
+    "additions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "baseRef": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "branch": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "deletions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "files": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "root": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "truncated": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "unavailableReason": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsSearchParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "limit": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "query": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKeys": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsSearchHit": {
+   "fields": {
+    "messageId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "role": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "score": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "snippet": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "timestamp": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsSearchResult": {
+   "fields": {
+    "indexing": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "results": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "truncated": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsListParams": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "SessionGroup": {
+   "fields": {
+    "name": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "position": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsListResult": {
+   "fields": {
+    "groups": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sectionOrder": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsPutParams": {
+   "fields": {
+    "names": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sectionOrder": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsRenameParams": {
+   "fields": {
+    "name": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "to": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsDeleteParams": {
+   "fields": {
+    "name": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsGroupsMutationResult": {
+   "fields": {
+    "groups": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ok": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sectionOrder": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updatedSessions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsRewindParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "entryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsForkParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "entryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsRewindResult": {
+   "fields": {
+    "editorAttachments": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "editorText": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsForkResult": {
+   "fields": {
+    "editorAttachments": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "editorText": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionBranch": {
+   "fields": {
+    "active": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "headline": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "leafEntryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "messageCount": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updatedAt": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsBranchesListParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsBranchesListResult": {
+   "fields": {
+    "branches": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsBranchesSwitchParams": {
+   "fields": {
+    "agentId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "leafEntryId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionKey": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "SessionsBranchesSwitchResult": {
+   "status": "gap",
+   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+  },
+  "PresenceEntry": {
+   "fields": {
+    "deviceFamily": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "deviceId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "host": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "instanceId": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ip": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "lastInputSeconds": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "mode": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "modelIdentifier": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "platform": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "reason": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "roles": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "scopes": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "tags": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "text": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "ts": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "user": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "version": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "watchedSessions": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "StateVersion": {
+   "fields": {
+    "health": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "presence": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
+  },
+  "Snapshot": {
+   "fields": {
+    "appliedConfigHash": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "authMode": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "configPath": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "health": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "presence": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "sessionDefaults": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "stateDir": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "stateVersion": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "updateAvailable": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "uptimeMs": {
+     "status": "gap",
+     "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    }
+   }
   }
  }
 }

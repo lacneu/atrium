@@ -42,6 +42,7 @@ constats de revue, et — systématiquement — les limites qui restent.
 - [15-lot-g70-announced-surface.md](15-lot-g70-announced-surface.md) — lire ce que la passerelle annonce sur elle-même
 - [16-lot-agent-dead-end.md](16-lot-agent-dead-end.md) — sortir d'une conversation ouverte sur une passerelle en panne ; **à faire** : précondition de liaison sur le premier envoi
 - [17-lot-cron-delivery-verdict.md](17-lot-cron-delivery-verdict.md) — une tâche porte le verdict de livraison de sa dernière exécution ; **à faire** : l'atterrissage du compte rendu
+- [18-lot-gouvernance-trames.md](18-lot-gouvernance-trames.md) — le manifeste de couverture dit la vérité ; le processus de découverte et de contribution vit dans le dépôt ; **à faire** : gagner au banc les preuves déterministes, instruire les 17 lacunes puis la file beta.5
 
 ## Conventions
 

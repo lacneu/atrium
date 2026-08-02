@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.70.0] — An alarm that names what actually broke, and an inventory that cannot lie
+
+Two themes, no breaking changes and nothing to migrate. The first is an alarm that
+stopped conflating two different failures; the second makes the protocol inventory
+this project publishes about itself provably true rather than merely well-formed.
+
+- **A failure of Atrium's own background work no longer reads as a user left
+  without a reply — and is no longer silent either.** Investigating a production
+  alarm showed a send that timed out on a hidden conversation Atrium creates for
+  itself to write a summary. Nobody was waiting, yet the alert was worded, and
+  stayed open, exactly as if a person had lost a turn. It now has its own class,
+  which names the job that failed — summary, document fetch, curation, conversion —
+  with the cause and a sample to jump to in Traces. Both halves matter: a summary
+  that can never be built is a real malfunction *precisely* because no user ever
+  sees it fail. The user-facing alarm keeps its threshold of one and never
+  auto-resolves (a lost turn stays lost); the internal one clears by itself and
+  needs three occurrences in the window, so an isolated blip does not flicker.
+- **Every dispatch now records which kind of conversation it belonged to.** That is
+  what made the above diagnosable in one lookup instead of two, and the same will
+  hold for the next investigation. A short label, never content.
+- **The protocol coverage screen tells the truth about the code.** Settings ▸ Bridge
+  now reports 166 fields consumed / 413 deliberately ignored / 17 declared gaps.
+  Eight of those declarations had quietly gone false: a task's progress line was
+  still listed as unread months after it started driving the activity indicator,
+  and seven scheduled-task delivery fields were still listed as ignored after the
+  `0.69.3` work began consuming every one of them. An inventory that is false is
+  worse than none.
+- **And it can no longer drift.** The build now checks that each of those
+  declarations matches the code — a field claimed as consumed must point at the
+  line that consumes it, and a field claimed unused must not be consumed anywhere,
+  in the bridge, the backend, or the front end. Code that merely *touches* a field
+  without the data ever flowing must say so explicitly, which is the honest
+  description of several session-event fields today: the reader is written, nothing
+  feeds it.
+
+Also in this release, for contributors: the discovery procedure for a protocol
+frame and the gated process for contributing upstream now live in the repository
+as versioned skills, with a ledger of the issues and pull requests Atrium opens
+against its providers and their state. The contract of OpenClaw `2026.7.2-beta.5`
+is vendored and classified in preparation for that release — 476 newly declared
+gaps to work through. Support is unchanged: a version is still only claimed once
+it has earned a full-catalogue bench run.
+
+Deploy: `npx convex deploy` (the detector and the trace enrichment are backend
+changes) plus the frontend and bridge images — the corrected coverage counts are
+published by the bridge.
+
 ## [0.69.3] — A way out of a stuck conversation, and an end to silent failures
 
 Corrective release. No breaking changes, nothing to migrate.

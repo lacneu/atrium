@@ -266,9 +266,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 158,
-  ignored: 420,
-  gaps: 18,
+  handled: 166,
+  ignored: 413,
+  gaps: 17,
   /** The declared gaps, by schema path — the actionable part of the matrix. */
   gapList: [
     "ChatAbortedEvent.errorMessage",
@@ -299,7 +299,6 @@ export const COVERAGE_SUMMARY = {
     // while the activity indicator shows a bare spinner.
     "CronJobState.consecutiveErrors",
     "CronRunLogEntry.usage",
-    "TaskSummary.progressSummary",
     // The voice lane (2026-07-27): the result carries an identifier for the consult and
     // the bridge keeps only `runId`. Stated as the verifiable fact after two corrections —
     // there is no param to quote the key back on, and what it identifies inside the

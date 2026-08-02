@@ -1,0 +1,5 @@
+{
+ "$comment": "Upstream-contribution ledger. Every issue/PR Atrium opens against a provider (openclaw/openclaw, NousResearch/hermes-agent) lives here with its state, the protocol frames it is tied to, and the Atrium lots it originated from — so 'which upstream items caused or resulted from our work, and where do they stand' is one read, not an archaeology. Validated by bridge/test/contrib-registry.test.ts; synchronized by bridge/scripts/contrib-sync.mjs (gh, read-only); the process that writes entries is .claude/skills/upstream-contrib/. Rules: public upstream URLs only — never client data, tokens, private paths, or conversational content. States mirror GitHub (open/closed/merged) with `resolution` carrying the human verdict (accepted/rejected/fixed/wontfix/superseded) once known; `origin` says whether the item came from an Atrium finding or from an upstream change Atrium had to adapt to.",
+ "version": 1,
+ "entries": []
+}

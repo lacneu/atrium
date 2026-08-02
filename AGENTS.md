@@ -15,14 +15,20 @@ before making changes; read the per-area notes below before touching an area.
   perf), not narration.
 - **No work-tracking docs in this repo.** `docs/` and `compliance/` are for users
   and contributors. Plans, decision logs, retros, and "what we built" write-ups
-  belong in the maintainer's private notes, never here. **One exception, and it
-  earned it**: `docs/design/stabilization-1.0.0/` holds the gap registry and the
-  per-lot notes of the 1.0.0 stabilization programme. Kept outside the repo, that
-  registry drifted — gaps closed by a lot stayed listed as open, and a state note
-  never re-derived from the source becomes a trap. It lives beside the code so it
-  is re-read and corrected with it. Everything in it is anonymized (see that
-  directory's README). This exception does not generalize: new plans and retros
-  still belong in private notes.
+  belong in the maintainer's private notes, never here. **Two exceptions, each
+  earned the same way — kept outside the repo, a registry drifts, and a state
+  note never re-derived from its source becomes a trap; beside the code it is
+  re-read and corrected with it:**
+  1. `docs/design/stabilization-1.0.0/` — the gap registry and per-lot notes of
+     the 1.0.0 stabilization programme (anonymized; see that directory's README).
+  2. `bridge/protocol/contrib/registry.json` — the upstream-contribution ledger:
+     every issue/PR Atrium opens against a provider (OpenClaw, Hermes), its state,
+     and the frames/lots it is tied to. Machine-readable, validated by a bridge
+     test, synchronized via `gh` (see `.claude/skills/upstream-contrib/`). Public
+     upstream URLs only — never client data, tokens, or conversational content.
+
+  These exceptions do not generalize: new plans and retros still belong in
+  private notes.
 
 ## Map
 
@@ -33,9 +39,10 @@ before making changes; read the per-area notes below before touching an area.
 | `bridge/` | Standalone Node/TypeScript package: holds the connection to an agent gateway (OpenClaw, or Hermes over its WebSocket or REST transport), normalizes the version-specific event stream, relays turns to/from Convex. One adapter per provider under `bridge/src/providers/`. Its own `package.json` + tests. |
 | `mcp/` | MCP server exposing the metadata-only observability API to agents/CLIs. |
 | `deploy/` | The deployment surface: `compose/` (Docker Compose + `bootstrap-env.sh`) and `helm/`. **The canonical deploy guide is `deploy/README.md`.** |
-| `docs/` | User/contributor documentation. `docs/design/stabilization-1.0.0/` is the 1.0.0 gap registry and its per-lot notes — the one work-tracking exception, explained above. |
+| `docs/` | User/contributor documentation. `docs/design/stabilization-1.0.0/` is the 1.0.0 gap registry and its per-lot notes — a named work-tracking exception, explained above. |
 | `messages/` + `project.inlang/` | i18n source (Paraglide). Compiled to the git-ignored `src/paraglide/`. |
 | `.github/` | CI (`build-and-push.yml`, `ci.yml`), issue/PR templates. |
+| `.claude/skills/` | Repo-owned, hand-authored process skills (checked in; installable `convex-*` skills stay git-ignored). `frame-discovery` instructs one protocol frame end to end; `upstream-contrib` gates and tracks contributions to the providers; `release-notes` drafts the CHANGELOG entry. Process definitions, not work-tracking docs. |
 
 ## Commands
 
@@ -117,7 +124,8 @@ gracefully rather than breaking it.
   messages when proposing one.
 - Security: never commit secrets/tokens/keys/`.env`; see [SECURITY.md](SECURITY.md).
 - Docs: user/contributor docs go in `docs/`; the SOC 2 product story in
-  `compliance/`. Work-tracking does NOT belong in this repo.
+  `compliance/`. Work-tracking does NOT belong in this repo (two named
+  exceptions — see Ground rules).
 
 <!-- convex-ai-start -->
 
