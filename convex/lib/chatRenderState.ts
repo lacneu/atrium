@@ -22,6 +22,12 @@ export type RunStatusKind = "thinking" | "generating" | "error" | "aborted";
 export function runStatusKind(
   status: string | undefined,
   hasText: boolean,
+  /** The user STOPPED the conversation while this block's delegated work ran.
+   *  The block itself settled normally — it wrote its reply and finished — so
+   *  `status` is "complete" and cannot carry the fact. Without this the reader
+   *  gets a reply that simply has no sequel, and nothing says the rest was cut
+   *  short at their request. */
+  interrupted = false,
 ): RunStatusKind | null {
   if (status === undefined) return "thinking"; // optimistic placeholder
   switch (status) {
@@ -32,7 +38,10 @@ export function runStatusKind(
     case "aborted":
       return "aborted";
     default:
-      return null; // "complete" / unknown -> no chip
+      // A SETTLED block whose work was stopped reads as interrupted. Checked
+      // last, so a real terminal state always wins over the marker: an errored
+      // turn is an error whether or not a Stop landed on it afterwards.
+      return interrupted ? "aborted" : null;
   }
 }
 

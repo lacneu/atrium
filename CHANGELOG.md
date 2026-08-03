@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.71.4] — Stop stops everything, at once
+
+Corrective, and the one `0.71.3` listed as still open. The Stop button vanished
+the moment a delegating turn settled — the parent had written its sentence and
+finished — while the sub-agents it launched carried on, sometimes for hours.
+Whoever pressed Stop to SAVE TIME had nothing left to press.
+
+- **Stop is offered while anything in the conversation is running**, the turn
+  itself or a sub-agent. It is the same condition that parks a follow-up: if the
+  chat is busy enough to queue, it is busy enough to stop.
+- **One press stops all of it, immediately.** Every running sub-agent is killed
+  along with the turn, each through its own session and its own instance.
+- **"Immediately" means the app stops claiming the work is alive.** The rows go
+  terminal in the same write that orders the kills, so the elapsed clock and the
+  "a sub-agent is working" line go out at once, instead of insisting for as long
+  as the gateway takes to answer.
+- **Nothing the user refused comes back.** Pressing Stop records an EPOCH on the
+  conversation, and every post-turn delivery is measured against it at the one
+  door they all walk through: work that started before the stop does not get to
+  deliver afterwards — no bubble, no reopen, no report. It holds whatever the
+  shape of the delivery: the parent still streaming when Stop landed, a child
+  that was never anchored to a block, a result that had already merged once. A
+  late terminal frame may still record what the child did (it is worth having),
+  but its TEXT stays out of the panel.
+- **Work started AFTER the stop is untouched.** Stopping this turn never mutes
+  the next one.
+- **The block says so.** The interrupted result carries "Interrompu". Its text
+  and its status are never rewritten: what the agent did say stands.
+- **A follow-up parked behind the stopped work is released.**
+- **A child nobody could reach is not shown as stopped**, for the undeliverable
+  cases we can detect — the row is handed back to running rather than hiding
+  live work behind a terminal state.
+
+That epoch replaces what three review passes had shown to be the wrong shape:
+"stopped" was carried as a STATUS on rows, and a status is overwritten by
+whatever the gateway says next. Every delivery path had to remember the user's
+intention independently, and each pass found another that forgot. Recording the
+intention once, and asking it at the single gate, is what closes them together
+rather than one at a time.
+
+Known, and deliberately honest rather than convenient:
+
+- **One narrow window escapes the epoch.** It is measured against the moment a
+  sub-agent was first RECORDED, not the moment it was launched upstream — those
+  are usually milliseconds apart, but a Stop landing exactly between them leaves
+  that child unstopped and its result free to arrive. Closing it needs the launch
+  generation carried down from the spawn itself, which is an upstream change.
+  Everything else — the child already recorded, the parent still streaming, the
+  unanchored child, the late terminal frame — is covered.
+- **A gateway BACKGROUND TASK is not stopped, and is no longer claimed to be.**
+  `chat.abort` names provider sessions; a task row's key is a registry
+  correlator, so there is nothing to name. It keeps showing as running until
+  cancelling one has a real upstream primitive — telling you it stopped while it
+  went on spending would be worse than admitting it did not. Its delivery is
+  still refused by the epoch, so it cannot land a result you stopped.
+
+Deploy: `npx convex deploy` **first** (the epoch, the `interruptedAt` marker and
+the abort logic are backend), then the frontend image — **and the bridge**, whose
+turn-sink now drops a run Convex refused instead of feeding a message that does
+not exist.
+
 ## [0.71.3] — Two panels that lied about their own state
 
 Corrective. Two things on screen were saying something other than what was

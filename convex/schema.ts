@@ -947,6 +947,19 @@ export default defineSchema({
 
   // A chat thread owned by exactly one user.
   chats: defineTable({
+    // THE INTERRUPTION EPOCH: when the user last pressed Stop on this chat.
+    //
+    // "Stopped" is an INTENTION, and an intention has to be durable. Carried as
+    // a status on rows it was overwritten by whatever the gateway said next, and
+    // every delivery path had to remember it independently — a parent still
+    // streaming at Stop time never got marked, a child whose spawn was never
+    // anchored had no block to mark, a late `done` frame restored the result.
+    // One epoch, consulted at the single door every post-turn delivery walks
+    // through, answers all of them: work that STARTED before this timestamp does
+    // not get to deliver afterwards.
+    //
+    // Monotonic — a second Stop only ever moves it forward.
+    stoppedAt: v.optional(v.number()),
     userId: v.id("users"),
     title: v.optional(v.string()),
     // The OpenClaw-side chat identifier (used to route sends). Non-secret.
@@ -1365,6 +1378,13 @@ export default defineSchema({
     // never rewritten by re-finalize/late part writes) — the stable end of the
     // generation window for the reply-duration UI. OPTIONAL (additive).
     finalizedAt: v.optional(v.number()),
+    // The user STOPPED the conversation while this block's delegated work was
+    // still running. The block itself had already SETTLED — it wrote its reply
+    // and finished — so `status` cannot carry the fact and its text must not be
+    // rewritten: what the agent did say stands. This marks the block whose work
+    // was cut short, which is the one the reader is looking at when they press
+    // Stop. OPTIONAL (additive).
+    interruptedAt: v.optional(v.number()),
     // VISIBLE auto-retry state (the Claude-Code-style "retrying (N/2)…"
     // countdown): stamped by turnRetry when a bounded re-dispatch of this
     // errored zero-content turn is SCHEDULED; cleared when it fires (the
@@ -1541,6 +1561,12 @@ export default defineSchema({
     // stale plausible anchor fails closed to two bubbles, never merges wrong.
     anchorExact: v.optional(v.boolean()),
     childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
+    // The user stopped THIS child. Distinct from `status`, which legitimately
+    // keeps moving afterwards: a late terminal frame turns the row `done` and
+    // carries the child's `resultText`, and without a stamp that survives it the
+    // report the user refused reappears in the sub-agent panel. Never rewritten
+    // once set.
+    stopRequestedAt: v.optional(v.number()),
     // Row family: absent/"subagent" = a spawned child session; "task" = a
     // gateway BACKGROUND-TASK engagement (`task:<taskId>` key, born from an
     // async tool ack {async:true, taskId}) — same lifecycle/anchor semantics,

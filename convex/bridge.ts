@@ -1761,13 +1761,21 @@ export const dispatchAbort = internalAction({
     // finalize drains the queued follow-up, which must not dispatch while the
     // gateway still runs the old turn (one-turn-per-session).
     finalizeMessageId: v.optional(v.id("messages")),
+    // The sub-agent row this kill belongs to. When NOTHING could be sent — no
+    // routing target at all — the row is handed BACK to `running`: the app
+    // marked it aborted optimistically, and leaving it terminal would hide a
+    // child that is still spending and can still produce external effects,
+    // under a button that has since disappeared. Only a kill that was never
+    // ATTEMPTED reverts; one that was sent and answered badly does not, since
+    // the gateway may well have stopped it.
+    childRowId: v.optional(v.id("subAgents")),
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
   },
   handler: async (
     ctx,
-    { chatId, userId, sessionKey, runId, finalizeMessageId, routedAgent },
+    { chatId, userId, sessionKey, runId, finalizeMessageId, childRowId, routedAgent },
   ) => {
     /** The provider session the bridge asked to interrupt WITHOUT being able to confirm
      *  it stopped. Set only from a verdict the bridge actually reported; it rides the
@@ -1780,6 +1788,14 @@ export const dispatchAbort = internalAction({
         console.error(
           "bridge.dispatchAbort: BRIDGE_SHARED_SECRET not configured",
         );
+        // PRE-SEND exit, like the routing failures below: nothing left this
+        // process, so the child is certainly still running and must not stay
+        // hidden behind an optimistic terminal state.
+        if (childRowId !== undefined) {
+          await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
+            childRowId,
+          });
+        }
         return;
       }
       const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
@@ -1791,6 +1807,11 @@ export const dispatchAbort = internalAction({
         console.error(
           "bridge.dispatchAbort: no routing target (nothing to kill)",
         );
+        if (childRowId !== undefined) {
+          await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
+            childRowId,
+          });
+        }
         return;
       }
       const bridgeUrl = routing.bridgeUrl;
@@ -1798,6 +1819,11 @@ export const dispatchAbort = internalAction({
         console.error(
           "bridge.dispatchAbort: no bridgeUrl for the routed instance",
         );
+        if (childRowId !== undefined) {
+          await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
+            childRowId,
+          });
+        }
         return;
       }
       const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/abort`, {

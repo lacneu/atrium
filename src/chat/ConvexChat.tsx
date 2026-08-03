@@ -5119,7 +5119,15 @@ function Composer({
                queueMode (NOT ThreadPrimitive.If running) so the sub-agent case —
                where the thread is NOT running — also shows the queue affordance. */
             <>
-              {queueMode.reason === "turn" ? <StopTurnButton /> : null}
+              {/* STOP IS OFFERED FOR THE WHOLE BRANCH, not just the streaming
+                  turn. This is exactly the condition that says the chat is busy
+                  — the same one that parks a follow-up — so anything that makes
+                  the composer queue also makes it stoppable. It used to be
+                  gated on `reason === "turn"`, which meant the button vanished
+                  the moment a delegating parent settled: the work went on for
+                  minutes, and the person who pressed Stop to SAVE TIME had
+                  nothing left to press (user report 2026-08-03). */}
+              <StopTurnButton />
               <QueueSendButton reason={queueMode.reason} />
             </>
           ) : (

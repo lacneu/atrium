@@ -30,6 +30,8 @@ import {
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { agentIdFromChildKey } from "./lib/subAgentFailure";
+import { drainNextQueued } from "./lib/outboxQueue";
 import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
 import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
@@ -368,6 +370,10 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
               : message.text,
           error: message.error,
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
+          // The user's Stop landed on this block while its delegated work ran.
+          // Carried so the reply can be marked interrupted WITHOUT its status or
+          // its text being rewritten.
+          interruptedAt: message.interruptedAt,
           // Visible auto-retry countdown (turnRetry stamp): attempt/max/firesAt.
           autoRetry: message.autoRetry,
           // L2: ready downloadable-attachment count (subtle Sources-chip badge).
@@ -814,7 +820,11 @@ export const chatStateInternal = internalQuery({
         // path for gateway/stream errors that only carry a text reason).
         errorCode: mDoc.errorCode ?? normalizeMessageErrorCode(mDoc.error),
         // Client's DERIVED render-state from the SHARED logic (runStatusView core).
-        runStatusKind: runStatusKind(mDoc.status, hasText),
+        runStatusKind: runStatusKind(
+          mDoc.status,
+          hasText,
+          mDoc.interruptedAt !== undefined,
+        ),
         stuckStreaming: mDoc.status === "streaming" && ageMs > STALE_STREAM_MS,
         // L2: count of READY downloadable document attachments fetched for this
         // reply (a COUNT — never references/filenames). null when none.
@@ -1140,8 +1150,113 @@ export const abortTurn = mutation({
       )
       .order("desc")
       .first();
-    if (streaming === null) {
+    // STOP MEANS THE WHOLE CONVERSATION, not just the turn that is streaming.
+    //
+    // A parent that delegated has SETTLED — it wrote its sentence and finished —
+    // while its children go on working, sometimes for hours. Keyed on the
+    // streaming message alone this returned `no_active_turn` and killed nothing:
+    // the button vanished, the work continued, and the user who pressed Stop to
+    // SAVE TIME had no way to stop anything (user report 2026-08-03).
+    const runningRows = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", chatId).eq("status", "running"),
+      )
+      .collect();
+    // ONLY WHAT WE CAN ACTUALLY KILL. A spawned child owns a provider SESSION,
+    // and `chat.abort` names sessions — so naming its `childSessionKey` stops
+    // it. A background TASK row does not: its key (`task:<id>`) is a registry
+    // correlator, and passing it as a session key would abort nothing while we
+    // marked the row `aborted`. That is worse than not stopping it: the app
+    // would claim the work is over and the task would go on spending and
+    // deliver later. Tasks are therefore left alone and honestly keep showing
+    // as running, until cancelling them has a real upstream primitive.
+    const runningChildren = runningRows.filter((r) => r.kind !== "task");
+    if (streaming === null && runningChildren.length === 0) {
       return { ok: false as const, reason: "no_active_turn" as const };
+    }
+    // TERMINAL NOW, in this mutation — never on the gateway's word.
+    //
+    // Whoever pressed Stop is watching the indicators. If these rows stayed
+    // `running` until their kill frames came back, `subAgents.turnActivity`
+    // would go on reporting live work: the elapsed clock would keep ticking and
+    // the "a sub-agent is working" line would stay lit, insisting the very thing
+    // the user just refused. Immediacy is not the kill's latency — it is when
+    // the app stops claiming the work is alive.
+    const abortedAt = Date.now();
+    // THE EPOCH. Monotonic: a second Stop only ever moves it forward, so a stop
+    // recorded while an older one is still being processed never rolls back the
+    // protection. Every post-turn delivery is measured against it.
+    const chatDoc = await ctx.db.get(chatId);
+    if (chatDoc !== null && (chatDoc.stoppedAt ?? 0) < abortedAt) {
+      await ctx.db.patch(chatId, { stoppedAt: abortedAt });
+    }
+    for (const child of runningChildren) {
+      await ctx.db.patch(child._id, {
+        status: "aborted" as const,
+        updatedAt: abortedAt,
+        // Durable, and never rewritten: the row's STATUS keeps moving after
+        // this (a late terminal frame is worth recording), but the user's
+        // decision must outlive it — it is what keeps the refused report out of
+        // the sub-agent panel.
+        stopRequestedAt: abortedAt,
+      });
+    }
+    // The children's kills are dispatched per row, each with ITS OWN session and
+    // run: a child born on another instance is reached through that instance's
+    // bridge, or the fan-out would quietly kill nothing on a multi-instance
+    // chat. No `finalizeMessageId` — a child has no message of its own to
+    // settle, and the drain belongs to the parent's settle alone (draining once
+    // per child would dispatch a queued follow-up while the gateway is still
+    // being told to stop, breaking one-turn-per-session).
+    for (const child of runningChildren) {
+      await ctx.scheduler.runAfter(0, internal.bridge.dispatchAbort, {
+        chatId,
+        userId,
+        // The child's OWN session. No runId: a child session carries exactly one
+        // run, so naming the session is naming the run. (The parent's abort does
+        // need the run id — a queued follow-up can start a second run on the
+        // same session before the kill lands.)
+        sessionKey: child.childSessionKey,
+        // So an undeliverable kill can hand this row back to `running` rather
+        // than leave a live child hidden behind a terminal state.
+        childRowId: child._id,
+        ...(child.instanceName !== undefined &&
+        agentIdFromChildKey(child.childSessionKey) !== null
+          ? {
+              routedAgent: {
+                instanceName: child.instanceName,
+                agentId: agentIdFromChildKey(child.childSessionKey) as string,
+              },
+            }
+          : {}),
+      });
+    }
+    if (streaming === null) {
+      // Nothing streaming: the children were the whole of the live work, and
+      // they are already terminal. Mark the block that carried them, so the
+      // reader sees WHERE the interruption landed rather than a reply that
+      // simply stops having a sequel.
+      const anchorId = runningChildren.find(
+        (c) => c.parentMessageId !== undefined,
+      )?.parentMessageId;
+      if (anchorId !== undefined) {
+        const anchor = await ctx.db.get(anchorId);
+        // Only a SETTLED block is marked, and its text is never touched: the
+        // reply the agent did write stands. `interruptedAt` is the marker.
+        if (anchor !== null && anchor.status !== "streaming") {
+          await ctx.db.patch(anchorId, { interruptedAt: abortedAt });
+        }
+      }
+      // THE HELD SEND MUST STILL GO. Every child is terminal above BEFORE this
+      // runs — the same ordering the stale-row reaper uses — so `isChatBusy`
+      // sees a free chat and the drain dispatches FIFO. Without it a follow-up
+      // parked behind the stopped work stays `queued` for ever: this branch has
+      // no message to finalize, and finalize is what normally drains. A kill
+      // that never reports back would then leave the queue stuck rather than
+      // visibly failed.
+      await drainNextQueued(ctx, chatId);
+      return { ok: true as const, aborted: runningChildren.length };
     }
     // MULTI-AGENT: per-turn routing stamps routedAgent on the USER message, not
     // the assistant row — resolve the turn's routing from the most recent user

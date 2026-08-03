@@ -124,3 +124,288 @@ describe("messages.abortTurn (stop button)", () => {
     ).rejects.toThrow();
   });
 });
+
+// STOP MEANS THE WHOLE CONVERSATION.
+//
+// The case Fabien reported: a parent that delegated has SETTLED — it wrote its
+// sentence and finished — while its children go on working, sometimes for
+// hours. Keyed on the streaming message alone, Stop answered "no active turn",
+// killed nothing, and the button had already vanished.
+describe("messages.abortTurn stops delegated work too", () => {
+  /** A settled parent whose sub-agent is still running — no streaming message. */
+  async function seedSettledParentWithRunningChild(
+    t: ReturnType<typeof convexTest>,
+    opts: { instanceName?: string; childKey?: string } = {},
+  ) {
+    return t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      const parentId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "Sous-agent lancé.",
+        updatedAt: 1,
+      });
+      // FRESH: `turnActivity` treats a running row untouched for longer than the
+      // reaper's TTL as stale and stops reporting it. A row stamped at the epoch
+      // is a state production never produces — and it would make the signal read
+      // "idle" before the Stop, so the assertion below would pass for the wrong
+      // reason.
+      const childId = await ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        parentMessageId: parentId,
+        childSessionKey: opts.childKey ?? "agent:files:subagent:abc-123",
+        status: "running" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ...(opts.instanceName ? { instanceName: opts.instanceName } : {}),
+      });
+      return { userId, chatId, parentId, childId };
+    });
+  }
+
+  test("a settled parent with a running child is NOT 'no active turn'", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledParentWithRunningChild(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const res = await asUser.mutation(api.messages.abortTurn, { chatId });
+    expect(res.ok, "the button had nothing to press before this").toBe(true);
+  });
+
+  test("the child goes terminal IN THE MUTATION, not on the gateway's word", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId, childId } = await seedSettledParentWithRunningChild(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await asUser.mutation(api.messages.abortTurn, { chatId });
+    const child = await t.run(async (ctx) => ctx.db.get(childId));
+    expect(child?.status, "left running, the indicators keep insisting").toBe(
+      "aborted",
+    );
+  });
+
+  // THE user-visible promise: whoever pressed Stop is watching the clock and the
+  // "a sub-agent is working" line. Both read turnActivity.
+  test("the activity signal is OFF immediately after the stop", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledParentWithRunningChild(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const before = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(before.running, "precondition: work was live").toBe(true);
+    await asUser.mutation(api.messages.abortTurn, { chatId });
+    const after = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(after.running, "the clock must stop the moment Stop is pressed").toBe(
+      false,
+    );
+  });
+
+  test("the block that carried the work is MARKED, and its reply is untouched", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId, parentId } = await seedSettledParentWithRunningChild(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await asUser.mutation(api.messages.abortTurn, { chatId });
+    const parent = await t.run(async (ctx) => ctx.db.get(parentId));
+    expect(parent?.interruptedAt, "nothing says the rest was cut short").toBeTypeOf(
+      "number",
+    );
+    expect(parent?.status, "a settled reply stays settled").toBe("complete");
+    expect(parent?.text, "what the agent did say stands").toBe(
+      "Sous-agent lancé.",
+    );
+  });
+
+  test("every running child is stopped, not just the first", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledParentWithRunningChild(t);
+    await t.run(async (ctx) => {
+      const chat = await ctx.db.get(chatId);
+      for (const key of ["agent:a:subagent:two", "agent:b:subagent:three"]) {
+        await ctx.db.insert("subAgents", {
+          chatId,
+          userId: chat!.userId,
+          childSessionKey: key,
+          status: "running" as const,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+    });
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const res = await asUser.mutation(api.messages.abortTurn, { chatId });
+    expect(res.ok).toBe(true);
+    const stillRunning = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chatId).eq("status", "running"),
+        )
+        .collect(),
+    );
+    expect(stillRunning, "one survivor is two hours of work the user refused").toEqual(
+      [],
+    );
+  });
+
+  test("the follow-up parked behind the stopped work is released", async () => {
+    // This branch has no message to finalize, and finalize is what normally
+    // drains. Without an explicit drain the queued message stays `queued` for
+    // ever — not "visibly failed", simply stuck behind work that no longer
+    // exists.
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledParentWithRunningChild(t);
+    const outboxId = await t.run(async (ctx) =>
+      ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        text: "et sinon, autre chose",
+        status: "queued" as const,
+        clientMessageId: "cm-queued-1",
+        attachmentIds: [],
+      }),
+    );
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await asUser.mutation(api.messages.abortTurn, { chatId });
+    const row = await t.run(async (ctx) => ctx.db.get(outboxId));
+    expect(row?.status, "a message held behind stopped work must go out").not.toBe(
+      "queued",
+    );
+  });
+
+  test("a chat with nothing running still answers 'no active turn'", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId, childId } = await seedSettledParentWithRunningChild(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(childId, { status: "done" as const });
+    });
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const res = await asUser.mutation(api.messages.abortTurn, { chatId });
+    expect(res.ok).toBe(false);
+  });
+});
+
+// WHAT A STOP MUST NOT DO.
+describe("a stop is honest about what it stopped", () => {
+  test("a background TASK is not claimed as stopped when it cannot be", async () => {
+    // `chat.abort` names provider SESSIONS. A task row's key is a registry
+    // correlator, so there is nothing to name — marking it `aborted` would tell
+    // the user the work is over while it goes on spending and delivers later.
+    const t = convexTest(schema);
+    const { userId, chatId, taskRowId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      const taskRowId = await ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        childSessionKey: "task:t-42",
+        kind: "task" as const,
+        status: "running" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        childSessionKey: "agent:files:subagent:killable",
+        status: "running" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return { userId, chatId, taskRowId };
+    });
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await asUser.mutation(api.messages.abortTurn, { chatId });
+    const task = await t.run(async (ctx) => ctx.db.get(taskRowId));
+    expect(
+      task?.status,
+      "claiming a task stopped is worse than admitting it was not",
+    ).toBe("running");
+  });
+
+
+  test("a kill that could never be SENT hands the child back to running", async () => {
+    // The row is terminalized optimistically — that is what makes the clock go
+    // out at once. But when no routing target exists for that child (revoked
+    // grant, utility agent, unresolvable instance) nothing was attempted and the
+    // child is still spending. Leaving it terminal would hide live work behind a
+    // button that has since disappeared.
+    const t = convexTest(schema);
+    const { chatId, userId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      return { chatId, userId };
+    });
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        childSessionKey: "agent:revoked:subagent:x",
+        status: "aborted" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await t.mutation(internal.subAgents.restoreRunningAfterFailedKill, {
+      childRowId: rowId,
+    });
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.status, "a child nobody could reach is not 'stopped'").toBe(
+      "running",
+    );
+  });
+
+  test("a child that reached a REAL terminal state is not resurrected", async () => {
+    const t = convexTest(schema);
+    const { chatId, userId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      return { chatId, userId };
+    });
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        childSessionKey: "agent:a:subagent:done",
+        status: "done" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await t.mutation(internal.subAgents.restoreRunningAfterFailedKill, {
+      childRowId: rowId,
+    });
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row?.status, "its own frame landed — that wins").toBe("done");
+  });
+});

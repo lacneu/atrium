@@ -207,7 +207,10 @@ export interface SubAgentToolPartRecord {
  * order by the run-manager so appendDelta ordering is deterministic.
  */
 export interface ConvexWriter {
-  /** run start -> internal.stream.startAssistant; returns the new message id.
+  /** run start -> internal.stream.startAssistant; returns the new message id,
+   *  or NULL when the run has nowhere to land — the user stopped the work this
+   *  delivery carries, so it is dropped whole and nothing that follows it
+   *  (deltas, snapshot, finalize) should be written.
    *  `sessionKey` (optional, additive) is the gateway session the turn runs
    *  under — the deterministic reply-to-send join key. */
   startAssistant(
@@ -217,7 +220,7 @@ export interface ConvexWriter {
     /** The OUTBOX row this turn was dispatched from (correlation for
      *  outboxReconcile); null on a gateway-initiated turn. */
     dispatchOutboxId?: string | null,
-  ): Promise<string>;
+  ): Promise<string | null>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
   /** The compaction VERDICT (G-08): the last compaction failed for good, so the

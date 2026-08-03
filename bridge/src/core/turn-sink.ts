@@ -858,14 +858,40 @@ export class TurnSink {
           this.sessionKey ?? null,
           this.dispatchOutboxId,
         );
+        // GENERATION FIRST, always. A user send can call beginTurn while this
+        // open is in flight: it installs its own message and bumps the epoch,
+        // and this stale resolution — refusal included — must not touch the
+        // sink the new turn now owns. Resetting before this check wiped that
+        // turn's state, losing its frames and leaving its Convex message
+        // streaming until the watchdog.
         if (this.turnEpoch !== epoch) {
-          // A new turn preempted this open while the write was in flight: do
-          // NOT touch the sink (the new turn owns it). The created message is
-          // an orphan streaming row — the stuck-stream watchdog settles it.
-          console.error(
-            "[announce] deferred open superseded by a new turn — orphan message",
-            id,
-          );
+          if (id !== null) {
+            console.error(
+              "[announce] deferred open superseded by a new turn — orphan message",
+              id,
+            );
+          }
+          return;
+        }
+        if (id === null) {
+          // REFUSED BY THE INTERRUPTION EPOCH: the user stopped the work this
+          // delivery carries, so Convex gave it nowhere to land.
+          //
+          // ABANDON THE TURN WHOLE, not just its buffer. Clearing the events
+          // alone left the sink ACTIVE with a null messageId: `tryOpenDeferred`
+          // then reported success, the terminal fell through `apply()` without
+          // ever resetting, and the run-manager went on believing a spontaneous
+          // turn was in flight — holding its frames across a preemption and
+          // blocking the legitimate announces queued behind it. And no Convex
+          // message exists for the watchdog to sweep, so nothing would have
+          // freed it later either.
+          this.turnActive = false;
+          this.pendingOpen = false;
+          this.deferredRunId = null;
+          this.deferredEvents = [];
+          this.sawDeferredVisible = false;
+          this.messageId = null;
+          this.openPromise = null;
           return;
         }
         this.messageId = id;

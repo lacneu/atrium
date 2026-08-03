@@ -45,9 +45,15 @@ type Call =
 
 class FakeWriter implements ConvexWriter {
   readonly calls: Call[] = [];
-  async startAssistant(chatId: string, runId: string | null): Promise<string> {
+  /** Set to make Convex REFUSE the run (the interruption epoch): null means
+   *  "this delivery has nowhere to land". */
+  refuse = false;
+  async startAssistant(
+    chatId: string,
+    runId: string | null,
+  ): Promise<string | null> {
     this.calls.push(["startAssistant", chatId, runId]);
-    return "msg_announce_1";
+    return this.refuse ? null : "msg_announce_1";
   }
   async appendDelta(messageId: string, text: string): Promise<void> {
     this.calls.push(["appendDelta", messageId, text]);
@@ -963,5 +969,57 @@ describe("realtime-voice AGENT-CONSULT run -> spontaneous turn (talk- family)", 
     expect(finals[0]?.[2]).toBe("complete");
     expect(finals[0]?.[3]).toContain("26°C");
     release(RELAY_RUN);
+  });
+});
+
+
+// THE USER STOPPED THIS WORK. Convex refuses the delivery (null), and the sink
+// must let the turn GO — not merely swallow its buffer.
+describe("a delivery refused by the interruption epoch", () => {
+  it("writes nothing, and leaves the sink free for what comes next", async () => {
+    const writer = new FakeWriter();
+    writer.refuse = true;
+    const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
+    let now = 1000;
+    for (const frame of ANNOUNCE_FRAMES) {
+      await manager.feed(frame, (now += 1));
+    }
+    // Nothing was written for the refused run: no message to stream into.
+    expect(
+      writer.calls.filter((c) => c[0] === "appendDelta"),
+      "a refused delivery must not stream",
+    ).toHaveLength(0);
+    expect(
+      writer.calls.filter((c) => c[0] === "finalize"),
+      "…nor finalize a message that does not exist",
+    ).toHaveLength(0);
+
+    // AND THE SINK IS FREE. Left active with a null messageId, the run-manager
+    // went on believing a spontaneous turn was in flight — holding the frames
+    // of whatever came next behind a turn that can never end, with no Convex
+    // message for the watchdog to sweep. A second, ACCEPTED announce proves it
+    // is released.
+    writer.refuse = false;
+    const before = writer.calls.filter((c) => c[0] === "startAssistant").length;
+    // A DIFFERENT delivery — same shape, its own run id, as the next announce
+    // on this session would be.
+    const NEXT_RUN = ANNOUNCE_RUN.replace(
+      "a40575b2-6ddd-4b8f-85aa-351e1a26c2b7",
+      "b51686c3-7eee-5c9f-96bb-462f2f37c8d3",
+    );
+    const nextFrames = JSON.parse(
+      JSON.stringify(ANNOUNCE_FRAMES).split(ANNOUNCE_RUN).join(NEXT_RUN),
+    ) as typeof ANNOUNCE_FRAMES;
+    for (const frame of nextFrames) {
+      await manager.feed(frame, (now += 1));
+    }
+    const after = writer.calls.filter((c) => c[0] === "startAssistant").length;
+    expect(after, "the next delivery must be able to open its own turn").toBeGreaterThan(
+      before,
+    );
+    expect(
+      writer.calls.filter((c) => c[0] === "finalize").length,
+      "…and land normally",
+    ).toBeGreaterThan(0);
   });
 });

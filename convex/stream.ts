@@ -214,6 +214,11 @@ export const startAssistant = internalMutation({
     dispatchOutboxId: v.optional(v.string()),
     ...boundArg,
   },
+  // NULL = "this run has nowhere to land": the user stopped the work it
+  // delivers, so it is dropped whole rather than given a message to write into.
+  // Every other outcome is a message id (a fresh turn, a merged announce, or a
+  // silent terminal rebroadcast).
+  returns: v.union(v.id("messages"), v.null()),
   handler: async (
     ctx,
     { chatId, runId, turnSessionKey, dispatchOutboxId, boundInstanceName },
@@ -255,6 +260,37 @@ export const startAssistant = internalMutation({
     // chat's last message, REOPEN it and stream the announce into it instead
     // of creating a second assistant message.
     if (runId !== undefined && deliveryChildKey(runId) !== null) {
+      // ── THE INTERRUPTION EPOCH ──────────────────────────────────────────
+      // THE single door every post-turn delivery walks through — announce and
+      // background task alike. Asked HERE, before the row settles and before any
+      // merge is attempted, so it holds whatever the shape of the delivery:
+      // whether the parent was still streaming when Stop was pressed, whether
+      // the child was ever anchored to a block, whether its result already
+      // merged once. Those were four separate ways back in, and they were one
+      // defect — the user's intention was inferred from row statuses that keep
+      // moving instead of being recorded once.
+      //
+      // Work that STARTED before the user pressed Stop does not get to deliver
+      // afterwards. A child spawned AFTER it is younger than the epoch and
+      // passes untouched — stopping this turn must never mute the next one.
+      const stoppedAt = chat.stoppedAt;
+      if (stoppedAt !== undefined) {
+        const refusedRow = await ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) =>
+            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+          )
+          .filter((q) => q.eq(q.field("chatId"), chatId))
+          .first();
+        // `<=`, not `<`: a row first persisted in the very millisecond the Stop
+        // was recorded is not proof it started after it.
+        if (refusedRow !== null && refusedRow.createdAt <= stoppedAt) {
+          // Dropped whole: no bubble, no reopen, no row settle. The bridge
+          // treats a null start as "this run has nowhere to land" and stops
+          // feeding it, so the deltas that follow never arrive either.
+          return null;
+        }
+      }
       // A task-delivery run arriving means the background task IS finished:
       // settle its engagement row (turns the thread indicator off) whatever
       // the merge decision below. The silent (NO_REPLY) path settles from the
@@ -592,6 +628,25 @@ async function reopenParentForAnnounce(
   // never resume (handled above).
   const resuming = parent.status === "error" && alreadyMerged;
   if (parent.status !== "complete" && !resuming) return null;
+  // THE USER SAID STOP. A child killed mid-flight can still push its announce
+  // afterwards — the kill and the frame race — and reopening here would repaint
+  // the very block the user interrupted with the result they refused to wait
+  // for: the reply they DID get would be overwritten, the "Interrompu" marker
+  // would sit above a report that arrived anyway, and the whole point of the
+  // button ("I am not waiting two hours for this") would be undone.
+  //
+  // Checked on the PARENT's marker rather than on the child's row, because the
+  // marker is what the reader can see: whatever raced, a block that was stopped
+  // stays stopped.
+  if (parent.interruptedAt !== undefined) {
+    // Handed back as a TERMINAL REBROADCAST — the same silent sink a replayed
+    // announce already uses. Returning null instead would read as "no merge
+    // possible", and `startAssistant` would open a NEW bubble: the report the
+    // user refused would simply arrive next to the block they stopped, which is
+    // the same broken promise one message lower. The parent stays `complete`,
+    // has no live row, and the deltas that follow drop against that.
+    return { reopened: false, messageId: parentId };
+  }
   // Position gate — CHAIN-resolved anchors only. An anchor inherited from
   // the conversation's shape (no engagement row) is only trustworthy while
   // the parent is still the LOGICALLY last message (effectiveOrder: a

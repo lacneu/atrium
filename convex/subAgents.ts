@@ -418,7 +418,18 @@ export const upsertSubAgent = internalMutation({
     // here. The stale provisional error must not linger on a SUCCEEDED child.
     const recoveredToDone =
       existing.status === "error" && patch.status === "done";
-    if (args.resultText !== undefined) patch.resultText = args.resultText;
+    // THE REPORT THE USER REFUSED NEVER LANDS. A child killed by Stop can still
+    // push its terminal frame — the kill and the frame race — and that frame
+    // carries the very text the user declined to wait for. The row's status
+    // legitimately moves on (a real `done` is worth recording for
+    // observability), but the CONTENT stays out: the sub-agent panel renders
+    // whatever `resultText` holds, so accepting it here would put the refused
+    // report back on screen one panel away from the block marked "Interrompu".
+    // `stopRequestedAt` is set once and never rewritten, precisely so a later
+    // frame cannot undo the user's decision.
+    if (args.resultText !== undefined && existing.stopRequestedAt === undefined) {
+      patch.resultText = args.resultText;
+    }
     // SUPPLIED-ONLY, like resultText above: these arrive on the terminal, and a later
     // running-state refresh must not erase what the terminal established.
     if (args.providerStatus !== undefined) {
@@ -1479,3 +1490,29 @@ export async function runTaskReconcile(
     };
   }
 }
+
+/**
+ * Hand a sub-agent row BACK to `running` after a kill that was never sent.
+ *
+ * `abortTurn` terminalizes optimistically — that is what makes the indicators
+ * go out the instant the user presses Stop. When the kill turns out to be
+ * undeliverable (no routing target for that child's agent: a revoked grant, a
+ * utility agent, an instance that no longer resolves), nothing was attempted
+ * and the child is still running. Leaving the row terminal would hide work that
+ * is still spending, under a button that has since disappeared — the same lie
+ * this release refuses for background tasks.
+ *
+ * Only an ABORTED row reverts: a child that reached a real terminal state
+ * meanwhile (its own done/error frame landed) keeps it.
+ */
+export const restoreRunningAfterFailedKill = internalMutation({
+  args: { childRowId: v.id("subAgents") },
+  handler: async (ctx, { childRowId }) => {
+    const row = await ctx.db.get(childRowId);
+    if (row === null || row.status !== "aborted") return;
+    await ctx.db.patch(childRowId, {
+      status: "running" as const,
+      updatedAt: Date.now(),
+    });
+  },
+});

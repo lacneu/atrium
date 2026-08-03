@@ -37,6 +37,8 @@ interface RunMeta {
   toolParts?: Array<{ toolName: string; phase?: string }>;
   activeToolName?: string | null;
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number } | null;
+  /** Stamped when the user's Stop cut this block's delegated work short. */
+  interruptedAt?: number | null;
 }
 
 // Claude-Code-style VISIBLE resilience: while a bounded automatic re-dispatch
@@ -129,7 +131,13 @@ export function RunStatus() {
   // ChatGPT-style: the working label (tool/phase) is ALWAYS shown — it is
   // conversation-level info, not tool telemetry (the Tools toggle keeps gating
   // the detailed meta block only).
-  const view = runStatusView(status, hasText, phase, activeTool);
+  // The Stop the user pressed while this block's delegated work ran. The block
+  // settled normally, so `status` is "complete" and only this says the rest was
+  // cut short at their request.
+  const interrupted = useMessage(
+    (m) => (m.metadata?.custom as RunMeta | undefined)?.interruptedAt != null,
+  );
+  const view = runStatusView(status, hasText, phase, activeTool, interrupted);
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
   // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.

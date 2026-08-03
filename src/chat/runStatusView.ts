@@ -127,8 +127,11 @@ export function runStatusView(
   /** The tool currently running, if any — beats the phase (it is the more
    *  specific "what is happening now"), on thinking AND generating. */
   activeTool?: ActiveTool | null,
+  /** The user stopped the conversation while this block's delegated work ran.
+   *  A settled block then reads as interrupted (see runStatusKind). */
+  interrupted?: boolean,
 ): RunStatusView | null {
-  const kind = runStatusKind(status, hasText);
+  const kind = runStatusKind(status, hasText, interrupted ?? false);
   if (kind === null) return null;
   if (kind === "thinking" || kind === "generating") {
     if (activeTool) {

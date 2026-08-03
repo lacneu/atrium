@@ -133,3 +133,22 @@ export function toSubAgentFailureStructure(
     childIdShort,
   };
 }
+
+/**
+ * The AGENT a child session belongs to, read off its key (`agent:<id>:subagent:<uuid>`).
+ *
+ * A Stop has to reach each child at the bridge serving ITS agent — a child born
+ * on another instance is unreachable through the chat's default routing, and the
+ * kill would silently land nowhere. The row carries the instance but not the
+ * agent, and the key is where the agent is written down.
+ *
+ * Null for anything not of that shape — a background-task row (`task:<id>`) has
+ * no agent of its own and falls back to the chat's routing.
+ */
+export function agentIdFromChildKey(childSessionKey: string): string | null {
+  const parts = childSessionKey.trim().split(":");
+  if (parts.length < 4) return null;
+  if (parts[0] !== "agent" || parts[2] !== "subagent") return null;
+  const agentId = parts[1];
+  return agentId === "" ? null : agentId;
+}

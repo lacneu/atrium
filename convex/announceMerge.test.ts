@@ -98,6 +98,9 @@ describe("announce merge (one bubble per delegated turn)", () => {
       chatId,
       runId: ANNOUNCE_RUN,
     });
+    // startAssistant returns null only when the interruption epoch refuses the
+    // delivery; this turn is not one, so the id is the contract here.
+    if (reopened === null) throw new Error("startAssistant refused an ordinary turn");
     expect(reopened).toBe(parentId);
 
     // Reopened: streaming again, owned by the announce run, prefix parked,
@@ -1204,6 +1207,200 @@ describe("subAgents.turnActivity", () => {
     const a = await asUser.query(api.subAgents.turnActivity, { chatId });
     expect(a.deliveringSince).toBeNull();
     expect(a.deliveringTtlRemainingMs).toBeNull();
+  });
+
+  // THE USER SAID STOP, and the child's announce arrives anyway — the kill and
+  // the child's own terminal frame race. Reopening here would repaint the very
+  // block the user interrupted with the result they refused to wait for: the
+  // reply they DID get overwritten, under an "Interrompu" marker.
+  // THE INTERRUPTION EPOCH — the four ways the refused result used to come back,
+  // each asked at the ONE door every post-turn delivery walks through.
+  describe("the interruption epoch", () => {
+    /** Press Stop: stamp the chat's epoch and the child's own marker. */
+    async function stop(t: ReturnType<typeof convexTest>, chatId: Id<"chats">) {
+      const at = Date.now();
+      await t.run(async (ctx) => {
+        await ctx.db.patch(chatId, { stoppedAt: at });
+        const rows = (await ctx.db.query("subAgents").collect()).filter(
+          (r) => r.chatId === chatId && r.status === "running",
+        );
+        for (const row of rows) {
+          await ctx.db.patch(row._id, {
+            status: "aborted" as const,
+            stopRequestedAt: at,
+            updatedAt: at,
+          });
+        }
+      });
+      return at;
+    }
+
+    const countMessages = async (
+      t: ReturnType<typeof convexTest>,
+      chatId: Id<"chats">,
+    ) =>
+      (
+        await t.run(async (ctx) =>
+          (await ctx.db.query("messages").collect()).filter(
+            (m) => m.chatId === chatId,
+          ),
+        )
+      ).length;
+
+    test("the delivery of stopped work creates NO bubble at all", async () => {
+      const t = convexTest(schema, modules);
+      const { chatId } = await seedDelegatedTurn(t);
+      await stop(t, chatId);
+      const before = await countMessages(t, chatId);
+      const landed = await t.mutation(internal.stream.startAssistant, {
+        chatId,
+        runId: ANNOUNCE_RUN,
+      });
+      expect(landed, "the run has nowhere to land").toBeNull();
+      expect(await countMessages(t, chatId)).toBe(before);
+    });
+
+    // Pass-3 path: the parent was still STREAMING when Stop was pressed, so it
+    // never carried a marker of its own. The epoch does not care.
+    test("…even when the parent was still streaming at Stop time", async () => {
+      const t = convexTest(schema, modules);
+      const { chatId, parentId } = await seedDelegatedTurn(t);
+      await t.run(async (ctx) => {
+        await ctx.db.patch(parentId, { status: "streaming" as const });
+      });
+      await stop(t, chatId);
+      const before = await countMessages(t, chatId);
+      const landed = await t.mutation(internal.stream.startAssistant, {
+        chatId,
+        runId: ANNOUNCE_RUN,
+      });
+      expect(landed).toBeNull();
+      expect(await countMessages(t, chatId)).toBe(before);
+    });
+
+    // Pass-3 path: the spawn was never anchored, so there is no block to mark.
+    test("…even when the child was never anchored to a block", async () => {
+      const t = convexTest(schema, modules);
+      const { chatId } = await seedDelegatedTurn(t);
+      await t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("subAgents")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .first();
+        await ctx.db.patch(row!._id, { parentMessageId: undefined });
+      });
+      await stop(t, chatId);
+      const before = await countMessages(t, chatId);
+      const landed = await t.mutation(internal.stream.startAssistant, {
+        chatId,
+        runId: ANNOUNCE_RUN,
+      });
+      expect(landed).toBeNull();
+      expect(await countMessages(t, chatId)).toBe(before);
+    });
+
+    // STOPPING THIS TURN MUST NOT MUTE THE NEXT ONE. A child spawned after the
+    // stop is younger than the epoch and delivers normally.
+    test("work started AFTER the stop delivers normally", async () => {
+      const t = convexTest(schema, modules);
+      const { chatId } = await seedDelegatedTurn(t);
+      const at = await stop(t, chatId);
+      // A fresh child, born after the epoch, under the same key.
+      await t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("subAgents")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .first();
+        await ctx.db.patch(row!._id, {
+          createdAt: at + 1000,
+          status: "running" as const,
+          stopRequestedAt: undefined,
+        });
+      });
+      const landed = await t.mutation(internal.stream.startAssistant, {
+        chatId,
+        runId: ANNOUNCE_RUN,
+      });
+      expect(landed, "a stop must not mute everything that follows").not.toBeNull();
+    });
+
+    // Pass-3 path: a late terminal frame turns the row `done` and carries the
+    // very text the user refused. The status may move; the CONTENT may not.
+    test("a late terminal frame cannot restore the refused report", async () => {
+      const t = convexTest(schema, modules);
+      const { chatId } = await seedDelegatedTurn(t);
+      // The seed's row is already terminal; the case is a child that was STILL
+      // RUNNING when Stop landed and whose terminal frame arrives afterwards.
+      await t.run(async (ctx) => {
+        const row = await ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD_KEY))
+          .first();
+        await ctx.db.patch(row!._id, { status: "running" as const });
+      });
+      await stop(t, chatId);
+      await t.mutation(internal.subAgents.upsertSubAgent, {
+        chatId,
+        childSessionKey: CHILD_KEY,
+        status: "done",
+        resultText: "LE RAPPORT QUE L'UTILISATEUR A REFUSÉ",
+      });
+      const row = await t.run(async (ctx) =>
+        ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD_KEY))
+          .first(),
+      );
+      expect(
+        row?.resultText,
+        "the panel renders resultText — the refused report must not reach it",
+      ).toBeUndefined();
+    });
+  });
+
+  test("a stopped block is never reopened by a late announce", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, { interruptedAt: Date.now() });
+    });
+    const countMessages = async () =>
+      (await t.run(async (ctx) =>
+        ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+          .collect(),
+      )).length;
+    const before = await countMessages();
+    const landed = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    // NOT merely "it did not reopen the parent": refusing the merge used to
+    // fall through to inserting a NEW assistant message, so the report the user
+    // refused simply arrived in the next bubble — the same broken promise one
+    // message lower. Counting is what catches that; an id comparison passes
+    // precisely BECAUSE a new message was created.
+    expect(await countMessages(), "no new bubble for a refused report").toBe(
+      before,
+    );
+    expect(landed, "the delivery is sunk into the stopped block").toBe(parentId);
+    const parent = await t.run(async (ctx) => ctx.db.get(parentId));
+    expect(parent?.status, "…which is not dragged back into streaming").toBe(
+      "complete",
+    );
+    expect(parent?.text, "the reply the user did get is untouched").toBe(
+      "La tâche est lancée.",
+    );
+    // And the deltas that follow the refused start must not write either.
+    await t.mutation(internal.stream.appendDelta, {
+      messageId: parentId,
+      text: "RAPPORT TARDIF QUE L'UTILISATEUR A REFUSÉ",
+    });
+    const after = await t.run(async (ctx) => ctx.db.get(parentId));
+    expect(after?.text, "a late delta cannot repaint a stopped block").toBe(
+      "La tâche est lancée.",
+    );
   });
 
   test("a LATE terminal upsert after the merge settled stays quiet (write order must not matter)", async () => {

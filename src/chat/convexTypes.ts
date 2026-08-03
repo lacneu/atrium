@@ -198,6 +198,9 @@ export interface ConvexMessageView {
   /** Visible auto-retry state (turnRetry stamp): a bounded automatic
    *  re-dispatch of this errored turn is scheduled. */
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number };
+  /** Stamped when the user's Stop cut this block's delegated work short. The
+   *  block itself settled normally, so its status cannot carry the fact. */
+  interruptedAt?: number;
   /** Live processing phase of an IN-FLIGHT turn (processing_history/compacting/
    *  querying_gateway/awaiting_subagents) — merged from the streaming row; shown
    *  by the thinking placeholder when Tools is ON. Absent once text streams. */

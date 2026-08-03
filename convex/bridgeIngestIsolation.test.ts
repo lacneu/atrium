@@ -1122,6 +1122,9 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
       runId: "rz2",
       boundInstanceName: "alpha",
     });
+    // startAssistant returns null only when the interruption epoch refuses the
+    // delivery; this turn is not one, so the id is the contract here.
+    if (messageId === null) throw new Error("startAssistant refused an ordinary turn");
     await expect(
       t.mutation(internal.stream.appendDelta, {
         messageId,
