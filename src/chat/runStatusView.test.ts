@@ -22,7 +22,7 @@ describe("runStatusView", () => {
   it("streaming WITH text -> generating", () => {
     expect(runStatusView("streaming", true)).toEqual({
       kind: "generating",
-      label: "Génération…",
+      label: "Rédaction de la réponse…",
     });
   });
 

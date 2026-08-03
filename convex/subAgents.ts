@@ -35,6 +35,13 @@ import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { deliveryChildKey } from "./lib/deliveryRuns";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
+/** How long a finished-but-undelivered child keeps the "composing the reply"
+ *  indicator up. It bounds a terminal row whose announce never arrives
+ *  (NO_REPLY) and the residual write-order race of a detached terminal upsert
+ *  landing after the parent settled. Lives on the SERVER so the remaining time
+ *  can be measured against the server clock and shipped as a duration. */
+const DELIVERING_WINDOW_MS = 45_000;
+
 /** Bounded reaper batch (mirrors stuckStreams.BATCH) — running rows are few. */
 const REAP_BATCH = 50;
 // User-visible (monitor) reason for a reaped child, shown as its errorMessage. FR
@@ -628,6 +635,16 @@ export const turnActivity = query({
     // Null when running is false or held by a task row (no display TTL).
     runningTtlRemainingMs: number | null;
     deliveringSince: number | null;
+    // How much of the delivery window is LEFT (ms), measured on the server —
+    // the same shape as runningTtlRemainingMs and for the same reason.
+    // Without it the client could only tell a live delivery from a stale value
+    // by comparing a SERVER timestamp to its own clock, which skew breaks; it
+    // therefore treated whatever it saw at mount as a baseline that never armed
+    // the window, and reopening a conversation DURING a real delivery showed no
+    // indicator at all. Asked of the server, "is this delivery still fresh" has
+    // an honest answer at the first observation. Null when nothing is
+    // delivering; 0 when the window has elapsed.
+    deliveringTtlRemainingMs: number | null;
     // When the delegated work STARTED (the live child's createdAt; during a
     // pure delivery window, the delivered child's createdAt) — the baseline
     // for the elapsed clock on the thread's activity indicator (prod report
@@ -829,10 +846,18 @@ export const turnActivity = query({
     // delivery window (the same child's createdAt during a pure delivery).
     const workingSince =
       runningRow !== null ? runningRow.createdAt : deliveringWorkStart;
+    // A never-correlated terminal row (a NO_REPLY announce) keeps the same
+    // `deliveringSince` indefinitely; the window bounds it, here rather than in
+    // every client. Announces follow a done child within seconds in practice.
+    const deliveringTtlRemainingMs =
+      deliveringSince === null
+        ? null
+        : Math.max(0, DELIVERING_WINDOW_MS - (nowMs - deliveringSince));
     return {
       running,
       runningTtlRemainingMs,
       deliveringSince,
+      deliveringTtlRemainingMs,
       workingSince,
       anchorMessageId,
       // WHAT the running work is doing, when the gateway published it. Taken from the

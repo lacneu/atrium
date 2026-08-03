@@ -1,27 +1,38 @@
-// PINNED SIDE PANEL — the pin that lets what you are READING survive navigation.
+// THE RIGHT-HAND PANEL — what is open in it, where it came from, and whether it
+// is pinned.
 //
-// The right-hand column (sources, sub-agent, scheduled-task detail, document)
-// is mounted PER CHAT inside ConvexChat: switching conversation re-scopes it,
-// and going to Settings unmounts it outright — so a reader who wanted to check
-// something elsewhere lost their reading. Pinning moves ownership of WHAT is
-// open to this module-level store; a panel rendered in the persistent chrome
-// keeps it readable while the user navigates anywhere.
+// It holds EVERY open panel, not only pinned ones. That is the whole point: the
+// panel is mounted once, when you open it, in the one surface that survives
+// navigation. Pinning is then a FLAG on that record — "keep it when I leave" —
+// and flips no subtree from one component to another.
+//
+// It was built the other way round, and both defects the users reported were the
+// same consequence. Pinning used to hand the content from the conversation's own
+// column to a persistent one, and a handover between two components is an
+// unmount: a PDF open at page 15 came back at page 1, having refetched and
+// reparsed the file. Unpinning handed it back the other way, except the
+// conversation's column had let go of its state — so the panel simply vanished.
+// One record, one mount, and neither can happen.
 //
 // Same shape and the same reasons as `dictationHold` next door: a pure module
 // with a tiny subscribe surface (no React), so it is unit-testable and immune
 // to the mount/unmount churn it exists to survive.
 //
-// TWO RULES CARRY THIS FILE, and both live here rather than in JSX so a test
+// THREE RULES CARRY THIS FILE, and they live here rather than in JSX so a test
 // can hold them:
 //
-//  1. ORIGIN TRAVELS WITH THE PIN. A pinned panel keeps the conversation it was
+//  1. ORIGIN TRAVELS WITH THE RECORD. A panel keeps the conversation it was
 //     opened from — never the one you navigated to. `SourcesPanelContent` takes
 //     only a messageId, so the origin is NOT recoverable from the content's
-//     props: it is captured at pin time, and displayed, or a reader sitting in
+//     props: it is captured at open time, and displayed, or a reader sitting in
 //     chat B has no way to tell whose sub-agent they are reading.
-//  2. EXACTLY ONE OWNER. Back in the origin chat, the in-chat column owns the
-//     panel again and the floating one steps aside — otherwise the same content
-//     renders twice. `whoOwns()` is that decision, and nothing else may make it.
+//  2. EXACTLY ONE SURFACE DRAWS, always — the persistent one. There is no
+//     handover left to make, and `whoOwns()` decides only WHETHER it draws.
+//  3. PINNED IS WHAT SURVIVES LEAVING. In the origin conversation the panel is
+//     shown pinned or not; elsewhere, only a pinned one is. So unpinning at home
+//     changes nothing on screen, and unpinning away from home closes the panel —
+//     which is exactly what unpinning from another conversation means: you have
+//     decided to carry on where you are.
 
 /** Every field a `CronPartView` carries. The degraded-part identity below is
  *  derived from ALL of them — a partial list makes two different jobs look like
@@ -68,10 +79,15 @@ export type PinnedPanel = {
   /** Human label for the header chip: the origin conversation's title at pin
    *  time. A pinned panel must SAY where it comes from. */
   originLabel: string;
-  /** The content's own parameters, exactly as the in-chat column passes them.
-   *  Kept opaque on purpose — this store owns WHICH panel is pinned and WHERE it
+  /** The content's own parameters, exactly as the opening call site passes them.
+   *  Kept opaque on purpose — this store owns WHICH panel is open and WHERE it
    *  came from, never how a panel renders. */
   params: Record<string, unknown>;
+  /** Does this reading survive leaving its conversation? FALSE for a panel you
+   *  simply opened: it closes when you navigate away, exactly as the
+   *  conversation-scoped column used to. Pinning sets it; unpinning clears it.
+   *  Neither remounts anything — that is the point of it being a flag. */
+  pinned: boolean;
 };
 
 /** Who should render the pinned content right now. */
@@ -97,9 +113,16 @@ export function getPinnedPanel(): PinnedPanel | null {
   return current;
 }
 
-/** Pin a panel. Replaces any existing pin — one column, one pin, and a second
- *  pin is the user asking for the new thing, not for both. */
-export function pinPanel(args: {
+/** OPEN a panel — the only way content gets into the column.
+ *
+ *  Replaces whatever was there: one column, one reading, and opening a second
+ *  thing is the reader asking for the new thing, not for both. It opens
+ *  UNPINNED; pinning is a separate, deliberate act.
+ *
+ *  Opening while something is pinned therefore replaces the pinned reading too.
+ *  That is the same "one column" rule, now that there is one column rather than
+ *  a conversation's and a persistent one able to sit side by side. */
+export function openPanel(args: {
   kind: PinnedPanelKind;
   ownerUserId: string;
   originChatId: string | null;
@@ -113,9 +136,20 @@ export function pinPanel(args: {
     originChatId: args.originChatId,
     originLabel: args.originLabel,
     params: args.params,
+    pinned: false,
   };
   emit();
   return current;
+}
+
+/** Set (or clear) the pin on what is ALREADY open. It changes one boolean and
+ *  nothing else — no record is replaced, so nothing the panel holds is rebuilt.
+ *  `pinId` guards a stale control against a replacement reading. */
+export function setPanelPinned(pinId: number, pinned: boolean): void {
+  if (current === null || current.pinId !== pinId) return;
+  if (current.pinned === pinned) return;
+  current = { ...current, pinned };
+  emit();
 }
 
 /** Release the pin. `pinId` guards against a stale close: a control captured
@@ -141,38 +175,38 @@ export function setPinnedParams(
 }
 
 /**
- * WHO RENDERS the pinned content, given where the user currently is.
+ * WHETHER the panel is drawn at all, given where the reader currently is.
  *
- * The whole point of a pin is that one surface hands over to the other, never
- * that both draw. Back in the origin conversation the in-chat column is the
- * better home — it is wider, resizable, and beside the thread it belongs to —
- * so the floating dock yields. Anywhere else (another conversation, Settings,
- * no conversation at all) the dock is the only surface left, so it takes over.
+ * There is only ever one surface — the persistent column — so this is no longer
+ * a choice between two of them. It answers a single question: does this reading
+ * belong on screen right now?
  *
- * A panel with NO origin chat (a scheduled task opened from Settings) has no
- * in-chat home to return to: the dock owns it everywhere.
+ * TWO WAYS TO EARN THE SCREEN, and the asymmetry the users asked for falls out
+ * of them rather than being written as a special case:
+ *   - PINNED: everywhere. That is what pinning means.
+ *   - AT HOME: in the conversation it was opened from, pinned or not — an open
+ *     panel belongs beside the thread it came from.
+ *
+ * So unpinning IN the origin conversation keeps the panel on screen (the second
+ * rule still holds), and unpinning FROM ANOTHER conversation closes it (neither
+ * holds). Both are what the reader meant: unpinning where you are is "I have
+ * decided to carry on here".
+ *
+ * A panel with NO origin chat (a scheduled task opened from Settings) can never
+ * be at home, so only the pin keeps it.
  */
 export function whoOwns(
   pin: PinnedPanel | null,
   viewer: PanelViewer,
 ): PanelOwner {
   if (pin === null) return "none";
-  // NOT MINE: nobody draws it. Fails closed before anything else, so a pin made
-  // under another identity is never rendered — not its content, and not the
-  // conversation TITLE its header carries.
+  // NOT MINE: nobody draws it. Fails closed before anything else, so a panel
+  // opened under another identity is never rendered — not its content, and not
+  // the conversation TITLE its header carries.
   if (pin.ownerUserId !== viewer.userId) return "none";
-  // MINE: the persistent column, ALWAYS — including in the conversation the
-  // reading came from.
-  //
-  // It used to hand back to the in-chat column at home, which reads well on
-  // paper and is wrong in practice: two components cannot pass a subtree between
-  // them, so every handover was an unmount. Everything the panel held died with
-  // it — a PDF reopened at page one after fetching and parsing the whole file
-  // again, a scroll position, a search box. A pinned reading that reloads on
-  // every conversation change is not a reading that survived navigation.
-  //
-  // So there is ONE surface for a pinned reading, and it is this one.
-  return "dock";
+  // "At home" is asked of `pinBelongsHere`, never re-derived here: two copies of
+  // one rule is how the panel and its controls came to disagree before.
+  return pin.pinned || pinBelongsHere(pin, viewer) ? "dock" : "none";
 }
 
 /**
@@ -265,9 +299,9 @@ export function fittedPanelWidth(
   );
 }
 
-/** Whether the pin was taken HERE, by this reader — the precondition for the
- *  column and the pin to act on each other at all. Not enough on its own to say
- *  the column is showing it (that is `isPinnedContent`). */
+/** Whether the reader is IN the conversation this panel was opened from. One of
+ *  the two ways a panel earns the screen (`whoOwns`), and what decides whether
+ *  unpinning leaves it standing or closes it. */
 export function pinBelongsHere(
   pin: PinnedPanel | null,
   viewer: PanelViewer,
@@ -277,30 +311,59 @@ export function pinBelongsHere(
   return pin.originChatId !== null && pin.originChatId === viewer.chatId;
 }
 
-/** Whether the pin holds exactly this content — what the pin button reports, and
- *  what tells the in-chat column to stand down because the persistent one is
- *  already showing the very same reading. */
-export function isPinnedContent(
+/** Should this record be DISCARDED now that the reader is here?
+ *
+ *  An unpinned panel belongs to its conversation: leaving closes it, exactly as
+ *  the conversation-scoped column always did. Without this the record would
+ *  merely go unrendered and come back the next time the reader walked into the
+ *  conversation it came from — a reading they had closed by walking out.
+ *
+ *  A record belonging to ANOTHER identity is never touched here: that purge is
+ *  the identity swap's, and doing it from a viewer check would let one session's
+ *  navigation delete another's state. */
+export function shouldDropOnLeave(
   pin: PinnedPanel | null,
   viewer: PanelViewer,
-  kind: PinnedPanelKind | null,
-  params: Record<string, unknown> | null,
 ): boolean {
-  if (pin === null || kind === null || params === null) return false;
-  // TAKEN HERE, and the same content. A fork shares its documents, so identity
-  // alone made a document opened in ANOTHER conversation pass for the pinned
-  // one: that conversation's column then refused to draw it — the reader's click
-  // did nothing — while the panel on the right went on showing it in the context
-  // of the conversation it was pinned from, drafts and version history included.
-  return (
-    pin.kind === kind &&
-    whoOwns(pin, viewer) === "dock" &&
-    pinBelongsHere(pin, viewer) &&
-    panelIdentity(pin.kind, pin.params) === panelIdentity(kind, params)
-  );
+  if (pin === null) return false;
+  if (pin.ownerUserId !== viewer.userId) return false;
+  return !pin.pinned && !pinBelongsHere(pin, viewer);
 }
 
-/** TEST-ONLY reset of the module state (pin, published column, id counter). */
+/** What UNPINNING does from where the reader currently stands.
+ *
+ *  At home it only clears the flag: the panel was open beside this conversation
+ *  before it was ever pinned, and it stays. Anywhere else it CLOSES the panel —
+ *  unpinning from another conversation is the reader saying they have decided to
+ *  carry on here, and merely clearing the flag would leave the reading lying in
+ *  the store, invisible, to reappear the next time they walked back into the
+ *  conversation it came from. */
+export function unpinOutcome(
+  pin: PinnedPanel | null,
+  viewer: PanelViewer,
+): "keep" | "close" {
+  return pinBelongsHere(pin, viewer) ? "keep" : "close";
+}
+
+/** What the OPEN panel is, as far as this conversation is concerned — the value
+ *  the chat's own controls read to know which chip is active.
+ *
+ *  Null unless the record belongs to this reader AND was opened here: a panel
+ *  pinned from another conversation is on screen, but it is not THIS
+ *  conversation's open panel, and marking its chip active here would point at a
+ *  message that is not the one being read.
+ *
+ *  A fork shares its documents, so comparing content alone would make a document
+ *  opened elsewhere pass for this one. Origin is the discriminator, not
+ *  identity. */
+export function panelOpenHere(
+  pin: PinnedPanel | null,
+  viewer: PanelViewer,
+): PinnedPanel | null {
+  return pinBelongsHere(pin, viewer) ? pin : null;
+}
+
+/** TEST-ONLY reset of the module state (record, id counter). */
 export function __resetPinnedPanelForTests(): void {
   current = null;
   nextPinId = 1;

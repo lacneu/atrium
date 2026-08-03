@@ -1,28 +1,26 @@
-// The PERSISTENT HOME of a pinned side panel: the same right-hand column, kept
-// in the chrome instead of inside the conversation.
+// THE right-hand column. Not "the pinned one" — the only one.
 //
-// The column is mounted per chat, so leaving the conversation used to take the
-// reading with it. Pinning hands ownership of WHAT is open to `pinnedPanel`'s
-// module store; this column is what keeps it on screen while the user is
-// anywhere else — another conversation, Settings, no conversation at all.
+// Every panel the conversation opens (sources, sub-agent, scheduled-task detail,
+// document) is mounted HERE, in the chrome, pinned or not. The conversation used
+// to have a column of its own and hand the reading over to this one on pinning;
+// a handover between two components is an unmount, so pinning rebuilt a PDF from
+// scratch and unpinning made the panel disappear. There is nothing left to hand
+// over: `pinnedPanel` holds the record, this draws it, and the pin is a flag on
+// it that moves nothing.
 //
-// It is a COLUMN, not a floating window: same place, same width (the very same
-// persisted width as the in-chat one), same content, and the conversation to its
-// left simply gets narrower. A reading you pinned should look exactly like the
-// reading you were having.
+// It is a COLUMN, not a floating window: same place, its own persisted width,
+// and the conversation to its left simply gets narrower.
 //
-// It renders ONLY when the store says so (`whoOwns` === "dock"). Back in the
-// origin conversation the in-chat column takes the panel over — it is the same
-// column, one level down in the tree — because drawing both would show the same
-// content twice.
+// `whoOwns` decides only WHETHER it is on screen — pinned (anywhere) or at home
+// (the conversation it was opened from).
 //
 // Mounted next to `HeldDictationDock`, and for the same reason: inside the
-// identity-keyed tree, so an impersonation or identity swap drops what was
-// pinned instead of carrying one person's reading into another's session.
+// identity-keyed tree, so an impersonation or identity swap drops the reading
+// instead of carrying one person's into another's session.
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ExternalLink, PinOff } from "lucide-react";
+import { ExternalLink, Pin, PinOff, X } from "lucide-react";
 
 import { CronDetailContent } from "./CronDetailPanel";
 import { PanelBodyBoundary } from "./PanelBodyBoundary";
@@ -39,9 +37,13 @@ import {
   fittedPanelWidth,
   getPinnedPanel,
   panelFitsBeside,
+  pinBelongsHere,
   releasePinnedPanel,
+  shouldDropOnLeave,
+  setPanelPinned,
   setPinnedParams,
   subscribePinnedPanel,
+  unpinOutcome,
   whoOwns,
 } from "./pinnedPanel";
 import { useWorkspaceRoom } from "./useWorkspaceRoom";
@@ -119,20 +121,36 @@ export function PinnedPanelDock({
   // (`HeldDictationDock` purges its held text the same way, for the same reason.)
   useEffect(() => () => releasePinnedPanel(), []);
 
+  // LEAVING A CONVERSATION CLOSES WHAT WAS ONLY OPEN THERE. `whoOwns` already
+  // stops drawing it; this discards the record, so walking back in later does
+  // not resurrect a reading the user closed by walking out. Pinned readings are
+  // untouched — surviving that is what the pin is.
+  const dropOnLeave = shouldDropOnLeave(pin, viewer);
+  const leavingPinId = pin?.pinId;
+  useEffect(() => {
+    if (dropOnLeave && leavingPinId !== undefined) {
+      releasePinnedPanel(leavingPinId);
+    }
+  }, [dropOnLeave, leavingPinId]);
+
   if (pin === null) return null;
   if (whoOwns(pin, viewer) !== "dock") return null;
 
   const p = pin.params;
   const close = () => releasePinnedPanel(pin.pinId);
   const { width, startResize, columnRef, min } = widths[pin.kind];
-  // NO ROOM: HIDDEN, NEVER UNMOUNTED. A phone has no room for a second column,
-  // and neither does a window too narrow for a readable thread beside one — so
-  // the reading is not DRAWN there. But returning null would tear its subtree
-  // down, and that is the whole defect this panel exists to avoid: widening the
-  // window again, or turning the phone, would rebuild a PDF from scratch and
-  // land the reader back on page one. Hidden keeps every bit of it — page,
-  // zoom, scroll, search — for the moment there is room again.
+  // NO ROOM for a column: a phone, or a window too narrow for a readable thread
+  // beside one.
   const roomless = isMobile || !panelFitsBeside(available, min);
+  // An UNPINNED panel there is shown as a sheet over the conversation, and the
+  // conversation renders that — so this must stand fully down, or the reading
+  // would be live twice and a PDF would be parsed twice.
+  if (roomless && !pin.pinned) return null;
+  // PINNED and roomless: HIDDEN, NEVER UNMOUNTED. Returning null would tear the
+  // subtree down, and that is the whole defect this panel exists to avoid —
+  // widening the window again would rebuild a PDF from scratch and land the
+  // reader back on page one. Hidden keeps every bit of it (page, zoom, scroll,
+  // search) for the moment there is room again.
   // DRAWN width, not remembered width: the remembered one survives a narrow
   // moment, so widening the window gives the reader back the column they set.
   const drawn = fittedPanelWidth(width, available, min);
@@ -158,14 +176,40 @@ export function PinnedPanelDock({
           aria-label={m.pinned_panel_resize()}
         />
         <div className="oc-pinpanel__head">
-          {/* WHOSE reading this is. A pinned panel read from another conversation
-              is unreadable as context without it — `SourcesPanelContent` carries
+          {/* WHOSE reading this is. A panel read from another conversation is
+              unreadable as context without it — `SourcesPanelContent` carries
               only a messageId, so nothing in the content itself can say. */}
           <span className="oc-pinpanel__origin" title={pin.originLabel}>
             {pin.originLabel}
           </span>
           <span className="oc-pinpanel__ctrls">
-            {pin.originChatId !== null ? (
+            {/* THE PIN LIVES WHERE THE PANEL LIVES. It used to sit in the
+                conversation's own column, which meant pressing it moved the
+                reading from that column to this one — and a move between two
+                components is an unmount, so a PDF came back at page one. Here it
+                flips one flag on the record already mounted here: nothing is
+                rebuilt, and the reader keeps their page. */}
+            <button
+              type="button"
+              className={`oc-pinpanel__btn${pin.pinned ? " is-on" : ""}`}
+              aria-pressed={pin.pinned}
+              title={pin.pinned ? m.pinned_panel_unpin() : m.panel_pin()}
+              aria-label={pin.pinned ? m.pinned_panel_unpin() : m.panel_pin()}
+              onClick={() => {
+                if (!pin.pinned) {
+                  setPanelPinned(pin.pinId, true);
+                  return;
+                }
+                // Unpinning AWAY from the origin conversation closes the
+                // reading; at home it only clears the flag. The rule is the
+                // store's, not this button's.
+                if (unpinOutcome(pin, viewer) === "close") close();
+                else setPanelPinned(pin.pinId, false);
+              }}
+            >
+              {pin.pinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
+            </button>
+            {pin.originChatId !== null && !pinBelongsHere(pin, viewer) ? (
               <button
                 type="button"
                 className="oc-pinpanel__btn"
@@ -181,14 +225,17 @@ export function PinnedPanelDock({
                 <ExternalLink size={14} aria-hidden />
               </button>
             ) : null}
+            {/* CLOSE, distinct from unpin now that the two differ: unpinning at
+                home leaves the reading open, so there has to be a way to say
+                "done with it" that does not depend on where you stand. */}
             <button
               type="button"
               className="oc-pinpanel__btn"
-              title={m.pinned_panel_unpin()}
-              aria-label={m.pinned_panel_unpin()}
+              title={m.panel_close()}
+              aria-label={m.panel_close()}
               onClick={close}
             >
-              <PinOff size={14} aria-hidden />
+              <X size={14} aria-hidden />
             </button>
           </span>
         </div>

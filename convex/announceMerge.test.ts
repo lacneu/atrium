@@ -1150,6 +1150,62 @@ describe("subAgents.turnActivity", () => {
     expect(a.deliveringSince).toBe(5000);
   });
 
+  // The remaining delivery time is what lets a client that OPENS the
+  // conversation mid-delivery know whether what it sees is live. Measured on
+  // the server, because a client comparing this server timestamp to its own
+  // clock gets it wrong under skew — which is why the client used to refuse to
+  // trust the first value it saw, and showed nothing at all on a reopen.
+  test("a fresh delivery ships the time LEFT in its window", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const justNow = Date.now() - 1_000;
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, updatedAt: justNow });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBe(justNow);
+    // A second old: most of the window is left, and it is a DURATION, never
+    // the timestamp itself.
+    expect(a.deliveringTtlRemainingMs).toBeGreaterThan(30_000);
+    expect(a.deliveringTtlRemainingMs).toBeLessThanOrEqual(45_000);
+  });
+
+  // The NO_REPLY case: a terminal row whose announce never arrives keeps this
+  // same timestamp for ever. It must arrive with its window already spent, so
+  // that reopening the conversation a day later shows nothing rather than a
+  // phantom "finalising".
+  test("a delivery older than its window ships ZERO remaining, not a live one", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const longAgo = Date.now() - 10 * 60 * 1000;
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, updatedAt: longAgo });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBe(longAgo);
+    expect(a.deliveringTtlRemainingMs).toBe(0);
+  });
+
+  // A conversation that never delegated: nothing is delivering, so there is no
+  // window at all to report the remaining time of.
+  test("nothing delivering reports no remaining time at all", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("subAgents").collect()) {
+        await ctx.db.delete(row._id);
+      }
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBeNull();
+    expect(a.deliveringTtlRemainingMs).toBeNull();
+  });
+
   test("a LATE terminal upsert after the merge settled stays quiet (write order must not matter)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);

@@ -23,17 +23,48 @@ import {
   fittedPanelWidth,
   panelFitsBeside,
   getPinnedPanel,
-  isPinnedContent,
+  openPanel,
   panelIdentity,
+  panelOpenHere,
   pinBelongsHere,
+  setPanelPinned,
   setPinnedParams,
-  pinPanel,
   releasePinnedPanel,
+  shouldDropOnLeave,
   subscribePinnedPanel,
+  unpinOutcome,
   whoOwns,
 } from "./pinnedPanel";
 
 const ME = "userA";
+
+/** Open a reading AND pin it — the state most of these rules are about. Opening
+ *  and pinning are two acts now, and keeping them two here is the point: what
+ *  changed is that pinning no longer moves anything. */
+/** What `isPinnedContent` used to answer, expressed against what the store now
+ *  offers. The question survives the refactor — "is the column showing THIS very
+ *  reading?" — even though nothing hands anything over any more: it is what keys
+ *  the error boundary, and the identity cases below are the ones that cost the
+ *  most to get right.  */
+function showsExactly(
+  viewer: { userId: string; chatId: string | null },
+  kind: Parameters<typeof panelIdentity>[0] | null,
+  params: Record<string, unknown> | null,
+): boolean {
+  const open = panelOpenHere(getPinnedPanel(), viewer);
+  if (open === null || kind === null || params === null) return false;
+  return (
+    open.kind === kind &&
+    panelIdentity(open.kind, open.params) === panelIdentity(kind, params)
+  );
+}
+
+function pinPanel(args: Parameters<typeof openPanel>[0]) {
+  const rec = openPanel(args);
+  setPanelPinned(rec.pinId, true);
+  return getPinnedPanel()!;
+}
+
 /** The desktop reader, in chat A. */
 /** The desktop reader, in chat A, with an EMPTY column. */
 const here = {
@@ -103,15 +134,24 @@ describe("the pin's lifecycle", () => {
     expect(getPinnedPanel()).toBeNull();
   });
 
-  test("subscribers are notified on pin and release", () => {
+  test("subscribers hear each act: opening, pinning, releasing", () => {
     let hits = 0;
     const off = subscribePinnedPanel(() => (hits += 1));
-    pinPanel(aDoc);
-    releasePinnedPanel();
+    const rec = openPanel(aDoc);
+    expect(hits, "opening").toBe(1);
+    setPanelPinned(rec.pinId, true);
+    expect(hits, "pinning is its own change, on the same record").toBe(2);
+    // …and setting it to what it already is changes nothing, so it says nothing:
+    // a no-op that emitted would re-render every subscriber on every render.
+    setPanelPinned(rec.pinId, true);
     expect(hits).toBe(2);
+    setPanelPinned(rec.pinId, false);
+    expect(hits, "unpinning").toBe(3);
+    releasePinnedPanel();
+    expect(hits, "releasing").toBe(4);
     off();
-    pinPanel(aDoc);
-    expect(hits, "an unsubscribed listener stops hearing").toBe(2);
+    openPanel(aDoc);
+    expect(hits, "an unsubscribed listener stops hearing").toBe(4);
   });
 });
 
@@ -124,26 +164,22 @@ describe("every way to close the reading releases the pin", () => {
   // the four column contents, and the four mobile sheets that show the same
   // things. `closingColumn` is the single door, so nothing may call `close`
   // directly.
-  test("no close bypasses closingColumn in ConvexChat", () => {
+  test("no close reaches across into another conversation's reading", () => {
+    // A panel pinned from ANOTHER conversation is on screen here. A chip's
+    // close in THIS thread must not dismiss it — the reader never touched it.
+    // Every content's `close` therefore goes through the one guarded closer.
     const src = readFileSync(
       new URL("./ConvexChat.tsx", import.meta.url),
       "utf8",
     );
-    const closers = [...src.matchAll(/\b(\w+Api)\.close\b/g)];
-    expect(closers.length, "the four contents, column + sheet").toBeGreaterThan(
-      7,
-    );
-    const bypassed = closers.filter((mm) => {
-      const before = src.slice(Math.max(0, mm.index - 24), mm.index);
-      return !before.includes("closingColumn(");
-    });
+    const closes = [...src.matchAll(/^\s*close: (.+),$/gm)].map((mm) => mm[1]);
+    expect(closes.length, "sources, sub-agent, document, cron").toBe(4);
     expect(
-      bypassed.map((mm) => mm[0]),
-      "a close that skips closingColumn leaves the pin standing, and the restore undoes it",
+      closes.filter((c) => c !== "closeIfOpenHere"),
+      "a close that is not the guarded one can dismiss another conversation's reading",
     ).toEqual([]);
   });
 });
-
 
 describe("the pin belongs to a CONTENT, not to a conversation", () => {
   const sourcesOf = (messageId: string) => ({
@@ -159,10 +195,10 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
     // pinned — and made closing it destroy the first, a reading never touched.
     pinPanel(sourcesOf("m1"));
     const pin = getPinnedPanel();
-    expect(isPinnedContent(pin, here, "sources", { messageId: "m1" })).toBe(
+    expect(showsExactly(here, "sources", { messageId: "m1" })).toBe(
       true,
     );
-    expect(isPinnedContent(pin, here, "sources", { messageId: "m2" })).toBe(
+    expect(showsExactly(here, "sources", { messageId: "m2" })).toBe(
       false,
     );
   });
@@ -170,7 +206,7 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
   test("same identifier, different KIND, is not the pinned one either", () => {
     pinPanel(sourcesOf("m1"));
     expect(
-      isPinnedContent(getPinnedPanel(), here, "subagent", {
+      showsExactly(here, "subagent", {
         childKey: "m1",
       }),
     ).toBe(false);
@@ -204,13 +240,13 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
     });
     const pin = getPinnedPanel();
     expect(
-      isPinnedContent(pin, here, "document", {
+      showsExactly(here, "document", {
         doc: { storageId: "st1", url: "https://signed/RESIGNED" },
       }),
       "a re-signed URL is the same document",
     ).toBe(true);
     expect(
-      isPinnedContent(pin, here, "document", {
+      showsExactly(here, "document", {
         doc: { storageId: "st2", url: "https://signed/one" },
       }),
     ).toBe(false);
@@ -218,7 +254,7 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
 
   test("nothing open means nothing is pinned HERE", () => {
     pinPanel(sourcesOf("m1"));
-    expect(isPinnedContent(getPinnedPanel(), here, null, null)).toBe(false);
+    expect(showsExactly(here, null, null)).toBe(false);
   });
 });
 
@@ -236,32 +272,32 @@ describe("a pinned document can move to its newer version", () => {
       originLabel: "Revue",
       params: v1,
     });
-    expect(isPinnedContent(pin, here, "document", v1)).toBe(true);
+    expect(showsExactly(here, "document", v1)).toBe(true);
     setPinnedParams(pin.pinId, { doc: { storageId: "v2" } });
     const moved = getPinnedPanel();
     expect(moved?.pinId, "same pin, same panel, same place").toBe(pin.pinId);
     expect(
-      isPinnedContent(moved, here, "document", v1),
+      showsExactly(here, "document", v1),
       "the version it left is no longer the pinned reading",
     ).toBe(false);
   });
 
-  test("only the PERSISTENT column carries the pin", () => {
-    // The in-chat column never shows a pinned document — the persistent one
-    // does — so the version change is carried there, in one place. Carrying it
-    // in the conversation too would mean two owners for one reading again.
+  test("a version change REWRITES the reading; it never opens a second one", () => {
+    // Opening anew would mint a fresh record — dropping the pin and remounting
+    // the viewer, which is the unmount this whole design removes. Both entry
+    // points (the conversation's provider and the column's own) must therefore
+    // rewrite the record in place. Derived from the source because the defect
+    // is a call that LOOKS right: `openFor` where `setPinnedParams` belongs.
     const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
     const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
-    expect(
-      /openNewerVersion: \(doc: ViewerDoc\) =>\s*\n?\s*setPinnedParams\(pin\.pinId/.test(
-        dock,
-      ),
-      "the persistent column's provider carries it",
-    ).toBe(true);
-    expect(
-      chat.includes("setPinnedParams"),
-      "and the conversation does not touch the pin at all",
-    ).toBe(false);
+    for (const [name, src] of [["the conversation", chat], ["the column", dock]] as const) {
+      const after = src.slice(src.indexOf("openNewerVersion"));
+      const body = after.slice(0, after.indexOf("close:"));
+      expect(
+        body.includes("setPinnedParams"),
+        `${name} rewrites the open reading rather than opening a new one`,
+      ).toBe(true);
+    }
   });
 
   test("the params are rewritten in place, and a stale write is refused", () => {
@@ -289,7 +325,7 @@ describe("a broken panel never traps the reader", () => {
     const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
     const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
     const boundaries = [...chat.matchAll(/<PanelBodyBoundary\b/g)];
-    expect(boundaries.length, "the column and the four sheets").toBe(5);
+    expect(boundaries.length, "the four narrow-screen sheets").toBe(4);
     const without = [...chat.matchAll(/<PanelBodyBoundary\b(?:(?!onClose)[\s\S]){0,400}?>/g)];
     expect(
       without.length,
@@ -427,39 +463,44 @@ describe("the conversation keeps a floor the panel cannot cross", () => {
         chat,
       ),
     ).toBe(true);
+    // A PINNED reading is never a sheet: the column keeps it mounted and hidden
+    // instead, so widening the window gives it back at the page it was on. If
+    // this dropped out, the sheet and the hidden column would both be live and
+    // one PDF would be parsed twice.
     expect(
-      /const asSheet = isMobile \|\| !columnFits;/.test(chat),
-      "…and it is the SAME decision for the phone and the narrow desktop",
+      /const asSheet =\s*\n?\s*columnOpen && \(isMobile \|\| !columnFits\) && openHere\?\.pinned !== true;/.test(
+        chat,
+      ),
+      "…the same decision for the phone and the narrow desktop, and never for a pinned reading",
     ).toBe(true);
-    const sheets = [...chat.matchAll(/Open && asSheet && !thisIsPinned \? \(/g)];
+    const sheets = [...chat.matchAll(/Open && asSheet \? \(/g)];
     expect(sheets.length, "the four contents").toBe(4);
+    // …and the conversation no longer renders a column of its own AT ALL: that
+    // second surface is what made pinning an unmount.
     expect(
-      chat.includes("columnOpen && !asSheet && !thisIsPinned ? ("),
-      "and the column renders only when it fits AND is not the pinned reading",
-    ).toBe(true);
+      chat.includes('className="oc-sources-col"'),
+      "the conversation must not grow a second column back",
+    ).toBe(false);
   });
 
-  test("two columns at once share ONE budget, not two", () => {
-    // A reading pinned in one conversation stays in the persistent column while
-    // a different one is opened in the conversation you are now in. Each
-    // measuring the full room meant each believed the other's width was free,
-    // and the thread between them was crushed by the pair.
+  test("ONE column, so no second width to budget against", () => {
+    // A reading pinned elsewhere used to sit in the persistent column while the
+    // conversation opened another in its own — two columns, one thread crushed
+    // between them, and a whole width negotiation to keep them apart. Opening
+    // now REPLACES, so the negotiation has nothing left to arbitrate.
     const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
     const room = readFileSync(new URL("./useWorkspaceRoom.ts", import.meta.url), "utf8");
     expect(
-      chat.includes("useWorkspaceRoom({ minusPinnedColumn: true })"),
-      "the in-chat column takes what the persistent one leaves",
-    ).toBe(true);
+      chat.includes("minusPinnedColumn"),
+      "no second column to subtract",
+    ).toBe(false);
     expect(
-      room.includes('row.querySelector(".oc-pinpanel")'),
-      "…which means measuring it, and watching it come and go",
-    ).toBe(true);
-    // 940 shared, a pinned document at 520: what is left is 420, which cannot
-    // hold another 380 column beside a 420 thread — so the second one is a sheet.
-    expect(panelFitsBeside(940 - 520, 380)).toBe(false);
-    expect(panelFitsBeside(940, 380), "…whereas the full room would have said yes").toBe(
-      true,
-    );
+      room.includes("minusPinnedColumn"),
+      "…and the measurement stops offering the option, or it grows back by use",
+    ).toBe(false);
+    // The floor itself is unchanged: one column still yields to the thread.
+    expect(panelFitsBeside(940, 380)).toBe(true);
+    expect(panelFitsBeside(700, 380)).toBe(false);
   });
 
   test("a narrow window never destroys the width the reader chose", () => {
@@ -592,35 +633,51 @@ describe("a pinned reading is never torn down", () => {
   // The whole point of the pin: the subtree is mounted once and stays mounted.
   // Anything that returns null instead of hiding it rebuilds a PDF from scratch
   // and lands the reader back on page one — the defect reported in production.
-  test("no room means HIDDEN, not unmounted", () => {
+  test("no room means HIDDEN for a PINNED reading, never unmounted", () => {
     const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
     expect(
       /const roomless = isMobile \|\| !panelFitsBeside\(available, min\);/.test(dock),
-      "the roomless states are computed…",
+      "the roomless state is computed…",
     ).toBe(true);
     expect(
       /hidden=\{roomless\}/.test(dock),
-      "…and hide the column instead of returning null",
+      "…and hides the column instead of returning null",
     ).toBe(true);
-    const nulls = [...dock.matchAll(/return null;/g)];
+    // An UNPINNED panel in that state IS unmounted here, on purpose: the
+    // conversation shows it as a sheet, and two live copies would parse one PDF
+    // twice. The order matters — this return must come before the render, and
+    // must be conditioned on the panel not being pinned.
     expect(
-      nulls.length,
-      "only two: no pin at all, and a pin that is not this reader's",
-    ).toBe(2);
+      /if \(roomless && !pin\.pinned\) return null;/.test(dock),
+      "the unpinned narrow case stands down for the sheet",
+    ).toBe(true);
   });
 
-  test("pinning hands the reading over, local state included", () => {
-    // Left behind, the conversation's copy is kept off screen only by the
-    // identity check — and that check drifts the moment the pinned document
-    // moves to a newer version, at which point the old one reappeared beside
-    // the new one.
-    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+  test("PINNING MOVES NOTHING — it sets a flag on the record already mounted", () => {
+    // THE defect the users reported, from both ends: pinning used to hand the
+    // reading from the conversation's column to the persistent one, and a
+    // handover between two components is an unmount — a PDF open at page 15 came
+    // back at page 1. Unpinning handed it back, except the conversation had let
+    // go, so the panel vanished. Derived from the source because the mistake to
+    // guard against is a call that reads perfectly well: `openPanel` where
+    // `setPanelPinned` belongs.
+    const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
+    const button = dock.slice(dock.indexOf("aria-pressed={pin.pinned}"));
+    const handler = button.slice(0, button.indexOf("</button>"));
     expect(
-      /pinPanel\(\{[\s\S]{0,400}?\}\);[\s\S]{0,700}?setActiveSourcesMessageId\(null\);[\s\S]{0,200}?setActiveCron\(null\);/.test(
-        chat,
-      ),
-      "the four local slots are cleared at pin time",
+      handler.includes("setPanelPinned(pin.pinId, true)"),
+      "pinning flips the flag",
     ).toBe(true);
+    expect(
+      handler.includes("openPanel("),
+      "…and never re-opens the reading, which would mint a new record and remount it",
+    ).toBe(false);
+    // The store side of the same promise: setting the flag keeps the pinId, so
+    // nothing keyed on it is torn down.
+    const rec = openPanel(aDoc);
+    setPanelPinned(rec.pinId, true);
+    expect(getPinnedPanel()?.pinId, "same record, same mount").toBe(rec.pinId);
+    expect(getPinnedPanel()?.params, "same content, untouched").toBe(rec.params);
   });
 });
 
@@ -638,10 +695,175 @@ describe("the same document in another conversation is another reading", () => {
       originLabel: "Revue",
       params: doc,
     });
-    expect(isPinnedContent(pin, here, "document", doc), "in its own chat").toBe(true);
+    expect(showsExactly(here, "document", doc), "in its own chat").toBe(true);
     expect(
-      isPinnedContent(pin, elsewhere, "document", doc),
+      showsExactly(elsewhere, "document", doc),
       "…and NOT in another one, whose column must be free to draw it",
     ).toBe(false);
+  });
+});
+
+// THE TWO THINGS THE CLIENT ASKED FOR, as rules rather than as symptoms.
+//
+//  "when I pin, the content must not be refreshed"  -> pinning is a flag on a
+//   record that is already mounted (asserted above, "PINNING MOVES NOTHING").
+//  "when I unpin it should not close, unless I am not in the conversation it
+//   came from" -> the two rules below.
+describe("unpinning means something different depending on where you stand", () => {
+  const reading = {
+    kind: "document" as const,
+    ownerUserId: ME,
+    originChatId: "chatA",
+    originLabel: "Revue budgétaire",
+    params: { doc: { filename: "note.md", storageId: "st1" } },
+  };
+
+  test("AT HOME, unpinning keeps the reading on screen", () => {
+    const rec = openPanel(reading);
+    setPanelPinned(rec.pinId, true);
+    expect(unpinOutcome(getPinnedPanel(), here)).toBe("keep");
+    setPanelPinned(rec.pinId, false);
+    expect(
+      whoOwns(getPinnedPanel(), here),
+      "still drawn: an open panel belongs beside the thread it came from",
+    ).toBe("dock");
+  });
+
+  test("AWAY FROM HOME, unpinning closes it", () => {
+    const rec = openPanel(reading);
+    setPanelPinned(rec.pinId, true);
+    expect(
+      unpinOutcome(getPinnedPanel(), elsewhere),
+      "unpinning from another conversation is 'I am carrying on here'",
+    ).toBe("close");
+    // …and merely clearing the flag would NOT be enough: the record would go
+    // invisible and come back the next time the reader walked into chat A.
+    setPanelPinned(rec.pinId, false);
+    expect(whoOwns(getPinnedPanel(), elsewhere)).toBe("none");
+    expect(
+      whoOwns(getPinnedPanel(), here),
+      "which is why the outcome is 'close', not 'clear the flag'",
+    ).toBe("dock");
+  });
+
+  test("in Settings, with no conversation at all, unpinning closes it too", () => {
+    const rec = openPanel(reading);
+    setPanelPinned(rec.pinId, true);
+    expect(unpinOutcome(getPinnedPanel(), nowhere)).toBe("close");
+  });
+});
+
+describe("what earns the screen", () => {
+  const openHereRec = () =>
+    openPanel({
+      kind: "sources",
+      ownerUserId: ME,
+      originChatId: "chatA",
+      originLabel: "Revue",
+      params: { messageId: "m1" },
+    });
+
+  test("an UNPINNED panel shows at home and nowhere else", () => {
+    openHereRec();
+    expect(whoOwns(getPinnedPanel(), here)).toBe("dock");
+    expect(whoOwns(getPinnedPanel(), elsewhere)).toBe("none");
+    expect(whoOwns(getPinnedPanel(), nowhere)).toBe("none");
+  });
+
+  test("a PINNED panel shows everywhere — that is what pinning is", () => {
+    const rec = openHereRec();
+    setPanelPinned(rec.pinId, true);
+    expect(whoOwns(getPinnedPanel(), here)).toBe("dock");
+    expect(whoOwns(getPinnedPanel(), elsewhere)).toBe("dock");
+    expect(whoOwns(getPinnedPanel(), nowhere)).toBe("dock");
+  });
+
+  test("never another reader's, pinned or not", () => {
+    const rec = openHereRec();
+    expect(whoOwns(getPinnedPanel(), someoneElse)).toBe("none");
+    setPanelPinned(rec.pinId, true);
+    expect(
+      whoOwns(getPinnedPanel(), someoneElse),
+      "an identity boundary must not depend on a flag",
+    ).toBe("none");
+  });
+
+  test("a reading with no conversation of origin is held by the pin alone", () => {
+    // A scheduled task opened from Settings has no home to be at.
+    const rec = openPanel({
+      kind: "cron",
+      ownerUserId: ME,
+      originChatId: null,
+      originLabel: "Tâches programmées",
+      params: { instanceName: "olivier", jobId: "j1", part: {}, occurrenceId: "o1" },
+    });
+    expect(whoOwns(getPinnedPanel(), nowhere)).toBe("none");
+    setPanelPinned(rec.pinId, true);
+    expect(whoOwns(getPinnedPanel(), nowhere)).toBe("dock");
+  });
+});
+
+describe("leaving a conversation closes what was only open there", () => {
+  const openHereRec = () =>
+    openPanel({
+      kind: "sources",
+      ownerUserId: ME,
+      originChatId: "chatA",
+      originLabel: "Revue",
+      params: { messageId: "m1" },
+    });
+
+  test("an unpinned reading is DISCARDED once the reader is elsewhere", () => {
+    openHereRec();
+    expect(shouldDropOnLeave(getPinnedPanel(), here)).toBe(false);
+    expect(
+      shouldDropOnLeave(getPinnedPanel(), elsewhere),
+      "otherwise it lies in the store and resurfaces on the way back in",
+    ).toBe(true);
+    expect(shouldDropOnLeave(getPinnedPanel(), nowhere)).toBe(true);
+  });
+
+  test("a pinned reading is never discarded — surviving that IS the pin", () => {
+    const rec = openHereRec();
+    setPanelPinned(rec.pinId, true);
+    expect(shouldDropOnLeave(getPinnedPanel(), elsewhere)).toBe(false);
+    expect(shouldDropOnLeave(getPinnedPanel(), nowhere)).toBe(false);
+  });
+
+  test("another reader's record is never discarded by MY navigation", () => {
+    // The identity purge belongs to the identity swap. Doing it from a viewer
+    // check would let one session's navigation delete another session's state.
+    openHereRec();
+    expect(shouldDropOnLeave(getPinnedPanel(), someoneElse)).toBe(false);
+  });
+
+  test("nothing open, nothing to discard", () => {
+    expect(shouldDropOnLeave(null, elsewhere)).toBe(false);
+  });
+});
+
+describe("opening replaces, and opens UNPINNED", () => {
+  test("a fresh reading is not born pinned", () => {
+    const rec = openPanel(aDoc);
+    expect(rec.pinned, "pinning is a deliberate act, never a side effect").toBe(false);
+  });
+
+  test("opening while something is pinned replaces it — one column, one reading", () => {
+    const first = openPanel(aDoc);
+    setPanelPinned(first.pinId, true);
+    const second = openPanel({ ...aDoc, params: { filename: "autre.md" } });
+    expect(getPinnedPanel()?.pinId).toBe(second.pinId);
+    expect(getPinnedPanel()?.pinned, "and the replacement starts unpinned").toBe(false);
+  });
+
+  test("a STALE pin toggle cannot touch the reading that replaced it", () => {
+    const first = openPanel(aDoc);
+    const second = openPanel({ ...aDoc, params: { filename: "autre.md" } });
+    setPanelPinned(first.pinId, true);
+    expect(
+      getPinnedPanel()?.pinned,
+      "a control captured before the replacement must not pin the new reading",
+    ).toBe(false);
+    expect(getPinnedPanel()?.pinId).toBe(second.pinId);
   });
 });

@@ -20,8 +20,23 @@ export interface PromptBridge {
   insertText: (text: string) => void;
 }
 
+/** THE composer's contract, module-level so the two subtrees that need it can
+ *  reach it without being nested one inside the other.
+ *
+ *  The viewer moved out of the conversation and into the persistent column,
+ *  which is the conversation's SIBLING — outside any provider it renders. The
+ *  context alone would hand that viewer a null bridge, and "use in prompt" would
+ *  report itself unavailable on every document. There is one composer on screen
+ *  at a time, so one ref is the honest shape; the context stays for the nested
+ *  case and simply defaults to it. */
+export const sharedPromptBridge: MutableRefObject<PromptBridge | null> = {
+  current: null,
+};
+
 export const PromptBridgeContext =
-  createContext<MutableRefObject<PromptBridge | null> | null>(null);
+  createContext<MutableRefObject<PromptBridge | null> | null>(
+    sharedPromptBridge,
+  );
 
 /** A backtick fence LONGER than any run inside the content, so a markdown
  *  document containing ``` blocks nests safely (min 3). */

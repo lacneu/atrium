@@ -1,29 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
-import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api";
-import type { Id } from "../../convex/_generated/dataModel";
 import { m } from "@/paraglide/messages.js";
 import {
   turnBaselineMs,
+  turnClockActive,
   turnElapsedMs,
   turnClockLabel,
 } from "./turnClockView";
-import {
-  assistantEmptyState,
-  toolPartsHaveSpawn,
-} from "./assistantEmptyState";
-import { messageHasText } from "./runStatusView";
-import type { ToolActivityPart } from "./toolActivityView";
-import type { SubAgentRow } from "./subAgentActivityView";
+import { TurnActivityAnchorContext } from "./turnActivityAnchor";
 
 // Live "Working for 5 min 21 s" clock above an assistant message whose TURN is
 // still being treated (ChatGPT/Codex-style). Covers BOTH in-flight shapes:
 //   - the message itself is STREAMING, and
-//   - a DELEGATED turn whose parent message settled empty while its sub-agent
-//     runs or its merged reply is being composed (the waiting/composing pill)
-//     — the user reads that block as "still working", so the clock must not
-//     vanish there (user report 2026-07-20).
+//   - a DELEGATED turn whose parent message settled — with or WITHOUT text —
+//     while its sub-agent runs or its merged reply is being composed (the
+//     waiting/composing pill) — the user reads that block as "still working",
+//     so the clock must not vanish there (user report 2026-07-20).
+// The second shape is not decided here: it is the thread's anchor, read through
+// TurnActivityAnchorContext, so the clock and the pill under it show one verdict
+// over one window instead of two verdicts over two.
 // Renders null once the turn truly settles — the final duration stays in the
 // ⋯ menu (no duplication). The 1 s interval only exists while active.
 
@@ -31,12 +26,7 @@ interface ClockMeta {
   status?: string;
   messageId?: string;
   sentAt?: number;
-  chatId?: string;
-  allToolParts?: ToolActivityPart[];
-  toolParts?: ToolActivityPart[];
 }
-
-const EMPTY_PARTS: ToolActivityPart[] = [];
 
 export function TurnClock() {
   const status = useMessage(
@@ -48,48 +38,25 @@ export function TurnClock() {
   const sentAt = useMessage(
     (msg) => (msg.metadata?.custom as ClockMeta | undefined)?.sentAt,
   );
-  const chatId = useMessage(
-    (msg) => (msg.metadata?.custom as ClockMeta | undefined)?.chatId,
-  );
-  const toolParts = useMessage(
-    (msg) =>
-      (msg.metadata?.custom as ClockMeta | undefined)?.allToolParts ??
-      (msg.metadata?.custom as ClockMeta | undefined)?.toolParts ??
-      EMPTY_PARTS,
-  );
-  const hasText = useMessage((msg) =>
-    messageHasText(
-      msg.content as ReadonlyArray<{ type?: string; text?: unknown }>,
-    ),
-  );
-  const hasMedia = useMessage((msg) =>
-    (msg.content as ReadonlyArray<{ type?: string }>).some(
-      (p) => p?.type === "file",
-    ),
-  );
   const streaming = status === "streaming";
-  // DELEGATION probe, only where it can matter (a settled-empty turn that
-  // spawned): Convex dedupes this subscription with the sub-agent monitor's
-  // and AssistantEmptyState's identical one — no extra network cost.
-  const mayBeDelegated =
-    status === "complete" &&
-    !hasText &&
-    !hasMedia &&
-    toolPartsHaveSpawn(toolParts);
-  const subAgents = useQuery(
-    api.subAgents.listSubAgents,
-    mayBeDelegated && chatId ? { chatId: chatId as Id<"chats"> } : "skip",
-  ) as SubAgentRow[] | undefined;
-  const delegatedState = mayBeDelegated
-    ? assistantEmptyState(
-        { status, hasText, hasMedia },
-        toolParts,
-        subAgents ?? [],
-        messageId,
-      ).kind
-    : "none";
-  const active =
-    streaming || delegatedState === "waiting" || delegatedState === "composing";
+  // THE SAME VERDICT the thread already reached, not a second opinion of it.
+  // The thread computes where the "still working" signal belongs — covering a
+  // running sub-agent AND the window in which its reply is being composed, each
+  // with its own local expiry — and publishes it here. Reading that decision is
+  // what makes the clock and the pill under it incapable of disagreeing.
+  //
+  // It replaces, in turn: a probe that only fired on a settled turn with NO text
+  // and NO media (an agent that says a sentence before delegating fell outside
+  // it), then a straight `running` read of the same query — which switched the
+  // clock off at "the agent is finalising its reply" while the pill below stayed
+  // on, because running and delivering are not the same window (live check
+  // 2026-08-03; prod reports 2026-07-22 and 2026-08-03).
+  const anchored = useContext(TurnActivityAnchorContext);
+  const active = turnClockActive(
+    streaming,
+    anchored?.messageId ?? null,
+    messageId,
+  );
   // First-observation anchor, keyed by messageId so a composer runtime reused
   // across chats/turns never carries a stale baseline (the repo's reuse trap).
   const anchor = useRef<{

@@ -1,5 +1,112 @@
 # Changelog
 
+## [0.71.3] — Two panels that lied about their own state
+
+Corrective. Two things on screen were saying something other than what was
+happening: the block that reports an agent's delegated work contradicted itself
+while the work ran, and the right-hand panel rebuilt what you were reading the
+moment you pinned it — then closed it when you unpinned.
+
+### The side panel: pinning moves nothing, unpinning does not close it
+
+The panel had a home in the conversation and another in the persistent chrome,
+and pinning handed the reading from one to the other. A handover between two
+components is an unmount, so both reported defects were the same consequence:
+pinning a PDF open at page 15 brought it back at page 1, and unpinning made the
+panel disappear, because the conversation's column had already let go of it.
+
+- **Every panel opens in the one column that survives navigation**, pinned or
+  not. There is nothing left to hand over.
+- **Pinning is a flag on the reading already on screen.** The page you are on,
+  your scroll, your search box, a parsed PDF: none of it is rebuilt, because
+  nothing is remounted.
+- **Unpinning in the conversation the reading came from keeps it open.** You
+  asked for it beside that thread before you ever pinned it, and it stays there.
+- **Unpinning from anywhere else closes it** — another conversation, Settings,
+  no conversation at all. That is what unpinning there means: you have decided to
+  carry on where you are.
+- **Leaving a conversation still closes a panel you had merely opened.** Only a
+  pinned one follows you.
+- **"Use in prompt" reaches the composer again.** The document viewer now renders
+  in the persistent column, which is the conversation's sibling rather than its
+  child, so the contract it read through a context stopped at the provider's
+  edge. The composer publishes into a shared ref both subtrees reach.
+
+One behaviour is deliberately dropped: a reading pinned in one conversation and a
+second one opened in another can no longer sit side by side as two columns.
+Opening replaces — one column, one reading — which is the rule the code already
+stated and could not honour while two surfaces existed. The width negotiation
+that kept the pair from crushing the thread goes with it.
+
+### The working block: one voice, and no silent gaps
+
+While an agent's delegated work ran, the elapsed time vanished from the top of
+the block as soon as the agent had written a sentence, a second duration appeared
+underneath it, and for a stretch nothing on screen said anything was happening at
+all — the work carried on regardless.
+
+- **The elapsed time stays at the top of the block for the whole treatment.** It
+  no longer stops when the agent writes text, nor when a sub-agent finishes and
+  its reply is being composed. It is the time the block has taken, from its start
+  until it truly settles.
+- **One clock, not two.** The duration under the "a sub-agent is working" line is
+  gone when the line sits on the block that owns the work: that block already
+  carries the clock, and the two counted different things — the whole turn above,
+  the sub-task below.
+- **The clock and the "still working" line can no longer disagree.** They read a
+  single verdict instead of each deciding for itself when a turn is still being
+  treated. The disagreements were exactly the gap between the two windows they
+  each knew about.
+- **And that verdict no longer blinks off at the handover.** The moment a
+  sub-agent finished and its reply started being composed, every indicator left
+  the screen for a measured 66 ms before coming back. The window is now opened as
+  the block is drawn rather than a frame after it.
+- **A stream that has ended no longer silences the whole block.** Whether a
+  message is streaming is read from the message, not from the presence of a
+  live-text row: such a row can outlive its message, and while one did, the block
+  reported nothing at all — for as long as fifteen minutes — with the work still
+  running.
+- **Opening a conversation while a reply is being composed now shows it.** The
+  server reports how much of that window is left, so the first thing a freshly
+  opened page sees is enough to answer "is this live?". The client had no way to
+  tell a live delivery from an old timestamp and chose to trust neither, which
+  meant reopening a conversation mid-delivery showed nothing at all. The choice is
+  gone rather than made differently, and the client-side 45-second cap it needed
+  goes with it.
+- **"Generating…" says what is being generated.** It now reads "Writing the
+  reply…", like every neighbouring label, which names what the agent is doing.
+
+### Known, and not addressed here
+
+- The **Stop button** still disappears once the parent turn settles, while a
+  sub-agent it launched keeps running.
+- When two sub-agents run at once and one delivers, the signal **moves** from one
+  block to the other, and a ~57 ms gap remains at that handover. The cause is the
+  anchor changing block, not the delivery window this release closed.
+- The **running** signal keeps the one-frame gap this release removed from the
+  delivering one: after a sub-agent has been silent long enough to be written off
+  (twenty minutes), a new one starting blanks the block for a frame. It needs a
+  notion of "this observation is fresher" that the running signal does not
+  publish today, and it only bites in an already-degraded state.
+- Leaving a conversation before its delivery window elapses and returning after
+  can briefly show "finalising" again, for as long as the cached value takes to
+  refresh. The fix would restore the persistent client-side state this release
+  removed, so it waits for a better key than a timestamp.
+- Carried unchanged from `0.71.2`, and verified against it rather than assumed:
+  in a window too narrow for a column, a PINNED reading is kept mounted but
+  hidden and the narrow presentation skips it, so it is not merely invisible but
+  unreachable — its close and unpin controls go with it. And "use in prompt"
+  writes to the conversation's composer, not to a DETACHED one.
+
+Deploy: `npx convex deploy` **first**, then the frontend image — and in that
+order. The remaining delivery time is a new backend field, and the frontend has
+no fallback for its absence on purpose: a fallback would be the very guesswork
+this release removes. Convex first is what makes the order safe — the new backend
+serves the old frontend unchanged, since it simply ignores the extra field, so
+there is no moment at which the two disagree. The reverse order would ship a
+frontend reading a field nobody sends, and would show no delivery indicator at
+all until the functions catch up.
+
 ## [0.71.2] — A pinned reading is no longer rebuilt on every conversation change
 
 Corrective release. A pinned panel was being handed between two different
@@ -18,6 +125,8 @@ panel held died with it on each conversation change: a 69-page PDF closed at pag
   conversation's column and into the persistent one, which does reload it that
   once. Everything after that is stable — and the conversation lets go of it at
   that moment, so it cannot reappear beside the pinned one later.
+  *(Superseded: that one reload was itself the defect. See the entry above —
+  pinning now moves nothing at all.)*
 - **Narrowing the window no longer costs you the reading either.** Where there is
   no room for a column — a phone, a window too narrow for a readable thread
   beside one — the panel is hidden rather than taken down. Widen the window again

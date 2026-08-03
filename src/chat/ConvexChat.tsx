@@ -184,6 +184,12 @@ import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { RunStatus } from "./RunStatus";
 import { TurnClock } from "./TurnClock";
 import {
+  TurnActivityAnchorContext,
+  deliveryWindowOpen,
+  threadStreaming,
+  type DeliveryExpiry,
+} from "./turnActivityAnchor";
+import {
   turnBaselineMs,
   turnElapsedMs,
   turnClockLabel,
@@ -209,7 +215,7 @@ import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { parseChatReferenceCandidate } from "./chatReference";
-import { PromptBridgeContext, type PromptBridge } from "./promptBridge";
+import { PromptBridgeContext, sharedPromptBridge } from "./promptBridge";
 import { takePendingFocusTerms } from "./pendingFocusTerms";
 import { chatBannerKind } from "./chatBanner";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
@@ -243,14 +249,13 @@ import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
 import {
   getPinnedPanel,
-  fittedPanelWidth,
   panelFitsBeside,
-  isPinnedContent,
   panelIdentity,
-  pinPanel,
+  panelOpenHere,
+  openPanel,
   releasePinnedPanel,
+  setPinnedParams,
   subscribePinnedPanel,
-  whoOwns,
   type PinnedPanelKind,
 } from "./pinnedPanel";
 import { useThreadLanding } from "./useThreadLanding";
@@ -361,19 +366,6 @@ export function useUiPrefs(): UiEffective {
 // delete-assistant flow arm the SAME thinking placeholder + composer lock a
 // send uses, from inside any message row.
 const TurnGateContext = createContext<TurnGate | null>(null);
-
-// Where the thread-level "still working" indicator should ANCHOR: under the
-// bubble whose sub-agent row carries the live work. Null = bottom-of-thread
-// fallback (no anchor, or the anchor's bubble is not mounted). Without this a
-// QUEUED follow-up sits between the working bubble and the indicator, and the
-// signal reads as belonging to the WAITING user message (user report).
-const TurnActivityAnchorContext = createContext<{
-  messageId: string;
-  running: boolean;
-  workingSince: number | null;
-  /** The running work's own progress line, when it publishes one. */
-  progressSummary: string | null;
-} | null>(null);
 
 // Mid-turn QUEUE (Phase 1): the composer reads this to send a follow-up WHILE a
 // turn is in flight. Null when no chat is mounted. Provided by ConvexChat from the
@@ -543,247 +535,164 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // that message until closed or another chip is clicked, and resets on chat
   // switch. Mobile (< 767px) falls back to the overlay drawer (no 3rd column).
   const isMobile = useIsMobile();
-  // The room this column and the conversation share, measured once and given to
-  // every width below: the DRAG must obey the same floor as the render, or the
-  // first move of the separator repaints the raw remembered width and the thread
-  // disappears on a narrow desktop window.
-  // MINUS the persistent column when one is on screen: it is served first, and
-  // this one gets what is actually left. Without that, a pinned reading and a
-  // freshly opened one each claimed the same width and squeezed the thread out
-  // between them.
-  const room = useWorkspaceRoom({ minusPinnedColumn: true });
-  const fitFor = useCallback(
-    (min: number) => (w: number) => fittedPanelWidth(w, room, min),
-    [room],
-  );
-  const {
-    width: sourcesWidth,
-    startResize: startSourcesResize,
-    columnRef: sourcesColRef,
-  } = useResizableWidth(
-    {
-      storageKey: "oc.sources.width",
-      defaultWidth: 380,
-      min: 300,
-      max: 680,
-      edge: "right",
-      fit: fitFor(300),
-    },
-  );
-  const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(
-    null,
-  );
-  const {
-    width: subAgentWidth,
-    startResize: startSubAgentResize,
-    columnRef: subAgentColRef,
-  } =
-    useResizableWidth({
-      storageKey: "oc.subagent.width",
-      defaultWidth: 460,
-      min: 320,
-      max: 720,
-      edge: "right",
-      fit: fitFor(320),
-    });
-  const [activeSubAgentKey, setActiveSubAgentKey] = useState<string | null>(null);
-  // Document Viewer (third occupant of the shared right column): a clicked
-  // file chip opens the file IN PLACE — conversation stays live on the left.
-  // Wider default than Sources (documents want room), own persisted width.
-  // The ceiling is viewport-relative: reading the document is the point of
-  // this panel, so the user may pull it across most of the window (the
-  // conversation keeps the rest; collapsing the sidebar frees even more).
-  const {
-    width: docViewerWidth,
-    startResize: startDocViewerResize,
-    columnRef: docViewerColRef,
-  } =
-    useResizableWidth({
-      storageKey: "oc.docviewer.width",
-      defaultWidth: 560,
-      min: 380,
-      max: 1800,
-      maxViewportFraction: 0.72,
-      edge: "right",
-      fit: fitFor(380),
-    });
-  const [activeDoc, setActiveDoc] = useState<ViewerDoc | null>(null);
-  // Sources + the sub-agent panel + the document viewer SHARE one right column
-  // (mutually exclusive): opening one closes the others, so there's never a 4th
-  // column. Each keeps its own resizable width.
-  const sourcesApi = useMemo<SourcesPanelApi>(
-    () => ({
-      activeMessageId: activeSourcesMessageId,
-      openFor: (id) => {
-        setActiveSourcesMessageId(id);
-        setActiveSubAgentKey(null);
-        setActiveDoc(null);
-        setActiveCron(null);
-      },
-      close: () => setActiveSourcesMessageId(null),
-    }),
-    [activeSourcesMessageId],
-  );
-  const subAgentApi = useMemo<SubAgentPanelApi>(
-    () => ({
-      activeChildKey: activeSubAgentKey,
-      openFor: (key) => {
-        setActiveSubAgentKey(key);
-        setActiveSourcesMessageId(null);
-        setActiveDoc(null);
-        setActiveCron(null);
-      },
-      close: () => setActiveSubAgentKey(null),
-    }),
-    [activeSubAgentKey],
-  );
-  // Composer -> viewer bridge (collaborative documents "use in prompt").
-  const promptBridgeRef = useRef<PromptBridge | null>(null);
-  const docViewerApi = useMemo<DocumentViewerApi>(
-    () => ({
-      activeDoc,
-      openFor: (doc) => {
-        setActiveDoc(doc);
-        setActiveSourcesMessageId(null);
-        setActiveSubAgentKey(null);
-        setActiveCron(null);
-      },
-      // A pinned document is drawn by the PERSISTENT column, never by this one,
-      // so no opening here can ever be the pinned reading — the pin is carried
-      // by that column's own provider instead. Same act, same guard, one place.
-      openNewerVersion: (doc) => {
-        setActiveDoc(doc);
-        setActiveSourcesMessageId(null);
-        setActiveSubAgentKey(null);
-        setActiveCron(null);
-      },
-      close: () => setActiveDoc(null),
-    }),
-    [activeDoc],
-  );
-  // 4th occupant of the shared right column: the cron DETAIL (a job the turn
-  // created/updated, opened from the message's "Crons" section).
-  const [activeCron, setActiveCron] = useState<{
-    instanceName: string;
-    jobId: string | null;
-    part: CronPartView;
-    occurrenceId: string;
-  } | null>(null);
-  // CHANGING CONVERSATION EMPTIES THE COLUMN — DURING THE RENDER, not after it.
-  // These four were cleared by effects, which run once the new conversation has
-  // already been painted: for that frame the column of chat B showed chat A's
-  // reading, while the dock — already routed to B — drew the pinned one too.
-  // Two live copies, each with its own queries and effects. Adjusting the state
-  // while rendering makes the change atomic with the route change (React's
-  // documented "derive state from props" escape hatch).
-  const [panelChat, setPanelChat] = useState<typeof chatId>(chatId);
-  if (panelChat !== chatId) {
-    setPanelChat(chatId);
-    setActiveSourcesMessageId(null);
-    setActiveSubAgentKey(null);
-    setActiveDoc(null);
-    setActiveCron(null);
-  }
-  const chatInstanceName = agentInfo?.agent?.instanceName ?? null;
-  const cronApi = useMemo<CronDetailApi>(
-    () => ({
-      active: activeCron,
-      openFor: (part, routedInstanceName, occurrenceId) => {
-        const instanceName = routedInstanceName ?? chatInstanceName;
-        if (instanceName === null) return; // no resolvable gateway — no panel
-        setActiveCron({
-          instanceName,
-          jobId: part.jobId ?? null,
-          part,
-          occurrenceId,
-        });
-        setActiveSourcesMessageId(null);
-        setActiveSubAgentKey(null);
-        setActiveDoc(null);
-      },
-      close: () => setActiveCron(null),
-    }),
-    [activeCron, chatInstanceName],
-  );
-  const sourcesOpen = activeSourcesMessageId !== null;
-  const subAgentOpen = activeSubAgentKey !== null;
-  const docViewerOpen = activeDoc !== null;
-  const cronOpen = activeCron !== null;
-
-  // PINNED PANEL. The column is mounted per chat, so leaving the conversation
-  // used to take the reading with it. `pinnedPanel` owns what is pinned; this
-  // component owns the column, and the two agree through `whoOwns` — exactly one
-  // surface draws the content (see pinnedPanel.ts for the rule and its tests).
+  // The room the conversation and the column share. Only the NARROW threshold is
+  // decided here now (column, or sheet over the conversation); the column's own
+  // width lives with the column, in `PinnedPanelDock`.
+  const room = useWorkspaceRoom();
+  // THE RIGHT-HAND PANEL LIVES IN ONE PLACE, and it is not here.
+  //
+  // What is open, where it came from, and whether it is pinned all belong to the
+  // `pinnedPanel` store, and the persistent column (`PinnedPanelDock`) is the
+  // only surface that draws it. This component no longer keeps its own copy: it
+  // used to, and pinning then had to HAND the reading from this column to that
+  // one — a handover between two components is an unmount, so a PDF open at page
+  // 15 came back at page 1. Unpinning handed it back, except this column had
+  // already let go, so the panel vanished instead. One record, one mount.
+  //
+  // What is left here: the openers the conversation's own controls call, and the
+  // active-chip state they read back.
   const pinnedPanel = useSyncExternalStore(
     subscribePinnedPanel,
     getPinnedPanel,
     getPinnedPanel,
   );
   // WHO is looking. Passed whole to every arbitration so no call site can omit
-  // the identity check (the store outlives React; a pin made under another
+  // the identity check (the store outlives React; a panel opened under another
   // identity must never be drawn).
   const viewer = { userId: meUserId, chatId: chatIdStr };
-  /** Which content this column currently holds, or null. */
-  const openKind: PinnedPanelKind | null = cronOpen
-    ? "cron"
-    : docViewerOpen
-      ? "document"
-      : subAgentOpen
-        ? "subagent"
-        : sourcesOpen
-          ? "sources"
-          : null;
-  /** Its own parameters — captured verbatim at pin time, and compared against
-   *  the pin so the button reports THIS content rather than merely "something is
-   *  pinned". */
-  const openParams: Record<string, unknown> | null =
-    openKind === null
-      ? null
-      : openKind === "cron"
-        ? (activeCron as unknown as Record<string, unknown>)
-        : openKind === "document"
-          ? { doc: activeDoc }
-          : openKind === "subagent"
-            ? {
-                childKey: activeSubAgentKey,
-                parentAgentLabel: assistantDisplayName(assistantIdentity),
-              }
-            : { messageId: activeSourcesMessageId };
+  // THIS conversation's open panel — null when the record belongs to another
+  // conversation (pinned from elsewhere and merely visible here) or to another
+  // identity. That is what the chips must read: marking one active here for a
+  // reading that came from another thread points at the wrong message.
+  const openHere = panelOpenHere(pinnedPanel, viewer);
+  const chatInstanceName = agentInfo?.agent?.instanceName ?? null;
+  /** Open a reading in the one column. Every opener funnels through this, so the
+   *  origin and the owner are captured once and cannot be omitted. */
+  const openInPanel = useCallback(
+    (kind: PinnedPanelKind, params: Record<string, unknown>) => {
+      openPanel({
+        kind,
+        ownerUserId: meUserId,
+        originChatId: chatIdStr,
+        originLabel: meta?.title || m.chat_conversation_fallback(),
+        params,
+      });
+    },
+    [meUserId, chatIdStr, meta?.title],
+  );
+  /** Close it, but only if the reading being closed is the one this conversation
+   *  opened: a panel pinned from ANOTHER conversation is on screen here, and a
+   *  chip's close in this thread must not reach across and dismiss it. */
+  const closeIfOpenHere = useCallback(() => {
+    if (openHere !== null) releasePinnedPanel(openHere.pinId);
+  }, [openHere]);
+  const activeSourcesMessageId =
+    openHere?.kind === "sources" ? (openHere.params.messageId as string) : null;
+  const activeSubAgentKey =
+    openHere?.kind === "subagent" ? (openHere.params.childKey as string) : null;
+  const activeDoc =
+    openHere?.kind === "document" ? (openHere.params.doc as ViewerDoc) : null;
+  const activeCron =
+    openHere?.kind === "cron"
+      ? (openHere.params as unknown as {
+          instanceName: string;
+          jobId: string | null;
+          part: CronPartView;
+          occurrenceId: string;
+        })
+      : null;
+  // Sources + the sub-agent panel + the document viewer + the cron detail SHARE
+  // one right column (mutually exclusive): opening one replaces the others, so
+  // there is never a second column. Each keeps its own resizable width.
+  const sourcesApi = useMemo<SourcesPanelApi>(
+    () => ({
+      activeMessageId: activeSourcesMessageId,
+      openFor: (id) => openInPanel("sources", { messageId: id }),
+      close: closeIfOpenHere,
+    }),
+    [activeSourcesMessageId, openInPanel, closeIfOpenHere],
+  );
+  const subAgentLabel = assistantDisplayName(assistantIdentity);
+  const subAgentApi = useMemo<SubAgentPanelApi>(
+    () => ({
+      activeChildKey: activeSubAgentKey,
+      openFor: (key) =>
+        openInPanel("subagent", {
+          childKey: key,
+          parentAgentLabel: subAgentLabel,
+        }),
+      close: closeIfOpenHere,
+    }),
+    [activeSubAgentKey, subAgentLabel, openInPanel, closeIfOpenHere],
+  );
+  // Composer -> viewer bridge (collaborative documents "use in prompt").
+  // THE shared ref, not a fresh one: the document viewer now lives in the
+  // persistent column, a SIBLING of this component, so a ref created here would
+  // never reach it and "use in prompt" would be dead on every document. Cleared
+  // on unmount so a torn-down composer never leaves a stale contract behind for
+  // a viewer that outlives it.
+  const promptBridgeRef = sharedPromptBridge;
+  useEffect(
+    () => () => {
+      promptBridgeRef.current = null;
+    },
+    [promptBridgeRef],
+  );
+  const docViewerApi = useMemo<DocumentViewerApi>(
+    () => ({
+      activeDoc,
+      openFor: (doc) => openInPanel("document", { doc }),
+      // "Open the newer version" REWRITES the open reading rather than opening a
+      // fresh one: the panel stays mounted, and a pinned document stays pinned
+      // through a version change. Opening anew would drop the pin and rebuild
+      // the viewer — the very unmount this design removes.
+      openNewerVersion: (doc) => {
+        if (openHere !== null) setPinnedParams(openHere.pinId, { doc });
+        else openInPanel("document", { doc });
+      },
+      close: closeIfOpenHere,
+    }),
+    [activeDoc, openHere, openInPanel, closeIfOpenHere],
+  );
+  const cronApi = useMemo<CronDetailApi>(
+    () => ({
+      active: activeCron,
+      openFor: (part, routedInstanceName, occurrenceId) => {
+        const instanceName = routedInstanceName ?? chatInstanceName;
+        if (instanceName === null) return; // no resolvable gateway — no panel
+        openInPanel("cron", {
+          instanceName,
+          jobId: part.jobId ?? null,
+          part,
+          occurrenceId,
+        });
+      },
+      close: closeIfOpenHere,
+    }),
+    [activeCron, chatInstanceName, openInPanel, closeIfOpenHere],
+  );
+  const sourcesOpen = activeSourcesMessageId !== null;
+  const subAgentOpen = activeSubAgentKey !== null;
+  const docViewerOpen = activeDoc !== null;
+  const cronOpen = activeCron !== null;
+  /** Which content this conversation currently has open, or null. */
+  const openKind: PinnedPanelKind | null = openHere?.kind ?? null;
+  const openParams: Record<string, unknown> | null = openHere?.params ?? null;
   const shownIdentity =
     openKind === null ? null : panelIdentity(openKind, openParams ?? {});
-  /** Is the pin THIS very reading? Then the PERSISTENT column is already drawing
-   *  it, and this one stands down — one surface, and no handover to unmount it. */
-  const thisIsPinned = isPinnedContent(pinnedPanel, viewer, openKind, openParams);
   const columnOpen = cronOpen || docViewerOpen || subAgentOpen || sourcesOpen;
   const columnMin = docViewerOpen ? 380 : subAgentOpen ? 320 : 300;
-  const columnWanted = docViewerOpen
-    ? docViewerWidth
-    : subAgentOpen
-      ? subAgentWidth
-      : sourcesWidth;
-  const drawnColumnWidth = fittedPanelWidth(columnWanted, room, columnMin);
   // TOO NARROW FOR A COLUMN AT ALL. An explicit open must always show something
   // — nobody clicks a source chip to watch nothing happen — but a column that
   // cannot stand beside the thread is not the way to show it: below the floor,
   // the panel takes the presentation it already has on a phone, a sheet over the
-  // conversation.
+  // conversation. That sheet is the ONLY panel this component still renders; the
+  // column itself belongs to `PinnedPanelDock`, and a PINNED reading is never
+  // shown as a sheet (the dock keeps it mounted and hidden instead), so the two
+  // can never be live at once.
   const columnFits = openKind === null || panelFitsBeside(room, columnMin);
-  const asSheet = isMobile || !columnFits;
-  // CLOSING THE READING ENDS THE PIN. The restore above fires on an empty column,
-  // so a close that left the pin standing would be undone on the next render —
-  // the X would look broken. A pin holds a reading open; it does not outlive the
-  // reader closing it.
-  const closingColumn = useCallback(
-    (close: () => void) => () => {
-      // ONLY the pin this column is actually showing. A pin taken elsewhere —
-      // another conversation, or another message in this one — is being drawn by
-      // the dock: closing what this column holds must not reach across and
-      // dismiss a reading the reader never touched.
-      if (thisIsPinned) releasePinnedPanel(pinnedPanel?.pinId);
-      close();
-    },
-    [thisIsPinned, pinnedPanel],
-  );
+  const asSheet =
+    columnOpen && (isMobile || !columnFits) && openHere?.pinned !== true;
   // Per-instance voice settings for THIS chat (read-aloud language/rate/auto).
   // One query at the root; the read-aloud button, the mic and the auto-reader
   // consume it via context.
@@ -864,204 +773,70 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
               <div className="oc-empty">{m.chat_empty_select()}</div>
             )}
           </div>
-          {/* DESKTOP: integrated, resizable Sources column (conversation stays
-              live on the left). MOBILE: overlay drawer below. */}
-          {/* `!thisIsPinned`: the persistent column is already showing this very
-              reading, and two components cannot pass a subtree between them —
-              drawing it here too would either duplicate it or, worse, take it
-              over and unmount the one the reader has been scrolling. */}
-          {columnOpen && !asSheet && !thisIsPinned ? (
-            <>
-              <div
-                className="oc-sources-resizer"
-                onPointerDown={
-                  docViewerOpen
-                    ? startDocViewerResize
-                    : subAgentOpen
-                      ? startSubAgentResize
-                      : startSourcesResize
-                }
-                role="separator"
-                aria-orientation="vertical"
-                aria-label={m.sources_panel_resize()}
-              />
-              <aside
-                className="oc-sources-col"
-                // One physical column shared by the three panels (mutually
-                // exclusive) — bind every hook's ref; only the active panel's
-                // drag writes to it.
-                ref={(el) => {
-                  sourcesColRef.current = el;
-                  subAgentColRef.current = el;
-                  docViewerColRef.current = el;
-                }}
-                style={{ width: drawnColumnWidth, flex: `0 0 ${drawnColumnWidth}px` }}
-              >
-                {/* The pin belongs to the COLUMN, not to one content: all four
-                    share it, so the control sits here once rather than four
-                    times. Pinning captures WHAT is open plus WHERE it came from
-                    — the origin is not recoverable from a content's props. */}
-                {openKind !== null ? (
-                  <div className="oc-sources-col__pinbar">
-                    <button
-                      type="button"
-                      className={`oc-sources-col__pin${thisIsPinned ? " is-on" : ""}`}
-                      aria-pressed={thisIsPinned}
-                      title={thisIsPinned ? m.pinned_panel_unpin() : m.panel_pin()}
-                      aria-label={
-                        thisIsPinned ? m.pinned_panel_unpin() : m.panel_pin()
-                      }
-                      onClick={() => {
-                        if (thisIsPinned) {
-                          releasePinnedPanel(pinnedPanel?.pinId);
-                          return;
-                        }
-                        pinPanel({
-                          kind: openKind,
-                          ownerUserId: viewer.userId,
-                          originChatId: chatId ?? null,
-                          originLabel: meta?.title || m.chat_conversation_fallback(),
-                          params: openParams ?? {},
-                        });
-                        // THE READING HAS MOVED, so this column lets go of it.
-                        // Left behind, the local state is a copy that only the
-                        // identity check keeps off screen — and that check drifts
-                        // the moment the pinned document moves to a newer
-                        // version, at which point the old one came back here
-                        // beside the new one in the persistent column.
-                        setActiveSourcesMessageId(null);
-                        setActiveSubAgentKey(null);
-                        setActiveDoc(null);
-                        setActiveCron(null);
-                      }}
-                    >
-                      {thisIsPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
-                    </button>
-                  </div>
-                ) : null}
-                {/* Same confinement as the dock's: coming home, the column
-                    rehydrates the pinned panel from possibly-stale data, and
-                    an uncaught throw here reaches the ROUTE boundary. Keyed by
-                    the content so a new panel never inherits the failure of the
-                    one before it; the pin bar stays outside. */}
-                <PanelBodyBoundary
-                  key={openKind === null ? "none" : panelIdentity(openKind, openParams ?? {})}
-                  onClose={closingColumn(() => {
-                    setActiveSourcesMessageId(null);
-                    setActiveSubAgentKey(null);
-                    setActiveDoc(null);
-                    setActiveCron(null);
-                  })}
-                >
-                {cronOpen ? (
-                  <CronDetailContent
-                    instanceName={(activeCron as { instanceName: string }).instanceName}
-                    part={(activeCron as { part: CronPartView }).part}
-                    onClose={closingColumn(cronApi.close)}
-                  />
-                ) : docViewerOpen ? (
-                  <DocumentViewerContent
-                    doc={activeDoc as ViewerDoc}
-                    chatId={chatId as string}
-                    onClose={closingColumn(docViewerApi.close)}
-                  />
-                ) : subAgentOpen ? (
-                  <SubAgentPanelContent
-                    chatId={chatId as string}
-                    childKey={activeSubAgentKey as string}
-                    onClose={closingColumn(subAgentApi.close)}
-                    parentAgentLabel={assistantDisplayName(assistantIdentity)}
-                  />
-                ) : (
-                  <SourcesPanelContent
-                    messageId={activeSourcesMessageId as string}
-                    onClose={closingColumn(sourcesApi.close)}
-                  />
-                )}
-                </PanelBodyBoundary>
-              </aside>
-            </>
-          ) : null}
         </div>
-        {sourcesOpen && asSheet && !thisIsPinned ? (
-          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(sourcesApi.close)(); }}>
+        {/* DESKTOP: the resizable column is `PinnedPanelDock`, a sibling of this
+            whole shell — one mount for the reading, pinned or not. What follows
+            is the NARROW presentation only: a phone, or a window too tight for a
+            readable thread beside a column. */}
+        {sourcesOpen && asSheet ? (
+          <Sheet open onOpenChange={(o) => { if (!o) sourcesApi.close(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
-                onClose={closingColumn(() => {
-                  setActiveSourcesMessageId(null);
-                  setActiveSubAgentKey(null);
-                  setActiveDoc(null);
-                  setActiveCron(null);
-                })}
+                onClose={closeIfOpenHere}
               >
                 <SourcesPanelContent
                   messageId={activeSourcesMessageId as string}
-                  onClose={closingColumn(sourcesApi.close)}
+                  onClose={sourcesApi.close}
                 />
               </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {subAgentOpen && asSheet && !thisIsPinned ? (
-          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(subAgentApi.close)(); }}>
+        {subAgentOpen && asSheet ? (
+          <Sheet open onOpenChange={(o) => { if (!o) subAgentApi.close(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
-                onClose={closingColumn(() => {
-                  setActiveSourcesMessageId(null);
-                  setActiveSubAgentKey(null);
-                  setActiveDoc(null);
-                  setActiveCron(null);
-                })}
+                onClose={closeIfOpenHere}
               >
                 <SubAgentPanelContent
                   chatId={chatId as string}
                   childKey={activeSubAgentKey as string}
-                  onClose={closingColumn(subAgentApi.close)}
+                  onClose={subAgentApi.close}
                   parentAgentLabel={assistantDisplayName(assistantIdentity)}
                 />
               </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {cronOpen && asSheet && !thisIsPinned ? (
-          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(cronApi.close)(); }}>
+        {cronOpen && asSheet ? (
+          <Sheet open onOpenChange={(o) => { if (!o) cronApi.close(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
-                onClose={closingColumn(() => {
-                  setActiveSourcesMessageId(null);
-                  setActiveSubAgentKey(null);
-                  setActiveDoc(null);
-                  setActiveCron(null);
-                })}
+                onClose={closeIfOpenHere}
               >
                 <CronDetailContent
                   instanceName={(activeCron as { instanceName: string }).instanceName}
                   part={(activeCron as { part: CronPartView }).part}
-                  onClose={closingColumn(cronApi.close)}
+                  onClose={cronApi.close}
                 />
               </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {docViewerOpen && asSheet && !thisIsPinned ? (
-          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(docViewerApi.close)(); }}>
+        {docViewerOpen && asSheet ? (
+          <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
-                onClose={closingColumn(() => {
-                  setActiveSourcesMessageId(null);
-                  setActiveSubAgentKey(null);
-                  setActiveDoc(null);
-                  setActiveCron(null);
-                })}
+                onClose={closeIfOpenHere}
               >
                 <DocumentViewerContent
                   doc={activeDoc as ViewerDoc}
                   chatId={chatId as string}
-                  onClose={closingColumn(docViewerApi.close)}
+                  onClose={docViewerApi.close}
                 />
               </PanelBodyBoundary>
             </SheetContent>
@@ -1476,53 +1251,52 @@ function ChatThread({
   const turnActivity = useQuery(api.subAgents.turnActivity, {
     chatId: chatId as Id<"chats">,
   });
-  const liveRows = useQuery(api.messages.getStreamingText, { chatId }) as
-    | unknown[]
-    | undefined;
-  const anyStreaming = (liveRows?.length ?? 0) > 0;
-  // Local cap on the delivering window: a NO_REPLY announce never re-stamps
-  // the chat, so the server-side signal alone would linger forever — and it
-  // also bounds the residual write-order race (a detached terminal upsert
-  // landing after the parent settled). Announces follow a done child within
-  // seconds in practice.
-  const DELIVERING_CAP_MS = 45_000;
-  // deliveringSince is a SERVER timestamp — subtracting it from the browser
-  // clock breaks the window under clock skew (a fast client never shows the
-  // indicator; a slow one holds it far too long). Arm a purely LOCAL window
-  // when the server value appears or changes instead.
-  // The MOUNT-TIME value is a baseline that never arms the window: a NO_REPLY
-  // announce (or a never-correlated terminal row) keeps the same server value
-  // indefinitely, and arming on it would flash a stale "finalizing" for 45s on
-  // every reopen — only a CHANGE observed while subscribed is a live delivery.
+  // "A message is actively streaming" read from the MESSAGES' own status, the
+  // way the runtime already reads it — not from the presence of a live-text row.
+  // The two are not the same fact: `getStreamingText` returns every row of the
+  // chat without consulting its message, and the stuck-stream watchdog documents
+  // that a row can outlive its message's terminal status until it is swept.
+  // Approximating the status by the row meant that, in that state, this said
+  // "something is streaming" while nothing was — and the whole activity signal
+  // (this pill AND the clock the block carries, which now follows it) went dark
+  // for as long as the orphan row lasted, with delegated work still running.
+  // Convex dedupes this subscription with the runtime's identical one.
+  const threadMessages = useQuery(api.messages.listByChat, {
+    chatId: chatId as Id<"chats">,
+  }) as { status?: string }[] | undefined;
+  const anyStreaming = threadStreaming(threadMessages);
+  // WHETHER a reply is being composed is the SERVER's answer, remaining time
+  // included. The client no longer keeps a baseline of the value it saw at
+  // mount: that existed only because it could not tell a live delivery from a
+  // stale one without comparing a server timestamp to its own clock, and it
+  // therefore missed every delivery already under way when a conversation was
+  // opened. There is nothing to arm and nothing to advance — the whole window
+  // is derived while rendering, so it also cannot lag a frame behind the
+  // running signal it takes over from.
   const deliverKey = turnActivity?.deliveringSince ?? null;
-  const deliverLoaded = turnActivity !== undefined;
-  const deliverBaseline = useRef<{ chatId: string; key: number | null } | null>(
+  const deliverTtl = turnActivity?.deliveringTtlRemainingMs ?? null;
+  // The LOCAL expiry: the remaining time is not a reactive dependency, so a
+  // client that receives no further write closes the window on its own timer.
+  // It records WHICH delivery it closed, so a fresh one is live on the render
+  // that first sees it — a plain flag would still be raised from the previous
+  // window and would blank the signal until an effect lowered it.
+  const [deliverExpired, setDeliverExpired] = useState<DeliveryExpiry | null>(
     null,
   );
-  const [freshDeliverKey, setFreshDeliverKey] = useState<number | null>(null);
   useEffect(() => {
-    if (!deliverLoaded) return;
-    if (deliverBaseline.current?.chatId !== chatId) {
-      deliverBaseline.current = { chatId, key: deliverKey };
-      setFreshDeliverKey(null);
-      return;
-    }
-    if (deliverKey == null || deliverKey === deliverBaseline.current.key) {
-      if (deliverKey == null) {
-        deliverBaseline.current = { chatId, key: null };
-        setFreshDeliverKey(null);
-      }
-      return;
-    }
-    deliverBaseline.current = { chatId, key: deliverKey };
-    setFreshDeliverKey(deliverKey);
+    if (deliverKey === null || deliverTtl === null || deliverTtl <= 0) return;
     const t = window.setTimeout(
-      () => setFreshDeliverKey(null),
-      DELIVERING_CAP_MS,
+      () => setDeliverExpired({ chatId, key: deliverKey }),
+      deliverTtl,
     );
     return () => window.clearTimeout(t);
-  }, [deliverLoaded, deliverKey, chatId]);
-  const deliveringFresh = deliverKey != null && freshDeliverKey === deliverKey;
+  }, [deliverKey, deliverTtl, chatId]);
+  const deliveringFresh = deliveryWindowOpen(
+    chatId,
+    deliverKey,
+    deliverTtl,
+    deliverExpired,
+  );
   // LOCAL expiry of the running signal: Date.now() is not a reactive Convex
   // dependency, so a dead child's row keeps `running:true` cached client-side
   // until the reaper writes. The query ships the remaining display TTL —
@@ -1701,8 +1475,15 @@ function TurnActivityIndicator({
     const t = window.setInterval(() => setTick((n) => n + 1), 1000);
     return () => window.clearInterval(t);
   }, [since]);
+  // ONE DURATION ON SCREEN, and it is the GLOBAL one. Anchored under the working
+  // turn, the block already carries `TurnClock` at its top, counting the whole
+  // treatment; this row's own clock counts only the CHILD currently running, and
+  // the two side by side read as a contradiction — the reader sees "9 min" above
+  // and "2 min 44 s" below and cannot tell which is the answer to "how long has
+  // this been going". At the bottom of the thread, with no block to head, there
+  // is no top clock and this one is the only one: it stays.
   const clock =
-    since !== null && anchor.current !== null && anchor.current.key === since
+    !anchored && since !== null && anchor.current !== null && anchor.current.key === since
       ? turnClockLabel(
           turnElapsedMs(
             anchor.current.baselineMs,
