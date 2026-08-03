@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.71.0] — Keep what you are reading, and go wherever you need
+
+A single feature, requested by a customer, plus the invariants it turned out to
+need. Front end only: no schema change, no bridge change, nothing to migrate.
+
+- **The right-hand panel can be pinned, and then it stays.** Sources, a
+  sub-agent's detail, a scheduled task, an open document — whichever of the four
+  the panel is showing, a pin keeps it readable while you go to another
+  conversation, into Settings, anywhere. Before, that panel was mounted inside the
+  conversation, so leaving took the reading with it and you came back and clicked
+  again to find your place.
+- **A pinned panel says where it came from, and takes you back.** It carries the
+  title of the conversation it was opened from and a control to return there. That
+  is not decoration: read from somewhere else, a sub-agent's transcript or a list
+  of sources gives no clue whose it is, and the panel's own contents cannot say.
+- **One reading, one panel — never two, never none.** Back in its own
+  conversation the in-chat column takes the panel over, because it is wider and
+  sits beside the thread it belongs to, and the floating one steps aside; the
+  handover waits until the column actually has it, so nothing blinks out in
+  between. Open something else in that conversation and the floating panel keeps
+  your pinned reading rather than hiding behind a column showing something
+  different. On a narrow screen, where there is no column at all, the floating
+  panel simply keeps it.
+- **Move it where you want it, once.** Drag it by its header; it stays where you
+  left it, including the next time you pin something, and it re-clamps itself into
+  view if the window shrinks under it.
+- **A panel that fails no longer takes the page with it.** The four panel contents
+  read data that can go stale — a deleted conversation, a document whose file is
+  gone, a sub-agent that no longer exists. Such a failure used to reach the route
+  and blank the whole page, sidebar included; a pinned one would have done it on
+  every page you visited. It is now confined to the panel's own body, which offers
+  a way out instead of sitting there unclosable.
+- **A pin belongs to the person who made it.** It is dropped when the identity
+  changes, and it is never drawn for anyone else — not its contents, and not the
+  conversation title it carries.
+- **Two readings that look alike are no longer confused for one.** Pinning one
+  message's sources and opening another's, or one card of a scheduled job and
+  another card of the same job, used to make the second claim to be the pinned one
+  — and closing it released a pin nobody asked to close. The same holds for a
+  document: two files sharing one uploaded blob under different names are two
+  readings, and a copy of a document in a forked conversation is not the original.
+  Moving a pinned document to a newer version carries the pin along; merely
+  previewing another file does not.
+
+Deploy: frontend image only.
+
 ## [0.70.0] — An alarm that names what actually broke, and an inventory that cannot lie
 
 Two themes, no breaking changes and nothing to migrate. The first is an alarm that

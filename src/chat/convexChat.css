@@ -9071,6 +9071,93 @@ button.oc-bmk-rail__count:hover {
    while the user navigates elsewhere. Fully editable + dictatable + sendable.
    Tokens-only (--voice per charte). Geometry is inline (store-driven).
    ========================================================================== */
+/* PINNED SIDE PANEL — the floating home of a pinned reading, in the persistent
+   chrome. Sits on the detached-composer layer: both are pinned surfaces that
+   float over the app, and neither should ever cover the other's use case (they
+   are the only two, and the user pins one thing at a time in practice). */
+.oc-pinpanel {
+  position: fixed;
+  z-index: var(--oc-layer-detached-composer);
+  display: flex;
+  flex-direction: column;
+  min-width: min(320px, 100vw);
+  min-height: min(220px, 100dvh);
+  border-radius: 0.9rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.24);
+  overflow: hidden;
+}
+.oc-pinpanel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.oc-pinpanel__head:active { cursor: grabbing; }
+.oc-pinpanel__origin {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-pinpanel__ctrls { display: flex; gap: 0.15rem; flex: 0 0 auto; }
+.oc-pinpanel__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.oc-pinpanel__btn:hover { background: var(--muted); color: var(--foreground); }
+.oc-pinpanel__body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.oc-panel-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 1rem 0.9rem;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.oc-panel-failed__close {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+.oc-panel-failed__close:hover { background: var(--muted); }
+
+/* The pin control of the in-chat column. One bar for the four contents. */
+.oc-sources-col__pinbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.25rem 0.4rem 0;
+}
+.oc-sources-col__pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.oc-sources-col__pin:hover { background: var(--muted); color: var(--foreground); }
+.oc-sources-col__pin.is-on { color: var(--primary); }
+
 .oc-detach {
   position: fixed;
   z-index: var(--oc-layer-detached-composer);

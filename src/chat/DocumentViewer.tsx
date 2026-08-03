@@ -60,12 +60,18 @@ export type ViewerDoc = {
 export interface DocumentViewerApi {
   activeDoc: ViewerDoc | null;
   openFor: (doc: ViewerDoc) => void;
+  /** SAME document, newer version — a distinct act from opening a file.
+   *  `openFor` is what every file chip calls, so a pinned reading that followed
+   *  it was silently replaced by whatever unrelated file the reader previewed
+   *  next. Only this one carries the pin along. */
+  openNewerVersion: (doc: ViewerDoc) => void;
   close: () => void;
 }
 
 export const DocumentViewerContext = createContext<DocumentViewerApi>({
   activeDoc: null,
   openFor: () => {},
+  openNewerVersion: () => {},
   close: () => {},
 });
 
@@ -166,7 +172,7 @@ export function DocumentViewerContent({
                 // mime/format, so classification, re-attachment AND the
                 // Office-rendition decision follow the NEW metadata, never
                 // the version being replaced (codex P2).
-                viewer.openFor({
+                viewer.openNewerVersion({
                   url: newer.url,
                   filename: doc.filename,
                   mimeType: newer.mimeType || null,

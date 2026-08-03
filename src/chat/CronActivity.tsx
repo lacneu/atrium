@@ -17,8 +17,22 @@ import type { CronPartView } from "./convexTypes";
 /** Row → right-column wiring. `instanceName` is resolved by the opener (the
  *  message's routed instance, falling back to the chat's primary). */
 export interface CronDetailApi {
-  active: { instanceName: string; jobId: string | null; part: CronPartView } | null;
-  openFor: (part: CronPartView, routedInstanceName: string | null) => void;
+  active: {
+    instanceName: string;
+    jobId: string | null;
+    part: CronPartView;
+    /** WHICH CARD this is: `<messageId>#<index>`. The same job is created,
+     *  updated and removed across a conversation, and two updates can even
+     *  produce the same snapshot — by value those cards are indistinguishable,
+     *  so a pinned one could be released by closing another. This travels with
+     *  the opening because only the list knows it. */
+    occurrenceId: string;
+  } | null;
+  openFor: (
+    part: CronPartView,
+    routedInstanceName: string | null,
+    occurrenceId: string,
+  ) => void;
   close: () => void;
 }
 export const CronDetailContext = createContext<CronDetailApi | null>(null);
@@ -48,6 +62,7 @@ export function CronActivity() {
       (msg.metadata?.custom as { routedInstanceName?: string | null } | undefined)
         ?.routedInstanceName ?? null,
   );
+  const messageId = useMessage((msg) => msg.id);
   const panel = useContext(CronDetailContext);
   // Expanded by DEFAULT — the whole point is that the user notices the jobs
   // their prompt produced; a fold is still offered for long threads.
@@ -71,13 +86,15 @@ export function CronActivity() {
             panel?.active !== null &&
             panel?.active !== undefined &&
             panel.active.jobId === (p.jobId ?? null) &&
-            panel.active.part === p;
+            panel.active.occurrenceId === `${messageId}#${i}`;
           return (
             <button
               key={`${p.jobId ?? "job"}-${i}`}
               type="button"
               className={`oc-cronact__item${isActive ? " oc-cronact__item--active" : ""}`}
-              onClick={() => panel?.openFor(p, routedInstanceName)}
+              onClick={() =>
+                panel?.openFor(p, routedInstanceName, `${messageId}#${i}`)
+              }
               title={m.cron_item_open()}
             >
               <span className={`oc-cronact__op oc-cronact__op--${p.op}`}>

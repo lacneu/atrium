@@ -98,6 +98,7 @@ import {
   Minimize2,
   Paperclip,
   Pin,
+  PinOff,
   Plus,
   Reply,
   Search,
@@ -138,6 +139,7 @@ import { CronActivity, CronDetailContext, type CronDetailApi } from "./CronActiv
 import { PlanActivity } from "./PlanActivity";
 import { CronDetailContent } from "./CronDetailPanel";
 import type { CronPartView } from "./convexTypes";
+import { PanelBodyBoundary } from "./PanelBodyBoundary";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 import {
@@ -238,6 +240,22 @@ import { MarkdownText, AgentMarkdown } from "./MarkdownText";
 import { FeedbackButton } from "./FeedbackDialog";
 import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
+import {
+  getPinnedPanel,
+  clearShownColumn,
+  dockDrawsThis,
+  isPinnedContent,
+  panelIdentity,
+  pinBelongsHere,
+  setPinnedParams,
+  setShownColumn,
+  pinPanel,
+  releasePinnedPanel,
+  subscribePinnedPanel,
+  shouldRestoreInChat,
+  whoOwns,
+  type PinnedPanelKind,
+} from "./pinnedPanel";
 import { useThreadLanding } from "./useThreadLanding";
 import {
   DocumentViewerContent,
@@ -516,6 +534,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     chatId ? { chatId: chatId as Id<"chats"> } : "skip",
   );
   const notFound = chatId !== null && meta === null;
+  /** The two identity scalars the panel arbitration needs, read here so the
+   *  callbacks below can close over values rather than over a viewer object
+   *  rebuilt every render. */
+  const meUserId = (me?.userId as string | undefined) ?? "";
+  const chatIdStr = (chatId as string | null) ?? null;
 
   // Sources panel as an INTEGRATED, resizable right COLUMN (not an overlay): the
   // conversation stays visible + interactive on the left while the user reads the
@@ -533,9 +556,6 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(
     null,
   );
-  useEffect(() => {
-    setActiveSourcesMessageId(null);
-  }, [chatId]);
   const {
     width: subAgentWidth,
     startResize: startSubAgentResize,
@@ -549,9 +569,6 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       edge: "right",
     });
   const [activeSubAgentKey, setActiveSubAgentKey] = useState<string | null>(null);
-  useEffect(() => {
-    setActiveSubAgentKey(null);
-  }, [chatId]);
   // Document Viewer (third occupant of the shared right column): a clicked
   // file chip opens the file IN PLACE — conversation stays live on the left.
   // Wider default than Sources (documents want room), own persisted width.
@@ -572,9 +589,6 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       edge: "right",
     });
   const [activeDoc, setActiveDoc] = useState<ViewerDoc | null>(null);
-  useEffect(() => {
-    setActiveDoc(null);
-  }, [chatId]);
   // Sources + the sub-agent panel + the document viewer SHARE one right column
   // (mutually exclusive): opening one closes the others, so there's never a 4th
   // column. Each keeps its own resizable width.
@@ -615,9 +629,36 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         setActiveSubAgentKey(null);
         setActiveCron(null);
       },
+      openNewerVersion: (doc) => {
+        // The ONLY opening that carries the pin: same document, newer version.
+        // Wired to `openFor` it followed every file chip too, so a pinned
+        // reading was silently replaced by whatever the reader previewed next.
+        const pin = getPinnedPanel();
+        if (
+          pin !== null &&
+          pin.kind === "document" &&
+          // Taken HERE: a fork shares its documents' storage ids, so identity
+          // alone would let this conversation rewrite another one's pin.
+          pinBelongsHere(pin, {
+            userId: meUserId,
+            chatId: chatIdStr,
+            inChatColumn: true,
+            shownIdentity: null,
+          }) &&
+          activeDoc !== null &&
+          panelIdentity("document", pin.params) ===
+            panelIdentity("document", { doc: activeDoc })
+        ) {
+          setPinnedParams(pin.pinId, { ...pin.params, doc });
+        }
+        setActiveDoc(doc);
+        setActiveSourcesMessageId(null);
+        setActiveSubAgentKey(null);
+        setActiveCron(null);
+      },
       close: () => setActiveDoc(null),
     }),
-    [activeDoc],
+    [activeDoc, meUserId, chatIdStr],
   );
   // 4th occupant of the shared right column: the cron DETAIL (a job the turn
   // created/updated, opened from the message's "Crons" section).
@@ -625,18 +666,36 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     instanceName: string;
     jobId: string | null;
     part: CronPartView;
+    occurrenceId: string;
   } | null>(null);
-  useEffect(() => {
+  // CHANGING CONVERSATION EMPTIES THE COLUMN — DURING THE RENDER, not after it.
+  // These four were cleared by effects, which run once the new conversation has
+  // already been painted: for that frame the column of chat B showed chat A's
+  // reading, while the dock — already routed to B — drew the pinned one too.
+  // Two live copies, each with its own queries and effects. Adjusting the state
+  // while rendering makes the change atomic with the route change (React's
+  // documented "derive state from props" escape hatch).
+  const [panelChat, setPanelChat] = useState<typeof chatId>(chatId);
+  if (panelChat !== chatId) {
+    setPanelChat(chatId);
+    setActiveSourcesMessageId(null);
+    setActiveSubAgentKey(null);
+    setActiveDoc(null);
     setActiveCron(null);
-  }, [chatId]);
+  }
   const chatInstanceName = agentInfo?.agent?.instanceName ?? null;
   const cronApi = useMemo<CronDetailApi>(
     () => ({
       active: activeCron,
-      openFor: (part, routedInstanceName) => {
+      openFor: (part, routedInstanceName, occurrenceId) => {
         const instanceName = routedInstanceName ?? chatInstanceName;
         if (instanceName === null) return; // no resolvable gateway — no panel
-        setActiveCron({ instanceName, jobId: part.jobId ?? null, part });
+        setActiveCron({
+          instanceName,
+          jobId: part.jobId ?? null,
+          part,
+          occurrenceId,
+        });
         setActiveSourcesMessageId(null);
         setActiveSubAgentKey(null);
         setActiveDoc(null);
@@ -650,6 +709,165 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   const docViewerOpen = activeDoc !== null;
   const cronOpen = activeCron !== null;
 
+  // PINNED PANEL. The column is mounted per chat, so leaving the conversation
+  // used to take the reading with it. `pinnedPanel` owns what is pinned; this
+  // component owns the column, and the two agree through `whoOwns` — exactly one
+  // surface draws the content (see pinnedPanel.ts for the rule and its tests).
+  const pinnedPanel = useSyncExternalStore(
+    subscribePinnedPanel,
+    getPinnedPanel,
+    getPinnedPanel,
+  );
+  // On mobile the four contents are modal SHEETS — there is no column to hand
+  // the panel over to, so the dock keeps it and nothing is restored (a restore
+  // would slam a modal open over the thread, unprompted).
+  const inChatColumn = !isMobile;
+  // WHO is looking, and at what. Passed whole to every arbitration so no call
+  // site can omit the identity check (the store outlives React; a pin made under
+  // another identity must never be drawn).
+  // COMING HOME. This component remounts on navigation, so its local panel state
+  // is empty again — but the pin says the reading is still open and belongs here.
+  // Rehydrate the column from it, once, and let the dock stand down.
+  const columnOpen = cronOpen || docViewerOpen || subAgentOpen || sourcesOpen;
+  /** Which content the column currently holds, or null. Drives the pin button's
+   *  state AND what gets captured at pin time. */
+  const openKind: PinnedPanelKind | null = cronOpen
+    ? "cron"
+    : docViewerOpen
+      ? "document"
+      : subAgentOpen
+        ? "subagent"
+        : sourcesOpen
+          ? "sources"
+          : null;
+  /** The open content's own parameters — captured verbatim at pin time, and
+   *  compared against the pin so the button reports THIS content rather than
+   *  merely "something in this conversation is pinned". */
+  const openParams: Record<string, unknown> | null =
+    openKind === null
+      ? null
+      : openKind === "cron"
+        ? (activeCron as unknown as Record<string, unknown>)
+        : openKind === "document"
+          ? { doc: activeDoc }
+          : openKind === "subagent"
+            ? {
+                childKey: activeSubAgentKey,
+                parentAgentLabel: assistantDisplayName(assistantIdentity),
+              }
+            : { messageId: activeSourcesMessageId };
+  /** What this column is showing, as the store's comparable identity. */
+  const shownIdentity =
+    openKind === null ? null : panelIdentity(openKind, openParams ?? {});
+  const viewer = {
+    userId: meUserId,
+    chatId: chatIdStr,
+    inChatColumn,
+    shownIdentity,
+  };
+  // A PINNED DOCUMENT AND ITS PIN MOVE TOGETHER. The viewer offers "open the
+  // newer version", and it can be clicked from either surface. Whichever one
+  // moves, the other must follow within the SAME pin — otherwise the two hold
+  // different versions of the same document, each claims a different identity,
+  // and both get drawn: two live copies the reader can interact with.
+  // DURING THE RENDER, like the conversation change above and for the same
+  // reason: an effect lands after the frame is painted, so the dock would have
+  // been showing v2 while this column still painted v1 — the two live copies
+  // this rule exists to prevent, merely briefer.
+  const [lastPinDoc, setLastPinDoc] = useState<{
+    pinId: number;
+    identity: string;
+  } | null>(null);
+  const pinDocIdentity =
+    pinnedPanel !== null && pinnedPanel.kind === "document"
+      ? panelIdentity("document", pinnedPanel.params)
+      : null;
+  if (pinDocIdentity === null) {
+    if (lastPinDoc !== null) setLastPinDoc(null);
+  } else if (
+    lastPinDoc === null ||
+    lastPinDoc.pinId !== pinnedPanel!.pinId ||
+    lastPinDoc.identity !== pinDocIdentity
+  ) {
+    const prev = lastPinDoc;
+    setLastPinDoc({ pinId: pinnedPanel!.pinId, identity: pinDocIdentity });
+    // Only a version change WITHIN the same pin — a replacement pin is a
+    // different reading, and the column keeps whatever it was showing. And only
+    // if this column still shows the version the pin left, which is what tells
+    // us the move came from the dock rather than from here.
+    if (
+      prev !== null &&
+      prev.pinId === pinnedPanel!.pinId &&
+      // …and only for a pin taken HERE. A fork reuses the same storage id, so
+      // the identity alone would let a pin from another conversation rewrite
+      // this column's document — and the reader would act on a version that
+      // belongs to a thread they are not in.
+      pinBelongsHere(pinnedPanel, viewer) &&
+      activeDoc !== null &&
+      panelIdentity("document", { doc: activeDoc }) === prev.identity
+    ) {
+      setActiveDoc(pinnedPanel!.params.doc as ViewerDoc);
+    }
+  }
+
+  // PUBLISH it: the dock is mounted in the chrome and has no other way to know
+  // what this column holds. Both surfaces then arbitrate on the same fact, so a
+  // reading is never drawn twice — nor, as it was, on neither surface.
+  // BEFORE PAINT, deliberately: a plain effect publishes after the frame is on
+  // screen, so the column could be showing the pinned reading while the dock
+  // still believed nothing was — and drew it a second time. A layout effect
+  // lands the fact in the same commit, so the handover is never seen half-done.
+  useLayoutEffect(() => {
+    const mine = (chatId as string | null) ?? null;
+    setShownColumn(mine, shownIdentity);
+    return () => clearShownColumn(mine);
+  }, [chatId, shownIdentity]);
+  /** Is the pin THIS content? Not "this conversation" — pinning one message's
+   *  sources and then opening another's must not make the button claim the
+   *  second is pinned, nor let closing it destroy the first. */
+  const thisIsPinned = isPinnedContent(pinnedPanel, viewer, openKind, openParams);
+  // The dock is already drawing exactly this. Happens when a desktop window
+  // narrows under a pinned panel: the local state still says "open", and the
+  // mobile sheet would render the same reading a second time.
+  const dockHasIt = dockDrawsThis(pinnedPanel, viewer);
+  useEffect(() => {
+    if (pinnedPanel === null) return;
+    if (!shouldRestoreInChat(pinnedPanel, viewer, columnOpen)) return;
+    const p = pinnedPanel.params;
+    if (pinnedPanel.kind === "cron") {
+      setActiveCron(
+        p as unknown as {
+          instanceName: string;
+          jobId: string | null;
+          part: CronPartView;
+          occurrenceId: string;
+        },
+      );
+    } else if (pinnedPanel.kind === "document") {
+      setActiveDoc(p.doc as ViewerDoc);
+    } else if (pinnedPanel.kind === "subagent") {
+      setActiveSubAgentKey(p.childKey as string);
+    } else {
+      setActiveSourcesMessageId(p.messageId as string);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `viewer` is a fresh
+    // object each render; its three fields are the real dependencies.
+  }, [pinnedPanel, viewer.userId, viewer.chatId, inChatColumn, columnOpen]);
+  // CLOSING THE READING ENDS THE PIN. The restore above fires on an empty column,
+  // so a close that left the pin standing would be undone on the next render —
+  // the X would look broken. A pin holds a reading open; it does not outlive the
+  // reader closing it.
+  const closingColumn = useCallback(
+    (close: () => void) => () => {
+      // ONLY the pin this column is actually showing. A pin taken elsewhere —
+      // another conversation, or another message in this one — is being drawn by
+      // the dock: closing what this column holds must not reach across and
+      // dismiss a reading the reader never touched.
+      if (thisIsPinned) releasePinnedPanel(pinnedPanel?.pinId);
+      close();
+    },
+    [thisIsPinned, pinnedPanel],
+  );
   // Per-instance voice settings for THIS chat (read-aloud language/rate/auto).
   // One query at the root; the read-aloud button, the mic and the auto-reader
   // consume it via context.
@@ -772,76 +990,163 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                   }px`,
                 }}
               >
+                {/* The pin belongs to the COLUMN, not to one content: all four
+                    share it, so the control sits here once rather than four
+                    times. Pinning captures WHAT is open plus WHERE it came from
+                    — the origin is not recoverable from a content's props. */}
+                {openKind !== null ? (
+                  <div className="oc-sources-col__pinbar">
+                    <button
+                      type="button"
+                      className={`oc-sources-col__pin${thisIsPinned ? " is-on" : ""}`}
+                      aria-pressed={thisIsPinned}
+                      title={thisIsPinned ? m.pinned_panel_unpin() : m.panel_pin()}
+                      aria-label={
+                        thisIsPinned ? m.pinned_panel_unpin() : m.panel_pin()
+                      }
+                      onClick={() => {
+                        if (thisIsPinned) {
+                          releasePinnedPanel(pinnedPanel?.pinId);
+                          return;
+                        }
+                        pinPanel({
+                          kind: openKind,
+                          ownerUserId: viewer.userId,
+                          originChatId: chatId ?? null,
+                          originLabel: meta?.title || m.chat_conversation_fallback(),
+                          params: openParams ?? {},
+                        });
+                      }}
+                    >
+                      {thisIsPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
+                    </button>
+                  </div>
+                ) : null}
+                {/* Same confinement as the dock's: coming home, the column
+                    rehydrates the pinned panel from possibly-stale data, and
+                    an uncaught throw here reaches the ROUTE boundary. Keyed by
+                    the content so a new panel never inherits the failure of the
+                    one before it; the pin bar stays outside. */}
+                <PanelBodyBoundary
+                  key={openKind === null ? "none" : panelIdentity(openKind, openParams ?? {})}
+                  onClose={closingColumn(() => {
+                    setActiveSourcesMessageId(null);
+                    setActiveSubAgentKey(null);
+                    setActiveDoc(null);
+                    setActiveCron(null);
+                  })}
+                >
                 {cronOpen ? (
                   <CronDetailContent
                     instanceName={(activeCron as { instanceName: string }).instanceName}
                     part={(activeCron as { part: CronPartView }).part}
-                    onClose={cronApi.close}
+                    onClose={closingColumn(cronApi.close)}
                   />
                 ) : docViewerOpen ? (
                   <DocumentViewerContent
                     doc={activeDoc as ViewerDoc}
                     chatId={chatId as string}
-                    onClose={docViewerApi.close}
+                    onClose={closingColumn(docViewerApi.close)}
                   />
                 ) : subAgentOpen ? (
                   <SubAgentPanelContent
                     chatId={chatId as string}
                     childKey={activeSubAgentKey as string}
-                    onClose={subAgentApi.close}
+                    onClose={closingColumn(subAgentApi.close)}
                     parentAgentLabel={assistantDisplayName(assistantIdentity)}
                   />
                 ) : (
                   <SourcesPanelContent
                     messageId={activeSourcesMessageId as string}
-                    onClose={sourcesApi.close}
+                    onClose={closingColumn(sourcesApi.close)}
                   />
                 )}
+                </PanelBodyBoundary>
               </aside>
             </>
           ) : null}
         </div>
-        {sourcesOpen && isMobile ? (
-          <Sheet open onOpenChange={(o) => { if (!o) sourcesApi.close(); }}>
+        {sourcesOpen && isMobile && !dockHasIt ? (
+          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(sourcesApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
-              <SourcesPanelContent
-                messageId={activeSourcesMessageId as string}
-                onClose={sourcesApi.close}
-              />
+              <PanelBodyBoundary
+                key={shownIdentity ?? "none"}
+                onClose={closingColumn(() => {
+                  setActiveSourcesMessageId(null);
+                  setActiveSubAgentKey(null);
+                  setActiveDoc(null);
+                  setActiveCron(null);
+                })}
+              >
+                <SourcesPanelContent
+                  messageId={activeSourcesMessageId as string}
+                  onClose={closingColumn(sourcesApi.close)}
+                />
+              </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {subAgentOpen && isMobile ? (
-          <Sheet open onOpenChange={(o) => { if (!o) subAgentApi.close(); }}>
+        {subAgentOpen && isMobile && !dockHasIt ? (
+          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(subAgentApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
-              <SubAgentPanelContent
-                chatId={chatId as string}
-                childKey={activeSubAgentKey as string}
-                onClose={subAgentApi.close}
-                parentAgentLabel={assistantDisplayName(assistantIdentity)}
-              />
+              <PanelBodyBoundary
+                key={shownIdentity ?? "none"}
+                onClose={closingColumn(() => {
+                  setActiveSourcesMessageId(null);
+                  setActiveSubAgentKey(null);
+                  setActiveDoc(null);
+                  setActiveCron(null);
+                })}
+              >
+                <SubAgentPanelContent
+                  chatId={chatId as string}
+                  childKey={activeSubAgentKey as string}
+                  onClose={closingColumn(subAgentApi.close)}
+                  parentAgentLabel={assistantDisplayName(assistantIdentity)}
+                />
+              </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {cronOpen && isMobile ? (
-          <Sheet open onOpenChange={(o) => { if (!o) cronApi.close(); }}>
+        {cronOpen && isMobile && !dockHasIt ? (
+          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(cronApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
-              <CronDetailContent
-                instanceName={(activeCron as { instanceName: string }).instanceName}
-                part={(activeCron as { part: CronPartView }).part}
-                onClose={cronApi.close}
-              />
+              <PanelBodyBoundary
+                key={shownIdentity ?? "none"}
+                onClose={closingColumn(() => {
+                  setActiveSourcesMessageId(null);
+                  setActiveSubAgentKey(null);
+                  setActiveDoc(null);
+                  setActiveCron(null);
+                })}
+              >
+                <CronDetailContent
+                  instanceName={(activeCron as { instanceName: string }).instanceName}
+                  part={(activeCron as { part: CronPartView }).part}
+                  onClose={closingColumn(cronApi.close)}
+                />
+              </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}
-        {docViewerOpen && isMobile ? (
-          <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
+        {docViewerOpen && isMobile && !dockHasIt ? (
+          <Sheet open onOpenChange={(o) => { if (!o) closingColumn(docViewerApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
-              <DocumentViewerContent
-                doc={activeDoc as ViewerDoc}
-                chatId={chatId as string}
-                onClose={docViewerApi.close}
-              />
+              <PanelBodyBoundary
+                key={shownIdentity ?? "none"}
+                onClose={closingColumn(() => {
+                  setActiveSourcesMessageId(null);
+                  setActiveSubAgentKey(null);
+                  setActiveDoc(null);
+                  setActiveCron(null);
+                })}
+              >
+                <DocumentViewerContent
+                  doc={activeDoc as ViewerDoc}
+                  chatId={chatId as string}
+                  onClose={closingColumn(docViewerApi.close)}
+                />
+              </PanelBodyBoundary>
             </SheetContent>
           </Sheet>
         ) : null}

@@ -21,6 +21,7 @@
 //                           (roles/integrations/instances/theme)
 
 import { HeldDictationDock } from "./chat/HeldDictationDock";
+import { PinnedPanelDock } from "./chat/PinnedPanelDock";
 import {
   lazy,
   Suspense,
@@ -546,6 +547,7 @@ function RoleGate() {
       // URL-points-at-foreign-chat hole that routing would otherwise open.
       key={me.userId}
       canOpenSettings={visibleTabs(me.permissions ?? []).length > 0}
+      viewerUserId={me.userId}
       userLabel={userLabel}
       themeMode={me.themeMode}
       resolvedThemeMode={me.resolvedThemeMode}
@@ -688,12 +690,16 @@ function AppTopBar({
 // layout + scroll position survive route changes (§3.5).
 function AuthenticatedChrome({
   canOpenSettings,
+  viewerUserId,
   userLabel,
   themeMode,
   resolvedThemeMode,
   brand,
 }: {
   canOpenSettings: boolean;
+  /** The EFFECTIVE user id — what the pinned panel is scoped to, so a pin never
+   *  outlives the identity that made it (the store is module-level). */
+  viewerUserId: string;
   userLabel: string;
   themeMode: ThemeMode | null;
   resolvedThemeMode: ThemeMode;
@@ -851,6 +857,15 @@ function AuthenticatedChrome({
           tree — an impersonation/identity swap remounts it, which stops the
           engine and purges the held text (codex P1). */}
       <HeldDictationDock />
+      {/* Pinned side panel: same home and same reason as the dictation dock —
+          inside the identity-keyed tree, and it releases the pin on unmount, so
+          an identity swap drops one person's reading (and their conversation's
+          title, shown in the panel's header) instead of carrying it into
+          another's session. */}
+      <PinnedPanelDock
+        viewerUserId={viewerUserId}
+        currentChatId={params.chatId ?? null}
+      />
     </div>
   );
 }
