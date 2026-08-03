@@ -852,20 +852,22 @@ function AuthenticatedChrome({
         <main className="oc-main">
           <Outlet />
         </main>
+        {/* Pinned side panel: the right-hand column, kept HERE so it survives
+            navigation — a sibling of the conversation, which simply gets
+            narrower, not a window floating over it. Inside the identity-keyed
+            tree like the dictation dock, and it releases the pin on unmount, so
+            an identity swap drops one person's reading (and their conversation's
+            title, shown in its header) instead of carrying it into another's
+            session. */}
+        <PinnedPanelDock
+          viewerUserId={viewerUserId}
+          currentChatId={params.chatId ?? null}
+        />
       </div>
       {/* Pinned dictation dock: persistent chrome INSIDE the identity-keyed
           tree — an impersonation/identity swap remounts it, which stops the
           engine and purges the held text (codex P1). */}
       <HeldDictationDock />
-      {/* Pinned side panel: same home and same reason as the dictation dock —
-          inside the identity-keyed tree, and it releases the pin on unmount, so
-          an identity swap drops one person's reading (and their conversation's
-          title, shown in the panel's header) instead of carrying it into
-          another's session. */}
-      <PinnedPanelDock
-        viewerUserId={viewerUserId}
-        currentChatId={params.chatId ?? null}
-      />
     </div>
   );
 }

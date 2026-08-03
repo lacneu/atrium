@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.71.1] — The pinned panel stays in place
+
+Corrective release. The pin shipped in `0.71.0` detached the right-hand panel into
+a floating window; what it should do — and now does — is leave the panel exactly
+where it is.
+
+- **A pinned panel is the same column, in the same place, at the same width.** It
+  no longer lifts out into a window you drag around and position. It stays on the
+  right, keeps the width you had given it, keeps what it was showing, and the
+  conversation beside it simply gets narrower — while you move to another
+  conversation, into Settings, anywhere. It also stays resizable where it is, from
+  the same handle, and reads the very same remembered width as the panel inside a
+  conversation, so pinning changes nothing about how the reading looks.
+- **On a phone, the reading follows the presentation that fits.** The panels are
+  full-screen sheets there, and the previous floating window covered the thread it
+  was supposed to sit beside. A pinned reading now waits in its conversation and
+  is there when you come back to it. The same answer covers a desktop window too
+  narrow for two columns: opening a panel gives you a sheet rather than a column
+  that squeezes the conversation to a sliver.
+- **The conversation always keeps room to be read.** Two right-hand columns can be
+  on screen at once — a reading pinned in one conversation while you open another
+  here — and they now share one budget instead of each assuming the other's width
+  was free. Below the point where a column and a readable thread both fit, the
+  thread wins and the panel takes the sheet presentation.
+- **A width you set is a width you keep.** Resizing a column was writing back
+  whatever the current window allowed: a wide document panel remembered at 1200px
+  came back as 720px on a small screen and stayed there. The remembered width is
+  now yours alone — the window and the room decide only what is drawn — and a
+  gesture that changes nothing visible (a click on the separator, a drag against a
+  limit, a drag brought back to where it started) no longer overwrites it.
+- **And the separator behaves under real hands.** One pointer owns a resize, so a
+  stray second finger cannot corrupt it; the gesture ends on a cancelled or lost
+  pointer, on a release outside the window, and on leaving the page — none of
+  which used to end it, leaving the cursor frozen and, latterly, later resizes
+  refused.
+
+Nothing else changes: what a pin means, what it remembers, and the guarantees
+around it are the ones described in `0.71.0`.
+
+Deploy: frontend image only.
+
 ## [0.71.0] — Keep what you are reading, and go wherever you need
 
 A single feature, requested by a customer, plus the invariants it turned out to

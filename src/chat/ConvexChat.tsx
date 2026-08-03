@@ -140,6 +140,7 @@ import { PlanActivity } from "./PlanActivity";
 import { CronDetailContent } from "./CronDetailPanel";
 import type { CronPartView } from "./convexTypes";
 import { PanelBodyBoundary } from "./PanelBodyBoundary";
+import { useWorkspaceRoom } from "./useWorkspaceRoom";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 import {
@@ -243,7 +244,8 @@ import { SessionPanel } from "./SessionPanel";
 import {
   getPinnedPanel,
   clearShownColumn,
-  dockDrawsThis,
+  fittedPanelWidth,
+  panelFitsBeside,
   isPinnedContent,
   panelIdentity,
   pinBelongsHere,
@@ -546,12 +548,32 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // that message until closed or another chip is clicked, and resets on chat
   // switch. Mobile (< 767px) falls back to the overlay drawer (no 3rd column).
   const isMobile = useIsMobile();
+  // The room this column and the conversation share, measured once and given to
+  // every width below: the DRAG must obey the same floor as the render, or the
+  // first move of the separator repaints the raw remembered width and the thread
+  // disappears on a narrow desktop window.
+  // MINUS the persistent column when one is on screen: it is served first, and
+  // this one gets what is actually left. Without that, a pinned reading and a
+  // freshly opened one each claimed the same width and squeezed the thread out
+  // between them.
+  const room = useWorkspaceRoom({ minusPinnedColumn: true });
+  const fitFor = useCallback(
+    (min: number) => (w: number) => fittedPanelWidth(w, room, min),
+    [room],
+  );
   const {
     width: sourcesWidth,
     startResize: startSourcesResize,
     columnRef: sourcesColRef,
   } = useResizableWidth(
-    { storageKey: "oc.sources.width", defaultWidth: 380, min: 300, max: 680, edge: "right" },
+    {
+      storageKey: "oc.sources.width",
+      defaultWidth: 380,
+      min: 300,
+      max: 680,
+      edge: "right",
+      fit: fitFor(300),
+    },
   );
   const [activeSourcesMessageId, setActiveSourcesMessageId] = useState<string | null>(
     null,
@@ -567,6 +589,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       min: 320,
       max: 720,
       edge: "right",
+      fit: fitFor(320),
     });
   const [activeSubAgentKey, setActiveSubAgentKey] = useState<string | null>(null);
   // Document Viewer (third occupant of the shared right column): a clicked
@@ -587,6 +610,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       max: 1800,
       maxViewportFraction: 0.72,
       edge: "right",
+      fit: fitFor(380),
     });
   const [activeDoc, setActiveDoc] = useState<ViewerDoc | null>(null);
   // Sources + the sub-agent panel + the document viewer SHARE one right column
@@ -642,7 +666,6 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           pinBelongsHere(pin, {
             userId: meUserId,
             chatId: chatIdStr,
-            inChatColumn: true,
             shownIdentity: null,
           }) &&
           activeDoc !== null &&
@@ -757,12 +780,30 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
               }
             : { messageId: activeSourcesMessageId };
   /** What this column is showing, as the store's comparable identity. */
+  // THE CONVERSATION KEEPS A FLOOR HERE TOO. The persistent column yields when
+  // the thread would be crushed; this one is the same column one level down, so
+  // it obeys the same rule — otherwise coming home to the origin conversation
+  // restored a remembered 680px panel into 640px of room, and `.oc-main` has no
+  // minimum of its own. What is DRAWN yields; what is remembered does not.
+  const columnMin = docViewerOpen ? 380 : subAgentOpen ? 320 : 300;
+  const columnWanted = docViewerOpen
+    ? docViewerWidth
+    : subAgentOpen
+      ? subAgentWidth
+      : sourcesWidth;
+  const drawnColumnWidth = fittedPanelWidth(columnWanted, room, columnMin);
+  // TOO NARROW FOR A COLUMN AT ALL. An explicit open must always show something
+  // — nobody clicks a source chip to watch nothing happen — but a column that
+  // cannot stand beside the thread is not the way to show it: below the floor,
+  // the panel takes the presentation it already has on a phone, a sheet over the
+  // conversation, rather than squeezing the thread to a sliver or to nothing.
+  const columnFits = openKind === null || panelFitsBeside(room, columnMin);
+  const asSheet = isMobile || !columnFits;
   const shownIdentity =
     openKind === null ? null : panelIdentity(openKind, openParams ?? {});
   const viewer = {
     userId: meUserId,
     chatId: chatIdStr,
-    inChatColumn,
     shownIdentity,
   };
   // A PINNED DOCUMENT AND ITS PIN MOVE TOGETHER. The viewer offers "open the
@@ -826,11 +867,12 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
    *  sources and then opening another's must not make the button claim the
    *  second is pinned, nor let closing it destroy the first. */
   const thisIsPinned = isPinnedContent(pinnedPanel, viewer, openKind, openParams);
-  // The dock is already drawing exactly this. Happens when a desktop window
-  // narrows under a pinned panel: the local state still says "open", and the
-  // mobile sheet would render the same reading a second time.
-  const dockHasIt = dockDrawsThis(pinnedPanel, viewer);
-  useEffect(() => {
+  // BEFORE PAINT. A passive effect leaves the first frame of the remounted
+  // conversation with every panel closed — and where the persistent column does
+  // not render (a phone, a window too narrow for two columns) that frame shows
+  // the pinned reading NOWHERE. The blink the acknowledged handover exists to
+  // remove, reintroduced by the restore itself.
+  useLayoutEffect(() => {
     if (pinnedPanel === null) return;
     if (!shouldRestoreInChat(pinnedPanel, viewer, columnOpen)) return;
     const p = pinnedPanel.params;
@@ -852,7 +894,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `viewer` is a fresh
     // object each render; its three fields are the real dependencies.
-  }, [pinnedPanel, viewer.userId, viewer.chatId, inChatColumn, columnOpen]);
+  }, [pinnedPanel, viewer.userId, viewer.chatId, columnOpen]);
   // CLOSING THE READING ENDS THE PIN. The restore above fires on an empty column,
   // so a close that left the pin standing would be undone on the next render —
   // the X would look broken. A pin holds a reading open; it does not outlive the
@@ -950,7 +992,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           </div>
           {/* DESKTOP: integrated, resizable Sources column (conversation stays
               live on the left). MOBILE: overlay drawer below. */}
-          {(sourcesOpen || subAgentOpen || docViewerOpen || cronOpen) && !isMobile ? (
+          {(sourcesOpen || subAgentOpen || docViewerOpen || cronOpen) && !asSheet ? (
             <>
               <div
                 className="oc-sources-resizer"
@@ -975,20 +1017,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                   subAgentColRef.current = el;
                   docViewerColRef.current = el;
                 }}
-                style={{
-                  width: docViewerOpen
-                    ? docViewerWidth
-                    : subAgentOpen
-                      ? subAgentWidth
-                      : sourcesWidth,
-                  flex: `0 0 ${
-                    docViewerOpen
-                      ? docViewerWidth
-                      : subAgentOpen
-                        ? subAgentWidth
-                        : sourcesWidth
-                  }px`,
-                }}
+                style={{ width: drawnColumnWidth, flex: `0 0 ${drawnColumnWidth}px` }}
               >
                 {/* The pin belongs to the COLUMN, not to one content: all four
                     share it, so the control sits here once rather than four
@@ -1066,7 +1095,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </>
           ) : null}
         </div>
-        {sourcesOpen && isMobile && !dockHasIt ? (
+        {sourcesOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(sourcesApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1086,7 +1115,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {subAgentOpen && isMobile && !dockHasIt ? (
+        {subAgentOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(subAgentApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1108,7 +1137,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {cronOpen && isMobile && !dockHasIt ? (
+        {cronOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(cronApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1129,7 +1158,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {docViewerOpen && isMobile && !dockHasIt ? (
+        {docViewerOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(docViewerApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
               <PanelBodyBoundary

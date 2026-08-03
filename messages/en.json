@@ -484,6 +484,7 @@
   "sources_panel_resize": "Resize the sources panel",
   "pinned_panel_aria": "Pinned panel — {origin}",
   "pinned_panel_goto": "Go to the source conversation",
+  "pinned_panel_resize": "Resize the pinned panel",
   "pinned_panel_unpin": "Unpin and close",
   "panel_pin": "Pin this panel (keeps it open as you navigate)",
   "pinned_panel_failed": "This panel could not be displayed. Go to the source conversation, or unpin it.",

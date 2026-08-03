@@ -9071,36 +9071,41 @@ button.oc-bmk-rail__count:hover {
    while the user navigates elsewhere. Fully editable + dictatable + sendable.
    Tokens-only (--voice per charte). Geometry is inline (store-driven).
    ========================================================================== */
-/* PINNED SIDE PANEL — the floating home of a pinned reading, in the persistent
-   chrome. Sits on the detached-composer layer: both are pinned surfaces that
-   float over the app, and neither should ever cover the other's use case (they
-   are the only two, and the user pins one thing at a time in practice). */
+/* PINNED SIDE PANEL — the right-hand column, kept in the chrome so it survives
+   navigation. Deliberately IN FLOW, as a sibling of `.oc-main`: the conversation
+   to its left gets narrower and the reading stays exactly where it was, at the
+   width it had. A window floating over the page would be a different thing than
+   the panel the reader was already using. */
 .oc-pinpanel {
-  position: fixed;
-  z-index: var(--oc-layer-detached-composer);
+  position: relative;
   display: flex;
   flex-direction: column;
-  min-width: min(320px, 100vw);
-  min-height: min(220px, 100dvh);
-  border-radius: 0.9rem;
-  border: 1px solid var(--border);
-  background: var(--card);
+  min-width: 0;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: var(--background);
   color: var(--foreground);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.24);
   overflow: hidden;
 }
+/* Grab strip on the LEFT edge — the side that faces the conversation, like the
+   in-chat column's own handle. */
+.oc-pinpanel__resizer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+.oc-pinpanel__resizer:hover { background: var(--border); }
 .oc-pinpanel__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.4rem 0.5rem 0.4rem 0.7rem;
+  padding: 0.4rem 0.5rem 0.4rem 0.85rem;
   border-bottom: 1px solid var(--border);
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
 }
-.oc-pinpanel__head:active { cursor: grabbing; }
 .oc-pinpanel__origin {
   font-size: 12px;
   font-weight: 500;

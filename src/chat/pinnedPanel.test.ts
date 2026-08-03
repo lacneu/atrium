@@ -20,8 +20,9 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import {
   __resetPinnedPanelForTests,
+  fittedPanelWidth,
+  panelFitsBeside,
   clearShownColumn,
-  dockDrawsThis,
   getPinnedPanel,
   getShownColumn,
   isPinnedContent,
@@ -31,7 +32,6 @@ import {
   setShownColumn,
   pinPanel,
   releasePinnedPanel,
-  setPinnedGeometry,
   shouldRestoreInChat,
   subscribePinnedPanel,
   whoOwns,
@@ -43,12 +43,11 @@ const ME = "userA";
 const here = {
   userId: ME,
   chatId: "chatA",
-  inChatColumn: true,
   shownIdentity: null as string | null,
 };
 const elsewhere = { ...here, chatId: "chatB" };
 const nowhere = { ...here, chatId: null };
-const onMobile = { ...here, inChatColumn: false };
+const onMobile = { ...here };
 const someoneElse = { ...here, userId: "userB" };
 
 const aDoc = {
@@ -143,29 +142,15 @@ describe("the pin's lifecycle", () => {
     expect(getPinnedPanel()).toBeNull();
   });
 
-  test("an untouched pin carries NO geometry — the dock places it", () => {
-    // The store cannot see the window; inventing an origin here put the first
-    // pin at (0,0), over the header.
-    expect(pinPanel(aDoc).geom).toBeNull();
-  });
-
-  test("geometry survives the pin — a moved panel does not jump back", () => {
-    pinPanel(aDoc);
-    setPinnedGeometry({ x: 120, y: 40, w: 500, h: 700 });
-    releasePinnedPanel();
-    expect(pinPanel(aDoc).geom).toEqual({ x: 120, y: 40, w: 500, h: 700 });
-  });
-
-  test("subscribers are notified on pin, move and release", () => {
+  test("subscribers are notified on pin and release", () => {
     let hits = 0;
     const off = subscribePinnedPanel(() => (hits += 1));
     pinPanel(aDoc);
-    setPinnedGeometry({ x: 1, y: 2, w: 3, h: 4 });
     releasePinnedPanel();
-    expect(hits).toBe(3);
+    expect(hits).toBe(2);
     off();
     pinPanel(aDoc);
-    expect(hits, "an unsubscribed listener stops hearing").toBe(3);
+    expect(hits, "an unsubscribed listener stops hearing").toBe(2);
   });
 });
 
@@ -355,21 +340,30 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
   });
 });
 
-describe("mobile has no column to hand the panel back to", () => {
-  test("the dock keeps it even in the origin conversation", () => {
-    // The four contents are modal SHEETS on mobile. Handing over to a column
-    // that does not exist made the panel vanish from BOTH surfaces.
-    const pin = pinPanel(aDoc);
-    const shownIdentity = panelIdentity("document", aDoc.params);
-    expect(whoOwns(pin, { ...onMobile, shownIdentity })).toBe("dock");
-    expect(whoOwns(pin, { ...here, shownIdentity })).toBe("inchat");
+describe("a phone changes the presentation, not the rules", () => {
+  test("coming home restores the reading — as a sheet, but it is THERE", () => {
+    // Refusing to restore where no column fits left the pin in the store and on
+    // no surface at all: pin in A, go to B, come back to A on a phone, and the
+    // reading was gone for good. Whether it comes back as a column or a sheet is
+    // decided downstream; both are surfaces.
+    pinPanel(aDoc);
+    expect(shouldRestoreInChat(getPinnedPanel(), onMobile, false)).toBe(true);
+    expect(shouldRestoreInChat(getPinnedPanel(), here, false)).toBe(true);
   });
 
-  test("and nothing is restored into a column that is not there", () => {
-    // Restoring on mobile would slam a modal open over the thread, unprompted.
+  test("and a column already showing something is still not overwritten", () => {
     pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), onMobile, false)).toBe(false);
-    expect(shouldRestoreInChat(getPinnedPanel(), here, false)).toBe(true);
+    expect(shouldRestoreInChat(getPinnedPanel(), onMobile, true)).toBe(false);
+  });
+
+  test("elsewhere on a phone nothing draws it — it waits, and it comes back", () => {
+    const pin = pinPanel(aDoc);
+    expect(whoOwns(pin, { ...onMobile, chatId: "chatB" })).toBe("dock");
+    // …the persistent column renders nothing on a phone, so the reading is not
+    // on screen there; the test above is what makes that a WAIT and not a loss.
+    expect(shouldRestoreInChat(pin, { ...onMobile, chatId: "chatB" }, false)).toBe(
+      false,
+    );
   });
 });
 
@@ -397,43 +391,6 @@ describe("exactly one surface, whatever the column is showing", () => {
     ).toBe("dock");
   });
 
-  test("the mobile sheet stands down when the dock draws the same reading", () => {
-    // A desktop window narrowed under a pinned panel: the chat's local state
-    // still says "open", and the sheet would render the reading a second time.
-    pinPanel(aDoc);
-    const pin = getPinnedPanel();
-    const shown = panelIdentity("document", aDoc.params);
-    expect(
-      dockDrawsThis(pin, { ...onMobile, shownIdentity: shown }),
-      "same reading, dock owns it → the sheet must not draw",
-    ).toBe(true);
-    expect(
-      dockDrawsThis(pin, { ...onMobile, shownIdentity: "sources:other" }),
-      "a different reading is the sheet's own",
-    ).toBe(false);
-    expect(dockDrawsThis(pin, { ...here, shownIdentity: shown })).toBe(false);
-  });
-
-  test("a fork's identical document does not silence the other chat's panel", () => {
-    // Same storage id, pin taken in A, reader in B on mobile. Suppressing B's
-    // panel here left the tap doing nothing, with the only live viewer bound to
-    // a conversation the reader is not in.
-    const pin = pinPanel({
-      kind: "document",
-      ownerUserId: ME,
-      originChatId: "chatA",
-      originLabel: "Revue",
-      params: { doc: { storageId: "shared" } },
-    });
-    const shown = panelIdentity("document", { doc: { storageId: "shared" } });
-    expect(
-      dockDrawsThis(pin, { ...onMobile, chatId: "chatB", shownIdentity: shown }),
-    ).toBe(false);
-    expect(
-      dockDrawsThis(pin, { ...onMobile, shownIdentity: shown }),
-      "in its own conversation it still stands down",
-    ).toBe(true);
-  });
 
   test("the column publishes what it shows, and clears it", () => {
     setShownColumn("chatA", "sources:m1");
@@ -679,5 +636,247 @@ describe("two readings must not collide on one identity", () => {
       guards.length,
       "the render-phase follow AND openNewerVersion — losing either reopens it",
     ).toBe(2);
+  });
+});
+
+describe("the conversation keeps a floor the panel cannot cross", () => {
+  const MIN_SOURCES = 300;
+
+  test("a wide remembered column yields rather than crushing the thread", () => {
+    // The sidebar and this column both sit OUTSIDE the thread's box, so just
+    // above the phone threshold a remembered 680px panel left the conversation
+    // with nothing — and `.oc-main` has `min-width: 0`, so it simply vanished.
+    expect(fittedPanelWidth(680, 1600, MIN_SOURCES)).toBe(680);
+    expect(fittedPanelWidth(680, 900, MIN_SOURCES)).toBe(480);
+  });
+
+  test("when both cannot be honoured, the CONVERSATION wins", () => {
+    // A panel that leaves the thread a sliver helps nobody, and `.oc-main` has
+    // no minimum of its own — it simply vanished. The column waits instead, the
+    // same answer as on a phone, and comes back as soon as there is room.
+    expect(panelFitsBeside(1600, MIN_SOURCES)).toBe(true);
+    expect(panelFitsBeside(720, MIN_SOURCES)).toBe(true);
+    expect(panelFitsBeside(640, MIN_SOURCES), "900px window, sidebar open").toBe(
+      false,
+    );
+    expect(panelFitsBeside(600, MIN_SOURCES)).toBe(false);
+    // …and collapsing the sidebar hands back its whole width, so it fits again.
+    expect(panelFitsBeside(640 + 260, MIN_SOURCES)).toBe(true);
+  });
+
+  test("the rule is the SAME for both columns — persistent and in-chat", () => {
+    // They are one column at two levels of the tree. Applying the floor only to
+    // the persistent one meant coming home restored a remembered 680px panel
+    // into 640px of room, which is exactly the crush the rule exists to stop.
+    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+    const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
+    expect(
+      /style=\{\{ width: drawnColumnWidth/.test(chat),
+      "the in-chat column draws a FITTED width",
+    ).toBe(true);
+    expect(
+      /const asSheet = isMobile \|\| !columnFits;/.test(chat),
+      "…and where no column fits, BOTH the explicit open and the restore land in a sheet",
+    ).toBe(true);
+    // BEFORE PAINT: a passive restore leaves the first frame of the remounted
+    // conversation showing the pinned reading nowhere, wherever the persistent
+    // column does not render.
+    expect(
+      /shouldRestoreInChat[\s\S]{0,80}?return;/.test(chat) &&
+        chat.indexOf("useLayoutEffect", chat.indexOf("COMING HOME")) <
+          chat.indexOf("shouldRestoreInChat", chat.indexOf("COMING HOME")),
+      "the restore runs in a layout effect",
+    ).toBe(true);
+    expect(
+      dock.includes("panelFitsBeside(available, min)"),
+      "the persistent one asks the same question",
+    ).toBe(true);
+    expect(
+      chat.includes("useWorkspaceRoom(") && dock.includes("useWorkspaceRoom("),
+      "…measured the same way, from the workspace",
+    ).toBe(true);
+    // AND during the drag, not only at render: the separator's first move used
+    // to repaint the raw remembered width, which is how the thread vanished.
+    const fits = [...chat.matchAll(/fit: fitFor\(/g)];
+    expect(
+      fits.length,
+      "the three in-chat widths each resize against the shared room",
+    ).toBe(3);
+    expect(
+      [...dock.matchAll(/fit: fitFor\(/g)].length,
+      "and so do the persistent one's",
+    ).toBe(3);
+  });
+
+  test("too narrow for a column: the panel becomes a sheet, not a sliver", () => {
+    // An explicit open must always show something — nobody clicks a source chip
+    // to watch nothing happen. But a 380px document column in 508px of shared
+    // room left the conversation at ~128px, and `.oc-main` has no minimum: with
+    // a wide sidebar it reached zero. Below the floor the panel takes the
+    // presentation it already has on a phone.
+    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+    expect(
+      /const columnFits = openKind === null \|\| panelFitsBeside\(room, columnMin\);/.test(
+        chat,
+      ),
+    ).toBe(true);
+    expect(
+      /const asSheet = isMobile \|\| !columnFits;/.test(chat),
+      "…and it is the SAME decision for the phone and the narrow desktop",
+    ).toBe(true);
+    const sheets = [...chat.matchAll(/Open && asSheet \? \(/g)];
+    expect(sheets.length, "the four contents").toBe(4);
+    expect(
+      chat.includes("cronOpen) && !asSheet ? ("),
+      "and the column renders only when it fits",
+    ).toBe(true);
+  });
+
+  test("two columns at once share ONE budget, not two", () => {
+    // A reading pinned in one conversation stays in the persistent column while
+    // a different one is opened in the conversation you are now in. Each
+    // measuring the full room meant each believed the other's width was free,
+    // and the thread between them was crushed by the pair.
+    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+    const room = readFileSync(new URL("./useWorkspaceRoom.ts", import.meta.url), "utf8");
+    expect(
+      chat.includes("useWorkspaceRoom({ minusPinnedColumn: true })"),
+      "the in-chat column takes what the persistent one leaves",
+    ).toBe(true);
+    expect(
+      room.includes('row.querySelector(".oc-pinpanel")'),
+      "…which means measuring it, and watching it come and go",
+    ).toBe(true);
+    // 940 shared, a pinned document at 520: what is left is 420, which cannot
+    // hold another 380 column beside a 420 thread — so the second one is a sheet.
+    expect(panelFitsBeside(940 - 520, 380)).toBe(false);
+    expect(panelFitsBeside(940, 380), "…whereas the full room would have said yes").toBe(
+      true,
+    );
+  });
+
+  test("a narrow window never destroys the width the reader chose", () => {
+    // The viewport ceiling used to be written back into the stored value: a
+    // 1200px document column became 720px in a small window and STAYED 720px
+    // once the window grew again. The persistent column mounts these widths even
+    // with nothing pinned, so merely opening the app on a small screen was
+    // enough to lose the preference.
+    const hook = readFileSync(
+      new URL("../lib/useSidebarLayout.ts", import.meta.url),
+      "utf8",
+    );
+    expect(
+      /localStorage\.setItem\(storageKey, String\(wanted\)\)/.test(hook),
+      "what is persisted is the PREFERENCE, not the drawn width",
+    ).toBe(true);
+    expect(
+      /const width = fit\(clamp\(/.test(hook),
+      "…and the window's ceiling applies to what is DRAWN",
+    ).toBe(true);
+    expect(
+      /setWidth\(\(w\) => clamp\(w\)\)/.test(hook),
+      "no automatic write-back of a viewport-shrunk width",
+    ).toBe(false);
+    // …nor through the drag: a one-pixel move against a limit the room already
+    // imposes changes nothing visible, and must not replace the preference with
+    // whatever the window happens to allow.
+    expect(
+      /const next = clampStored\(startW \+ sign \* \(ev\.clientX - startX\)\);/.test(hook),
+      "the dragged value is bounded by the column's own limits only",
+    ).toBe(true);
+    expect(
+      /if \(drawnFor\(next\) !== drawnFor\(latest\)\) visiblyMoved = true;/.test(hook),
+      "visibility is judged AT THE MOVE, both sides under the same constraints",
+    ).toBe(true);
+    expect(
+      /const asked = visiblyMoved && latest !== startW;/.test(hook),
+      "…and a separator brought back to where it began asked for NOTHING",
+    ).toBe(true);
+    expect(/if \(!asked\) return;/.test(hook), "nothing committed without it").toBe(
+      true,
+    );
+    // And the settle is SYNCHRONOUS: a gesture can end because the component is
+    // going away, and `setWidth` on a component React will never render again
+    // never reaches the persist effect — the width was dropped, the twin column
+    // kept the old one, and the panel snapped back at the next mount.
+    expect(
+      /const commitWidth = useCallback\([\s\S]{0,240}?localStorage\.setItem\(storageKey, String\(w\)\);[\s\S]{0,160}?publishWidth\(storageKey, w[\s\S]{0,80}?setWidth\(w\);/.test(
+        hook,
+      ),
+      "state, storage and broadcast settle in one synchronous act",
+    ).toBe(true);
+    expect(/commitWidth\(latest\);/.test(hook), "…and the drag uses it").toBe(true);
+    // ONE POINTER AT A TIME. A second pointerdown installed a second gesture over
+    // the first: both fed on every move from different origins, and whichever
+    // came up first settled a width computed from the other.
+    expect(
+      /if \(stopRef\.current !== null\) return;/.test(hook),
+      "a second gesture cannot start while one is live",
+    ).toBe(true);
+    expect(
+      /if \(!draggingRef\.current \|\| ev\.pointerId !== pointerId\) return;/.test(hook),
+      "…and only the owning pointer moves it",
+    ).toBe(true);
+    expect(
+      /if \(ev instanceof PointerEvent && ev\.pointerId !== pointerId\) return;/.test(
+        hook,
+      ),
+      "…or ends it — while a blur or an unmount, which carry no pointer, always do",
+    ).toBe(true);
+    // …and the owning pointer is CAPTURED, or a release outside the viewport is
+    // never heard: the gesture stays live, the cursor stays forced, and — one
+    // gesture at a time — every later resize of that column is refused.
+    expect(
+      /grabber\.setPointerCapture\(pointerId\);/.test(hook),
+      "the gesture captures its pointer",
+    ).toBe(true);
+    expect(
+      /document\.addEventListener\("lostpointercapture", onUp\);/.test(hook) &&
+        /grabber\.releasePointerCapture\(pointerId\);/.test(hook),
+      "…losing it ends the gesture — heard on `document`, where the spec fires it "
+        + "once the handle has been detached — and ending it releases the capture",
+    ).toBe(true);
+    expect(
+      /const settled = asked \? latest : wantedRef\.current;/.test(hook),
+      "a gesture that asked for nothing puts the DOM back on the PREFERENCE",
+    ).toBe(true);
+    // …and the DOM is repainted in BOTH cases: a commit equal to the current
+    // state re-renders nothing, so the last width the drag painted would stay on
+    // screen while React and storage say something else.
+    expect(
+      /const back = columnRef\.current;\s*\n\s*if \(back\) \{[\s\S]{0,200}?\}\s*\n\s*if \(!asked\) return;/.test(
+        hook,
+      ),
+      "the final repaint happens before the early return, not inside it",
+    ).toBe(true);
+    // A column can vanish mid-gesture (the room crossing the threshold, the
+    // panel becoming a sheet). The refless path must paint through a transient
+    // value, never through the stored preference.
+    expect(
+      /setProposed\(latest\); *\n/.test(hook) &&
+        !/setWidth\(latest\); \/\/ no bound column/.test(hook),
+      "the ref-less drag proposes, it does not persist",
+    ).toBe(true);
+    expect(
+      /const width = fit\(clamp\(proposed \?\? wanted\)\);/.test(hook),
+      "…and the proposal is what gets drawn while it lasts",
+    ).toBe(true);
+  });
+
+  test("where it does fit, the thread keeps its floor", () => {
+    expect(1600 - fittedPanelWidth(680, 1600, MIN_SOURCES)).toBeGreaterThanOrEqual(
+      420,
+    );
+    expect(900 - fittedPanelWidth(680, 900, MIN_SOURCES)).toBeGreaterThanOrEqual(
+      420,
+    );
+  });
+
+  test("the remembered width is untouched — only what is DRAWN yields", () => {
+    // Widening the window must give the reader back exactly the column they set,
+    // which it cannot do if the fit has overwritten it.
+    const remembered = 680;
+    expect(fittedPanelWidth(remembered, 900, MIN_SOURCES)).toBeLessThan(remembered);
+    expect(fittedPanelWidth(remembered, 1600, MIN_SOURCES)).toBe(remembered);
   });
 });

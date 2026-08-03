@@ -484,6 +484,7 @@
   "sources_panel_resize": "Redimensionner le panneau des sources",
   "pinned_panel_aria": "Panneau épinglé — {origin}",
   "pinned_panel_goto": "Aller à la conversation d'origine",
+  "pinned_panel_resize": "Redimensionner le panneau épinglé",
   "pinned_panel_unpin": "Détacher et fermer",
   "panel_pin": "Épingler ce panneau (le garde ouvert en changeant de page)",
   "pinned_panel_failed": "Ce panneau n’a pas pu être affiché. Allez à la conversation d’origine, ou détachez-le.",

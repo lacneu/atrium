@@ -42,9 +42,6 @@ const CRON_PART_FIELDS = [
  *  `oc-sources-col`; the pin belongs to the COLUMN, so it must name all four. */
 export type PinnedPanelKind = "sources" | "subagent" | "cron" | "document";
 
-/** Floating panel geometry, persisted across pins (same idea as the composer's). */
-export type PinnedGeometry = { x: number; y: number; w: number; h: number };
-
 /** Who is looking, and at what. Every arbitration takes this rather than loose
  *  arguments, so no call site can quietly omit the identity check. */
 export type PanelViewer = {
@@ -52,8 +49,6 @@ export type PanelViewer = {
   userId: string;
   /** The conversation on screen, or null (Settings, no conversation). */
   chatId: string | null;
-  /** Whether an in-chat column exists to hand the panel over to. */
-  inChatColumn: boolean;
   /** WHAT that column is showing right now (`panelIdentity`), or null when it is
    *  empty. Without it the column claimed the pin merely because the origin
    *  conversation was on screen: opening a SECOND panel there hid the dock while
@@ -83,11 +78,6 @@ export type PinnedPanel = {
    *  Kept opaque on purpose — this store owns WHICH panel is pinned and WHERE it
    *  came from, never how a panel renders. */
   params: Record<string, unknown>;
-  /** Where the reader last left the floating panel, or `null` while it has never
-   *  been moved. NULL RATHER THAN A DEFAULT: this module knows nothing of the
-   *  window, so an invented origin would land the first pin wherever (0,0) is —
-   *  over the header. The dock, which can measure, does the first placement. */
-  geom: PinnedGeometry | null;
 };
 
 /** Who should render the pinned content right now. */
@@ -102,7 +92,6 @@ let shownColumn: { chatId: string | null; identity: string | null } = {
   chatId: null,
   identity: null,
 };
-let lastGeom: PinnedGeometry | null = null;
 let nextPinId = 1;
 const listeners = new Set<() => void>();
 
@@ -164,7 +153,6 @@ export function pinPanel(args: {
     originChatId: args.originChatId,
     originLabel: args.originLabel,
     params: args.params,
-    geom: lastGeom,
   };
   emit();
   return current;
@@ -192,15 +180,6 @@ export function setPinnedParams(
   emit();
 }
 
-/** Move/resize the floating panel. Geometry survives the pin so re-pinning does
- *  not send the panel back to a corner the user already moved it out of. */
-export function setPinnedGeometry(geom: PinnedGeometry): void {
-  lastGeom = geom;
-  if (current === null) return;
-  current = { ...current, geom };
-  emit();
-}
-
 /**
  * WHO RENDERS the pinned content, given where the user currently is.
  *
@@ -222,9 +201,6 @@ export function whoOwns(
   // under another identity is never rendered — not its content, and not the
   // conversation TITLE its header carries.
   if (pin.ownerUserId !== viewer.userId) return "none";
-  // No column to hand over to (mobile: the four contents are modal sheets), so
-  // the dock keeps it — otherwise the panel vanishes from BOTH surfaces.
-  if (!viewer.inChatColumn) return "dock";
   if (pin.originChatId === null) return "dock";
   if (pin.originChatId !== viewer.chatId) return "dock";
   // HOME, BUT THE HANDOVER IS ACKNOWLEDGED. The column owns the pin only once it
@@ -232,6 +208,9 @@ export function whoOwns(
   // about to. A column restores in a later effect, so handing over on "empty"
   // left a frame with the dock already gone and no column body yet: the reading
   // blinked out. It stays with the dock until the column says it has it.
+  // The surface SHOWING the reading owns it, whatever shape that surface takes:
+  // a column beside the thread when there is room, a sheet over it when there is
+  // not. Ownership follows what is on screen, never the presentation.
   return viewer.shownIdentity === panelIdentity(pin.kind, pin.params)
     ? "inchat"
     : "dock";
@@ -297,6 +276,36 @@ export function panelIdentity(
   }
 }
 
+/** The conversation's floor: the persistent column never takes so much room that
+ *  the thread beside it disappears. Its remembered width is left untouched — it
+ *  is only what gets DRAWN that yields, so widening the window gives the reader
+ *  back exactly the column they had set. */
+export const MIN_CONVERSATION_WIDTH = 420;
+
+/** Whether a persistent column can stand beside the conversation at all.
+ *
+ *  When both cannot be honoured, the CONVERSATION wins and the column does not
+ *  appear: you are reading a thread, and a panel that leaves it a sliver helps
+ *  nobody. The reading is not lost — it waits, exactly as it does on a phone,
+ *  and comes back as soon as there is room (widening the window, or collapsing
+ *  the sidebar, which hands back its whole width). */
+export function panelFitsBeside(availableWidth: number, minPanel: number): boolean {
+  return availableWidth - MIN_CONVERSATION_WIDTH >= minPanel;
+}
+
+/** How wide the persistent column may actually draw, given the room it has.
+ *  Only meaningful where `panelFitsBeside` holds. */
+export function fittedPanelWidth(
+  wanted: number,
+  availableWidth: number,
+  minPanel: number,
+): number {
+  return Math.max(
+    minPanel,
+    Math.min(wanted, availableWidth - MIN_CONVERSATION_WIDTH),
+  );
+}
+
 /** Whether the pin was taken HERE, by this reader — the precondition for the
  *  column and the pin to act on each other at all. Not enough on its own to say
  *  the column is showing it (that is `isPinnedContent`). */
@@ -326,28 +335,6 @@ export function isPinnedContent(
 }
 
 /**
- * Is the DOCK drawing exactly what this column would draw?
- *
- * Only one surface may render a given reading. On mobile — or after a desktop
- * window narrows under a pinned panel — the dock owns the pin while the chat's
- * own state still says "sources for m1 are open", which rendered the same thing
- * twice: once floating, once in a modal sheet. The sheet stands down.
- */
-export function dockDrawsThis(
-  pin: PinnedPanel | null,
-  viewer: PanelViewer,
-): boolean {
-  if (pin === null || viewer.shownIdentity === null) return false;
-  // TAKEN HERE, not merely identical. A fork shares its documents' storage ids,
-  // so identity alone let a pin from another conversation silence THIS one's
-  // panel: the reader tapped, nothing opened, and the only live viewer belonged
-  // to a thread they were not in.
-  if (!pinBelongsHere(pin, viewer)) return false;
-  if (whoOwns(pin, viewer) !== "dock") return false;
-  return viewer.shownIdentity === panelIdentity(pin.kind, pin.params);
-}
-
-/**
  * Whether the in-chat column must REHYDRATE itself from the pin.
  *
  * Coming home, `ConvexChat` has remounted with empty local state while the pin
@@ -367,19 +354,23 @@ export function shouldRestoreInChat(
 ): boolean {
   if (pin === null || columnOpen) return false;
   // NOT expressed through `whoOwns`: ownership is the ACKNOWLEDGEMENT of this
-  // restore, so asking it here would be circular — an empty column would have
+  // restore, so asking it here would be circular — an empty surface would have
   // to own the pin before filling itself, which is exactly the blink this
   // separation removes. The conditions are the plain ones instead.
+  //
+  // And no condition on the PRESENTATION. Refusing to restore where no column
+  // fits — a phone, a narrow window — left the reading drawn nowhere at all
+  // once its conversation had been left and returned to: the pin was still in
+  // the store, invisible. Coming home restores it; whether that is a column or
+  // a sheet is decided downstream, and both are surfaces.
   if (pin.ownerUserId !== viewer.userId) return false;
-  if (!viewer.inChatColumn) return false;
   return pin.originChatId !== null && pin.originChatId === viewer.chatId;
 }
 
-/** TEST-ONLY reset of the module state (pins, geometry, id counter). */
+/** TEST-ONLY reset of the module state (pin, published column, id counter). */
 export function __resetPinnedPanelForTests(): void {
   current = null;
   shownColumn = { chatId: null, identity: null };
-  lastGeom = null;
   nextPinId = 1;
   listeners.clear();
 }

@@ -1,23 +1,27 @@
-// The floating home of a PINNED side panel, rendered in the persistent chrome.
+// The PERSISTENT HOME of a pinned side panel: the same right-hand column, kept
+// in the chrome instead of inside the conversation.
 //
-// The right-hand column is mounted per chat, so leaving the conversation used to
-// take the reading with it. Pinning hands the panel to `pinnedPanel`'s module
-// store; this dock is what keeps it readable while the user is anywhere else —
-// another conversation, Settings, or no conversation at all.
+// The column is mounted per chat, so leaving the conversation used to take the
+// reading with it. Pinning hands ownership of WHAT is open to `pinnedPanel`'s
+// module store; this column is what keeps it on screen while the user is
+// anywhere else — another conversation, Settings, no conversation at all.
+//
+// It is a COLUMN, not a floating window: same place, same width (the very same
+// persisted width as the in-chat one), same content, and the conversation to its
+// left simply gets narrower. A reading you pinned should look exactly like the
+// reading you were having.
 //
 // It renders ONLY when the store says so (`whoOwns` === "dock"). Back in the
-// origin conversation the in-chat column takes the panel over, because it is
-// wider, resizable and sits beside the thread it belongs to; drawing both would
-// show the same content twice.
+// origin conversation the in-chat column takes the panel over — it is the same
+// column, one level down in the tree — because drawing both would show the same
+// content twice.
 //
 // Mounted next to `HeldDictationDock`, and for the same reason: inside the
 // identity-keyed tree, so an impersonation or identity swap drops what was
 // pinned instead of carrying one person's reading into another's session.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useNavigate } from "@tanstack/react-router";
-
-import { useIsMobile } from "@/lib/useSidebarLayout";
 import { ExternalLink, PinOff } from "lucide-react";
 
 import { CronDetailContent } from "./CronDetailPanel";
@@ -32,28 +36,55 @@ import { LightboxProvider } from "./ImageLightbox";
 import { SourcesPanelContent } from "./SourcesActivity";
 import { SubAgentPanelContent } from "./SubAgentPanel";
 import {
+  fittedPanelWidth,
   getPinnedPanel,
+  panelFitsBeside,
   getShownColumn,
   releasePinnedPanel,
   setPinnedParams,
-  setPinnedGeometry,
   subscribePinnedPanel,
   whoOwns,
-  type PinnedGeometry,
 } from "./pinnedPanel";
+import { useWorkspaceRoom } from "./useWorkspaceRoom";
+import { useIsMobile, useResizableWidth } from "@/lib/useSidebarLayout";
 import { m } from "@/paraglide/messages.js";
 
-/** Keep the panel on screen: a geometry restored from a previous, larger window
- *  must not park it out of reach (the composer dock's clamp, same intent). */
-function clamp(g: PinnedGeometry): PinnedGeometry {
-  const w = Math.min(g.w, window.innerWidth);
-  const h = Math.min(g.h, window.innerHeight);
-  return {
-    w,
-    h,
-    x: Math.max(0, Math.min(g.x, window.innerWidth - w)),
-    y: Math.max(0, Math.min(g.y, window.innerHeight - h)),
-  };
+/** The persisted widths, read from the SAME keys the in-chat column uses — that
+ *  is what makes a pinned reading keep its size when it moves out here. All the
+ *  hooks run every render (hooks cannot be conditional); only the pinned kind's
+ *  width is used. The scheduled-task detail shares the sources width, exactly as
+ *  it does in the conversation. */
+function usePanelWidths(fitFor: (min: number) => (w: number) => number) {
+  const sourcesW = useResizableWidth({
+    storageKey: "oc.sources.width",
+    fit: fitFor(300),
+    defaultWidth: 380,
+    min: 300,
+    max: 680,
+    edge: "right",
+  });
+  const subagentW = useResizableWidth({
+    storageKey: "oc.subagent.width",
+    fit: fitFor(320),
+    defaultWidth: 460,
+    min: 320,
+    max: 720,
+    edge: "right",
+  });
+  const documentW = useResizableWidth({
+    storageKey: "oc.docviewer.width",
+    fit: fitFor(380),
+    defaultWidth: 560,
+    min: 380,
+    max: 1800,
+    maxViewportFraction: 0.72,
+    edge: "right",
+  });
+  // The floor each column keeps for itself, carried alongside so the fit below
+  // never squeezes a panel down to something unreadable.
+  const sources = { ...sourcesW, min: 300 };
+  const document = { ...documentW, min: 380 };
+  return { sources, subagent: { ...subagentW, min: 320 }, cron: sources, document };
 }
 
 export function PinnedPanelDock({
@@ -68,13 +99,20 @@ export function PinnedPanelDock({
 }) {
   const pin = useSyncExternalStore(subscribePinnedPanel, getPinnedPanel, getPinnedPanel);
   const navigate = useNavigate();
-  // On mobile there is no in-chat column to hand the panel back to (the four
-  // contents are modal sheets there), so this dock keeps it everywhere.
-  const inChatColumn = !useIsMobile();
-  // The same fact the column publishes: WHAT it is showing. Both surfaces
-  // arbitrate on it, so a reading is drawn exactly once — never twice, and never
-  // on neither (a second panel opened in the origin chat used to hide this dock
-  // while the column showed something else).
+  const isMobile = useIsMobile();
+  const available = useWorkspaceRoom();
+  // Every column resizes against the SAME room, so a drag can never paint a
+  // width the conversation cannot afford.
+  const widths = usePanelWidths(
+    useCallback(
+      (min: number) => (w: number) => fittedPanelWidth(w, available, min),
+      [available],
+    ),
+  );
+  // The same fact the in-chat column publishes: WHAT it is showing. Both
+  // surfaces arbitrate on it, so a reading is drawn exactly once — never twice,
+  // and never on neither (a second panel opened in the origin conversation used
+  // to hide this column while the in-chat one showed something different).
   const shown = useSyncExternalStore(
     subscribePinnedPanel,
     getShownColumn,
@@ -83,90 +121,54 @@ export function PinnedPanelDock({
   const viewer = {
     userId: viewerUserId,
     chatId: currentChatId,
-    inChatColumn,
     shownIdentity: shown.chatId === currentChatId ? shown.identity : null,
   };
-  const [geom, setGeom] = useState<PinnedGeometry | null>(null);
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
 
   // THE PIN DIES WITH THE IDENTITY. The store is module-level, so it outlives
   // React on its own: without this, an impersonation swap — which remounts this
   // whole subtree by key — would carry one person's reading, and their
   // conversation's TITLE in the header chip, straight into another's session.
-  // Mount-scoped by design: this dock lives in the persistent chrome, so the
+  // Mount-scoped by design: this column lives in the persistent chrome, so the
   // only things that unmount it are exactly the identity swap and the teardown.
   // (`HeldDictationDock` purges its held text the same way, for the same reason.)
   useEffect(() => () => releasePinnedPanel(), []);
 
-  // Place on first render of a pin, and re-clamp on resize: a window that shrank
-  // while the panel was pinned must not leave it off screen.
-  useEffect(() => {
-    if (pin === null) return;
-    const place = () =>
-      setGeom(
-        clamp(
-          // Never moved: open where the column was — on the right, under the
-          // header — rather than over the chrome the reader still needs.
-          pin.geom ?? { x: window.innerWidth - 480, y: 96, w: 460, h: 620 },
-        ),
-      );
-    place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [pin]);
-
-  const onPointerMove = useCallback((e: PointerEvent) => {
-    const d = dragRef.current;
-    if (d === null) return;
-    setGeom((g) =>
-      g === null ? g : clamp({ ...g, x: e.clientX - d.dx, y: e.clientY - d.dy }),
-    );
-  }, []);
-
-  // ONE way to stop a drag, used by every ending. `pointerup` is not the only
-  // one: `pointercancel` (a gesture stolen by the OS), a window blur, an
-  // identity swap mid-drag — each of those used to leave the move handler on
-  // `window`, so the NEXT panel followed the pointer with no button pressed.
-  const onPointerUp = useCallback(() => {
-    dragRef.current = null;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
-    window.removeEventListener("pointercancel", onPointerUp);
-    window.removeEventListener("blur", onPointerUp);
-    // Persist where the user left it: geometry survives the pin, so re-pinning
-    // does not send the panel back to a corner they already moved it out of.
-    setGeom((g) => {
-      if (g !== null) setPinnedGeometry(g);
-      return g;
-    });
-  }, [onPointerMove]);
-  // …and no drag outlives this component either: an identity swap mid-drag
-  // unmounts us, and the move handler must not stay behind on `window`.
-  useEffect(() => () => onPointerUp(), [onPointerUp]);
-
-  if (pin === null || geom === null) return null;
+  if (pin === null) return null;
+  // NO ROOM ON A PHONE. There the four contents are modal sheets over a single
+  // full-width column; a second column beside them is not a layout that exists.
+  // A pinned reading therefore waits in its own conversation instead of
+  // following the reader — a stated limit rather than something half-working.
+  if (isMobile) return null;
   if (whoOwns(pin, viewer) !== "dock") return null;
 
   const p = pin.params;
   const close = () => releasePinnedPanel(pin.pinId);
+  const { width, startResize, columnRef, min } = widths[pin.kind];
+  // NO ROOM FOR BOTH — the conversation wins and this column waits, the same
+  // answer as on a phone. Checked after the hooks, never before them.
+  if (!panelFitsBeside(available, min)) return null;
+  // DRAWN width, not remembered width: the remembered one survives a narrow
+  // moment, so widening the window gives the reader back the column they set.
+  const drawn = fittedPanelWidth(width, available, min);
 
   return (
     <LightboxProvider>
       <aside
         className="oc-pinpanel"
-        style={{ left: geom.x, top: geom.y, width: geom.w, height: geom.h }}
+        ref={columnRef}
+        style={{ width: drawn, flex: `0 0 ${drawn}px` }}
         aria-label={m.pinned_panel_aria({ origin: pin.originLabel })}
       >
+        {/* Same affordance as the in-chat column's: the reading keeps its width
+            AND stays resizable where it now lives. */}
         <div
-          className="oc-pinpanel__head"
-          onPointerDown={(e) => {
-            dragRef.current = { dx: e.clientX - geom.x, dy: e.clientY - geom.y };
-            window.addEventListener("pointermove", onPointerMove);
-            window.addEventListener("pointerup", onPointerUp);
-            window.addEventListener("pointercancel", onPointerUp);
-            window.addEventListener("blur", onPointerUp);
-          }}
-        >
+          className="oc-pinpanel__resizer"
+          onPointerDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={m.pinned_panel_resize()}
+        />
+        <div className="oc-pinpanel__head">
           {/* WHOSE reading this is. A pinned panel read from another conversation
               is unreadable as context without it — `SourcesPanelContent` carries
               only a messageId, so nothing in the content itself can say. */}
@@ -206,44 +208,43 @@ export function PinnedPanelDock({
         <PanelBodyBoundary key={pin.pinId} onClose={close}>
           <div className="oc-pinpanel__body">
             {pin.kind === "cron" ? (
-            <CronDetailContent
-              instanceName={p.instanceName as string}
-              part={p.part as CronPartView}
-              onClose={close}
-            />
-          ) : pin.kind === "document" ? (
-            // The viewer offers "open the newer version" when the document has
-            // moved on. In the column that goes through ConvexChat's provider;
-            // here there was none, so the control was visible and did nothing.
-            // It now rewrites THIS pin's params — guarded by pinId, so a late
-            // click cannot retarget a replacement pin.
-            <DocumentViewerContext.Provider
-              value={{
-                activeDoc: p.doc as ViewerDoc,
-                // In the dock this panel IS the only viewer, so both openings
-                // land here; the pinId guard keeps a late one from retargeting
-                // a replacement pin.
-                openFor: (doc: ViewerDoc) =>
-                  setPinnedParams(pin.pinId, { ...p, doc }),
-                openNewerVersion: (doc: ViewerDoc) =>
-                  setPinnedParams(pin.pinId, { ...p, doc }),
-                close,
-              }}
-            >
-              <DocumentViewerContent
-                doc={p.doc as ViewerDoc}
-                chatId={pin.originChatId as string}
+              <CronDetailContent
+                instanceName={p.instanceName as string}
+                part={p.part as CronPartView}
                 onClose={close}
               />
-            </DocumentViewerContext.Provider>
-          ) : pin.kind === "subagent" ? (
-            <SubAgentPanelContent
-              chatId={pin.originChatId as string}
-              childKey={p.childKey as string}
-              onClose={close}
-              parentAgentLabel={(p.parentAgentLabel as string) ?? ""}
-            />
-          ) : (
+            ) : pin.kind === "document" ? (
+              // The viewer offers "open the newer version" when the document has
+              // moved on. In the conversation that goes through ConvexChat's
+              // provider; here there was none, so the control was visible and did
+              // nothing. It now rewrites THIS pin's params.
+              <DocumentViewerContext.Provider
+                value={{
+                  activeDoc: p.doc as ViewerDoc,
+                  // In this column the panel IS the only viewer, so both openings
+                  // land here; the pinId guard keeps a late one from retargeting
+                  // a replacement pin.
+                  openFor: (doc: ViewerDoc) =>
+                    setPinnedParams(pin.pinId, { ...p, doc }),
+                  openNewerVersion: (doc: ViewerDoc) =>
+                    setPinnedParams(pin.pinId, { ...p, doc }),
+                  close,
+                }}
+              >
+                <DocumentViewerContent
+                  doc={p.doc as ViewerDoc}
+                  chatId={pin.originChatId as string}
+                  onClose={close}
+                />
+              </DocumentViewerContext.Provider>
+            ) : pin.kind === "subagent" ? (
+              <SubAgentPanelContent
+                chatId={pin.originChatId as string}
+                childKey={p.childKey as string}
+                onClose={close}
+                parentAgentLabel={(p.parentAgentLabel as string) ?? ""}
+              />
+            ) : (
               <SourcesPanelContent messageId={p.messageId as string} onClose={close} />
             )}
           </div>
