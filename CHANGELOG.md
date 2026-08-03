@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.71.2] — A pinned reading is no longer rebuilt on every conversation change
+
+Corrective release. A pinned panel was being handed between two different
+components — the conversation's own column at home, the persistent one
+elsewhere — and a handover between two components is an unmount. Everything the
+panel held died with it on each conversation change: a 69-page PDF closed at page
+46 reopened at page 1, having fetched and parsed the whole file again.
+
+- **One surface draws a pinned reading, and it never changes.** The persistent
+  column now keeps it everywhere, including in the conversation it came from. The
+  panel is mounted once, when you pin it, and stays mounted until you unpin it —
+  so a page, a scroll position, a search box, a zoom survive as many conversation
+  changes as you like. A reading that reloads whenever you move is not a reading
+  that survived navigation.
+- **Pinning is what moves it, once.** Pinning takes the reading out of the
+  conversation's column and into the persistent one, which does reload it that
+  once. Everything after that is stable — and the conversation lets go of it at
+  that moment, so it cannot reappear beside the pinned one later.
+- **Narrowing the window no longer costs you the reading either.** Where there is
+  no room for a column — a phone, a window too narrow for a readable thread
+  beside one — the panel is hidden rather than taken down. Widen the window again
+  and it is exactly where you left it, on the same page, at the same scroll.
+- **And a right-hand column no longer disappears on a wide screen.** The
+  available-room measurement could keep watching a workspace element the app had
+  since replaced, reporting no room at all on a screen that had plenty.
+
+This also removes machinery that only existed to arbitrate between two surfaces:
+the acknowledged handover, the published-column mirror, and the restore on coming
+home are gone, along with their tests. Nothing they guaranteed is lost — the
+guarantees were about two surfaces agreeing, and there is now one.
+
+Deploy: frontend image only.
+
 ## [0.71.1] — The pinned panel stays in place
 
 Corrective release. The pin shipped in `0.71.0` detached the right-hand panel into

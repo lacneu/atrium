@@ -49,12 +49,6 @@ export type PanelViewer = {
   userId: string;
   /** The conversation on screen, or null (Settings, no conversation). */
   chatId: string | null;
-  /** WHAT that column is showing right now (`panelIdentity`), or null when it is
-   *  empty. Without it the column claimed the pin merely because the origin
-   *  conversation was on screen: opening a SECOND panel there hid the dock while
-   *  the column showed something else, and the pinned reading was drawn on
-   *  neither surface. */
-  shownIdentity: string | null;
 };
 
 export type PinnedPanel = {
@@ -81,17 +75,9 @@ export type PinnedPanel = {
 };
 
 /** Who should render the pinned content right now. */
-export type PanelOwner = "inchat" | "dock" | "none";
+export type PanelOwner = "dock" | "none";
 
 let current: PinnedPanel | null = null;
-/** WHAT the in-chat column is showing, published by `ConvexChat` so the dock can
- *  arbitrate against the same fact. The dock is mounted in the chrome and has no
- *  other way to know; without it, both surfaces guessed and the pinned reading
- *  could end up drawn twice, or not at all. */
-let shownColumn: { chatId: string | null; identity: string | null } = {
-  chatId: null,
-  identity: null,
-};
 let nextPinId = 1;
 const listeners = new Set<() => void>();
 
@@ -109,32 +95,6 @@ export function subscribePinnedPanel(fn: () => void): () => void {
  *  `useSyncExternalStore` does not loop. */
 export function getPinnedPanel(): PinnedPanel | null {
   return current;
-}
-
-/** Publish what the in-chat column is showing. Cleared when it unmounts (no
- *  conversation on screen means no column, hence nothing shown). */
-export function setShownColumn(
-  chatId: string | null,
-  identity: string | null,
-): void {
-  if (shownColumn.chatId === chatId && shownColumn.identity === identity) return;
-  shownColumn = { chatId, identity };
-  emit();
-}
-
-/** Stop publishing for THIS conversation — and only if it is still the one on
- *  record. A column clears on unmount, and during a route change the leaving
- *  column's cleanup can land after the arriving one has already published: an
- *  unconditional clear would then erase a fact that is true, leaving the dock
- *  and the new column drawing the same reading at once. */
-export function clearShownColumn(chatId: string | null): void {
-  if (shownColumn.chatId !== chatId) return;
-  setShownColumn(null, null);
-}
-
-/** What the in-chat column is showing. Stable between changes. */
-export function getShownColumn(): { chatId: string | null; identity: string | null } {
-  return shownColumn;
 }
 
 /** Pin a panel. Replaces any existing pin — one column, one pin, and a second
@@ -201,19 +161,18 @@ export function whoOwns(
   // under another identity is never rendered — not its content, and not the
   // conversation TITLE its header carries.
   if (pin.ownerUserId !== viewer.userId) return "none";
-  if (pin.originChatId === null) return "dock";
-  if (pin.originChatId !== viewer.chatId) return "dock";
-  // HOME, BUT THE HANDOVER IS ACKNOWLEDGED. The column owns the pin only once it
-  // has PUBLISHED that it is showing it — never merely because it is empty and
-  // about to. A column restores in a later effect, so handing over on "empty"
-  // left a frame with the dock already gone and no column body yet: the reading
-  // blinked out. It stays with the dock until the column says it has it.
-  // The surface SHOWING the reading owns it, whatever shape that surface takes:
-  // a column beside the thread when there is room, a sheet over it when there is
-  // not. Ownership follows what is on screen, never the presentation.
-  return viewer.shownIdentity === panelIdentity(pin.kind, pin.params)
-    ? "inchat"
-    : "dock";
+  // MINE: the persistent column, ALWAYS — including in the conversation the
+  // reading came from.
+  //
+  // It used to hand back to the in-chat column at home, which reads well on
+  // paper and is wrong in practice: two components cannot pass a subtree between
+  // them, so every handover was an unmount. Everything the panel held died with
+  // it — a PDF reopened at page one after fetching and parsing the whole file
+  // again, a scroll position, a search box. A pinned reading that reloads on
+  // every conversation change is not a reading that survived navigation.
+  //
+  // So there is ONE surface for a pinned reading, and it is this one.
+  return "dock";
 }
 
 /**
@@ -318,8 +277,9 @@ export function pinBelongsHere(
   return pin.originChatId !== null && pin.originChatId === viewer.chatId;
 }
 
-/** Whether the pin is THIS content, here — what the pin button reports and what
- *  a close is allowed to release. */
+/** Whether the pin holds exactly this content — what the pin button reports, and
+ *  what tells the in-chat column to stand down because the persistent one is
+ *  already showing the very same reading. */
 export function isPinnedContent(
   pin: PinnedPanel | null,
   viewer: PanelViewer,
@@ -327,50 +287,22 @@ export function isPinnedContent(
   params: Record<string, unknown> | null,
 ): boolean {
   if (pin === null || kind === null || params === null) return false;
-  // Asked ABOUT this content, so it is what the column shows — whatever the
-  // viewer's published identity happens to be at this instant. Taking it from
-  // the arguments keeps the question honest for a caller mid-handover.
-  const showing = { ...viewer, shownIdentity: panelIdentity(kind, params) };
-  return pin.kind === kind && whoOwns(pin, showing) === "inchat";
-}
-
-/**
- * Whether the in-chat column must REHYDRATE itself from the pin.
- *
- * Coming home, `ConvexChat` has remounted with empty local state while the pin
- * says the reading is still open and belongs here — so the column fills itself
- * from the pin rather than making the reader click again.
- *
- * The subtlety is that the very same condition is true one render after the
- * reader CLOSES the panel: rehydrating on it alone would undo the close and make
- * the X look broken. So CLOSING THE READING ENDS THE PIN — the close releases it
- * first, and there is nothing left here to restore from. This predicate is what
- * both sides agree on, which is why it lives here and not in JSX.
- */
-export function shouldRestoreInChat(
-  pin: PinnedPanel | null,
-  viewer: PanelViewer,
-  columnOpen: boolean,
-): boolean {
-  if (pin === null || columnOpen) return false;
-  // NOT expressed through `whoOwns`: ownership is the ACKNOWLEDGEMENT of this
-  // restore, so asking it here would be circular — an empty surface would have
-  // to own the pin before filling itself, which is exactly the blink this
-  // separation removes. The conditions are the plain ones instead.
-  //
-  // And no condition on the PRESENTATION. Refusing to restore where no column
-  // fits — a phone, a narrow window — left the reading drawn nowhere at all
-  // once its conversation had been left and returned to: the pin was still in
-  // the store, invisible. Coming home restores it; whether that is a column or
-  // a sheet is decided downstream, and both are surfaces.
-  if (pin.ownerUserId !== viewer.userId) return false;
-  return pin.originChatId !== null && pin.originChatId === viewer.chatId;
+  // TAKEN HERE, and the same content. A fork shares its documents, so identity
+  // alone made a document opened in ANOTHER conversation pass for the pinned
+  // one: that conversation's column then refused to draw it — the reader's click
+  // did nothing — while the panel on the right went on showing it in the context
+  // of the conversation it was pinned from, drafts and version history included.
+  return (
+    pin.kind === kind &&
+    whoOwns(pin, viewer) === "dock" &&
+    pinBelongsHere(pin, viewer) &&
+    panelIdentity(pin.kind, pin.params) === panelIdentity(kind, params)
+  );
 }
 
 /** TEST-ONLY reset of the module state (pin, published column, id counter). */
 export function __resetPinnedPanelForTests(): void {
   current = null;
-  shownColumn = { chatId: null, identity: null };
   nextPinId = 1;
   listeners.clear();
 }

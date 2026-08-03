@@ -243,18 +243,13 @@ import { SessionKnobsGroup } from "./KnobRow";
 import { SessionPanel } from "./SessionPanel";
 import {
   getPinnedPanel,
-  clearShownColumn,
   fittedPanelWidth,
   panelFitsBeside,
   isPinnedContent,
   panelIdentity,
-  pinBelongsHere,
-  setPinnedParams,
-  setShownColumn,
   pinPanel,
   releasePinnedPanel,
   subscribePinnedPanel,
-  shouldRestoreInChat,
   whoOwns,
   type PinnedPanelKind,
 } from "./pinnedPanel";
@@ -653,27 +648,10 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         setActiveSubAgentKey(null);
         setActiveCron(null);
       },
+      // A pinned document is drawn by the PERSISTENT column, never by this one,
+      // so no opening here can ever be the pinned reading — the pin is carried
+      // by that column's own provider instead. Same act, same guard, one place.
       openNewerVersion: (doc) => {
-        // The ONLY opening that carries the pin: same document, newer version.
-        // Wired to `openFor` it followed every file chip too, so a pinned
-        // reading was silently replaced by whatever the reader previewed next.
-        const pin = getPinnedPanel();
-        if (
-          pin !== null &&
-          pin.kind === "document" &&
-          // Taken HERE: a fork shares its documents' storage ids, so identity
-          // alone would let this conversation rewrite another one's pin.
-          pinBelongsHere(pin, {
-            userId: meUserId,
-            chatId: chatIdStr,
-            shownIdentity: null,
-          }) &&
-          activeDoc !== null &&
-          panelIdentity("document", pin.params) ===
-            panelIdentity("document", { doc: activeDoc })
-        ) {
-          setPinnedParams(pin.pinId, { ...pin.params, doc });
-        }
         setActiveDoc(doc);
         setActiveSourcesMessageId(null);
         setActiveSubAgentKey(null);
@@ -681,7 +659,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       },
       close: () => setActiveDoc(null),
     }),
-    [activeDoc, meUserId, chatIdStr],
+    [activeDoc],
   );
   // 4th occupant of the shared right column: the cron DETAIL (a job the turn
   // created/updated, opened from the message's "Crons" section).
@@ -741,19 +719,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     getPinnedPanel,
     getPinnedPanel,
   );
-  // On mobile the four contents are modal SHEETS — there is no column to hand
-  // the panel over to, so the dock keeps it and nothing is restored (a restore
-  // would slam a modal open over the thread, unprompted).
-  const inChatColumn = !isMobile;
-  // WHO is looking, and at what. Passed whole to every arbitration so no call
-  // site can omit the identity check (the store outlives React; a pin made under
-  // another identity must never be drawn).
-  // COMING HOME. This component remounts on navigation, so its local panel state
-  // is empty again — but the pin says the reading is still open and belongs here.
-  // Rehydrate the column from it, once, and let the dock stand down.
-  const columnOpen = cronOpen || docViewerOpen || subAgentOpen || sourcesOpen;
-  /** Which content the column currently holds, or null. Drives the pin button's
-   *  state AND what gets captured at pin time. */
+  // WHO is looking. Passed whole to every arbitration so no call site can omit
+  // the identity check (the store outlives React; a pin made under another
+  // identity must never be drawn).
+  const viewer = { userId: meUserId, chatId: chatIdStr };
+  /** Which content this column currently holds, or null. */
   const openKind: PinnedPanelKind | null = cronOpen
     ? "cron"
     : docViewerOpen
@@ -763,9 +733,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         : sourcesOpen
           ? "sources"
           : null;
-  /** The open content's own parameters — captured verbatim at pin time, and
-   *  compared against the pin so the button reports THIS content rather than
-   *  merely "something in this conversation is pinned". */
+  /** Its own parameters — captured verbatim at pin time, and compared against
+   *  the pin so the button reports THIS content rather than merely "something is
+   *  pinned". */
   const openParams: Record<string, unknown> | null =
     openKind === null
       ? null
@@ -779,12 +749,12 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                 parentAgentLabel: assistantDisplayName(assistantIdentity),
               }
             : { messageId: activeSourcesMessageId };
-  /** What this column is showing, as the store's comparable identity. */
-  // THE CONVERSATION KEEPS A FLOOR HERE TOO. The persistent column yields when
-  // the thread would be crushed; this one is the same column one level down, so
-  // it obeys the same rule — otherwise coming home to the origin conversation
-  // restored a remembered 680px panel into 640px of room, and `.oc-main` has no
-  // minimum of its own. What is DRAWN yields; what is remembered does not.
+  const shownIdentity =
+    openKind === null ? null : panelIdentity(openKind, openParams ?? {});
+  /** Is the pin THIS very reading? Then the PERSISTENT column is already drawing
+   *  it, and this one stands down — one surface, and no handover to unmount it. */
+  const thisIsPinned = isPinnedContent(pinnedPanel, viewer, openKind, openParams);
+  const columnOpen = cronOpen || docViewerOpen || subAgentOpen || sourcesOpen;
   const columnMin = docViewerOpen ? 380 : subAgentOpen ? 320 : 300;
   const columnWanted = docViewerOpen
     ? docViewerWidth
@@ -796,105 +766,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // — nobody clicks a source chip to watch nothing happen — but a column that
   // cannot stand beside the thread is not the way to show it: below the floor,
   // the panel takes the presentation it already has on a phone, a sheet over the
-  // conversation, rather than squeezing the thread to a sliver or to nothing.
+  // conversation.
   const columnFits = openKind === null || panelFitsBeside(room, columnMin);
   const asSheet = isMobile || !columnFits;
-  const shownIdentity =
-    openKind === null ? null : panelIdentity(openKind, openParams ?? {});
-  const viewer = {
-    userId: meUserId,
-    chatId: chatIdStr,
-    shownIdentity,
-  };
-  // A PINNED DOCUMENT AND ITS PIN MOVE TOGETHER. The viewer offers "open the
-  // newer version", and it can be clicked from either surface. Whichever one
-  // moves, the other must follow within the SAME pin — otherwise the two hold
-  // different versions of the same document, each claims a different identity,
-  // and both get drawn: two live copies the reader can interact with.
-  // DURING THE RENDER, like the conversation change above and for the same
-  // reason: an effect lands after the frame is painted, so the dock would have
-  // been showing v2 while this column still painted v1 — the two live copies
-  // this rule exists to prevent, merely briefer.
-  const [lastPinDoc, setLastPinDoc] = useState<{
-    pinId: number;
-    identity: string;
-  } | null>(null);
-  const pinDocIdentity =
-    pinnedPanel !== null && pinnedPanel.kind === "document"
-      ? panelIdentity("document", pinnedPanel.params)
-      : null;
-  if (pinDocIdentity === null) {
-    if (lastPinDoc !== null) setLastPinDoc(null);
-  } else if (
-    lastPinDoc === null ||
-    lastPinDoc.pinId !== pinnedPanel!.pinId ||
-    lastPinDoc.identity !== pinDocIdentity
-  ) {
-    const prev = lastPinDoc;
-    setLastPinDoc({ pinId: pinnedPanel!.pinId, identity: pinDocIdentity });
-    // Only a version change WITHIN the same pin — a replacement pin is a
-    // different reading, and the column keeps whatever it was showing. And only
-    // if this column still shows the version the pin left, which is what tells
-    // us the move came from the dock rather than from here.
-    if (
-      prev !== null &&
-      prev.pinId === pinnedPanel!.pinId &&
-      // …and only for a pin taken HERE. A fork reuses the same storage id, so
-      // the identity alone would let a pin from another conversation rewrite
-      // this column's document — and the reader would act on a version that
-      // belongs to a thread they are not in.
-      pinBelongsHere(pinnedPanel, viewer) &&
-      activeDoc !== null &&
-      panelIdentity("document", { doc: activeDoc }) === prev.identity
-    ) {
-      setActiveDoc(pinnedPanel!.params.doc as ViewerDoc);
-    }
-  }
-
-  // PUBLISH it: the dock is mounted in the chrome and has no other way to know
-  // what this column holds. Both surfaces then arbitrate on the same fact, so a
-  // reading is never drawn twice — nor, as it was, on neither surface.
-  // BEFORE PAINT, deliberately: a plain effect publishes after the frame is on
-  // screen, so the column could be showing the pinned reading while the dock
-  // still believed nothing was — and drew it a second time. A layout effect
-  // lands the fact in the same commit, so the handover is never seen half-done.
-  useLayoutEffect(() => {
-    const mine = (chatId as string | null) ?? null;
-    setShownColumn(mine, shownIdentity);
-    return () => clearShownColumn(mine);
-  }, [chatId, shownIdentity]);
-  /** Is the pin THIS content? Not "this conversation" — pinning one message's
-   *  sources and then opening another's must not make the button claim the
-   *  second is pinned, nor let closing it destroy the first. */
-  const thisIsPinned = isPinnedContent(pinnedPanel, viewer, openKind, openParams);
-  // BEFORE PAINT. A passive effect leaves the first frame of the remounted
-  // conversation with every panel closed — and where the persistent column does
-  // not render (a phone, a window too narrow for two columns) that frame shows
-  // the pinned reading NOWHERE. The blink the acknowledged handover exists to
-  // remove, reintroduced by the restore itself.
-  useLayoutEffect(() => {
-    if (pinnedPanel === null) return;
-    if (!shouldRestoreInChat(pinnedPanel, viewer, columnOpen)) return;
-    const p = pinnedPanel.params;
-    if (pinnedPanel.kind === "cron") {
-      setActiveCron(
-        p as unknown as {
-          instanceName: string;
-          jobId: string | null;
-          part: CronPartView;
-          occurrenceId: string;
-        },
-      );
-    } else if (pinnedPanel.kind === "document") {
-      setActiveDoc(p.doc as ViewerDoc);
-    } else if (pinnedPanel.kind === "subagent") {
-      setActiveSubAgentKey(p.childKey as string);
-    } else {
-      setActiveSourcesMessageId(p.messageId as string);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `viewer` is a fresh
-    // object each render; its three fields are the real dependencies.
-  }, [pinnedPanel, viewer.userId, viewer.chatId, columnOpen]);
   // CLOSING THE READING ENDS THE PIN. The restore above fires on an empty column,
   // so a close that left the pin standing would be undone on the next render —
   // the X would look broken. A pin holds a reading open; it does not outlive the
@@ -992,7 +866,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
           </div>
           {/* DESKTOP: integrated, resizable Sources column (conversation stays
               live on the left). MOBILE: overlay drawer below. */}
-          {(sourcesOpen || subAgentOpen || docViewerOpen || cronOpen) && !asSheet ? (
+          {/* `!thisIsPinned`: the persistent column is already showing this very
+              reading, and two components cannot pass a subtree between them —
+              drawing it here too would either duplicate it or, worse, take it
+              over and unmount the one the reader has been scrolling. */}
+          {columnOpen && !asSheet && !thisIsPinned ? (
             <>
               <div
                 className="oc-sources-resizer"
@@ -1045,6 +923,16 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
                           originLabel: meta?.title || m.chat_conversation_fallback(),
                           params: openParams ?? {},
                         });
+                        // THE READING HAS MOVED, so this column lets go of it.
+                        // Left behind, the local state is a copy that only the
+                        // identity check keeps off screen — and that check drifts
+                        // the moment the pinned document moves to a newer
+                        // version, at which point the old one came back here
+                        // beside the new one in the persistent column.
+                        setActiveSourcesMessageId(null);
+                        setActiveSubAgentKey(null);
+                        setActiveDoc(null);
+                        setActiveCron(null);
                       }}
                     >
                       {thisIsPinned ? <PinOff size={14} aria-hidden /> : <Pin size={14} aria-hidden />}
@@ -1095,7 +983,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </>
           ) : null}
         </div>
-        {sourcesOpen && asSheet ? (
+        {sourcesOpen && asSheet && !thisIsPinned ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(sourcesApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1115,7 +1003,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {subAgentOpen && asSheet ? (
+        {subAgentOpen && asSheet && !thisIsPinned ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(subAgentApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1137,7 +1025,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {cronOpen && asSheet ? (
+        {cronOpen && asSheet && !thisIsPinned ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(cronApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet">
               <PanelBodyBoundary
@@ -1158,7 +1046,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             </SheetContent>
           </Sheet>
         ) : null}
-        {docViewerOpen && asSheet ? (
+        {docViewerOpen && asSheet && !thisIsPinned ? (
           <Sheet open onOpenChange={(o) => { if (!o) closingColumn(docViewerApi.close)(); }}>
             <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
               <PanelBodyBoundary

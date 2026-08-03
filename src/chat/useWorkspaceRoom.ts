@@ -26,34 +26,43 @@ export function useWorkspaceRoom(opts?: {
   const minusPinned = opts?.minusPinnedColumn ?? false;
   const [available, setAvailable] = useState(() => window.innerWidth);
   useLayoutEffect(() => {
-    const row = document.querySelector(".oc-workspace");
-    if (row === null) return;
+    // The workspace element is RE-QUERIED at every measurement, never captured.
+    // It is replaced when the authenticated chrome mounts, and a hook that had
+    // kept a reference went on measuring a node detached from the document —
+    // reporting nought room forever, which hid the pinned column on a screen
+    // that had plenty. Observing the documentElement, which is never replaced,
+    // is what guarantees the measurement keeps being taken at all.
     const measure = () => {
+      const row = document.querySelector(".oc-workspace");
+      if (row === null) return;
       const sidebar = row.querySelector(".oc-sidebar-col");
       let taken = sidebar === null ? 0 : sidebar.getBoundingClientRect().width;
       if (minusPinned) {
         const pinned = row.querySelector(".oc-pinpanel");
         taken += pinned === null ? 0 : pinned.getBoundingClientRect().width;
       }
-      setAvailable(row.getBoundingClientRect().width - taken);
+      const room = row.getBoundingClientRect().width - taken;
+      // A width of zero is a layout that has not happened yet, not a room of
+      // zero: taking it as fact is what made the column disappear.
+      if (room > 0) setAvailable(room);
     };
     const ro = new ResizeObserver(measure);
-    ro.observe(row);
-    // The sidebar is resized independently, which changes the room without
-    // changing the row. And COLLAPSING it removes the element entirely while
-    // expanding creates a new one, which no ResizeObserver would ever hear
-    // about — hence the child watch, which re-attaches to whichever sidebar
-    // exists now and re-measures on the spot.
-    // The pinned column comes and goes exactly like the sidebar, and resizes on
-    // its own, so it is watched the same way.
+    ro.observe(document.documentElement);
+    // The sidebar and the pinned column resize on their own AND come and go —
+    // collapsing removes the element, expanding creates another one, which no
+    // ResizeObserver would ever hear about. The child watch re-attaches to
+    // whichever elements exist now and re-measures on the spot.
     const watched = new Set<Element>();
     const attach = () => {
+      const row = document.querySelector(".oc-workspace");
       const wanted = new Set<Element>();
-      const sidebar = row.querySelector(".oc-sidebar-col");
-      if (sidebar !== null) wanted.add(sidebar);
-      if (minusPinned) {
-        const pinned = row.querySelector(".oc-pinpanel");
-        if (pinned !== null) wanted.add(pinned);
+      if (row !== null) {
+        const sidebar = row.querySelector(".oc-sidebar-col");
+        if (sidebar !== null) wanted.add(sidebar);
+        if (minusPinned) {
+          const pinned = row.querySelector(".oc-pinpanel");
+          if (pinned !== null) wanted.add(pinned);
+        }
       }
       for (const el of watched) if (!wanted.has(el)) ro.unobserve(el);
       for (const el of wanted) if (!watched.has(el)) ro.observe(el);
@@ -63,7 +72,7 @@ export function useWorkspaceRoom(opts?: {
     };
     attach();
     const mo = new MutationObserver(attach);
-    mo.observe(row, { childList: true, subtree: true });
+    mo.observe(document.body, { childList: true, subtree: true });
     return () => {
       ro.disconnect();
       mo.disconnect();

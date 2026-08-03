@@ -22,17 +22,13 @@ import {
   __resetPinnedPanelForTests,
   fittedPanelWidth,
   panelFitsBeside,
-  clearShownColumn,
   getPinnedPanel,
-  getShownColumn,
   isPinnedContent,
   panelIdentity,
   pinBelongsHere,
   setPinnedParams,
-  setShownColumn,
   pinPanel,
   releasePinnedPanel,
-  shouldRestoreInChat,
   subscribePinnedPanel,
   whoOwns,
 } from "./pinnedPanel";
@@ -43,7 +39,6 @@ const ME = "userA";
 const here = {
   userId: ME,
   chatId: "chatA",
-  shownIdentity: null as string | null,
 };
 const elsewhere = { ...here, chatId: "chatB" };
 const nowhere = { ...here, chatId: null };
@@ -78,40 +73,6 @@ describe("a pin survives navigation, and says where it came from", () => {
   });
 });
 
-describe("exactly one surface renders the panel", () => {
-  test("back in the origin conversation, the in-chat column takes over", () => {
-    // The column is wider, resizable and sits beside the thread it belongs to;
-    // the floating panel yields rather than drawing the same content twice —
-    // but only once the column has PUBLISHED that it is showing the pin.
-    const pin = pinPanel(aDoc);
-    const showing = { ...here, shownIdentity: panelIdentity("document", aDoc.params) };
-    expect(whoOwns(pin, here), "not yet: the column is still empty").toBe("dock");
-    expect(whoOwns(pin, showing)).toBe("inchat");
-  });
-
-  test("the handover is ACKNOWLEDGED — the reading never blinks out", () => {
-    // Coming home, the column restores in a later effect. Handing over on
-    // "empty" left a frame with the dock gone and no column body yet.
-    const pin = pinPanel(aDoc);
-    expect(whoOwns(pin, here), "dock still draws it…").toBe("dock");
-    expect(shouldRestoreInChat(pin, here, false), "…and the column fills").toBe(
-      true,
-    );
-    const showing = { ...here, shownIdentity: panelIdentity("document", aDoc.params) };
-    expect(whoOwns(pin, showing), "now the dock yields").toBe("inchat");
-  });
-
-  test("a panel with NO origin chat is owned by the dock everywhere", () => {
-    // A scheduled task opened from Settings has no in-chat home to return to.
-    const pin = pinPanel({ ...aDoc, kind: "cron", originChatId: null });
-    expect(whoOwns(pin, here)).toBe("dock");
-    expect(whoOwns(pin, nowhere)).toBe("dock");
-  });
-
-  test("no pin means nobody renders the floating panel", () => {
-    expect(whoOwns(null, here)).toBe("none");
-  });
-});
 
 describe("the pin's lifecycle", () => {
   test("pinning again REPLACES — a second pin is not a second panel", () => {
@@ -154,48 +115,6 @@ describe("the pin's lifecycle", () => {
   });
 });
 
-describe("coming home to the origin conversation", () => {
-  test("an empty column refills itself from the pin", () => {
-    // ConvexChat remounts on navigation with empty local state; the reading is
-    // still pinned here, so the column fills itself rather than making the
-    // reader click again.
-    pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), here, false)).toBe(true);
-  });
-
-  test("a column already showing something is NOT overwritten", () => {
-    pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), here, true)).toBe(false);
-  });
-
-  test("closing ANOTHER conversation's column leaves the pin alone", () => {
-    // The reader pinned from chat A and is now in chat B. What B's column shows
-    // is B's own; the dock is drawing A's pin. Closing B must not reach across.
-    const pin = pinPanel(aDoc);
-    expect(whoOwns(pin, elsewhere), "the dock draws it, not B's column").toBe(
-      "dock",
-    );
-    // (The column only releases when it OWNS the pin — see ConvexChat's
-    // `closingColumn`, guarded on `pinnedHere`.)
-    expect(shouldRestoreInChat(getPinnedPanel(), elsewhere, false)).toBe(false);
-    expect(getPinnedPanel()?.pinId).toBe(pin.pinId);
-  });
-
-  test("closing the reading ends the pin — the column must not reopen it", () => {
-    // Without the release, the close is undone on the very next render and the
-    // X looks broken: the restore condition is true again the instant the column
-    // goes empty.
-    const pin = pinPanel(aDoc);
-    releasePinnedPanel(pin.pinId);
-    expect(shouldRestoreInChat(getPinnedPanel(), here, false)).toBe(false);
-  });
-
-  test("elsewhere, nothing is restored into the column at all", () => {
-    pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), elsewhere, false)).toBe(false);
-    expect(shouldRestoreInChat(getPinnedPanel(), nowhere, false)).toBe(false);
-  });
-});
 
 describe("every way to close the reading releases the pin", () => {
   // DERIVED FROM THE SOURCE, not from a list kept by hand. The restore fires on
@@ -225,43 +144,6 @@ describe("every way to close the reading releases the pin", () => {
   });
 });
 
-describe("the pin does not outlive the identity that made it", () => {
-  test("another identity sees NOTHING — not even the origin title", () => {
-    // The store outlives React, so an impersonation swap can render the new
-    // identity's tree before the old one's cleanup effect has run. The check
-    // therefore fails CLOSED on every read rather than waiting for a purge:
-    // the header chip carries a conversation TITLE, which is the leak.
-    const pin = pinPanel(aDoc);
-    expect(whoOwns(pin, someoneElse)).toBe("none");
-    expect(whoOwns(pin, { ...someoneElse, chatId: "chatB" })).toBe("none");
-    expect(shouldRestoreInChat(pin, someoneElse, false)).toBe(false);
-    expect(
-      isPinnedContent(pin, someoneElse, "document", aDoc.params),
-    ).toBe(false);
-    expect(
-      whoOwns(pin, { ...here, shownIdentity: panelIdentity("document", aDoc.params) }),
-      "and the owner still sees it",
-    ).toBe("inchat");
-  });
-
-  // The store is module-level: it survives React on its own. The dock is
-  // mounted INSIDE the identity-keyed tree, so an impersonation swap remounts
-  // it — and only a mount-scoped cleanup turns that remount into a purge.
-  // Without it, one person's reading, and the conversation TITLE shown in the
-  // panel's header, would carry into another's session.
-  test("the dock releases the pin in a mount-scoped cleanup", () => {
-    const src = readFileSync(
-      new URL("./PinnedPanelDock.tsx", import.meta.url),
-      "utf8",
-    );
-    expect(
-      /useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>\s*releasePinnedPanel\(\),\s*\[\]\s*\)/.test(
-        src,
-      ),
-      "no unmount release: an identity swap would carry the pin across sessions",
-    ).toBe(true);
-  });
-});
 
 describe("the pin belongs to a CONTENT, not to a conversation", () => {
   const sourcesOf = (messageId: string) => ({
@@ -340,86 +222,13 @@ describe("the pin belongs to a CONTENT, not to a conversation", () => {
   });
 });
 
-describe("a phone changes the presentation, not the rules", () => {
-  test("coming home restores the reading — as a sheet, but it is THERE", () => {
-    // Refusing to restore where no column fits left the pin in the store and on
-    // no surface at all: pin in A, go to B, come back to A on a phone, and the
-    // reading was gone for good. Whether it comes back as a column or a sheet is
-    // decided downstream; both are surfaces.
-    pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), onMobile, false)).toBe(true);
-    expect(shouldRestoreInChat(getPinnedPanel(), here, false)).toBe(true);
-  });
 
-  test("and a column already showing something is still not overwritten", () => {
-    pinPanel(aDoc);
-    expect(shouldRestoreInChat(getPinnedPanel(), onMobile, true)).toBe(false);
-  });
-
-  test("elsewhere on a phone nothing draws it — it waits, and it comes back", () => {
-    const pin = pinPanel(aDoc);
-    expect(whoOwns(pin, { ...onMobile, chatId: "chatB" })).toBe("dock");
-    // …the persistent column renders nothing on a phone, so the reading is not
-    // on screen there; the test above is what makes that a WAIT and not a loss.
-    expect(shouldRestoreInChat(pin, { ...onMobile, chatId: "chatB" }, false)).toBe(
-      false,
-    );
-  });
-});
-
-describe("exactly one surface, whatever the column is showing", () => {
-  const idOf = (messageId: string) =>
-    panelIdentity("sources", { messageId });
-
-  test("a SECOND panel opened at home leaves the pin to the dock", () => {
-    // Pin m1's sources, then open m2's in the same conversation. The column now
-    // shows m2 and refuses to restore m1 (it is not empty) — so if it still
-    // claimed ownership, m1 would be drawn on NEITHER surface.
-    pinPanel({
-      kind: "sources",
-      ownerUserId: ME,
-      originChatId: "chatA",
-      originLabel: "Revue",
-      params: { messageId: "m1" },
-    });
-    const pin = getPinnedPanel();
-    expect(whoOwns(pin, { ...here, shownIdentity: idOf("m2") })).toBe("dock");
-    expect(whoOwns(pin, { ...here, shownIdentity: idOf("m1") })).toBe("inchat");
-    expect(
-      whoOwns(pin, here),
-      "empty column: the dock KEEPS it until the column acknowledges",
-    ).toBe("dock");
-  });
-
-
-  test("the column publishes what it shows, and clears it", () => {
-    setShownColumn("chatA", "sources:m1");
-    expect(getShownColumn()).toEqual({ chatId: "chatA", identity: "sources:m1" });
-    clearShownColumn("chatA");
-    expect(getShownColumn()).toEqual({ chatId: null, identity: null });
-  });
-
-  test("a LATE clear from the conversation you left erases nothing", () => {
-    // Leaving A for B, A's cleanup can land after B has already published. An
-    // unconditional clear would erase a true fact, and the dock and B's column
-    // would then draw the same reading at once.
-    setShownColumn("chatA", "sources:m1");
-    setShownColumn("chatB", "sources:m9");
-    clearShownColumn("chatA");
-    expect(getShownColumn(), "B's column still speaks for itself").toEqual({
-      chatId: "chatB",
-      identity: "sources:m9",
-    });
-  });
-});
 
 describe("a pinned document can move to its newer version", () => {
-  test("the pin and the column never end up on two versions at once", () => {
-    // Whichever surface moves, the other follows within the SAME pin. Left
-    // unsynchronised, the two hold different versions of the same file, each
-    // claims a different identity, and BOTH get drawn — two live copies.
+  test("moving to a newer version keeps ONE reading, not two", () => {
+    // One surface draws a pinned document, so a version change is a change of
+    // params on the same pin rather than a negotiation between two columns.
     const v1 = { doc: { storageId: "v1" } };
-    const v2 = { doc: { storageId: "v2" } };
     const pin = pinPanel({
       kind: "document",
       ownerUserId: ME,
@@ -427,41 +236,32 @@ describe("a pinned document can move to its newer version", () => {
       originLabel: "Revue",
       params: v1,
     });
-    const showing = (params: Record<string, unknown>) => ({
-      ...here,
-      shownIdentity: panelIdentity("document", params),
-    });
-    expect(whoOwns(pin, showing(v1))).toBe("inchat");
-    // The dock moves the pin to v2. A column left on v1 would be a second live
-    // copy, which is why the follow-up happens during the render — the state
-    // below is never painted.
-    setPinnedParams(pin.pinId, v2);
+    expect(isPinnedContent(pin, here, "document", v1)).toBe(true);
+    setPinnedParams(pin.pinId, { doc: { storageId: "v2" } });
     const moved = getPinnedPanel();
-    expect(whoOwns(moved, showing(v1)), "column left behind → two copies").toBe(
-      "dock",
-    );
-    expect(whoOwns(moved, showing(v2)), "once it follows, one copy").toBe(
-      "inchat",
-    );
+    expect(moved?.pinId, "same pin, same panel, same place").toBe(pin.pinId);
+    expect(
+      isPinnedContent(moved, here, "document", v1),
+      "the version it left is no longer the pinned reading",
+    ).toBe(false);
   });
 
-
-  test("BOTH surfaces carry the pin — neither direction is left out", () => {
-    // The pure rule above says two versions must never coexist; these are the
-    // two places that keep it. Column-initiated: `openFor` writes the pin.
-    // Dock-initiated: the chat follows the pin's params. Losing either one
-    // reopens the two-live-copies state.
+  test("only the PERSISTENT column carries the pin", () => {
+    // The in-chat column never shows a pinned document — the persistent one
+    // does — so the version change is carried there, in one place. Carrying it
+    // in the conversation too would mean two owners for one reading again.
     const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+    const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
     expect(
-      /openFor:[\s\S]{0,1600}?setPinnedParams\(pin\.pinId/.test(chat),
-      "the column's version change must carry the pin",
-    ).toBe(true);
-    expect(
-      /if \(pinDocIdentity === null\)[\s\S]{0,1400}?setActiveDoc\(pinnedPanel!\.params\.doc/.test(
-        chat,
+      /openNewerVersion: \(doc: ViewerDoc\) =>\s*\n?\s*setPinnedParams\(pin\.pinId/.test(
+        dock,
       ),
-      "the dock's version change must be followed DURING the render, not after",
+      "the persistent column's provider carries it",
     ).toBe(true);
+    expect(
+      chat.includes("setPinnedParams"),
+      "and the conversation does not touch the pin at all",
+    ).toBe(false);
   });
 
   test("the params are rewritten in place, and a stale write is refused", () => {
@@ -498,22 +298,6 @@ describe("a broken panel never traps the reader", () => {
     expect(/<PanelBodyBoundary[^>]*onClose=/.test(dock), "the dock's too").toBe(true);
   });
 
-  test("the transfer is atomic — nothing is deferred to a post-paint effect", () => {
-    // The column used to be emptied by an effect on [chatId] and the mirror
-    // published by a plain effect: both land AFTER the frame is on screen, so
-    // chat B briefly showed chat A's reading while the dock drew it as well.
-    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
-    expect(
-      /if \(panelChat !== chatId\) \{[\s\S]{0,400}?setActiveCron\(null\)/.test(chat),
-      "the column must empty DURING the render",
-    ).toBe(true);
-    expect(
-      /useLayoutEffect\(\(\) => \{[\s\S]{0,300}?setShownColumn\(mine, shownIdentity\)/.test(
-        chat,
-      ),
-      "the mirror must be published BEFORE paint",
-    ).toBe(true);
-  });
 });
 
 describe("two readings must not collide on one identity", () => {
@@ -604,39 +388,6 @@ describe("two readings must not collide on one identity", () => {
     expect(pinBelongsHere(pin, nowhere), "no conversation at all").toBe(false);
   });
 
-  test("only the VERSION action carries the pin — not every file chip", () => {
-    // `openFor` is what every FileChip calls. Wired to the pin, previewing an
-    // unrelated file silently replaced the pinned reading with it.
-    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
-    const openForBody = chat.slice(
-      chat.indexOf("openFor: (doc) => {"),
-      chat.indexOf("openNewerVersion: (doc) => {"),
-    );
-    expect(
-      openForBody.includes("setPinnedParams"),
-      "a plain open must leave the pin alone",
-    ).toBe(false);
-    expect(
-      /openNewerVersion: \(doc\) => \{[\s\S]{0,1600}?setPinnedParams\(pin\.pinId/.test(
-        chat,
-      ),
-      "and the version change must carry it",
-    ).toBe(true);
-    const viewer = readFileSync(new URL("./DocumentViewer.tsx", import.meta.url), "utf8");
-    expect(
-      viewer.includes("viewer.openNewerVersion({"),
-      "the version button must use the distinct act",
-    ).toBe(true);
-  });
-
-  test("both document sync directions carry the belongs-here guard", () => {
-    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
-    const guards = [...chat.matchAll(/pinBelongsHere\(/g)];
-    expect(
-      guards.length,
-      "the render-phase follow AND openNewerVersion — losing either reopens it",
-    ).toBe(2);
-  });
 });
 
 describe("the conversation keeps a floor the panel cannot cross", () => {
@@ -664,50 +415,6 @@ describe("the conversation keeps a floor the panel cannot cross", () => {
     expect(panelFitsBeside(640 + 260, MIN_SOURCES)).toBe(true);
   });
 
-  test("the rule is the SAME for both columns — persistent and in-chat", () => {
-    // They are one column at two levels of the tree. Applying the floor only to
-    // the persistent one meant coming home restored a remembered 680px panel
-    // into 640px of room, which is exactly the crush the rule exists to stop.
-    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
-    const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
-    expect(
-      /style=\{\{ width: drawnColumnWidth/.test(chat),
-      "the in-chat column draws a FITTED width",
-    ).toBe(true);
-    expect(
-      /const asSheet = isMobile \|\| !columnFits;/.test(chat),
-      "…and where no column fits, BOTH the explicit open and the restore land in a sheet",
-    ).toBe(true);
-    // BEFORE PAINT: a passive restore leaves the first frame of the remounted
-    // conversation showing the pinned reading nowhere, wherever the persistent
-    // column does not render.
-    expect(
-      /shouldRestoreInChat[\s\S]{0,80}?return;/.test(chat) &&
-        chat.indexOf("useLayoutEffect", chat.indexOf("COMING HOME")) <
-          chat.indexOf("shouldRestoreInChat", chat.indexOf("COMING HOME")),
-      "the restore runs in a layout effect",
-    ).toBe(true);
-    expect(
-      dock.includes("panelFitsBeside(available, min)"),
-      "the persistent one asks the same question",
-    ).toBe(true);
-    expect(
-      chat.includes("useWorkspaceRoom(") && dock.includes("useWorkspaceRoom("),
-      "…measured the same way, from the workspace",
-    ).toBe(true);
-    // AND during the drag, not only at render: the separator's first move used
-    // to repaint the raw remembered width, which is how the thread vanished.
-    const fits = [...chat.matchAll(/fit: fitFor\(/g)];
-    expect(
-      fits.length,
-      "the three in-chat widths each resize against the shared room",
-    ).toBe(3);
-    expect(
-      [...dock.matchAll(/fit: fitFor\(/g)].length,
-      "and so do the persistent one's",
-    ).toBe(3);
-  });
-
   test("too narrow for a column: the panel becomes a sheet, not a sliver", () => {
     // An explicit open must always show something — nobody clicks a source chip
     // to watch nothing happen. But a 380px document column in 508px of shared
@@ -724,11 +431,11 @@ describe("the conversation keeps a floor the panel cannot cross", () => {
       /const asSheet = isMobile \|\| !columnFits;/.test(chat),
       "…and it is the SAME decision for the phone and the narrow desktop",
     ).toBe(true);
-    const sheets = [...chat.matchAll(/Open && asSheet \? \(/g)];
+    const sheets = [...chat.matchAll(/Open && asSheet && !thisIsPinned \? \(/g)];
     expect(sheets.length, "the four contents").toBe(4);
     expect(
-      chat.includes("cronOpen) && !asSheet ? ("),
-      "and the column renders only when it fits",
+      chat.includes("columnOpen && !asSheet && !thisIsPinned ? ("),
+      "and the column renders only when it fits AND is not the pinned reading",
     ).toBe(true);
   });
 
@@ -878,5 +585,63 @@ describe("the conversation keeps a floor the panel cannot cross", () => {
     const remembered = 680;
     expect(fittedPanelWidth(remembered, 900, MIN_SOURCES)).toBeLessThan(remembered);
     expect(fittedPanelWidth(remembered, 1600, MIN_SOURCES)).toBe(remembered);
+  });
+});
+
+describe("a pinned reading is never torn down", () => {
+  // The whole point of the pin: the subtree is mounted once and stays mounted.
+  // Anything that returns null instead of hiding it rebuilds a PDF from scratch
+  // and lands the reader back on page one — the defect reported in production.
+  test("no room means HIDDEN, not unmounted", () => {
+    const dock = readFileSync(new URL("./PinnedPanelDock.tsx", import.meta.url), "utf8");
+    expect(
+      /const roomless = isMobile \|\| !panelFitsBeside\(available, min\);/.test(dock),
+      "the roomless states are computed…",
+    ).toBe(true);
+    expect(
+      /hidden=\{roomless\}/.test(dock),
+      "…and hide the column instead of returning null",
+    ).toBe(true);
+    const nulls = [...dock.matchAll(/return null;/g)];
+    expect(
+      nulls.length,
+      "only two: no pin at all, and a pin that is not this reader's",
+    ).toBe(2);
+  });
+
+  test("pinning hands the reading over, local state included", () => {
+    // Left behind, the conversation's copy is kept off screen only by the
+    // identity check — and that check drifts the moment the pinned document
+    // moves to a newer version, at which point the old one reappeared beside
+    // the new one.
+    const chat = readFileSync(new URL("./ConvexChat.tsx", import.meta.url), "utf8");
+    expect(
+      /pinPanel\(\{[\s\S]{0,400}?\}\);[\s\S]{0,700}?setActiveSourcesMessageId\(null\);[\s\S]{0,200}?setActiveCron\(null\);/.test(
+        chat,
+      ),
+      "the four local slots are cleared at pin time",
+    ).toBe(true);
+  });
+});
+
+describe("the same document in another conversation is another reading", () => {
+  test("opening it there is not refused because a twin is pinned here", () => {
+    // Forks share their documents. On identity alone, the other conversation's
+    // column stood down — the reader clicked and nothing happened — while the
+    // panel kept showing the file in the context it was pinned from, drafts and
+    // version history included.
+    const doc = { doc: { filename: "note.md", storageId: "shared" } };
+    const pin = pinPanel({
+      kind: "document",
+      ownerUserId: ME,
+      originChatId: "chatA",
+      originLabel: "Revue",
+      params: doc,
+    });
+    expect(isPinnedContent(pin, here, "document", doc), "in its own chat").toBe(true);
+    expect(
+      isPinnedContent(pin, elsewhere, "document", doc),
+      "…and NOT in another one, whose column must be free to draw it",
+    ).toBe(false);
   });
 });

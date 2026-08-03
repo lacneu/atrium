@@ -39,7 +39,6 @@ import {
   fittedPanelWidth,
   getPinnedPanel,
   panelFitsBeside,
-  getShownColumn,
   releasePinnedPanel,
   setPinnedParams,
   subscribePinnedPanel,
@@ -109,20 +108,7 @@ export function PinnedPanelDock({
       [available],
     ),
   );
-  // The same fact the in-chat column publishes: WHAT it is showing. Both
-  // surfaces arbitrate on it, so a reading is drawn exactly once — never twice,
-  // and never on neither (a second panel opened in the origin conversation used
-  // to hide this column while the in-chat one showed something different).
-  const shown = useSyncExternalStore(
-    subscribePinnedPanel,
-    getShownColumn,
-    getShownColumn,
-  );
-  const viewer = {
-    userId: viewerUserId,
-    chatId: currentChatId,
-    shownIdentity: shown.chatId === currentChatId ? shown.identity : null,
-  };
+  const viewer = { userId: viewerUserId, chatId: currentChatId };
 
   // THE PIN DIES WITH THE IDENTITY. The store is module-level, so it outlives
   // React on its own: without this, an impersonation swap — which remounts this
@@ -134,19 +120,19 @@ export function PinnedPanelDock({
   useEffect(() => () => releasePinnedPanel(), []);
 
   if (pin === null) return null;
-  // NO ROOM ON A PHONE. There the four contents are modal sheets over a single
-  // full-width column; a second column beside them is not a layout that exists.
-  // A pinned reading therefore waits in its own conversation instead of
-  // following the reader — a stated limit rather than something half-working.
-  if (isMobile) return null;
   if (whoOwns(pin, viewer) !== "dock") return null;
 
   const p = pin.params;
   const close = () => releasePinnedPanel(pin.pinId);
   const { width, startResize, columnRef, min } = widths[pin.kind];
-  // NO ROOM FOR BOTH — the conversation wins and this column waits, the same
-  // answer as on a phone. Checked after the hooks, never before them.
-  if (!panelFitsBeside(available, min)) return null;
+  // NO ROOM: HIDDEN, NEVER UNMOUNTED. A phone has no room for a second column,
+  // and neither does a window too narrow for a readable thread beside one — so
+  // the reading is not DRAWN there. But returning null would tear its subtree
+  // down, and that is the whole defect this panel exists to avoid: widening the
+  // window again, or turning the phone, would rebuild a PDF from scratch and
+  // land the reader back on page one. Hidden keeps every bit of it — page,
+  // zoom, scroll, search — for the moment there is room again.
+  const roomless = isMobile || !panelFitsBeside(available, min);
   // DRAWN width, not remembered width: the remembered one survives a narrow
   // moment, so widening the window gives the reader back the column they set.
   const drawn = fittedPanelWidth(width, available, min);
@@ -156,7 +142,10 @@ export function PinnedPanelDock({
       <aside
         className="oc-pinpanel"
         ref={columnRef}
-        style={{ width: drawn, flex: `0 0 ${drawn}px` }}
+        hidden={roomless}
+        style={
+          roomless ? { display: "none" } : { width: drawn, flex: `0 0 ${drawn}px` }
+        }
         aria-label={m.pinned_panel_aria({ origin: pin.originLabel })}
       >
         {/* Same affordance as the in-chat column's: the reading keeps its width
