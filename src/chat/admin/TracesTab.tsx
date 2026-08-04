@@ -123,6 +123,10 @@ export function TracesTab() {
   const direction = search.direction ?? ALL;
   const roleKey = search.roleKey ?? ALL;
   const q = search.q ?? "";
+  // Handed to the query as a TOP-LEVEL argument, which is what routes it through
+  // `by_correlation`. Inside `filter` it would be post-filtered instead, and a
+  // busy window would hide the very chain the operator drilled into.
+  const correlationId = search.correlationId;
   // URL stores time-range TOKENS; resolve to live epoch ms at component level.
   const range = decodeRange(search.from, search.to);
   const advanced = useMemo(() => parseAdv(search.adv), [search.adv]);
@@ -180,6 +184,9 @@ export function TracesTab() {
   const filtered = useQuery(api.observability.listEvents, {
     limit,
     kind: kind === ALL_KINDS ? undefined : kind,
+    // TOP-LEVEL, never inside `filter`: this is what makes the query range
+    // `by_correlation` instead of post-filtering a bounded recent window.
+    ...(correlationId ? { correlationId } : {}),
     filter: {
       q: q || undefined,
       from,
@@ -332,19 +339,30 @@ export function TracesTab() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={kind} onValueChange={setKind}>
-          <SelectTrigger size="sm" className="w-44">
-            <SelectValue placeholder={m.traces_filter_kind_placeholder()} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL_KINDS}>{m.traces_filter_kind_all()}</SelectItem>
-            {kindOptions.map((k) => (
-              <SelectItem key={k} value={k}>
-                {k}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* TYPABLE, not a closed list. The options below are the kinds SEEN in
+            the current window, which is exactly what a RARE kind is missing
+            from: once busier kinds fill the window it vanishes from the menu,
+            and the operator can no longer ask for the indexed query that would
+            find it — the backend index alone leaves the diagnostic dead end in
+            place (live 2026-08-04: `openclaw.dispatch` unreachable from here).
+            A datalist keeps the discovered kinds as suggestions AND accepts a
+            name typed from a log line or an anomaly. */}
+        <input
+          list="oc-trace-kinds"
+          className="oc-input oc-input--sm w-44"
+          value={kind === ALL_KINDS ? "" : kind}
+          placeholder={m.traces_filter_kind_placeholder()}
+          aria-label={m.traces_filter_kind_placeholder()}
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            setKind(v === "" ? ALL_KINDS : v);
+          }}
+        />
+        <datalist id="oc-trace-kinds">
+          {kindOptions.map((k) => (
+            <option key={k} value={k} />
+          ))}
+        </datalist>
         <Select
           value={String(limit)}
           onValueChange={(v) => setLimit(Number(v) as LimitValue)}

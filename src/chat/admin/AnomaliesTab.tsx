@@ -498,11 +498,13 @@ function CauseCell({ row }: { row: AnomalyView }) {
           type="button"
           className="oc-anomaly__drill"
           onClick={() =>
-            // Drill into the failing turn's traces. `limit` is required by the
-            // traces search schema (100 = its default window).
+            // Drill into the failing turn's traces BY CORRELATION, not by free
+            // text: as `q` it was post-filtered over a bounded recent window, so
+            // past that window this button opened an EMPTY list for a chain that
+            // exists — on a busy day, which is exactly when it is used.
             void navigate({
               to: "/settings/traces",
-              search: { q: corr, limit: 100 },
+              search: { correlationId: corr, limit: 100 },
             })
           }
         >

@@ -23,6 +23,7 @@ import {
   ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { maybeScheduleTurnRetry } from "./turnRetry";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
@@ -356,7 +357,7 @@ export const failDispatch = internalMutation({
     const chat = await ctx.db.get(row.chatId);
     if (chat === null) return;
     const now = Date.now();
-    await ctx.db.insert("messages", {
+    const failedMessageId = await ctx.db.insert("messages", {
       chatId: row.chatId,
       userId: row.userId,
       role: "assistant",
@@ -377,6 +378,32 @@ export const failDispatch = internalMutation({
     });
     // Keep the chat sorted-to-top so the failed turn is visible in the sidebar.
     await ctx.db.patch(row.chatId, { updatedAt: now });
+
+    // A DISPATCH failure can be retryable too. The bounded auto-retry was wired
+    // only into `stream.finalize` — the path a turn takes once it has STARTED —
+    // so a send refused BEFORE any stream never reached it. The gateway's
+    // transient session conflict therefore ended as a dead card even once it
+    // was classified correctly: the classification was right and nothing acted
+    // on it (live prod 2026-08-04, a user message lost).
+    //
+    // Same engine, same bound, same gates: `maybeScheduleTurnRetry` re-checks
+    // the code against RETRYABLE_KINDS, the chat kind, and the attempt chain.
+    // Zero text length — nothing streamed, so a re-dispatch bills nothing twice.
+    const failedMessage = await ctx.db.get(failedMessageId);
+    if (failedMessage !== null) {
+      // The attempt count is HANDED OVER, not re-derived: this mutation has
+      // already flipped `row` to `failed`, so the engine's own scan over
+      // sent/pending rows can no longer see the row that dispatched this turn.
+      // Left to re-derive it, a persistent conflict would read attempt 0 every
+      // time and re-arm for ever — a dispatch loop, not a bounded retry.
+      await maybeScheduleTurnRetry(
+        ctx,
+        failedMessage,
+        errorCode ?? reason,
+        0,
+        row.autoRetryAttempt ?? 0,
+      );
+    }
 
     // L2: a DOCUMENTARY fetch whose dispatch failed BEFORE stream.finalize would
     // otherwise leave the hidden chat's pendingFetch set forever -> the owner is

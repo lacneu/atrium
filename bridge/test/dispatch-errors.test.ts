@@ -250,3 +250,65 @@ describe("faultDomain (bridge-health classification)", () => {
     expect(faultDomain(classifyGatewayError(null))).toBe("bridge");
   });
 });
+
+// LIVE PROD 2026-08-04: a send lost on a conversation carrying a 66-page report.
+// The gateway refused it with `Session "…" changed while starting work. Retry.`
+// — a transient conflict it explicitly asks us to retry — and the bridge folded
+// it into INVALID_REQUEST because the text arrives behind that prefix. That code
+// is a dead end: the message was lost and the user was told the chat service was
+// unavailable.
+describe("a session that moved under a starting run is retriable, not malformed", () => {
+  const raw =
+    'INVALID_REQUEST: Error: Session "agent:fabien:atrium:chat:fabien.lacombe:mh796j2qfy71p8dq9trafvtmmx8bdead" changed while starting work. Retry.';
+
+  test("classifies the gateway's own 'Retry.' as the session conflict it is", () => {
+    expect(classifyGatewayError(new Error(raw))).toBe("session_init_conflict");
+  });
+
+  test("does NOT fall into the malformed-request bucket", () => {
+    expect(classifyGatewayError(new Error(raw))).not.toBe("INVALID_REQUEST");
+  });
+
+  // The same conflict on a send that CARRIES a file: the attachment fallback
+  // fires on `hasAttachments && /invalid request/`, so this was classified
+  // ATTACHMENT_REJECTED — terminal, and blaming a file that had nothing to do
+  // with it.
+  test("a send WITH an attachment is not blamed on the attachment", () => {
+    expect(
+      classifyGatewayError(new Error(raw), { hasAttachments: true }),
+    ).toBe("session_init_conflict");
+  });
+
+  test("an explicit attachment failure still wins over it", () => {
+    expect(
+      classifyGatewayError(new Error("INVALID_REQUEST: invalid base64"), {
+        hasAttachments: true,
+      }),
+    ).toBe("ATTACHMENT_REJECTED");
+  });
+
+  // A message carrying BOTH signals states a real file failure: retrying it
+  // would loop on a payload that cannot be staged.
+  test("an explicit attachment marker in the SAME message wins", () => {
+    expect(
+      classifyGatewayError(
+        new Error(
+          'attachment parse/stage failed: Session "x" changed while starting work. Retry.',
+        ),
+        { hasAttachments: true },
+      ),
+    ).toBe("ATTACHMENT_REJECTED");
+  });
+
+  test("a genuinely malformed request still classifies as one", () => {
+    expect(
+      classifyGatewayError(new Error("INVALID_REQUEST: malformed payload")),
+    ).toBe("INVALID_REQUEST");
+  });
+
+  // The gateway answered — the bridge's link and credentials worked. Counting
+  // this as a bridge fault would paint the Bridge tab red on a healthy bridge.
+  test("is a DOWNSTREAM rejection, so bridge health stays green", () => {
+    expect(faultDomain("session_init_conflict")).toBe("downstream");
+  });
+});

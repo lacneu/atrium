@@ -154,6 +154,13 @@ export const tracesSearchSchema = z.object({
   // shareable URL.
   section: z.enum(["latency", "events"]).default("events").catch("events"),
   kind: z.string().default("all").catch("all"),
+  // A CORRELATION CHAIN, asked of its own index rather than of the free-text
+  // search. Passed as `q`, it was post-filtered over a bounded recent-rows scan:
+  // past that window the drill-down from an anomaly returned an EMPTY list for a
+  // chain that exists — the same silent trap the kind filter had, on the one
+  // path an operator actually walks (live 2026-08-04). A real search param, so
+  // the drill-down stays a shareable URL.
+  correlationId: z.string().optional().catch(undefined),
   limit: z
     .coerce
     .number()

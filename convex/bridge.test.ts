@@ -1082,3 +1082,81 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     }
   });
 });
+
+// A DISPATCH failure can be retryable too.
+//
+// The bounded auto-retry was wired only into `stream.finalize` — the path a turn
+// takes once it has STARTED. A send refused BEFORE any stream never reached it,
+// so the gateway's transient session conflict ended as a dead card even once it
+// was classified correctly: the classification was right and nothing acted on
+// it (live prod 2026-08-04, a user message lost on a 66-page report).
+describe("failDispatch arms the bounded retry on a retryable code", () => {
+  test("a transient session conflict schedules the automatic retry", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seed(t);
+
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "send_failed",
+      errorCode: "session_init_conflict",
+    });
+
+    const msgs = await messagesOf(t, chatId);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.errorCode).toBe("session_init_conflict");
+    expect(
+      msgs[0]!.autoRetry,
+      "classified right and acted on: the card must carry the armed retry",
+    ).toBeDefined();
+  });
+
+  // THE BOUND MUST BE REAL ON THIS PATH TOO. `failDispatch` flips its outbox row
+  // to `failed` before arming, so the engine's own scan over sent/pending rows
+  // can no longer see the row that dispatched this turn. Left to re-derive the
+  // count it would read 0 every time and re-arm for ever — a dispatch loop.
+  test("a retry that fails AGAIN does not re-arm from zero", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    // The row that dispatched THIS turn is itself the 2nd attempt (the bound).
+    const exhausted = await t.run(async (ctx) => {
+      const chat = await ctx.db.get(chatId);
+      return ctx.db.insert("outbox", {
+        chatId,
+        userId: chat!.userId,
+        clientMessageId: "cmid-retry-2",
+        text: "hello",
+        attachmentIds: [],
+        status: "pending" as const,
+        autoRetryAttempt: 2,
+      });
+    });
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId: exhausted,
+      reason: "send_failed",
+      errorCode: "session_init_conflict",
+    });
+    const msgs = await messagesOf(t, chatId);
+    const card = msgs[msgs.length - 1]!;
+    expect(
+      card.autoRetry,
+      "past the bound the card must be terminal, not another attempt",
+    ).toBeUndefined();
+  });
+
+  test("a NON-retryable dispatch failure is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seed(t);
+
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "no_agent",
+      errorCode: "NO_AGENT",
+    });
+
+    const msgs = await messagesOf(t, chatId);
+    expect(
+      msgs[0]!.autoRetry,
+      "retrying a missing agent burns quota and shows a misleading label",
+    ).toBeUndefined();
+  });
+});

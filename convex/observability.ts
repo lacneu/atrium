@@ -296,20 +296,36 @@ async function fetchRecentEvents(
   // directly addressable; applyFilter re-checks from/to harmlessly below.
   const from = opts.filter?.from;
   const to = opts.filter?.to;
-  const rows = await ctx.db
-    .query("traceEvents")
-    .withIndex("by_at", (q) =>
-      from !== undefined && to !== undefined
-        ? q.gte("at", from).lte("at", to)
-        : from !== undefined
-          ? q.gte("at", from)
-          : to !== undefined
-            ? q.lte("at", to)
-            : q,
-    )
+  // A KIND is asked of the INDEX, never post-filtered. Scanning recent rows and
+  // dropping the ones that do not match makes a RARE kind read as empty as soon
+  // as busier kinds fill the window — silently, which is the worst way to be
+  // wrong in a diagnostic tool. `by_kind_at` ranges the window inside the kind,
+  // so the answer no longer depends on how much unrelated traffic there was.
+  const kind = opts.kind;
+  const rows = await (kind !== undefined && kind !== null && kind !== ""
+    ? ctx.db.query("traceEvents").withIndex("by_kind_at", (q) => {
+        const k = q.eq("kind", kind);
+        return from !== undefined && to !== undefined
+          ? k.gte("at", from).lte("at", to)
+          : from !== undefined
+            ? k.gte("at", from)
+            : to !== undefined
+              ? k.lte("at", to)
+              : k;
+      })
+    : ctx.db.query("traceEvents").withIndex("by_at", (q) =>
+        from !== undefined && to !== undefined
+          ? q.gte("at", from).lte("at", to)
+          : from !== undefined
+            ? q.gte("at", from)
+            : to !== undefined
+              ? q.lte("at", to)
+              : q,
+      )
+  )
     .order("desc")
     .take(scan);
-  const byKind = opts.kind ? rows.filter((r) => r.kind === opts.kind) : rows;
+  const byKind = rows;
   const views = applyFilter(byKind.map(toView), opts.filter, TRACES_FILTER_CFG);
   return views.slice(0, limit);
 }

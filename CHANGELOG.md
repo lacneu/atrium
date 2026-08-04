@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.71.5] — A message the gateway asked us to resend is no longer lost
+
+Corrective, from a production report: a send vanished on a conversation carrying
+a 66-page report, and the user was told the chat service was unavailable. The
+gateway had in fact answered — `Session "…" changed while starting work. Retry.`
+— a transient conflict it explicitly asks us to retry. We classified it as a
+malformed request, which is a dead end, and the message was gone.
+
+- **A transient session conflict is recognised and retried.** The automatic
+  retry already existed; it never fired here because the classifier knew only
+  two phrasings of this conflict and production produced a third. The message
+  now goes out on its own, bounded to two attempts, ending on an honest error
+  card if the conflict persists.
+- **A send carrying a file is no longer blamed on the file.** The same conflict
+  on a message with an attachment was reported as a rejected attachment —
+  terminal, and pointing at a document that had nothing to do with it. Explicit
+  attachment failures still take precedence: retrying one would loop on a
+  payload that can never be staged.
+- **Retrying a failed dispatch is bounded like any other.** The retry engine was
+  wired only to turns that had already started streaming; a send refused before
+  that never reached it.
+
+The same report exposed why it took a log file to find the cause, so this
+release also repairs the diagnostic path itself:
+
+- **A rare event type is findable again.** Filtering traces by kind scanned
+  recent rows and dropped the rest, so an uncommon type read as *empty* once
+  busier ones filled the window — indistinguishable from "it never happened".
+  It is now asked of an index.
+- **And it is selectable.** The filter offered only the types seen in the
+  current window — precisely what a rare type has fallen out of. It now accepts
+  a name typed from a log line or an anomaly, keeping the observed types as
+  suggestions.
+- **Opening an anomaly's traces reaches its chain.** The drill-down passed the
+  correlation as free text, post-filtered over the same bounded window: on a
+  busy day — the only day it is used — it opened an empty list for a chain that
+  exists. It now queries the correlation index directly.
+
+Deploy: `npx convex deploy` **first** (new `by_kind_at` index and the retry
+wiring are backend), then the frontend image **and the bridge**, which carries
+the classifier.
+
 ## [0.71.4] — Stop stops everything, at once
 
 Corrective, and the one `0.71.3` listed as still open. The Stop button vanished

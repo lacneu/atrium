@@ -25,6 +25,12 @@ export type DispatchErrorCode =
   | "ATTACHMENT_TOO_LARGE" // gateway refused an attachment over a size/staging cap
   | "ATTACHMENT_REJECTED" // gateway could not parse/stage the attachment (e.g. its base64 validator overflowed)
   | "INVALID_REQUEST" // gateway rejected the request shape
+  // The session changed under a run that was STARTING — a transient OCC the
+  // gateway itself asks us to retry. Lower-case like `context_length_presend`
+  // because it is a SHARED code: Convex's RETRYABLE_KINDS keys the bounded
+  // auto-retry on this exact string, so minting a bridge-only spelling would
+  // classify it correctly and still let the turn die.
+  | "session_init_conflict"
   // A Hermes surface that is NOT DEPLOYED on this instance, as opposed to one that failed.
   // The managed-files API lives only in the dashboard web server, which upstream starts
   // when HERMES_DASHBOARD is set; `hermes serve` alone answers every turn and 404s every
@@ -79,6 +85,10 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // and the credentials worked perfectly, and a full session must never paint the
   // bridge red. The failure is still fully surfaced (card, trace, anomaly).
   "context_length_presend",
+  // The gateway RECEIVED the send and refused it on a session that moved: its
+  // link and credentials worked, so this must not paint the bridge red. It is
+  // surfaced as every rejection is — card, trace, anomaly — and retried.
+  "session_init_conflict",
 ]);
 
 /**
@@ -185,12 +195,41 @@ export function classifyGatewayError(
   ) {
     return "ATTACHMENT_TOO_LARGE";
   }
+  // EXPLICIT attachment markers: the gateway names the file as the problem.
+  // These win over everything below, including the session conflict — a message
+  // carrying both states a real staging failure, and retrying it would loop on
+  // a payload that can never be staged.
   if (
     /attachment parse\/stage|invalid base64|unsupported[^.]*attachment|attachment[^.]*content/.test(
       msg,
-    ) ||
-    (opts?.hasAttachments === true &&
-      /maximum call stack|invalid_request|invalid request/.test(msg))
+    )
+  ) {
+    return "ATTACHMENT_REJECTED";
+  }
+  // TRANSIENT SESSION CONFLICT — after the EXPLICIT attachment markers, before
+  // both generic buckets.
+  // The gateway wraps it in an `INVALID_REQUEST:` prefix, so the generic test
+  // below matches it and the send died as a shape error — a dead end, with the
+  // user's message lost. It is not a shape problem: the session moved under a
+  // starting run, and the gateway itself says "Retry." Classified here as the
+  // session conflict it is, it rides the existing bounded auto-retry.
+  //
+  // Placed here on purpose, between the two: the attachment rule's GENERIC arm
+  // (`hasAttachments && /invalid request/`) used to swallow this conflict and
+  // call it ATTACHMENT_REJECTED — terminal, and blaming a file that had nothing
+  // to do with it. But an EXPLICIT attachment marker in the same message
+  // (`invalid base64`, `attachment parse/stage`) states a real file failure and
+  // must still win: retrying it would loop on a payload that cannot be staged.
+  if (/session .* changed while starting work/.test(msg)) {
+    return "session_init_conflict";
+  }
+  // GENERIC attachment fallback: no marker named the file, we only know the
+  // send carried one and the gateway said "invalid request". It sits AFTER the
+  // session conflict on purpose — that conflict has nothing to do with the
+  // file, and blaming the attachment made it terminal (live prod 2026-08-04).
+  if (
+    opts?.hasAttachments === true &&
+    /maximum call stack|invalid_request|invalid request/.test(msg)
   ) {
     return "ATTACHMENT_REJECTED";
   }

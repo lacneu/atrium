@@ -144,6 +144,16 @@ export async function maybeScheduleTurnRetry(
   message: Doc<"messages">,
   errorKind: string | undefined,
   finalTextLen: number,
+  /** The attempt count of the row that dispatched this turn, when the CALLER
+   *  already knows it.
+   *
+   *  The scan below reads it off the newest `sent`/`pending` outbox row — which
+   *  works from `finalize`, where that row is still in one of those states. It
+   *  does NOT work from `failDispatch`, which flips the row to `failed` first:
+   *  the chain's own row becomes invisible to the scan, `lastAttempt` falls
+   *  back to 0, and a persistent failure re-arms attempt 1 for ever. Passing
+   *  the known value keeps the bound real on that path. */
+  knownAttempt?: number,
 ): Promise<void> {
   if (errorKind === undefined || !RETRYABLE_KINDS.has(errorKind)) return;
   // REGULAR chats only: the utility kinds (documentary/summarizer/curator) have
@@ -180,7 +190,7 @@ export async function maybeScheduleTurnRetry(
   const newest = rows
     .filter((r) => r !== null)
     .sort((a, b) => b!._creationTime - a!._creationTime)[0];
-  const lastAttempt = newest?.autoRetryAttempt ?? 0;
+  const lastAttempt = knownAttempt ?? newest?.autoRetryAttempt ?? 0;
   const decision = retryDecision({
     status: message.status === "error" ? "error" : String(message.status),
     errorKind: errorKind ?? null,

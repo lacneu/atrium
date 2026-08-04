@@ -2629,6 +2629,13 @@ export default defineSchema({
     meta: v.optional(v.string()), // JSON-encoded non-PHI extras
   })
     .index("by_at", ["at"]) // retention scan + recent-events listing
+    // A RARE kind must stay findable. Filtering `kind` in memory over a bounded
+    // recent-rows scan makes an uncommon event type read as SILENTLY EMPTY once
+    // busier kinds fill the window — the same diagnostic trap the `by_at` range
+    // already fixed for old time windows. Live 2026-08-04: the dispatch failure
+    // behind a lost user message was returned by `correlationId` and NOT by
+    // `kind`, so the recurring pattern could not be listed at all.
+    .index("by_kind_at", ["kind", "at"])
     .index("by_correlation", ["correlationId"]) // follow a span chain
     .index("by_principal", ["principalType", "principalId"]),
 
