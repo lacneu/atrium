@@ -55,15 +55,19 @@ const cfgFor = (transport: "ws" | "rest"): BridgeConfig =>
 
 /** A REST client whose `capabilities()` answers with `caps`. */
 function stubRest(caps: unknown, hang = false): void {
+  // A CONSTRUCTIBLE stub: `hermesClientFor` calls `new HermesClient(...)`, and an
+  // arrow function throws "is not a constructor" there — which took the whole
+  // suite down rather than failing one assertion.
   vi.spyOn(client, "HermesClient").mockImplementation(
-    () =>
-      ({
+    function () {
+      return ({
         models: async () => ({ data: [{ id: "m1" }] }),
         health: async () => ({ version: "0.19.0" }),
         capabilities: hang
           ? () => new Promise(() => {}) // never settles
           : async () => caps,
-      }) as unknown as client.HermesClient,
+      }) as unknown as client.HermesClient;
+    } as never,
   );
 }
 
@@ -112,15 +116,17 @@ describe("the probe can never cost the poll anything", () => {
   });
 
   it("an endpoint that FAILS leaves the ledger untouched", async () => {
+    // Constructible, same reason as `stubRest` above.
     vi.spyOn(client, "HermesClient").mockImplementation(
-      () =>
-        ({
+      function () {
+        return ({
           models: async () => ({ data: [{ id: "m1" }] }),
           health: async () => ({ version: "0.19.0" }),
           capabilities: async () => {
             throw new Error("no such route");
           },
-        }) as unknown as client.HermesClient,
+        }) as unknown as client.HermesClient;
+      } as never,
     );
     const got = await discoverHermesAgents(cfgFor("rest"));
     await capabilityProbeSettled();

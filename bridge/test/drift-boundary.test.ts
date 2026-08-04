@@ -31,7 +31,15 @@ type Bounded = {
   driftOverflow: number;
   driftTruncated: number;
 } | null;
-const COMPAT = "../../convex/lib/compat.ts";
+// Resolved against THIS file's URL, then imported as an absolute href.
+//
+// The specifier has to stay opaque to TypeScript — `convex/` sits outside the
+// bridge's rootDir, and a literal `.ts` path trips both TS6059 and TS5097. But
+// a bare relative variable is opaque to the RESOLVER too, which then read it as
+// absolute (`/convex/lib/compat.ts`) and failed to load the module: the suite
+// guarding the drift boundary was not running at all, silently. A URL is opaque
+// to the compiler and unambiguous at runtime.
+const COMPAT = new URL("../../convex/lib/compat.ts", import.meta.url).href;
 const { boundProtocolInfo, foldProtocolInfo } = (await import(COMPAT)) as {
   boundProtocolInfo: (raw: unknown) => Bounded;
   foldProtocolInfo: (parts: Bounded[]) => Bounded;
