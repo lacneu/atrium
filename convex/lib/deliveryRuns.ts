@@ -45,3 +45,15 @@ export function taskDeliveryIdentity(
   if (m === null || m[1] === undefined || m[2] === undefined) return null;
   return { toolName: m[1], taskId: m[2] };
 }
+
+/** Is this run a post-turn DELIVERY — either family — rather than the user's
+ *  own turn? The distinction decides which alarm a failure raises and whether a
+ *  failed bubble means "the conversation's reply failed": both families deliver
+ *  a result the parent turn already announced, and both merge into that turn's
+ *  bubble, rotating its runId.
+ *
+ *  Fails CLOSED: an absent or unrecognised run reads as a user turn, so a shape
+ *  we do not know is never quietly demoted out of the alarm that matters most. */
+export function isDeliveryRun(runId: string | null | undefined): boolean {
+  return typeof runId === "string" && deliveryChildKey(runId) !== null;
+}

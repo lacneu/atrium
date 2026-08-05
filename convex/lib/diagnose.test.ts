@@ -4,6 +4,7 @@ import {
   actionForErrorCode,
   type DiagAvailability,
   type DiagMessage,
+  RECENT_SUBAGENT_FAILURE_SECONDS,
 } from "./diagnose";
 
 const AVAIL_OK: DiagAvailability = {
@@ -300,5 +301,186 @@ describe("actionForErrorCode", () => {
   test("an unknown code -> a safe generic fallback", () => {
     expect(actionForErrorCode(null)).toMatch(/bridge logs/i);
     expect(actionForErrorCode("WEIRD")).toMatch(/escalate/i);
+  });
+});
+
+// A SUB-AGENT'S REPORT IS NOT THIS CHAT'S REPLY.
+//
+// Live prod 2026-08-04: five `jerome` announces failed in 54 s on a chat whose
+// parent turn had answered perfectly. Taking the newest assistant row blindly
+// classified that healthy conversation `dispatch_error`, pointing whoever read
+// it at a turn that was fine.
+describe("failed sub-agent reports do not condemn a healthy chat", () => {
+  const ANNOUNCE = "announce:v1:agent:jerome:subagent:x:y";
+
+  test("a failed ANNOUNCE after a good reply is a lost REPORT, not a broken chat", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "complete", runId: "webchat-abc" }),
+          msg({ status: "error", runId: ANNOUNCE }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    // BOTH halves matter. The reply arrived, so this is not the conversation
+    // failing (severity high, "the last turn failed") — and a report was lost,
+    // so it is not nothing either: calling it healthy hides real work the user
+    // asked for and will never see.
+    expect(a.class, "the user's reply arrived — the chat is not broken").not.toBe(
+      "dispatch_error",
+    );
+    expect(a.class, "a lost report is reported as nothing at all").toBe(
+      "subagent_failure",
+    );
+    expect(a.severity).toBe("warn");
+  });
+
+  test("a real failed TURN is still caught, announces or not", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "error", errorCode: "GATEWAY_TIMEOUT", runId: "webchat-abc" }),
+          msg({ status: "complete", runId: ANNOUNCE }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("dispatch_error");
+    expect(a.errorCode).toBe("GATEWAY_TIMEOUT");
+  });
+
+  test("a message with no runId reads as a TURN (fails closed)", () => {
+    const a = assessChat(
+      { ok: true, messages: [msg({ status: "error" })] },
+      AVAIL_OK,
+    );
+    expect(a.class, "an unknown shape must never be quietly excluded").toBe(
+      "dispatch_error",
+    );
+  });
+});
+
+// NO TURN IN VIEW = NO VERDICT.
+describe("a window holding only reports yields no health verdict", () => {
+  test("announces only -> inconclusive, never 'healthy'", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "error", runId: "announce:v1:agent:j:subagent:x:y" }),
+          msg({ status: "error", runId: "announce:v1:agent:j:subagent:x:z" }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    expect(
+      a.class,
+      "a failed turn just outside the window would read as good health",
+    ).not.toBe("healthy");
+    // The deliveries FAILED, and that is knowable: `unknown_chat` is the verdict
+    // when nothing can be concluded, not when the only thing in view went wrong.
+    expect(a.class).toBe("subagent_failure");
+  });
+
+  test("announces that all SUCCEEDED, and no turn, remain inconclusive", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "complete", runId: "announce:v1:agent:j:subagent:x:y" }),
+          msg({ status: "complete", runId: "announce:v1:agent:j:subagent:x:z" }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    expect(
+      a.class,
+      "a failed turn just outside the window would read as good health",
+    ).toBe("unknown_chat");
+  });
+
+  test("an OLD lost delivery does not condemn a chat that recovered", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({
+            status: "error",
+            runId: "announce:v1:agent:j:subagent:x:y",
+            ageSeconds: RECENT_SUBAGENT_FAILURE_SECONDS + 60,
+          }),
+          msg({ status: "complete", runId: "webchat-later" }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    expect(
+      a.class,
+      "one old lost report pins the verdict until it scrolls out of the window",
+    ).toBe("healthy");
+  });
+
+  test("an OLD lost delivery does not bury a degraded bridge either", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({
+            status: "error",
+            runId: "announce:v1:agent:j:subagent:x:y",
+            ageSeconds: RECENT_SUBAGENT_FAILURE_SECONDS + 60,
+          }),
+          msg({ status: "complete", runId: "webchat-later" }),
+        ],
+      },
+      { known: true, available: true, degraded: true, reason: "target down" },
+    );
+    expect(a.class).toBe("bridge_degraded");
+  });
+
+  test("a degraded target does not hide a lost delivery", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "complete", runId: "webchat-abc" }),
+          msg({ status: "error", runId: "announce:v1:agent:j:subagent:x:y" }),
+        ],
+      },
+      { known: true, available: true, degraded: true, reason: "target down" },
+    );
+    // A generic note about the bridge's targets must not outrank direct,
+    // chat-specific evidence that a result was lost HERE.
+    expect(
+      a.class,
+      "a bridge-wide note buries the lost result in this chat",
+    ).toBe("subagent_failure");
+  });
+
+  test("a window with no turn does not hide a bridge outage", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ status: "complete", runId: "announce:v1:agent:j:subagent:x:y" }),
+        ],
+      },
+      { known: true, available: false, degraded: false, reason: "unreachable" },
+    );
+    // "Nothing can be concluded about THIS chat" must never outrank a fact that
+    // holds for EVERY chat.
+    expect(
+      a.class,
+      "an inconclusive per-chat verdict outranks a global outage",
+    ).toBe("bridge_unavailable");
+    expect(a.severity).toBe("critical");
+  });
+
+  test("an empty chat is still healthy (nothing has failed)", () => {
+    const a = assessChat({ ok: true, messages: [] }, AVAIL_OK);
+    expect(a.class).toBe("healthy");
   });
 });

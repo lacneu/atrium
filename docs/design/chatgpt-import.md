@@ -78,12 +78,89 @@ rejouable, décodeur qui **échoue bruyamment** sur une forme inconnue plutôt q
 deviner. Une surface non documentée qu'on interprète au jugé dérive en silence,
 et l'incident se découvre en production.
 
-## Ce qui reste à établir sur pièce
+## Établi sur pièce (export réel, 2026-08-04)
 
-**L'export porte-t-il l'appartenance à un projet ?** Aucune source consultée ne
-l'affirme de façon fiable ; la réponse se lit sur un export réel, pas sur une
-documentation. Elle décide de la reconstitution des dossiers : portée par le
-fichier, ou reconstruite autrement.
+L'archive porte 9 conversations, 27 entrées, et **9 fichiers JSON** dont
+`export_manifest.json` qui les inventorie avec leur taille — utile pour valider
+une archive avant de la lire.
+
+**L'appartenance à un projet est PRÉSENTE, mais sous une forme qu'il faut savoir
+lire.** Aucun champ ne s'appelle `project`, `folder` ni `workspace` : la
+recherche sur les noms de champs les donne à zéro. Ce qui la porte :
+
+| Champ | Ce qu'il dit |
+|---|---|
+| `conversation_template_id` | `g-p-<hex>` quand la conversation appartient à un projet, `null` sinon |
+| `memory_scope` | `project_v2` pour ces mêmes conversations, `global_enabled` autrement |
+
+Les deux concordent exactement sur l'export mesuré (3 + 2 conversations réparties
+sur deux projets, 4 hors projet). Le préfixe `g-p-` distingue un PROJET d'un GPT
+personnalisé (`g-` seul) — c'est cette distinction qui fait de ce champ une
+appartenance de dossier et non un simple modèle.
+
+**Ce que l'export ne porte pas : le NOM des projets.** Seul leur identifiant
+voyage. Un import peut donc reconstituer les regroupements fidèlement, mais pas
+les intituler — le libellé sera demandé à l'utilisateur, ou porté par une
+conversation du groupe.
+
+### La forme des messages
+
+L'arbre `mapping` est fait de nœuds `{id, message, parent}` — un arbre, pas une
+liste : les branches de régénération y vivent, et un import doit choisir la
+sienne (`current_node` remonte la branche affichée).
+
+Un `message` porte `{author, content, create_time, id, metadata}`. Les rôles
+observés sont `user` et `assistant`; les `content_type` sont `text`,
+`multimodal_text`, et deux formes de RAISONNEMENT — `thoughts` et
+`reasoning_recap` — qui représentent 23 % des messages. Elles ne sont pas de la
+réponse : un import qui les traite comme du texte fabriquerait une conversation
+que l'utilisateur n'a jamais lue.
+
+### Les pièces jointes
+
+Les fichiers sont des `.dat` anonymes ; `conversation_asset_file_names.json` fait
+le lien vers leurs vrais noms. Deux paires de 114 Mo et 22 Mo dans cet export
+seul confirment la décision d'ouvrir l'archive DANS LE NAVIGATEUR : le poids ne
+transite que pour ce que l'utilisateur choisit de reprendre.
+
+`library_files.json` (19 entrées) décrit les fichiers de bibliothèque avec leurs
+`context_scopes` — une seconde voie d'attachement, à instruire séparément.
+
+## Décidé (2026-08-04, après lecture de l'export réel)
+
+### Les dossiers sont NOMMÉS par l'utilisateur, à l'import
+
+L'export porte l'appartenance mais pas le libellé : seul `g-p-<hex>` voyage.
+Plutôt que d'inventer un nom ou d'en déduire un d'une conversation du groupe —
+deux façons de se tromper en silence — **l'écran d'import affiche les groupes
+détectés et laisse nommer chacun**.
+
+Cela tombe juste, parce que cet écran existe de toute façon : l'archive est
+ouverte dans le navigateur et l'utilisateur y choisit déjà ce qu'il reprend. Le
+nom est une colonne de plus sur une décision qu'il prend déjà, pas une étape
+ajoutée. Un groupe non renommé garde un libellé neutre dérivé de son rang, jamais
+l'identifiant brut — `g-p-67d99058…` n'a de sens pour personne.
+
+Conséquence sur la conception : le décodeur rend des GROUPES (identifiant
+d'origine + conversations), pas des projets Atrium. C'est l'écran qui décide de
+créer un projet et sous quel nom, et `convex/projects.ts` n'est appelé qu'avec un
+libellé fourni. Le décodeur reste pur et sans opinion.
+
+### Les blocs de raisonnement ne sont pas importés
+
+`thoughts` et `reasoning_recap` — 23 % des messages de l'export mesuré — sont
+ÉCARTÉS. Ce n'est pas une réponse : c'est la trace de fabrication d'une réponse,
+que l'utilisateur n'a pas lue comme telle et dont il n'a jamais demandé la
+reprise. Les importer gonflerait la conversation d'une matière qu'il ne
+reconnaîtrait pas, et surtout la ferait payer deux fois — au stockage, puis au
+budget de contexte de la première réhydratation.
+
+Conséquence sur la conception : le filtrage est une DÉCISION DU DÉCODEUR, pas un
+masquage d'affichage. Ce qui est écarté ne doit jamais entrer. Le décodeur
+travaille donc sur une liste EXPLICITE de `content_type` repris (`text`,
+`multimodal_text`), et **échoue bruyamment sur un type inconnu** plutôt que de
+choisir à notre place — même règle que les deux autres surfaces amont : une
+forme non reconnue s'arrête, elle ne se devine pas.
 
 ## Points identifiés, à traiter dans le lot
 
@@ -103,6 +180,11 @@ fichier, ou reconstruite autrement.
   portent que des comptes, des longueurs et des états.
 - **Les fichiers** de l'export ont un poids et un format propres ; leur reprise se
   décide séparément de celle du texte.
+- **La branche à reprendre.** `mapping` est un arbre : une régénération laisse
+  les deux versions. `current_node` remonte celle qui était affichée — c'est
+  celle-là qui est reprise, parce que c'est la conversation que l'utilisateur a
+  eue. Les branches abandonnées ne sont pas de l'historique perdu : elles n'ont
+  jamais fait partie du fil qu'il a lu.
 
 ## Ce qui n'est pas fait
 

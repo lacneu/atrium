@@ -1336,6 +1336,16 @@ export default defineSchema({
     // after a NEWER announce overwrote `runId` — without it, replaying A after
     // merging A then B would re-append A's result.
     mergedAnnounceRuns: v.optional(v.array(v.string())),
+    // Was this bubble a user TURN before any delivery merged into it? Stamped
+    // ONCE, at the first reopen, and never cleared — because the reopen rotates
+    // `runId` to the delivery run and never restores it, so afterwards nothing
+    // else can answer the question. `mergedAnnounceRuns` cannot: a STANDALONE
+    // delivery bubble (created when no engagement row resolved) can itself
+    // become the parent of the next same-tool delivery through the chain
+    // fallback, and would then look exactly like a reopened turn. ABSENT on rows
+    // written before this field existed — readers fall back to the old inference,
+    // which errs toward "a turn" and therefore toward surfacing.
+    mergedIntoTurn: v.optional(v.boolean()),
     // TRANSIENT replay window: the DEADLINE (epoch ms) until which addPart
     // dedupes media by filename (a replay re-uploads the bytes, so storageIds
     // never match). A deadline — not a boolean — so it self-expires and an

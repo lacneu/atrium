@@ -1162,6 +1162,7 @@
   "kpi_metric_openclaw_ingest": "OpenClaw ingest",
   "kpi_metric_chat_send": "Messages sent",
   "kpi_metric_stream_errors": "Stream errors",
+  "kpi_metric_announce_errors": "Lost sub-agent reports",
   "kpi_header_hint": "Hourly aggregated indicators from redacted traces (non-PHI metadata only). Live updates (useQuery) — the rollup runs every hour.",
   "kpi_header_range_note": "The range filters the rollup history — an earlier range may be partial.",
   "kpi_loading": "Loading KPIs…",

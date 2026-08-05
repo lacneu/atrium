@@ -25,8 +25,12 @@ import {
 } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
 import { requirePermission } from "./lib/access";
+import { isAnnounceCorrelation, streamFinalizeClass } from "./anomalies";
 import { PERMISSIONS } from "./lib/rbac";
 import { filterValidator, type Filter } from "./lib/filters";
+import { KPI_METRICS } from "./lib/kpiMetrics";
+
+export { KPI_METRICS } from "./lib/kpiMetrics";
 
 // How many full hours back the rollup recomputes. The cutoff is snapped to an
 // hour BOUNDARY so every COMPLETED bucket in range is always scanned in full
@@ -40,20 +44,7 @@ const MAX_SCAN = 5000;
 const DEFAULT_LIST_LIMIT = 200;
 const MAX_LIST_LIMIT = 1000;
 
-// Stable metric keys. Mirrors the increment-4 contract; keep this the single
-// source so the cron, the query, and the test cannot drift.
-export const KPI_METRICS = {
-  API_CALLS: "api.calls",
-  API_ERRORS: "api.errors",
-  API_LATENCY_AVG_MS: "api.latency.avg_ms",
-  OPENCLAW_INGEST: "openclaw.ingest",
-  CHAT_SEND: "chat.send",
-  ASSISTANT_STREAM_ERRORS: "assistant.stream.errors",
-  // Server-side query EXECUTION latency from the synthetic probe (metricsProbe.ts)
-  // — a backend-load proxy that is comparable across a NAS↔Cloud migration
-  // (fixed-cadence, traffic-independent). NOT full client-perceived latency.
-  CONVEX_PROBE_LATENCY_AVG_MS: "convex.probe.latency.avg_ms",
-} as const;
+
 
 /** The hour bucket an event belongs to, e.g. 1717336800000 -> "2026-06-02T14". */
 function hourBucket(at: number): string {
@@ -69,6 +60,7 @@ type BucketAgg = {
   openclawIngest: number;
   chatSend: number;
   streamErrors: number;
+  announceErrors: number;
   probeLatencySum: number;
   probeLatencyCount: number;
 };
@@ -82,6 +74,7 @@ function emptyAgg(): BucketAgg {
     openclawIngest: 0,
     chatSend: 0,
     streamErrors: 0,
+    announceErrors: 0,
     probeLatencySum: 0,
     probeLatencyCount: 0,
   };
@@ -93,21 +86,7 @@ function emptyAgg(): BucketAgg {
  * numeric, see observability.ts). Parse defensively — a malformed/absent meta is
  * simply not counted.
  */
-function isStreamError(row: Doc<"traceEvents">): boolean {
-  if (row.kind !== "assistant.stream" || row.meta === undefined) return false;
-  try {
-    const m = JSON.parse(row.meta) as {
-      phase?: string;
-      streamStatus?: string;
-    };
-    return (
-      m.phase === "finalize" &&
-      (m.streamStatus === "error" || m.streamStatus === "aborted")
-    );
-  } catch {
-    return false;
-  }
-}
+
 
 /** Fold a single trace row into its bucket aggregate. */
 function accumulate(agg: BucketAgg, row: Doc<"traceEvents">): void {
@@ -132,7 +111,25 @@ function accumulate(agg: BucketAgg, row: Doc<"traceEvents">): void {
       break;
     }
     case "assistant.stream": {
-      if (isStreamError(row)) agg.streamErrors += 1;
+      // WHOSE failure, and WHICH failure — both read from the detector's own
+      // helpers (streamFinalizeClass / isAnnounceCorrelation) so the chart and
+      // the alarm cannot drift apart on what they classified.
+      const cls = streamFinalizeClass(row);
+      if (cls !== null) {
+        if (isAnnounceCorrelation(row.correlationId)) {
+          // A report delivery the USER stopped is not a lost report: since the
+          // Stop epoch (0.71.x) one click aborts every child announce at once,
+          // so folding aborts in here would turn each Stop into a delivery
+          // outage on the chart. Only a genuine error counts.
+          if (cls === "error") agg.announceErrors += 1;
+        } else {
+          // KNOWN ASYMMETRY, left as-is on purpose: this metric has folded
+          // error+aborted since it existed, and re-cutting it would rewrite the
+          // meaning of every historical bucket. A stopped TURN therefore still
+          // counts here while a stopped REPORT counts nowhere.
+          agg.streamErrors += 1;
+        }
+      }
       break;
     }
     case "convex.probe": {
@@ -204,6 +201,7 @@ export const rollupKpis = internalMutation({
         [KPI_METRICS.OPENCLAW_INGEST, agg.openclawIngest],
         [KPI_METRICS.CHAT_SEND, agg.chatSend],
         [KPI_METRICS.ASSISTANT_STREAM_ERRORS, agg.streamErrors],
+        [KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS, agg.announceErrors],
         [KPI_METRICS.CONVEX_PROBE_LATENCY_AVG_MS, avgProbeLatency],
       ];
       for (const [metric, value] of metricValues) {

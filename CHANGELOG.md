@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.71.6] — A failed sub-agent report stops raising the wrong alarm
+
+Corrective. When several sub-agents report back at once and their deliveries
+fail, the platform said the wrong thing twice: it raised the alarm meaning
+"users are not getting their replies" — while the replies had arrived perfectly
+— and it declared the conversation broken. The real problem, reports the user
+asked for and will never see, had no alarm of its own to appear in.
+
+Seen in production on 2026-08-04: five sub-agent reports failed in 54 seconds on
+a chat whose own turn had answered fine.
+
+- **Failed report deliveries have their own alarm.** Separate from the one about
+  replies, with its own threshold — these deliveries arrive in bursts by nature,
+  so a pair is not yet a signal, while a burst is. It names what happened rather
+  than pointing at a reply that was never in trouble.
+- **A conversation is no longer declared broken by a failed report.** The health
+  assessment looks at the last actual TURN. A reply that arrived plus a report
+  that did not is a healthy conversation with a lost report — which is exactly
+  what it is, and what it now says.
+- **A report merged into a reply no longer hides that reply.** When a report
+  lands inside the answer it belongs to, that answer takes on the report's
+  identity — so the health assessment stopped seeing the user's own turn there
+  and returned "nothing can be concluded" on conversations that were fine. It
+  now recognises a reply that absorbed a report, and, when such a delivery
+  fails, still reads the answer the user already has as intact.
+- **Lost reports have their own line on the dashboard.** Previously folded into
+  stream errors, they now have a card of their own — and the dashboard sizes its
+  window from what the backend actually publishes instead of from what it
+  happens to display, which had been quietly shortening the visible history.
+- **A report you STOP is not a lost report.** Stopping a delivery is a choice,
+  not a failure; it no longer counts against the lost-report figure.
+- **A wave of lost deliveries is louder than a handful.** The new alarm escalates
+  to critical at the same magnitude the reply alarm does, so a systemic outage
+  reads as one instead of being capped at a warning forever.
+- **A lost delivery is never silence.** A result that failed to land now says so
+  even when nothing else recorded it — previously, a conversation whose reply had
+  arrived and whose report had not read simply as healthy. And the alarm it
+  raises now offers the one thing it exists for: a way through to the failing
+  run, where the cause column used to show a dash.
+- **Background tasks count as deliveries too.** Image and video generation, and
+  any durable work that returns after the turn, come back the same way a
+  sub-agent report does. They were being read as the conversation's own reply,
+  so a failed generation condemned an otherwise healthy chat — and raised the
+  alarm about users not getting answers. Both delivery families are now
+  recognised by one shared rule instead of two divergent ones.
+- **All these distinctions fail closed.** Anything that cannot be read as a
+  report counts as a user turn, so nothing is ever quietly dropped out of the
+  alarm that matters most.
+
+Not fixed here, deliberately:
+
+- **The race that makes those simultaneous reports fail.** Its diagnosis needs
+  the bridge's own detail, and guessing at a concurrency fix would cost more
+  than the defect. What this release changes is that the next burst raises a
+  signal that names it — which is what was missing to investigate the last one.
+- **History is left as charted, beyond the rolling window.** The dashboard
+  recomputes the last three hours on every pass, so those buckets — and only
+  those — take the new split as soon as the release lands. Everything older
+  keeps its original attribution, as do alarms already open: re-deriving old
+  evidence is the one thing an incident record must not have done under it.
+- **A stopped TURN still counts as a stream error.** That metric has folded
+  errors and stops together since it existed; re-cutting it would change the
+  meaning of every past bucket. Only the report side distinguishes them.
+
+Deploy: `npx convex deploy`, then the frontend image — the dashboard card and
+the window sizing are frontend. No bridge change.
+
 ## [0.71.5] — A message the gateway asked us to resend is no longer lost
 
 Corrective, from a production report: a send vanished on a conversation carrying

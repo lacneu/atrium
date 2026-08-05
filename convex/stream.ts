@@ -24,6 +24,7 @@ import { internal } from "./_generated/api";
 import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
+  isDeliveryRun,
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./lib/deliveryRuns";
@@ -707,6 +708,20 @@ async function reopenParentForAnnounce(
     // ALWAYS parked (even empty, e.g. a media-only parent): its presence is
     // the "reopened by the merge" marker the idempotent-retry path checks.
     announcePrefix: prefix,
+    // Stamped ONCE: what this bubble WAS before the first delivery took its
+    // runId. Preserved on every later merge.
+    //
+    // A bubble ALREADY merged before this field existed carries a rotated runId
+    // and no stamp: reading the run would durably brand a real turn as a
+    // delivery, and — unlike the read-side fallback — a written `false` is
+    // authoritative forever. A non-empty reopen history at first stamping means
+    // exactly "we cannot tell", so it takes the same conservative answer the
+    // readers take: a turn. (Empty here on a genuinely fresh standalone
+    // delivery bubble, since this runs BEFORE the new run is appended.)
+    mergedIntoTurn:
+      parent.mergedIntoTurn ??
+      ((parent.mergedAnnounceRuns?.length ?? 0) > 0 ||
+        !isDeliveryRun(parent.runId)),
     // Consumed-announce history (bounded) — recognizes an OLD announce's
     // rebroadcast even after further merges rotate `runId`.
     mergedAnnounceRuns: [

@@ -342,6 +342,16 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // bubble (reopen history) — the renderer skips its typewriter
           // replay there; a fail-closed FRESH delivery bubble keeps it.
           hasMergedRuns: (message.mergedAnnounceRuns?.length ?? 0) > 0,
+          // TRUE while the PRE-MERGE reply is parked on this bubble (presence
+          // only — never the text). Set for the duration of a merge, consumed
+          // on success/abort, PRESERVED on error. Its presence says the turn
+          // answered and it is the REPORT that is in flight or failed — the
+          // discriminator lib/diagnose needs once the merge has rotated runId.
+          hasAnnouncePrefix: message.announcePrefix !== undefined,
+          // What this bubble WAS before a delivery took its runId (schema note).
+          // UNDEFINED on rows written before the stamp existed — readers fall
+          // back to `hasMergedRuns`, the old inference.
+          mergedIntoTurn: message.mergedIntoTurn,
           // MULTI-AGENT per-turn routing (read projection only — routing/dispatch is
           // owned server-side). Which agent THIS turn was addressed to; absent on a
           // single-agent message. The frontend attributes each reply (inheriting the
@@ -801,6 +811,18 @@ export const chatStateInternal = internalQuery({
         role: mDoc.role,
         status: mDoc.status,
         runId: mDoc.runId ?? null,
+        // WHOSE bubble is this once `runId` says `announce:`? A merged report
+        // rotates the parent turn's runId and never restores it, so the run
+        // alone cannot tell a reopened turn from a standalone delivery — and
+        // reading it alone excluded the very turn the user is looking at.
+        // PRESENCE ONLY (never the parked text): `hasMergedRuns` = a report
+        // merged into a bubble that already existed; `hasAnnouncePrefix` = the
+        // pre-merge reply is still parked, i.e. the turn answered and it is the
+        // REPORT that is in flight or failed. Consumed by lib/diagnose's
+        // isTurnBubble.
+        hasMergedRuns: mDoc.hasMergedRuns,
+        hasAnnouncePrefix: mDoc.hasAnnouncePrefix,
+        mergedIntoTurn: mDoc.mergedIntoTurn,
         // MULTI-AGENT per-turn routing (G1): which agent THIS turn was routed to —
         // null = the chat's primary agent. Non-secret slugs (same class as the
         // chat-level instanceName/agentId already exposed). Lets the MCP see a

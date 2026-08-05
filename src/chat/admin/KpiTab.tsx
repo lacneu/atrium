@@ -4,6 +4,10 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { api } from "../convexApi";
 import type { Id } from "../convexApi";
 import {
+  KPI_METRICS,
+  KPI_METRIC_COUNT,
+} from "../../../convex/lib/kpiMetrics";
+import {
   TimeRangePicker,
   useResolvedRange,
 } from "./filters/TimeRangePicker";
@@ -77,17 +81,26 @@ const METRIC_CONFIG: MetricConfig[] = [
   },
   { metric: "chat.send", label: m.kpi_metric_chat_send(), unit: "/h", group: "Chat", isError: false },
   {
-    metric: "assistant.stream.errors",
+    metric: KPI_METRICS.ASSISTANT_STREAM_ERRORS,
     label: m.kpi_metric_stream_errors(),
+    unit: "/h",
+    group: "Assistant",
+    isError: true,
+  },
+  {
+    metric: KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS,
+    label: m.kpi_metric_announce_errors(),
     unit: "/h",
     group: "Assistant",
     isError: true,
   },
 ];
 
-// Number of distinct metrics the rollup writes per bucket. limit (rows) for the
-// backend = wanted buckets * this. Kept in sync with METRIC_CONFIG.
-const METRIC_COUNT = METRIC_CONFIG.length;
+// Rows one bucket occupies, DERIVED FROM THE BACKEND CONTRACT — not from what
+// this dashboard happens to render. Sized on METRIC_CONFIG.length it silently
+// under-counted (6 against 8 metrics written), so a 24h window fetched 18 hours
+// of buckets instead of 24 and the chart quietly lost its oldest quarter.
+const METRIC_COUNT = KPI_METRIC_COUNT;
 
 // Group render order.
 const GROUP_ORDER: MetricGroup[] = ["API", "OpenClaw", "Chat", "Assistant"];

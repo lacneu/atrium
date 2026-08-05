@@ -5,6 +5,8 @@
 // non-secret availability projection, and emits a stable class + a suggested
 // action (and, when a safe corrective tool exists, the tool to call).
 
+import { isDeliveryRun } from "./deliveryRuns";
+
 export type DiagnoseClass =
   | "unknown_chat"
   | "stuck_stream"
@@ -33,12 +35,89 @@ export interface ChatAssessment {
   suggestedTool: string | null;
 }
 
+/** Is this message the delivery of a post-turn RESULT rather than the user's own
+ *  turn? BOTH gateway delivery families count (see lib/deliveryRuns): a spawned
+ *  sub-agent's `announce:v1:<childSessionKey>:<childRunId>` report, and a
+ *  background task's `<tool>:<taskId>:<ok|error>` result. Recognising only the
+ *  first left every failed image/video generation reading as "this
+ *  conversation's reply failed" — the same defect, second family.
+ *
+ *  Fails CLOSED — an absent or unrecognised run reads as a turn, so nothing is
+ *  quietly excluded from the diagnosis. */
+export function isDeliveryBubbleRun(
+  runId: string | null | undefined,
+): boolean {
+  return isDeliveryRun(runId);
+}
+
+/** Does this bubble's STATUS speak for the user's own turn?
+ *
+ *  A `runId` alone cannot answer it. A merged report ROTATES the parent turn's
+ *  runId to the announce run and never restores it (stream.ts, the reopen), so
+ *  reading the prefix would exclude the very turn the user is reading. Two
+ *  durable marks settle it:
+ *
+ *   - `hasMergedRuns` — the reopen history. Present only on a bubble that
+ *     ALREADY existed when a report merged into it; a standalone delivery
+ *     bubble never carries it.
+ *   - `hasAnnouncePrefix` — the pre-merge reply, PARKED for the duration of the
+ *     merge and preserved when it fails (consumed on success/abort). Its
+ *     presence says the turn's own answer is intact and what is in flight — or
+ *     what just failed — is the REPORT.
+ *
+ *  Fails CLOSED: an unknown or absent run reads as a turn, so nothing is
+ *  quietly excluded from the diagnosis. */
+export function isTurnBubble(m: DiagMessage): boolean {
+  return (
+    !isDeliveryBubbleRun(m.runId) ||
+    (m.mergedIntoTurn ?? m.hasMergedRuns) === true
+  );
+}
+
+/** Does this bubble's TERMINAL STATUS belong to the report rather than to the
+ *  turn? A merge parks the pre-merge reply and KEEPS it when the merge fails —
+ *  so a merged bubble sitting in `error` with its prefix still parked is a turn
+ *  that answered and a report that did not.
+ *
+ *  Deliberately NOT folded into isTurnBubble: skipping such a bubble outright
+ *  would hide the reply the user is reading, and hand the verdict either to
+ *  "nothing can be concluded" or to some older failed turn (codex P3). The
+ *  bubble IS the turn; only its ending belongs to something else. */
+export function reportOwnsStatus(m: DiagMessage): boolean {
+  return (
+    isDeliveryBubbleRun(m.runId) &&
+    (m.mergedIntoTurn ?? m.hasMergedRuns) === true &&
+    m.hasAnnouncePrefix === true
+  );
+}
+
 // Minimal structural inputs (a subset of chatStateInternal + computeAvailability).
 export interface DiagMessage {
   role: string;
   status: string;
   stuckStreaming: boolean;
   errorCode: string | null;
+  /** The run that produced this message. An `announce:` run is a sub-agent
+   *  REPORT, not the user's own turn — the distinction below depends on it.
+   *  Optional: a message written before it was carried simply reads as a turn,
+   *  which is the conservative side. */
+  runId?: string | null;
+  /** TRUE when a report actually MERGED into this bubble — i.e. it existed
+   *  before the announce did. Distinguishes a reopened turn from a standalone
+   *  delivery bubble once `runId` has been rotated. */
+  hasMergedRuns?: boolean;
+  /** TRUE while the pre-merge reply is PARKED on this bubble (presence only —
+   *  never the text). Set for the duration of a merge and kept when the merge
+   *  fails: the turn answered, the report did not. */
+  hasAnnouncePrefix?: boolean;
+  /** Was this bubble a user TURN before a delivery merged into it and took its
+   *  runId? The durable answer. Absent on rows written before the stamp existed
+   *  — `hasMergedRuns` is then the fallback, which errs toward "a turn". */
+  mergedIntoTurn?: boolean;
+  /** Seconds since this message last changed. Optional: a projection that omits
+   *  it makes the recency checks below fail OPEN (the message is considered
+   *  recent), which surfaces rather than hides. */
+  ageSeconds?: number;
 }
 /** A content-free sub-agent row in the chat-state summary (subset of the
  *  loadSubAgentSummary entry — only the fields the assessment reasons over). */
@@ -205,9 +284,52 @@ export function assessChat(
     };
   }
 
-  // 2) The most recent assistant turn ended in error (a failed dispatch).
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (lastAssistant && lastAssistant.status === "error") {
+  // 2) The most recent assistant TURN ended in error (a failed dispatch).
+  //
+  // Post-turn DELIVERIES are skipped when looking for it (see isTurnBubble):
+  // a report or a background task's result failing to land is a real problem,
+  // but it is not this chat's reply failing — the turn answered. Taking the newest assistant row
+  // blindly made a burst of failed reports classify a perfectly healthy
+  // conversation as `dispatch_error`, pointing whoever read it at a turn that
+  // was fine (live prod 2026-08-04). The reports still surface: their own
+  // anomaly class says so, and the sub-agent rows below carry them.
+  const lastAssistant = [...messages]
+    .reverse()
+    .find((m) => m.role === "assistant" && isTurnBubble(m));
+  // NO TURN IN VIEW = NO VERDICT. The window is bounded, so a chat whose recent
+  // rows are all announces — or whose parent turn has scrolled past it — offers
+  // no evidence either way. Falling through to `healthy` would state something
+  // this function cannot see: a genuinely failed turn just outside the window
+  // would be reported as a chat in good health.
+  // A DELIVERY BUBBLE THAT ENDED IN ERROR. No sub-agent row need exist for it:
+  // the merge falls back to a standalone bubble precisely WHEN the engagement
+  // row is missing, so the sub-agent summary below can be empty while an error
+  // bubble sits in the conversation for the user to see. Skipping such a bubble
+  // out of the turn search is right; letting the verdict then read `healthy`
+  // off an older successful turn is not — the result was still lost.
+  const failedDelivery = [...messages]
+    .reverse()
+    .find(
+      (m) =>
+        m.role === "assistant" &&
+        m.status === "error" &&
+        // Either shape: a standalone delivery bubble, or a bubble whose turn
+        // answered and whose ERROR belongs to the report merged into it. The
+        // second was invisible here — isTurnBubble is true for it — so a failed
+        // merge with no engagement row still read as a healthy chat.
+        (!isTurnBubble(m) || reportOwnsStatus(m)) &&
+        // RECENT, on the same horizon as the sub-agent branch below. The message
+        // window is 200 rows deep: without this, one lost delivery pinned every
+        // later verdict on a chat that had long since recovered — and buried the
+        // degraded-bridge note behind evidence that was no longer current.
+        (m.ageSeconds ?? 0) <= RECENT_SUBAGENT_FAILURE_SECONDS,
+    );
+
+  if (
+    lastAssistant &&
+    lastAssistant.status === "error" &&
+    !reportOwnsStatus(lastAssistant)
+  ) {
     const code = lastAssistant.errorCode;
     const isAttachment = code !== null && ATTACHMENT_CODES.has(code);
     return {
@@ -256,6 +378,29 @@ export function assessChat(
     };
   }
 
+  // 3.6) A delivery that FAILED — either family, standalone or merged — when the
+  // sub-agent summary above said nothing about it. Ranked ABOVE the generic
+  // "a target is degraded" note for the same reason 3.5 is: this is direct,
+  // chat-specific evidence of a lost result, and a reader sent to the bridge's
+  // targets instead would never find it. The merge falls back to a
+  // standalone bubble precisely WHEN the engagement row is missing, so the only
+  // evidence can be the error bubble itself. Skipping it out of the turn search
+  // is right; letting the verdict then read `healthy` off an older successful
+  // turn is not — the result the user asked for was still lost.
+  if (failedDelivery !== undefined) {
+    return {
+      class: "subagent_failure",
+      severity: "warn",
+      errorCode: failedDelivery.errorCode,
+      reason: "a delegated result failed to land",
+      summary:
+        "A sub-agent report or background-task result ended in error — the turn itself answered, but the result the user asked for was lost.",
+      suggestedAction:
+        "Inspect the delivery run in the traces (the lost-report anomaly class carries a sample correlation). The turn's own reply is unaffected.",
+      suggestedTool: null,
+    };
+  }
+
   // 4) A target/agent is erroring while the bridge is up — informational only.
   if (availability.degraded) {
     return {
@@ -270,6 +415,22 @@ export function assessChat(
     };
   }
 
+  // 3.7) NO TURN IN VIEW = NO VERDICT — and deliberately LAST among the
+  // conclusive checks. Ranked earlier, this `ok` answer preempted a KNOWN global
+  // bridge outage, which applies to every chat whatever its window holds.
+  if (messages.length > 0 && lastAssistant === undefined) {
+    return {
+      class: "unknown_chat",
+      severity: "ok",
+      errorCode: null,
+      reason: "no assistant turn in the observed window",
+      summary:
+        "No assistant turn is visible in the observed window (only sub-agent report deliveries) — nothing can be concluded about this chat's health.",
+      suggestedAction:
+        "Widen the window or inspect the chat directly; the sub-agent report deliveries have their own anomaly class.",
+      suggestedTool: null,
+    };
+  }
   return {
     class: "healthy",
     severity: "ok",

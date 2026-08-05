@@ -83,6 +83,7 @@ import type * as lib_folderTree from "../lib/folderTree.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
 import type * as lib_ingestAuthz from "../lib/ingestAuthz.js";
 import type * as lib_instanceConfig from "../lib/instanceConfig.js";
+import type * as lib_kpiMetrics from "../lib/kpiMetrics.js";
 import type * as lib_locales from "../lib/locales.js";
 import type * as lib_mediaName from "../lib/mediaName.js";
 import type * as lib_mediaTransport from "../lib/mediaTransport.js";
@@ -211,6 +212,7 @@ declare const fullApi: ApiFromModules<{
   "lib/groupAccess": typeof lib_groupAccess;
   "lib/ingestAuthz": typeof lib_ingestAuthz;
   "lib/instanceConfig": typeof lib_instanceConfig;
+  "lib/kpiMetrics": typeof lib_kpiMetrics;
   "lib/locales": typeof lib_locales;
   "lib/mediaName": typeof lib_mediaName;
   "lib/mediaTransport": typeof lib_mediaTransport;

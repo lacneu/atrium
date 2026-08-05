@@ -398,13 +398,20 @@ export function AnomaliesTab() {
   );
 }
 
-// Parse the dispatch-failure evidence (root cause + drill-down anchor). Only the
-// dispatch_failures detector carries this; other kinds return empty -> "—".
+// Parse the drill-down evidence (root cause + failing-run anchor). Two detectors
+// carry it: dispatch_failures (code + sample) and the lost-report alarm (sample
+// only — a delivery has no dominant error code, and gating on one left its rows
+// showing "—" with no way to reach the very runs the alarm exists to have
+// investigated). Other kinds return empty -> "—".
+const DRILLABLE_KINDS = new Set([
+  "openclaw.dispatch_failures",
+  "assistant.announce_errors",
+]);
 function parseDispatchEvidence(r: AnomalyView): {
   dominantCode?: string;
   sampleCorrelationId?: string;
 } {
-  if (r.kind !== "openclaw.dispatch_failures" || !r.evidence) return {};
+  if (!DRILLABLE_KINDS.has(r.kind) || !r.evidence) return {};
   try {
     const e = JSON.parse(r.evidence) as {
       dominantCode?: string;
@@ -483,7 +490,32 @@ function CauseCell({ row }: { row: AnomalyView }) {
   }
 
   const ev = parseDispatchEvidence(row);
-  if (!ev.dominantCode) return <span className="oc-traces__muted">—</span>;
+  // A class with NO dominant error code can still name a failing run — the
+  // lost-report alarm is exactly that: a count plus one sample correlation. The
+  // cause column used to require a code, so those rows rendered "—" with no way
+  // to reach the very traces the alarm exists to have investigated.
+  if (!ev.dominantCode) {
+    const only = ev.sampleCorrelationId;
+    if (!only) return <span className="oc-traces__muted">—</span>;
+    return (
+      <div className="oc-anomaly__cause">
+        <button
+          type="button"
+          className="oc-anomaly__drill"
+          onClick={() =>
+            void navigate({
+              to: "/settings/traces",
+              // The INDEXED lookup, not the bounded post-filtered `q` search:
+              // under load the text search can scan past the run entirely.
+              search: { correlationId: only, limit: 100 },
+            })
+          }
+        >
+          ↗ {m.anomalies_view_trace()}
+        </button>
+      </div>
+    );
+  }
   const info = dispatchErrorInfo(ev.dominantCode);
   const corr = ev.sampleCorrelationId;
   return (

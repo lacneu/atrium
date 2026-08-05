@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { assessChat, type DiagAvailability } from "./lib/diagnose";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -1734,5 +1735,303 @@ describe("stream.addPart — compaction marker upsert", () => {
         .collect(),
     );
     expect(parts).toHaveLength(2);
+  });
+});
+
+// WHAT THE DIAGNOSIS SEES AFTER A MERGE.
+//
+// The merge ROTATES the parent turn's runId to the announce run and never
+// restores it. A diagnosis that reads the run alone therefore stops seeing the
+// user's own turn — the newest bubble in a healthy delegated conversation. This
+// walks the REAL path (startAssistant → finalize → chatStateInternal →
+// assessChat) rather than hand-building a message shaped the way the assertion
+// wants; the rotation is the whole point and only the real path performs it.
+describe("a merged report does not blind the diagnosis", () => {
+  const AVAIL: DiagAvailability = {
+    known: true,
+    available: true,
+    degraded: false,
+    reason: null,
+  };
+
+  async function diagnose(t: ReturnType<typeof convexTest>, chatId: Id<"chats">) {
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    return assessChat(state, AVAIL);
+  }
+
+  test("a successful merge leaves the chat readable as healthy", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t);
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened as Id<"messages">,
+      status: "complete",
+      text: "Document créé.",
+    });
+    const a = await diagnose(t, chatId);
+    expect(
+      a.class,
+      "the rotated runId hides the user's own turn from the diagnosis",
+    ).toBe("healthy");
+  });
+
+  test("a merge that FAILS is a lost report, never a failed turn", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t);
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened as Id<"messages">,
+      status: "error",
+      error: "delivery lost",
+    });
+    // The pre-merge reply is still parked on the bubble: the user HAS an
+    // answer, so this is not the chat's reply failing.
+    const doc = await t.run(async (ctx) =>
+      ctx.db.get(reopened as Id<"messages">),
+    );
+    expect(doc?.announcePrefix).toBe("La tâche est lancée.");
+    const a = await diagnose(t, chatId);
+    // The EXACT class, not merely "not dispatch_error": skipping the bubble
+    // altogether also clears that bar, while leaving the user's own reply
+    // invisible to the diagnosis.
+    // The turn is NOT the failure — and the lost report is not nothing either.
+    expect(
+      a.class,
+      "the reply the user already has is blamed for the report's failure",
+    ).not.toBe("dispatch_error");
+    expect(a.class, "the lost report is reported as nothing at all").toBe(
+      "subagent_failure",
+    );
+  });
+
+  test("an OLDER failed turn is not resurrected by a failed merge", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seedDelegatedTurn(t);
+    // A turn that genuinely failed EARLIER, before the delegated one.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "error" as const,
+        text: "",
+        runId: "webchat-older-run",
+        errorCode: "timeout",
+        orderTime: 500,
+        updatedAt: 500,
+      });
+    });
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened as Id<"messages">,
+      status: "error",
+      error: "delivery lost",
+    });
+    const a = await diagnose(t, chatId);
+    // The OLD timeout must not become the verdict: what is wrong right now is
+    // the report, and it is a warning, not the conversation being broken.
+    expect(
+      a.class,
+      "an old failure is promoted to 'the current state' by a lost report",
+    ).toBe("subagent_failure");
+    expect(a.errorCode, "the old turn's code is presented as current").not.toBe(
+      "timeout",
+    );
+  });
+});
+
+// THE SECOND DELIVERY FAMILY.
+//
+// A background task (image/video generation, any durable gateway work) returns
+// on a `<tool>:<taskId>:<ok|error>` run and merges into its parent exactly like
+// a sub-agent report. Reading only the `announce:` family left every failed
+// generation classified as this conversation's reply failing.
+describe("a failed background-task delivery is not a failed reply", () => {
+  const TASK_ID = "c3e21208-1b7f-4a2e-9d55-0f1a2b3c4d5e";
+  const TASK_RUN = `image_generate:${TASK_ID}:error`;
+
+  const AVAIL2: DiagAvailability = {
+    known: true,
+    available: true,
+    degraded: false,
+    reason: null,
+  };
+
+  test("merged into the turn it belongs to, it leaves the chat healthy", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedDelegatedTurn(t, { withSubAgentRow: false });
+    await t.run(async (ctx) => {
+      const parent = await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .filter((q) => q.eq(q.field("role"), "assistant"))
+        .first();
+      await ctx.db.insert("subAgents", {
+        chatId,
+        parentMessageId: parent!._id,
+        anchorExact: true,
+        childSessionKey: `task:${TASK_ID}`,
+        kind: "task" as const,
+        taskName: "image_generate",
+        status: "running" as const,
+        createdAt: 1500,
+        updatedAt: 2500,
+      });
+    });
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: TASK_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened as Id<"messages">,
+      status: "error",
+      error: "generation failed",
+    });
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    // The EXACT class: the failure is attributed to the TASK that failed —
+    // which is true and actionable — and no longer to the conversation's reply,
+    // which arrived and is still there.
+    expect(
+      assessChat(state, AVAIL2).class,
+      "a failed image generation condemns the whole conversation",
+    ).toBe("subagent_failure");
+  });
+});
+
+// A CHAIN OF DELIVERIES IS STILL NOT A TURN.
+//
+// A task delivery that resolves no engagement row gets its OWN bubble. The next
+// same-tool delivery of the chain then merges into THAT bubble — which now
+// carries a reopen history without ever having been a user turn. Inferring
+// "this is a turn" from that history let a pure delivery chain stand in for the
+// conversation's reply.
+describe("a standalone delivery chain never stands in for a turn", () => {
+  const T1 = "aaaaaaaa-1111-4a2e-9d55-0f1a2b3c4d5e";
+  const T2 = "bbbbbbbb-2222-4a2e-9d55-0f1a2b3c4d5e";
+  const AVAIL3: DiagAvailability = {
+    known: true,
+    available: true,
+    degraded: false,
+    reason: null,
+  };
+
+  test("it does not hide a turn that really failed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seedDelegatedTurn(t, {
+      withSubAgentRow: false,
+      parentStatus: "error",
+    });
+    await t.run(async (ctx) => {
+      const parent = await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+        .filter((q) => q.eq(q.field("role"), "assistant"))
+        .first();
+      await ctx.db.patch(parent!._id, { errorCode: "timeout" });
+      void userId;
+      // The chain's FIRST task row, anchored nowhere: its delivery gets a bubble
+      // of its own rather than merging.
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: `task:${T1}`,
+        kind: "task" as const,
+        taskName: "image_generate",
+        status: "running" as const,
+        createdAt: 1500,
+        updatedAt: 2500,
+      });
+    });
+    const first = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${T1}:ok`,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: first as Id<"messages">,
+      status: "complete",
+      text: "Image 1.",
+    });
+    // The chain's SECOND delivery merges into that standalone bubble.
+    const second = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: `image_generate:${T2}:ok`,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: second as Id<"messages">,
+      status: "complete",
+      text: "Image 2.",
+    });
+    const merged = await t.run(async (ctx) =>
+      ctx.db.get(second as Id<"messages">),
+    );
+    // The precondition the defect needs: a reopen history on a bubble that was
+    // never a turn. If this stops holding, the test proves nothing.
+    expect((merged?.mergedAnnounceRuns ?? []).length).toBeGreaterThan(0);
+    expect(merged?.mergedIntoTurn).toBe(false);
+
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    const a = assessChat(state, AVAIL3);
+    expect(
+      a.class,
+      "a chain of deliveries stands in for the reply that actually failed",
+    ).toBe("dispatch_error");
+    expect(a.errorCode).toBe("timeout");
+  });
+});
+
+// A BUBBLE THAT PREDATES THE STAMP MUST NOT BE BRANDED BY IT.
+describe("a turn merged before the stamp existed keeps its identity", () => {
+  test("re-merging it does not durably record it as a delivery", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+    // Exactly what production holds today: a REAL turn already merged once —
+    // rotated runId, reopen history, and no stamp because it did not exist yet.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, {
+        runId: "announce:v1:agent:old:subagent:c0:r0",
+        mergedAnnounceRuns: ["announce:v1:agent:old:subagent:c0:r0"],
+      });
+    });
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened as Id<"messages">,
+      status: "complete",
+      text: "Rapport.",
+    });
+    const doc = await t.run(async (ctx) =>
+      ctx.db.get(reopened as Id<"messages">),
+    );
+    expect(
+      doc?.mergedIntoTurn,
+      "the user's real reply is branded a delivery, permanently",
+    ).toBe(true);
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    expect(
+      assessChat(state, {
+        known: true,
+        available: true,
+        degraded: false,
+        reason: null,
+      }).class,
+    ).toBe("healthy");
   });
 });

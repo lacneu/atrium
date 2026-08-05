@@ -1449,3 +1449,222 @@ describe("a failed dispatch to Atrium's own hidden work is counted apart", () =>
     expect(r.detected).not.toContain("openclaw.dispatch_failures");
   });
 });
+
+// A DELEGATED REPORT FAILING IS NOT "USERS ARE NOT GETTING REPLIES".
+//
+// Live prod 2026-08-04: five `jerome` announces failed in 54 s on a chat whose
+// parent turn had answered fine. Counted as assistant stream errors, they fired
+// the user-facing alarm — and the real signal (reports the user asked for and
+// never saw) had no class of its own to be seen in.
+describe("failed sub-agent report deliveries have their own alarm", () => {
+  const announce = (i: number) =>
+    `chatJ:announce:v1:agent:jerome:subagent:child-${i}:run-${i}`;
+
+  test("a burst of failed announces does NOT trip the user-reply alarm", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 5; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: announce(i),
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(
+      r.detected,
+      "the parent turns answered — this is not a reply failure",
+    ).not.toContain("assistant.stream_errors");
+    expect(
+      r.detected,
+      "…but it IS a failure, and must be visible as one",
+    ).toContain("assistant.announce_errors");
+  });
+
+  test("real turn errors still trip their own alarm alongside announces", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: `chatJ:webchat-run${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+      for (let i = 0; i < 3; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 500 - i * 100,
+          correlationId: announce(i),
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("assistant.stream_errors");
+    expect(r.detected).toContain("assistant.announce_errors");
+  });
+
+  // Fails CLOSED: a correlation shape we cannot read as an announce stays in the
+  // user-reply alarm rather than being quietly demoted out of it.
+  test("an unreadable correlation is still counted as a user turn", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 2; i++) {
+        // The word appears, but NOT as the run's prefix: a webchat turn whose
+        // own run merely mentions it. A loose `includes("announce")` would
+        // demote a real reply failure out of the alarm.
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: `chatJ:webchat-announce-recap-${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("assistant.stream_errors");
+  });
+});
+
+// LOST REPORTS DO NOT HEAL BY THEMSELVES.
+describe("the lost-report alarm survives the window", () => {
+  test("it stays open after the burst scrolls out of the window", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: `chatJ:announce:v1:agent:j:subagent:c${i}:r${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    // The traces age out; the reports are still lost.
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("traceEvents").collect()) {
+        await ctx.db.delete(row._id);
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    expect(
+      row,
+      "auto-resolving announces the problem fixed and deletes the signal",
+    ).not.toBeNull();
+  });
+});
+
+// EACH ALARM POINTS AT ITS OWN EVIDENCE.
+describe("the lost-report alarm carries its own watermark", () => {
+  test("a later ordinary stream error does not move it", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const announceAt = now - 5000;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: announceAt - i,
+          correlationId: `chatK:announce:v1:agent:k:subagent:c${i}:r${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+      // A plain turn fails later — a different alarm, a different watermark.
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        at: now - 100,
+        correlationId: "chatK:run-plain",
+        meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+      });
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    expect(row).not.toBeNull();
+    expect(
+      row?.lastEventAt,
+      "the alarm points at an event that is not one of its own",
+    ).toBe(announceAt);
+  });
+});
+
+// AN ALARM RAISED TO BE INVESTIGATED MUST LEAD TO A RUN.
+describe("the lost-report alarm carries a reachable correlation", () => {
+  test("its row points at one of the failed deliveries", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 4; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i,
+          correlationId: `chatC:announce:v1:agent:c:subagent:c${i}:r${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const occurrence = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("anomalyOccurrences").collect();
+      return rows.find((r) => r.kind === "assistant.announce_errors");
+    });
+    expect(
+      occurrence?.correlationId,
+      "the alarm's history leads nowhere: no run to open from it",
+    ).toMatch(/^chatC:announce:v1:/);
+  });
+});
+
+// A SYSTEMIC OUTAGE MUST BE LOUDER THAN A HANDFUL.
+describe("the lost-report alarm can escalate", () => {
+  test("a burst at the turn class's own critical magnitude is critical", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 12; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i,
+          correlationId: `chatE:announce:v1:agent:e:subagent:c${i}:r${i}`,
+          meta: { phase: "finalize", streamStatus: "error", textLen: 0 },
+        });
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    expect(
+      row?.severity,
+      "splitting the class out capped a systemic outage at 'warn' forever",
+    ).toBe("critical");
+  });
+});

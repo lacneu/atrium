@@ -22,6 +22,7 @@
 // insert — a recurrence after a resolution is a new anomaly.
 
 import { v } from "convex/values";
+import { isDeliveryRun } from "./lib/deliveryRuns";
 import {
   internalMutation,
   internalQuery,
@@ -85,7 +86,19 @@ const INTERNAL_WORK_CRITICAL = 15;
 // (users interrupting everywhere = replies bad/slow) still reaches CRITICAL
 // via the combined count.
 const STREAM_ERROR_WARN = 2;
+// Announce deliveries are BURSTY by nature — one parent turn can spawn several
+// sub-agents that all report within seconds — so a pair is not yet a signal.
+// It still has to alarm: a delegated report that never lands is work the user
+// asked for and never sees.
+const ANNOUNCE_ERROR_WARN = 3;
 const STREAM_ERROR_CRITICAL = 10;
+// …and it still has to be able to become CRITICAL. Folded into the stream-error
+// class, a burst of this size WAS critical; splitting the class out capped it at
+// `warn` forever, so a systemic outage losing dozens of reports read no louder
+// than a handful and never reached the heartbeat's critical count. Same
+// magnitude as the turn class it was split from.
+const ANNOUNCE_ERROR_CRITICAL = STREAM_ERROR_CRITICAL;
+
 
 // openclaw.ingest_denied: ingest auth-denied spikes (possible misconfig/abuse).
 const INGEST_DENIED_WARN = 3;
@@ -111,10 +124,43 @@ const HEARTBEAT_MAX_PAGES = 50;
 type Severity = "info" | "warn" | "critical";
 
 // Stable detector kinds. Keep this the single source so the cron + test agree.
+/** Is this correlation a post-turn DELIVERY — a sub-agent reporting back, or a
+ *  background task returning its result — rather than a user's own turn?
+ *
+ *  A correlation is `<chatId>:<runId>`, and BOTH delivery families count (see
+ *  lib/deliveryRuns): `announce:v1:<childSessionKey>:<childRunId>` and
+ *  `<tool>:<taskId>:<ok|error>`. The distinction decides WHICH alarm a failure
+ *  raises: "users are not getting replies" is not the same fact as "a result
+ *  the user asked for did not land", and the parent turn of a delivery has
+ *  already answered. Reading only the first family left every failed
+ *  image/video generation raising the reply alarm.
+ *
+ *  Fails CLOSED: anything it cannot read as a delivery counts as a user turn,
+ *  so a shape we do not recognise is never quietly demoted out of the alarm.
+ *
+ *  The `announce` in the metric and anomaly KEYS is kept as-is: they are the
+ *  published names of a series already charted, and renaming them would orphan
+ *  every historical bucket and every open row. */
+export function isAnnounceCorrelation(
+  correlationId: string | undefined | null,
+): boolean {
+  if (!correlationId) return false;
+  const sep = correlationId.indexOf(":");
+  if (sep < 0) return false;
+  return isDeliveryRun(correlationId.slice(sep + 1));
+}
+
 export const ANOMALY_KINDS = {
   API_ERROR_RATIO: "api.error_ratio",
   DISPATCH_FAILURES: "openclaw.dispatch_failures",
   STREAM_ERRORS: "assistant.stream_errors",
+  // Sub-agent ANNOUNCE deliveries that failed. Split from STREAM_ERRORS on
+  // purpose: that alarm means "users did not get their replies", and an
+  // announce failing is a different fact — the parent turn answered fine, it is
+  // the delegated REPORT that did not land. Folded together, an internal burst
+  // fired the user-facing alarm and made `diagnose_chat` call a healthy chat
+  // broken (live prod 2026-08-04: five `jerome` announces in 54 s).
+  ANNOUNCE_ERRORS: "assistant.announce_errors",
   INGEST_DENIED: "openclaw.ingest_denied",
   ACCESS_SCAN: "api.access_scan",
   // A burst of user STOPS. Split out from `STREAM_ERRORS` (codex P2): the combined
@@ -184,6 +230,12 @@ export function isTurnCostingKind(kind: string): boolean {
   return (
     kind === ANOMALY_KINDS.STREAM_ERRORS ||
     kind === ANOMALY_KINDS.DISPATCH_FAILURES ||
+    // A report that never landed is WORK THE USER PAID FOR AND LOST — it is not
+    // recovered by the burst leaving the 15-minute window. Auto-resolving it
+    // would close the line with `detector:auto` and announce the problem as
+    // fixed, deleting the very signal an investigation starts from. It stays
+    // open until a human closes it, like every other lost-turn class.
+    kind === ANOMALY_KINDS.ANNOUNCE_ERRORS ||
     Object.values(CAUSE_ANOMALY_KINDS).includes(kind)
   );
 }
@@ -199,7 +251,10 @@ export function allDetectorKinds(): string[] {
 /** The terminal class of an `assistant.stream` finalize row: a REAL "error",
  *  a user "aborted" (Stop), or null (not a terminal / not a stream row). The
  *  detector weighs the two differently (see STREAM_ERROR_WARN). */
-function streamFinalizeClass(
+/** How a `assistant.stream` finalize ENDED — the one classifier both the
+ *  detector and the KPI rollup read, so the alarm and the chart cannot drift
+ *  apart on what a failure was. `null` = not a finalize (or unparseable). */
+export function streamFinalizeClass(
   row: Doc<"traceEvents">,
 ): "error" | "aborted" | null {
   if (row.kind !== "assistant.stream" || row.meta === undefined) return null;
@@ -309,6 +364,9 @@ type WindowAgg = {
   // STREAM_ERROR_WARN). Sample correlationId = drill-down anchor, like dispatch.
   streamErrors: number;
   streamAborts: number;
+  /** Failed sub-agent ANNOUNCE deliveries — counted apart from streamErrors. */
+  announceErrors: number;
+  announceSampleCorrelation?: string;
   streamSampleCorrelation?: string;
   // Failed turns BY CAUSE (curated code -> count) plus the most recent
   // correlationId per cause: what turns "2 errors" into "2 context overflows".
@@ -323,6 +381,11 @@ type WindowAgg = {
     dispatch?: string;
     internal?: string;
     streamError?: string;
+    /** The ANNOUNCE class's own newest contributing trace. Shared with
+     *  streamError, a fresh turn failure bumped the announce line's occurrence
+     *  count (and the reverse) — separate aggregates with a common watermark
+     *  still cross-count. */
+    announceError?: string;
     streamAbort?: string;
     ingest?: string;
     cause: Record<string, string>;
@@ -335,6 +398,7 @@ type WindowAgg = {
     /** Newest real ERROR finalize — the only thing that is a new observation for
      *  the turn-costing class. A user Stop must not advance it (codex P2). */
     streamError?: number;
+    announceError?: number;
     /** Newest user STOP — what makes a new observation for the burst class. */
     streamAbort?: number;
     ingest?: number;
@@ -631,6 +695,7 @@ export const detectAnomalies = internalMutation({
       latestAt: { cause: {}, accessByPrincipal: new Map() },
       latestKey: { cause: {}, accessByPrincipal: new Map() },
       streamAborts: 0,
+      announceErrors: 0,
       ingestDenied: 0,
       accessByPrincipal: new Map(),
     };
@@ -694,6 +759,20 @@ export const detectAnomalies = internalMutation({
         case "assistant.stream": {
           const cls = streamFinalizeClass(row);
           if (cls === "error") {
+            // WHOSE failure is this? An announce delivers a sub-agent's report
+            // on its own synthetic run; the parent turn already answered. It is
+            // a real failure — the user never sees a report they asked for —
+            // but NOT the "users are not getting replies" alarm, and counting
+            // it there both fired the wrong alert and made diagnose_chat call a
+            // healthy chat broken.
+            if (isAnnounceCorrelation(row.correlationId)) {
+              agg.announceErrors += 1;
+              if (row.correlationId)
+                agg.announceSampleCorrelation = row.correlationId;
+              agg.latestAt.announceError = row.at;
+              agg.latestKey.announceError = row._id;
+              break;
+            }
             agg.streamErrors += 1;
             // oldest -> newest scan: last write wins = most recent failed turn.
             if (row.correlationId)
@@ -709,6 +788,13 @@ export const detectAnomalies = internalMutation({
               agg.latestKey.cause[cause] = row._id;
             }
           } else if (cls === "aborted") {
+            // NOT split by correlation, and that is deliberate. A Stop finalizes
+            // exactly ONE message (abortTurn takes a single streaming row; the
+            // children it kills have no message of their own to finalize), so
+            // one click is already one abort here — including when the bubble
+            // stopped is a report merged into its parent, whose run is an
+            // announce. Excluding announce aborts made those real Stops
+            // invisible instead of deduplicating anything (codex P4).
             agg.streamAborts += 1;
             agg.latestAt.streamAbort = row.at;
             agg.latestKey.streamAbort = row._id;
@@ -858,6 +944,32 @@ export const detectAnomalies = internalMutation({
         latestEventKey: agg.latestKey.streamError,
       });
       detected.push(ANOMALY_KINDS.STREAM_ERRORS);
+    }
+    // DELEGATED REPORTS THAT NEVER LANDED — its own alarm, its own threshold.
+    // Real work the user asked for and will not see, but the parent turn
+    // answered: raising it as "assistant stream errors" pointed every reader at
+    // a reply that was in fact fine.
+    if (agg.announceErrors >= ANNOUNCE_ERROR_WARN) {
+      await upsertDetectorAnomaly(ctx, {
+        kind: ANOMALY_KINDS.ANNOUNCE_ERRORS,
+        severity:
+          agg.announceErrors >= ANNOUNCE_ERROR_CRITICAL ? "critical" : "warn",
+        message: `Sub-agent report deliveries failed: ${agg.announceErrors} over ${windowMin}m`,
+        evidence: {
+          announceErrors: agg.announceErrors,
+          sampleCorrelationId: agg.announceSampleCorrelation,
+          windowMs: DETECT_WINDOW_MS,
+          warnThreshold: ANNOUNCE_ERROR_WARN,
+          criticalThreshold: ANNOUNCE_ERROR_CRITICAL,
+        },
+        // Carried into the persisted OCCURRENCE, like every other cause-bearing
+        // class: an alarm raised so the next burst can be investigated is
+        // worthless if the history it accumulates does not lead back to a run.
+        correlationId: agg.announceSampleCorrelation,
+        latestEventAt: agg.latestAt.announceError,
+        latestEventKey: agg.latestKey.announceError,
+      });
+      detected.push(ANOMALY_KINDS.ANNOUNCE_ERRORS);
     }
     if (streamCombined >= STREAM_ERROR_CRITICAL && agg.streamErrors === 0) {
       // Users interrupting EVERYWHERE with no real errors: replies are bad or slow,

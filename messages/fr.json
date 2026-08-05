@@ -1162,6 +1162,7 @@
   "kpi_metric_openclaw_ingest": "Ingestion OpenClaw",
   "kpi_metric_chat_send": "Messages envoyés",
   "kpi_metric_stream_errors": "Erreurs de stream",
+  "kpi_metric_announce_errors": "Rapports de sous-agent perdus",
   "kpi_header_hint": "Indicateurs agrégés par heure à partir des traces expurgées (métadonnées non-PHI uniquement). Mise à jour en direct (useQuery) — le rollup tourne chaque heure.",
   "kpi_header_range_note": "La plage filtre l’historique des rollups — une plage antérieure peut être partielle.",
   "kpi_loading": "Chargement des KPI…",
