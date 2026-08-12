@@ -86,6 +86,10 @@ export interface SubAgentRecord {
    *  delivery run never opened a message of its own. */
   bornOfRun?: string;
   taskName?: string;
+  /** The bound the TOOL declared for this background task (async-start details).
+   *  Carried so the row can be bounded by the task's own deadline rather than by a
+   *  24 h net the liveness poll keeps resetting. */
+  declaredTimeoutMs?: number;
   status: "running" | "done" | "error" | "aborted";
   resultText?: string;
   phase?: string;
@@ -287,6 +291,15 @@ export interface ConvexWriter {
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** The send path's fill reading AND the figure it came from. Sent rather
+       *  than recomputed in Convex: a percentage stripped of its provenance
+       *  cannot be told apart from a gateway-measured one. */
+      fillPct?: number | null;
+      fillSource?: string | null;
+      /** WHICH model the window belongs to. Declared upstream; carried because
+       *  three models with different windows run on one instance, so a fill
+       *  recorded without its owner cannot be checked against anything. */
+      model?: string | null;
       /** Frames lost during the turn (omitted when none) — the per-turn
        *  counterpart of the live `openclaw.frame_gap` traces. */
       framesLost?: number;
@@ -644,6 +657,12 @@ type IngestOp =
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      // THE fill and the figure it came from, derived once on the send path.
+      fillPct?: number | null;
+      fillSource?: string | null;
+      // THE window's owner: three models with different windows run on one
+      // instance, so a window value alone cannot be interpreted.
+      model?: string | null;
       // Hard-overflow marker (errorKind "context_length" on a FAILED turn).
       errorKind?: string | null;
       stopReason?: string | null;
@@ -774,6 +793,7 @@ type IngestOp =
       kind?: "subagent" | "task";
       bornOfRun?: string;
       taskName?: string;
+      declaredTimeoutMs?: number;
       status: "running" | "done" | "error" | "aborted";
       resultText?: string;
       phase?: string;
@@ -2145,6 +2165,7 @@ export class HttpConvexWriter implements ConvexWriter {
       kind: record.kind,
       bornOfRun: record.bornOfRun,
       taskName: record.taskName,
+      declaredTimeoutMs: record.declaredTimeoutMs,
       status: record.status,
       ...(record.providerStatus !== undefined
         ? { providerStatus: record.providerStatus }

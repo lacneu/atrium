@@ -798,7 +798,11 @@ function parseSessionMeta(
     // miss (tool schemas, injected context). It rides `sessions.describe`, which
     // the bridge ALREADY calls before every send, so reading it costs nothing.
     // Content-free by construction: three token counts.
-    ...contextBudgetFields(sess.contextBudgetStatus),
+    // The SAME selection the guard makes. Projecting only the nested shape here
+    // let the header say 0 % `budget_estimate` while the guard was compacting or
+    // withholding the send on a flat 117 % — the two consumers of one describe,
+    // disagreeing again, which is the whole defect of this lot.
+    ...selectBudgetAssessment(sess, num(sess.contextTokens) ?? null),
   };
 }
 
@@ -827,6 +831,95 @@ function contextBudgetFields(raw: unknown): {
       ? { promptBudgetBeforeReserve }
       : {}),
     ...(overflowTokens !== undefined ? { overflowTokens } : {}),
+  };
+}
+
+/**
+ * THE budget assessment for one session row: both shapes read, the MOST ALARMING
+ * one returned whole.
+ *
+ * `contextBudgetStatus` is contractual in no pinned version, so the repo learned
+ * its shape twice from observation — nested here, flat on the row — and a partial
+ * or transitional response can carry both. Two rules, and they are the same rule:
+ *
+ *  - a RATIO is never crossed: each shape is scored with its own denominator and
+ *    the higher fill wins, so a zero in one shape cannot silence a 117 % in the
+ *    other;
+ *  - an OVERFLOW verdict is positive wherever it appears, so the largest wins.
+ *
+ * ONE selection, for all three consumers — the pre-send guard, the pressure trace
+ * and the header gauge. They used to project the describe separately, which is how
+ * the guard and the gauge came to read different shapes of the same figure without
+ * anyone noticing (live prod 2026-08-05).
+ */
+function selectBudgetAssessment(
+  row: unknown,
+  contextTokens: number | null,
+): {
+  estimatedPromptTokens?: number;
+  promptBudgetBeforeReserve?: number;
+  overflowTokens?: number;
+} {
+  // Named `o`, like the projector's own parameter, so the declaration gate's sweep
+  // sees this read too (describe-field-declaration.test.ts). A cast inline in the
+  // argument list hid `contextBudgetStatus` from it the moment this helper was
+  // extracted — the gate caught that, which is the point of it.
+  const o: Record<string, unknown> =
+    typeof row === "object" && row !== null
+      ? (row as Record<string, unknown>)
+      : {};
+  const nested = contextBudgetFields(o.contextBudgetStatus);
+  const flat = contextBudgetFields(o);
+  // ONE validity predicate, used both to score a shape and to decide whether an
+  // estimate was found at all. Split in two, they diverged: a NEGATIVE estimate
+  // counted as "present" here, selected its shape, and was then rejected
+  // downstream by sessionFillDetail — leaving the counter divided by that shape's
+  // budget instead of the smallest one, and turning a 90 % session into 29 %.
+  // A non-contractual field can carry a sentinel; only a usable figure counts.
+  const usableEstimate = (b: { estimatedPromptTokens?: number }): boolean =>
+    b.estimatedPromptTokens !== undefined && b.estimatedPromptTokens >= 0;
+  const scored = [nested, flat]
+    .filter(usableEstimate)
+    .map((b) => ({
+      b,
+      fill:
+        sessionFillDetail({
+          estimatedPromptTokens: b.estimatedPromptTokens,
+          promptBudgetBeforeReserve: b.promptBudgetBeforeReserve,
+          contextTokens,
+        }).fill ?? -1,
+    }));
+  const ratio =
+    scored.length > 0
+      ? scored.reduce((a, c) => (c.fill > a.fill ? c : a)).b
+      : {};
+  const overflows = [nested.overflowTokens, flat.overflowTokens].filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v),
+  );
+  // With NO estimate anywhere the fill comes from the counter, and the budget is
+  // only its denominator. Preferring one shape here made the guard OPTIMISTIC by
+  // luck: a nested 308 000 beside a flat 100 000 turns a 90 % fill into 29 % and
+  // sends. A smaller denominator is the more alarming reading, so take the
+  // smallest positive budget — the same rule as the ratio above and the overflow
+  // below: never end up more optimistic than a figure we were handed.
+  const budgets = [
+    nested.promptBudgetBeforeReserve,
+    flat.promptBudgetBeforeReserve,
+  ].filter((v): v is number => typeof v === "number" && v > 0);
+  const budget =
+    usableEstimate(ratio)
+      ? ratio.promptBudgetBeforeReserve
+      : budgets.length > 0
+        ? Math.min(...budgets)
+        : undefined;
+  return {
+    ...(usableEstimate(ratio)
+      ? { estimatedPromptTokens: ratio.estimatedPromptTokens }
+      : {}),
+    ...(budget !== undefined ? { promptBudgetBeforeReserve: budget } : {}),
+    ...(overflows.length > 0
+      ? { overflowTokens: Math.max(...overflows) }
+      : {}),
   };
 }
 
@@ -1095,6 +1188,14 @@ export async function performSend(
   let preTurnPromptBudget: number | null = null;
   let preTurnOverflowTokens: number | null = null;
   let preTurnTotalTokensFresh: boolean | null = null;
+  // WHICH MODEL the window belongs to. Three are in play on a single instance —
+  // a primary, a fallback, and a distinct sub-agent model — and their windows
+  // differ. A `contextTokens` recorded without its model cannot be interpreted at
+  // all: reading 372000 on some turns and 272000 on others of the same chat looks
+  // like a contradiction until you know they were different models (prod
+  // 2026-08-08, diagnosing a mid-turn overflow). Declared upstream, so this is
+  // not a new undeclared dependency.
+  let preTurnModel: string | null = null;
   // Whether THIS send prepended rehydration history (function-scope: read by
   // the post-ack beginTurn in the LATER try block for the processing_history phase).
   let turnWasRehydrated = false;
@@ -1155,11 +1256,15 @@ export async function performSend(
           : null;
       const num = (v: unknown): number | null =>
         typeof v === "number" && Number.isFinite(v) ? v : null;
-      preTurnEstimatedPromptTokens = num(s.estimatedPromptTokens);
-      preTurnPromptBudget = num(s.promptBudgetBeforeReserve);
-      preTurnOverflowTokens = num(s.overflowTokens);
+      // ONE selection, shared with the gauge and the pressure trace (see
+      // selectBudgetAssessment): both shapes read, the most alarming one kept.
+      const budget = selectBudgetAssessment(s, preTurnContextTokens);
+      preTurnEstimatedPromptTokens = budget.estimatedPromptTokens ?? null;
+      preTurnPromptBudget = budget.promptBudgetBeforeReserve ?? null;
+      preTurnOverflowTokens = budget.overflowTokens ?? null;
       preTurnTotalTokensFresh =
         typeof s.totalTokensFresh === "boolean" ? s.totalTokensFresh : null;
+      preTurnModel = typeof s.model === "string" && s.model ? s.model : null;
     };
     if (sess) captureDescribe(sess);
 
@@ -1639,11 +1744,37 @@ export async function performSend(
     // The transcript's user entry CONTAINS the raw text even when wrapped.
     await session.runManager.beginTurn(now, ackRunId, {
       expectedSessionId: preSendSessionId,
-      pressure: {
-        totalTokens: preTurnTotalTokens,
-        contextTokens: preTurnContextTokens,
-        costUsd: preTurnCostUsd,
-      },
+      pressure: (() => {
+        // THE fill, derived ONCE, here, from the describe as it stands at send
+        // time (post-compaction when the guard shrank the session) — and carried
+        // WITH ITS SOURCE all the way into the trace.
+        //
+        // The pressure trace used to recompute its own `totalTokens/contextTokens`
+        // in Convex, so the same session had THREE readings of "how full is it":
+        // the guard's, the trace's, and the header meter's. They agreed only by
+        // accident, and when a turn died of `context_length` at a displayed 51 %
+        // nothing said which figure had decided — the counter branch (blind to
+        // tool schemas and injected context) is indistinguishable from the
+        // gateway's own estimate once the label is dropped (live prod 2026-08-05).
+        const detail = sessionFillDetail({
+          estimatedPromptTokens: preTurnEstimatedPromptTokens,
+          promptBudgetBeforeReserve: preTurnPromptBudget,
+          totalTokens: preTurnTotalTokens,
+          contextTokens: preTurnContextTokens,
+          totalTokensFresh: preTurnTotalTokensFresh,
+        });
+        return {
+          totalTokens: preTurnTotalTokens,
+          contextTokens: preTurnContextTokens,
+          costUsd: preTurnCostUsd,
+          fillPct:
+            detail.fill === null ? null : Math.round(detail.fill * 100),
+          fillSource: detail.source,
+          // The window's OWNER (see preTurnModel): without it a fill percentage
+          // cannot be checked against the model that actually had to hold it.
+          model: preTurnModel,
+        };
+      })(),
       rehydrated: turnWasRehydrated,
       // Correlation for outboxReconcile: the assistant row this turn opens carries
       // the id of the send that caused it, so "this dispatch never ran" becomes a

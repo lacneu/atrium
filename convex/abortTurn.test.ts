@@ -409,3 +409,85 @@ describe("a stop is honest about what it stopped", () => {
     expect(row?.status, "its own frame landed — that wins").toBe("done");
   });
 });
+
+// A BACKGROUND TASK OUTLIVES THE REPLY IT CAME FROM.
+//
+// Production, 2026-08-08: a bubble whose text had been final for two days showed
+// a spinner and "47 h 08 min". Nothing was stuck — a background task launched by
+// that turn was genuinely still running, and the clock is the TASK'S age. Shown
+// under a settled reply it answers a question nobody asked, and reads as "your
+// answer has been in progress for two days".
+describe("a detached task keeps the signal but loses the clock", () => {
+  async function seedSettledReplyWithRunningTask(
+    t: ReturnType<typeof convexTest>,
+    parentStatus: "complete" | "streaming",
+  ) {
+    return t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      const parentId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: parentStatus,
+        text: "Voici la recette.",
+        updatedAt: Date.now(),
+      });
+      // FRESH updatedAt: a task polled seconds ago is the production shape — a
+      // stale row would make the signal read "idle" and pass for the wrong reason.
+      await ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        parentMessageId: parentId,
+        childSessionKey: "task:8074f478-9142-420e-88fa-e473ea4c27e4",
+        kind: "task" as const,
+        taskName: "image_generate",
+        status: "running" as const,
+        createdAt: Date.now() - 47 * 60 * 60 * 1000,
+        updatedAt: Date.now() - 19_000,
+      });
+      return { userId, chatId };
+    });
+  }
+
+  test("under a SETTLED reply: still working, but no duration is offered", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledReplyWithRunningTask(
+      t,
+      "complete",
+    );
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    // The work is real and must keep being announced.
+    expect(a.running, "the reader is told nothing is happening").toBe(true);
+    expect(
+      a.detachedTask,
+      "the task's age is presented as this turn's duration",
+    ).toBe(true);
+  });
+
+  test("under a STREAMING reply: that IS the turn, and it keeps its clock", async () => {
+    const t = convexTest(schema);
+    const { userId, chatId } = await seedSettledReplyWithRunningTask(
+      t,
+      "streaming",
+    );
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.running).toBe(true);
+    expect(
+      a.detachedTask,
+      "a turn still being composed lost the duration it is entitled to",
+    ).toBe(false);
+  });
+});

@@ -1587,6 +1587,24 @@ export default defineSchema({
     // anchor through the ENGAGEMENT row this points to.
     bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
+    /** The bound the TOOL ITSELF declared for this background task, in ms.
+     *
+     *  Received from the async-start details and previously discarded. A task
+     *  whose own call said `timeoutMs: 300000` ran for 47 HOURS in production
+     *  (2026-08-08): the only limit on the row was a 24 h net keyed on
+     *  `updatedAt`, and the liveness poll refreshed that every 30 s, so it never
+     *  fired. A deadline a task publishes about itself outranks any horizon we
+     *  could guess — and it can only TIGHTEN the net, never loosen it (capped at
+     *  the net's own 24 h where it is parsed). Absent on tasks that declare none,
+     *  and on every row written before this field existed. */
+    declaredTimeoutMs: v.optional(v.number()),
+    /** The ABSOLUTE moment this task stops being given the benefit of the doubt:
+     *  `createdAt + declaredTimeoutMs + the delivery window`. Stored, not derived,
+     *  so the reaper can RANGE on it — a filter applied after a bounded `take()`
+     *  let fifty deadline-less tasks, kept fresh by the reconciliation, starve
+     *  every declared one behind them (codex P1). Absent when the task declared
+     *  no deadline: those keep the generous updatedAt-keyed net. */
+    taskDeadlineAt: v.optional(v.number()),
     /** WHERE a running task currently is, in the agent's own words. Refreshed by the
      *  task probe (~30s) while the task runs; the terminal summary replaces it when the
      *  task ends.
@@ -1732,6 +1750,21 @@ export default defineSchema({
     // those rows. Mirrors messages.by_status_updated: a live child has a fresh
     // updatedAt → outside the range → never read (no full scan).
     .index("by_status_updated", ["status", "updatedAt"])
+    // (status, kind): the GLOBAL slice of running background tasks. The reaper
+    // bounds those by the deadline they declared for themselves, which lives on
+    // `createdAt` — not on `updatedAt`, because the liveness poll rewrites that
+    // every ~30 s and can therefore hold the updatedAt-keyed net off forever (a
+    // five-minute task reached 47 h in production, 2026-08-08). Ranging on
+    // (running, task) reads only live tasks, never a full scan.
+    // (status, kind): the GLOBAL slice of running background tasks — the input to
+    // the generous net, which is applied on `createdAt` (a refreshable clock
+    // cannot bound anything, the whole lesson of this lot).
+    .index("by_status_kind", ["status", "kind"])
+    // (status, taskDeadlineAt): the EXPIRED slice, read directly. Ranging beats
+    // filtering after a take(): the bounded window could be entirely occupied by
+    // deadline-less tasks the reconciliation keeps fresh, and a declared task
+    // behind them would never be examined at all (codex P1).
+    .index("by_status_deadline", ["status", "taskDeadlineAt"])
     // (parentMessageId): the auto-retry gate + cascade read ONLY this turn's
     // children (an unbounded by_chat walk on long chats could exceed the
     // finalize transaction — codex P2).

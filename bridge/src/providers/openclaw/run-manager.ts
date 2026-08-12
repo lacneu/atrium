@@ -12,6 +12,7 @@
 import { Normalizer } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
+import type { SessionFillSource } from "../../core/context-budget.js";
 import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
 import {
   compactionCompleted,
@@ -338,6 +339,11 @@ export class RunManager {
         totalTokens: number | null;
         contextTokens: number | null;
         costUsd?: number | null;
+        /** THE fill and WHICH figure produced it — derived once on the send path
+         *  (context-budget's sessionFillDetail), never recomputed downstream. */
+        fillPct?: number | null;
+        fillSource?: SessionFillSource | null;
+        model?: string | null;
       };
       /** Spontaneous (announce) turn: the sink DEFERS creating the assistant
        *  message until the normalizer proves visible content (turn-sink). */

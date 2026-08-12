@@ -20,6 +20,7 @@
 // paired terminal run.status arrives (final->complete, error->error,
 // aborted->aborted). Every other run.status is intermediate and dropped.
 
+import type { SessionFillSource } from "./context-budget.js";
 import type { NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
 import { cronPartFromTool } from "./cron-part.js";
@@ -398,6 +399,13 @@ export class TurnSink {
     totalTokens: number | null;
     contextTokens: number | null;
     costUsd?: number | null;
+    /** The fill AND its provenance, derived once on the send path. Carried here
+     *  rather than recomputed: a percentage without its source cannot be told
+     *  apart from a gateway-measured one, and the two mean different things. */
+    fillPct?: number | null;
+    fillSource?: SessionFillSource | null;
+    /** WHICH model the window belongs to — a fill without it is uncheckable. */
+    model?: string | null;
   } | null = null;
   private compactionPhase: string | null = null;
   /** WHY the gateway compacted this turn, from `session.operation` (W2 / G-09).
@@ -531,6 +539,9 @@ export class TurnSink {
       totalTokens: number | null;
       contextTokens: number | null;
       costUsd?: number | null;
+      fillPct?: number | null;
+      fillSource?: SessionFillSource | null;
+      model?: string | null;
     },
     deferOpen = false,
     rehydrated = false,
@@ -1193,6 +1204,14 @@ export class TurnSink {
                 kind: "task" as const,
                 status: "running" as const,
                 taskName: asyncStart.toolName,
+                // The bound the TOOL declared for itself, when it states one.
+                // Without it the row's only limit was a 24 h net keyed on
+                // `updatedAt`, which the liveness poll refreshes every 30 s —
+                // so a wedged task span 47 h in production while its own call
+                // said five minutes.
+                ...(asyncStart.timeoutMs !== undefined
+                  ? { declaredTimeoutMs: asyncStart.timeoutMs }
+                  : {}),
               };
               try {
                 await this.writer.upsertSubAgent?.(engagement);
@@ -2097,6 +2116,19 @@ export class TurnSink {
           // Session-cumulative cost BEFORE this turn (sessions.describe): the
           // delta between consecutive turns' traces IS the per-turn cost.
           costUsd: this.pressure?.costUsd ?? null,
+          // The send path's OWN reading, with the figure it came from. Sent
+          // whenever there WAS a pre-send describe — including as an explicit
+          // null, which means "the send path looked and could not tell". Convex
+          // must not answer that with a raw ratio of its own: omission means an
+          // older bridge, `null` means a measured UNKNOWN, and the two get
+          // different treatment there.
+          ...(this.pressure !== null
+            ? {
+                fillPct: this.pressure.fillPct ?? null,
+                fillSource: this.pressure.fillSource ?? null,
+                model: this.pressure.model ?? null,
+              }
+            : {}),
           toolCalls: this.toolCallCount,
           // Frames LOST during this turn (0 on the overwhelming majority). A
           // non-zero value is the honest answer to "why does this reply look

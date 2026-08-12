@@ -1668,3 +1668,42 @@ describe("the lost-report alarm can escalate", () => {
     ).toBe("critical");
   });
 });
+
+// AN ABANDONED TASK DOES NOT COME BACK BECAUSE THE WINDOW MOVED ON.
+describe("the task-overrun alarm survives the window", () => {
+  test("it stays open after the trace ages out", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "subagent.task_overrun",
+        at: now - 1000,
+        correlationId: "chatO:task:overrun-1",
+        meta: {
+          taskName: "image_generate",
+          declaredTimeoutMs: 300000,
+          ranForMs: 169200000,
+        },
+      });
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("traceEvents").collect()) {
+        await ctx.db.delete(row._id);
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.task_overruns"),
+        )
+        .first(),
+    );
+    expect(
+      row,
+      "auto-resolving announces the abandoned result recovered, and deletes the signal",
+    ).not.toBeNull();
+  });
+});

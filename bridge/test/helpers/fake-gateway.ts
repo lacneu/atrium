@@ -29,10 +29,23 @@ export interface FakeSessionDescribe {
   totalTokens?: number;
   contextTokens?: number;
   estimatedCostUsd?: number;
-  /** The gateway's OWN pre-prompt assessment — what the guard measures against. */
+  /** The gateway's OWN pre-prompt assessment — what the guard measures against.
+   *
+   *  TWO SHAPES, because no pinned contract declares this assessment and the repo
+   *  instructed it twice from observation: FLAT on the session row (these three),
+   *  and NESTED under `contextBudgetStatus` (below). A fake that can only express
+   *  one of them cannot test the guard against the other — which is exactly how
+   *  the flat-only reading went unnoticed until production (2026-08-05). */
   estimatedPromptTokens?: number;
   promptBudgetBeforeReserve?: number;
   overflowTokens?: number;
+  /** The NESTED shape of the same assessment. Deliberately loose: a partial one is
+   *  plausible precisely because nothing declares it. */
+  contextBudgetStatus?: {
+    estimatedPromptTokens?: number;
+    promptBudgetBeforeReserve?: number;
+    overflowTokens?: number;
+  };
   totalTokensFresh?: boolean;
 }
 

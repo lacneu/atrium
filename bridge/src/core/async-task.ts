@@ -19,6 +19,15 @@ const DELIVERY_RE = new RegExp(`^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)$`);
 export interface AsyncTaskStart {
   taskId: string;
   toolName: string;
+  /** The bound the TOOL ITSELF declared for this task, in ms, when it states one.
+   *
+   *  We were already receiving it and throwing it away. A production task ran for
+   *  47 HOURS while its own call carried `timeoutMs: 300000` — five minutes — and
+   *  the only thing bounding the engagement row was a 24 h net keyed on
+   *  `updatedAt`, which the liveness poll refreshed every 30 s and therefore
+   *  never fired. A deadline the task published about itself is the most
+   *  authoritative one there is; keeping it costs nothing. */
+  timeoutMs?: number;
 }
 
 export interface TaskDeliveryRun {
@@ -50,7 +59,22 @@ export function asyncTaskStartFromTool(
   if (typeof taskId !== "string" || taskId === "" || taskId.length > 128) {
     return null;
   }
-  return { taskId, toolName: name.slice(0, 80) };
+  // Bounded and sane, or absent: an implausible figure must not become a
+  // deadline. Upper bound at 24 h — the safety net's own horizon, so a declared
+  // value can only ever TIGHTEN what already applies, never loosen it.
+  const declared = details.timeoutMs;
+  const timeoutMs =
+    typeof declared === "number" &&
+    Number.isFinite(declared) &&
+    declared > 0 &&
+    declared <= 24 * 60 * 60 * 1000
+      ? Math.round(declared)
+      : undefined;
+  return {
+    taskId,
+    toolName: name.slice(0, 80),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
 }
 
 /** The stable row key for a background-task engagement (subAgents table). */

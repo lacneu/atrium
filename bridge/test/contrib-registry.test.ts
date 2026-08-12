@@ -27,7 +27,17 @@ interface ContribEntry {
   lastSyncAt?: string;
 }
 
-const ALLOWED_REPOS = ["openclaw/openclaw", "NousResearch/hermes-agent"];
+// The PROVIDERS' upstreams, plus the context-engine plugin one of them runs in
+// production. `Martian-Engineering/lossless-claw` was added 2026-08-08 on the
+// maintainer's explicit decision: it owns the compaction behaviour our own
+// context diagnostics depend on, so items there are facts we must adapt to, not
+// third-party trivia. Widening this list stays a visible review event — that is
+// the whole point of pinning it here.
+const ALLOWED_REPOS = [
+  "openclaw/openclaw",
+  "NousResearch/hermes-agent",
+  "Martian-Engineering/lossless-claw",
+];
 const KINDS = ["issue", "pr"];
 const ORIGINS = ["atrium-finding", "upstream-change"];
 const STATES = ["draft", "open", "closed", "merged"];

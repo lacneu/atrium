@@ -962,6 +962,16 @@ describe("TurnSink compaction part + pressure trace", () => {
       costUsd: null, // pressure seeded without a cost in this fixture
       toolCalls: 0, // no tools in this fixture turn
       compaction: "preflight",
+      // The fixture seeds a pressure snapshot with counters only and no derived
+      // reading — so the trace carries an EXPLICIT unknown. That is not the same
+      // as omitting the pair (which would mean an older bridge and let Convex
+      // derive a raw ratio of its own); the send path looked and could not tell.
+      fillPct: null,
+      fillSource: null,
+      // The window's OWNER, absent in this fixture (no model on the seeded
+      // pressure): a window value alone cannot be interpreted, so the field is
+      // always present and explicitly null rather than omitted.
+      model: null,
       errorKind: null, // no hard overflow this turn (compaction handled it)
       stopReason: null,
       finalizeCause: null, // diagnosis field rides the trace (null on this path)

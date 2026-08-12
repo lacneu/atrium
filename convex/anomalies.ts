@@ -176,6 +176,12 @@ export const ANOMALY_KINDS = {
   // never be built is a real malfunction, and it would go completely unnoticed if
   // the only choice were "user-facing alarm" or "silence".
   INTERNAL_WORK_FAILURES: "atrium.internal_work_failures",
+  // A background task that blew the deadline IT declared for itself. Its own
+  // class because it is neither a failed reply nor a lost report: the turn
+  // answered, and separately a result the user asked for was abandoned. One is
+  // enough to raise it — a task announcing five minutes and reaching 47 h is not
+  // a statistical signal, it is a single fact worth reading (prod 2026-08-08).
+  TASK_OVERRUNS: "assistant.task_overruns",
 } as const;
 
 /**
@@ -236,6 +242,9 @@ export function isTurnCostingKind(kind: string): boolean {
     // fixed, deleting the very signal an investigation starts from. It stays
     // open until a human closes it, like every other lost-turn class.
     kind === ANOMALY_KINDS.ANNOUNCE_ERRORS ||
+    // Same reason: an abandoned task is work the user asked for and lost. The
+    // window scrolling past does not deliver it.
+    kind === ANOMALY_KINDS.TASK_OVERRUNS ||
     Object.values(CAUSE_ANOMALY_KINDS).includes(kind)
   );
 }
@@ -366,6 +375,8 @@ type WindowAgg = {
   streamAborts: number;
   /** Failed sub-agent ANNOUNCE deliveries — counted apart from streamErrors. */
   announceErrors: number;
+  taskOverruns: number;
+  taskOverrunSampleCorrelation?: string;
   announceSampleCorrelation?: string;
   streamSampleCorrelation?: string;
   // Failed turns BY CAUSE (curated code -> count) plus the most recent
@@ -386,6 +397,7 @@ type WindowAgg = {
      *  count (and the reverse) — separate aggregates with a common watermark
      *  still cross-count. */
     announceError?: string;
+    taskOverrun?: string;
     streamAbort?: string;
     ingest?: string;
     cause: Record<string, string>;
@@ -399,6 +411,7 @@ type WindowAgg = {
      *  the turn-costing class. A user Stop must not advance it (codex P2). */
     streamError?: number;
     announceError?: number;
+    taskOverrun?: number;
     /** Newest user STOP — what makes a new observation for the burst class. */
     streamAbort?: number;
     ingest?: number;
@@ -696,6 +709,7 @@ export const detectAnomalies = internalMutation({
       latestKey: { cause: {}, accessByPrincipal: new Map() },
       streamAborts: 0,
       announceErrors: 0,
+      taskOverruns: 0,
       ingestDenied: 0,
       accessByPrincipal: new Map(),
     };
@@ -799,6 +813,16 @@ export const detectAnomalies = internalMutation({
             agg.latestAt.streamAbort = row.at;
             agg.latestKey.streamAbort = row._id;
           }
+          break;
+        }
+        // A task that overran the bound it declared for itself (written by the
+        // reaper when it terminalizes such a row).
+        case "subagent.task_overrun": {
+          agg.taskOverruns += 1;
+          if (row.correlationId)
+            agg.taskOverrunSampleCorrelation = row.correlationId;
+          agg.latestAt.taskOverrun = row.at;
+          agg.latestKey.taskOverrun = row._id;
           break;
         }
         case "openclaw.ingest.denied": {
@@ -949,6 +973,23 @@ export const detectAnomalies = internalMutation({
     // Real work the user asked for and will not see, but the parent turn
     // answered: raising it as "assistant stream errors" pointed every reader at
     // a reply that was in fact fine.
+    if (agg.taskOverruns > 0) {
+      await upsertDetectorAnomaly(ctx, {
+        kind: ANOMALY_KINDS.TASK_OVERRUNS,
+        severity: "warn",
+        message: `Background tasks past their own declared deadline: ${agg.taskOverruns} over ${windowMin}m`,
+        evidence: {
+          taskOverruns: agg.taskOverruns,
+          sampleCorrelationId: agg.taskOverrunSampleCorrelation,
+          windowMs: DETECT_WINDOW_MS,
+          warnThreshold: 1,
+        },
+        correlationId: agg.taskOverrunSampleCorrelation,
+        latestEventAt: agg.latestAt.taskOverrun,
+        latestEventKey: agg.latestKey.taskOverrun,
+      });
+      detected.push(ANOMALY_KINDS.TASK_OVERRUNS);
+    }
     if (agg.announceErrors >= ANNOUNCE_ERROR_WARN) {
       await upsertDetectorAnomaly(ctx, {
         kind: ANOMALY_KINDS.ANNOUNCE_ERRORS,

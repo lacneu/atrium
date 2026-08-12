@@ -4,6 +4,7 @@
 // clock both read this verdict, so an answer of "something is streaming" when
 // nothing is takes every indicator off the screen while work is still running.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { deliveryWindowOpen, threadStreaming } from "./turnActivityAnchor";
 
@@ -97,5 +98,48 @@ describe("deliveryWindowOpen", () => {
   // guess that the delivery is live.
   it("a delivery with no remaining time reported is not assumed live", () => {
     expect(deliveryWindowOpen(C, 1_000, null, null)).toBe(false);
+  });
+});
+
+// ONE DURATION, READ BY BOTH RENDERS.
+//
+// The activity indicator renders in TWO places: anchored under the working bubble
+// and, when that bubble is not mounted, at the bottom of the thread. Withholding
+// a detached task's clock on the bottom fallback ALONE left the 47-hour clock
+// exactly where production shows it — the anchored path is the normal one, since
+// the bubble is mounted (codex P1, lot 0.71.8).
+//
+// A DERIVED guard, not a mount: this suite has no React environment, so the thing
+// that can actually regress — a second, unfiltered read of `workingSince` — is
+// checked against the source instead of asserted on a rendered tree.
+describe("the detached-task clock is withheld on EVERY render path", () => {
+  const src = readFileSync(
+    new URL("./ConvexChat.tsx", import.meta.url),
+    "utf8",
+  );
+
+  it("`workingSince` is read from the server value exactly once", () => {
+    const raw = [...src.matchAll(/turnActivity\?\.workingSince/g)].length;
+    expect(
+      raw,
+      "a second raw read of workingSince bypasses the detached-task filter — which is how the anchored render kept the clock",
+    ).toBe(1);
+  });
+
+  it("that single read is the one guarded by detachedTask", () => {
+    // The derivation and the guard must sit together; a read that drifts away
+    // from its condition is the defect, not the count.
+    const i = src.indexOf("const visibleWorkingSince");
+    expect(i, "the single derivation was renamed or removed").toBeGreaterThan(-1);
+    const block = src.slice(i, i + 400);
+    expect(block).toContain("detachedTask");
+    expect(block).toContain("turnActivity?.workingSince");
+  });
+
+  it("both indicators are fed from that derivation", () => {
+    expect(
+      [...src.matchAll(/visibleWorkingSince/g)].length,
+      "one of the two render paths no longer reads the shared value",
+    ).toBeGreaterThanOrEqual(3);
   });
 });

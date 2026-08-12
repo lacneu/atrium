@@ -1144,3 +1144,256 @@ describe("queue dock management (cancel / edit while queued)", () => {
     ).rejects.toThrow(/EMPTY_TEXT/);
   });
 });
+
+// A TASK CANNOT OUTLIVE THE DEADLINE IT DECLARED FOR ITSELF.
+//
+// Background tasks are excluded from the 20-minute pass on purpose — a long
+// generation is legitimate — and the 24 h safety net that replaces it is keyed on
+// `updatedAt`. But `refreshTaskEngagement` rewrites `updatedAt` every ~30 s for as
+// long as the gateway says the task lives, so the net can be held off forever by
+// the very thing it bounds. In production (2026-08-08) a task whose own call
+// declared `timeoutMs: 300000` — five minutes — was still `running` after 47
+// HOURS, with the activity clock ticking under a reply the user already had.
+describe("the reaper honours a task's own declared deadline", () => {
+  /** A running task, CREATED BY PRODUCTION CODE and then aged.
+   *
+   *  `upsertSubAgent` is what derives the absolute deadline from the declared
+   *  bound — hand-inserting the row skipped that derivation, so the first version
+   *  of these tests passed against a shape production never writes (the mistake
+   *  this repo has a rule about). Only the CLOCK is moved afterwards: the row's
+   *  own fields come from the mutation, and `updatedAt` is left seconds old
+   *  because a fresh poll is exactly what defeats the 24 h net. */
+  async function insertTask(
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    key: string,
+    bornMsAgo: number,
+    declaredTimeoutMs?: number,
+  ) {
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: key,
+      kind: "task" as const,
+      taskName: "image_generate",
+      status: "running" as const,
+      ...(declaredTimeoutMs !== undefined ? { declaredTimeoutMs } : {}),
+    });
+    return t.run(async (ctx) => {
+      const rows = (await ctx.db.query("subAgents").collect()) as {
+        _id: Id<"subAgents">;
+        childSessionKey: string;
+        taskDeadlineAt?: number;
+      }[];
+      const row = rows.find((r) => r.childSessionKey === key);
+      const now = Date.now();
+      await ctx.db.patch(row!._id, {
+        createdAt: now - bornMsAgo,
+        updatedAt: now - 19_000,
+        ...(row!.taskDeadlineAt !== undefined
+          ? { taskDeadlineAt: row!.taskDeadlineAt - bornMsAgo }
+          : {}),
+      });
+      return row!._id;
+    });
+  }
+
+  test("a 5-minute task alive for 47 h is terminalized despite a fresh poll", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    const row = await insertTask(
+      t,
+      chatId,
+      "task:8074f478-9142-420e-88fa-e473ea4c27e4",
+      47 * 60 * 60 * 1000,
+      300_000,
+    );
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    const reaped = await t.run((ctx) => ctx.db.get(row));
+    expect(
+      reaped?.status,
+      "a fresh poll holds the updatedAt-keyed net off forever",
+    ).toBe("error");
+  });
+
+  test("a task still INSIDE its declared deadline is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    const row = await insertTask(t, chatId, "task:inside", 60_000, 300_000);
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    expect(
+      await t.run((ctx) => ctx.db.get(row).then((r) => r?.status)),
+      "a legitimate long generation must not be cut short",
+    ).toBe("running");
+  });
+
+  test("just past the deadline, the DELIVERY window is still granted", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    // Deadline passed 10 s ago: the result still has to travel back and merge,
+    // and killing the row mid-flight would lose it.
+    const row = await insertTask(t, chatId, "task:grace", 310_000, 300_000);
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    expect(
+      await t.run((ctx) => ctx.db.get(row).then((r) => r?.status)),
+      "the row was cut while its result was still on the way",
+    ).toBe("running");
+  });
+
+  test("a task that declared NO deadline keeps the GENEROUS net — counted from BIRTH", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    // No declared bound, born 47 h ago, POLLED SECONDS AGO. Keyed on `updatedAt`
+    // the net never fired — which is why rows written before this lot would have
+    // kept that immunity forever, with no migration able to reach them (codex P2).
+    // `createdAt` cannot be refreshed, so the same generous horizon now expires.
+    const row = await insertTask(t, chatId, "task:undeclared", 47 * 60 * 60 * 1000);
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    expect(
+      await t.run((ctx) => ctx.db.get(row).then((r) => r?.status)),
+      "a refreshed row stays immune to the net forever",
+    ).toBe("error");
+  });
+
+  test("more than one batch of expired tasks drains to ZERO (it re-arms)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    // 51 > REAP_BATCH. Re-arming on the sub-agent batch alone left the surplus
+    // waiting for the next cron tick, and a backlog growing faster than one tick
+    // drains it never converges (codex P3).
+    for (let i = 0; i < 51; i++) {
+      await insertTask(t, chatId, `task:flood-${i}`, 60 * 60 * 1000, 300_000);
+    }
+    // The scheduler is not run by convexTest, so drive the passes explicitly:
+    // what is proven is that ONE pass does not silently leave the rest behind.
+    const first = await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    expect(
+      first.reaped,
+      "the count ignores tasks entirely, which is exactly how a backlog hides",
+    ).toBeGreaterThan(0);
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    const remaining = await t.run(async (ctx) => {
+      const rows = (await ctx.db.query("subAgents").collect()) as {
+        status: string;
+        childSessionKey: string;
+      }[];
+      return rows.filter(
+        (r) => r.status === "running" && r.childSessionKey.startsWith("task:flood-"),
+      ).length;
+    });
+    expect(remaining, "expired tasks were left behind after draining").toBe(0);
+  });
+
+  test("a task with no deadline, YOUNGER than the net, is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    // A long generation remains legitimate: the horizon is generous, not tight.
+    const row = await insertTask(t, chatId, "task:young", 3 * 60 * 60 * 1000);
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    expect(
+      await t.run((ctx) => ctx.db.get(row).then((r) => r?.status)),
+      "a three-hour generation was cut on a horizon meant for a day",
+    ).toBe("running");
+  });
+});
+
+/** Same discipline as `insertTask` above: the row is written by the production
+ *  mutation, then aged. Duplicated rather than hoisted so each describe reads
+ *  standalone. */
+async function insertTaskViaMutation(
+  t: ReturnType<typeof convexTest>,
+  chatId: Id<"chats">,
+  key: string,
+  bornMsAgo: number,
+  declaredTimeoutMs?: number,
+) {
+  await t.mutation(internal.subAgents.upsertSubAgent, {
+    chatId,
+    childSessionKey: key,
+    kind: "task" as const,
+    taskName: "image_generate",
+    status: "running" as const,
+    ...(declaredTimeoutMs !== undefined ? { declaredTimeoutMs } : {}),
+  });
+  return t.run(async (ctx) => {
+    const rows = (await ctx.db.query("subAgents").collect()) as {
+      _id: Id<"subAgents">;
+      childSessionKey: string;
+      taskDeadlineAt?: number;
+    }[];
+    const row = rows.find((r) => r.childSessionKey === key);
+    const now = Date.now();
+    await ctx.db.patch(row!._id, {
+      createdAt: now - bornMsAgo,
+      updatedAt: now - 19_000,
+      ...(row!.taskDeadlineAt !== undefined
+        ? { taskDeadlineAt: row!.taskDeadlineAt - bornMsAgo }
+        : {}),
+    });
+    return row!._id;
+  });
+}
+
+// AN ABANDONED TASK MUST BE READABLE AS A LOSS, NOT ONLY AS AN ERRORED ROW.
+describe("a task that blew its own deadline raises a signal", () => {
+  test("the reap records it, and the detector gives it its own class", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    await insertTaskViaMutation(
+      t,
+      chatId,
+      "task:overrun-1",
+      47 * 60 * 60 * 1000,
+      300_000,
+    );
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    const traces = await t.run((ctx) =>
+      ctx.db.query("traceEvents").collect(),
+    );
+    const overrun = traces.find((e) => e.kind === "subagent.task_overrun");
+    expect(
+      overrun,
+      "the abandonment left no trace, so nothing can alarm on it",
+    ).toBeDefined();
+    const meta = JSON.parse(overrun?.meta ?? "{}") as {
+      declaredTimeoutMs?: number;
+      ranForMs?: number;
+    };
+    expect(meta.declaredTimeoutMs).toBe(300_000);
+    expect(meta.ranForMs ?? 0).toBeGreaterThan(46 * 60 * 60 * 1000);
+
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run((ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.task_overruns"),
+        )
+        .first(),
+    );
+    expect(row, "one abandoned task is not enough to be told about").not.toBeNull();
+  });
+
+  test("a task expired by the 24h NET alone raises nothing (no bound was blown)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserChat(t);
+    const now = Date.now();
+    // No declared deadline, and untouched for 25 h: the generic safety net, not
+    // a broken promise. Terminalized, but there is no overrun to report.
+    await t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: "task:net-1",
+        kind: "task" as const,
+        status: "running" as const,
+        createdAt: now - 30 * 60 * 60 * 1000,
+        updatedAt: now - 25 * 60 * 60 * 1000,
+      }),
+    );
+    await t.mutation(internal.subAgents.reapStaleSubAgents, {});
+    const traces = await t.run((ctx) => ctx.db.query("traceEvents").collect());
+    expect(
+      traces.some((e) => e.kind === "subagent.task_overrun"),
+      "a task that promised nothing is reported as having broken a promise",
+    ).toBe(false);
+  });
+});

@@ -322,6 +322,17 @@ type IngestOp =
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** THE fill, derived once on the send path, and WHICH figure produced it
+       *  ("gateway_estimate" | "counter"). Both absent on an older bridge — the
+       *  handler then falls back to the raw ratio and stores no source. */
+      fillPct?: number | null;
+      fillSource?: string | null;
+      /** WHICH model the window belongs to (an upstream-declared enum-ish slug).
+       *  Three models with different windows run on one instance, so a recorded
+       *  `contextTokens` cannot be interpreted without it — reading 372000 on some
+       *  turns and 272000 on others of the same chat looked like a contradiction
+       *  until the model explained it (prod 2026-08-08). */
+      model?: string | null;
       /** WHY it compacted — bucketed by the bridge, re-bucketed on arrival. */
       compactionReason?: string;
       /** The gateway REFUSED to compact rather than failing at it. */
@@ -461,6 +472,12 @@ type IngestOp =
       kind?: "subagent" | "task";
       bornOfRun?: string;
       taskName?: string;
+      /** The bound the TOOL declared for this background task (async-start
+       *  details). Relayed to the mutation, which turns it into an absolute
+       *  deadline on the row — without it the row falls back to a 24 h net keyed
+       *  on `updatedAt`, which the liveness poll refreshes every 30 s and can
+       *  therefore hold off forever (prod 2026-08-08: five minutes → 47 h). */
+      declaredTimeoutMs?: number;
       status: "running" | "done" | "error" | "aborted";
       /** The gateway's own terminal word, when the four states cannot hold the
        *  distinction (`timeout` vs `failed`). Enum-checked by the bridge. */
@@ -993,12 +1010,56 @@ export const ingest = httpAction(async (ctx, request) => {
       // gateway compacted during it. correlationId = `chatId:messageId` so the
       // obs MCP can line pressure up with the turn's other traces. The fill
       // percentage is derived here (single place) for direct MCP readability.
-      const fillPct =
-        typeof body.totalTokens === "number" &&
-        typeof body.contextTokens === "number" &&
-        body.contextTokens > 0
-          ? Math.round((body.totalTokens / body.contextTokens) * 100)
+      // WHOSE reading is this? The send path derives the fill ONCE (the bridge's
+      // context-budget sessionFillDetail) and sends it WITH its source, because
+      // only that side holds the gateway's own prompt estimate and usable budget.
+      // Deriving `totalTokens/contextTokens` here as well gave the same session a
+      // second, blinder reading that could not be told apart from the first — and
+      // when a turn died of `context_length` at a displayed 51 %, nothing said
+      // which figure had decided (live prod 2026-08-05).
+      //
+      // The wire is DOCUMENTED, not trusted: an out-of-range percentage or an
+      // unknown source label is dropped rather than stored.
+      // The pair is ATOMIC. A measurement and its provenance are one fact, and
+      // validating them apart lets a divergent or half-upgraded bridge produce
+      // shapes that reintroduce the exact ambiguity this lot removes: a source
+      // with no measurement, or a measurement whose label was rejected and now
+      // reads as unattributed. Either half being wrong voids both.
+      const rawPct =
+        typeof body.fillPct === "number" &&
+        Number.isFinite(body.fillPct) &&
+        body.fillPct >= 0
+          ? Math.round(body.fillPct)
           : null;
+      const rawSource =
+        body.fillSource === "gateway_estimate" || body.fillSource === "counter"
+          ? body.fillSource
+          : null;
+      // null/null is the send path's explicit UNKNOWN — coherent, and kept.
+      // Anything else half-formed collapses to that same UNKNOWN rather than
+      // being half-stored.
+      const coherent =
+        (rawPct === null && rawSource === null) ||
+        (rawPct !== null && rawSource !== null);
+      const sentPct = coherent ? rawPct : null;
+      const fillSource = coherent ? rawSource : null;
+      // ABSENT and NULL are different answers. BOTH absent = an older bridge never
+      // computed one, so the raw ratio is the best available and it is stored with
+      // no source, staying visibly unattributed. Anything else means this bridge
+      // DID speak: an explicit null (it looked and could not tell), or a
+      // half-formed pair from a divergent build. Neither may be answered with a
+      // ratio of our own — that would resurrect a figure the send path declined to
+      // give, or hand an orphan source a measurement to hide behind, which is the
+      // ambiguity this lot exists to remove.
+      const sentAbsent =
+        body.fillPct === undefined && body.fillSource === undefined;
+      const fillPct = sentAbsent
+        ? typeof body.totalTokens === "number" &&
+          typeof body.contextTokens === "number" &&
+          body.contextTokens > 0
+          ? Math.round((body.totalTokens / body.contextTokens) * 100)
+          : null
+        : sentPct;
       await traceIngest(ctx, {
         kind: "chat.gateway_pressure",
         chatId: body.chatId,
@@ -1007,6 +1068,11 @@ export const ingest = httpAction(async (ctx, request) => {
           totalTokens: body.totalTokens,
           contextTokens: body.contextTokens,
           fillPct,
+          ...(fillSource !== null ? { fillSource } : {}),
+          // A SLUG, capped: config-class like `taskName`, never free text.
+          ...(typeof body.model === "string" && body.model
+            ? { model: body.model.slice(0, 64) }
+            : {}),
           // Session-cumulative cost BEFORE the turn (per-turn cost = the delta
           // between consecutive gateway_pressure traces of the chat).
           ...(typeof body.costUsd === "number" ? { costUsd: body.costUsd } : {}),
@@ -1264,6 +1330,16 @@ export const ingest = httpAction(async (ctx, request) => {
         kind: body.kind,
         bornOfRun: body.bornOfRun,
         taskName: body.taskName,
+        // BOUNDED here, at the untrusted boundary: a non-finite or absurd figure
+        // must not become a deadline. The cap is the safety net's own horizon, so
+        // a declared value can only ever TIGHTEN what already applies.
+        declaredTimeoutMs:
+          typeof body.declaredTimeoutMs === "number" &&
+          Number.isFinite(body.declaredTimeoutMs) &&
+          body.declaredTimeoutMs > 0 &&
+          body.declaredTimeoutMs <= 24 * 60 * 60 * 1000
+            ? Math.round(body.declaredTimeoutMs)
+            : undefined,
         status: body.status,
         providerStatus: body.providerStatus,
         rollup: body.rollup,

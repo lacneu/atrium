@@ -160,7 +160,28 @@ interface ContextMeta {
 export function effectiveContextUsed(
   sm: ContextMeta | null | undefined,
 ): number | null {
-  if (!sm) return null;
+  return contextUsedDetail(sm).used;
+}
+
+/**
+ * The gauge's numerator AND the figure it came from, from ONE walk of the ladder.
+ *
+ * They used to be two functions repeating the same priority order — the number
+ * here, its label in `contextSource` — so nothing stopped a reading from being
+ * displayed under the wrong provenance the day one ladder was edited and the
+ * other was not. And provenance is not decoration: a percentage derived from a
+ * post-hoc counter is blind to tool schemas and injected context, i.e. to exactly
+ * what fills a window, while the gateway's own estimate is not. Prod died of
+ * `context_length` at a reported 51 % (2026-08-05), on the counter branch.
+ *
+ * Same shape as the bridge's `sessionFillDetail`: one implementation, the value
+ * and its source returned together, and the value-only helpers are wrappers.
+ */
+export function contextUsedDetail(sm: ContextMeta | null | undefined): {
+  used: number | null;
+  source: ContextSource;
+} {
+  if (!sm) return { used: null, source: "unknown" };
   const window = sm.contextTokens;
   // Absurd-value guard for the COUNTERS: a "used" larger than the window is not a
   // fill, it is a cumulative total. Report null (unknown) rather than a figure we
@@ -173,17 +194,22 @@ export function effectiveContextUsed(
   //    ("the next send does not fit"). Discarding it would hide an imminent
   //    overflow behind a comfortable post-hoc counter. Callers clamp the visual
   //    width; the NUMBER stays honest.
-  if (sm.estimatedPromptTokens != null) return sm.estimatedPromptTokens;
+  if (sm.estimatedPromptTokens != null) {
+    return { used: sm.estimatedPromptTokens, source: "budget_estimate" };
+  }
   // 2. The per-turn stamp. NOT gated by `totalTokensFresh` (codex P2): that flag
   //    qualifies the `totalTokens` sample it arrived with, while this stamp can be
   //    observed LATER (end-of-turn usage merged into the same meta) — letting a
   //    stale pre-send snapshot suppress a fresher observation would blank the
   //    gauge for the rest of the session.
   const active = usable(sm.activeTokens);
-  if (active != null) return active;
+  if (active != null) return { used: active, source: "last_call_usage" };
   // 3. The legacy counter, and only here does its own freshness flag apply.
-  if (sm.totalTokensFresh === false) return null;
-  return usable(sm.totalTokens);
+  if (sm.totalTokensFresh === false) return { used: null, source: "unknown" };
+  const total = usable(sm.totalTokens);
+  return total != null
+    ? { used: total, source: "last_call_usage" }
+    : { used: null, source: "unknown" };
 }
 
 /**
@@ -240,18 +266,13 @@ export function contextOverfull(sm: ContextMeta | null | undefined): boolean {
   return contextOverfullReason(sm) !== null;
 }
 
-/** Which source `effectiveContextUsed` actually used — for the hover text. */
+/** Which source `effectiveContextUsed` actually used — for the hover text. A
+ *  WRAPPER: the ladder is walked once, in contextUsedDetail, so the number and
+ *  its label can never come from different branches. */
 export function contextSource(
   sm: ContextMeta | null | undefined,
 ): ContextSource {
-  if (!sm) return "unknown";
-  const window = sm.contextTokens;
-  const usable = (n: number | undefined): number | null =>
-    n == null ? null : window && n > window ? null : n;
-  if (sm.estimatedPromptTokens != null) return "budget_estimate";
-  if (usable(sm.activeTokens) != null) return "last_call_usage";
-  if (sm.totalTokensFresh === false) return "unknown";
-  return usable(sm.totalTokens) != null ? "last_call_usage" : "unknown";
+  return contextUsedDetail(sm).source;
 }
 
 export function contextPct(

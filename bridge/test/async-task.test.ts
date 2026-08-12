@@ -265,3 +265,53 @@ describe("turn-sink: async engagement lifecycle (captured flow)", () => {
   });
 
 });
+
+// THE REAL FRAME, PINNED.
+//
+// The bound is only worth reading if the gateway actually sends it where we look.
+// This `details` object is the SHAPE CAPTURED IN PRODUCTION on 2026-08-08 (the
+// image_generate ack of the 47-hour incident, taken from the feedback report's
+// frozen forensic snapshot) — not a hand-made object. The golden fixture pinned
+// before this lot carries no `timeoutMs` at all, so nothing in the corpus
+// exercised the extraction (codex P1).
+describe("the declared bound is read from the frame the gateway really sends", () => {
+  const productionDetails = {
+    aspectRatio: "3:2",
+    async: true,
+    background: "opaque",
+    filename: "R002-flan-patissier-vanille-hero.png",
+    model: "openai/gpt-image-1.5",
+    outputFormat: "png",
+    quality: "high",
+    runId: "tool:image_generate:26570655-ad4a-4d1c-b25d-cf7435db88fc",
+    size: "1536x1024",
+    status: "started",
+    task: {
+      runId: "tool:image_generate:26570655-ad4a-4d1c-b25d-cf7435db88fc",
+      taskId: "8074f478-9142-420e-88fa-e473ea4c27e4",
+    },
+    taskId: "8074f478-9142-420e-88fa-e473ea4c27e4",
+    timeoutMs: 300000,
+  };
+
+  it("extracts the 300000 ms the incident's own ack carried", () => {
+    const start = asyncTaskStartFromTool("image_generate", "completed", {
+      content: [{ type: "text", text: "Background task started…" }],
+      details: productionDetails,
+    });
+    expect(start?.taskId).toBe("8074f478-9142-420e-88fa-e473ea4c27e4");
+    expect(
+      start?.timeoutMs,
+      "the bound is not where we look, so nothing downstream can ever use it",
+    ).toBe(300000);
+  });
+
+  it("an ack WITHOUT a bound still starts a task, simply unbounded", () => {
+    const { timeoutMs: _drop, ...noBound } = productionDetails;
+    const start = asyncTaskStartFromTool("image_generate", "completed", {
+      details: noBound,
+    });
+    expect(start?.taskId).toBe("8074f478-9142-420e-88fa-e473ea4c27e4");
+    expect(start?.timeoutMs).toBeUndefined();
+  });
+});

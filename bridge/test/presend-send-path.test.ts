@@ -21,7 +21,11 @@ import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
-import { fakeGateway, type FakeGateway } from "./helpers/fake-gateway.js";
+import {
+  fakeGateway,
+  type FakeGateway,
+  type FakeSessionDescribe,
+} from "./helpers/fake-gateway.js";
 import { servedMap } from "./helpers/served.js";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -637,5 +641,267 @@ describe("a guard-initiated compaction names its own cause", () => {
     await performSend(session, body, writer, null, null);
 
     expect(seen).toEqual([]);
+  });
+});
+
+/**
+ * WHICH FIGURE THE GUARD ACTUALLY DECIDED ON — and it must travel.
+ *
+ * Every test above hands the guard an `at(pct)` describe carrying
+ * `promptBudgetBeforeReserve` + `estimatedPromptTokens`. OpenClaw 2026.7.1
+ * declares NEITHER (they appear in zero files of the vendored contract, all
+ * three pinned versions) and live prod confirms it: 200 consecutive pre-send
+ * decisions over five days, `fillSource` = "counter" every time, never
+ * "gateway_estimate". So the suite has been proving a shape production never
+ * produces — which is why nobody noticed the strong branch was dead.
+ *
+ * These two pin BOTH shapes and, above all, make the guard state which figure it
+ * used, so the answer survives into the trace instead of being re-derived blind.
+ */
+describe("the fill reading carries the figure it came from", () => {
+  /** The REAL 2026.7.1 session describe: counters and a window, nothing more. */
+  const realGatewayShape = {
+    sessionId: "s-1",
+    systemSent: true,
+    totalTokens: 190_100,
+    contextTokens: 372_000,
+    totalTokensFresh: true,
+  };
+
+  async function pressureOf(describeScript: FakeSessionDescribe[]) {
+    const { session, writer } = await harness({ describe: describeScript });
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    vi.spyOn(
+      session.runManager as unknown as {
+        beginTurn: (...a: unknown[]) => Promise<void>;
+      },
+      "beginTurn",
+    ).mockImplementation(async (..._args: unknown[]) => {
+      const ctx = _args[2] as { pressure?: Record<string, unknown> } | undefined;
+      seen.push(ctx?.pressure);
+    });
+    await performSend(session, body, writer, null, null);
+    return seen[seen.length - 1];
+  }
+
+  it("on the REAL gateway shape it says so: counter, not a measured estimate", async () => {
+    const p = await pressureOf([realGatewayShape]);
+    expect(
+      p?.fillSource,
+      "the reading is stored with no way to tell it from a gateway-measured one",
+    ).toBe("counter");
+    // 190100/372000 — a figure that ignores tool schemas and injected context,
+    // i.e. exactly what fills a window. The thresholds were calibrated against
+    // `promptBudgetBeforeReserve`; this is a different quantity entirely.
+    expect(p?.fillPct).toBe(51);
+  });
+
+  // THE TWO SHAPES, neither of them contractual. `parseSessionMeta` (the on-screen
+  // gauge) reads the budget figures NESTED under `contextBudgetStatus`;
+  // `captureDescribe` (the guard) read the same names FLAT on the row. Which one
+  // this gateway build emits is an OPEN question — what is measured is only that
+  // the flat read finds nothing in prod. This pins the nested branch so the guard
+  // is not blind to it; the flat fallback is pinned by the test after it.
+  it("the guard sees the budget when it is NESTED, not only when it is flat", async () => {
+    const p = await pressureOf([
+      {
+        sessionId: "s-1",
+        systemSent: true,
+        totalTokens: 190_100,
+        contextTokens: 372_000,
+        totalTokensFresh: true,
+        contextBudgetStatus: {
+          estimatedPromptTokens: 358_960,
+          promptBudgetBeforeReserve: 308_000,
+        },
+      },
+    ]);
+    // 358960/308000 = 117 %: the prompt does NOT fit, and the guard must see it.
+    // Reading the flat names only, it sees 51 % of a window instead and sends.
+    expect(
+      p?.fillSource,
+      "the guard reads the budget from a place the gateway does not use",
+    ).toBe("gateway_estimate");
+    expect(p?.fillPct).toBe(117);
+  });
+
+  it("a PARTIAL nested budget never borrows the other shape's denominator", async () => {
+    // `contextBudgetStatus` is contractual in no pinned version, so a partial one
+    // is plausible. Here it carries the estimate and NO budget, while the flat
+    // shape carries a budget of its own. Dividing 358960 by the flat 100000 would
+    // read 359 % and force a compaction nothing asked for; dividing by the window
+    // (372000) is what the chosen shape actually supports.
+    const p = await pressureOf([
+      {
+        sessionId: "s-1",
+        systemSent: true,
+        totalTokens: 190_100,
+        contextTokens: 372_000,
+        totalTokensFresh: true,
+        promptBudgetBeforeReserve: 100_000,
+        contextBudgetStatus: { estimatedPromptTokens: 358_960 },
+      },
+    ]);
+    expect(p?.fillSource).toBe("gateway_estimate");
+    expect(
+      p?.fillPct,
+      "the estimate was divided by a budget its own shape never provided",
+    ).toBe(96);
+  });
+
+  it("a positive overflow is not cancelled by a ZERO in the other shape", async () => {
+    // `??` keeps a nested 0 over a flat 50000 — and 0 is not "no verdict", it is a
+    // verdict of "it fits". The gateway having said outright that the prompt does
+    // NOT fit is the strongest signal the guard has; losing it to the other
+    // shape's zero sends a turn already known to be doomed.
+    const { gw, session, writer } = await harness({
+      describe: [
+        {
+          sessionId: "s-1",
+          systemSent: true,
+          totalTokens: 10_000,
+          contextTokens: 372_000,
+          totalTokensFresh: true,
+          overflowTokens: 50_000,
+          contextBudgetStatus: { overflowTokens: 0 },
+        },
+        { sessionId: "s-2", systemSent: true, totalTokens: 10, contextTokens: 372_000 },
+      ],
+      compact: { payload: { ok: true, compacted: true } },
+    });
+    await performSend(session, body, writer, null, null);
+    // A comfortable-looking counter (3 %) must NOT be what decides here.
+    expect(
+      gw.countOf("sessions.compact"),
+      "the gateway's own 'this does not fit' was cancelled by the other shape's zero",
+    ).toBe(1);
+  });
+
+  it("a ZERO estimate in one shape cannot silence a positive one in the other", async () => {
+    // The mirror of the overflow case. A fixed preference for the nested shape
+    // would read 0 % here and send a prompt standing at 117 % of its budget.
+    const { gw, session, writer } = await harness({
+      describe: [
+        {
+          sessionId: "s-1",
+          systemSent: true,
+          totalTokens: 10_000,
+          contextTokens: 372_000,
+          totalTokensFresh: true,
+          estimatedPromptTokens: 358_960,
+          promptBudgetBeforeReserve: 308_000,
+          contextBudgetStatus: { estimatedPromptTokens: 0 },
+        },
+        { sessionId: "s-2", systemSent: true, totalTokens: 10, contextTokens: 372_000 },
+      ],
+      compact: { payload: { ok: true, compacted: true } },
+    });
+    await performSend(session, body, writer, null, null);
+    expect(
+      gw.countOf("sessions.compact"),
+      "a zero in one shape made the guard more optimistic than the figure it had",
+    ).toBe(1);
+  });
+
+  it("the HEADER GAUGE is told the same thing the guard decided on", async () => {
+    // The lot's own thesis, applied to the third consumer. Nested says 0, flat says
+    // 240000/308000 = 78 % — high enough that the reader must be told, low enough
+    // that no compaction fires (so the meter reports THIS describe, not a
+    // post-compaction one). The header must not claim an empty session while the
+    // guard is warning about a nearly full one.
+    const gw = fakeGateway({
+      describe: [
+        {
+          sessionId: "s-1",
+          systemSent: true,
+          totalTokens: 10_000,
+          contextTokens: 372_000,
+          totalTokensFresh: true,
+          estimatedPromptTokens: 240_000,
+          promptBudgetBeforeReserve: 308_000,
+          contextBudgetStatus: { estimatedPromptTokens: 0 },
+        },
+      ],
+    });
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
+      async () => gw as never,
+    );
+    const metas: Array<Record<string, unknown>> = [];
+    const { writer } = recordingWriter();
+    (writer as unknown as { reportSessionMeta: unknown }).reportSessionMeta =
+      async (_chatId: string, meta: Record<string, unknown>) => {
+        metas.push(meta);
+      };
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+    const session = await reg.acquire(ROUTING);
+    await tick();
+    await performSend(session, body, writer, null, null);
+
+    const seen = metas.find((m) => m.estimatedPromptTokens !== undefined);
+    expect(
+      seen?.estimatedPromptTokens,
+      "the header reports one shape while the guard decided on the other",
+    ).toBe(240_000);
+  });
+
+  it("with NO estimate, the SMALLER budget is the denominator", async () => {
+    // Completing the same rule for the third figure. A counter of 90000 is 29 % of
+    // a nested 308000 but 90 % of a flat 100000. Preferring either shape by
+    // position makes the guard optimistic by luck; the alarming reading must win.
+    const { gw, session, writer } = await harness({
+      describe: [
+        {
+          sessionId: "s-1",
+          systemSent: true,
+          totalTokens: 90_000,
+          contextTokens: 372_000,
+          totalTokensFresh: true,
+          promptBudgetBeforeReserve: 100_000,
+          contextBudgetStatus: { promptBudgetBeforeReserve: 308_000 },
+        },
+        { sessionId: "s-2", systemSent: true, totalTokens: 10, contextTokens: 372_000 },
+      ],
+      compact: { payload: { ok: true, compacted: true } },
+    });
+    await performSend(session, body, writer, null, null);
+    expect(
+      gw.countOf("sessions.compact"),
+      "the larger budget was picked by position and hid a 90 % session",
+    ).toBe(1);
+  });
+
+  it("an UNUSABLE estimate does not select its shape's denominator", async () => {
+    // A non-contractual field can carry a sentinel. A nested -1 must not count as
+    // "an estimate was found", or it selects its own 308000 budget and the counter
+    // reads 29 % instead of 90 % against the flat 100000.
+    const { gw, session, writer } = await harness({
+      describe: [
+        {
+          sessionId: "s-1",
+          systemSent: true,
+          totalTokens: 90_000,
+          contextTokens: 372_000,
+          totalTokensFresh: true,
+          promptBudgetBeforeReserve: 100_000,
+          contextBudgetStatus: {
+            estimatedPromptTokens: -1,
+            promptBudgetBeforeReserve: 308_000,
+          },
+        },
+        { sessionId: "s-2", systemSent: true, totalTokens: 10, contextTokens: 372_000 },
+      ],
+      compact: { payload: { ok: true, compacted: true } },
+    });
+    await performSend(session, body, writer, null, null);
+    expect(
+      gw.countOf("sessions.compact"),
+      "a sentinel estimate selected its shape and hid a 90 % session",
+    ).toBe(1);
+  });
+
+  it("when the gateway DOES measure the prompt, that is what travels", async () => {
+    const p = await pressureOf([at(97)]);
+    expect(p?.fillSource).toBe("gateway_estimate");
+    expect(p?.fillPct).toBe(97);
   });
 });

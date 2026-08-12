@@ -1,0 +1,26 @@
+{
+  "$comment": "Session-describe reads the pinned upstream contract does not declare. The truth ratchet enforces manifest->code (a declared field's classification must be true); NOTHING enforced code->manifest, so a field we depend on but that the contract never declared was invisible — it simply arrived undefined and every guard built on it fell open in silence. That is how the pre-send context guard came to run permanently on its weak branch (live prod 2026-08-05: 200 consecutive decisions, fillSource always 'counter', while a turn died of context_length at a reported 51%). Enforced by describe-field-declaration.test.ts against the UNION of every name the pinned version declares (the session snapshot plus its TypeBox schemas): a read that is neither declared there nor listed here fails the suite. Listing one is a REVIEW EVENT, not a silencer — each entry must state what the code does when the field is absent, because that is the behaviour production actually gets.",
+  "version": 2,
+  "fields": {
+    "contextBudgetStatus": {
+      "reason": "The gateway's OWN pre-prompt budget assessment, holding the estimate of the assembled prompt, the usable budget, and its outright overflow signal. Declared in NO pinned version (2026.6.11, 2026.7.1, 2026.7.2-beta.5) although the bridge has depended on it since the pre-send guard existed. With no contract to describe it, its shape was instructed TWICE from observation and the two disagree: the gauge's projection reads the figures nested here, the guard's capture read the same names flat on the session row. Which shape this gateway build actually produces is NOT established — only that the flat read finds nothing in prod.",
+      "whenAbsent": "sessionFillDetail falls to its `counter` branch: totalTokens over the raw window. That figure is blind to tool schemas and injected context — exactly what fills a window — so the pre-send thresholds, calibrated against promptBudgetBeforeReserve, get applied to a different quantity. A prompt at 117% of its real budget reads 51% of the window and is sent.",
+      "keepBecause": "It is the only figure that can make the guard correct, and reading it costs nothing when absent. What was missing is the DECLARATION and an instructed shape — not the code. `/frame-discovery contextBudgetStatus` is the OPEN QUESTION: settle which shape the gateway emits, and whether it omits the assessment entirely under a context engine that owns compaction (its own comment says so) or after a compaction or model change. SETTLE IT ON THE LOCAL BENCH (bridge/local-openclaw/up.sh), never against production: boot the pinned gateway and read one real sessions.describe. Attempted 2026-08-08 and blocked on an arm64 host — the 2026.7.1 image is amd64-only and its HTTP listener refuses connections under emulation, from inside the container too. Any amd64 host, or an arm64 image, answers this in one call."
+    },
+    "estimatedPromptTokens": {
+      "reason": "Read at the TOP LEVEL of the session row, beside the nested read above, because the contract never said which shape the gateway uses and the two instructions in this repo disagree.",
+      "whenAbsent": "Nothing: the nested read is tried first and this only ever adds a second place to look. When both are absent the guard falls to the counter branch, as described for contextBudgetStatus.",
+      "keepBecause": "Looking in two places can only find more, never invent. Removing it before `/frame-discovery` settles the shape would be trading one guess for another."
+    },
+    "promptBudgetBeforeReserve": {
+      "reason": "Same flat fallback as above — the denominator, i.e. the window minus the output reserve.",
+      "whenAbsent": "The denominator falls back to the raw contextTokens. The two differ by the output reserve: the difference that makes a 96%-of-window session read comfortable while being at 117% of its real budget.",
+      "keepBecause": "Same as above."
+    },
+    "overflowTokens": {
+      "reason": "Same flat fallback — the gateway saying outright that the assembled prompt does not fit, the strongest signal the guard can act on.",
+      "whenAbsent": "The guard never sees a positive overflow, so its strongest escalation path is unreachable and it decides on the fill alone.",
+      "keepBecause": "Same as above."
+    }
+  }
+}

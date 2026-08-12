@@ -402,6 +402,178 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(traces[traces.length - 1]?.compactionReason).toBe("overflow");
   });
 
+  // WHICH FIGURE DECIDED. A percentage without its provenance cannot be told
+  // apart from a gateway-measured one, and the two mean different things: the
+  // counter branch is blind to tool schemas and injected context, which is
+  // exactly what fills a window. Prod showed a turn dying of `context_length` at
+  // a displayed 51 % with nothing to say where that 51 % came from.
+  test("the send path's fill reading arrives WITH its source", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      // Deliberately INCONSISTENT with the raw ratio (1/2 = 50 %): the stored
+      // figure must be the one the send path derived, not one re-derived here.
+      totalTokens: 1,
+      contextTokens: 2,
+      fillPct: 97,
+      fillSource: "gateway_estimate",
+      compaction: null,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    const last = traces[traces.length - 1];
+    expect(last?.fillPct, "the trace re-derives its own blinder reading").toBe(
+      97,
+    );
+    expect(
+      last?.fillSource,
+      "the figure is stored stripped of what produced it",
+    ).toBe("gateway_estimate");
+  });
+
+  // A WINDOW WITHOUT ITS OWNER CANNOT BE INTERPRETED.
+  test("the model the window belongs to reaches the trace", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 230_766,
+      contextTokens: 372_000,
+      fillPct: 75,
+      fillSource: "counter",
+      model: "gpt-5.6-sol",
+      compaction: null,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    const last = traces[traces.length - 1];
+    expect(
+      last?.model,
+      "a window of 372000 is indistinguishable from one of 272000 without it",
+    ).toBe("gpt-5.6-sol");
+  });
+
+  test("an older bridge's unattributed fill claims no source", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      compaction: null,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    const last = traces[traces.length - 1];
+    expect(last?.fillPct).toBe(50);
+    expect(
+      last?.fillSource,
+      "an unattributed figure borrows a label it did not earn",
+    ).toBeUndefined();
+  });
+
+  // A MEASUREMENT AND ITS PROVENANCE ARE ONE FACT. Validated apart, a divergent
+  // or half-upgraded bridge could produce a figure whose label was rejected —
+  // which then reads as unattributed, i.e. exactly the ambiguity this lot exists
+  // to remove — or a source with nothing to attribute.
+  test("a half-formed pair collapses to UNKNOWN, never half-stored", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    // A figure whose label is not one we know.
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      fillPct: 42,
+      fillSource: "wishful_thinking",
+      compaction: null,
+    });
+    // And the mirror: a label with no figure behind it.
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      fillPct: null,
+      fillSource: "gateway_estimate",
+      compaction: null,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    // And the third shape a half-upgraded bridge can send: a source with the
+    // measurement field entirely ABSENT rather than null.
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      fillSource: "gateway_estimate",
+      compaction: null,
+    });
+    const traces3 = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    const orphanNoField = traces3[traces3.length - 1];
+    expect(
+      orphanNoField?.fillPct,
+      "an orphan source falls through to the legacy ratio and hides behind it",
+    ).toBeNull();
+    expect(orphanNoField?.fillSource).toBeUndefined();
+
+    const [rejectedLabel, orphanSource] = traces.slice(-2);
+    expect(
+      rejectedLabel?.fillPct,
+      "a figure whose label was refused is kept anyway, and reads unattributed",
+    ).toBeNull();
+    expect(rejectedLabel?.fillSource).toBeUndefined();
+    expect(
+      orphanSource?.fillSource,
+      "a provenance is stored with no measurement to attribute",
+    ).toBeUndefined();
+    expect(orphanSource?.fillPct).toBeNull();
+  });
+
+  test("a measured UNKNOWN is not answered with a ratio of our own", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 1,
+      contextTokens: 2,
+      // The send path looked and could not tell (a counter stated stale, no
+      // usable budget). That is an answer, not an absence.
+      fillPct: null,
+      fillSource: null,
+      compaction: null,
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}"),
+    );
+    const last = traces[traces.length - 1];
+    expect(
+      last?.fillPct,
+      "a reading the send path declined to state is re-derived here anyway",
+    ).toBeNull();
+    expect(last?.fillSource).toBeUndefined();
+  });
+
   test("a REFUSED compaction is named as a refusal, not as a failure", async () => {
     const t = convexTest(schema, modules);
     const { chatId, messageId } = await seedAssistantMessage(t);
@@ -1389,5 +1561,121 @@ describe("finalize relays the session-drop flag (lot 31)", () => {
       stored: "20260706_212939_aee24e",
       epoch: 0,
     });
+  });
+});
+
+// THE BOUNDARY IS WHERE THE FIELD WAS BEING LOST.
+//
+// The bridge sent `declaredTimeoutMs`; the ingest op did not declare it and did
+// not relay it. Every task written through the REAL writer therefore landed with
+// no bound at all, fell back to the refreshable 24 h net, and could never raise
+// an overrun. The reaper tests inserted the field by hand and so proved nothing
+// about production — the exact mistake this repo has a rule about.
+describe("a task's declared deadline survives the ingest boundary", () => {
+  test("the row lands with the bound AND an absolute deadline derived from it", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: "task:8074f478-9142-420e-88fa-e473ea4c27e4",
+      kind: "task",
+      taskName: "image_generate",
+      status: "running",
+      declaredTimeoutMs: 300_000,
+    });
+    const row = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("subAgents").collect();
+      return rows.find(
+        (r) =>
+          r.childSessionKey === "task:8074f478-9142-420e-88fa-e473ea4c27e4",
+      );
+    });
+    expect(
+      row?.declaredTimeoutMs,
+      "the bound is dropped at the boundary, so nothing downstream can use it",
+    ).toBe(300_000);
+    // The absolute moment the reaper ranges on — derived server-side, never sent.
+    expect(row?.taskDeadlineAt ?? 0).toBeGreaterThan(row!.createdAt + 300_000);
+  });
+
+  test("an absurd or hostile bound is refused, not stored", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    for (const [key, bad] of [
+      ["task:neg", -1],
+      ["task:zero", 0],
+      ["task:huge", 40 * 60 * 60 * 1000],
+    ] as const) {
+      await post(t, {
+        op: "upsertSubAgent",
+        chatId,
+        childSessionKey: key,
+        kind: "task",
+        status: "running",
+        declaredTimeoutMs: bad,
+      });
+    }
+    const rows = await t.run((ctx) => ctx.db.query("subAgents").collect());
+    for (const key of ["task:neg", "task:zero", "task:huge"]) {
+      const r = rows.find((x) => x.childSessionKey === key);
+      expect(
+        r?.taskDeadlineAt,
+        `${key}: an implausible figure became a deadline`,
+      ).toBeUndefined();
+    }
+  });
+
+  test("a bound arriving AFTER the row exists is still adopted", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    // The reconciliation can create the row from a registry sighting before the
+    // tool's own ack is relayed — and the ack's first attempt can fail and be
+    // retried after that. Applied on the insert path alone, the bound would
+    // never reach those rows: the original defect, on a realistic order.
+    await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: "task:late",
+      kind: "task",
+      status: "running",
+    });
+    await post(t, {
+      op: "upsertSubAgent",
+      chatId,
+      childSessionKey: "task:late",
+      kind: "task",
+      status: "running",
+      declaredTimeoutMs: 300_000,
+    });
+    const row = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("subAgents").collect();
+      return rows.find((r) => r.childSessionKey === "task:late");
+    });
+    expect(row?.taskDeadlineAt ?? 0).toBeGreaterThan(0);
+    expect(row?.declaredTimeoutMs).toBe(300_000);
+  });
+
+  test("two bounds: the TIGHTER one wins", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    for (const ms of [600_000, 300_000, 900_000]) {
+      await post(t, {
+        op: "upsertSubAgent",
+        chatId,
+        childSessionKey: "task:tighten",
+        kind: "task",
+        status: "running",
+        declaredTimeoutMs: ms,
+      });
+    }
+    const row = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("subAgents").collect();
+      return rows.find((r) => r.childSessionKey === "task:tighten");
+    });
+    expect(
+      row?.declaredTimeoutMs,
+      "a later, laxer bound talked the guard into being more patient",
+    ).toBe(300_000);
   });
 });

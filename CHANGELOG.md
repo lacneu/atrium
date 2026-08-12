@@ -1,5 +1,108 @@
 # Changelog
 
+## [0.71.7] — Two safeguards that could never do their job
+
+Corrective, and both halves have the same shape: a figure the platform was
+already receiving, thrown away — and a limit measured against a clock that could
+be pushed back forever.
+
+### A conversation was told it had room, and then failed for lack of it
+
+The gateway can tell us how full the prompt it is about to send really is. That
+figure is the only one that counts what a token counter cannot see: the tools'
+own definitions, and the context injected into the prompt. But no version of our
+agreement with the gateway ever described where that figure sits — so the
+platform ended up guessing, twice, in two places, and the two guesses disagree.
+The on-screen meter looks in one place; the safeguard looked in the other, and
+found nothing there. Not once, in two hundred consecutive checks over five days.
+
+Which is how, on 5 August, a conversation was told its context was **51 % full**
+and then failed for lack of context. The safeguard fell back, silently, to
+counting tokens against the raw window — and that count is blind to precisely
+what fills a window.
+
+- **The safeguard now looks in both places, and believes the worse one.** Nothing
+  is invented: two places to look can only ever find more than one. And when they
+  disagree, the more alarming reading wins, in every case — a safeguard must never
+  end up more optimistic than a figure it was handed. Which place the gateway
+  actually uses is still an open question, and it is now written down as one
+  instead of assumed.
+- **All three consumers of that reply now share one reading.** The safeguard, the
+  diagnostic record and the on-screen meter each used to interpret it separately.
+  That is how the meter could show a comfortable figure at the very moment the
+  safeguard was holding a message back.
+- **A reading travels with the figure that produced it.** One measurement, taken
+  once, recorded with its origin. It used to be derived three separate times —
+  safeguard, diagnostic record, on-screen meter, each on its own — and they
+  agreed only by coincidence. That is why "51 %" could not be traced back to what
+  produced it.
+- **"I cannot tell" is now an answer, not a blank.** When the send path looks and
+  cannot conclude, that is what gets recorded. A second, blinder calculation used
+  to fill the gap with a number the first had declined to give. A measurement and
+  its origin are also kept or dropped together, never half-stored.
+- **The on-screen meter reads from one place internally too.** Its percentage and
+  the origin shown on hover came from two separate walks of the same ladder; they
+  can no longer name different sources for the same figure.
+- **A dependency on the gateway can no longer be invisible.** This entire class of
+  defect existed because the platform leaned on a part of the gateway's reply that
+  our agreement never described. Such a dependency must now be declared in
+  writing, along with what happens in its absence. A new one appearing fails the
+  build.
+
+Not fixed here, and stated plainly: **we still do not know where the gateway puts
+that figure** — answering it needs the pinned gateway on a local bench, which this
+machine cannot currently run — nor when it declines to produce one at all — its own notes say it
+stays silent when another component owns compaction, and after a compaction or a
+model change. When it is silent the safeguard still falls back to the blind count.
+It is better than before only in that it now says so. Settling this is the next
+step, and it is a question to answer rather than a patch to write.
+
+### A finished answer looked like it was still being written
+
+From a production report: a reply that had been complete for two days still showed
+a spinner and a clock reading **47 h 08 min**.
+
+Nothing was stuck. The answer had been delivered; what was still running was a
+**background task** launched during that turn — an image generation — and the
+clock was counting that task's age, under a message the reader had long since
+finished. The task's own call had announced how long it should take: **five
+minutes.**
+
+- **A task cannot outlive the deadline it announced.** We were already receiving
+  that figure and discarding it. The only limit was a 24-hour safety net measured
+  from the last sign of life — and since the platform checks every 30 seconds
+  whether the task is still alive, that net could be pushed back indefinitely by
+  the very thing it was meant to bound. A deadline a task sets for itself is now
+  honoured, counted from its start, which nothing can reset. It only ever
+  tightens the existing limit, never loosens it, and the result is still given
+  time to travel back before the task is given up on.
+- **A task with no announced deadline keeps the generous net — now counted from
+  when it started.** A long generation remains legitimate, and a day is a wide
+  horizon. But the old net measured from the last sign of life, so it could never
+  fire on a task the platform kept checking; measuring from the start makes the
+  same generous limit something that actually applies, including to tasks already
+  running before this release, which no update could otherwise have reached.
+- **A detached task no longer borrows your turn's clock.** When the reply is
+  settled and a task outlives it, the platform still says work is happening —
+  that is true and worth knowing — but it stops offering a duration, because that
+  duration is the task's age and not the time your answer took. A turn still
+  being written keeps its clock, as before.
+- **An abandoned task is now reported as a loss.** Blowing an announced deadline
+  means a result you asked for will never arrive; it now has its own signal,
+  separate from a failed reply and from a lost sub-agent report, and a single
+  occurrence is enough to raise it. Like every class that costs someone work, it
+  waits for a human rather than closing itself once the wave has passed.
+
+- **A context figure now says which model it belongs to.** Three models with three
+  different capacities run side by side — a main one, its fallback, and a smaller
+  one for delegated work. A recorded capacity without the model it applies to
+  cannot be interpreted at all: the same conversation appeared to report two
+  different limits, which looked like a contradiction until the model explained
+  it. This does not prevent anything; it makes the next occurrence readable.
+
+Deploy: `npx convex deploy` first (two new indexes and two new fields), then the
+bridge image, then the frontend image — this release touches all three.
+
 ## [0.71.6] — A failed sub-agent report stops raising the wrong alarm
 
 Corrective. When several sub-agents report back at once and their deliveries

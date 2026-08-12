@@ -1333,12 +1333,20 @@ function ChatThread({
     const t = window.setInterval(check, 2000);
     return () => window.clearInterval(t);
   }, [showTurnActivity, anchorId]);
+  // ONE duration for BOTH renders. Withheld only on the bottom fallback, the
+  // anchored indicator kept showing a detached task's age — and the anchored path
+  // is the NORMAL one for the production case (the bubble is mounted), so the
+  // 47-hour clock survived the fix that was meant to remove it (codex P1).
+  const visibleWorkingSince =
+    turnActivity?.detachedTask === true
+      ? null
+      : (turnActivity?.workingSince ?? null);
   const anchoredActivity =
     showTurnActivity && anchorId !== null && anchorMounted
       ? {
           messageId: anchorId,
           running: runningLive,
-          workingSince: turnActivity?.workingSince ?? null,
+          workingSince: visibleWorkingSince,
           // Carried to the ANCHORED indicator too: the same signal must read the same
           // whether it renders under the thread or on the bubble it belongs to.
           progressSummary: turnActivity?.progressSummary ?? null,
@@ -1375,7 +1383,11 @@ function ChatThread({
         {showTurnActivity && anchoredActivity === null ? (
           <TurnActivityIndicator
             running={runningLive}
-            since={turnActivity?.workingSince ?? null}
+            // A DETACHED background task gets no clock: the reply is settled and
+            // the number would be the task's age, reading as "your answer has
+            // been in progress for 47 hours" (prod 2026-08-08). The label and
+            // the progress line still say work is happening.
+            since={visibleWorkingSince}
             progress={turnActivity?.progressSummary ?? null}
           />
         ) : null}

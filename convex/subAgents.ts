@@ -32,6 +32,7 @@ import { requireActive, requireOwnedChat } from "./lib/access";
 import { normalizeMessageErrorCode } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
+import { writeTraceEvent } from "./observability";
 import { deliveryChildKey } from "./lib/deliveryRuns";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
@@ -41,6 +42,11 @@ import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
  *  landing after the parent settled. Lives on the SERVER so the remaining time
  *  can be measured against the server clock and shipped as a duration. */
 const DELIVERING_WINDOW_MS = 45_000;
+/** Last-resort horizon for a background task that declared NO deadline of its
+ *  own. Deliberately generous — a legitimate generation can be long — and it is
+ *  keyed on `updatedAt`, so a task the gateway still vouches for is never cut.
+ *  A task that DID declare a deadline is bounded by that instead (the reaper). */
+const TASK_SAFETY_NET_MS = 24 * 60 * 60 * 1000;
 
 /** Bounded reaper batch (mirrors stuckStreams.BATCH) — running rows are few. */
 const REAP_BATCH = 50;
@@ -199,6 +205,9 @@ export const upsertSubAgent = internalMutation({
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
     bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()),
+    /** The bound the task declared for itself (schema note): the tightest honest
+     *  limit on how long this row may claim to be running. */
+    declaredTimeoutMs: v.optional(v.number()),
     status: STATUS,
     providerStatus: v.optional(v.string()),
     rollup: v.optional(
@@ -301,6 +310,17 @@ export const upsertSubAgent = internalMutation({
         kind: args.kind,
         bornOfRun: args.bornOfRun,
         taskName: args.taskName,
+        declaredTimeoutMs: args.declaredTimeoutMs,
+        // The declared bound turned into an ABSOLUTE moment, so the reaper can
+        // range on it instead of filtering a bounded scan. `now` is this row's
+        // createdAt below, and the grace is the window the result still needs to
+        // travel back through.
+        ...(args.declaredTimeoutMs !== undefined
+          ? {
+              taskDeadlineAt:
+                now + args.declaredTimeoutMs + DELIVERING_WINDOW_MS,
+            }
+          : {}),
         status: args.status,
         resultText: args.resultText,
         // The gateway's own terminal word and the branch rollups. Inserted here as well as
@@ -357,6 +377,8 @@ export const upsertSubAgent = internalMutation({
       instanceName?: string;
       bornOfRun?: string;
       userId?: Id<"users">;
+      declaredTimeoutMs?: number;
+      taskDeadlineAt?: number;
       updatedAt: number;
     } = { updatedAt: now };
     // Fill-only metadata (never rewritten once set).
@@ -471,6 +493,25 @@ export const upsertSubAgent = internalMutation({
     }
     // Backfill identity fields only if not already set (registration carries them;
     // later child frames don't, so don't clobber).
+    // A DEADLINE ARRIVING LATE, or arriving twice. `adoptDiscoveredTask` can
+    // create the row from a registry sighting BEFORE the tool's own ack is
+    // relayed, and the ack's first attempt can fail and be retried after that —
+    // so the bound frequently reaches an EXISTING row. Never applied on the
+    // insert path alone: that left the discovered-then-acked race with no bound
+    // at all, i.e. the original defect on a realistic reconciliation order
+    // (codex P1). When two arrive, the TIGHTER one wins: a guard must not be
+    // talked into being more patient.
+    if (args.declaredTimeoutMs !== undefined) {
+      const proposed =
+        existing.createdAt + args.declaredTimeoutMs + DELIVERING_WINDOW_MS;
+      if (
+        existing.taskDeadlineAt === undefined ||
+        proposed < existing.taskDeadlineAt
+      ) {
+        patch.declaredTimeoutMs = args.declaredTimeoutMs;
+        patch.taskDeadlineAt = proposed;
+      }
+    }
     if (args.taskName !== undefined && existing.taskName === undefined) {
       patch.taskName = args.taskName;
     }
@@ -577,14 +618,60 @@ export const reapStaleSubAgents = internalMutation({
       )
       .filter((q) => q.neq(q.field("kind"), "task"))
       .take(REAP_BATCH);
-    const taskCutoff = now - 24 * 60 * 60 * 1000;
-    const staleTasks = await ctx.db
+    const taskCutoff = now - TASK_SAFETY_NET_MS;
+    const netExpired = (
+      await ctx.db
+        .query("subAgents")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "running").eq("kind", "task"),
+        )
+        .take(REAP_BATCH)
+    ).filter(
+      // BORN more than the net ago — not "last seen more than the net ago".
+      //
+      // The net used to be keyed on `updatedAt`, and `refreshTaskEngagement`
+      // rewrites that every ~30 s while the gateway vouches for the task, so the
+      // net could be held off forever by the very thing it bounds. Rows written
+      // BEFORE this lot have no declared deadline at all and would keep that
+      // immunity indefinitely — no migration reaches them, and the reconciliation
+      // keeps them fresh (codex P2). `createdAt` cannot be refreshed, so the same
+      // generous horizon becomes something that actually expires.
+      (r) => r.createdAt < taskCutoff,
+    );
+    // …AND the tasks past the deadline THEY THEMSELVES DECLARED.
+    //
+    // The 24 h net above is keyed on `updatedAt`, and `refreshTaskEngagement`
+    // rewrites that every ~30 s for as long as the gateway says the task lives.
+    // So the net can be held off indefinitely by the very thing it exists to
+    // bound: a task whose own call declared `timeoutMs: 300000` — five minutes —
+    // was still `running` after 47 HOURS in production (2026-08-08), with the
+    // activity clock ticking under a reply the user had long since received.
+    //
+    // RANGED on the stored absolute deadline, never filtered after a `take()`:
+    // the bounded window could be filled entirely by deadline-less tasks the
+    // reconciliation keeps fresh, and a declared task behind them would never be
+    // examined (codex P1). The deadline already includes the delivery window, so
+    // a result still on its way is never cut mid-flight.
+    const declaredExpired = await ctx.db
       .query("subAgents")
-      .withIndex("by_status_updated", (q) =>
-        q.eq("status", "running").lt("updatedAt", taskCutoff),
+      .withIndex("by_status_deadline", (q) =>
+        // The LOWER bound is not decoration: an ABSENT `taskDeadlineAt` sorts
+        // before every number in Convex's total order, so a bare `lt(now)` also
+        // selects every running row that declared no deadline at all — including
+        // ordinary sub-agents — and the reaper would terminalize live work. `gte(0)`
+        // is below any real timestamp and above absent.
+        q
+          .eq("status", "running")
+          .gte("taskDeadlineAt", 0)
+          .lt("taskDeadlineAt", now),
       )
-      .filter((q) => q.eq(q.field("kind"), "task"))
       .take(REAP_BATCH);
+    // One row can satisfy both nets; flipping it twice would count it twice.
+    const seen = new Set(netExpired.map((r) => r._id as string));
+    const staleTasks = [
+      ...netExpired,
+      ...declaredExpired.filter((r) => !seen.has(r._id as string)),
+    ];
 
     const touchedChats = new Set<Id<"chats">>();
     for (const row of stale) {
@@ -596,11 +683,38 @@ export const reapStaleSubAgents = internalMutation({
       touchedChats.add(row.chatId);
     }
     for (const row of staleTasks) {
+      const overranDeclared =
+        row.declaredTimeoutMs !== undefined &&
+        row.createdAt + row.declaredTimeoutMs + DELIVERING_WINDOW_MS < now;
       await ctx.db.patch(row._id, {
         status: "error",
-        errorMessage: "background task expired (no delivery, unverifiable)",
+        errorMessage: overranDeclared
+          ? "background task overran the deadline it declared"
+          : "background task expired (no delivery, unverifiable)",
         updatedAt: now,
       });
+      // A task that blew ITS OWN declared bound is a result the user asked for
+      // and will not get, and the tool told us in advance how long it should
+      // have taken. Recorded here rather than alarmed here: the detector owns
+      // anomaly raising, and reusing it brings the dedupe, the occurrence
+      // history and the watermarks with it (hardened in 0.71.6) instead of
+      // inserting a fresh row on every 5-minute reaper tick.
+      //
+      // COUNTS AND ENUMS ONLY — the tool NAME is config, the same class as
+      // `taskName` already on this row; no task output ever reaches a trace.
+      if (overranDeclared) {
+        await writeTraceEvent(ctx, {
+          kind: "subagent.task_overrun",
+          chatId: row.chatId,
+          principalType: "system",
+          principalId: "detector",
+          meta: JSON.stringify({
+            taskName: row.taskName ?? null,
+            declaredTimeoutMs: row.declaredTimeoutMs,
+            ranForMs: now - row.createdAt,
+          }),
+        });
+      }
       touchedChats.add(row.chatId);
     }
     // Drain per touched chat AFTER all flips (see the head-of-line note above), via
@@ -610,14 +724,23 @@ export const reapStaleSubAgents = internalMutation({
     }
     // A full batch likely means more stale rows remain; the ones handled are now
     // terminal, so the next range read can't re-see them (converges).
-    if (stale.length === REAP_BATCH) {
+    // ANY full batch means more remain. Re-arming on the sub-agent batch alone
+    // left 51 expired TASKS to wait for the next cron tick, and a backlog that
+    // grows faster than one tick drains it never converges (codex P3).
+    if (
+      stale.length === REAP_BATCH ||
+      netExpired.length === REAP_BATCH ||
+      declaredExpired.length === REAP_BATCH
+    ) {
       await ctx.scheduler.runAfter(
         0,
         internal.subAgents.reapStaleSubAgents,
         {},
       );
     }
-    return { reaped: stale.length };
+    // The TRUE total: counting sub-agents only made every task this pass
+    // terminalized invisible, which is exactly how a backlog hides.
+    return { reaped: stale.length + staleTasks.length };
   },
 });
 
@@ -666,6 +789,12 @@ export const turnActivity = query({
     workingSince: number | null;
     // The running work's own progress line, or null when it published none.
     progressSummary: string | null;
+    /** TRUE when the running work is a background TASK that has outlived the turn
+     *  it was launched from: the reply is settled, the task is not. The signal
+     *  still says work is happening; the elapsed clock is withheld, because it is
+     *  the task's age and not this turn's duration (prod 2026-08-08: 47 h under a
+     *  reply final for two days). */
+    detachedTask: boolean;
     // Where the signal should RENDER: the message the live row is anchored
     // to (its bubble already carries the sub-agent card), so the thread can
     // place the indicator UNDER the working turn instead of at the bottom —
@@ -857,6 +986,29 @@ export const turnActivity = query({
     // delivery window (the same child's createdAt during a pure delivery).
     const workingSince =
       runningRow !== null ? runningRow.createdAt : deliveringWorkStart;
+    // IS THIS WORK STILL PART OF THE READER'S TURN?
+    //
+    // A background task outlives the reply it was launched from: the answer is
+    // delivered and complete, and the task keeps generating. The clock above is
+    // the task's OWN age, and shown under a settled reply it reads as "your
+    // answer has been in progress for 47 hours" — the production report of
+    // 2026-08-08, on a bubble whose text had been final for two days.
+    //
+    // So the running signal STAYS (work really is happening, and the label and
+    // progress line say so), but the DURATION is withheld: it is no longer this
+    // turn's duration, and a number that answers a question nobody asked is
+    // worse than no number. Decided here, where both the row and its anchor
+    // message are readable — never inferred client-side from two subscriptions.
+    let detachedTask = false;
+    if (runningRow !== null && runningRow.kind === "task") {
+      const anchor =
+        runningRow.parentMessageId !== undefined
+          ? await ctx.db.get(runningRow.parentMessageId)
+          : null;
+      // No anchor at all: nothing on screen for the clock to belong to. An
+      // anchor still streaming IS the turn — the clock belongs to it.
+      detachedTask = anchor === null || anchor.status !== "streaming";
+    }
     // A never-correlated terminal row (a NO_REPLY announce) keeps the same
     // `deliveringSince` indefinitely; the window bounds it, here rather than in
     // every client. Announces follow a done child within seconds in practice.
@@ -870,6 +1022,7 @@ export const turnActivity = query({
       deliveringSince,
       deliveringTtlRemainingMs,
       workingSince,
+      detachedTask,
       anchorMessageId,
       // WHAT the running work is doing, when the gateway published it. Taken from the
       // SAME row the clock is anchored on, so the line and the elapsed time always

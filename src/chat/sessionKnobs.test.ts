@@ -402,3 +402,54 @@ describe("contextOverfull (pre-announcement)", () => {
     expect(contextOverfull({})).toBe(false);
   });
 });
+
+// THE NUMBER AND ITS LABEL COME FROM THE SAME BRANCH.
+//
+// They used to be two walks of the same ladder. Nothing forced them to agree, and
+// a percentage displayed under the wrong provenance is worse than no label: a
+// counter-derived figure is blind to tool schemas and injected context — exactly
+// what fills a window — while a gateway estimate is not.
+describe("the context reading and its source cannot disagree", () => {
+  const cases: Array<{ name: string; sm: Parameters<typeof contextSource>[0] }> =
+    [
+      {
+        name: "the gateway's own estimate",
+        sm: { contextTokens: 200_000, estimatedPromptTokens: 190_000 },
+      },
+      {
+        name: "an estimate ABOVE the window (the imminent overflow)",
+        sm: { contextTokens: 200_000, estimatedPromptTokens: 240_000 },
+      },
+      {
+        name: "the per-turn stamp",
+        sm: { contextTokens: 200_000, activeTokens: 90_000 },
+      },
+      {
+        name: "the legacy counter",
+        sm: { contextTokens: 200_000, totalTokens: 90_000 },
+      },
+      {
+        name: "a counter stated STALE",
+        sm: { contextTokens: 200_000, totalTokens: 90_000, totalTokensFresh: false },
+      },
+      {
+        name: "a counter ABOVE the window (a cumulative total, not a fill)",
+        sm: { contextTokens: 200_000, totalTokens: 900_000 },
+      },
+      { name: "nothing at all", sm: {} },
+      { name: "no meta", sm: null },
+    ];
+
+  for (const c of cases) {
+    test(`${c.name}: a value implies a source, and vice versa`, () => {
+      const used = effectiveContextUsed(c.sm);
+      const source = contextSource(c.sm);
+      // The invariant that makes the label trustworthy: "unknown" exactly when
+      // there is no number, a named source exactly when there is one.
+      expect(
+        source === "unknown",
+        `used=${String(used)} source=${source} — a figure shown with no source, or a source with no figure`,
+      ).toBe(used === null);
+    });
+  }
+});
