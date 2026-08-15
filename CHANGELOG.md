@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.72.0] — Adding a gateway without anyone at a keyboard
+
+A new gateway can now be registered by a script. Until now, every one had to be
+added by hand, by an administrator, in the browser — which is fine for a handful
+and impossible for a service that lets a customer order one on demand.
+
+An external control plane can now do it directly: it declares the gateway, and
+Atrium hands back the one credential the installer must place on the new machine.
+The gateway then configures itself. Both technologies are covered.
+
+**It grants nothing, deliberately.** A gateway added this way arrives exactly as
+a hand-added one does: its assistants are found but stay switched off, and nobody
+can see them until an administrator turns them on. That is the whole point when
+the reason for a separate gateway is that a department's data must not be shared —
+the automated part stops at the door, and the decision about who may enter stays a
+human one.
+
+One thing to know before turning them on, and it is not new to this release:
+**switching an assistant on is what makes it visible.** Anyone who has never been
+given access to anything in particular currently sees everything that is switched
+on. So when a gateway exists precisely to keep a department's data separate,
+decide who gets access **before** switching its assistants on, not after.
+
+**It can be run twice without consequence.** The caller here is a machine that
+retries when the network hiccups, so a second run has to be harmless. Two ways it
+would not have been were found and closed:
+
+- **A retried registration used to be able to create a second entry** under the
+  same name — and that name is what everything else uses to find the gateway.
+  Registration now recognises the gateway it already knows and updates it.
+- **A retried registration would have issued a new credential**, silently
+  invalidating the one the installer had already put in place and cutting off a
+  gateway that was working. A credential is now issued only when there is none.
+  Replacing one is possible, but only when asked for explicitly — because doing
+  it disconnects the gateway until the new one is deployed.
+
+A partial declaration no longer overwrites what an administrator has set: a
+setting the script does not mention is left untouched, and clearing one has to be
+said out loud. A value that does not apply to the technology in use is refused
+rather than quietly ignored — a setting believed to be active while nothing reads
+it is worse than an error message.
+
+The credential is bound to whoever requested it, so an issued one always has an
+owner. And the access needed to do all this is a role of its own, which can do
+nothing else — it cannot read conversations, measurements or diagnostics.
+
+Stated plainly: this covers registering the gateway, not installing it. The
+machine, the gateway software and the connector are still put in place by your
+own installation scripts; what changes is that binding them to Atrium no longer
+requires a human step in between.
+
 ## [0.71.7] — Two safeguards that could never do their job
 
 Corrective, and both halves have the same shape: a figure the platform was

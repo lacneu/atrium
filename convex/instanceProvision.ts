@@ -119,7 +119,14 @@ export const applyProvision = internalMutation({
     }
 
     // `by_name` is an INDEX, not a unique constraint (the sync route says as much
-    // where it uses `.first()`). Take TWO: a pre-existing duplicate must be
+    // where it uses `.first()`), so the row's uniqueness rests on this
+    // read-then-write. What makes that safe is Convex's SERIALIZABLE mutation
+    // isolation: two concurrent provisions of the same new name cannot both read
+    // "absent" and both insert — one is retried against the other's write. Do NOT
+    // "optimize" this lookup away or move the insert outside the mutation; the
+    // fork it prevents corrupts the routing key for every table that references
+    // an instance by name.
+    // Take TWO: a pre-existing duplicate must be
     // refused loudly, not silently resolved to whichever row sorts first — that
     // would have the script configure one row while the bridge routes to another.
     const rows = await ctx.db
