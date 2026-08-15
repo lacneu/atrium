@@ -48,6 +48,15 @@ export const PERMISSIONS = {
   // effective grants — the same agents they can already chat with (and thus ask
   // to print any file anyway). Enforced in agentFiles.checkFilesReadAccess.
   AGENT_FILES_READ: "agents.files.read",
+  // Register/update an instance NON-INTERACTIVELY (the scripted-provisioning path:
+  // a control plane orders a new gateway, its installer binds it to Atrium without
+  // an admin at a browser). Grants NO agent and NO user access — a provisioned
+  // instance arrives exactly as a hand-created one does, with its discovered agents
+  // stamped `enabled: false` and nobody able to see them until an admin curates.
+  // The holder CAN mint a bridge secret, which unlocks that instance's encrypted
+  // gateway credentials, so this is admin / service-account only and is
+  // DELIBERATELY excluded from GRANTABLE_USER_PERMISSIONS below.
+  INSTANCES_PROVISION: "instances.provision",
   CHATS_READ: "chats.read", // read conversational data
   GROUPS_MANAGE: "groups.manage", // create/manage groups + group agents (admin-only)
   CHARTS_MANAGE: "charts.manage", // manage chart defaults + group availability (admin-only)
@@ -174,6 +183,12 @@ export const BUILTIN_ROLES: Record<
       // The support loop: read/reply/resolve user reports (meta/critic agent).
       PERMISSIONS.FEEDBACK_RESPOND,
     ],
+  },
+  provisioner: {
+    name: "Provisioner",
+    description:
+      "Service account for an external control plane that orders new gateways: registers an instance and mints its bridge secret, and NOTHING else. It cannot read traces, KPIs, chats or anomalies — least privilege for a third party that automates installs but must never see conversational data.",
+    permissions: [PERMISSIONS.INSTANCES_PROVISION],
   },
 };
 

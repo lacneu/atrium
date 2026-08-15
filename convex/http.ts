@@ -1637,6 +1637,182 @@ http.route({
   }),
 });
 
+// NON-INTERACTIVE instance provisioning (key-authed; instances.provision — the
+// `provisioner` service role, plus admin through the wildcard). The scripted twin
+// of the admin "Ajouter une instance" form, for a control plane that orders a new
+// gateway and has its installer bind it to Atrium with no admin at a browser.
+//
+// It registers the instance and hands back its per-bridge secret ONCE — the only
+// thing the installer must place on the new host, since the bridge then
+// self-configures from Convex (bridgeAuth.resolveBridgeInstanceBySecretHash
+// returns the gateway config against that secret).
+//
+// It grants NOTHING: no agent enabled, no user or group access. A provisioned
+// instance is invisible until an admin curates it, exactly like a hand-created
+// one — see instanceProvision.ts for why that parity is the isolation contract.
+//
+// REPLAY-SAFE by construction: the instance is resolved BY NAME and patched (never
+// blind-inserted, which is how a retried create would fork the routing key), and
+// the bridge secret is minted only when ABSENT (a replayed mint would lock out the
+// bridge already installed with the old one). A second pass therefore reports
+// `unchanged` / `existing` and writes nothing.
+http.route({
+  path: "/api/v1/instances/provision",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number, meta?: string): Promise<void> => {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/instances/provision",
+        method: "POST",
+        status,
+        latencyMs: Date.now() - startedAt,
+        meta,
+      });
+    };
+    if (!principalHasPermission(principal, PERMISSIONS.INSTANCES_PROVISION)) {
+      await trace(403);
+      return apiJson(
+        { ok: false, error: "missing permission: instances.provision" },
+        403,
+      );
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const reject = async (error: string) => {
+      await trace(400);
+      return apiJson({ ok: false, error }, 400);
+    };
+    // A field the caller sends and we silently ignore is how a control plane
+    // ships a bug that survives for months — every one is rejected loudly.
+    const str = (key: string): string | null | undefined | "bad" => {
+      const raw = body[key];
+      if (raw === undefined) return undefined;
+      if (raw === null) return null;
+      return typeof raw === "string" ? raw : "bad";
+    };
+    const name = body.name;
+    const gatewayUrl = body.gatewayUrl;
+    if (typeof name !== "string" || name.trim().length === 0) {
+      return await reject("name is required");
+    }
+    if (typeof gatewayUrl !== "string" || gatewayUrl.trim().length === 0) {
+      return await reject("gatewayUrl is required");
+    }
+    const kind = body.kind === undefined ? "openclaw" : body.kind;
+    if (kind !== "openclaw" && kind !== "hermes") {
+      return await reject("kind must be 'openclaw' or 'hermes'");
+    }
+    const optional: Record<string, string | null | undefined> = {};
+    for (const key of [
+      "displayName",
+      "bridgeUrl",
+      "gatewayVersion",
+      "gatewayHttpUrl",
+    ]) {
+      const value = str(key);
+      if (value === "bad") return await reject(`${key} must be a string or null`);
+      optional[key] = value;
+    }
+    // Kind-discriminated: `transport` is meaningless for OpenClaw (the schema says
+    // it is ignored), and the gateway-version/media overrides are OpenClaw's.
+    // Accepting them for the wrong kind would have the caller believe a setting
+    // took effect when nothing reads it.
+    let transport: "ws" | "rest" | null | undefined;
+    if (body.transport !== undefined && body.transport !== null) {
+      if (kind !== "hermes") {
+        return await reject("transport applies to kind 'hermes' only");
+      }
+      if (body.transport !== "ws" && body.transport !== "rest") {
+        return await reject("transport must be 'ws' or 'rest'");
+      }
+      transport = body.transport;
+    } else if (body.transport === null) {
+      transport = null;
+    }
+    if (kind === "hermes") {
+      for (const key of ["gatewayVersion", "gatewayHttpUrl"]) {
+        if (body[key] !== undefined && body[key] !== null) {
+          return await reject(`${key} applies to kind 'openclaw' only`);
+        }
+      }
+    }
+    const rotate = body.rotateBridgeSecret;
+    if (rotate !== undefined && typeof rotate !== "boolean") {
+      return await reject("rotateBridgeSecret must be a boolean");
+    }
+
+    let result;
+    try {
+      result = await ctx.runAction(internal.instanceProvision.provisionInstance, {
+        name,
+        gatewayUrl,
+        displayName: optional.displayName,
+        bridgeUrl: optional.bridgeUrl,
+        gatewayVersion: optional.gatewayVersion,
+        gatewayHttpUrl: optional.gatewayHttpUrl,
+        kind,
+        transport,
+        rotateBridgeSecret: rotate,
+        principalId: principal.id,
+      });
+    } catch (err) {
+      // The named refusals are the caller's fault (4xx); anything else is ours.
+      const message = err instanceof Error ? err.message : "provision_failed";
+      const known: Record<string, number> = {
+        instance_name_ambiguous: 409,
+        invalid_instance_name: 400,
+        gatewayUrl_required: 400,
+      };
+      const status = known[message] ?? 500;
+      await trace(status, JSON.stringify({ error: message }));
+      return apiJson({ ok: false, error: message }, status);
+    }
+    // The trace carries the OUTCOME, not just "200": this is the attribution
+    // trail for a minted bridge secret, which `auditLog` cannot hold (it requires
+    // a signed-in user). Names and verdicts only — never the plaintext.
+    await trace(
+      200,
+      JSON.stringify({
+        instance: result.name,
+        outcome: result.outcome,
+        bridgeSecret: result.bridgeSecret,
+      }),
+    );
+    return apiJson({
+      ok: true,
+      instance: result.name,
+      outcome: result.outcome,
+      bridgeSecret: result.bridgeSecret,
+      // Returned ONCE, at the call that mints it. A replay gets `existing` and no
+      // plaintext — correct, because the installed bridge already holds it.
+      ...(result.plaintext !== undefined
+        ? {
+            secret: result.plaintext,
+            prefix: result.prefix,
+            lastFour: result.lastFour,
+          }
+        : {}),
+    });
+  }),
+});
+
 // Diagnostic chat-state inspector (key-authed). Lets an operator debug a chat
 // from the terminal: per-message lifecycle (status/runId/age/partCount) — the
 // signal that exposes a stuck-streaming turn (status "streaming" + large age =

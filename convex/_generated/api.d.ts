@@ -42,6 +42,7 @@ import type * as fileRenditions from "../fileRenditions.js";
 import type * as files from "../files.js";
 import type * as groups from "../groups.js";
 import type * as http from "../http.js";
+import type * as instanceProvision from "../instanceProvision.js";
 import type * as instanceSecrets from "../instanceSecrets.js";
 import type * as instanceSync from "../instanceSync.js";
 import type * as integrations_config from "../integrations/config.js";
@@ -171,6 +172,7 @@ declare const fullApi: ApiFromModules<{
   files: typeof files;
   groups: typeof groups;
   http: typeof http;
+  instanceProvision: typeof instanceProvision;
   instanceSecrets: typeof instanceSecrets;
   instanceSync: typeof instanceSync;
   "integrations/config": typeof integrations_config;

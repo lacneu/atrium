@@ -223,7 +223,17 @@ describe("D-2 — ensureRolesSeeded seeds built-ins (admin-gated)", () => {
 
     const after = await t.run(async (ctx) => ctx.db.query("roles").collect());
     const keys = after.map((r) => r.key).sort();
-    expect(keys).toEqual(["admin", "agent", "observer", "pending", "user"]);
+    // `provisioner` is the least-privilege service role for an external control
+    // plane that orders gateways: it can register an instance and mint its bridge
+    // secret, and nothing else — no traces, no KPIs, no chats.
+    expect(keys).toEqual([
+      "admin",
+      "agent",
+      "observer",
+      "pending",
+      "provisioner",
+      "user",
+    ]);
 
     // Idempotent: a second call does not duplicate.
     await as.mutation(api.apiKeys.ensureRolesSeeded, {});

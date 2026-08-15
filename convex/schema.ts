@@ -476,7 +476,13 @@ export default defineSchema({
     prefix: v.string(), // non-secret leading segment for display
     lastFour: v.string(), // non-secret trailing 4 chars for disambiguation
     createdAt: v.number(),
-    createdBy: v.id("users"),
+    // The signed-in operator who minted it — ABSENT when a service principal did,
+    // through the non-interactive provisioning route (an API key has no user
+    // identity, which is also why that path cannot write `auditLog`). Exactly one
+    // of these two is set; `createdByPrincipal` carries the API-key principal id
+    // so a minted secret is always attributable to someone.
+    createdBy: v.optional(v.id("users")),
+    createdByPrincipal: v.optional(v.string()),
     lastUsedAt: v.optional(v.number()),
   })
     .index("by_hash", ["hashedSecret"]) // O(1) verification -> resolves the instance
