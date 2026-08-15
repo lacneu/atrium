@@ -27,7 +27,12 @@ RUN node -p "JSON.stringify({ version: require('./package.json').version, revisi
 # binary was compiled with a Go release carrying known high-severity issues.
 # Build the exact Caddy release with a fixed Go toolchain, then copy only the
 # static binary and CA bundle into a pinned, package-manager-free runtime.
-FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS caddy-builder
+# Go 1.26.6: 1.26.5's standard library picked up two HIGH advisories when the scan
+# database refreshed on 2026-08-14 (GO-2026-5026, GO-2026-5942), both fixed here.
+# The toolchain version IS a supply-chain input — the stdlib is linked into the
+# binary — so this pin moves whenever an advisory lands against it, independently
+# of any change in our own code.
+FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS caddy-builder
 # Caddy v2.11.4 (its LATEST release — there is no newer tag to move to) pins two
 # INDIRECT modules that now carry high-severity advisories, which the image scan
 # gate rejects: golang.org/x/text v0.37.0 (GO-2026-5970, fixed in 0.39.0) and
