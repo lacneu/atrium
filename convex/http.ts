@@ -11,7 +11,10 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { ingest } from "./bridge_ingest";
-import { instanceCredentials } from "./bridge_credentials";
+import {
+  instanceCredentials,
+  promoteDeviceToken,
+} from "./bridge_credentials";
 import { authenticateApiKey, principalHasPermission } from "./lib/apiAuth";
 import { PERMISSIONS } from "./lib/rbac";
 import { SYNC_STATUS_DETAIL } from "./instanceSync";
@@ -82,6 +85,12 @@ http.route({
   handler: instanceCredentials,
 });
 
+http.route({
+  path: "/bridge/device-token",
+  method: "POST",
+  handler: promoteDeviceToken,
+});
+
 // ===========================================================================
 // /api/v1 — the key-authed observability API surface.
 //
@@ -137,7 +146,9 @@ http.route({
 http.route({
   path: "/api/v1/version",
   method: "GET",
-  handler: httpAction(async () => apiJson({ ok: true, version: DEPLOYED_VERSION })),
+  handler: httpAction(async () =>
+    apiJson({ ok: true, version: DEPLOYED_VERSION }),
+  ),
 });
 
 // Published CONTRACT schemas (provenance/v1 + future). PUBLIC (no auth): these are the
@@ -148,7 +159,9 @@ http.route({
 http.route({
   path: "/api/v1/schemas",
   method: "GET",
-  handler: httpAction(async () => publicJson({ ok: true, schemas: listSchemas() })),
+  handler: httpAction(async () =>
+    publicJson({ ok: true, schemas: listSchemas() }),
+  ),
 });
 
 http.route({
@@ -159,7 +172,8 @@ http.route({
       new URL(request.url).pathname.slice("/api/v1/schemas/".length),
     );
     const entry = getSchema(id);
-    if (!entry) return publicJson({ ok: false, error: `unknown schema: ${id}` }, 404);
+    if (!entry)
+      return publicJson({ ok: false, error: `unknown schema: ${id}` }, 404);
     return publicJson({
       ok: true,
       id: entry.id,
@@ -222,7 +236,11 @@ http.route({
     const status = statusParam !== undefined ? Number(statusParam) : undefined;
     if (status !== undefined && Number.isFinite(status)) filter.status = status;
     const statusClass = strParam(url, "statusClass");
-    if (statusClass === "2xx" || statusClass === "4xx" || statusClass === "5xx") {
+    if (
+      statusClass === "2xx" ||
+      statusClass === "4xx" ||
+      statusClass === "5xx"
+    ) {
       filter.statusClass = statusClass;
     }
     const direction = strParam(url, "direction");
@@ -490,7 +508,10 @@ http.route({
           chatId,
         })) ?? undefined)
       : undefined;
-    const ov = await ctx.runQuery(internal.integrations.ship.vendorOverrides, {});
+    const ov = await ctx.runQuery(
+      internal.integrations.ship.vendorOverrides,
+      {},
+    );
     const enrichment = await enrichTraceByCorrelation({
       correlationId,
       chatId,
@@ -542,7 +563,10 @@ http.route({
         status: 403,
         latencyMs: Date.now() - startedAt,
       });
-      return apiJson({ ok: false, error: "missing permission: traces.read" }, 403);
+      return apiJson(
+        { ok: false, error: "missing permission: traces.read" },
+        403,
+      );
     }
     const chatId = strParam(url, "chatId");
     if (!chatId) {
@@ -631,7 +655,10 @@ http.route({
       status: result.ok ? 200 : 400,
       latencyMs: Date.now() - startedAt,
     });
-    return apiJson({ ok: result.ok, reconciled: result.reconciled }, result.ok ? 200 : 400);
+    return apiJson(
+      { ok: result.ok, reconciled: result.reconciled },
+      result.ok ? 200 : 400,
+    );
   }),
 });
 
@@ -1011,7 +1038,11 @@ http.route({
       const parsed: unknown = await request.json();
       // `null`/arrays are valid JSON but not a body (codex P2: reading a
       // field off null threw a 500 where a 400 belongs).
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         await trace(400);
         return apiJson({ ok: false, error: "invalid JSON body" }, 400);
       }
@@ -1159,14 +1190,11 @@ http.route({
     const limit = limitRaw !== null ? Number(limitRaw) : undefined;
     let history;
     try {
-      history = await ctx.runQuery(
-        internal.anomalies.occurrencesInternal,
-        {
-          ...(anomalyId ? { anomalyId: anomalyId as Id<"anomalies"> } : {}),
-          ...(kind ? { kind } : {}),
-          ...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
-        },
-      );
+      history = await ctx.runQuery(internal.anomalies.occurrencesInternal, {
+        ...(anomalyId ? { anomalyId: anomalyId as Id<"anomalies"> } : {}),
+        ...(kind ? { kind } : {}),
+        ...(limit !== undefined && Number.isFinite(limit) ? { limit } : {}),
+      });
     } catch {
       await trace(404);
       return apiJson({ ok: false, error: "unknown anomalyId" }, 404);
@@ -1228,7 +1256,9 @@ http.route({
     const b = (body ?? {}) as Record<string, unknown>;
     const kind = typeof b.kind === "string" ? b.kind : undefined;
     const severity =
-      b.severity === "info" || b.severity === "warn" || b.severity === "critical"
+      b.severity === "info" ||
+      b.severity === "warn" ||
+      b.severity === "critical"
         ? b.severity
         : undefined;
     const message = typeof b.message === "string" ? b.message : undefined;
@@ -1270,7 +1300,10 @@ http.route({
     ) {
       evidenceObj = b.evidence as Record<string, unknown>;
     } else if (b.evidence !== undefined && b.evidence !== null) {
-      return apiJson({ ok: false, error: "evidence must be a JSON object/string" }, 400);
+      return apiJson(
+        { ok: false, error: "evidence must be a JSON object/string" },
+        400,
+      );
     }
     evidenceObj.reportedBy = principal.id;
     let evidence: string | undefined;
@@ -1292,7 +1325,10 @@ http.route({
     if (b.attachments !== undefined && b.attachments !== null) {
       if (!Array.isArray(b.attachments)) {
         return apiJson(
-          { ok: false, error: "attachments must be an array of {name, content}" },
+          {
+            ok: false,
+            error: "attachments must be an array of {name, content}",
+          },
           400,
         );
       }
@@ -1410,8 +1446,7 @@ http.route({
       return apiJson({ ok: false, error: "invalid JSON body" }, 400);
     }
     const b = (body ?? {}) as Record<string, unknown>;
-    const anomalyId =
-      typeof b.anomalyId === "string" ? b.anomalyId : undefined;
+    const anomalyId = typeof b.anomalyId === "string" ? b.anomalyId : undefined;
     const status =
       b.status === "resolved" || b.status === "acknowledged"
         ? b.status
@@ -1423,19 +1458,25 @@ http.route({
       );
     }
     if (!anomalyId) {
-      return apiJson({ ok: false, error: "body requires anomalyId:string" }, 400);
+      return apiJson(
+        { ok: false, error: "body requires anomalyId:string" },
+        400,
+      );
     }
 
     // Resolve; a malformed id makes v.id() reject inside the mutation, which
     // would 500 — contain it and return 400 (the route never 500s on input).
     let result: { ok: boolean };
     try {
-      result = await ctx.runMutation(internal.anomalies.resolveAnomalyInternal, {
-        anomalyId: anomalyId as Id<"anomalies">,
-        status,
-        // Non-PHI resolution attribution: the calling service account's id.
-        resolvedBy: principal.id,
-      });
+      result = await ctx.runMutation(
+        internal.anomalies.resolveAnomalyInternal,
+        {
+          anomalyId: anomalyId as Id<"anomalies">,
+          status,
+          // Non-PHI resolution attribution: the calling service account's id.
+          resolvedBy: principal.id,
+        },
+      );
     } catch {
       return apiJson({ ok: false, error: "invalid anomalyId" }, 400);
     }
@@ -1631,10 +1672,9 @@ http.route({
     if (instanceId === null) {
       return apiJson({ ok: false, error: `unknown instance: ${name}` }, 404);
     }
-    const result = await ctx.runAction(
-      internal.instanceSync.runInstanceSync,
-      { instanceId },
-    );
+    const result = await ctx.runAction(internal.instanceSync.runInstanceSync, {
+      instanceId,
+    });
     await ctx.runMutation(internal.observability.recordEvent, {
       kind: "api.call",
       direction: "inbound",
@@ -1745,7 +1785,8 @@ http.route({
       "gatewayHttpUrl",
     ]) {
       const value = str(key);
-      if (value === "bad") return await reject(`${key} must be a string or null`);
+      if (value === "bad")
+        return await reject(`${key} must be a string or null`);
       optional[key] = value;
     }
     // Kind-discriminated: `transport` is meaningless for OpenClaw (the schema says
@@ -1778,23 +1819,27 @@ http.route({
 
     let result;
     try {
-      result = await ctx.runAction(internal.instanceProvision.provisionInstance, {
-        name,
-        gatewayUrl,
-        displayName: optional.displayName,
-        bridgeUrl: optional.bridgeUrl,
-        gatewayVersion: optional.gatewayVersion,
-        gatewayHttpUrl: optional.gatewayHttpUrl,
-        kind,
-        transport,
-        rotateBridgeSecret: rotate,
-        principalId: principal.id,
-      });
+      result = await ctx.runAction(
+        internal.instanceProvision.provisionInstance,
+        {
+          name,
+          gatewayUrl,
+          displayName: optional.displayName,
+          bridgeUrl: optional.bridgeUrl,
+          gatewayVersion: optional.gatewayVersion,
+          gatewayHttpUrl: optional.gatewayHttpUrl,
+          kind,
+          transport,
+          rotateBridgeSecret: rotate,
+          principalId: principal.id,
+        },
+      );
     } catch (err) {
       // The named refusals are the caller's fault (4xx); anything else is ours.
       const message = err instanceof Error ? err.message : "provision_failed";
       const known: Record<string, number> = {
         instance_name_ambiguous: 409,
+        instance_name_sweeping: 409,
         invalid_instance_name: 400,
         gatewayUrl_required: 400,
       };
@@ -1828,6 +1873,258 @@ http.route({
           }
         : {}),
     });
+  }),
+});
+
+// Enroll the gateway-side credential bundle after the instance exists and before
+// its bridge is deployed. The request is key-authenticated, provider-discriminated,
+// bounded, and exact: no partial bundle or unknown field can create a half-working
+// bridge. Plaintext exists only in this action invocation; the called action stores
+// AES-256-GCM envelopes and returns field names plus an idempotency outcome.
+http.route({
+  path: "/api/v1/instances/credentials",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number, meta?: string): Promise<void> => {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/instances/credentials",
+        method: "POST",
+        status,
+        latencyMs: Date.now() - startedAt,
+        meta,
+      });
+    };
+    if (!principalHasPermission(principal, PERMISSIONS.INSTANCES_PROVISION)) {
+      await trace(403);
+      return apiJson(
+        { ok: false, error: "missing permission: instances.provision" },
+        403,
+      );
+    }
+
+    let raw: string;
+    try {
+      raw = await request.text();
+    } catch {
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid request body" }, 400);
+    }
+    if (new TextEncoder().encode(raw).byteLength > 128 * 1024) {
+      await trace(413);
+      return apiJson({ ok: false, error: "request body is too large" }, 413);
+    }
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const reject = async (error: string) => {
+      await trace(400);
+      return apiJson({ ok: false, error }, 400);
+    };
+    if (
+      typeof decoded !== "object" ||
+      decoded === null ||
+      Array.isArray(decoded)
+    ) {
+      return await reject("invalid JSON body");
+    }
+    const body = decoded as Record<string, unknown>;
+    const unknown = Object.keys(body).filter(
+      (key) => !["name", "kind", "credentials"].includes(key),
+    );
+    if (unknown.length > 0) {
+      return await reject(`unsupported field: ${unknown.sort()[0]}`);
+    }
+    if (
+      typeof body.name !== "string" ||
+      body.name.trim().length === 0 ||
+      body.name.trim().length > 256
+    ) {
+      return await reject("name is invalid");
+    }
+    if (body.kind !== "openclaw" && body.kind !== "hermes") {
+      return await reject("kind must be 'openclaw' or 'hermes'");
+    }
+    if (
+      typeof body.credentials !== "object" ||
+      body.credentials === null ||
+      Array.isArray(body.credentials)
+    ) {
+      return await reject("credentials must be an object");
+    }
+    const credentials = body.credentials as Record<string, unknown>;
+    const expected = body.kind === "openclaw" ? ["token"] : ["apiKey"];
+    const credentialKeys = Object.keys(credentials).sort();
+    if (
+      credentialKeys.length !== expected.length ||
+      credentialKeys.some((key, index) => key !== expected[index])
+    ) {
+      return await reject(
+        `credentials for ${body.kind} must define exactly ${expected.join(", ")}`,
+      );
+    }
+
+    let actionCredentials: { token: string } | { apiKey: string };
+    if (body.kind === "openclaw") {
+      const token = credentials.token;
+      if (
+        typeof token !== "string" ||
+        token.trim().length === 0 ||
+        token.length > 8192
+      ) {
+        return await reject("credentials.token is invalid");
+      }
+      actionCredentials = { token };
+    } else {
+      const apiKey = credentials.apiKey;
+      if (
+        typeof apiKey !== "string" ||
+        apiKey.trim().length === 0 ||
+        apiKey.length > 8192
+      ) {
+        return await reject("credentials.apiKey is invalid");
+      }
+      actionCredentials = { apiKey };
+    }
+
+    try {
+      const result = await ctx.runAction(
+        internal.instanceCredentialProvision.enrollInstanceCredentials,
+        {
+          name: body.name,
+          kind: body.kind,
+          credentials: actionCredentials,
+        },
+      );
+      await trace(
+        200,
+        JSON.stringify({
+          instance: result.name,
+          outcome: result.outcome,
+          fields: result.fields,
+        }),
+      );
+      return apiJson({ ok: true, ...result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const known: Record<string, number> = {
+        instance_not_found: 404,
+        instance_name_ambiguous: 409,
+        credential_state_ambiguous: 409,
+        credential_state_changed: 409,
+        credential_state_invalid: 409,
+        credential_provenance_unknown: 409,
+        instance_kind_changed: 409,
+        instance_kind_mismatch: 409,
+        credential_fields_invalid: 400,
+      };
+      const status = known[message] ?? 500;
+      const publicError =
+        status === 500 ? "credential_enrollment_failed" : message;
+      await trace(status, JSON.stringify({ error: publicError }));
+      return apiJson({ ok: false, error: publicError }, status);
+    }
+  }),
+});
+
+// NON-INTERACTIVE instance removal for the same narrowly scoped provisioner.
+// The instance name is the immutable routing key. Deletion is idempotent when
+// absent and refuses duplicate names rather than choosing an arbitrary row.
+http.route({
+  path: "/api/v1/instances/deprovision",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    const trace = async (status: number, meta?: string): Promise<void> => {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/instances/deprovision",
+        method: "POST",
+        status,
+        latencyMs: Date.now() - startedAt,
+        meta,
+      });
+    };
+    if (!principalHasPermission(principal, PERMISSIONS.INSTANCES_PROVISION)) {
+      await trace(403);
+      return apiJson(
+        { ok: false, error: "missing permission: instances.provision" },
+        403,
+      );
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      await trace(400);
+      return apiJson({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    const payload = body as Record<string, unknown>;
+    const unknown = Object.keys(payload).filter((key) => key !== "name");
+    if (unknown.length > 0) {
+      await trace(400);
+      return apiJson(
+        { ok: false, error: `unsupported field: ${unknown.sort()[0]}` },
+        400,
+      );
+    }
+    if (typeof payload.name !== "string" || payload.name.trim().length === 0) {
+      await trace(400);
+      return apiJson({ ok: false, error: "name is required" }, 400);
+    }
+
+    try {
+      const result = await ctx.runMutation(
+        internal.instanceProvision.deprovisionInstance,
+        { name: payload.name },
+      );
+      await trace(
+        200,
+        JSON.stringify({ instance: result.name, outcome: result.outcome }),
+      );
+      return apiJson({
+        ok: true,
+        instance: result.name,
+        outcome: result.outcome,
+      });
+    } catch (error) {
+      const ambiguous =
+        error instanceof Error && error.message === "instance_name_ambiguous";
+      const status = ambiguous ? 409 : 500;
+      const publicError = ambiguous
+        ? "instance_name_ambiguous"
+        : "deprovision_failed";
+      await trace(status, JSON.stringify({ error: publicError }));
+      return apiJson({ ok: false, error: publicError }, status);
+    }
   }),
 });
 
@@ -1927,7 +2224,10 @@ http.route({
       !principalHasPermission(principal, PERMISSIONS.FEEDBACK_RESPOND)
     ) {
       return apiJson(
-        { ok: false, error: "missing permission: traces.read or feedback.respond" },
+        {
+          ok: false,
+          error: "missing permission: traces.read or feedback.respond",
+        },
         403,
       );
     }
@@ -2029,7 +2329,11 @@ http.route({
       const parsed: unknown = await request.json();
       // `null`/arrays/scalars are VALID JSON — reject before field access
       // turns a validation error into a 500 (codex P3).
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         return apiJson({ ok: false, error: "invalid json body" }, 400);
       }
       body = parsed as typeof body;
@@ -2099,7 +2403,11 @@ http.route({
     let body: { feedbackId?: unknown; note?: unknown };
     try {
       const parsed: unknown = await request.json();
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         return apiJson({ ok: false, error: "invalid json body" }, 400);
       }
       body = parsed as typeof body;
@@ -2380,7 +2688,8 @@ function sseCors(request: Request): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": request.headers.get("Origin") ?? "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Last-Event-ID, Content-Type",
+    "Access-Control-Allow-Headers":
+      "Authorization, Last-Event-ID, Content-Type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };

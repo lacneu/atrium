@@ -50,6 +50,31 @@ function unauthorized(): Response {
   });
 }
 
+async function traceDeviceTokenPromotion(
+  ctx: ActionCtx,
+  args: {
+    instance: string;
+    status: number;
+    outcome: "stored" | "unchanged" | "superseded" | "rejected";
+  },
+): Promise<void> {
+  try {
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "openclaw.device_token.promote",
+      direction: "inbound",
+      principalType: "system",
+      principalId: "bridge",
+      status: args.status,
+      meta: JSON.stringify({
+        instance: args.instance,
+        outcome: args.outcome,
+      }),
+    });
+  } catch {
+    // Never break promotion on a metadata-only audit failure.
+  }
+}
+
 export const instanceCredentials = httpAction(async (ctx, request) => {
   // 1. Extract the per-bridge secret from the Bearer header.
   const header = request.headers.get("authorization") ?? "";
@@ -139,4 +164,113 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
       },
     },
   );
+});
+
+/** Persist the server-issued device token for this bridge's exact instance. */
+export const promoteDeviceToken = httpAction(async (ctx, request) => {
+  const header = request.headers.get("authorization") ?? "";
+  const bridgeSecret = header.startsWith("Bearer ")
+    ? header.slice(7).trim()
+    : "";
+  if (!bridgeSecret) return unauthorized();
+  const hash = await hashKey(bridgeSecret);
+  const resolved = await ctx.runQuery(
+    internal.bridgeAuth.resolveBridgeInstanceBySecretHash,
+    { hash },
+  );
+  if (resolved === null) return unauthorized();
+
+  let raw: string;
+  try {
+    raw = await request.text();
+  } catch {
+    return new Response(JSON.stringify({ ok: false, error: "invalid_request" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (new TextEncoder().encode(raw).byteLength > 16 * 1024) {
+    return new Response(JSON.stringify({ ok: false, error: "invalid_request" }), {
+      status: 413,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    decoded = null;
+  }
+  const body =
+    typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)
+      ? (decoded as Record<string, unknown>)
+      : null;
+  const keys = body === null ? [] : Object.keys(body).sort();
+  if (
+    body === null ||
+    !["deviceId,publicKey,token", "deviceId,issuedAtMs,publicKey,token"].includes(
+      keys.join(","),
+    ) ||
+    typeof body.deviceId !== "string" ||
+    !/^[0-9a-f]{64}$/.test(body.deviceId) ||
+    typeof body.publicKey !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(body.publicKey) ||
+    typeof body.token !== "string" ||
+    body.token.trim().length === 0 ||
+    body.token.length > 8192 ||
+    (body.issuedAtMs !== undefined &&
+      (typeof body.issuedAtMs !== "number" ||
+        !Number.isInteger(body.issuedAtMs) ||
+        body.issuedAtMs < 0))
+  ) {
+    return new Response(JSON.stringify({ ok: false, error: "invalid_request" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  try {
+    const result = await ctx.runAction(
+      internal.instanceCredentialProvision.promoteOpenClawDeviceToken,
+      {
+        instanceId: resolved.instanceId,
+        deviceId: body.deviceId,
+        publicKey: body.publicKey,
+        token: body.token,
+        ...(typeof body.issuedAtMs === "number"
+          ? { issuedAtMs: body.issuedAtMs }
+          : {}),
+      },
+    );
+    await ctx.runMutation(internal.bridgeAuth.touchBridgeLastUsed, {
+      authId: resolved.authId,
+    });
+    await traceDeviceTokenPromotion(ctx, {
+      instance: resolved.instanceName,
+      status: 200,
+      outcome: result.outcome,
+    });
+    return new Response(JSON.stringify({ ok: true, ...result }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch {
+    await traceDeviceTokenPromotion(ctx, {
+      instance: resolved.instanceName,
+      status: 409,
+      outcome: "rejected",
+    });
+    return new Response(
+      JSON.stringify({ ok: false, error: "device_token_promotion_failed" }),
+      {
+        status: 409,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  }
 });

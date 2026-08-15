@@ -52,6 +52,7 @@ import {
   roleOf,
 } from "./lib/access";
 import { getEffectiveGrants } from "./agents";
+import { nameBoundWriteAllowed } from "./lib/instanceCascade";
 import { auditImpersonated } from "./lib/audit";
 import { PERMISSIONS } from "./lib/rbac";
 
@@ -350,6 +351,11 @@ export const recordFileRevision = internalMutation({
     afterMissing: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<null> => {
+    // Same rule as the discovery writers: a revision may not be recorded for an
+    // instance that no longer exists, or it becomes file CONTENT inherited by a
+    // gateway recreated under the same name. See lib/instanceCascade.
+    if (!(await nameBoundWriteAllowed(ctx, args.instanceName))) return null;
+
     const actor = await getActor(ctx);
     await ctx.db.insert("agentFileRevisions", {
       instanceName: args.instanceName,

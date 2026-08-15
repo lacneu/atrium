@@ -24,6 +24,7 @@ import {
 import { timingSafeEqual } from "node:crypto";
 
 import type { BridgeConfig, SharedConfig } from "./config.js";
+import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import {
   idempotencyKey,
   OpenClawConnection,
@@ -2177,6 +2178,7 @@ async function withOperatorConnection<T>(
     // Boot-resolved (index.ts) — non-null by construction.
     config.openclawToken!,
     config.deviceIdentity!,
+    deviceTokenPromotion(config),
   );
   onHandshake?.(conn);
   try {
@@ -2310,6 +2312,7 @@ export async function discoverAgents(
     // Boot-resolved (index.ts) — non-null by construction.
     config.openclawToken!,
     config.deviceIdentity!,
+    deviceTokenPromotion(config),
   );
   onHandshake?.(conn);
   try {

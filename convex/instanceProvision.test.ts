@@ -71,6 +71,13 @@ type ProvisionResponse = {
   secret?: string;
 };
 
+type DeprovisionResponse = {
+  ok: boolean;
+  error?: string;
+  instance?: string;
+  outcome?: "deleted" | "absent";
+};
+
 async function provision(
   t: TestConvex<typeof schema>,
   body: ProvisionBody,
@@ -85,6 +92,25 @@ async function provision(
     body: JSON.stringify(body),
   });
   return { status: res.status, json: (await res.json()) as ProvisionResponse };
+}
+
+async function deprovision(
+  t: TestConvex<typeof schema>,
+  body: Record<string, unknown>,
+  key: string = PROVISION_KEY,
+): Promise<{ status: number; json: DeprovisionResponse }> {
+  const response = await t.fetch("/api/v1/instances/deprovision", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return {
+    status: response.status,
+    json: (await response.json()) as DeprovisionResponse,
+  };
 }
 
 const OPENCLAW: ProvisionBody = {
@@ -403,5 +429,74 @@ describe("a minted secret stays attributable", () => {
     // an instance's encrypted gateway credentials, would have no owner at all.
     expect(row.createdByPrincipal).toBeTruthy();
     expect(row.createdBy).toBeUndefined();
+  });
+});
+
+describe("deprovisioning is replay-safe and fail-closed", () => {
+  test("deletes the instance and invalidates its bridge secret", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const created = await provision(t, OPENCLAW);
+    const secret = created.json.secret!;
+
+    const removed = await deprovision(t, { name: "compta" });
+    expect(removed.status).toBe(200);
+    expect(removed.json).toEqual({
+      ok: true,
+      instance: "compta",
+      outcome: "deleted",
+    });
+    expect(await instances(t)).toEqual([]);
+    expect(await resolves(t, secret)).toBe(false);
+  });
+
+  test("a replay reports absent without writing anything", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, OPENCLAW);
+    await deprovision(t, { name: "compta" });
+
+    const replay = await deprovision(t, { name: "compta" });
+    expect(replay.status).toBe(200);
+    expect(replay.json.outcome).toBe("absent");
+    expect(await instances(t)).toEqual([]);
+  });
+
+  test("a key without the provision permission cannot remove an instance", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, OPENCLAW);
+
+    const denied = await deprovision(t, { name: "compta" }, READONLY_KEY);
+    expect(denied.status).toBe(403);
+    expect(await instances(t)).toHaveLength(1);
+  });
+
+  test("unknown fields are rejected before deletion", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, OPENCLAW);
+
+    const rejected = await deprovision(t, {
+      name: "compta",
+      rotateBridgeSecret: true,
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.json.error).toBe("unsupported field: rotateBridgeSecret");
+    expect(await instances(t)).toHaveLength(1);
+  });
+
+  test("duplicate names yield 409 and neither row is deleted", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "twin", gatewayUrl: "ws://a" });
+      await ctx.db.insert("instances", { name: "twin", gatewayUrl: "ws://b" });
+    });
+
+    const rejected = await deprovision(t, { name: "twin" });
+    expect(rejected.status).toBe(409);
+    expect(rejected.json.error).toBe("instance_name_ambiguous");
+    expect(await instances(t)).toHaveLength(2);
   });
 });

@@ -527,11 +527,41 @@ export const getChatRouting = internalQuery({
             .withIndex("by_name", (q) => q.eq("name", target.instanceName))
             .first()
         : null;
+    // A GRANT CAN OUTLIVE ITS INSTANCE. Deletion removes the instance row (and its
+    // credentials) immediately, then sweeps the name-bound grants in scheduled
+    // batches; an abandoned sweep, or a legacy deletion, can also leave them for
+    // good. In that window `target` resolves — the grant is real and authorized —
+    // while `instance` is null, and the env fallback below would then POST the turn
+    // to the DEPLOYMENT bridge, i.e. potentially another instance's gateway. An
+    // agent whose instance no longer exists is no agent: null the target so the
+    // dispatch fails `no_agent` instead of reaching the wrong place.
     // Env fallback for a bridgeUrl-less instance is SAFE only for the sole/served
     // instance (else a chat would be POSTed to a different instance's gateway). A
     // cheap take(2) decides "sole" without a full count.
     const someInstances = await ctx.db.query("instances").take(2);
     const isSole = someInstances.length <= 1;
+    // ...and refusing outright is required when the routed instance is MISSING.
+    // Two situations look identical from here and must not be treated alike:
+    //   - a deployment that never had an `instances` table (the historical
+    //     single-bridge mode) — the env fallback is the ONLY route and is correct;
+    //   - an instance that was just DELETED — its grants outlive it until the sweep
+    //     drains them, and the env fallback would keep sending turns to the bridge
+    //     it was removed from, which still holds its credentials in memory.
+    // The deletion tombstone is exactly what separates them: it exists for the name
+    // from the moment the instance row disappears until the sweep completes. Other
+    // instances existing is the second, independent reason to refuse (the fallback
+    // would then resolve to somebody else's gateway).
+    const sweeping =
+      target === null
+        ? null
+        : await ctx.db
+            .query("instanceCascades")
+            .withIndex("by_name", (q) => q.eq("instanceName", target.instanceName))
+            .unique();
+    const routedTarget =
+      instance === null && (someInstances.length > 0 || sweeping !== null)
+        ? null
+        : target;
     // The instance's CONTENT locale drives the language of DEFAULT injection
     // texts sent to the bridge (an admin override always wins as-is).
     const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
@@ -574,7 +604,7 @@ export const getChatRouting = internalQuery({
       recoverableSession:
         chat.recoverableSession !== undefined &&
         (chat.recoverableSession.instanceName === undefined ||
-          chat.recoverableSession.instanceName === target?.instanceName) &&
+          chat.recoverableSession.instanceName === routedTarget?.instanceName) &&
         (chat.recoverableSession.resetCount === undefined ||
           chat.recoverableSession.resetCount === (chat.providerResetCount ?? 0))
           ? chat.recoverableSession
@@ -595,7 +625,7 @@ export const getChatRouting = internalQuery({
       // body so the turn's post-ACK session bind can prove no /reset ran
       // while it was in flight.
       providerResetCount: chat.providerResetCount ?? 0,
-      target: res.target, // null => no agent assigned (failReason no_agent)
+      target: routedTarget, // null => no agent assigned (failReason no_agent)
       rebind: res.rebind,
       failReason: res.failReason,
       // The user's per-chat OpenClaw knob intent (reasoning/model). The bridge

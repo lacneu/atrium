@@ -12,7 +12,7 @@
 //    drops to the effective id), while a real non-admin is rejected.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { getEffectiveGrants, effectiveAgentsForUsers } from "./agents";
@@ -845,7 +845,13 @@ describe("deleteInstance purges groupAgents", () => {
     });
     expect((await rowsOf(t, "groupAgents")).length).toBe(2);
 
+    // The name-bound cleanup is swept in SCHEDULED batches now (a large
+    // instance cannot fit one transaction). Fake timers must be installed
+    // BEFORE the mutation that schedules, then the chain is run to the end.
+    vi.useFakeTimers();
     await as.mutation(api.admin.deleteInstance, { instanceId: prodId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
 
     const remaining = await rowsOf(t, "groupAgents");
     expect(remaining.length).toBe(1); // prod's purged

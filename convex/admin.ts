@@ -15,6 +15,12 @@ import {
   instanceConfigValidator,
   parseInstanceConfig,
 } from "./lib/instanceConfig";
+import { internal } from "./_generated/api";
+import {
+  assertNameNotSweeping,
+  deleteInstanceCascade,
+  openCascadeJob,
+} from "./lib/instanceCascade";
 import { recordAudit } from "./lib/audit";
 import { cascadeDeleteChat } from "./chats";
 import { effectiveAgentsForUsers } from "./agents";
@@ -652,6 +658,13 @@ export const upsertInstance = mutation({
       gatewayHttpUrl: args.gatewayHttpUrl?.trim() || undefined,
       streamTransport: args.streamTransport,
     };
+    // Refuse a name whose deletion sweep is still owed — same guard the
+    // provisioner endpoint applies. Creation only: patching an EXISTING row cannot
+    // collide with a sweep, since a sweep only ever runs for a name no instance
+    // serves.
+    if (!args.instanceId) {
+      await assertNameNotSweeping(ctx, args.name);
+    }
     if (args.instanceId) {
       // The name is the immutable ROUTING KEY: agents, userAgents, chats and
       // instanceDiscovery all reference an instance BY NAME. Renaming would orphan
@@ -698,89 +711,17 @@ export const deleteInstance = mutation({
   args: { instanceId: v.id("instances") },
   handler: async (ctx, { instanceId }) => {
     await requireAdmin(ctx);
-    const inst = await ctx.db.get(instanceId);
-    if (inst === null) return; // idempotent
-    const name = inst.name;
-    await ctx.db.delete(instanceId);
-
-    // Encrypted credentials are keyed by THIS row's id (not its name), so they go
-    // UNCONDITIONALLY with the row — even if a duplicate-name instance remains
-    // (the name-keyed cascades below are gated on that; these are not).
-    const secretRows = await ctx.db
-      .query("instanceSecrets")
-      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
-      .collect();
-    for (const s of secretRows) await ctx.db.delete(s._id);
-
-    // The per-bridge auth secret is also keyed by THIS row's id — drop it
-    // unconditionally with the row (a stale hash must never resolve to a dead instance).
-    const bridgeAuthRows = await ctx.db
-      .query("bridgeAuth")
-      .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
-      .collect();
-    for (const b of bridgeAuthRows) await ctx.db.delete(b._id);
-
-    // `userAgents` / `agents` / `instanceDiscovery` reference the instance by
-    // NAME (value), so deleting the row alone leaves ORPHAN grants the user could
-    // still bind/send to (Codex P2). Cascade-clean — but ONLY if no OTHER instance
-    // row still serves this name (duplicate-name resilience, like routing.first()).
-    const stillServed = await ctx.db
-      .query("instances")
-      .withIndex("by_name", (q) => q.eq("name", name))
-      .first();
-    if (stillServed !== null) return;
-
-    // Discovery cache for this instance.
-    const discRows = await ctx.db
-      .query("instanceDiscovery")
-      .withIndex("by_instance", (q) => q.eq("instanceName", name))
-      .collect();
-    for (const d of discRows) await ctx.db.delete(d._id);
-    // Subscription-usage snapshot (same by-name reference — an orphan row would
-    // show a stale quota for a deleted/recreated instance; codex P2).
-    const usageRows = await ctx.db
-      .query("instanceUsage")
-      .withIndex("by_instance", (q) => q.eq("instanceName", name))
-      .collect();
-    for (const u of usageRows) await ctx.db.delete(u._id);
-    // Discovered/known agents for this instance.
-    const agentRows = await ctx.db
-      .query("agents")
-      .withIndex("by_instance", (q) => q.eq("instanceName", name))
-      .collect();
-    for (const a of agentRows) await ctx.db.delete(a._id);
-    // Group-shared agents on this instance (P2). Same bounded by_instance read as
-    // userAgents; no default re-election (groupAgents has no "one default per
-    // group" invariant — the read-time precedence simply re-picks).
-    const groupAgentRows = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_instance", (q) => q.eq("instanceName", name))
-      .collect();
-    for (const ga of groupAgentRows) await ctx.db.delete(ga._id);
-    // Orphaned per-user grants — read ONLY this instance's rows via by_instance
-    // (never a whole-table scan; Convex doc limits — Codex P2). Track affected
-    // users so we can re-elect a default among their remaining grants (never leave
-    // "agents but no default" — H2).
-    const instUa = await ctx.db
-      .query("userAgents")
-      .withIndex("by_instance", (q) => q.eq("instanceName", name))
-      .collect();
-    const affected = new Set<Id<"users">>();
-    for (const ua of instUa) {
-      affected.add(ua.userId);
-      await ctx.db.delete(ua._id);
+    const { sweepName } = await deleteInstanceCascade(ctx, instanceId);
+    // The name-bound rows are swept in bounded, rescheduled batches — see
+    // lib/instanceCascade. The admin path uses the SAME chain as the provisioner
+    // endpoint so neither can drift into leaving grants behind.
+    if (sweepName !== null) {
+      await openCascadeJob(ctx, sweepName);
+      await ctx.scheduler.runAfter(
+        0,
+        internal.instanceCascade.sweepInstanceCascade,
+        { name: sweepName },
+      );
     }
-    for (const userId of affected) {
-      const remaining = await ctx.db
-        .query("userAgents")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
-        .collect();
-      if (remaining.length > 0 && !remaining.some((r) => r.isDefault)) {
-        await ctx.db.patch(remaining[0]._id, { isDefault: true });
-      }
-    }
-    // Chats bound to the deleted instance are intentionally LEFT: on the next send
-    // resolveTargetForChat sees the (now-removed) grant and re-binds to the user's
-    // default (or fails no_agent) — no orphan dispatch, history preserved.
   },
 });

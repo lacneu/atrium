@@ -107,15 +107,137 @@ gateway configuration back from Atrium
 Everything except `secret` is safe to log verbatim, which is what makes the
 response usable as a qualification record.
 
+## Enrolling provider credentials
+
+Provisioning creates the instance and its one-time bridge credential; it does
+not make provider credentials appear. Before starting the bridge, the same
+provisioner identity must enroll the exact provider bundle:
+
+```http
+POST /api/v1/instances/credentials
+Authorization: Bearer <api-key>
+Content-Type: application/json
+
+{"name":"compta","kind":"openclaw","credentials":{"token":"…"}}
+```
+
+Hermes uses `{"apiKey":"…"}` instead of `{"token":"…"}`. The request
+accepts exactly `name`, `kind`, and `credentials`; the credential object must
+also be exact for its provider. Partial bundles and unknown fields are refused.
+
+For OpenClaw, Atrium mints the Ed25519 device identity in its action runtime,
+stores its private half only as an AES-256-GCM envelope bound to
+`<instanceId>:deviceIdentity`, and returns only the public pairing material:
+
+```json
+{
+  "ok": true,
+  "name": "compta",
+  "outcome": "stored",
+  "fields": ["deviceIdentity", "token"],
+  "deviceIdentity": {"id": "…", "publicKey": "…"}
+}
+```
+
+The caller never supplies or receives the private key. An identical replay
+decrypts the current envelopes only long enough to compare them, returns
+`outcome: "unchanged"`, preserves the existing device identity, and writes
+nothing. A changed OpenClaw bootstrap token updates that encrypted field only
+until the bridge has promoted a paired device token; subsequent provisioner
+replays cannot downgrade it. A changed Hermes key updates only its encrypted
+field. A provider switch removes stale provider fields in the same optimistic mutation.
+Duplicate instance names, kind drift, duplicate secret rows, concurrent changes,
+and malformed stored identities fail closed.
+
+**A token of UNKNOWN provenance is refused, not overwritten.** The no-downgrade
+rule above reads `instanceSecrets.source`, which is OPTIONAL and which nothing
+backfills — so a token row written before this field existed carries no
+provenance at all, and "not marked device" does not mean "not promoted". Writing
+over it could cut a gateway that works. Such a row therefore yields
+`409 credential_provenance_unknown`, and the remedy is a deliberate human act:
+clear the credential from the admin interface, then enroll again. An identical
+value is still reported `unchanged` — there is nothing to write, so nothing to
+refuse. This applies to OpenClaw tokens only: a Hermes `apiKey` has no second
+writer, so an absent provenance there carries no ambiguity and updates normally.
+
+The plaintext provider credential exists only in the authenticated action call.
+It is never returned, traced, or stored unencrypted. The trace records the
+instance, outcome, and field names only.
+
+### OpenClaw device-token promotion and rotation
+
+The enrolled OpenClaw token is an installation bootstrap credential, not the
+steady-state bridge credential. On the first successful handshake, OpenClaw
+returns a token bound to the bridge's Ed25519 device identity. The bridge sends
+that value to `POST /bridge/device-token` with its instance-bound bridge secret.
+Atrium verifies the exact stored public identity, encrypts the device token, and
+only then lets the client reconnect with it. The first connection returned to a
+turn is therefore already authenticated by `device-token`; a failed persistence
+or proof reconnect fails closed.
+
+This ordering separates routine shared-secret rotation from live clients:
+
+1. every bridge persists and proves its device token;
+2. every other connected OpenClaw device must report `device-token` in the
+   sanitized `system-presence` authentication field;
+3. the control plane refuses rotation while any live client still reports
+   shared `token` or `password` authentication;
+4. only after that drain proof may the shared gateway secret be replaced.
+
+No plaintext token is returned by Atrium, logged, traced, or written to a
+temporary file. The promotion trace contains only the instance name and the
+`stored`, `unchanged`, or `rejected` outcome.
+
+## Removing an instance
+
+The same narrow provisioner identity can remove a gateway after the host
+reconciler has stopped its bridge and gateway services:
+
+```http
+POST /api/v1/instances/deprovision
+Authorization: Bearer <api-key>
+Content-Type: application/json
+
+{"name":"compta"}
+```
+
+The request accepts exactly `name`; unknown fields are refused. The response is
+idempotent:
+
+```json
+{
+  "ok": true,
+  "instance": "compta",
+  "outcome": "deleted"
+}
+```
+
+`outcome` is `deleted` on the first successful call and `absent` on a replay.
+Two pre-existing rows sharing the requested name return
+`409 instance_name_ambiguous` and neither row is touched.
+
+Deletion revokes the bridge credential and removes the instance's encrypted
+credentials, discovery and usage rows, agents, and direct/group grants through
+the same cascade used by the authenticated admin UI. Chats remain so their next
+dispatch can rebind safely while preserving history. The API call trace records
+the service principal, instance name, and outcome, never a credential.
+
+The endpoint does not stop containers. The external control plane must prove
+that both bridge and gateway services are absent before calling it; this ordering
+prevents a still-running bridge from entering an unauthorized retry loop.
+
 ### Failures
 
-| Status | Error | Meaning |
-|---|---|---|
-| 400 | `name is required`, `gatewayUrl is required` | Missing mandatory field. |
-| 400 | `invalid_instance_name` | Charset rejected at creation. |
-| 400 | `<field> applies to kind '<k>' only` | Field/kind mismatch. |
-| 403 | `missing permission: instances.provision` | Key lacks the permission. |
-| 409 | `instance_name_ambiguous` | Two rows already share this name. Nothing is written — a guess would configure one row while the bridge routes to the other. Resolve by hand. |
+| Status | Error                                        | Meaning                                                                                                                                       |
+| ------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `name is required`, `gatewayUrl is required` | Missing mandatory field.                                                                                                                      |
+| 400    | `invalid_instance_name`                      | Charset rejected at creation.                                                                                                                 |
+| 400    | `<field> applies to kind '<k>' only`         | Field/kind mismatch.                                                                                                                          |
+| 403    | `missing permission: instances.provision`    | Key lacks the permission.                                                                                                                     |
+| 409    | `instance_name_ambiguous`                    | Two rows already share this name. Nothing is written — a guess would configure one row while the bridge routes to the other. Resolve by hand. |
+| 409    | `credential_state_changed`                   | A concurrent writer changed credentials. The caller must restart from a fresh read.                                                          |
+| 409    | `credential_state_invalid`                   | An existing OpenClaw identity cannot be validated. Repair it explicitly; Atrium does not overwrite it.                                      |
+| 409    | `credential_provenance_unknown`              | The stored OpenClaw token predates provenance tracking and may already be a promoted device token. Clear it from the admin interface first. |
 
 ## Running it twice
 

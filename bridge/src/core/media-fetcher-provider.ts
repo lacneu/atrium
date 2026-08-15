@@ -29,7 +29,7 @@ export function buildMediaFetcher(
         httpBase: config.gatewayHttpBase,
         // Boot-resolved (index.ts) — non-null by construction; the same operator
         // token the WS connect uses.
-        token: config.openclawToken!,
+        token: () => config.openclawToken!,
         maxBytes,
         timeoutMs: config.mediaFetchTimeoutMs,
       });

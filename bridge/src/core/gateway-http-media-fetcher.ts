@@ -34,8 +34,20 @@ import {
 export interface GatewayHttpMediaFetcherOptions {
   /** Gateway HTTP origin, e.g. "http://host:18790" (trailing slash trimmed). */
   httpBase: string;
-  /** Bearer token for the meta probe — the same OPENCLAW_TOKEN as the WS. */
-  token: string;
+  /**
+   * Bearer token for the meta probe — the same OPENCLAW_TOKEN as the WS.
+   *
+   * A THUNK, deliberately, never a captured value. The operator token is not
+   * constant for the life of a process: an OpenClaw device-token promotion
+   * replaces it mid-run. Holding a copy here made outbound media keep presenting
+   * the superseded bootstrap token while the WebSocket had already moved on —
+   * media failing with `fetch_error` against a perfectly healthy connection. The
+   * provider rebuilds this fetcher only when its (mode, maxBytes) signature
+   * changes, so a token change could never have triggered a rebuild; reading the
+   * value per request removes the staleness rather than adding one more thing to
+   * remember to invalidate.
+   */
+  token: () => string;
   /** Reject a download whose Content-Length exceeds this (safety valve). */
   maxBytes: number;
   /**
@@ -87,7 +99,7 @@ function byteCap(maxBytes: number): Transform {
 
 export class GatewayHttpMediaFetcher implements MediaFetcher {
   private readonly httpBase: string;
-  private readonly token: string;
+  private readonly token: () => string;
   private readonly maxBytes: number;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -119,7 +131,7 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       const metaRes = await this.fetchImpl(
         `${this.httpBase}${MEDIA_ROUTE}?source=${enc}&meta=1`,
         {
-          headers: { Authorization: `Bearer ${this.token}` },
+          headers: { Authorization: `Bearer ${this.token()}` },
           signal: controller.signal,
         },
       );

@@ -23,6 +23,7 @@ import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
 import { sessionsGetParams } from "./core/rpc-params.js";
+import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
@@ -1342,6 +1343,7 @@ export class SessionRegistry {
       bundle.config.openclawGatewayUrl,
       bundle.config.openclawToken!,
       bundle.config.deviceIdentity!,
+      deviceTokenPromotion(bundle.config),
     );
     // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
     // gateway's own account of a compaction — it carries the CAUSE (`overflow` vs
@@ -1387,6 +1389,7 @@ export class SessionRegistry {
         cfg.openclawGatewayUrl,
         cfg.openclawToken!,
         cfg.deviceIdentity!,
+        deviceTokenPromotion(cfg),
       );
       try {
         const raw = await conn.request("sessions.get", sessionsGetParams(key), 10_000);

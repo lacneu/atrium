@@ -71,6 +71,7 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "ws://olivier/ws",
       "t",
       expect.anything(),
+      undefined,
     );
 
     // Self-heal registers jerome at runtime (size -> 2).
@@ -88,6 +89,7 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "ws://jerome/ws",
       "t",
       expect.anything(),
+      undefined,
     );
 
     // Explicit route to the ORIGINAL instance STILL hits olivier's gateway (no misroute
@@ -103,6 +105,7 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "ws://olivier/ws",
       "t",
       expect.anything(),
+      undefined,
     );
 
     reg.closeAll();

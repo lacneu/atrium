@@ -9,7 +9,7 @@
 //    the old, removeAgent re-elects — H2/H3).
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
@@ -667,7 +667,13 @@ describe("deleteInstance cascade (Codex P2 — no orphan grants)", () => {
       agentId: "bob",
     }); // not default
 
+    // The name-bound cleanup is swept in SCHEDULED batches now (a large
+    // instance cannot fit one transaction). Fake timers must be installed
+    // BEFORE the mutation that schedules, then the chain is run to the end.
+    vi.useFakeTimers();
     await as.mutation(api.admin.deleteInstance, { instanceId: prodId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
 
     expect((await agentsOf(t, "prod")).length).toBe(0);
     const prodDisc = await t.run((ctx) =>
@@ -703,7 +709,13 @@ describe("deleteInstance cascade (Codex P2 — no orphan grants)", () => {
       instanceName: "prod",
       agentId: "alice",
     });
+    // The name-bound cleanup is swept in SCHEDULED batches now (a large
+    // instance cannot fit one transaction). Fake timers must be installed
+    // BEFORE the mutation that schedules, then the chain is run to the end.
+    vi.useFakeTimers();
     await as.mutation(api.admin.deleteInstance, { instanceId: dupId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
     expect((await uaOf(t, userId)).length).toBe(1); // grant kept
     expect((await agentsOf(t, "prod")).length).toBe(1); // agents kept
   });

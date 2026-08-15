@@ -5,6 +5,7 @@
 // dispatch. NO secrets — non-secret instance/agent NAMES only.
 
 import { v } from "convex/values";
+import { nameBoundWriteAllowed } from "./lib/instanceCascade";
 import {
   internalAction,
   internalMutation,
@@ -187,6 +188,12 @@ export const recordInstanceUsage = internalMutation({
     ),
   },
   handler: async (ctx, { instanceName, usage }) => {
+    // The SAME poll that calls applyDiscovery calls this next, so guarding one and
+    // not the other left the door open: the sweep visits `instanceUsage` exactly
+    // once, and a late write after that pass recreates the row for good — a stale
+    // quota then inherited by any instance recreated under this name.
+    if (!(await nameBoundWriteAllowed(ctx, instanceName))) return;
+
     const existing = await ctx.db
       .query("instanceUsage")
       .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
@@ -208,6 +215,11 @@ export const applyDiscovery = internalMutation({
     allowEmpty: v.optional(v.boolean()),
   },
   handler: async (ctx, { instanceName, agents, allowEmpty }) => {
+    // A poll or file write started before a deletion can land after it. Name-bound
+    // rows require a live instance, or the deleted one gets partially recreated and
+    // a gateway later reusing the name inherits it. See lib/instanceCascade.
+    if (!(await nameBoundWriteAllowed(ctx, instanceName))) return undefined;
+
     const now = Date.now();
     await upsertInstanceDiscovery(ctx, instanceName, { ok: true, now });
 
@@ -288,6 +300,10 @@ export const applyDiscovery = internalMutation({
 export const recordDiscoveryFailure = internalMutation({
   args: { instanceName: v.string(), error: v.string() },
   handler: async (ctx, { instanceName, error }) => {
+    // A poll or file write started before a deletion can land after it. Name-bound
+    // rows require a live instance, or the deleted one gets partially recreated and
+    // a gateway later reusing the name inherits it. See lib/instanceCascade.
+    if (!(await nameBoundWriteAllowed(ctx, instanceName))) return undefined;
     await upsertInstanceDiscovery(ctx, instanceName, {
       ok: false,
       error,

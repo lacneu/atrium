@@ -33,6 +33,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getActor, requireAdmin } from "./lib/access";
 import { resolveCuratorTarget } from "./agents";
+import { nameBoundWriteAllowed } from "./lib/instanceCascade";
 import {
   afterStateFromSetResponse,
   postBridge,
@@ -218,6 +219,14 @@ export const dispatchCuration = internalMutation({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<{ ok: boolean; reason?: string; curationId?: string }> => {
+    // A curation requested BEFORE the deletion can reach this insert after the
+    // sweep has already emptied `agentFileCurations` — that table is visited once
+    // and never revisited, so the row would outlive the tombstone and be inherited,
+    // with its file content, by a gateway recreated under this name.
+    if (!(await nameBoundWriteAllowed(ctx, args.instanceName))) {
+      return { ok: false, reason: "instance_deleted" };
+    }
+
     const userId = args.userId ?? (await getActor(ctx)).realUserId;
     // A curator agent on the SAME instance (content never crosses instances).
     const target = await resolveCuratorTarget(ctx, userId, args.instanceName);

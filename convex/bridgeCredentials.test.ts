@@ -58,7 +58,124 @@ const get = (t: TestConvex<typeof schema>, auth?: string) =>
     headers: auth ? { Authorization: auth } : {},
   });
 
+const promote = (
+  t: TestConvex<typeof schema>,
+  auth: string,
+  body: Record<string, unknown>,
+) =>
+  t.fetch("/bridge/device-token", {
+    method: "POST",
+    headers: {
+      Authorization: auth,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
 describe("/bridge/credentials end-to-end", () => {
+  test("promotes only its own paired device token and returns no secret", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const beta = await seedInstance(t, "beta");
+    const identity = {
+      id: "a".repeat(64),
+      publicKey: "A".repeat(43),
+      privateKey: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA==\n-----END PRIVATE KEY-----",
+    };
+    await as(t, admin).action(api.instanceSecrets.setInstanceSecret, {
+      instanceId: beta,
+      field: "token",
+      plaintext: "bootstrap-token",
+    });
+    await as(t, admin).action(api.instanceSecrets.setInstanceSecret, {
+      instanceId: beta,
+      field: "deviceIdentity",
+      plaintext: JSON.stringify(identity),
+    });
+    const secret = await as(t, admin).action(api.bridgeAuth.mintBridgeSecret, {
+      instanceId: beta,
+    });
+
+    const first = await promote(t, `Bearer ${secret.plaintext}`, {
+      deviceId: identity.id,
+      publicKey: identity.publicKey,
+      token: "paired-device-token",
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ ok: true, outcome: "stored" });
+    const credentials = await get(t, `Bearer ${secret.plaintext}`);
+    expect((await credentials.json()).credentials.token).toBe(
+      "paired-device-token",
+    );
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("instanceSecrets")
+        .withIndex("by_instance_field", (query) =>
+          query.eq("instanceId", beta).eq("field", "token"),
+        )
+        .unique(),
+    );
+    expect(rows?.source).toBe("device");
+
+    const replay = await promote(t, `Bearer ${secret.plaintext}`, {
+      deviceId: identity.id,
+      publicKey: identity.publicKey,
+      token: "paired-device-token",
+    });
+    expect(await replay.json()).toEqual({ ok: true, outcome: "unchanged" });
+  });
+
+  test("rejects cross-instance identities and malformed promotion bodies", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const beta = await seedInstance(t, "beta");
+    await as(t, admin).action(api.instanceSecrets.setInstanceSecret, {
+      instanceId: beta,
+      field: "token",
+      plaintext: "bootstrap-token",
+    });
+    await as(t, admin).action(api.instanceSecrets.setInstanceSecret, {
+      instanceId: beta,
+      field: "deviceIdentity",
+      plaintext: JSON.stringify({
+        id: "a".repeat(64),
+        publicKey: "A".repeat(43),
+        privateKey: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA==\n-----END PRIVATE KEY-----",
+      }),
+    });
+    const secret = await as(t, admin).action(api.bridgeAuth.mintBridgeSecret, {
+      instanceId: beta,
+    });
+
+    expect(
+      (
+        await promote(t, `Bearer ${secret.plaintext}`, {
+          deviceId: "b".repeat(64),
+          publicKey: "A".repeat(43),
+          token: "paired-device-token",
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await promote(t, `Bearer ${secret.plaintext}`, {
+          deviceId: "bad",
+          publicKey: "A".repeat(43),
+          token: "paired-device-token",
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await promote(t, "Bearer unknown", {
+          deviceId: "a".repeat(64),
+          publicKey: "A".repeat(43),
+          token: "paired-device-token",
+        })
+      ).status,
+    ).toBe(401);
+  });
+
   test("a valid per-bridge secret returns ONLY its instance's decrypted creds", async () => {
     const t = convexTest(schema, modules);
     const admin = await seedAdmin(t);

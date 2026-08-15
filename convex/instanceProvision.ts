@@ -36,11 +36,18 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
+import {
+  assertNameNotSweeping,
+  deleteInstanceCascade,
+  openCascadeJob,
+} from "./lib/instanceCascade";
 
 /** What a provisioning call did to the instance row. */
 export type ProvisionOutcome = "created" | "updated" | "unchanged";
 /** What it did to the per-bridge secret. */
 export type SecretOutcome = "minted" | "rotated" | "existing";
+/** What a deprovisioning call did to the named instance. */
+export type DeprovisionOutcome = "deleted" | "absent";
 
 /**
  * The instance NAME is the routing key: `agents`, `userAgents`, `chats` and
@@ -138,6 +145,14 @@ export const applyProvision = internalMutation({
 
     if (existing === undefined) {
       if (!NAME_PATTERN.test(name)) throw new Error("invalid_instance_name");
+      // FIRST LOCK. A deletion answers as soon as the instance row and its
+      // credentials are gone; the name-bound rows are still being swept in the
+      // background, and that sweep matches by NAME with nothing to tell an old row
+      // from a new one. Recreating the name now — the ordinary delete-then-recreate
+      // a control plane performs — would have the running sweep delete the NEW
+      // instance's agents and grants. Refuse until the sweep has finished; it is
+      // seconds of bounded work, and the caller retries.
+      await assertNameNotSweeping(ctx, name);
       const instanceId = await ctx.db.insert("instances", {
         name,
         gatewayUrl,
@@ -201,6 +216,39 @@ export const bridgeSecretPresent = internalQuery({
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
       .first();
     return row !== null;
+  },
+});
+
+/** Remove one unambiguous instance by name through the provisioner boundary. */
+export const deprovisionInstance = internalMutation({
+  args: { name: v.string() },
+  handler: async (
+    ctx,
+    { name: rawName },
+  ): Promise<{ name: string; outcome: DeprovisionOutcome }> => {
+    const name = rawName.trim();
+    const rows = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (query) => query.eq("name", name))
+      .take(2);
+    if (rows.length > 1) throw new Error("instance_name_ambiguous");
+    const instance = rows[0];
+    if (instance === undefined) return { name, outcome: "absent" };
+    const { sweepName } = await deleteInstanceCascade(ctx, instance._id);
+    // The instance row and its ID-bound CREDENTIALS are already gone at this
+    // point — those are never deferred. What remains is the unbounded name-bound
+    // cleanup, which a large instance cannot fit in one transaction: it is swept
+    // in bounded batches, and an `instanceCascades` job row makes a dropped chain
+    // recoverable rather than silently leaving orphan grants.
+    if (sweepName !== null) {
+      await openCascadeJob(ctx, sweepName);
+      await ctx.scheduler.runAfter(
+        0,
+        internal.instanceCascade.sweepInstanceCascade,
+        { name: sweepName },
+      );
+    }
+    return { name, outcome: "deleted" };
   },
 });
 

@@ -15,6 +15,54 @@ Delivery is at least once without becoming duplicate display: Atrium persists a
 receipt and deduplicates it before acknowledging the delivery on a later poll.
 The notification itself is translated when each reader opens the bell.
 
+## [0.73.0] — Automating gateway credentials and clean removal
+
+The provisioner can now enroll the exact OpenClaw or Hermes credential bundle
+before a bridge starts. Provider plaintext is encrypted inside the action
+runtime, bound to the instance and field with AES-256-GCM, and never returned or
+traced. OpenClaw device identities are generated inside Atrium: the private key
+never crosses the API boundary, while the public identity is returned for local
+gateway pairing. Identical replays preserve ciphertext and device identity and
+write nothing; partial bundles, ambiguous rows, kind drift, corrupted identities,
+and concurrent updates fail closed.
+
+An external control plane can now remove a gateway through the same narrowly
+scoped provisioner access used to register it. Removal is deliberately the last
+step: the caller must first stop the gateway and bridge services, then Atrium
+revokes the bridge credential and deletes the instance-bound secrets, discovery,
+usage, agents, and grants.
+
+The operation is safe to replay. A second request reports that the instance is
+already absent and writes nothing. Legacy duplicate names fail closed with a
+conflict instead of choosing one row. The authenticated administrator interface
+and the provisioner endpoint now share the same deletion cascade, so neither path
+can drift into leaving credentials or grants behind.
+
+Removing a large gateway now works. The cleanup used to run entirely inside the
+request that deleted it — every assistant, every access right, and a further
+lookup per affected person — which fits comfortably for a small gateway and
+exceeds what one database transaction may do for a big one. Removal failed, and
+kept failing, for exactly the gateways most worth removing.
+
+What must not wait no longer does: the gateway's stored credentials, and the
+connector credential that identifies it, are erased in the same instant as the
+gateway itself. A gateway reported as removed can no longer be reached, full
+stop. The rest — the assistants, the access rights, the cached discovery — is
+cleared progressively in the background, and the work is recorded so that an
+interruption resumes instead of leaving people with access to something that no
+longer exists. Nobody is left without a default assistant on the way through.
+
+Two habits were made structural while this shipped. A gateway connection is never
+given up because a *different* system was briefly unreachable: once the handshake
+has succeeded the connection is kept, and the credential it could not save is
+saved on the next attempt. And a credential whose origin is unknown — written
+before Atrium began recording it — is refused rather than replaced, because it
+may already be the one a paired gateway is using.
+
+Outbound files also stop depending on a credential captured at startup: the
+token is now read at the moment it is used, so a gateway that hands out a new one
+mid-run no longer leaves attachments failing against a connection that works.
+
 ## [0.72.1] — Checking your own work should not need a bigger key
 
 Corrective. The scripted gateway registration shipped in 0.72.0 came with an

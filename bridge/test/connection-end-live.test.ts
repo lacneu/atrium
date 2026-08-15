@@ -86,6 +86,229 @@ afterEach(async () => {
 });
 
 describe("connection end over a real socket", () => {
+  it("persists a server-issued device token and reconnects with it before returning", async () => {
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    const observedTokens: string[] = [];
+    const promoted: string[] = [];
+    wss.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "n", ts: 1 },
+        }),
+      );
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as {
+          id: string;
+          method?: string;
+          params?: { auth?: { token?: string } };
+        };
+        if (frame.method !== "connect") return;
+        observedTokens.push(frame.params?.auth?.token ?? "missing");
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 4,
+              server: { version: "2026.7.1", connId: "c" },
+              auth: { deviceToken: "paired-device-token" },
+              policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
+            },
+          }),
+        );
+      });
+    });
+    const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+
+    const conn = await OpenClawConnection.connect(
+      url,
+      "bootstrap-token",
+      deviceIdentity(),
+      async (token) => {
+        promoted.push(token);
+        return "stored" as const;
+      },
+    );
+
+    expect(promoted).toEqual(["paired-device-token"]);
+    expect(observedTokens).toEqual([
+      "bootstrap-token",
+      "paired-device-token",
+    ]);
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  /** A gateway that hands back a FRESH device token on every connect. The pinned
+   *  contract does not describe `auth.deviceToken` at all, so its re-issue policy
+   *  is not something this bridge may assume — the loop has to be impossible by
+   *  construction rather than by the gateway behaving. */
+  const startReissuingGateway = async (
+    deviceTokenFor: (attempt: number) => string | undefined,
+  ): Promise<{ wss: WebSocketServer; url: string; observed: string[] }> => {
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    const observed: string[] = [];
+    wss.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "n", ts: 1 },
+        }),
+      );
+      socket.on("message", (raw) => {
+        const frame = JSON.parse(raw.toString()) as {
+          id: string;
+          method?: string;
+          params?: { auth?: { token?: string } };
+        };
+        if (frame.method !== "connect") return;
+        observed.push(frame.params?.auth?.token ?? "missing");
+        const issued = deviceTokenFor(observed.length);
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 4,
+              server: { version: "2026.7.1", connId: "c" },
+              ...(issued === undefined ? {} : { auth: { deviceToken: issued } }),
+              policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
+            },
+          }),
+        );
+      });
+    });
+    return {
+      wss,
+      url: `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`,
+      observed,
+    };
+  };
+
+  it("is BOUNDED to two sockets while still persisting the last token issued", async () => {
+    // Every connect answers with a token this connection has never used — the exact
+    // shape that made the first implementation recurse without bound, because it
+    // handed the promoter back to its own reconnect.
+    //
+    // Two properties have to hold together, and fixing one alone breaks the other:
+    // the chain must STOP (an unbounded one opens sockets and writes credentials
+    // for ever), and no issued token may be DROPPED (the socket would work while
+    // Convex and the in-memory operator token kept a superseded value, which every
+    // media request then presents). So: at most two sockets, and the token the
+    // second handshake issues is still persisted.
+    const { wss, url, observed } = await startReissuingGateway(
+      (attempt) => `device-token-${attempt}`,
+    );
+    const promoted: string[] = [];
+
+    const conn = await OpenClawConnection.connect(
+      url,
+      "bootstrap-token",
+      deviceIdentity(),
+      async (token) => {
+        promoted.push(token);
+        return "stored" as const;
+      },
+    );
+
+    // TWO sockets, never three, however many tokens are offered...
+    expect(observed).toEqual(["bootstrap-token", "device-token-1"]);
+    // ...and neither issued token was thrown away.
+    expect(promoted).toEqual(["device-token-1", "device-token-2"]);
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("records provenance even when the issued token EQUALS the one in use", async () => {
+    // The gateway can hand back the very string the bridge connected with. That is
+    // still "this is now your device token", and only the promotion call records
+    // that provenance in Convex. Skipping it left the stored row marked as a
+    // provisioner bootstrap, which a later enrollment is free to replace — locking
+    // the bridge out of a gateway it had legitimately paired with.
+    const { wss, url, observed } = await startReissuingGateway(
+      () => "already-the-device-token",
+    );
+    const promoted: string[] = [];
+
+    const conn = await OpenClawConnection.connect(
+      url,
+      "already-the-device-token",
+      deviceIdentity(),
+      async (token) => {
+        promoted.push(token);
+        return "stored" as const;
+      },
+    );
+
+    expect(promoted).toEqual(["already-the-device-token"]);
+    // No reconnect: nothing changed on the wire, only what Convex knows about it.
+    expect(observed).toEqual(["already-the-device-token"]);
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("a SUPERSEDED promotion keeps the socket and never walks the token backwards", async () => {
+    // A concurrent handshake already stored a newer token, so Convex answers
+    // `superseded`. Reconnecting with ours would step back to a credential Convex
+    // has deliberately replaced — and the in-memory token must not move either.
+    const { wss, url, observed } = await startReissuingGateway(
+      () => "our-older-token",
+    );
+
+    const conn = await OpenClawConnection.connect(
+      url,
+      "bootstrap-token",
+      deviceIdentity(),
+      async () => "superseded" as const,
+    );
+
+    // ONE socket: the reconnect that a `stored` outcome would have triggered does
+    // not happen, and the connection we already hold is kept.
+    expect(observed).toEqual(["bootstrap-token"]);
+    expect(conn.gatewayVersion).toBe("2026.7.1");
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("keeps the authenticated connection when persistence fails, instead of losing it", async () => {
+    // The credential store is down. The hello-ok has ALREADY succeeded, so the
+    // socket is authenticated and usable; trading it for a transient outage of a
+    // different system would be the bridge failing over someone else's fault.
+    const { wss, url, observed } = await startReissuingGateway(
+      () => "paired-device-token",
+    );
+    let attempts = 0;
+
+    const conn = await OpenClawConnection.connect(
+      url,
+      "bootstrap-token",
+      deviceIdentity(),
+      async () => {
+        attempts += 1;
+        throw new Error("device token promotion endpoint is unreachable");
+      },
+    );
+
+    expect(attempts).toBe(1);
+    // No reconnect happened: the ORIGINAL socket is the one returned.
+    expect(observed).toEqual(["bootstrap-token"]);
+    // And it is a working connection, not a husk — the handshake facts it captured
+    // during hello-ok are present, which is what the caller goes on to use.
+    expect(conn.gatewayVersion).toBe("2026.7.1");
+    expect(conn.maxPayload).toBe(MAX_PAYLOAD);
+    conn.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
   it("records an announced shutdown AND still delivers the frame to the consumer", async () => {
     gateway = startFakeGateway();
     await gateway.ready;

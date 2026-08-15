@@ -27,6 +27,18 @@ crons.cron(
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 
+// Re-arm instance-deletion sweeps whose scheduled chain died. The chain itself is
+// self-rescheduling, so this only ever picks up a pass that THREW (the scheduler
+// does not retry those) — leaving user grants pointing at an instance that no
+// longer exists. Cheap: an indexed range read bounded to a handful of rows, and a
+// no-op whenever nothing is mid-deletion.
+crons.interval(
+  "reap stalled instance cascades",
+  { minutes: 5 },
+  internal.instanceCascade.reapStalledCascades,
+  {},
+);
+
 // Prune expired auth refresh tokens. `@convex-dev/auth` deletes a session's tokens
 // on every refresh WITHOUT pagination, so past ~4k rows that delete hits Convex's
 // read limit and SIGN-IN STOPS WORKING for everyone — observed on a long-lived

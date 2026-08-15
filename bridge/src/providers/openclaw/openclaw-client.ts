@@ -292,6 +292,23 @@ export class OpenClawConnection {
     gatewayUrl: string,
     token: string,
     device: DeviceIdentity,
+    promoteDeviceToken?: (
+      token: string,
+      issuedAtMs?: number,
+    ) => Promise<"stored" | "unchanged" | "superseded">,
+    /**
+     * How many promotions this chain has already performed. 0 = a re-issued token
+     * is persisted AND reconnected with; 1 = it is persisted ONLY, and this socket
+     * is kept.
+     *
+     * Both halves matter. Without the cap a gateway that mints a fresh token on
+     * every connect drives an unbounded connect->promote->connect chain. Without
+     * the persist-at-depth-1 half, the second handshake's token was DROPPED: the
+     * live socket worked, but Convex and `config.openclawToken` still held the
+     * first one, so the next reconnect — and every media request, which reads the
+     * operator token per call — used a superseded credential.
+     */
+    promotionDepth = 0,
   ): Promise<OpenClawConnection> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -347,8 +364,9 @@ export class OpenClawConnection {
         );
       });
 
-      // Phase 1: await connect.challenge. Phase 2: await the connect res.
-      let phase: "challenge" | "connect" = "challenge";
+      // Phase 1: await connect.challenge. Phase 2: await the connect response.
+      // Promotion persists the server-issued device token before reconnecting.
+      let phase: "challenge" | "connect" | "promotion" = "challenge";
       let connection: OpenClawConnection | null = null;
       let reqId = "";
 
@@ -428,6 +446,7 @@ export class OpenClawConnection {
           );
           return;
         }
+        if (phase !== "connect") return;
         // phase === "connect": expect the res for our connect request.
         if (frame.type !== "res" || frame.id !== reqId) {
           return; // ignore unrelated frames until our connect ack lands
@@ -448,40 +467,152 @@ export class OpenClawConnection {
             "| role/scopes=",
             clip({ role: payload.role, scopes: payload.scopes }, 200),
           );
-          dbg("connect hello-ok (raw):", clip(frame, 20000));
-          settled = true;
-          clearTimeout(connectTimer);
-          connection = new OpenClawConnection(ws);
-          if (handshakeShutdown !== null) {
-            connection.adoptShutdownNotice(handshakeShutdown);
+          const auth = (payload.auth ?? {}) as Record<string, unknown>;
+          dbg("connect hello-ok metadata:", {
+            payloadKeys: Object.keys(payload).sort(),
+            authKeys: Object.keys(auth).sort(),
+          });
+          /**
+           * Adopt THIS socket as the live connection. Extracted because the
+           * handshake now has TWO ways of reaching it: the ordinary path, and a
+           * device-token promotion that failed to persist. The hello-ok is already
+           * in hand at both — the socket is authenticated and usable — so nothing
+           * below may throw it away over a side-effect.
+           */
+          const finishConnection = (): void => {
+            settled = true;
+            clearTimeout(connectTimer);
+            connection = new OpenClawConnection(ws);
+            if (handshakeShutdown !== null) {
+              connection.adoptShutdownNotice(handshakeShutdown);
+            }
+            // Capture the gateway version for the compat manifest (defensive:
+            // an absent/non-string field leaves null -> conservative policy).
+            connection.gatewayVersion =
+              typeof server.version === "string" && server.version.length > 0
+                ? server.version
+                : null;
+            // Capture the WS frame limit (policy.maxPayload) — the authoritative
+            // inbound-attachment ceiling. Defensive: a non-number leaves null.
+            const policy = (payload.policy ?? {}) as Record<string, unknown>;
+            connection.maxPayload =
+              typeof policy.maxPayload === "number" && policy.maxPayload > 0
+                ? policy.maxPayload
+                : null;
+            connection.maxBufferedBytes =
+              typeof policy.maxBufferedBytes === "number" &&
+              policy.maxBufferedBytes > 0
+                ? policy.maxBufferedBytes
+                : null;
+            // The gateway ANNOUNCES what it emits (G-70). Read before the reader is
+            // attached, and read defensively: `features` is a closed object upstream, but
+            // this is the connect path and a diagnostic must never be able to fail it.
+            // The sensor itself total-catches; this guard only keeps a malformed payload
+            // from throwing on property access.
+            const features = (payload.features ?? {}) as Record<string, unknown>;
+            protocolDrift.observeAnnouncedEvents(features.events);
+            connection.attachReader();
+            resolve(connection);
+          };
+
+          // DEVICE-TOKEN PROMOTION. `auth.deviceToken` is the gateway handing back a
+          // durable per-device token to replace the bootstrap one. It is NOT declared
+          // by the pinned contract (2026.7.1 vendors no frames.ts at all; the field
+          // appears first in 2026.7.2-beta.5), so against an older gateway it simply
+          // never arrives and this whole path stays dormant — which is why the dormant
+          // case is LOGGED rather than left silent: a promoter that is configured and
+          // never fires is indistinguishable from a broken one otherwise.
+          const issuedDeviceToken = auth.deviceToken;
+          // Promote even when the value EQUALS the token we connected with, as long
+          // as this chain has not promoted yet. The gateway handing back the same
+          // string still means "this is now your device token", and only the
+          // promotion records that PROVENANCE. Skipping it left the row marked
+          // `provisioner`, so a later enrollment was free to replace a token the
+          // gateway had actually paired — locking the bridge out. At depth >= 1 an
+          // equal value is simply the one we just stored, so there is nothing left
+          // to record.
+          const promotable =
+            promoteDeviceToken !== undefined &&
+            typeof issuedDeviceToken === "string" &&
+            issuedDeviceToken.length > 0 &&
+            (promotionDepth === 0 || issuedDeviceToken !== token);
+          if (promotable && typeof issuedDeviceToken === "string") {
+            // The handshake is OVER — hello-ok is in hand — so its deadline has
+            // done its job. Left armed, it can fire DURING the promotion (which
+            // carries its own, shorter timeout), terminate a socket that is already
+            // authenticated, and reject the connection before the promotion has
+            // even answered; the tolerant catch below would then find `settled` and
+            // be unable to keep anything.
+            clearTimeout(connectTimer);
+            phase = "promotion";
+            // The gateway states WHEN it issued this token. Carried through so a
+            // slower handshake cannot overwrite a newer token with an older one —
+            // concurrent connections to the same gateway are each handed their own.
+            const issuedAtMs =
+              typeof auth.issuedAtMs === "number" ? auth.issuedAtMs : undefined;
+            void promoteDeviceToken(issuedDeviceToken, issuedAtMs)
+              .then((outcome) => {
+                if (settled) return;
+                // A SUPERSEDED promotion means a concurrent handshake already
+                // stored a newer token. Reconnecting with ours would walk backwards
+                // to a credential Convex has deliberately replaced; keep the socket
+                // we have, which the gateway itself just authenticated.
+                if (outcome === "superseded") {
+                  finishConnection();
+                  return;
+                }
+                // AT DEPTH 1 the token is now persisted and in memory; keep THIS
+                // socket. Reconnecting again is what would be unbounded, and there
+                // is nothing left to gain: we are already authenticated with the
+                // very token we just stored.
+                // Nothing to reconnect for when the token did not change, or when
+                // this chain has already spent its one reconnect.
+                if (promotionDepth >= 1 || issuedDeviceToken === token) {
+                  finishConnection();
+                  return;
+                }
+                settled = true;
+                ws.removeAllListeners();
+                ws.close(1000, "device token promoted");
+                // Exactly TWO sockets at most: this reconnect may still persist a
+                // token the gateway re-issues, but it can no longer reconnect.
+                resolve(
+                  OpenClawConnection.connect(
+                    gatewayUrl,
+                    issuedDeviceToken,
+                    device,
+                    promoteDeviceToken,
+                    promotionDepth + 1,
+                  ),
+                );
+              })
+              .catch((err: unknown) => {
+                if (settled) return;
+                // The hello-ok already succeeded: this socket is authenticated and
+                // usable RIGHT NOW. Persisting the token is a side-effect on a
+                // DIFFERENT system (Convex), and the write it performs is idempotent,
+                // so it costs nothing to retry on the next connect. Failing the
+                // connection here would trade a working gateway for a transient
+                // outage of the credential store — the bridge must never do that.
+                console.log(
+                  "[openclaw] device token promotion failed; keeping the " +
+                    "authenticated connection and retrying on the next connect: " +
+                    (err instanceof Error ? err.message : String(err)),
+                );
+                finishConnection();
+              });
+            return;
           }
-          // Capture the gateway version for the compat manifest (defensive:
-          // an absent/non-string field leaves null -> conservative policy).
-          connection.gatewayVersion =
-            typeof server.version === "string" && server.version.length > 0
-              ? server.version
-              : null;
-          // Capture the WS frame limit (policy.maxPayload) — the authoritative
-          // inbound-attachment ceiling. Defensive: a non-number leaves null.
-          const policy = (payload.policy ?? {}) as Record<string, unknown>;
-          connection.maxPayload =
-            typeof policy.maxPayload === "number" && policy.maxPayload > 0
-              ? policy.maxPayload
-              : null;
-          connection.maxBufferedBytes =
-            typeof policy.maxBufferedBytes === "number" &&
-            policy.maxBufferedBytes > 0
-              ? policy.maxBufferedBytes
-              : null;
-          // The gateway ANNOUNCES what it emits (G-70). Read before the reader is
-          // attached, and read defensively: `features` is a closed object upstream, but
-          // this is the connect path and a diagnostic must never be able to fail it.
-          // The sensor itself total-catches; this guard only keeps a malformed payload
-          // from throwing on property access.
-          const features = (payload.features ?? {}) as Record<string, unknown>;
-          protocolDrift.observeAnnouncedEvents(features.events);
-          connection.attachReader();
-          resolve(connection);
+          if (promoteDeviceToken !== undefined) {
+            dbg(
+              "device token promotion configured but the gateway issued none",
+              "| gatewayVersion=",
+              server.version ?? "?",
+              "| authKeys=",
+              Object.keys(auth).sort(),
+            );
+          }
+          finishConnection();
           return;
         }
         const error = (frame.error ?? {}) as Record<string, unknown>;

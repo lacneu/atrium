@@ -77,9 +77,38 @@ function mockGateway(opts: MockOpts) {
   return { fetchImpl, calls };
 }
 const fetcher = (fetchImpl: typeof fetch, maxBytes = 1024) =>
-  new GatewayHttpMediaFetcher({ httpBase: BASE, token: "TKN", maxBytes, fetchImpl });
+  new GatewayHttpMediaFetcher({ httpBase: BASE, token: () => "TKN", maxBytes, fetchImpl });
 
 describe("GatewayHttpMediaFetcher", () => {
+  it("reads the operator token PER REQUEST, so a promoted device token takes effect at once", async () => {
+    // The bridge replaces its operator token mid-run when OpenClaw promotes a
+    // paired device token. This fetcher is rebuilt only when its (mode, maxBytes)
+    // signature changes, so a captured token could never be refreshed: outbound
+    // media went on presenting the superseded bootstrap credential against a
+    // WebSocket that had already moved on.
+    let current = "bootstrap";
+    const seen: string[] = [];
+    const impl = (async (_url: string, init?: RequestInit) => {
+      seen.push(
+        String((init?.headers as Record<string, string>)?.Authorization ?? ""),
+      );
+      return new Response(null, { status: 404 });
+    }) as unknown as typeof fetch;
+    const f = new GatewayHttpMediaFetcher({
+      httpBase: BASE,
+      token: () => current,
+      maxBytes: 1024,
+      fetchImpl: impl,
+    });
+
+    await f.open("m1").catch(() => undefined);
+    current = "promoted-device-token";
+    await f.open("m2").catch(() => undefined);
+
+    expect(seen[0]).toBe("Bearer bootstrap");
+    expect(seen[seen.length - 1]).toBe("Bearer promoted-device-token");
+  });
+
   it("SUCCESS: meta(Bearer)->ticket->download(no Bearer) streams bytes + mime + size", async () => {
     const { fetchImpl, calls } = mockGateway({
       meta: { body: { available: true, mediaTicket: "v1.tkt.sig" } },
@@ -217,7 +246,7 @@ describe("GatewayHttpMediaFetcher", () => {
       })) as unknown as typeof fetch;
     const f = new GatewayHttpMediaFetcher({
       httpBase: BASE,
-      token: "TKN",
+      token: () => "TKN",
       maxBytes: 1024,
       timeoutMs: 15,
       fetchImpl: hanging,
@@ -236,7 +265,7 @@ describe("GatewayHttpMediaFetcher", () => {
     });
     const f = new GatewayHttpMediaFetcher({
       httpBase: BASE,
-      token: "TKN",
+      token: () => "TKN",
       maxBytes: 1024,
       timeoutMs: 15,
       fetchImpl,

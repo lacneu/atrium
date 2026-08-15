@@ -28,3 +28,10 @@ export const secretFieldValidator = v.union(
   v.literal("deviceIdentity"),
   v.literal("apiKey"),
 );
+
+/** Describe who last established a credential without exposing its value. */
+export const secretSourceValidator = v.union(
+  v.literal("admin"),
+  v.literal("provisioner"),
+  v.literal("device"),
+);

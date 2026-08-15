@@ -51,10 +51,41 @@ export const storeInstanceSecret = internalMutation({
         instanceId,
         field,
         secret,
+        source: "admin",
         updatedAt: Date.now(),
       });
     } else {
-      await ctx.db.patch(existing._id, { secret, updatedAt: Date.now() });
+      await ctx.db.patch(existing._id, {
+        secret,
+        source: "admin",
+        // An admin-supplied token is not a gateway issuance, so the promotion
+        // timestamp of whatever it replaces must go with it. Kept, it would order
+        // future promotions against a moment that no longer relates to anything —
+        // after a gateway change or a clock that moved back, a genuinely new token
+        // would be classified `superseded` for good.
+        issuedAtMs: undefined,
+        updatedAt: Date.now(),
+      });
+    }
+    // REPLACING THE DEVICE IDENTITY INVALIDATES A PROMOTED TOKEN.
+    // A token whose `source` is "device" was issued by the gateway AGAINST a
+    // specific Ed25519 identity — the promotion endpoint refuses any other. Leave
+    // it in place after the identity is replaced and the bridge presents the NEW
+    // key with a token minted for the OLD one, which the gateway rejects: the
+    // instance is then locked out with two credentials that are individually
+    // valid and jointly meaningless. Dropping it returns the instance to the
+    // bootstrap path, where the provisioner may enroll a token again and the
+    // bridge re-earns a device token on its next handshake.
+    if (field === "deviceIdentity") {
+      const promoted = await ctx.db
+        .query("instanceSecrets")
+        .withIndex("by_instance_field", (q) =>
+          q.eq("instanceId", instanceId).eq("field", "token"),
+        )
+        .unique();
+      if (promoted !== null && promoted.source === "device") {
+        await ctx.db.delete(promoted._id);
+      }
     }
     const actor = await getActor(ctx);
     // Audit WHO + WHICH instance — never the field value (which is the secret's
@@ -141,7 +172,11 @@ export const getInstanceSecretEnvelopes = internalQuery({
       .query("instanceSecrets")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
       .collect();
-    return rows.map((r) => ({ field: r.field, secret: r.secret }));
+    return rows.map((r) => ({
+      field: r.field,
+      secret: r.secret,
+      source: r.source,
+    }));
   },
 });
 
@@ -158,6 +193,7 @@ export const listInstanceSecretStatus = query({
     return rows.map((r) => ({
       instanceId: r.instanceId,
       field: r.field,
+      source: r.source,
       updatedAt: r.updatedAt,
     }));
   },

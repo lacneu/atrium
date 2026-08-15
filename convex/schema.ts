@@ -22,6 +22,7 @@ import { instanceConfigValidator } from "./lib/instanceConfig";
 import {
   encryptedSecretValidator,
   secretFieldValidator,
+  secretSourceValidator,
 } from "./lib/crypto/convexValidator";
 
 // A single normalized message part. assistant-ui's `convertMessage` maps these
@@ -452,10 +453,29 @@ export default defineSchema({
   // plaintext is never stored and never returned to the browser — only the bridge
   // fetches the decrypted form server-side. Encryption binds AAD `<instanceId>:
   // <field>` so a ciphertext can't be relocated to another instance/field.
+  // An instance deletion still owing its name-bound sweep. Present ONLY between
+  // the moment the instance row disappears and the moment the last grant/agent/
+  // discovery row for that name is gone. The row exists so a dropped scheduler
+  // chain is recoverable: `updatedAt` is the progress stamp a cron watches, and
+  // an absent row means the sweep completed.
+  instanceCascades: defineTable({
+    instanceName: v.string(),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_name", ["instanceName"])
+    .index("by_updated", ["updatedAt"]),
+
   instanceSecrets: defineTable({
     instanceId: v.id("instances"),
     field: secretFieldValidator, // "token" | "deviceIdentity" | "apiKey"
     secret: encryptedSecretValidator,
+    source: v.optional(secretSourceValidator),
+    // Gateway-declared issuance time of a PROMOTED device token (`auth.issuedAtMs`
+    // on the connect hello-ok). Two handshakes to the same gateway can overlap and
+    // be handed DIFFERENT tokens; without an order, the one that happens to write
+    // last wins, which can be the older. Absent for anything not promoted.
+    issuedAtMs: v.optional(v.number()),
     updatedAt: v.number(),
   })
     .index("by_instance", ["instanceId"]) // status list + cascade delete
