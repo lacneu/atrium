@@ -124,6 +124,37 @@ Pushed by `bootstrap-env.sh` (or the Helm Job) via `convex env set`.
 | --- | --- | --- |
 | `ATRIUM_SECRET_KEY` | for UI-entered credentials | Base64 of 32 random bytes. Master key that AES-256-GCM-encrypts gateway credentials (operator token, Ed25519 device identity, Hermes API key) entered per instance in the admin UI before they are stored in Convex. Treat it as a **root secret and back it up** — losing or changing it makes existing encrypted credentials unrecoverable (you would re-enter them in the UI). Keep it in env/a secret store, never in the database. |
 
+### Signed operator announcements
+
+This integration is optional. When all seven variables are absent, it is inactive
+and makes no outbound request. A partial or invalid configuration also fails
+closed. The URL must use HTTPS. The token and public key stay in the Convex
+deployment environment and never reach the browser or a database table.
+
+| Variable | Description |
+| --- | --- |
+| `SIGNED_ANNOUNCEMENTS_URL` | Full mailbox endpoint URL. |
+| `SIGNED_ANNOUNCEMENTS_TOKEN` | Bearer credential dedicated to this Atrium deployment. |
+| `SIGNED_ANNOUNCEMENTS_RECIPIENT_ID` | Recipient identity that every signed envelope must contain. |
+| `SIGNED_ANNOUNCEMENTS_RECIPIENT_FIELD` | Name of the signed envelope field that carries the recipient identity. |
+| `SIGNED_ANNOUNCEMENTS_PUBLIC_KEY` | Pinned Ed25519 public key, SPKI encoded as standard base64. |
+| `SIGNED_ANNOUNCEMENTS_DOMAIN` | Expected signed-domain value. It is part of the verified envelope. |
+| `SIGNED_ANNOUNCEMENTS_KEY_MAP` | Compact JSON object mapping exactly four remote keys to `maintenance_scheduled`, `maintenance_completed`, `incident_update`, and `subscription_notice`, once each. |
+
+For example, a generic server could use this key map:
+
+```json
+{"maintenance.scheduled":"maintenance_scheduled","maintenance.completed":"maintenance_completed","incident.update":"incident_update","subscription.notice":"subscription_notice"}
+```
+
+The recipient field and key mapping adapt a remote protocol without baking its
+private naming into this public project. The mapping controls only which closed
+local template is selected. The remote server cannot supply display text, URLs,
+paths, commands, or scripts. Atrium
+validates the type-specific parameters, signature, pinned key, recipient and
+expiry before persisting a receipt. It persists and deduplicates before sending
+an acknowledgement on the following poll.
+
 ### Optional trace shipping
 
 Leave blank to disable. Keys live in the Convex deployment env, not the bridge.

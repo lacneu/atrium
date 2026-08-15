@@ -2569,6 +2569,8 @@ export default defineSchema({
       v.literal("feedback_new"),
       // Agent-file curation proposal ready / failed (admin-facing).
       v.literal("curation"),
+      // Signed, informational announcement received from a configured service.
+      v.literal("operator_announcement"),
     ),
     // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
     // producer without a key) still display. New producers ALSO store a
@@ -2586,6 +2588,8 @@ export default defineSchema({
     // event (e.g. one anomaly_open per (user, anomalyId)).
     dedupeKey: v.optional(v.string()),
     createdAt: v.number(),
+    // Signed announcements disappear at their verified envelope expiry.
+    expiresAt: v.optional(v.number()),
     readAt: v.optional(v.number()), // unset = unread
   })
     .index("by_user", ["userId"]) // feed (most-recent page)
@@ -2594,6 +2598,28 @@ export default defineSchema({
     // whole per-user history. A missing optional `readAt` is indexed as
     // `undefined`, so `.eq("readAt", undefined)` ranges exactly the unread rows.
     .index("by_user_unread", ["userId", "readAt"]),
+
+  // Durable receipt comes BEFORE acknowledgement. The remote mailbox is
+  // at-least-once: a successful retry finds this row by deliveryId and never
+  // creates a second notification. User-clearing the bell does not erase the
+  // acknowledgement proof.
+  signedAnnouncementReceipts: defineTable({
+    deliveryId: v.string(),
+    messageId: v.string(),
+    notificationKey: v.union(
+      v.literal("notif_operator_maintenance_scheduled"),
+      v.literal("notif_operator_maintenance_completed"),
+      v.literal("notif_operator_incident_update"),
+      v.literal("notif_operator_subscription_notice"),
+    ),
+    params: v.record(v.string(), v.string()),
+    issuedAt: v.number(),
+    expiresAt: v.number(),
+    receivedAt: v.number(),
+    acknowledgedAt: v.optional(v.number()),
+  })
+    .index("by_delivery_id", ["deliveryId"])
+    .index("by_acknowledged_at", ["acknowledgedAt"]),
 
   // ===========================================================================
   // Observability & RBAC spine (increment 1). All NEW tables -> required fields

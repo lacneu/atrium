@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] — Signed announcements without remote prose
+
+Atrium can now poll an optional, configurable server for signed operator
+announcements. The integration is inactive when its complete environment
+configuration is absent and performs no outbound request in that state.
+
+Every delivery must match the pinned Ed25519 key, signed domain, recipient,
+expiry and one of four configured message keys. The remote service selects a
+closed local template and supplies only bounded parameters; it cannot send text,
+links, paths or executable fields for the notification bell to render.
+
+Delivery is at least once without becoming duplicate display: Atrium persists a
+receipt and deduplicates it before acknowledging the delivery on a later poll.
+The notification itself is translated when each reader opens the bell.
+
 ## [0.72.1] — Checking your own work should not need a bigger key
 
 Corrective. The scripted gateway registration shipped in 0.72.0 came with an

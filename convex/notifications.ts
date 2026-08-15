@@ -10,11 +10,22 @@
 // NON-PHI: `title`/`body` are labels only — never message/feedback text.
 
 import { v } from "convex/values";
-import { mutation, query, internalMutation } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { getActor } from "./lib/access";
+import {
+  loadSignedAnnouncementConfig,
+  verifyMailboxResponse,
+  type VerifiedAnnouncement,
+} from "./lib/signedAnnouncements";
 
 type NotifKind =
   | "anomaly_open"
@@ -22,7 +33,8 @@ type NotifKind =
   | "feedback_reply"
   | "feedback_resolved"
   | "feedback_new"
-  | "curation";
+  | "curation"
+  | "operator_announcement";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-
@@ -33,6 +45,8 @@ const FEED_LIMIT = 50;
 const BULK_BATCH = 256;
 // Admin fan-out batch (anomaly notifications), paginated + self-scheduled.
 const FANOUT_PAGE = 100;
+const ANNOUNCEMENT_RESPONSE_MAX_BYTES = 64 * 1024;
+const ANNOUNCEMENT_ACK_LIMIT = 100;
 
 // --- Internal writers (called by producers) ---------------------------------
 
@@ -55,8 +69,9 @@ export async function notifyUser(
     // ORIGINAL time). Defaults to now. Note: feed ordering is by _creationTime,
     // so a backfilled row still surfaces at the top — this only fixes its label.
     createdAt?: number;
+    expiresAt?: number;
   },
-): Promise<void> {
+): Promise<Id<"notifications"> | null> {
   if (args.dedupeKey !== undefined) {
     const dk = args.dedupeKey;
     const existing = await ctx.db
@@ -65,9 +80,9 @@ export async function notifyUser(
         q.eq("userId", args.userId).eq("dedupeKey", dk),
       )
       .first();
-    if (existing !== null) return;
+    if (existing !== null) return null;
   }
-  await ctx.db.insert("notifications", {
+  return ctx.db.insert("notifications", {
     userId: args.userId,
     kind: args.kind,
     title: args.title,
@@ -77,6 +92,7 @@ export async function notifyUser(
     href: args.href,
     dedupeKey: args.dedupeKey,
     createdAt: args.createdAt ?? Date.now(),
+    expiresAt: args.expiresAt,
   });
 }
 
@@ -148,6 +164,245 @@ export async function notifyAdmins(
   );
 }
 
+// --- Signed operator announcements -----------------------------------------
+
+const verifiedAnnouncementValidator = v.object({
+  deliveryId: v.string(),
+  messageId: v.string(),
+  notificationKey: v.union(
+    v.literal("notif_operator_maintenance_scheduled"),
+    v.literal("notif_operator_maintenance_completed"),
+    v.literal("notif_operator_incident_update"),
+    v.literal("notif_operator_subscription_notice"),
+  ),
+  params: v.record(v.string(), v.string()),
+  issuedAt: v.number(),
+  expiresAt: v.number(),
+});
+
+/** Only durable receipts are acknowledged. A user may clear the derived bell
+ * row without causing the remote service to redeliver an already-seen item. */
+export const pendingSignedAnnouncementAcknowledgements = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("signedAnnouncementReceipts")
+      .withIndex("by_acknowledged_at", (q) =>
+        q.eq("acknowledgedAt", undefined),
+      )
+      .take(ANNOUNCEMENT_ACK_LIMIT);
+    return rows.map((row) => row.deliveryId);
+  },
+});
+
+export const acknowledgeSignedAnnouncements = internalMutation({
+  args: { deliveryIds: v.array(v.string()) },
+  handler: async (ctx, { deliveryIds }) => {
+    const acknowledgedAt = Date.now();
+    for (const deliveryId of deliveryIds.slice(0, ANNOUNCEMENT_ACK_LIMIT)) {
+      const row = await ctx.db
+        .query("signedAnnouncementReceipts")
+        .withIndex("by_delivery_id", (q) => q.eq("deliveryId", deliveryId))
+        .unique();
+      if (row !== null && row.acknowledgedAt === undefined) {
+        await ctx.db.patch(row._id, { acknowledgedAt });
+      }
+    }
+  },
+});
+
+/** Fan out one already-verified receipt. The scheduled chain is transactional
+ * with receipt insertion, and per-user dedupe makes retries harmless. */
+export const fanOutSignedAnnouncement = internalMutation({
+  args: {
+    receiptId: v.id("signedAnnouncementReceipts"),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (ctx, { receiptId, cursor }) => {
+    const receipt = await ctx.db.get(receiptId);
+    if (receipt === null) return;
+    const result = await ctx.db
+      .query("profiles")
+      .paginate({ numItems: FANOUT_PAGE, cursor: cursor ?? null });
+    for (const profile of result.page) {
+      const notificationId = await notifyUser(ctx, {
+        userId: profile.userId,
+        kind: "operator_announcement",
+        title: "Operator announcement",
+        body: "A verified announcement is available.",
+        messageKey: receipt.notificationKey,
+        params: receipt.params,
+        dedupeKey: `signed-announcement:${receipt.deliveryId}`,
+        createdAt: receipt.issuedAt,
+        expiresAt: receipt.expiresAt,
+      });
+      if (notificationId !== null) {
+        await ctx.scheduler.runAt(
+          receipt.expiresAt,
+          internal.notifications.expireSignedNotification,
+          {
+            notificationId,
+            dedupeKey: `signed-announcement:${receipt.deliveryId}`,
+          },
+        );
+      }
+    }
+    if (!result.isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.notifications.fanOutSignedAnnouncement,
+        { receiptId, cursor: result.continueCursor },
+      );
+    }
+  },
+});
+
+export const expireSignedNotification = internalMutation({
+  args: {
+    notificationId: v.id("notifications"),
+    dedupeKey: v.string(),
+  },
+  handler: async (ctx, { notificationId, dedupeKey }) => {
+    const notification = await ctx.db.get(notificationId);
+    if (
+      notification !== null &&
+      notification.kind === "operator_announcement" &&
+      notification.dedupeKey === dedupeKey &&
+      notification.expiresAt !== undefined &&
+      notification.expiresAt <= Date.now()
+    ) {
+      await ctx.db.delete(notificationId);
+    }
+  },
+});
+
+export const persistSignedAnnouncements = internalMutation({
+  args: { announcements: v.array(verifiedAnnouncementValidator) },
+  handler: async (ctx, { announcements }) => {
+    let inserted = 0;
+    let duplicate = 0;
+    for (const announcement of announcements.slice(0, 100)) {
+      const existing = await ctx.db
+        .query("signedAnnouncementReceipts")
+        .withIndex("by_delivery_id", (q) =>
+          q.eq("deliveryId", announcement.deliveryId),
+        )
+        .unique();
+      if (existing !== null) {
+        duplicate += 1;
+        continue;
+      }
+      const receiptId = await ctx.db.insert("signedAnnouncementReceipts", {
+        ...announcement,
+        receivedAt: Date.now(),
+      });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.notifications.fanOutSignedAnnouncement,
+        { receiptId },
+      );
+      inserted += 1;
+    }
+    return { inserted, duplicate };
+  },
+});
+
+/** Poll a configurable signed-announcement service. Missing or malformed
+ * configuration is fail-closed: the action performs no outbound request. */
+export const pollSignedAnnouncements = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const state = loadSignedAnnouncementConfig();
+    if (state.status === "inactive") {
+      if (state.reason !== "not_configured") {
+        console.warn(`[signed-announcements] inactive: ${state.reason}`);
+      }
+      return { status: "inactive" as const, reason: state.reason };
+    }
+
+    const acknowledgements: string[] = await ctx.runQuery(
+      internal.notifications.pendingSignedAnnouncementAcknowledgements,
+      {},
+    );
+    let response: Response;
+    try {
+      response = await fetch(state.config.url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${state.config.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ contract_version: 1, acknowledgements }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      console.warn("[signed-announcements] poll failed: network_error");
+      return { status: "error" as const, reason: "network_error" as const };
+    }
+    if (!response.ok) {
+      console.warn(
+        `[signed-announcements] poll failed: http_${response.status}`,
+      );
+      return { status: "error" as const, reason: "http_error" as const };
+    }
+
+    if (acknowledgements.length > 0) {
+      await ctx.runMutation(
+        internal.notifications.acknowledgeSignedAnnouncements,
+        { deliveryIds: acknowledgements },
+      );
+    }
+
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > ANNOUNCEMENT_RESPONSE_MAX_BYTES
+    ) {
+      console.warn("[signed-announcements] poll failed: response_too_large");
+      return { status: "error" as const, reason: "response_too_large" as const };
+    }
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > ANNOUNCEMENT_RESPONSE_MAX_BYTES) {
+      console.warn("[signed-announcements] poll failed: response_too_large");
+      return { status: "error" as const, reason: "response_too_large" as const };
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      console.warn("[signed-announcements] poll failed: invalid_response");
+      return { status: "error" as const, reason: "invalid_response" as const };
+    }
+
+    let result: Awaited<ReturnType<typeof verifyMailboxResponse>>;
+    try {
+      result = await verifyMailboxResponse(payload, state.config);
+    } catch {
+      console.warn("[signed-announcements] poll failed: invalid_response");
+      return { status: "error" as const, reason: "invalid_response" as const };
+    }
+    for (const rejected of result.rejected) {
+      console.warn(
+        `[signed-announcements] rejected delivery ${rejected.deliveryId ?? "unknown"}: ${rejected.reason}`,
+      );
+    }
+    const persistResult: { inserted: number; duplicate: number } =
+      result.verified.length > 0
+        ? await ctx.runMutation(
+            internal.notifications.persistSignedAnnouncements,
+            { announcements: result.verified satisfies VerifiedAnnouncement[] },
+          )
+        : { inserted: 0, duplicate: 0 };
+    return {
+      status: "ok" as const,
+      received: result.verified.length,
+      rejected: result.rejected.length,
+      ...persistResult,
+    };
+  },
+});
+
 // --- User-facing read --------------------------------------------------------
 
 export const myNotifications = query({
@@ -159,7 +414,8 @@ export const myNotifications = query({
       .withIndex("by_user", (q) => q.eq("userId", effectiveUserId))
       .order("desc")
       .take(FEED_LIMIT);
-    return rows.map((r) => ({
+    const now = Date.now();
+    return rows.filter((r) => r.expiresAt === undefined || r.expiresAt > now).map((r) => ({
       _id: r._id,
       kind: r.kind,
       title: r.title,
@@ -192,7 +448,10 @@ export const myUnreadCount = query({
         q.eq("userId", effectiveUserId).eq("readAt", undefined),
       )
       .take(FEED_LIMIT);
-    return unread.length;
+    const now = Date.now();
+    return unread.filter(
+      (row) => row.expiresAt === undefined || row.expiresAt > now,
+    ).length;
   },
 });
 

@@ -107,6 +107,15 @@ crons.interval(
   {},
 );
 
+// Signed operator announcements are opt-in. The action is a strict no-op when
+// its complete environment configuration is absent.
+crons.interval(
+  "poll signed announcements",
+  { minutes: 5 },
+  internal.notifications.pollSignedAnnouncements,
+  {},
+);
+
 // Agent discovery (multi-agent redesign): every 2 minutes, ask the bridge
 // `/agents` for each instance and cache the result RESILIENTLY (a failed poll
 // never empties the cache nor flips per-agent presence — red-team B2). This is
