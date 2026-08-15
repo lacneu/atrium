@@ -1567,6 +1567,15 @@ http.route({
 // (resolve + connect -> pairing) + pull the instance's agents NOW. Mirrors
 // /api/v1/reconcile-chat (the other selfheal-gated bounded-corrective WRITE). Returns the
 // SPECIFIC status + an English `detail` (the MCP consumer has no i18n) so an agent can act.
+//
+// `instances.provision` ALSO passes, so a scripted install can verify the binding it
+// just made. Without this the installer had to carry a SECOND, far broader key —
+// `selfheal` is otherwise only in `agent`, which also grants openclaw.query, trace
+// and KPI reads, feedback.respond (writes reaching a user's notification bell) and
+// reconcile-chat. Putting that on a VPS installer to poke a bridge it just created
+// is a workaround, not a design. It widens nothing: a provisioning key can already
+// create and update ANY instance by name and mint its bridge secret, so syncing one
+// reaches strictly less than it already commands.
 http.route({
   path: "/api/v1/instances/sync",
   method: "POST",
@@ -1577,7 +1586,10 @@ http.route({
       return apiJson({ ok: false, error: authResult.error }, authResult.status);
     }
     const { principal } = authResult;
-    if (!principalHasPermission(principal, PERMISSIONS.SELF_HEAL)) {
+    if (
+      !principalHasPermission(principal, PERMISSIONS.SELF_HEAL) &&
+      !principalHasPermission(principal, PERMISSIONS.INSTANCES_PROVISION)
+    ) {
       await ctx.runMutation(internal.observability.recordEvent, {
         kind: "api.call",
         direction: "inbound",
@@ -1589,7 +1601,13 @@ http.route({
         status: 403,
         latencyMs: Date.now() - startedAt,
       });
-      return apiJson({ ok: false, error: "missing permission: selfheal" }, 403);
+      return apiJson(
+        {
+          ok: false,
+          error: "missing permission: selfheal or instances.provision",
+        },
+        403,
+      );
     }
     // Instance NAME via ?instance= (API-friendly) or a JSON body { instance }.
     const url = new URL(request.url);

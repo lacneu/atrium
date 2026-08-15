@@ -226,6 +226,47 @@ describe("the permission is the gate", () => {
   });
 });
 
+describe("a provisioning key can verify its own work", () => {
+  const sync = (t: TestConvex<typeof schema>, key: string, instance: string) =>
+    t.fetch("/api/v1/instances/sync", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ instance }),
+    });
+
+  test("instances.provision reaches /instances/sync", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, OPENCLAW);
+
+    // NOT 403. Without this the installer had to carry a second key holding
+    // `selfheal`, which outside `admin` lives only in the `agent` role — dragging
+    // openclaw.query, trace/KPI reads, feedback.respond and reconcile-chat onto a
+    // VPS installer just so it could poke the bridge it had itself created.
+    const res = await sync(t, PROVISION_KEY, "compta");
+    expect(res.status).not.toBe(403);
+  });
+
+  test("a key with neither permission is still refused", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, OPENCLAW);
+    // The observer key holds neither — widening the gate must not open it to all.
+    const res = await sync(t, READONLY_KEY, "compta");
+    expect(res.status).toBe(403);
+  });
+
+  test("an unknown instance is a clean 404, not a permission answer", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const res = await sync(t, PROVISION_KEY, "never-provisioned");
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("a pre-existing duplicate name is refused, never silently resolved", () => {
   test("two rows sharing a name yield 409 rather than patching whichever sorts first", async () => {
     const t = convexTest(schema, modules);

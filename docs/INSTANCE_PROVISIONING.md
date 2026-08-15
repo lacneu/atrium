@@ -138,9 +138,17 @@ explicit precisely so a plain replay can never reach it.
 
 ## Verifying
 
-`POST /api/v1/instances/sync` (permission `selfheal`) pokes the bridge and pulls
-the instance's agents, returning a specific status. Running it after provisioning
-turns the sequence into an end-to-end proof rather than an assumption.
+`POST /api/v1/instances/sync` pokes the bridge and pulls the instance's agents,
+returning a specific status. Running it after provisioning turns the sequence into
+an end-to-end proof rather than an assumption. **The same key does it** — the
+route accepts `instances.provision` as well as `selfheal`.
+
+That second acceptance exists so an installer never has to carry a broader key.
+Outside `admin`, `selfheal` lives only in the `agent` role, which also grants
+`openclaw.query`, trace and KPI reads, `feedback.respond` and reconcile-chat —
+none of which belongs on a machine that installs VPSs. It widens nothing: a
+provisioning key can already create and update any instance by name and mint its
+bridge secret, so syncing one reaches strictly less than it already commands.
 
 ## Attribution
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.72.1] — Checking your own work should not need a bigger key
+
+Corrective. The scripted gateway registration shipped in 0.72.0 came with an
+access made deliberately narrow: it can declare a gateway and nothing else — no
+conversations, no measurements, no diagnostics.
+
+It was too narrow by one step. The check that confirms the connection actually
+works — the same "Synchroniser" an administrator runs from the interface — was
+not included. So an installation script could register a gateway but not verify
+it, and proving the connection meant handing the installer a **second** access,
+one that also allows querying gateways, reading activity records and writing
+where a user sees a notification. Far more than poking a connector it had just
+created itself, on a machine that only installs servers.
+
+The check now accepts the registration access as well. Nothing widens: that
+access could already declare and modify any gateway and issue its connector
+credential, so running a check on one reaches strictly less than it already
+commands. An installer needs one credential from beginning to end.
+
 ## [0.72.0] — Adding a gateway without anyone at a keyboard
 
 A new gateway can now be registered by a script. Until now, every one had to be
