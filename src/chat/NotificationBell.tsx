@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Megaphone,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -49,7 +50,8 @@ type NotifKind =
   | "feedback_reply"
   | "feedback_resolved"
   | "feedback_new"
-  | "curation";
+  | "curation"
+  | "operator_announcement";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
@@ -72,6 +74,28 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   feedback_resolved: MessageSquare,
   feedback_new: MessageSquare,
   curation: FileText,
+  operator_announcement: Megaphone,
+};
+
+const OPERATOR_SERVICE_LABELS: Record<string, () => string> = {
+  atrium: () => m.notif_operator_service_atrium(),
+  assistants: () => m.notif_operator_service_assistants(),
+  platform: () => m.notif_operator_service_platform(),
+};
+const OPERATOR_STATUS_LABELS: Record<string, () => string> = {
+  investigating: () => m.notif_operator_status_investigating(),
+  monitoring: () => m.notif_operator_status_monitoring(),
+  resolved: () => m.notif_operator_status_resolved(),
+};
+const operatorService = (value: string | undefined) =>
+  (value ? OPERATOR_SERVICE_LABELS[value] : undefined)?.() ?? "?";
+const operatorStatus = (value: string | undefined) =>
+  (value ? OPERATOR_STATUS_LABELS[value] : undefined)?.() ?? "?";
+const operatorTime = (value: string | undefined) => {
+  const parsed = value === undefined ? Number.NaN : Date.parse(value);
+  return Number.isFinite(parsed)
+    ? new Date(parsed).toLocaleString(getLocale())
+    : "?";
 };
 
 // READ-TIME localization: a notification is stored as {messageKey, params} and
@@ -133,9 +157,39 @@ const KEY_RENDERERS: Record<
     title: m.notif_anomaly_resolved_title({ kind: p.kind ?? "?" }),
     body: n.body,
   }),
+  notif_operator_maintenance_scheduled: (p) => ({
+    title: m.notif_operator_maintenance_scheduled_title(),
+    body: m.notif_operator_maintenance_scheduled_body({
+      service: operatorService(p.service),
+      startsAt: operatorTime(p.starts_at),
+      endsAt: operatorTime(p.ends_at),
+    }),
+  }),
+  notif_operator_maintenance_completed: (p) => ({
+    title: m.notif_operator_maintenance_completed_title(),
+    body: m.notif_operator_maintenance_completed_body({
+      service: operatorService(p.service),
+      completedAt: operatorTime(p.completed_at),
+    }),
+  }),
+  notif_operator_incident_update: (p) => ({
+    title: m.notif_operator_incident_update_title(),
+    body: m.notif_operator_incident_update_body({
+      service: operatorService(p.service),
+      status: operatorStatus(p.status),
+      reference: p.reference ?? "?",
+    }),
+  }),
+  notif_operator_subscription_notice: (p) => ({
+    title: m.notif_operator_subscription_notice_title(),
+    body: m.notif_operator_subscription_notice_body({
+      plan: p.plan ?? "?",
+      effectiveAt: operatorTime(p.effective_at),
+    }),
+  }),
 };
 
-function notifText(n: Notif): { title: string; body: string } {
+export function notifText(n: Notif): { title: string; body: string } {
   const render = n.messageKey ? KEY_RENDERERS[n.messageKey] : undefined;
   if (render) return render(n.params ?? {}, n);
   // Legacy rows written before read-time localization: the kind-level shortcuts

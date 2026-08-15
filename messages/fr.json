@@ -2141,5 +2141,19 @@
   "error_dispatch_stalled_label": "Dispatch bloqué (réconcilié)",
   "error_dispatch_stalled_hint": "Ce dispatch est resté en attente bien plus longtemps qu'un dispatch vivant ne peut l'être : le réconciliateur l'a clos pour débloquer la conversation. Son action est morte avant de marquer la ligne, ou une reprise après préemption n'a jamais démarré — cherchez une action Convex plantée ou évincée à ce moment-là.",
   "bridge_protocol_drift_dropped": "au-delà du plafond : {overflow} observation(s) non nommée(s) par le bridge, {truncated} forme(s) non conservée(s)",
-  "afiles_error_dashboard_absent": "Le tableau de bord Hermes ne tourne pas sur cette instance : les fichiers d'agent sont indisponibles. Démarrez la passerelle avec HERMES_DASHBOARD pour les activer."
+  "afiles_error_dashboard_absent": "Le tableau de bord Hermes ne tourne pas sur cette instance : les fichiers d'agent sont indisponibles. Démarrez la passerelle avec HERMES_DASHBOARD pour les activer.",
+  "notif_operator_maintenance_scheduled_title": "Maintenance planifiée",
+  "notif_operator_maintenance_scheduled_body": "La maintenance de {service} est planifiée du {startsAt} au {endsAt}.",
+  "notif_operator_maintenance_completed_title": "Maintenance terminée",
+  "notif_operator_maintenance_completed_body": "La maintenance de {service} s'est terminée le {completedAt}.",
+  "notif_operator_incident_update_title": "Mise à jour d'incident de service",
+  "notif_operator_incident_update_body": "{service} : {status} ({reference}).",
+  "notif_operator_subscription_notice_title": "Mise à jour de l'abonnement",
+  "notif_operator_subscription_notice_body": "Le plan {plan} change le {effectiveAt}.",
+  "notif_operator_service_atrium": "Atrium",
+  "notif_operator_service_assistants": "les assistants",
+  "notif_operator_service_platform": "la plateforme",
+  "notif_operator_status_investigating": "analyse en cours",
+  "notif_operator_status_monitoring": "sous surveillance",
+  "notif_operator_status_resolved": "résolu"
 }

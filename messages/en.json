@@ -2141,5 +2141,19 @@
   "error_dispatch_stalled_label": "Dispatch stalled (reconciled)",
   "error_dispatch_stalled_hint": "This dispatch stayed pending far longer than any live one could, so the reconciler settled it to unlock the conversation. Its action died before marking the row, or a preempt re-dispatch never fired — look for a crashed or evicted Convex action around that time.",
   "bridge_protocol_drift_dropped": "past the cap: {overflow} observation(s) the bridge could not name, {truncated} shape(s) not kept",
-  "afiles_error_dashboard_absent": "The Hermes dashboard is not running on this instance, so agent files are unavailable. Start the gateway with HERMES_DASHBOARD set to enable them."
+  "afiles_error_dashboard_absent": "The Hermes dashboard is not running on this instance, so agent files are unavailable. Start the gateway with HERMES_DASHBOARD set to enable them.",
+  "notif_operator_maintenance_scheduled_title": "Scheduled maintenance",
+  "notif_operator_maintenance_scheduled_body": "Maintenance for {service} is scheduled from {startsAt} to {endsAt}.",
+  "notif_operator_maintenance_completed_title": "Maintenance completed",
+  "notif_operator_maintenance_completed_body": "Maintenance for {service} was completed at {completedAt}.",
+  "notif_operator_incident_update_title": "Service incident update",
+  "notif_operator_incident_update_body": "{service}: {status} ({reference}).",
+  "notif_operator_subscription_notice_title": "Subscription update",
+  "notif_operator_subscription_notice_body": "Plan {plan} changes on {effectiveAt}.",
+  "notif_operator_service_atrium": "Atrium",
+  "notif_operator_service_assistants": "assistants",
+  "notif_operator_service_platform": "platform",
+  "notif_operator_status_investigating": "investigating",
+  "notif_operator_status_monitoring": "monitoring",
+  "notif_operator_status_resolved": "resolved"
 }
