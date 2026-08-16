@@ -64,6 +64,14 @@ deployment, not in the container. The bootstrap step bridges your `.env` into it
 
 ## Gotcha 3: configure each gateway as an instance in Convex
 
+> **Automating this?** Everything below is the BY-HAND path. A control plane that
+> provisions gateways on demand should use the scripted surface instead — declare
+> the hosts allowed to do it in `ATRIUM_PROVISION_KEYS`, then register, enroll,
+> verify and remove instances over `/api/v1/instances/*`. See
+> [docs/INSTANCE_PROVISIONING.md](../docs/INSTANCE_PROVISIONING.md). The two paths
+> coexist; what stays MANUAL either way is enabling discovered agents and
+> assigning them, which is the isolation boundary.
+
 After deploying, add your gateway as an **instance** (Settings → Agents →
 Instances): set its **gateway URL**, enter its **operator token + device identity**
 under **Credentials** (stored encrypted), and **mint a per-bridge secret**. Put that
