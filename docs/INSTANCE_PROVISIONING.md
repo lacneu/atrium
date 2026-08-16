@@ -11,6 +11,12 @@ install anything: the host, the gateway process and the bridge process are put i
 place by the caller's own installation scripts. What it removes is the manual step
 between "the gateway exists" and "Atrium can reach it".
 
+This API contract is available starting with Atrium `0.74.0`. An installer must
+verify the deployed Atrium version before declaring a provisioning key or an
+instance. A `404` from a provisioning route on an older release is a version
+failure and must stop reconciliation; it is not a retryable missing-instance
+response.
+
 It grants nothing. Discovered agents arrive with `enabled: false` (stamped by
 `applyDiscovery`, which never enables), and the availability resolver drops
 non-enabled agents from every pool — so a provisioned instance is invisible to
