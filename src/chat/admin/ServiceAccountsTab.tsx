@@ -47,7 +47,16 @@ type ServiceAccountRow = {
   roleKey: string;
   disabled: boolean;
   description: string | null;
-  createdByUserId: Id<"users">;
+  createdByUserId: Id<"users"> | null;
+  // Non-null when this account follows a declared-keys environment value. Its
+  // identity and its keys belong to that declaration, so the destructive actions
+  // below are refused server-side — offering them would walk the operator through
+  // a confirmation for something that cannot happen.
+  // OPTIONAL, not just nullable: the frontend image can ship BEFORE
+  // `npx convex deploy` — they are separate steps, especially under Helm — and the
+  // older query does not return this field at all. Read as `undefined !== null`,
+  // every manual account would lose its actions until Convex caught up.
+  managedBy?: string | null;
   createdAt: number;
 };
 
@@ -358,25 +367,37 @@ export function ServiceAccountsTab() {
           />
         )}
         rowActions={(a) => [
-          {
-            label: m.serviceaccounts_action_edit(),
-            onSelect: () => openEdit(a),
-          },
-          {
-            label: m.serviceaccounts_action_mint(),
-            onSelect: () => void mint(a),
-          },
+          // A declaration-managed account keeps ONLY the read-only action. Edit,
+          // mint and delete are refused by the server, and showing them would take
+          // the operator through a destructive confirmation before telling them so
+          // — worst of all for revoke, where they would believe a key is gone.
+          ...((a.managedBy ?? null) !== null
+            ? []
+            : [
+                {
+                  label: m.serviceaccounts_action_edit(),
+                  onSelect: () => openEdit(a),
+                },
+                {
+                  label: m.serviceaccounts_action_mint(),
+                  onSelect: () => void mint(a),
+                },
+              ]),
           {
             label: expanded.has(a._id)
               ? m.serviceaccounts_action_hide_keys()
               : m.serviceaccounts_action_show_keys(),
             onSelect: () => toggleExpanded(a._id),
           },
-          {
-            label: m.serviceaccounts_action_delete(),
-            variant: "destructive",
-            onSelect: () => void deleteAccount(a),
-          },
+          ...((a.managedBy ?? null) !== null
+            ? []
+            : [
+                {
+                  label: m.serviceaccounts_action_delete(),
+                  variant: "destructive" as const,
+                  onSelect: () => void deleteAccount(a),
+                },
+              ]),
         ]}
         columns={[
           {
@@ -598,7 +619,11 @@ function AccountKeys({
                 <td>{formatExpiry(k.expiresAt)}</td>
                 <td>{statusBadge(k)}</td>
                 <td className="text-right">
-                  {!k.disabled ? (
+                  {/* A declared key is revoked by withdrawing its entry, not from
+                      here — the server refuses, and the reconciliation would
+                      re-enable it anyway. Offering the button would have an
+                      operator believe a compromised key is gone. */}
+                  {!k.disabled && (account.managedBy ?? null) === null ? (
                     <Button
                       variant="destructive"
                       size="sm"

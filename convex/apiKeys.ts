@@ -175,6 +175,18 @@ export const updateServiceAccount = mutation({
   },
   handler: async (ctx, { serviceAccountId, name, roleKey, description }) => {
     await requireAdmin(ctx);
+    // A declaration-managed account's identity belongs to the declaration. Renaming
+    // it makes the reconciliation create a SECOND account under the expected name,
+    // refuse to move the existing hash onto it, then disable the old one — leaving
+    // the declared key answering 401 and two managed accounts to untangle by hand.
+    {
+      const existing = await ctx.db.get(serviceAccountId);
+      if (existing !== null && existing.managedBy !== undefined) {
+        throw new Error(
+          `Refused: "${existing.name}" follows ${existing.managedBy}; change that declaration instead`,
+        );
+      }
+    }
     const account = await ctx.db.get(serviceAccountId);
     if (account === null) throw new Error("Not found: serviceAccount");
     const patch: { name?: string; roleKey?: string; description?: string } = {};
@@ -224,7 +236,16 @@ export const listServiceAccounts = query({
       roleKey: a.roleKey,
       disabled: a.disabled,
       description: a.description ?? null,
-      createdByUserId: a.createdByUserId,
+      // `?? null`, never a bare `undefined`: Convex refuses undefined inside a
+      // query result, so the moment one declaration-managed account exists — which
+      // has no author — this projection stopped serialising and the whole Service
+      // Accounts tab failed to load. The feature became unmanageable exactly when
+      // it started being used.
+      createdByUserId: a.createdByUserId ?? null,
+      // Exposed so the UI can SAY that this account follows a declaration. Hiding
+      // it left the interface offering Revoke and Delete on accounts where they
+      // are refused — a control that looks available and is not.
+      managedBy: a.managedBy ?? null,
       createdAt: a._creationTime,
     }));
     return applyFilter(views, filter, SERVICE_ACCOUNTS_FILTER_CFG);
@@ -247,6 +268,15 @@ export const deleteServiceAccount = mutation({
     await requireAdmin(ctx);
     const account = await ctx.db.get(serviceAccountId);
     if (account === null) throw new Error("Not found: service account");
+    // A DECLARATION-MANAGED account is not the administrator's to remove: the
+    // reconciliation recreates it from the environment on its next pass, so the
+    // deletion would report success and change nothing. Withdrawing the entry from
+    // the declaration is the only thing that actually revokes it.
+    if (account.managedBy !== undefined) {
+      throw new Error(
+        `Refused: "${account.name}" follows ${account.managedBy}; remove its entry from that declaration instead`,
+      );
+    }
     // Cascade-delete this account's API keys (bounded batches via by_account).
     let deletedKeys = 0;
     for (;;) {
@@ -295,6 +325,15 @@ export const createKeyRecord = internalMutation({
     const adminId = await requireAdmin(ctx);
     const account = await ctx.db.get(args.serviceAccountId);
     if (account === null) throw new Error("Not found: service account");
+    // A declaration-managed account's keys come from the declaration. Minting one
+    // here returns a plaintext and reports success, but its first call finds the
+    // hash absent from the declaration, reconciles, disables it and answers 401 —
+    // a secret handed out that never works. Refuse before it is generated.
+    if (account.managedBy !== undefined) {
+      throw new Error(
+        `Refused: "${account.name}" follows ${account.managedBy}; add the key to that declaration instead`,
+      );
+    }
     const keyId = await ctx.db.insert("apiKeys", {
       serviceAccountId: args.serviceAccountId,
       hashedKey: args.hashedKey,
@@ -361,6 +400,16 @@ export const revokeApiKey = mutation({
     await requireAdmin(ctx);
     const key = await ctx.db.get(keyId);
     if (key === null) throw new Error("Not found: api key");
+    // Same rule as deleteServiceAccount, and it matters MORE here: an operator
+    // revoking a key they believe is compromised would be told it is done while
+    // the reconciliation re-enables it on its next pass. A security control that
+    // reports success without acting is worse than one that refuses.
+    const owner = await ctx.db.get(key.serviceAccountId);
+    if (owner !== null && owner.managedBy !== undefined) {
+      throw new Error(
+        `Refused: this key follows ${owner.managedBy}; remove its entry from that declaration instead`,
+      );
+    }
     // Disable (not delete) so the key id stays referenceable for audit.
     await ctx.db.patch(keyId, { disabled: true });
     const actor = await getActor(ctx);

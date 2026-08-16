@@ -46,6 +46,35 @@ An existing deployment gains the role automatically: `seedBuiltinRoles` inserts
 any built-in role missing from the `roles` table on the next seed pass (triggered
 by listing roles or minting a key). No migration is required.
 
+### Getting the key without a human
+
+An administrator can mint one from Settings, but an automated platform cannot ask
+for that at install time. It DECLARES its keys instead, one per provisioned host,
+in a single Convex environment value:
+
+```
+ATRIUM_PROVISION_KEYS=vps-compta-01:<secret>,vps-rh-02:<secret>
+```
+
+Atrium generates nothing and returns nothing: the platform owns generation and
+keeps the plaintext, Atrium stores only the hash. A reconciliation makes the
+service accounts follow the declaration — every 5 minutes, and on demand when a
+declared key presents itself before it has been persisted, so a host provisioned
+seconds ago works on its FIRST call.
+
+Editing the variable is the whole lifecycle: add an entry to authorise a host,
+replace a secret to rotate it (the old one stops working at once), remove an entry
+to revoke it (the account is disabled, never deleted — what it did stays
+attributable). An unchanged declaration writes nothing.
+
+The role is fixed by the code, not taken from the declaration: an entry says WHICH
+host may provision, never what else it could do. Malformed entries are ignored
+rather than guessed at, and a REPEATED label voids all of its entries — keeping
+the first would let ordering inside an environment variable decide which host may
+provision. Ignored labels are logged (never the secret).
+
+See `lib/provisionKeys.ts` for the parsing rules.
+
 ## Request
 
 ```json

@@ -92,6 +92,65 @@ set_env() {
   fi
 }
 
+# ATRIUM_PROVISION_KEYS is DECLARATIVE, so an empty value is a REMOVAL, not a
+# no-op. `set_env` skips blanks on purpose — for an optional credential, blank
+# means "not configured, leave whatever is there". Here it would mean the exact
+# opposite: an operator withdrawing the last declared host would leave the old
+# declaration live in Convex, and the key they meant to revoke would keep
+# authenticating for ever.
+# Is the key PRESENT in .env at all? `dotenv_get` cannot tell an absent key from an
+# empty one, and for a DECLARATIVE variable those mean opposite things: absent is
+# "this deployment does not manage it here — leave Convex alone", empty is "revoke
+# everything". Every .env derived from the current example lacks this key, so
+# conflating them would have an ordinary bootstrap silently revoke every declared
+# provisioner.
+dotenv_has() {
+  local key="$1"
+  # Same file `dotenv_get` reads: this script runs from the compose directory.
+  # The SAME pattern `dotenv_get` uses — no `export` prefix. Accepting a form the
+  # reader does not parse made an `export KEY=...` line read as PRESENT but resolve
+  # EMPTY, which this script then took for "revoke everything".
+  grep -qE "^[[:space:]]*${key}=" .env 2>/dev/null
+}
+
+set_declared_provision_keys() {
+  local value="$1" current
+  # `env get` fails BOTH when the variable is absent and when the CLI, the network
+  # or the credentials are broken. Swallowing every failure as "absent" would have
+  # this function report a removal it never performed, leaving the withdrawn
+  # declaration — and its access — live. Only a genuine absence is tolerated.
+  # `env get` SUCCEEDS when the variable is simply absent, so a non-zero exit means
+  # something is actually wrong — the CLI, the network, the credentials. Treating
+  # that as "absent" was the dangerous half: with an empty local declaration the
+  # script would skip the removal and leave the old value authorising, while
+  # reporting that nothing was declared.
+  # NOTE the space after `$(` — `$((` is ARITHMETIC expansion, and bash -n accepts
+  # it happily: the failure only shows at run time, where it would trip the FATAL
+  # below and abort every Compose bootstrap.
+  current="$( ( cd "$REPO_ROOT" && npx convex env get ATRIUM_PROVISION_KEYS ) 2>/dev/null )" || {
+    echo "FATAL: cannot read ATRIUM_PROVISION_KEYS from the Convex environment" >&2
+    exit 1
+  }
+  if [[ -z "$value" ]]; then
+    if [[ -n "$current" ]]; then
+      if ! ( cd "$REPO_ROOT" && npx convex env remove ATRIUM_PROVISION_KEYS ) >/dev/null 2>&1; then
+        echo "FATAL: could not remove ATRIUM_PROVISION_KEYS — the withdrawn declaration is STILL live" >&2
+        exit 1
+      fi
+      echo "  - ATRIUM_PROVISION_KEYS: removed (declaration emptied)"
+    else
+      echo "  . ATRIUM_PROVISION_KEYS: (none declared)"
+    fi
+    return
+  fi
+  if [[ "$current" == "$value" ]]; then
+    echo "  = ATRIUM_PROVISION_KEYS: unchanged"
+  else
+    ( cd "$REPO_ROOT" && npx convex env set ATRIUM_PROVISION_KEYS -- "$value" ) >/dev/null
+    echo "  + ATRIUM_PROVISION_KEYS: set"
+  fi
+}
+
 # 4) AUTH_ALLOWED_EMAIL_DOMAINS FIRST — it is the authoritative sign-in gate and
 #    MUST be in place before anyone can reach the sign-in screen (else sign-in
 #    breaks, or a wrong domain could seed the admin).
@@ -101,6 +160,15 @@ echo "▶ setting Convex deployment env (auth gate first) …"
 # an argument, which once stored the literal "FATAL …" message as JWT_PRIVATE_KEY.
 push() { local name="$1" val; val="$(resolve "$name")" || exit 1; set_env "$name" "$val"; }
 push AUTH_ALLOWED_EMAIL_DOMAINS
+# Capture resolve() FIRST: `set -e` does NOT abort on a command substitution
+# used directly as an argument, so a missing ATRIUM_PROVISION_KEYS_FILE would
+# arrive here as an empty string and DELETE the live declaration.
+if dotenv_has ATRIUM_PROVISION_KEYS || dotenv_has ATRIUM_PROVISION_KEYS_FILE; then
+  DECLARED_PROVISION_KEYS="$(resolve ATRIUM_PROVISION_KEYS)" || exit 1
+  set_declared_provision_keys "$DECLARED_PROVISION_KEYS"
+else
+  echo "  . ATRIUM_PROVISION_KEYS: not declared in .env — leaving Convex untouched"
+fi
 
 # 5) The rest. JWT_PRIVATE_KEY / JWKS support the `<KEY>_FILE` form (recommended
 #    for the PEM key + JWKS JSON) via `resolve`.

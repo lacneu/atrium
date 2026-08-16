@@ -52,6 +52,70 @@ push() { local name="$1" val; val="$(resolve "$name")" || exit 1; set_env "$name
 
 echo "▶ pushing Convex deployment env to ${CONVEX_SELF_HOSTED_URL} (auth gate first) …"
 push AUTH_ALLOWED_EMAIL_DOMAINS
+# ATRIUM_PROVISION_KEYS is DECLARATIVE, so an empty value is a REMOVAL, not a
+# no-op. `set_env` skips blanks on purpose — for an optional credential, blank
+# means "not configured, leave whatever is there". Here it would mean the exact
+# opposite: an operator withdrawing the last declared host would leave the old
+# declaration live in Convex, and the key they meant to revoke would keep
+# authenticating for ever.
+# Is the key PRESENT in .env at all? `dotenv_get` cannot tell an absent key from an
+# empty one, and for a DECLARATIVE variable those mean opposite things: absent is
+# "this deployment does not manage it here — leave Convex alone", empty is "revoke
+# everything". Every .env derived from the current example lacks this key, so
+# conflating them would have an ordinary bootstrap silently revoke every declared
+# provisioner.
+dotenv_has() {
+  local key="$1"
+  # The SAME pattern `dotenv_get` uses — no `export` prefix. Accepting a form the
+  # reader does not parse made an `export KEY=...` line read as PRESENT but resolve
+  # EMPTY, which this script then took for "revoke everything".
+  grep -qE "^[[:space:]]*${key}=" "$ENV_FILE" 2>/dev/null
+}
+
+set_declared_provision_keys() {
+  local value="$1" current get_status=0
+  # `env get` fails BOTH when the variable is absent and when the CLI, the network
+  # or the credentials are broken. Reading every failure as "absent" would report a
+  # removal never performed, leaving the withdrawn declaration — and its access —
+  # live. Only a genuine absence is tolerated.
+  # `env get` SUCCEEDS when the variable is simply absent, so a non-zero exit means
+  # something is actually wrong — the CLI, the network, the credentials. Treating
+  # that as "absent" was the dangerous half: with an empty local declaration the
+  # script would skip the removal and leave the old value authorising, while
+  # reporting that nothing was declared.
+  current="$(npx convex env get ATRIUM_PROVISION_KEYS 2>/dev/null)" || {
+    echo "FATAL: cannot read ATRIUM_PROVISION_KEYS from the Convex environment" >&2
+    exit 1
+  }
+  if [[ -z "$value" ]]; then
+    if [[ -n "$current" ]]; then
+      if ! npx convex env remove ATRIUM_PROVISION_KEYS >/dev/null 2>&1; then
+        echo "FATAL: could not remove ATRIUM_PROVISION_KEYS — the withdrawn declaration is STILL live" >&2
+        exit 1
+      fi
+      echo "  - ATRIUM_PROVISION_KEYS: removed (declaration emptied)"
+    else
+      echo "  . ATRIUM_PROVISION_KEYS: (none declared)"
+    fi
+    return
+  fi
+  if [[ "$current" == "$value" ]]; then
+    echo "  = ATRIUM_PROVISION_KEYS: unchanged"
+  else
+    npx convex env set ATRIUM_PROVISION_KEYS -- "$value" >/dev/null
+    echo "  + ATRIUM_PROVISION_KEYS: set"
+  fi
+}
+# Capture resolve() FIRST: `set -e` does NOT abort on a command substitution
+# used directly as an argument, so a missing ATRIUM_PROVISION_KEYS_FILE would
+# arrive here as an empty string and DELETE the live declaration.
+if dotenv_has ATRIUM_PROVISION_KEYS || dotenv_has ATRIUM_PROVISION_KEYS_FILE; then
+  DECLARED_PROVISION_KEYS="$(resolve ATRIUM_PROVISION_KEYS)" || exit 1
+  set_declared_provision_keys "$DECLARED_PROVISION_KEYS"
+else
+  echo "  . ATRIUM_PROVISION_KEYS: not declared in .env — leaving Convex untouched"
+fi
+
 for v in \
   AUTH_GOOGLE_ID AUTH_GOOGLE_SECRET \
   AUTH_MICROSOFT_ENTRA_ID_ID AUTH_MICROSOFT_ENTRA_ID_SECRET AUTH_MICROSOFT_ENTRA_ID_ISSUER \

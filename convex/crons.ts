@@ -27,6 +27,18 @@ crons.cron(
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 
+// Make the service accounts match the DECLARED provisioning keys. This is what
+// makes rotation and revocation take effect on their own: the platform edits one
+// environment value, and the next pass follows it. A steady state writes nothing,
+// so the interval is cheap; the install path does not depend on it, because an
+// authentication miss reconciles on demand.
+crons.interval(
+  "reconcile declared provisioning keys",
+  { minutes: 5 },
+  internal.provisionKeys.reconcileProvisionKeys,
+  {},
+);
+
 // Re-arm instance-deletion sweeps whose scheduled chain died. The chain itself is
 // self-rescheduling, so this only ever picks up a pass that THREW (the scheduler
 // does not retry those) — leaving user grants pointing at an instance that no

@@ -2670,8 +2670,28 @@ export default defineSchema({
     roleKey: v.string(), // -> roles.key (e.g. "observer", "agent")
     disabled: v.boolean(),
     description: v.optional(v.string()),
-    createdByUserId: v.id("users"), // admin who created it (attribution)
-  }).index("by_name", ["name"]),
+    // The admin who created it. ABSENT for an account Atrium reconciled from the
+    // declared-keys environment value: an automated install runs before any human
+    // has ever signed in, so there is no author to record. Required-and-faked
+    // would have been worse — the first admin would appear to have authorised
+    // something they never saw.
+    createdByUserId: v.optional(v.id("users")),
+    // Set when this account exists BECAUSE of a declaration, and names what
+    // declares it. Ownership must never be inferred from the account NAME: an
+    // account an admin created by hand, happening to match the naming convention,
+    // would otherwise be adopted — re-roled, its keys disabled, or revoked when a
+    // label it never belonged to left the declaration.
+    managedBy: v.optional(v.string()),
+  }).index("by_name", ["name"])
+    // Bounded revocation sweep. `disabled` is IN THE INDEX on purpose, and that is
+    // what makes the sweep converge: `false` sorts before `true`, so every pass
+    // reads the still-ACTIVE accounts first and therefore sees rows the previous
+    // pass has not already handled. Indexing `managedBy` alone would have each
+    // bounded read return the same first page for ever — disabling a row does not
+    // remove it from that range — and the sweep would spin without reaching the
+    // rest. The explicit `.eq("disabled", false)` below is belt-and-braces on top
+    // of that ordering, not the mechanism.
+    .index("by_managed_disabled", ["managedBy", "disabled"]),
 
   // API keys for service accounts. SECRET-SAFE: only the SHA-256 hash of the
   // plaintext key is stored (`hashedKey`); the plaintext (`oc_live_<base62>`)
@@ -2689,7 +2709,12 @@ export default defineSchema({
     expiresAt: v.optional(v.number()),
   })
     .index("by_hash", ["hashedKey"]) // O(1) verification lookup
-    .index("by_account", ["serviceAccountId"]), // list/revoke a SA's keys
+    .index("by_account", ["serviceAccountId"])
+    // ACTIVE keys of one account. Reading a bounded page of `by_account` returned
+    // the OLDEST rows, so past ~50 rotations the current key fell out of the window
+    // and the next rotation stopped disabling it — several keys left marked active.
+    // What the reconciliation needs is the active ones, and there are never many.
+    .index("by_account_disabled", ["serviceAccountId", "disabled"]), // list/revoke a SA's keys
 
   // Bounded recent trace window (D1). Convex is NOT the log store: a daily cron
   // (observability.purgeOldTraces) deletes rows older than TRACE_RETENTION_DAYS.

@@ -1,6 +1,51 @@
 # Changelog
 
-## [Unreleased] — Signed announcements without remote prose
+## [0.74.0] — Authorising an automation without a human in the loop
+
+Adding or removing a gateway could already be scripted, but the access to do it
+still had to be created by an administrator, by hand, before anything could run.
+That is fine once; it is impossible for a platform that provisions servers on
+demand.
+
+A deployment can now be told, in its configuration, which hosts are allowed to
+add and remove gateways — one entry per server. Atrium neither creates nor hands
+back any credential: whoever installs the platform generates the secret, keeps
+it, and simply declares it. Only a fingerprint is ever stored.
+
+Editing that configuration is the whole lifecycle. Adding an entry authorises a
+server; replacing its secret rotates it, and the previous one stops working
+immediately; removing the entry withdraws the access while keeping the record of
+what it did. A configuration that has not changed changes nothing.
+
+A server provisioned seconds ago works on its very first call, without waiting
+for anything to catch up. And an entry that cannot be read is ignored rather than
+guessed at — including one naming the same server twice, where letting the order
+of the list decide would be worse than refusing both.
+
+The access this grants remains exactly what it was: registering, checking and
+removing gateways. Nothing else — no conversations, no measurements, no
+diagnostics.
+
+**Two details an administrator will notice.** A server authorised this way is
+managed by the configuration, not from the interface: its entry in Service
+Accounts no longer offers Edit, Delete, Revoke or Mint, and the server refuses
+them if asked another way. Those buttons would have walked an operator through a
+confirmation for something that cannot happen — worst of all for Revoke, where
+they would have believed a compromised key was gone. Withdrawing the entry is
+what revokes it.
+
+**Two details whoever installs will notice.** Leaving the setting out entirely
+means "this deployment does not manage the list here", and nothing is touched.
+Writing it empty means "withdraw every server". They are opposite instructions,
+so they are now told apart rather than both read as blank. And a secret that is
+already in use somewhere else is refused rather than accepted — the key it
+clashes with is retired at the same time, so a mistake in the list cannot quietly
+hand a server permissions it was never meant to have.
+
+### Also in these notes: signed operator announcements
+
+This shipped in 0.73.0 but its notes were left unpublished, so it appears here
+rather than nowhere. The release it belongs to is 0.73.0.
 
 Atrium can now poll an optional, configurable server for signed operator
 announcements. The integration is inactive when its complete environment
