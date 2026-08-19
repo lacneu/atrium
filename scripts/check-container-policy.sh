@@ -29,6 +29,11 @@ if grep -Eq '^[[:space:]]*RUN[[:space:]].*(apk|apt-get|dnf|yum)[[:space:]].*(cur
   exit 1
 fi
 
+if ! grep -Eq '^RUN apk del --purge apk-tools$' "$dockerfile"; then
+  echo "The Alpine runtime must remove apk-tools and its TLS dependency chain" >&2
+  exit 1
+fi
+
 # Caddy must be built from an EXPLICITLY PINNED source release. The assertion is
 # on the INTENT, not on one build form: `go install pkg@vX.Y.Z` and the
 # throwaway-module form (`go mod edit -require=pkg@vX.Y.Z`, the only way to

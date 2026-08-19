@@ -36,6 +36,8 @@ export interface CredentialRefreshDeps {
   resolveOne: (secret: string) => Promise<ResolveOneResult>;
   /** Build + register a resolved instance (bundle + served.set + reaper). SYNCHRONOUS. */
   register: (data: InstanceData) => RegisterOutcome;
+  /** Start non-blocking provider discovery after a NEW instance is registered. */
+  onRegistered?: (data: InstanceData) => void | Promise<void>;
   /** Retry interval (ms) between passes over the still-pending secrets. */
   intervalMs: number;
   /** Called after EVERY pass with the CURRENT pending issues (drives /health). */
@@ -116,6 +118,24 @@ export function startCredentialRefresh(
           continue;
         }
         drop(secret);
+        if (outcome === "registered") {
+          try {
+            const followUp = deps.onRegistered?.(r.data);
+            if (followUp) {
+              void followUp.catch(() => {
+                deps.log?.(
+                  `post-registration discovery failed for instance "${r.data.instanceName}"; a later refresh will retry`,
+                );
+              });
+            }
+          } catch {
+            // Registration is already complete. A best-effort discovery hook must
+            // never put the secret back into the retry queue or hide a served instance.
+            deps.log?.(
+              `post-registration discovery could not start for instance "${r.data.instanceName}"; a later refresh will retry`,
+            );
+          }
+        }
         deps.log?.(
           outcome === "registered"
             ? `instance "${r.data.instanceName}" now resolved and serving`

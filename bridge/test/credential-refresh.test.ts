@@ -133,6 +133,63 @@ describe("startCredentialRefresh (boot self-heal)", () => {
     expect(sched.setTimer).not.toHaveBeenCalled(); // nothing pending -> no retry
   });
 
+  it("notifies exactly once when a newly resolved instance is registered", async () => {
+    const sched = fakeScheduler();
+    const registered = okData("olivier");
+    const onRegistered = vi.fn();
+    const refresh = startCredentialRefresh({
+      pending: ["new", "duplicate", "collision"],
+      resolveOne: async (secret) => ({
+        ok: true,
+        data:
+          secret === "new"
+            ? registered
+            : okData(secret === "duplicate" ? "existing" : "conflict"),
+      }),
+      register: (data) =>
+        data.instanceName === "olivier"
+          ? "registered"
+          : data.instanceName === "existing"
+            ? "duplicate"
+            : "collision",
+      onRegistered,
+      intervalMs: 10_000,
+      onIssues: () => {},
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+
+    await refresh.tick();
+
+    expect(onRegistered).toHaveBeenCalledTimes(1);
+    expect(onRegistered).toHaveBeenCalledWith(registered);
+  });
+
+  it("keeps a registered instance resolved when its discovery hook rejects synchronously", async () => {
+    const sched = fakeScheduler();
+    let issues: ConfigIssue[] = [];
+    const refresh = startCredentialRefresh({
+      pending: ["new"],
+      resolveOne: async () => ({ ok: true, data: okData("olivier") }),
+      register: () => "registered",
+      onRegistered: () => {
+        throw new Error("discovery unavailable");
+      },
+      intervalMs: 10_000,
+      onIssues: (value) => {
+        issues = value;
+      },
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+
+    await refresh.tick();
+
+    expect(refresh.pendingCount()).toBe(0);
+    expect(issues).toEqual([]);
+    expect(sched.setTimer).not.toHaveBeenCalled();
+  });
+
   it("schedules exactly ONE retry per pass (recursive setTimeout — never stacking)", async () => {
     const sched = fakeScheduler();
     const refresh = startCredentialRefresh({

@@ -114,6 +114,7 @@ RUN go mod init atrium/caddy-dist \
  && go get golang.org/x/text@v0.39.0 \
  && CGO_ENABLED=0 go build -trimpath -o /out/caddy .
 FROM alpine:3.23@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+RUN apk del --purge apk-tools
 COPY --from=caddy-builder /out/caddy /usr/bin/caddy
 EOF
 "$policy" "$fixture_dir/module-form"
