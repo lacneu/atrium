@@ -58,6 +58,11 @@ RUN go mod init atrium/caddy-dist \
  && CGO_ENABLED=0 go build -trimpath -o /out/caddy . \
  && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc'
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
+# Caddy is statically linked and the entrypoint only needs BusyBox + musl. Removing
+# apk-tools also removes its OpenSSL/zlib dependency chain before the trusted CA bundle
+# is copied back from the builder, keeping the runtime package-manager and TLS-library
+# free while preserving outbound certificate verification.
+RUN apk del --purge apk-tools
 COPY --from=caddy-builder /out/caddy /usr/bin/caddy
 COPY --from=caddy-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /app/dist /srv
