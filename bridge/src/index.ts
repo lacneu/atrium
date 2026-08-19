@@ -34,7 +34,7 @@ import { scanAndHostOutbound } from "./core/outbound-scan.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { HealthRegistry } from "./core/health.js";
 import { SessionRegistry, type InstanceBundle } from "./session.js";
-import { createBridgeServer } from "./server.js";
+import { createBridgeServer, discoverAgents } from "./server.js";
 import {
   installProcessSafetyNet,
   installServerFailFast,
@@ -216,6 +216,21 @@ async function main(): Promise<void> {
       pending: shared.bridgeInstanceSecrets,
       resolveOne: (secret) => resolver.resolveOne(secret),
       register,
+      onRegistered: (data) => {
+        if (data.kind !== "openclaw") return;
+        const bundle = served.get(data.instanceName);
+        if (!bundle) return;
+        // A newly deployed bridge may have missed Convex's earlier refresh poke while
+        // its private gateway network was not attached yet. Opening one bounded
+        // discovery connection here creates the OpenClaw pairing request without
+        // operator intervention; NOT_PAIRED is expected until the lifecycle driver
+        // approves this exact public device identity.
+        void discoverAgents(bundle.config).catch(() => {
+          console.log(
+            `[credentials] initial discovery for "${data.instanceName}" awaits pairing or a later refresh`,
+          );
+        });
+      },
       intervalMs: shared.credentialRetryMs,
       onIssues: (issues) => {
         configIssues = issues;
