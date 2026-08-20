@@ -29,6 +29,10 @@ import {
   type RegisterOutcome,
   type CredentialRefresh,
 } from "./core/credential-refresh.js";
+import {
+  startRegistrationDiscovery,
+  type RegistrationDiscovery,
+} from "./core/registration-discovery.js";
 import { startInboundReaper } from "./core/inbound-reaper.js";
 import { scanAndHostOutbound } from "./core/outbound-scan.js";
 import type { OutboundScan } from "./core/turn-sink.js";
@@ -136,6 +140,7 @@ async function main(): Promise<void> {
   // Declared before the server so `triggerRefresh` can close over it (assigned below);
   // the closure reads the live value at call time (when /refresh-credentials is hit).
   let refresh: CredentialRefresh | null = null;
+  const registrationDiscoveries: RegistrationDiscovery[] = [];
   const server = createBridgeServer({
     shared,
     served,
@@ -225,11 +230,14 @@ async function main(): Promise<void> {
         // discovery connection here creates the OpenClaw pairing request without
         // operator intervention; NOT_PAIRED is expected until the lifecycle driver
         // approves this exact public device identity.
-        void discoverAgents(bundle.config).catch(() => {
-          console.log(
-            `[credentials] initial discovery for "${data.instanceName}" awaits pairing or a later refresh`,
-          );
-        });
+        registrationDiscoveries.push(
+          startRegistrationDiscovery({
+            data,
+            discover: () => discoverAgents(bundle.config),
+            intervalMs: Math.min(shared.credentialRetryMs, 2_000),
+            log: (message) => console.log(`[credentials] ${message}`),
+          }),
+        );
       },
       intervalMs: shared.credentialRetryMs,
       onIssues: (issues) => {
@@ -269,6 +277,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`received ${signal}, shutting down`);
     refresh?.stop();
+    for (const discovery of registrationDiscoveries) discovery.stop();
     registry.closeAll();
     server.close(() => process.exit(0));
     // Hard cap so a stuck close never blocks the process forever.
