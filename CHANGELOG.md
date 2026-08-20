@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.74.2] — Completing automatic OpenClaw pairing
+
+A newly registered OpenClaw bridge now retries its first discovery connection in
+the background until the lifecycle agent has approved its device identity. The
+retry is serialized, bounded by the configured interval, does not block bridge
+startup, stops after the first successful connection, and is cancelled during a
+graceful shutdown.
+
+This closes the final race in unattended gateway installation: a bridge that
+correctly created its pairing request no longer remains unauthorized in memory
+after the request is approved, and no manual bridge restart is required.
+
 ## [0.74.0] — Authorising an automation without a human in the loop
 
 Adding or removing a gateway could already be scripted, but the access to do it
