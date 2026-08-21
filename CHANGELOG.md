@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.74.3] — Attachments you can actually see
+
+Images attached to a message were laid out one per row, at a size too small to
+recognise, with their two controls crowded onto the same edge. Ten images filled
+the composer from top to bottom and pushed the writing area off screen.
+
+Thumbnails now sit side by side and wrap onto as many rows as they need, up to
+three — past that the row scrolls rather than taking the composer over. Each
+preview is large enough to tell one screenshot from another, and its two
+controls sit in opposite corners, appearing when the pointer is over the
+thumbnail so the picture is unobstructed the rest of the time.
+
+On a touch screen the controls stay visible, there being nothing to hover with.
+That case is now decided on whether a touch pointer exists at all rather than on
+which one the device calls primary: a tablet with a mouse attached reports that
+it can hover, and would otherwise have kept the remove control invisible while
+still delivering it every tap — discarding an attachment through a button nobody
+could see.
+
 ## [0.74.2] — Completing automatic OpenClaw pairing
 
 A newly registered OpenClaw bridge now retries its first discovery connection in

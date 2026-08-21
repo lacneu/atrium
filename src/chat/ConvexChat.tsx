@@ -4937,9 +4937,17 @@ function Composer({
         </div>
       ) : null}
       <QuoteChip chatId={chatId} />
-      <ComposerPrimitive.Attachments
-        components={{ Attachment: ComposerAttachmentChip }}
-      />
+      {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
+          fragment — no element of its own — so every chip became a direct child
+          of the composer, which is a COLUMN flex: ten images stacked ten rows
+          high and pushed the textarea off screen. The row below lays them out
+          horizontally, wraps, and caps its own height rather than growing for
+          ever. `:empty` hides it so it costs no gap when nothing is attached. */}
+      <div className="oc-attachrow">
+        <ComposerPrimitive.Attachments
+          components={{ Attachment: ComposerAttachmentChip }}
+        />
+      </div>
       {/* SR-only routed-paste confirmation: the paste never lands in the
           textarea, so without this a non-visual user cannot tell it became an
           attachment (the visible cue is the chip's mount shimmer). */}

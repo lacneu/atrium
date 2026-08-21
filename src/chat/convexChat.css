@@ -7304,12 +7304,33 @@ button.oc-bmk-rail__count:hover {
 /* ── Composer attachment chip (BUG-2): selecting a file used to render nothing
    (empty components map → no Attachment component). This chip restores the
    feedback — icon, filename, live upload status, remove — for all types. */
+/* The row the chips live in. `ComposerPrimitive.Attachments` renders a bare
+   fragment, so without this every chip was a direct child of `.oc-composer` —
+   a COLUMN flex — and ten images became ten stacked rows that pushed the
+   textarea off screen. Wrapping row, capped height, scrolls past three rows. */
+.oc-attachrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  /* ~3 rows of thumbnails, then scroll: a large paste must never grow the
+     composer without bound. */
+  max-height: 15rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* No attachments = no element at all, so the composer's own gap is not spent on
+   an empty row. */
+.oc-attachrow:empty {
+  display: none;
+}
+
 .oc-attach {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
   max-width: 18rem;
-  margin: 0.35rem 0.35rem 0 0.35rem;
+  /* Spacing comes from the row's gap; a margin here would double it. */
+  margin: 0;
   padding: 0.3rem 0.5rem;
   font-size: 0.8rem;
   color: var(--foreground);
@@ -7876,33 +7897,76 @@ button.oc-bmk-rail__count:hover {
 }
 
 /* Composer image attachment: a thumbnail preview instead of a generic chip. */
+/* 44px was too small to recognise what had been attached, and left two 18px
+   buttons covering most of the image. 76px reads as a preview and gives the
+   controls a corner each without eating the picture. */
 .oc-attach--image {
   position: relative;
   padding: 0;
   overflow: hidden;
-  width: 44px;
-  height: 44px;
+  width: 76px;
+  height: 76px;
 }
 .oc-attach__thumb {
   display: block;
-  width: 44px;
-  height: 44px;
+  width: 76px;
+  height: 76px;
   object-fit: cover;
   border-radius: 6px;
 }
-/* Remove button overlays the image thumb (top-right), readable on any image. */
-.oc-attach--image .oc-attach__remove {
+/* Controls overlay the thumbnail, one per corner, on a scrim that keeps them
+   readable over any image. They REVEAL on hover/focus so the preview is
+   unobstructed at rest — except on a coarse pointer, where there is no hover and
+   an invisible control is an unreachable one (see below). */
+.oc-attach--image .oc-attach__remove,
+.oc-attach--image .oc-attach__view {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  border-radius: 50%;
-  width: 18px;
-  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* 22px: below this a finger or an imprecise mouse misses between the two. */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.oc-attach--image .oc-attach__remove {
+  top: 3px;
+  right: 3px;
+}
+.oc-attach--image:hover .oc-attach__remove,
+.oc-attach--image:hover .oc-attach__view,
+.oc-attach--image:focus-within .oc-attach__remove,
+.oc-attach--image:focus-within .oc-attach__view {
+  opacity: 1;
+}
+/* A hint that the thumbnail is interactive at all, without covering it. */
+.oc-attach--image:hover .oc-attach__thumb,
+.oc-attach--image:focus-within .oc-attach__thumb {
+  filter: brightness(0.82);
+}
+/* A COARSE POINTER EXISTS: the controls must simply be there.
+   `hover: none` alone asks about the PRIMARY pointer, so a hybrid device — a
+   tablet with a mouse attached — reports hover and kept them at `opacity: 0`
+   while still delivering touch events: tapping the top-right corner would remove
+   an attachment through a control nobody could see. `any-pointer: coarse` asks
+   whether a coarse pointer is available AT ALL, which is the real question. */
+@media (hover: none), (any-pointer: coarse) {
+  .oc-attach--image .oc-attach__remove,
+  .oc-attach--image .oc-attach__view {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-attach--image .oc-attach__remove,
+  .oc-attach--image .oc-attach__view {
+    transition: none;
+  }
 }
 
 
@@ -8037,22 +8101,13 @@ button.oc-bmk-rail__count:hover {
 .oc-attach__view:hover {
   opacity: 1;
 }
-/* Image chips are a fixed 44px thumbnail with overflow hidden — the eye must
-   overlay the thumbnail (same treatment as the remove cross, bottom corner)
-   or it gets clipped out of reach (codex P2). */
+/* The eye sits in the OPPOSITE corner from the remove cross — sharing the
+   right edge put two circles a few pixels apart on a small thumbnail, which is
+   how the wrong one got clicked. Its size, scrim and reveal are shared with the
+   remove button above. */
 .oc-attach--image .oc-attach__view {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  border-radius: 50%;
-  width: 18px;
-  height: 18px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  opacity: 1;
+  bottom: 3px;
+  left: 3px;
 }
 .oc-attach__dialog {
   max-width: min(56rem, 92vw);
