@@ -2658,6 +2658,14 @@ export interface BridgeServerDeps {
    *  by `POST /refresh-credentials` so Convex can make the bridge pick up a just-saved
    *  credential NOW instead of waiting for the poll. No-op when no loop is running. */
   triggerRefresh?: () => Promise<void>;
+  /** Injectable gateway discovery used by authenticated operational proofs. */
+  discoverGatewayAgents?: typeof discoverAgents;
+  /** Read an instance's PERSISTED credential from Convex, by the per-bridge secret
+   *  that resolves it. `null` when it cannot be read — no secret, no resolver yet,
+   *  or Convex unreachable — which a rotation proof must treat as unprovable. */
+  readPersistedCredential?: (
+    instanceSecret: string | null,
+  ) => Promise<{ token: string; source: string | null } | null>;
 }
 
 /**
@@ -2674,8 +2682,28 @@ export interface BridgeServerDeps {
  *   POST /config-defaults -> authenticated gateway chat-defaults get/set
  */
 export function createBridgeServer(deps: BridgeServerDeps): Server {
-  const { shared, served, registry, health, getConfigIssues, triggerRefresh } =
-    deps;
+  const {
+    shared,
+    served,
+    registry,
+    health,
+    getConfigIssues,
+    triggerRefresh,
+    discoverGatewayAgents = discoverAgents,
+    readPersistedCredential,
+  } = deps;
+  // Rotation proofs IN FLIGHT, per instance. This route opens gateway connections
+  // AND can promote a credential; concurrent callers would multiply sockets and
+  // interleave promotions on the same live config, so a second caller is told the
+  // proof is already running rather than starting another one.
+  const rotationProofsInFlight = new Set<string>();
+  /** How many times a rotation proof re-connects after finding the credential has
+   *  moved. Counts DISCOVERIES, not sockets: one discovery may itself reconnect
+   *  once inside the promotion chain, so the real ceiling is three discoveries and
+   *  six connections. Small and finite is what matters — a credential still moving
+   *  after that belongs to another writer, and no number of retries would settle
+   *  it. */
+  const MAX_PROOF_RECONNECTS = 2;
   // PER-INSTANCE caches (one bridge, N gateways): the last gateway version +
   // maxPayload seen for EACH served instance, so /health and /capabilities report
   // each gateway honestly even when no chat session is live (lazy bridge / restart).
@@ -2918,6 +2946,203 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
 
     if (
       req.method === "GET" &&
+      (req.url === "/rotation-readiness" ||
+        req.url?.startsWith("/rotation-readiness?"))
+    ) {
+      // This endpoint is deliberately stronger than `/agents`: it attests that the
+      // gateway issued a per-device token, that the token's VALUE is not the shared
+      // enrollment credential, and it proves that value against the gateway now.
+      // The response is metadata-only and authenticated with the same internal
+      // bridge secret as every connection-opening route.
+      const provided = req.headers["authorization"];
+      if (
+        typeof provided !== "string" ||
+        !constantTimeEqual(provided, shared.bridgeSharedSecret)
+      ) {
+        sendJson(res, 401, { ok: false, error: "unauthorized" });
+        return;
+      }
+      const instanceName = new URL(
+        req.url ?? "/rotation-readiness",
+        "http://bridge",
+      ).searchParams.get("instance");
+      const bundle = instanceName ? served.get(instanceName) : undefined;
+      if (!bundle) {
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
+        return;
+      }
+      if (bundle.config.kind === "hermes") {
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_openclaw" },
+        });
+        return;
+      }
+      if (rotationProofsInFlight.has(instanceName!)) {
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "proof_in_progress" },
+        });
+        return;
+      }
+      rotationProofsInFlight.add(instanceName!);
+      try {
+        // The credential this bridge is about to present. If a promotion follows,
+        // this is the value the proof must be shown to have LEFT — comparing
+        // against it is the only thing that separates a real per-device token from
+        // a gateway echoing the enrollment secret back.
+        const enrollmentCredential = bundle.config.openclawEnrollmentCredential;
+        // PROVE A FIXED POINT, not just a successful connection: the credential the
+        // connection PRESENTED must still be the one held when it returns.
+        //
+        // Reading the provenance back is not enough. A promotion chain at depth 1
+        // can receive a second, different token, persist it, and deliberately keep
+        // the socket it already has — so the stored credential was never
+        // authenticated with. A session or an `/agents` call promoting at the same
+        // moment does the same thing from outside, which this route's lock cannot
+        // prevent. Either way the value moved under the proof.
+        //
+        // So: connect, and if the credential is no longer the one we presented,
+        // connect again with the new value. Bounded — a credential that keeps
+        // moving is another writer's, and is refused rather than chased.
+        let presented: string | null = null;
+        let reconnects = 0;
+        for (;;) {
+          presented = bundle.config.openclawToken;
+          await discoverGatewayAgents(
+            bundle.config,
+            noteHandshakeFor(instanceName!),
+            (v) => noteGatewayVersion(instanceName!, v),
+          );
+          if (bundle.config.openclawToken === presented) break;
+          if (++reconnects > MAX_PROOF_RECONNECTS) {
+            sendJson(res, 409, {
+              ok: false,
+              error: { code: "credential_moved_during_proof" },
+            });
+            return;
+          }
+        }
+        // ATTEST FROM THE PERSISTED STATE, not from this process's memory. Several
+        // bridge processes can serve one instance — replicas, or simply the overlap
+        // of a rolling update — and each holds its own copy of the credential. What
+        // survives a restart is what Convex holds, so a proof that only ever looked
+        // at local memory could report ready while another process had already put
+        // the enrollment secret back: the rotation would then lock the instance out
+        // at its next start.
+        //
+        // This is the LAST await. Everything below runs without an interruption
+        // point, so no concurrent promotion can slip between a check and the answer.
+        const persisted =
+          readPersistedCredential === undefined
+            ? null
+            : await readPersistedCredential(
+                bundle.config.bridgeInstanceSecret ?? null,
+              );
+        if (persisted === null) {
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "persisted_credential_unreadable" },
+          });
+          return;
+        }
+        if (bundle.config.openclawToken !== presented) {
+          // The credential moved while the persisted state was being read.
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "credential_moved_during_proof" },
+          });
+          return;
+        }
+        if (persisted.token !== presented) {
+          // Convex holds a credential this connection never authenticated with —
+          // another process promoted, and it is that value a restart would read.
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "persisted_credential_differs" },
+          });
+          return;
+        }
+        if (persisted.source !== "device") {
+          // THE PLATFORM MUST AGREE. This process believing the credential is a
+          // device token is not enough: what the platform records is what governs a
+          // rotation, and it still files this value as an enrollment credential.
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "persisted_credential_not_device" },
+          });
+          return;
+        }
+        if (bundle.config.openclawCredentialSource !== "device") {
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "device_credential_unavailable" },
+          });
+          return;
+        }
+        if (
+          enrollmentCredential === null ||
+          enrollmentCredential === undefined
+        ) {
+          // This instance was registered already holding a device token, so the
+          // enrollment value is not knowable here — only the platform holds both.
+          // Nothing about the credential in use can be compared to it, and a proof
+          // that cannot compare must not attest.
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "device_credential_unproven" },
+          });
+          return;
+        }
+        if (presented === null || presented === enrollmentCredential) {
+          // The credential the proven connection presented IS the enrollment
+          // secret. That happens when the gateway echoes it back as this device's
+          // token, and equally when a later re-issue brings the old value round
+          // again — which is why this is a comparison and not a remembered flag.
+          // Rotating it would lock this bridge out.
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "device_credential_shared_with_enrollment" },
+          });
+          return;
+        }
+        // READ BACK, never a literal: the response states what the config holds
+        // after the last proven connection, so a value that moved during the proof
+        // cannot be reported as something it is not.
+        const credentialSource = bundle.config.openclawCredentialSource;
+        if (credentialSource !== "device") {
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "device_credential_unavailable" },
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          instanceName,
+          credentialSource,
+        });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        // The CLASSIFIED code only. An upstream failure message is gateway-authored
+        // text (the client builds it from `frame.error.message`), so echoing it into
+        // the log hands whatever the gateway put there — a credential included — to
+        // the log sink.
+        console.error(
+          `bridge /rotation-readiness failed [${code}] instance=${instanceName}`,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
+      } finally {
+        rotationProofsInFlight.delete(instanceName!);
+      }
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
       (req.url === "/agents" || req.url?.startsWith("/agents?"))
     ) {
       // Bridge-driven agent discovery. Authenticated (it opens a gateway
@@ -2947,7 +3172,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       try {
-        const { agents, rawCount, usage } = await discoverAgents(
+        const { agents, rawCount, usage } = await discoverGatewayAgents(
           bundle.config,
           noteHandshakeFor(instanceName!),
           (v) => noteGatewayVersion(instanceName!, v),

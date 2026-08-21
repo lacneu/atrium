@@ -187,6 +187,7 @@ export class CredentialResolver {
         transport?: string | null;
       };
       credentials?: Record<string, string>;
+      credentialSources?: Record<string, unknown>;
     };
     try {
       body = (await res.json()) as typeof body;
@@ -213,6 +214,24 @@ export class CredentialResolver {
     const nonEmpty = (v: string | undefined): string | undefined =>
       v && v.trim().length > 0 ? v : undefined;
     const creds = body.credentials ?? {};
+    // PROVENANCE IS METADATA, NOT A CREDENTIAL. An unreadable value must never
+    // remove the instance from service: the token, the identity and the URL are
+    // untouched by it, and the only consumer is the rotation-readiness proof, which
+    // already refuses anything it cannot attest. Failing the whole resolution here
+    // turned a future Convex enum value — a rolling upgrade is enough — into a
+    // gateway that stops serving chats entirely.
+    const rawTokenSource = body.credentialSources?.token;
+    const tokenSource =
+      rawTokenSource === "provisioner" || rawTokenSource === "device"
+        ? rawTokenSource
+        : null;
+    if (rawTokenSource !== undefined && tokenSource === null) {
+      // Named, not silent: a provenance we cannot read is why rotation readiness
+      // will refuse, and an operator has to be able to see that from the logs.
+      this.#deps.onWarn?.(
+        `instance "${instanceName}" reported an unreadable token provenance; serving it with no attested provenance`,
+      );
+    }
     // Provider FIRST: the auth SHAPE differs by provider. OpenClaw stores its
     // operator token under `token` + an Ed25519 device identity; Hermes stores
     // ONLY its bearer under `apiKey` (the instanceSecrets field is
@@ -260,6 +279,7 @@ export class CredentialResolver {
       instanceName,
       gatewayUrl: url,
       token,
+      tokenSource,
       deviceIdentity,
       gatewayVersion: nonEmpty(body.gateway?.version ?? undefined) ?? null,
       gatewayHttpUrl: nonEmpty(body.gateway?.httpUrl ?? undefined) ?? null,

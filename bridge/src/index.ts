@@ -140,6 +140,9 @@ async function main(): Promise<void> {
   // Declared before the server so `triggerRefresh` can close over it (assigned below);
   // the closure reads the live value at call time (when /refresh-credentials is hit).
   let refresh: CredentialRefresh | null = null;
+  // Same shape, same reason: the server closes over it and reads the live value at
+  // call time, because the resolver cannot exist before the server it is read from.
+  let resolver: CredentialResolver | null = null;
   const registrationDiscoveries: RegistrationDiscovery[] = [];
   const server = createBridgeServer({
     shared,
@@ -150,6 +153,11 @@ async function main(): Promise<void> {
     // Convex pokes POST /refresh-credentials to make the bridge pick up a just-saved
     // credential NOW (resolve + connect -> pairing) instead of waiting for the poll.
     triggerRefresh: () => refresh?.tick() ?? Promise.resolve(),
+    readPersistedCredential: async (secret) => {
+      if (secret === null || resolver === null) return null;
+      const r = await resolver.resolveOne(secret);
+      return r.ok ? { token: r.data.token, source: r.data.tokenSource ?? null } : null;
+    },
   });
 
   // A listen/bind failure must FAIL FAST so the supervisor restarts and the failure
@@ -211,15 +219,18 @@ async function main(): Promise<void> {
         "serving 0 instances. Set it + recreate the bridge.",
     );
   } else {
-    const resolver = new CredentialResolver({
+    const credentials = new CredentialResolver({
       convexHttpActionsUrl: shared.convexHttpActionsUrl,
       bridgeInstanceSecrets: shared.bridgeInstanceSecrets,
       shared,
       onWarn: (msg) => console.warn(`[credentials] ${msg}`),
     });
+    // Published to the holder the server closes over; the local binding keeps the
+    // callbacks below strictly typed.
+    resolver = credentials;
     refresh = startCredentialRefresh({
       pending: shared.bridgeInstanceSecrets,
-      resolveOne: (secret) => resolver.resolveOne(secret),
+      resolveOne: (secret) => credentials.resolveOne(secret),
       register,
       onRegistered: (data) => {
         if (data.kind !== "openclaw") return;

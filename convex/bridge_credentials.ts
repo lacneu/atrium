@@ -117,11 +117,15 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
   }
 
   const credentials: Record<string, string> = {};
-  for (const { field, secret } of envelopes) {
+  const credentialSources: Record<string, "provisioner" | "device"> = {};
+  for (const { field, secret, source } of envelopes) {
     credentials[field] = await registry.decrypt(
       secret,
       `${resolved.instanceId}:${field}`,
     );
+    if (source === "provisioner" || source === "device") {
+      credentialSources[field] = source;
+    }
   }
 
   // 4. Best-effort heartbeat + a metadata-only audit trace (fields present, never
@@ -154,6 +158,9 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
         transport: resolved.transport ?? null,
       },
       credentials,
+      // Metadata only: rotation tooling must distinguish a shared enrollment
+      // credential from a gateway-issued device token without ever seeing either.
+      credentialSources,
     }),
     {
       status: 200,

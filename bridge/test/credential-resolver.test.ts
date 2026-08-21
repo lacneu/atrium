@@ -43,6 +43,7 @@ interface CredBody {
     kind?: string;
   };
   credentials?: Record<string, string>;
+  credentialSources?: Record<string, unknown>;
 }
 
 /** A fake fetch that routes by the Bearer secret to a per-secret response. A secret
@@ -85,6 +86,7 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
             instanceName: "olivier",
             gateway: { url: "wss://olivier.gw/ws", version: "2026.6.5" },
             credentials: { token: "tok-o", deviceIdentity: DEV_JSON },
+            credentialSources: { token: "device" },
           },
           "sec-jerome": {
             instanceName: "jerome",
@@ -100,6 +102,7 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
     const o = served.get("olivier")!;
     expect(o.openclawGatewayUrl).toBe("wss://olivier.gw/ws");
     expect(o.openclawToken).toBe("tok-o");
+    expect(o.openclawCredentialSource).toBe("device");
     expect(o.deviceIdentity).toEqual(DEV);
     expect(o.instanceName).toBe("olivier");
     expect(o.gatewayVersionFallback).toBe("2026.6.5");
@@ -245,6 +248,70 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
     const { served, failures } = await r.resolveAll();
     expect(served.size).toBe(0);
     expect(failures[0]!.reason).toBe("bad_device");
+  });
+
+  it("captures the ENROLLMENT credential as an anchor, and only when it is one", async () => {
+    // The rotation proof compares the credential in use against this value, so a
+    // config built without it refuses every instance — silently, and everywhere.
+    const r = new CredentialResolver(
+      deps({
+        bridgeInstanceSecrets: ["shared", "paired"],
+        fetchImpl: routedFetch({
+          shared: {
+            instanceName: "shared",
+            gateway: { url: "wss://shared/ws" },
+            credentials: { token: "enrollment-secret", deviceIdentity: DEV_JSON },
+            credentialSources: { token: "provisioner" },
+          },
+          paired: {
+            instanceName: "paired",
+            gateway: { url: "wss://paired/ws" },
+            credentials: { token: "device-token", deviceIdentity: DEV_JSON },
+            credentialSources: { token: "device" },
+          },
+        }),
+      }),
+    );
+    const { served } = await r.resolveAll();
+
+    // Convex says this token IS the shared enrollment credential: anchor it.
+    expect(served.get("shared")!.openclawEnrollmentCredential).toBe(
+      "enrollment-secret",
+    );
+    // Already paired: the enrollment value is not knowable here, and MUST NOT be
+    // guessed from the device token — anchoring that would attest against itself.
+    expect(served.get("paired")!.openclawEnrollmentCredential).toBeNull();
+  });
+
+  it("an UNREADABLE provenance keeps the gateway in service, unattested", async () => {
+    // Provenance is metadata. The token, the identity and the URL are untouched by
+    // a value we cannot read, so refusing to serve the instance would turn a future
+    // Convex enum value — a rolling upgrade is enough — into a gateway that stops
+    // dispatching chats. It is the rotation proof that must refuse, not the bridge.
+    const onWarn = vi.fn();
+    const r = new CredentialResolver(
+      deps({
+        bridgeInstanceSecrets: ["x"],
+        onWarn,
+        fetchImpl: routedFetch({
+          x: {
+            instanceName: "x",
+            gateway: { url: "wss://x/ws" },
+            credentials: { token: "t", deviceIdentity: DEV_JSON },
+            credentialSources: { token: "untrusted" },
+          },
+        }),
+      }),
+    );
+    const { served, failures } = await r.resolveAll();
+
+    expect(failures).toEqual([]);
+    expect(served.get("x")!.openclawToken).toBe("t");
+    // Unattested, so the readiness proof refuses — and NOT silently.
+    expect(served.get("x")!.openclawCredentialSource).toBeNull();
+    expect(onWarn).toHaveBeenCalledWith(
+      expect.stringContaining("unreadable token provenance"),
+    );
   });
 
   it("two secrets resolving to the SAME instance keep the first + warn", async () => {

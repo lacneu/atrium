@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.74.4] — Refusing to say a rotation is safe unless it is
+
+Before an operator rotates the shared credential a gateway was enrolled with, a
+bridge can now be asked whether it has genuinely stopped using it. The question
+is answered over an internal, authenticated endpoint; nothing in the interface
+calls it yet, so what ships here is the proof, not an operator workflow.
+
+What it takes to answer yes is deliberately narrow. The gateway must have issued
+a per-device token; that token's value must differ from the enrollment
+credential; and it must authenticate against the gateway on a connection of its
+own. A gateway that hands the enrollment secret straight back — which it is
+allowed to do, and which still legitimately marks that value as this device's
+token — is refused, because the shared secret is plainly still in use. So is a
+credential that has come back round to the enrollment value after moving away
+from it: the check compares against that value rather than remembering having
+once left it, precisely so a re-issued older token cannot pass. And so is an
+unknown gateway, a Hermes one, a failed connection, or a gateway registered while
+already paired — the enrollment value is then not knowable to the bridge at all.
+Every refusal names its own cause.
+
+The connection has to end holding the credential it started with. A gateway may
+hand back a second token part-way through and keep the connection it already
+has, which would leave the stored credential one no connection ever
+authenticated with; a conversation or an agent listing running at the same
+moment can move it too. So the proof reconnects with the new value until it
+stops moving, and refuses — rather than chasing — a credential another writer
+keeps replacing.
+
+And it answers from what the platform has stored, not from one process's memory
+alone. What a restart reads is the stored credential, so a proof that consulted
+only local memory could report ready on a value the platform never recorded. A
+bridge that cannot read the stored credential says so instead of attesting, and
+so does one whose platform still files that credential as an enrollment
+credential — believing locally that it is a device token is not what governs a
+rotation.
+
+What it does NOT establish, and should not be read as establishing: that every
+bridge process serving this gateway has stopped using the enrollment credential.
+The answer covers the process that gave it. A deployment running more than one
+bridge for the same gateway can have a second process still holding the old value
+in memory, and rotating would stop that one from reconnecting. Proving it for all
+of them needs a durable acknowledgement from each, which this release does not
+add — so treat the answer as covering one bridge, and rotate a multi-process
+deployment on the strength of a restart rather than of this endpoint.
+
+Two consequences worth knowing. A bridge restarted since its credential was
+issued cannot tell a genuine device token from an echoed one — only the platform
+holds both values — so it refuses rather than guesses. And a proof already
+running for a gateway is not started again in parallel, because answering the
+question opens connections and can itself replace a credential.
+
+Separately, a credential provenance this bridge cannot read no longer takes the
+gateway out of service. Provenance is metadata: the token, the identity and the
+address are untouched by it, so the gateway keeps serving conversations and only
+the rotation proof refuses. Previously, a value added on the platform side — a
+rolling upgrade was enough — would have stopped that gateway entirely.
+
 ## [0.74.3] — Attachments you can actually see
 
 Images attached to a message were laid out one per row, at a size too small to

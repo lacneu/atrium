@@ -6,6 +6,7 @@ function config(): BridgeConfig {
   return {
     openclawGatewayUrl: "wss://gateway.example.test",
     openclawToken: "bootstrap-token",
+    openclawCredentialSource: "provisioner",
     kind: "openclaw",
     deviceIdentity: {
       id: "a".repeat(64),
@@ -33,6 +34,43 @@ function config(): BridgeConfig {
 }
 
 describe("device token promotion", () => {
+  /** A Convex that always answers with the given outcome. */
+  const answering = (outcome: string) =>
+    vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, outcome }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+  test("a LOST answer, once repaired, still knows the credential CHANGED", async () => {
+    // The provisioning path this endpoint exists for: the gateway issues a device
+    // token, Convex is briefly unreachable, the bridge adopts the token anyway and
+    // repairs later. Deciding distinctness only on the repair would compare the
+    // token against itself — the enrollment secret HAS been left behind, and a
+    // rotation proof that refuses for ever afterwards is a false refusal.
+    const value = config();
+    const pending: (() => void)[] = [];
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("network down");
+      return new Response(JSON.stringify({ ok: true, outcome: "stored" }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const promote = deviceTokenPromotion(value, fetchImpl, (run) => {
+      pending.push(run);
+    })!;
+
+    await expect(promote("issued-token")).rejects.toThrow("unreachable");
+    // Adopted in memory, but nothing is attested yet: the answer is unknown.
+    expect(value.openclawToken).toBe("issued-token");
+    expect(value.openclawCredentialSource).toBe("provisioner");
+
+    pending[0]!();
+    await vi.waitFor(() =>
+      expect(value.openclawCredentialSource).toBe("device"),
+    );
+  });
+
   test("persists the token through the instance-bound endpoint before switching memory", async () => {
     const value = config();
     const fetchImpl = vi.fn(
@@ -49,6 +87,7 @@ describe("device token promotion", () => {
     await promote("device-token");
 
     expect(value.openclawToken).toBe("device-token");
+    expect(value.openclawCredentialSource).toBe("device");
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe("https://convex.example.test/bridge/device-token");
@@ -89,6 +128,7 @@ describe("device token promotion", () => {
       }) as unknown as typeof fetch)!("issued-token"),
     ).rejects.toThrow("unreachable");
     expect(lost.openclawToken).toBe("issued-token");
+    expect(lost.openclawCredentialSource).toBe("provisioner");
 
     // A 2xx whose body makes no sense (a proxy page, a truncated answer) carries
     // the same uncertainty as an unreadable one — the write may have landed.
@@ -129,6 +169,7 @@ describe("device token promotion", () => {
 
     expect(await promote("our-older-token", 1_000)).toBe("superseded");
     expect(value.openclawToken).toBe("bootstrap-token");
+    expect(value.openclawCredentialSource).toBe("provisioner");
   });
 
   test("a LOST persistence is retried, not merely hoped for", async () => {
@@ -157,7 +198,8 @@ describe("device token promotion", () => {
 
     // Run the scheduled repair.
     pending[0]!();
-    await vi.waitFor(() => expect(calls).toBe(2));
+    await vi.waitFor(() => expect(value.openclawCredentialSource).toBe("device"));
+    expect(calls).toBe(2);
     expect(value.openclawToken).toBe("issued-token");
   });
 

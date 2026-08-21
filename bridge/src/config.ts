@@ -24,6 +24,19 @@ export interface BridgeConfig {
   /** Bearer token presented in the connect request's auth.token. ENV FALLBACK only
    *  since 3b: null when unset (the credential resolver may fetch it from Convex). */
   openclawToken: string | null;
+  /** Provenance of the OpenClaw token returned by Convex. A `device` value means
+   * the shared enrollment credential has already been replaced by a paired,
+   * per-device token. Missing/unknown must fail closed for rotation readiness. */
+  openclawCredentialSource?: "provisioner" | "device" | null;
+  /** The ENROLLMENT credential this instance was registered with, when it is known
+   * to be one — captured once, never updated. Rotation readiness compares the
+   * credential in use against THIS value, because no amount of remembered history
+   * can describe the credential coming back: a gateway is free to re-issue an
+   * earlier value, and a flag saying "it changed once" would still read as changed
+   * after it changed back. Absent when the instance was registered already holding
+   * a device token: the enrollment value is then not knowable here, and the proof
+   * refuses rather than guesses. */
+  openclawEnrollmentCredential?: string | null;
   /** Which provider serves this instance. Routes the dispatch path: "openclaw"
    *  = the persistent multiplexed WebSocket; "hermes" = per-turn REST+SSE.
    *  ABSENT ⇒ openclaw (backward-compatible default at every consumer). */
@@ -476,6 +489,7 @@ export interface InstanceData {
   instanceName: string;
   gatewayUrl: string;
   token: string;
+  tokenSource?: "provisioner" | "device" | null;
   deviceIdentity: DeviceIdentity | null; // null for Hermes (bearer-only auth)
   gatewayVersion: string | null;
   gatewayHttpUrl: string | null;
@@ -571,6 +585,11 @@ export function buildInstanceConfig(
   return {
     openclawGatewayUrl: inst.gatewayUrl,
     openclawToken: inst.token,
+    openclawCredentialSource: inst.tokenSource ?? null,
+    // The anchor is the token itself, and ONLY when Convex says it is the shared
+    // enrollment credential.
+    openclawEnrollmentCredential:
+      inst.tokenSource === "provisioner" ? inst.token : null,
     kind: inst.kind,
     transport: inst.transport ?? undefined,
     deviceIdentity: inst.deviceIdentity,

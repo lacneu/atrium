@@ -117,7 +117,16 @@ export function deviceTokenPromotion(
     // older value here would put memory out of step with what is stored, and every
     // reconnect and media request would then present a credential Convex no longer
     // knows about. Leave the in-memory token alone and say so.
-    if (outcome !== "superseded") config.openclawToken = token;
+    if (outcome !== "superseded") {
+      // DISTINCTNESS IS RECORDED SEPARATELY from provenance, and only upwards. The
+      // gateway may hand back the very string we connected with; that still records
+      // `device` (see the client's promotion guard) but leaves the enrollment secret
+      // in use, which a rotation proof must not attest to. A later reconnect
+      // re-issuing the same DEVICE token must not undo a distinctness already
+      // established, hence the one-way set.
+      config.openclawToken = token;
+      config.openclawCredentialSource = "device";
+    }
     // ANY definite answer clears the debt, whatever it says and whichever token it
     // was about. Convex's state is known at this point, and re-pushing an older
     // owed value would be exactly the walk backwards this module exists to avoid.

@@ -104,9 +104,9 @@ describe("/bridge/credentials end-to-end", () => {
     expect(first.status).toBe(200);
     expect(await first.json()).toEqual({ ok: true, outcome: "stored" });
     const credentials = await get(t, `Bearer ${secret.plaintext}`);
-    expect((await credentials.json()).credentials.token).toBe(
-      "paired-device-token",
-    );
+    const credentialBody = await credentials.json();
+    expect(credentialBody.credentials.token).toBe("paired-device-token");
+    expect(credentialBody.credentialSources.token).toBe("device");
     const rows = await t.run((ctx) =>
       ctx.db
         .query("instanceSecrets")
@@ -212,11 +212,13 @@ describe("/bridge/credentials end-to-end", () => {
       instanceName: string;
       gateway: { url: string; version: string | null; httpUrl: string | null; kind: string };
       credentials: Record<string, string>;
+      credentialSources: Record<string, string>;
     };
     // ISOLATION: beta's secret resolves to beta and returns ONLY beta's creds —
     // never primary's (the cross-instance leak the whole design prevents).
     expect(body.instanceName).toBe("beta");
     expect(body.credentials.token).toBe("beta-token");
+    expect(body.credentialSources).not.toHaveProperty("token");
     expect(body.credentials.deviceIdentity).toBe(
       '{"id":"b","publicKey":"bpk","privateKey":"bpem"}',
     );
