@@ -71,3 +71,25 @@ export function readDeploymentOrigin(): string | null {
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
+
+/**
+ * Which stored identity, if any, speaks for the deployment running right now.
+ *
+ * Shared deliberately. Re-deriving this at each call site is what put an
+ * UNRECONCILED identity into an export manifest: after a database is restored
+ * elsewhere, the stored row still names the deployment it came from, and stamping
+ * that onto an archive would have the archive read as local back at the original —
+ * reattaching agents that were never its own.
+ */
+export function pickReconciledIdentity(
+  rows: ReadonlyArray<{ deploymentId: string; mintedForOrigin: string | null }>,
+  origin: string | null,
+): string | null {
+  const row =
+    origin === null
+      ? rows.length === 1
+        ? rows[0]
+        : undefined
+      : rows.find((candidate) => candidate.mintedForOrigin === origin);
+  return isDeploymentId(row?.deploymentId) ? row!.deploymentId : null;
+}

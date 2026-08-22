@@ -16,7 +16,7 @@ const MERGED_ROW_SCAN = 16;
 import {
   DEPLOYMENT_ID_BYTES,
   formatDeploymentId,
-  isDeploymentId,
+  pickReconciledIdentity,
   readDeploymentOrigin,
 } from "./lib/deploymentIdentity";
 
@@ -173,23 +173,12 @@ export const getDeploymentId = query({
   handler: async (ctx): Promise<string | null> => {
     await requireActive(ctx);
     const rows = await ctx.db.query("deploymentIdentity").take(MERGED_ROW_SCAN);
-    const origin = readDeploymentOrigin();
     // A query cannot reconcile — it cannot write. What it CAN do is decline to
     // vouch for an identity it has not seen reconciled: after a database is
     // restored from another deployment, the stored row still names that other
     // deployment, and answering with it would make ITS archives read as local
     // here. "Cannot say" is the safe answer, because an archive of unknown origin
     // is treated as foreign — readable, never reattached.
-    // With several rows and no origin to match them against, nothing here can be
-    // shown to speak for this deployment — and naming one anyway would have an
-    // archive claim an identity that is not its own.
-    const row =
-      origin === null
-        ? rows.length === 1
-          ? rows[0]
-          : undefined
-        : rows.find((candidate) => candidate.mintedForOrigin === origin);
-    const value = row?.deploymentId;
-    return isDeploymentId(value) ? value : null;
+    return pickReconciledIdentity(rows, readDeploymentOrigin());
   },
 });
