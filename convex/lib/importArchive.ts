@@ -6,8 +6,15 @@
 
 import { ARCHIVE_FORMAT_VERSION } from "./exportArchive";
 
-/** Archive shapes this version knows how to read. */
+/**
+ * Archive shapes this version knows how to read.
+ *
+ * Version 1 is still readable: it simply carries no `archiveOrder`, and the
+ * import falls back to its own sequence — which orders the conversation
+ * correctly except where the source itself had an inversion.
+ */
 export const SUPPORTED_FORMAT_VERSIONS: ReadonlyArray<number> = [
+  1,
   ARCHIVE_FORMAT_VERSION,
 ];
 

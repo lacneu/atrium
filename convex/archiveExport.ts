@@ -11,6 +11,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
+import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import {
   pickReconciledIdentity,
   readDeploymentOrigin,
@@ -19,6 +20,7 @@ import {
   ARCHIVE_FORMAT_VERSION,
   CHAT_FIELDS_DROPPED,
   CHAT_SECTIONS,
+  IMPORT_TRANSFORMS,
   EXPORT_PAGE_SIZE,
   FOLDER_PAGE_SIZE,
   MAX_FOLDER_DEPTH,
@@ -253,8 +255,20 @@ export const exportChatSection = query({
         .withIndex("by_chat", (q) => q.eq("chatId", chatId))
         .paginate(page);
       return {
-        rows: result.page.map((row) =>
-          stripRowForExport(row, { drop: MESSAGE_FIELDS_DROPPED }),
+        // LOGICAL order, not creation order. `_creationTime` misplaces a mid-turn
+        // queued follow-up, and the import re-bases on the order it receives — so
+        // emitting creation order would bake that misordering into the archive.
+        // The order the SOURCE displays, carried explicitly. Sorting the page
+        // alone could not fix an order that crosses a page boundary — a queued
+        // follow-up ending one page and the reply created after it beginning the
+        // next — and re-basing on the arrival order would then bake that
+        // inversion in for ever. `effectiveOrder` is the value the source itself
+        // sorts by, so carrying it needs no page to be complete.
+        rows: [...result.page].sort(compareOrder).map(
+          (row): Record<string, unknown> => ({
+            ...stripRowForExport(row, { drop: MESSAGE_FIELDS_DROPPED }),
+            archiveOrder: effectiveOrder(row),
+          }),
         ),
         blobs: [],
         cursor: result.isDone ? null : result.continueCursor,
@@ -407,15 +421,22 @@ export const exportChatSection = query({
         filename: string;
         mimeType: string;
       }[] = [];
+      let attachmentCursor = state.parts;
       for (let i = state.skip; i < messagePage.page.length; i += 1) {
         const message = messagePage.page[i]!;
-        const attachments = await ctx.db
+        // A CURSOR, like every other section. A flat `take` dropped everything
+        // past it on a message with many attachments — the one place this module
+        // still did what it says nowhere else may be done.
+        const attachmentPage = await ctx.db
           .query("documentAttachments")
           .withIndex("by_source_message", (q) =>
             q.eq("sourceMessageId", message._id),
           )
-          .take(EXPORT_PAGE_SIZE);
-        for (const attachment of attachments) {
+          .paginate({ numItems: EXPORT_PAGE_SIZE, cursor: attachmentCursor });
+        attachmentCursor = attachmentPage.isDone
+          ? null
+          : attachmentPage.continueCursor;
+        for (const attachment of attachmentPage.page) {
           const { storageId } = attachment;
           const hasBytes = storageId !== undefined && storageId !== null;
           rows.push({
@@ -433,6 +454,18 @@ export const exportChatSection = query({
               mimeType: attachment.mimeType ?? "application/octet-stream",
             });
           }
+        }
+        if (attachmentCursor !== null) {
+          // This message has more; resume on it rather than moving on.
+          return {
+            rows,
+            blobs,
+            cursor: encodePartsCursor({
+              messages: state.messages,
+              skip: i,
+              parts: attachmentCursor,
+            }),
+          };
         }
         if (rows.length >= EXPORT_PAGE_SIZE && i + 1 < messagePage.page.length) {
           return {
@@ -484,6 +517,9 @@ export const manifestBase = internalQuery({
       formatVersion: ARCHIVE_FORMAT_VERSION,
       sections: [...CHAT_SECTIONS],
       notIncluded: NOT_EXPORTED.map((entry) => ({ ...entry })),
+      // Omissions alone made the manifest misleading: a reader who trusted it
+      // believed they were reading the original.
+      transforms: IMPORT_TRANSFORMS.map((entry) => ({ ...entry })),
       chatFieldsDropped: [...CHAT_FIELDS_DROPPED],
     };
   },
@@ -512,6 +548,7 @@ export const exportManifest = action({
     origin: string | null;
     sections: string[];
     notIncluded: { what: string; why: string }[];
+    transforms: { what: string; why: string }[];
     chatFieldsDropped: string[];
   }> => {
     const base = await ctx.runQuery(internal.archiveExport.manifestBase, {});

@@ -627,6 +627,66 @@ describe("archive export", () => {
     expect(page.blobs).toHaveLength(0);
   });
 
+  test("messages carry the order the SOURCE displays, not their creation order", async () => {
+    // A follow-up queued mid-turn is created BEFORE the reply to the turn it
+    // interrupted, and still belongs after it. Emitting creation order would bake
+    // that inversion into the archive — and no amount of sorting on the import
+    // side could repair it, since the two can fall on different pages.
+    const t = convexTest(schema, modules);
+    const userId = await user(t);
+    const chatId = await chatFor(t, userId);
+    await t.run(async (ctx) => {
+      const asked = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user",
+        status: "complete",
+        text: "question",
+        updatedAt: 1,
+      });
+      // Created NEXT, yet it belongs LAST: queued mid-turn, then re-stamped on
+      // drain to a time after the reply.
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user",
+        status: "complete",
+        text: "relance",
+        updatedAt: 2,
+        orderTime: Date.now() + 60_000,
+      });
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant",
+        status: "complete",
+        text: "reponse",
+        updatedAt: 3,
+      });
+      return asked;
+    });
+
+    const page = await t
+      .withIdentity({ subject: userId })
+      .query(api.archiveExport.exportChatSection, {
+        chatId,
+        section: "messages",
+      });
+
+    expect(page.rows.map((row) => row.text)).toEqual([
+      "question",
+      "reponse",
+      "relance",
+    ]);
+    // ...and each carries that order explicitly, so an import needs no page to
+    // be complete to reproduce it.
+    for (const row of page.rows) {
+      expect(typeof row.archiveOrder).toBe("number");
+    }
+    const orders = page.rows.map((row) => row.archiveOrder as number);
+    expect([...orders].sort((a, b) => a - b)).toEqual(orders);
+  });
+
   test("a folder CYCLE does not hang the walk", async () => {
     // `projects.parentId` is a plain reference and nothing in the schema forbids
     // a cycle. A walk that trusted it would not terminate.

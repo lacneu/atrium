@@ -6,8 +6,15 @@
 // from one whose attachments were dropped, so the manifest states the omissions
 // as plainly as the contents.
 
-/** Bumped when the archive's shape changes in a way a reader must notice. */
-export const ARCHIVE_FORMAT_VERSION = 1;
+/**
+ * Bumped when the archive's shape changes in a way a reader must notice.
+ *
+ * 2 — messages carry `archiveOrder`, the order the source displays them in. A
+ * version-1 reader would accept such an archive and ignore the field, silently
+ * keeping an inversion that crosses a page boundary; refusing what it cannot
+ * read is the point of the number.
+ */
+export const ARCHIVE_FORMAT_VERSION = 2;
 
 /** Rows read per bounded page. Small enough that any single call stays well
  *  inside a Convex read, large enough that a long conversation does not take
@@ -64,6 +71,14 @@ export const IDENTITY_KEYS: ReadonlyArray<string> = [
 export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "turnSessionKey",
   "dispatchOutboxId",
+  // Correlation with the SOURCE deployment's live run. The fork path excludes
+  // the same fields for the same reason: they belong to sessions that are not
+  // ours.
+  "runId",
+  "mergedAnnounceRuns",
+  // The in-flight buffer of a turn that had not finished. The manifest says
+  // live streaming state does not travel; this is that state.
+  "liveText",
   "announceReplayArmed",
   "announceReplayRun",
   "autoRetry",
@@ -131,6 +146,40 @@ export const NOT_EXPORTED: ReadonlyArray<{ what: string; why: string }> = [
 ];
 
 /**
+ * What an import REWRITES rather than leaves behind.
+ *
+ * The manifest used to list only omissions, so a reader who trusted it believed
+ * they were reading the original. These are the places where the imported
+ * history deliberately says something the source did not.
+ */
+export const IMPORT_TRANSFORMS: ReadonlyArray<{ what: string; why: string }> = [
+  {
+    what: "a turn that was still live becomes terminal",
+    why: "nothing here resumes it, and a running delegation would make the conversation look busy for ever",
+  },
+  {
+    what: "display order is re-based onto the import",
+    why: "the source deployment's clock would otherwise interleave with this one's, putting a queued follow-up ahead of the reply it came after",
+  },
+  {
+    what: "one inversion can survive, on a conversation of more than a page of messages",
+    why: "the export walks by creation time and sorts each page, so a follow-up that was queued mid-turn at the source and lands at the end of a page keeps its place ahead of the reply that begins the next one. Closing it needs an index on display order, which does not exist because that field is set on almost no message — a separate change, not a silent omission",
+  },
+  {
+    what: "a sub-agent's session key is re-minted",
+    why: "it links the archive's rows together, but it is also what an interaction sends to a gateway",
+  },
+  {
+    what: "attachments are re-uploaded and renamed to something safe",
+    why: "an archive names bytes in another deployment, and a filename reaches a listing and a download",
+  },
+  {
+    what: "agents are reattached only where they exist here and this user may use them",
+    why: "an identifier from another deployment means something else here, and an archive cannot grant anything",
+  },
+];
+
+/**
  * Fields dropped from an exported chat, and why. Named rather than silently
  * omitted, because two of them look harmless and are not.
  */
@@ -155,6 +204,22 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   // pinned conversations would rearrange the sidebar of whoever imported it —
   // and on a same-deployment copy, pin the copy beside its original.
   "pinned",
+  // The provider's own session accounting (token counts, overfull flags, reset
+  // marks). The fork path already learned this one: inherited, a conversation
+  // opens already warned that it cannot answer, and every later refresh
+  // preserves the flag, so it never clears itself.
+  "sessionMeta",
+  // WHAT ATRIUM SENDS ITS OWN GATEWAY. Model, thinking level, fast mode and the
+  // clear allow-list ride on every dispatch — so a foreign archive would be
+  // dictating this deployment's requests to its own provider.
+  "sessionSettings",
+  // Per-turn routing with no routing history left (the segment and the last
+  // routed target are dropped above) is simply false — and it also stops the
+  // imported conversation from ever binding a target.
+  "perTurnRouting",
+  // Removed by the import as well (an imported conversation is never a hidden
+  // utility one), so the manifest must say so rather than claim it travels.
+  "kind",
   // Queue and lifecycle state, meaningless once exported.
   "pendingFetch",
   "pendingSummarize",
@@ -165,14 +230,6 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "lastRoutedInstanceName",
   "lastRoutedAgentId",
 ];
-
-/** A reference the archive could not keep, stated so a reader is not misled. */
-export interface DroppedReference {
-  /** Archive-local id of the row whose reference was dropped. */
-  from: string;
-  field: string;
-  reason: "outside_export_scope";
-}
 
 /**
  * Strip a chat down to what may travel.

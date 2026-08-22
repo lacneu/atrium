@@ -14,6 +14,7 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { ARCHIVE_FORMAT_VERSION } from "./lib/exportArchive";
 import { MAX_FILENAME_LENGTH, sanitizeFilename } from "./lib/importArchive";
+import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -673,10 +674,11 @@ describe("archive import", () => {
     expect(parts[0]!.status).toBe("error");
   });
 
-  test("imported messages are ordered by their arrival HERE", async () => {
-    // `orderTime` is the source deployment's clock, and ordering falls back to it
-    // before the creation time Convex mints here — so a message queued there
-    // would sort ahead of everything imported after it.
+  test("an imported conversation is on ONE clock, in the archive's order", async () => {
+    // Deleting the source order left the conversation on TWO clocks: a message
+    // that had carried one fell back to the creation time minted here while its
+    // neighbours did not, so an answer could be shown before the question it
+    // answers. Every imported message takes a position from the same sequence.
     const t = convexTest(schema, modules);
     const importer = await user(t);
     const as = t.withIdentity({ subject: importer });
@@ -688,23 +690,39 @@ describe("archive import", () => {
       section: "chats",
       rows: [archived("c1", { title: "t", updatedAt: 1 })],
     });
+    // The archive's own order: a question, its reply, then a follow-up that had
+    // been QUEUED mid-turn at the source (its order there was re-stamped on
+    // drain, so it belongs last).
     await as.mutation(api.archiveImport.importBatch, {
       importId,
       section: "messages",
       rows: [
-        archived("m1", {
-          chatId: "c1",
-          role: "user",
-          status: "complete",
-          text: "x",
-          updatedAt: 1,
-          orderTime: 1,
-        }),
+        // The order the SOURCE displayed — the export emits them already sorted
+        // by it, including a follow-up created BEFORE the reply it belongs after.
+        // The import takes that as the rank and puts it on its own clock.
+        archived("m1", { chatId: "c1", role: "user", status: "complete", text: "question", updatedAt: 1, archiveOrder: 100 }),
+        archived("m2", { chatId: "c1", role: "assistant", status: "complete", text: "reponse", updatedAt: 2, archiveOrder: 200 }),
+        archived("m3", { chatId: "c1", role: "user", status: "complete", text: "relance", updatedAt: 3, archiveOrder: 8.64e15 }),
       ],
     });
 
-    const message = (await t.run((ctx) => ctx.db.query("messages").collect()))[0]!;
-    expect(message.orderTime).toBeUndefined();
+    const messages = await t.run((ctx) =>
+      ctx.db.query("messages").withIndex("by_chat").collect(),
+    );
+    // Every one carries a position on THIS deployment's clock — none falls back
+    // to another, and none lands in the future.
+    for (const message of messages) {
+      expect(typeof message.orderTime).toBe("number");
+      expect(message.orderTime!).toBeLessThan(Date.now() + 60_000);
+    }
+    const ordered = [...messages].sort(
+      (a, b) => (a.orderTime ?? 0) - (b.orderTime ?? 0),
+    );
+    expect(ordered.map((m) => m.text)).toEqual([
+      "question",
+      "reponse",
+      "relance",
+    ]);
   });
 
   test("a media part whose bytes are missing is SKIPPED, not fatal", async () => {
@@ -1097,6 +1115,191 @@ describe("archive import", () => {
     expect(messages).toHaveLength(2);
     const copied = messages.find((m) => m._id !== originalMessage)!;
     expect(copied.chatId).toBe(copy._id);
+  });
+
+  test("an archive cannot CHOOSE the agent name shown on its history", async () => {
+    // The label is what the interface shows in place of an agent. Accepting one
+    // from the archive would let it name whoever it likes on history it did not
+    // answer — and at any length.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { title: "t", updatedAt: 1 })],
+    });
+
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", {
+          chatId: "c1",
+          role: "assistant",
+          status: "complete",
+          text: "x",
+          updatedAt: 1,
+          importedAgentLabel: "Direction".padEnd(5000, "!"),
+        }),
+      ],
+    });
+
+    const message = (await t.run((ctx) => ctx.db.query("messages").collect()))[0]!;
+    expect(message.importedAgentLabel).toBeUndefined();
+  });
+
+  test("a filename inside a PART is sanitised like every other", async () => {
+    // It is the name the conversation renders and a download uses — the very
+    // reason the guard exists. Applying it everywhere except there applied it
+    // everywhere except where it is read.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const storageId = await t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob(["x"]));
+      await ctx.db.insert("uploads", { storageId: id, userId: importer });
+      return id;
+    });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { title: "t", updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", { chatId: "c1", role: "user", status: "complete", text: "x", updatedAt: 1 }),
+      ],
+    });
+
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messageParts",
+      rows: [
+        archived("p1", {
+          messageId: "m1",
+          order: 0,
+          part: {
+            kind: "media",
+            filename: "../../etc/passwd",
+            mimeType: "image/png",
+          },
+          archiveBlobKeys: ["k1"],
+        }),
+      ],
+      blobs: [{ key: "k1", storageId }],
+    });
+
+    const part = (await t.run((ctx) => ctx.db.query("messageParts").collect()))[0]!;
+    expect((part.part as { filename: string }).filename).not.toContain("/");
+  });
+
+  test("abandoning an import with an ATTACHMENT leaves no bytes behind", async () => {
+    // The blobs are registered before any row, so they come first in the index —
+    // and one the import's own file row still references cannot be discarded
+    // yet. Removing its mapping anyway left nothing able to name those bytes
+    // once the row was gone.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const storageId = await t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob(["octets"]));
+      await ctx.db.insert("uploads", { storageId: id, userId: importer });
+      return id;
+    });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.registerImportBlob, {
+      importId,
+      storageId,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { title: "t", updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", { chatId: "c1", role: "user", status: "complete", text: "x", updatedAt: 1 }),
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "files",
+      rows: [
+        archived("f1", {
+          chatId: "c1",
+          messageId: "m1",
+          archiveBlobKey: "k1",
+          filename: "a.png",
+          mimeType: "image/png",
+          kind: "media",
+          direction: "outbound",
+          createdAt: 1,
+        }),
+      ],
+      blobs: [{ key: "k1", storageId }],
+    });
+
+    let done = false;
+    for (let i = 0; i < 10 && !done; i += 1) {
+      done = (await as.mutation(api.archiveImport.abandonImport, { importId }))
+        .done;
+    }
+
+    expect(done).toBe(true);
+    // Nothing imported remains — and neither do its bytes.
+    expect(await t.run((ctx) => ctx.db.query("chats").collect())).toHaveLength(0);
+    expect(await t.run((ctx) => ctx.db.query("files").collect())).toHaveLength(0);
+    expect(await t.run((ctx) => ctx.db.query("uploads").collect())).toHaveLength(0);
+    expect(
+      await t.run((ctx) => ctx.db.query("archiveImportIds").collect()),
+    ).toHaveLength(0);
+  });
+
+  test("a follow-up still PARKED at the source does not sort last for ever", async () => {
+    // Its exported order is the value that means "after everything". Copied
+    // verbatim, every message this deployment writes from now on would sort
+    // before it — and the import terminalises that message anyway.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { title: "t", updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "garee",
+          updatedAt: 1,
+          archiveOrder: QUEUED_ORDER_SENTINEL,
+        }),
+      ],
+    });
+
+    const message = (await t.run((ctx) => ctx.db.query("messages").collect()))[0]!;
+    expect(message.orderTime).toBeLessThan(QUEUED_ORDER_SENTINEL);
   });
 
   test("another user's import cannot be written to", async () => {

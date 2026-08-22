@@ -18,9 +18,10 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { requireAgentMembership } from "./chats";
 import { requireActive } from "./lib/access";
+import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import {
   pickReconciledIdentity,
   readDeploymentOrigin,
@@ -46,6 +47,8 @@ import { assertOwnsUpload } from "./uploads";
 const MERGED_ROW_SCAN = 16;
 /** Rows deleted per abandon pass. Bounded, and resumed by calling again. */
 const ABANDON_BATCH = 100;
+/** Open imports listed at once. A user has one in flight, not a hundred. */
+const OPEN_IMPORTS_SCAN = 50;
 
 /** The sections an import accepts, and which of their fields name other rows.
  *
@@ -228,6 +231,7 @@ export const importBatch = mutation({
     // reference, and the caller decides from this whether the bytes it uploaded
     // for that row are still needed.
     const writtenIds: string[] = [];
+    let orderCursor = session.orderCursor ?? 0;
     for (const raw of rows) {
       const row = raw as Record<string, unknown>;
       const archiveId = row._id;
@@ -238,14 +242,24 @@ export const importBatch = mutation({
       if ((await mappedId(ctx, importId, section, archiveId)) !== null) {
         continue;
       }
-      const prepared = await prepareRow(ctx, session, section, row, blobByKey);
+      const prepared = await prepareRow(
+        ctx,
+        session,
+        section,
+        row,
+        blobByKey,
+        session.startedAt + orderCursor,
+      );
       if (prepared === null) continue;
+      // Advanced only for a row that is WRITTEN, so the sequence has no holes
+      // and stays the same on a retried batch.
+      if (section === "messages") orderCursor += 1;
       const newId = await ctx.db.insert(section as "messages", prepared as never);
       await recordMapping(ctx, importId, section, archiveId, newId);
       writtenIds.push(archiveId);
       written += 1;
     }
-    await ctx.db.patch(importId, { updatedAt: Date.now() });
+    await ctx.db.patch(importId, { updatedAt: Date.now(), orderCursor });
     return { written, writtenIds };
   },
 });
@@ -258,6 +272,32 @@ export const importBatch = mutation({
  * closed, nothing reads it. Left behind, every import would durably double the
  * rows it wrote. Purged in bounded passes — call again while `done` is false.
  */
+/**
+ * The imports this user left open.
+ *
+ * Without it an interrupted import is UNREACHABLE: a closed tab leaves a session
+ * nobody can name, so it can never be finished nor undone, and its rows and its
+ * bytes stay for ever. The index exists for exactly this; nothing was asking it.
+ */
+export const listOpenImports = query({
+  args: {},
+  handler: async (ctx) => {
+    const { userId } = await requireActive(ctx);
+    const rows = await ctx.db
+      .query("archiveImports")
+      .withIndex("by_user_status", (q) =>
+        q.eq("userId", userId).eq("status", "applying"),
+      )
+      .take(OPEN_IMPORTS_SCAN);
+    return rows.map((row) => ({
+      importId: row._id,
+      startedAt: row.startedAt,
+      updatedAt: row.updatedAt,
+      targetProjectId: row.targetProjectId,
+    }));
+  },
+});
+
 /**
  * Record that this import uploaded these bytes.
  *
@@ -346,23 +386,9 @@ export const discardUpload = mutation({
       )
       .unique();
     if (owned === null) return { discarded: false };
-    // BOTH tables. An attachment can point at storage with no `files` row beside
-    // it, so checking only that one deletes bytes a row still names.
-    const usedByFile = await ctx.db
-      .query("files")
-      .withIndex("by_storage", (q) => q.eq("storageId", storageId))
-      .first();
-    const usedByAttachment = await ctx.db
-      .query("documentAttachments")
-      .withIndex("by_storage", (q) => q.eq("storageId", storageId))
-      .first();
-    if (usedByFile !== null || usedByAttachment !== null) {
-      return { discarded: false };
-    }
-    await ctx.storage.delete(storageId);
-    await ctx.db.delete(owned._id);
-    await ctx.db.delete(registered._id);
-    return { discarded: true };
+    const discarded = await discardImportBlob(ctx, userId, storageId);
+    if (discarded) await ctx.db.delete(registered._id);
+    return { discarded };
   },
 });
 
@@ -385,13 +411,57 @@ export const abandonImport = mutation({
     if (session.status === "done") {
       throw new Error("Conflict: a finished import is not undone this way");
     }
+    // PHASE ONE: the rows. Paged with a CURSOR rather than judged from one page —
+    // a hundred attachments are registered before any row is written, so the
+    // first page can be nothing but blobs, and "no rows here" would be false.
+    // A blob the import's own file row still references cannot be discarded, and
+    // dropping its mapping anyway left nothing able to name those bytes
+    // afterwards: the same leak, arrived at from the other side.
+    if (session.rowsCleared !== true) {
+      const page = await ctx.db
+        .query("archiveImportIds")
+        .withIndex("by_import", (q) => q.eq("importId", importId))
+        .paginate({
+          numItems: ABANDON_BATCH,
+          cursor: session.abandonCursor ?? null,
+        });
+      for (const mapping of page.page) {
+        if (mapping.kind === IMPORT_BLOB) continue;
+        const doc = await ctx.db.get(mapping.mappedId as Id<"messages">);
+        if (doc !== null) {
+          await ctx.db.delete(mapping.mappedId as Id<"messages">);
+        }
+        await ctx.db.delete(mapping._id);
+      }
+      await ctx.db.patch(importId, {
+        status: "applying",
+        updatedAt: Date.now(),
+        abandonCursor: page.isDone ? null : page.continueCursor,
+        ...(page.isDone ? { rowsCleared: true } : {}),
+      });
+      return { done: false };
+    }
+
     const mappings = await ctx.db
       .query("archiveImportIds")
       .withIndex("by_import", (q) => q.eq("importId", importId))
       .take(ABANDON_BATCH);
+    // A refusal in phase two means the bytes are referenced by something that is
+    // NOT this import — not an orphan, and the mapping has done its job either
+    // way.
     for (const mapping of mappings) {
-      const doc = await ctx.db.get(mapping.mappedId as Id<"messages">);
-      if (doc !== null) await ctx.db.delete(mapping.mappedId as Id<"messages">);
+      if (mapping.kind === IMPORT_BLOB) {
+        await discardImportBlob(
+          ctx,
+          session.userId,
+          mapping.mappedId as Id<"_storage">,
+        );
+      } else {
+        const doc = await ctx.db.get(mapping.mappedId as Id<"messages">);
+        if (doc !== null) {
+          await ctx.db.delete(mapping.mappedId as Id<"messages">);
+        }
+      }
       await ctx.db.delete(mapping._id);
     }
     const done = mappings.length < ABANDON_BATCH;
@@ -404,6 +474,40 @@ export const abandonImport = mutation({
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Remove bytes an import uploaded, unless a row still names them.
+ *
+ * BOTH tables are checked: an attachment can point at storage with no `files`
+ * row beside it, so checking only that one deletes bytes a row still names.
+ */
+async function discardImportBlob(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  // Written by `registerImportBlob` from a validated `v.id("_storage")`, so the
+  // mapping's value is one — it never comes from the archive.
+  id: Id<"_storage">,
+): Promise<boolean> {
+  const owned = await ctx.db
+    .query("uploads")
+    .withIndex("by_user_storage", (q) =>
+      q.eq("userId", userId).eq("storageId", id),
+    )
+    .unique();
+  if (owned === null) return false;
+  const usedByFile = await ctx.db
+    .query("files")
+    .withIndex("by_storage", (q) => q.eq("storageId", id))
+    .first();
+  const usedByAttachment = await ctx.db
+    .query("documentAttachments")
+    .withIndex("by_storage", (q) => q.eq("storageId", id))
+    .first();
+  if (usedByFile !== null || usedByAttachment !== null) return false;
+  await ctx.storage.delete(id);
+  await ctx.db.delete(owned._id);
+  return true;
+}
 
 /** Sections whose table declares an owner. Assigning one to a table that does
  *  not declare it is rejected by the schema — which is every part, tool and
@@ -505,6 +609,8 @@ async function prepareRow(
   section: string,
   row: Record<string, unknown>,
   blobByKey: Map<string, Id<"_storage">>,
+  /** This message's position in the import's own sequence. */
+  orderAt: number,
 ): Promise<Record<string, unknown> | null> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
@@ -512,6 +618,11 @@ async function prepareRow(
     // Convex mints both. Carrying them would be writing another database's keys.
     if (key === "_id" || key === "_creationTime") continue;
     if (key === "archiveBlobKey" || key === "archiveBlobKeys") continue;
+    // COMPUTED HERE, never taken from the archive. It is what the interface shows
+    // in place of an agent name, so an archive that supplied its own would choose
+    // that text — unbounded, and attached to history it did not answer.
+    if (key === "importedAgentLabel") continue;
+    if (key === "archiveOrder") continue;
     if (value === undefined) continue;
     out[key] = value;
   }
@@ -627,11 +738,30 @@ async function prepareRow(
       delete out.routedInstanceName;
     }
     for (const field of MESSAGE_FIELDS_DROPPED) delete out[field];
-    // ORDER IS REBASED. `orderTime` is the source deployment's clock and ordering
-    // falls back to it before the creation time Convex mints here, so a message
-    // that had been queued there would sort ahead of everything imported after
-    // it — reordering any conversation that used mid-turn sending.
-    delete out.orderTime;
+    // THE SOURCE'S OWN DISPLAY ORDER, carried rather than reconstructed.
+    //
+    // Deleting it left the conversation on TWO clocks — a message that had
+    // carried one fell back to the creation time minted here while its
+    // neighbours did not — so an answer could be shown before the question it
+    // answers. Re-basing on arrival order fixed that but could not fix an
+    // inversion that crossed a page boundary at the source, and would have made
+    // it permanent. The value the source sorts by needs no page to be complete.
+    //
+    // Every imported message carries one, so no two clocks ever meet. A hand
+    // edited archive that omits it falls back to the import's own sequence.
+    // RANK PRESERVED, CLOCK REBASED.
+    //
+    // The archive carries the order the SOURCE displays — which is what sorting
+    // a page could not reconstruct — but carries it as the source's timestamps.
+    // Copied verbatim, an archive from a machine whose clock runs ahead sorts its
+    // whole history after messages written here afterwards, and a follow-up still
+    // parked at the source carries the value meaning "after everything", which
+    // would sit last for all time.
+    //
+    // So the carried order is used as a RANK — the rows arrive in it — and the
+    // position comes from this import's own sequence. Nothing imported lands in
+    // the future, and no imported conversation is ever on two clocks.
+    out.orderTime = orderAt;
     if (typeof out.updatedAt !== "number") out.updatedAt = Date.now();
   }
 
@@ -648,7 +778,16 @@ async function prepareRow(
       part !== undefined &&
       (part.kind === "media" || part.kind === "file");
     if (storageId !== undefined && part !== undefined) {
-      out.part = { ...part, storageId };
+      // The filename here is the one the conversation RENDERS and a download
+      // uses — the same reason the other sections sanitise theirs. Leaving this
+      // one raw applied the guard everywhere except where it is read.
+      out.part = {
+        ...part,
+        storageId,
+        ...(part.filename === undefined
+          ? {}
+          : { filename: sanitizeFilename(part.filename) }),
+      };
     } else if (needsBytes) {
       // A part of this kind cannot exist without its bytes — the export says so
       // itself when it could not resolve them. Skipping it beats failing the

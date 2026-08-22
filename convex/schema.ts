@@ -819,6 +819,20 @@ export default defineSchema({
     targetProjectId: v.union(v.id("projects"), v.null()),
     startedAt: v.number(),
     updatedAt: v.number(),
+    // Next display position to hand an imported message. Monotonic across the
+    // whole import: the source's clock and this one must never interleave inside
+    // one conversation, or a queued follow-up sorts ahead of the reply it came
+    // after — an answer shown before its question.
+    orderCursor: v.optional(v.number()),
+    // Where the undo has got to, and whether it has finished with the ROWS.
+    //
+    // Two phases, because a blob the import's own file row still references
+    // cannot be discarded yet: attempting it early and dropping its mapping left
+    // nothing able to name those bytes afterwards. Deciding "no rows left" from
+    // one page was wrong — a hundred attachments registered before any row fill
+    // it entirely — so the phase is carried, not inferred.
+    abandonCursor: v.optional(v.union(v.string(), v.null())),
+    rowsCleared: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_user_status", ["userId", "status"]),
