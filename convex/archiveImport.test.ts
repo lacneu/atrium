@@ -421,8 +421,12 @@ describe("archive import", () => {
       ],
     });
 
+    // ON THE CONVERSATION, not copied onto its messages: a per-message copy
+    // would override the real routed agent of every turn in a multi-agent one.
+    const chat = (await t.run((ctx) => ctx.db.query("chats").collect()))[0]!;
+    expect(chat.importedAgentLabel).toBe("alice");
     const message = (await t.run((ctx) => ctx.db.query("messages").collect()))[0]!;
-    expect(message.importedAgentLabel).toBe("alice");
+    expect(message.importedAgentLabel).toBeUndefined();
   });
 
   test("an archive from HERE reattaches, but only an agent this user may use", async () => {
@@ -901,6 +905,105 @@ describe("archive import", () => {
     )[0]!;
     expect(attachment.status).toBe("not_found");
     expect(attachment.storageId).toBeUndefined();
+  });
+
+  test("bytes are discarded only when THIS import uploaded them and nothing names them", async () => {
+    // Without the import to scope it, a caller could name any storage id of their
+    // own — including an attachment of a conversation they still have — and have
+    // the bytes deleted underneath it.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+
+    const { free, usedByFile, usedByDoc, unregistered } = await t.run(
+      async (ctx) => {
+        const make = async () => {
+          const id = await ctx.storage.store(new Blob(["x"]));
+          await ctx.db.insert("uploads", { storageId: id, userId: importer });
+          return id;
+        };
+        const free = await make();
+        const usedByFile = await make();
+        const usedByDoc = await make();
+        const unregistered = await make();
+        const chatId = await ctx.db.insert("chats", {
+          userId: importer,
+          title: "t",
+          updatedAt: 1,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId: importer,
+          role: "user",
+          status: "complete",
+          text: "x",
+          updatedAt: 1,
+        });
+        await ctx.db.insert("files", {
+          userId: importer,
+          chatId,
+          messageId,
+          storageId: usedByFile,
+          filename: "a.png",
+          mimeType: "image/png",
+          kind: "media",
+          direction: "outbound",
+          createdAt: 1,
+        });
+        await ctx.db.insert("documentAttachments", {
+          userId: importer,
+          sourceMessageId: messageId,
+          entryKey: "e",
+          reference: "r",
+          status: "ready",
+          storageId: usedByDoc,
+          createdAt: 1,
+          updatedAt: 1,
+        });
+        return { free, usedByFile, usedByDoc, unregistered };
+      },
+    );
+    for (const storageId of [free, usedByFile, usedByDoc]) {
+      await as.mutation(api.archiveImport.registerImportBlob, {
+        importId,
+        storageId,
+      });
+    }
+
+    expect(
+      await as.mutation(api.archiveImport.discardUpload, {
+        importId,
+        storageId: free,
+      }),
+    ).toEqual({ discarded: true });
+    expect(
+      await as.mutation(api.archiveImport.discardUpload, {
+        importId,
+        storageId: usedByFile,
+      }),
+    ).toEqual({ discarded: false });
+    // An attachment can point at storage with NO files row beside it.
+    expect(
+      await as.mutation(api.archiveImport.discardUpload, {
+        importId,
+        storageId: usedByDoc,
+      }),
+    ).toEqual({ discarded: false });
+    // Never uploaded by this import: not this call's to delete.
+    expect(
+      await as.mutation(api.archiveImport.discardUpload, {
+        importId,
+        storageId: unregistered,
+      }),
+    ).toEqual({ discarded: false });
+
+    const remaining = await t.run((ctx) => ctx.db.query("uploads").collect());
+    expect(remaining.map((r) => r.storageId).sort()).toEqual(
+      [usedByFile, usedByDoc, unregistered].sort(),
+    );
   });
 
   test("another user's import cannot be written to", async () => {

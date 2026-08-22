@@ -2,6 +2,7 @@
 import { describe, expect, test } from "vitest";
 import {
   agentRefEquals,
+  resolveImportedAgentLabels,
   findAgentDisplay,
   isFirstTurn,
   lastRoutedAgent,
@@ -529,5 +530,63 @@ describe("resolveAgentSelectorGate — when the control is rendered at all", () 
   test("a multi-agent user keeps the selector in every usable mode", () => {
     expect(gate({ hasUserTurn: true }).hidden).toBe(false);
     expect(gate({ emptyThread: true }).hidden).toBe(false);
+  });
+});
+
+
+describe("imported agent labels", () => {
+  test("an assistant reply inherits the label of the turn it answers", () => {
+    // Same inheritance as the attribution itself: an ordinary assistant message
+    // carries no agent of its own, so without this an imported reply would show
+    // nothing while the user turn beside it showed the name.
+    const labels = resolveImportedAgentLabels([
+      { _id: "u1", role: "user", importedAgentLabel: "alice" },
+      { _id: "a1", role: "assistant" },
+      { _id: "u2", role: "user", importedAgentLabel: "bob" },
+      { _id: "a2", role: "assistant" },
+    ]);
+
+    expect(labels.get("a1")).toBe("alice");
+    expect(labels.get("a2")).toBe("bob");
+  });
+
+  test("a message with its OWN label keeps it", () => {
+    const labels = resolveImportedAgentLabels([
+      { _id: "u1", role: "user", importedAgentLabel: "alice" },
+      { _id: "a1", role: "assistant", importedAgentLabel: "carol" },
+    ]);
+
+    expect(labels.get("a1")).toBe("carol");
+  });
+
+  test("a conversation's own label is the LAST resort, not the first", () => {
+    // The ordinary single-agent case has no per-message agent at all, so the
+    // conversation's is what names it. But on a multi-agent one the turn's own
+    // agent must win, or every reply reads as coming from the chat's primary.
+    const labels = resolveImportedAgentLabels([
+      { _id: "u1", role: "user", importedAgentLabel: "bob", chatImportedAgentLabel: "alice" },
+      { _id: "a1", role: "assistant", chatImportedAgentLabel: "alice" },
+      { _id: "u2", role: "user", chatImportedAgentLabel: "alice" },
+      { _id: "a2", role: "assistant", chatImportedAgentLabel: "alice" },
+    ]);
+
+    // The turn that named its own agent, and the reply that answers it.
+    expect(labels.get("u1")).toBe("bob");
+    expect(labels.get("a1")).toBe("bob");
+    // The turn that named none falls back to the conversation.
+    expect(labels.get("u2")).toBe("alice");
+    expect(labels.get("a2")).toBe("alice");
+  });
+
+  test("history that was never imported carries no label", () => {
+    // The field must stay absent on ordinary conversations, or every reply would
+    // claim an agent that has nothing to do with an import.
+    const labels = resolveImportedAgentLabels([
+      { _id: "u1", role: "user", routedInstanceName: "primary", routedAgentId: "alice" },
+      { _id: "a1", role: "assistant" },
+    ]);
+
+    expect(labels.get("u1")).toBe(null);
+    expect(labels.get("a1")).toBe(null);
   });
 });

@@ -32,6 +32,10 @@ export interface RoutableMessage {
   role: "user" | "assistant" | "system";
   routedInstanceName?: string;
   routedAgentId?: string;
+  /** IMPORTED history: the agent that answered, as a name only. */
+  importedAgentLabel?: string;
+  /** IMPORTED history: the agent the CONVERSATION was bound to elsewhere. */
+  chatImportedAgentLabel?: string;
 }
 
 /** A message's OWN routed agent, or null when it carries none. */
@@ -298,4 +302,37 @@ export function resolveRoutedAgentToSend(params: {
   if (perTurnRouting) return selected;
   if (agentRefEquals(selected, primary)) return undefined;
   return selected;
+}
+
+/**
+ * Per message, the name of the agent that answered it in ANOTHER deployment.
+ *
+ * Same inheritance as the attribution above — an assistant reply takes the label
+ * of the user turn it answers when it carries none — because the two describe
+ * the same thing. It is separate from `resolveMessageAgents` for one reason: an
+ * `AgentRef` is ROUTABLE, and this must never be. It is a name to display, and
+ * nothing here exists in this deployment.
+ */
+export function resolveImportedAgentLabels(
+  messages: RoutableMessage[],
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  let fromUserTurn: string | null = null;
+  for (const message of messages) {
+    if (message.role === "user") {
+      fromUserTurn = message.importedAgentLabel ?? null;
+      out.set(message._id, fromUserTurn ?? message.chatImportedAgentLabel ?? null);
+      continue;
+    }
+    // Own, then the turn it answers, then the conversation's. The last is the
+    // ordinary single-agent case, where no message names an agent at all.
+    out.set(
+      message._id,
+      message.importedAgentLabel ??
+        fromUserTurn ??
+        message.chatImportedAgentLabel ??
+        null,
+    );
+  }
+  return out;
 }

@@ -87,15 +87,9 @@ const sectionValidator = v.union(
   ...CHAT_SECTIONS.map((name) => v.literal(name)),
 );
 
-/**
- * Mapping kind under which a detached chat's agent is remembered.
- *
- * NOT an identifier: it is the name of the agent that answered, kept so the
- * messages of that conversation can say so. In an ordinary single-agent
- * conversation the agent exists ONLY on the chat — the messages carry none — so
- * without this a foreign import loses the attribution of every message it holds.
- */
-const CHAT_AGENT_LABEL = "chatAgentLabel";
+/** Mapping kind under which the bytes this import uploaded are recorded, so they
+ *  can be discarded without letting a caller name any blob they like. */
+const IMPORT_BLOB = "blob";
 
 /** What an archive identifier became here, or null when this import never saw it. */
 async function mappedId(
@@ -230,6 +224,10 @@ export const importBatch = mutation({
     }
 
     let written = 0;
+    // WHICH rows, not just how many. A row can be skipped for want of a
+    // reference, and the caller decides from this whether the bytes it uploaded
+    // for that row are still needed.
+    const writtenIds: string[] = [];
     for (const raw of rows) {
       const row = raw as Record<string, unknown>;
       const archiveId = row._id;
@@ -244,10 +242,11 @@ export const importBatch = mutation({
       if (prepared === null) continue;
       const newId = await ctx.db.insert(section as "messages", prepared as never);
       await recordMapping(ctx, importId, section, archiveId, newId);
+      writtenIds.push(archiveId);
       written += 1;
     }
     await ctx.db.patch(importId, { updatedAt: Date.now() });
-    return { written };
+    return { written, writtenIds };
   },
 });
 
@@ -259,6 +258,33 @@ export const importBatch = mutation({
  * closed, nothing reads it. Left behind, every import would durably double the
  * rows it wrote. Purged in bounded passes — call again while `done` is false.
  */
+/**
+ * Record that this import uploaded these bytes.
+ *
+ * It is what lets them be discarded later without a caller being able to name
+ * any storage id they like.
+ */
+export const registerImportBlob = mutation({
+  args: { importId: v.id("archiveImports"), storageId: v.id("_storage") },
+  handler: async (ctx, { importId, storageId }) => {
+    const { userId } = await requireActive(ctx);
+    await openImport(ctx, userId, importId);
+    await assertOwnsUploadLocal(ctx, userId, storageId);
+    const already = await ctx.db
+      .query("archiveImportIds")
+      .withIndex("by_import_kind_archive", (q) =>
+        q
+          .eq("importId", importId)
+          .eq("kind", IMPORT_BLOB)
+          .eq("archiveId", storageId),
+      )
+      .first();
+    if (already === null) {
+      await recordMapping(ctx, importId, IMPORT_BLOB, storageId, storageId);
+    }
+  },
+});
+
 export const finishImport = mutation({
   args: { importId: v.id("archiveImports") },
   handler: async (ctx, { importId }) => {
@@ -281,6 +307,62 @@ export const finishImport = mutation({
       .take(ABANDON_BATCH);
     for (const mapping of mappings) await ctx.db.delete(mapping._id);
     return { done: mappings.length < ABANDON_BATCH };
+  },
+});
+
+/**
+ * Remove bytes an import uploaded but never used.
+ *
+ * The undo above removes the ROWS this import wrote; it never learned about a
+ * blob whose batch failed before running. Without this they stay for ever, and a
+ * repeated bad import becomes a way to fill the storage.
+ *
+ * Refuses a blob that is IN USE: a key can only be discarded while nothing
+ * points at it, or an import could delete an attachment of an existing
+ * conversation by naming its storage id.
+ */
+export const discardUpload = mutation({
+  args: { importId: v.id("archiveImports"), storageId: v.id("_storage") },
+  handler: async (ctx, { importId, storageId }) => {
+    const { userId } = await requireActive(ctx);
+    const session = await ctx.db.get(importId);
+    if (session === null || session.userId !== userId) {
+      return { discarded: false };
+    }
+    // ONLY bytes THIS import uploaded. Without the import to scope it, a caller
+    // could name any storage id of their own — including an attachment of a
+    // conversation they still have — and have the bytes deleted underneath it.
+    const registered = await ctx.db
+      .query("archiveImportIds")
+      .withIndex("by_import_kind_archive", (q) =>
+        q.eq("importId", importId).eq("kind", IMPORT_BLOB).eq("archiveId", storageId),
+      )
+      .first();
+    if (registered === null) return { discarded: false };
+    const owned = await ctx.db
+      .query("uploads")
+      .withIndex("by_user_storage", (q) =>
+        q.eq("userId", userId).eq("storageId", storageId),
+      )
+      .unique();
+    if (owned === null) return { discarded: false };
+    // BOTH tables. An attachment can point at storage with no `files` row beside
+    // it, so checking only that one deletes bytes a row still names.
+    const usedByFile = await ctx.db
+      .query("files")
+      .withIndex("by_storage", (q) => q.eq("storageId", storageId))
+      .first();
+    const usedByAttachment = await ctx.db
+      .query("documentAttachments")
+      .withIndex("by_storage", (q) => q.eq("storageId", storageId))
+      .first();
+    if (usedByFile !== null || usedByAttachment !== null) {
+      return { discarded: false };
+    }
+    await ctx.storage.delete(storageId);
+    await ctx.db.delete(owned._id);
+    await ctx.db.delete(registered._id);
+    return { discarded: true };
   },
 });
 
@@ -473,16 +555,12 @@ async function prepareRow(
       row.agentId,
     );
     if (!keep) {
-      if (typeof row.agentId === "string" && isArchiveId(row._id)) {
-        // Remembered against the CHAT's archive identifier, so the messages
-        // imported afterwards can find it.
-        await recordMapping(
-          ctx,
-          session._id,
-          CHAT_AGENT_LABEL,
-          row._id,
-          row.agentId.slice(0, 200),
-        );
+      // Kept ON THE CONVERSATION, not copied onto its messages. A message's own
+      // label is the agent that answered THAT turn; a conversation-wide fallback
+      // written per message would override the real routed agent of every turn
+      // in a multi-agent conversation.
+      if (typeof row.agentId === "string") {
+        out.importedAgentLabel = row.agentId.slice(0, 200);
       }
       delete out.instanceName;
       delete out.agentId;
@@ -533,19 +611,13 @@ async function prepareRow(
       // MEANS "inherit the turn's agent, else the chat's", so leaving an imported
       // message unrouted would attribute it to whichever agent the reader later
       // binds — the archive would appear to say something it does not.
-      const routed =
-        typeof row.routedAgentId === "string"
-          ? row.routedAgentId.slice(0, 200)
-          : null;
-      // A per-turn routed message names its own agent. An ordinary one does not —
-      // the agent lives on the conversation — so the chat's own is used, or the
-      // attribution of every message in a single-agent conversation is lost.
-      const fromChat =
-        routed !== null || !isArchiveId(row.chatId)
-          ? null
-          : await mappedId(ctx, session._id, CHAT_AGENT_LABEL, row.chatId);
-      const label = routed ?? fromChat;
-      if (label !== null) out.importedAgentLabel = label;
+      // ONLY this message's own routed agent. Where it has none, the reader
+      // falls back to the conversation's imported label — the same chain the
+      // live attribution uses — instead of this message claiming an agent that
+      // answered a different turn.
+      if (typeof row.routedAgentId === "string") {
+        out.importedAgentLabel = row.routedAgentId.slice(0, 200);
+      }
       delete out.routedAgentId;
       delete out.routedInstanceName;
     }

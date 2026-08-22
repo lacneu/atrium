@@ -3466,7 +3466,20 @@ function AssistantMessage() {
   // chat primary. Scoped to RunStatus only — the avatar stays brand-uniform. Falls
   // back to the chat identity (same object) on a single-agent chat → no change.
   const pool = routing?.pool;
+  // IMPORTED history: the agent that answered, in the deployment this
+  // conversation came from. Nothing here can resolve it — it is a name, not a
+  // reference — and it takes precedence precisely because the fallback below
+  // would otherwise attribute the reply to whichever agent this chat is bound
+  // to now, which is the false attribution the label exists to prevent.
+  const importedAgentLabel = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { importedAgentLabel?: string | null } | undefined)
+        ?.importedAgentLabel ?? null,
+  );
   const messageIdentity = useMemo<AssistantIdentity>(() => {
+    if (importedAgentLabel !== null) {
+      return { ...identity, agentName: importedAgentLabel, agentEmoji: null };
+    }
     if (!perMsgAgent) return identity;
     const d = findAgentDisplay(pool ?? [], perMsgAgent);
     return {
@@ -3474,7 +3487,7 @@ function AssistantMessage() {
       agentName: d?.displayName ?? perMsgAgent.agentId,
       agentEmoji: d?.emoji ?? null,
     };
-  }, [perMsgAgent, identity, pool]);
+  }, [importedAgentLabel, perMsgAgent, identity, pool]);
   // Suppress the queued synthetic placeholder entirely (its "En attente" lives on the
   // user message badge). Placed AFTER all hooks — Rules of Hooks.
   if (placeholderStatus === undefined && lastUserTurnQueued) return null;

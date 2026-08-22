@@ -1149,6 +1149,11 @@ export default defineSchema({
     updatedAt: v.number(),
     // Sidebar organization (all optional — additive on existing rows):
     projectId: v.optional(v.id("projects")), // 0-or-1 project membership
+    // IMPORTED history: the agent this conversation was bound to elsewhere, as a
+    // name only. DISTINCT from the per-message label: a message's own label is
+    // the agent that answered THAT turn, and a conversation-wide fallback stored
+    // per message would override the turn's real agent on a multi-agent chat.
+    importedAgentLabel: v.optional(v.string()),
     // BRANCHED chat (chatFork.forkChat): the conversation this one was forked
     // from — provenance only (a badge/affordance later); the fork is otherwise a
     // fully independent chat. Optional/additive; survives the source's deletion
@@ -2365,7 +2370,11 @@ export default defineSchema({
     // Correlation: a source's still-pending references, matched by filename.
     .index("by_source_status", ["sourceMessageId", "status"])
     // Upsert: find the row for a specific selected card.
-    .index("by_source_entry", ["sourceMessageId", "entryKey"]),
+    .index("by_source_entry", ["sourceMessageId", "entryKey"])
+    // Reference check before bytes are discarded: an attachment can point at
+    // storage with no `files` row beside it, so checking only that table would
+    // delete bytes a row still names.
+    .index("by_storage", ["storageId"]),
 
   // Document RENDITIONS (Release B of the right-column viewer): the cached PDF the
   // instance-designated converter agent produced from an Office file (pptx/docx/

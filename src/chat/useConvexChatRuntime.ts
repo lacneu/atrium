@@ -23,6 +23,7 @@ import {
   isFirstTurn,
   lastRoutedAgent,
   resolveEffectiveSelection,
+  resolveImportedAgentLabels,
   resolveMessageAgents,
   resolveRoutedAgentToSend,
   type AgentRef,
@@ -141,6 +142,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // Never set on a message this session just wrote: the label only exists on
         // imported history.
         importedAgentLabel: undefined,
+        chatImportedAgentLabel: undefined,
       } satisfies (typeof base)[number];
       localStore.setQuery(api.messages.listByChat, key, [...base, optimistic]);
     },
@@ -574,10 +576,18 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // conversion cache whenever convertMessage's identity changes, so an inline
   // lambda here would reconvert the whole thread on EVERY streamed delta
   // (`list` changes per token; `messageAgents` only when the message SET does).
+  const importedAgentLabels = useMemo(
+    () => resolveImportedAgentLabels(messages ?? []),
+    [messages],
+  );
   const convertWithAgents = useCallback(
     (msg: ConvexMessageView) =>
-      convertConvexMessage(msg, messageAgents.get(msg._id) ?? null),
-    [messageAgents],
+      convertConvexMessage(
+        msg,
+        messageAgents.get(msg._id) ?? null,
+        importedAgentLabels.get(msg._id) ?? null,
+      ),
+    [messageAgents, importedAgentLabels],
   );
 
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {

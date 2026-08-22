@@ -211,6 +211,11 @@ export interface ConvexMessageView {
    *  composer defaults to the last-used one. See src/chat/perTurnAgent.ts. */
   routedInstanceName?: string;
   routedAgentId?: string;
+  /** IMPORTED history: the agent that answered, as a name only. Never routable. */
+  importedAgentLabel?: string;
+  /** IMPORTED history: the agent the CONVERSATION was bound to elsewhere. Used
+   *  only where neither the message nor the turn it answers names one. */
+  chatImportedAgentLabel?: string;
   /** QUOTE-REPLY: the assistant block this user turn replies to. The stored
    *  excerpt is the display truth (kept even if the quoted message is deleted);
    *  messageId+blockIndex drive the scroll+flash jump. */

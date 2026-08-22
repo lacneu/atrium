@@ -203,6 +203,11 @@ const fieldBytes = (v: unknown): number =>
 // (the projection-drift the API was asked to eliminate). Auth + owner-scoping
 // stay in the CALLERS; this core is identity-agnostic, keyed by a validated id.
 async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
+  // IMPORTED history: the agent this conversation was bound to elsewhere. Read
+  // once here rather than copied onto every imported message, because a
+  // conversation-wide fallback stored per message would override the real routed
+  // agent of every turn in a multi-agent one.
+  const chatImportedAgentLabel = (await ctx.db.get(id))?.importedAgentLabel;
   // Bounded read: most-recent MESSAGE_WINDOW messages, newest first.
   const recentDesc = await ctx.db
       .query("messages")
@@ -364,6 +369,9 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // chat's", so without this the reader would see an imported reply
           // attributed to whichever agent they later bind.
           importedAgentLabel: message.importedAgentLabel,
+          // The conversation's own, used only where neither the message nor the
+          // turn it answers names one.
+          chatImportedAgentLabel,
           // QUOTE-REPLY: the block this user turn replies to (collapsed header
           // in the bubble). The stored excerpt is the display truth even if the
           // quoted message is later deleted.

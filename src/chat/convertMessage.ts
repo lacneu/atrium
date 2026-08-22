@@ -136,6 +136,10 @@ export function convertConvexMessage(
   // INHERITS the preceding user turn's agent — the cron detail panel must
   // target THAT instance, not the chat primary.
   resolvedAgent?: { instanceName: string; agentId: string } | null,
+  // IMPORTED history: the name of the agent that answered, in the deployment the
+  // conversation came from. Passed separately from `resolvedAgent` because that
+  // one is ROUTABLE and this must never be — nothing it names exists here.
+  importedAgentLabel?: string | null,
 ): ThreadMessageLike {
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
@@ -270,6 +274,10 @@ export function convertConvexMessage(
         // The Convex message _id — surfaced so per-message actions (delete) call
         // the mutation with the authoritative id, not assistant-ui's internal one.
         messageId: message._id,
+        // Shown in place of an agent name on imported history. Without it the
+        // reply reads as coming from whichever agent the reader later binds,
+        // because carrying no routed agent already MEANS "inherit".
+        importedAgentLabel: importedAgentLabel ?? null,
         // The message's true moment (fork copies carry their SOURCE time in
         // orderTime) — shown in the reply's contextual menu header.
         sentAt: message.orderTime ?? message._creationTime,
