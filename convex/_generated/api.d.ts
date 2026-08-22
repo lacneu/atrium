@@ -33,6 +33,7 @@ import type * as chats from "../chats.js";
 import type * as compat from "../compat.js";
 import type * as crons from "../crons.js";
 import type * as deliveryTiming from "../deliveryTiming.js";
+import type * as deploymentIdentity from "../deploymentIdentity.js";
 import type * as dev from "../dev.js";
 import type * as deviceIdentity from "../deviceIdentity.js";
 import type * as documentAttachments from "../documentAttachments.js";
@@ -77,6 +78,7 @@ import type * as lib_crypto_convexValidator from "../lib/crypto/convexValidator.
 import type * as lib_crypto_keyProvider from "../lib/crypto/keyProvider.js";
 import type * as lib_curation from "../lib/curation.js";
 import type * as lib_deliveryRuns from "../lib/deliveryRuns.js";
+import type * as lib_deploymentIdentity from "../lib/deploymentIdentity.js";
 import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
 import type * as lib_envLabel from "../lib/envLabel.js";
@@ -169,6 +171,7 @@ declare const fullApi: ApiFromModules<{
   compat: typeof compat;
   crons: typeof crons;
   deliveryTiming: typeof deliveryTiming;
+  deploymentIdentity: typeof deploymentIdentity;
   dev: typeof dev;
   deviceIdentity: typeof deviceIdentity;
   documentAttachments: typeof documentAttachments;
@@ -213,6 +216,7 @@ declare const fullApi: ApiFromModules<{
   "lib/crypto/keyProvider": typeof lib_crypto_keyProvider;
   "lib/curation": typeof lib_curation;
   "lib/deliveryRuns": typeof lib_deliveryRuns;
+  "lib/deploymentIdentity": typeof lib_deploymentIdentity;
   "lib/diagnose": typeof lib_diagnose;
   "lib/domains": typeof lib_domains;
   "lib/envLabel": typeof lib_envLabel;

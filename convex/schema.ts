@@ -791,6 +791,28 @@ export default defineSchema({
   // `adminAssigned === false` claims admin AND flips the flag in one
   // transaction; concurrent first sign-ins collide on THIS doc (OCC) and the
   // loser retries, sees the flag set, and becomes "pending".
+  // This deployment's identity, in a table OF ITS OWN.
+  //
+  // Deliberately not a field on `appMeta`: that row also carries `adminAssigned`,
+  // the first-admin bootstrap lock, and anything that creates it defensively has to
+  // pick a value for that lock. `false` re-opens bootstrap and hands admin to the
+  // next sign-in; `true` closes it before any admin exists. Neither is a decision
+  // the identity has any business making, so it does not share the row.
+  deploymentIdentity: defineTable({
+    // `atr_` + 32 hex. See lib/deploymentIdentity for what it means, and — more
+    // importantly — for the fact that it authorises nothing.
+    deploymentId: v.string(),
+    // WHICH deployment this identity was minted for, as the backend reported itself
+    // at the time. A database restored into a second deployment carries this row
+    // with it, and the two would then share one identity: a foreign archive would
+    // read as local and reattach against identifiers that mean something else
+    // there. Comparing the origin is what lets the clone notice and mint its own.
+    // Null when the backend does not report one — no detection is then possible,
+    // and the identity is kept rather than churned.
+    mintedForOrigin: v.union(v.string(), v.null()),
+    mintedAt: v.number(),
+  }),
+
   appMeta: defineTable({
     key: v.string(),
     // One-time rollout flag: has the opt-in agent-enablement backfill run? Set
