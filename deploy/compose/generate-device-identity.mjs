@@ -23,8 +23,8 @@
 //
 // Usage (from deploy/compose):
 //   node generate-device-identity.mjs                 # print the single-line JSON to stdout
-//   node generate-device-identity.mjs olivier.device.json   # also write to a file
-//   node generate-device-identity.mjs olivier.device.json --force   # overwrite
+//   node generate-device-identity.mjs alpha.device.json   # also write to a file
+//   node generate-device-identity.mjs alpha.device.json --force   # overwrite
 
 import { generateKeyPairSync, createHash } from "node:crypto";
 import { writeFileSync, existsSync } from "node:fs";

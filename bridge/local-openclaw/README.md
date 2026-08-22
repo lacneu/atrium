@@ -3,8 +3,10 @@
 A throwaway, **volatile** local OpenClaw gateway for live tests + media-share
 validation, pinned to a chosen version, that you can start/stop on demand. Each
 `reset.sh` gives a **pristine** instance so previous tests never affect the next.
-Based on the published OpenClaw gateway image (`your-registry/openclaw-docker`;
-override the repository with `OPENCLAW_IMAGE` if you build your own).
+Based on a published OpenClaw gateway image. **The repository is a placeholder**
+(`your-registry/openclaw-docker`) and will not pull as-is: set `OPENCLAW_IMAGE` to
+a registry you can reach, or build your own image. This is the bench's only
+precondition beyond Docker.
 
 ## Usage
 ```bash

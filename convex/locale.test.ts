@@ -101,8 +101,9 @@ describe("locale preference (cross-device, mirror of theme)", () => {
     expect(mePref.resolvedLocale).toBe("fr");
     expect(mePref.defaultLocale).toBe("en");
 
-    // User WITHOUT a pref inherits the "en" admin default (the otherwise
-    // unreachable branch until the admin setter ships in I18N-4).
+    // User WITHOUT a pref inherits the "en" admin default — the branch no UI
+    // reaches yet (no admin setter exists), pinned here so it works the day one
+    // does.
     const meNoPref = await t
       .withIdentity({ subject: `${userNoPref}|session` })
       .query(api.me.getMe, {});

@@ -6,7 +6,7 @@
  *  - `bridge/src/compat.ts` — `maxValidated`, the version Atrium claims to support;
  *  - `test/fixtures/openclaw_upstream_frames.json` — `upstream_tag`, the tag whose
  *    own unit tests the replayed wire shapes were extracted from;
- *  - `docs/design/upstream-interpretation-comparison.md` — the tag the whole
+ *  - `docs/UPSTREAM_INTERPRETATION.md` — the tag the whole
  *    comparison was written against.
  *
  * Raising `maxValidated` without re-extracting the fixtures leaves the bridge
@@ -38,7 +38,7 @@ import { promisedVersion } from "./helpers/vendored.js";
 
 const FIXTURE = new URL("./fixtures/openclaw_upstream_frames.json", import.meta.url);
 const DOC = new URL(
-  "../../docs/design/upstream-interpretation-comparison.md",
+  "../../docs/UPSTREAM_INTERPRETATION.md",
   import.meta.url,
 );
 

@@ -14,21 +14,28 @@ before making changes; read the per-area notes below before touching an area.
   reformat unrelated code. Comments carry durable rationale (edge cases, security,
   perf), not narration.
 - **No work-tracking docs in this repo.** `docs/` and `compliance/` are for users
-  and contributors. Plans, decision logs, retros, and "what we built" write-ups
-  belong in the maintainer's private notes, never here. **Two exceptions, each
-  earned the same way — kept outside the repo, a registry drifts, and a state
-  note never re-derived from its source becomes a trap; beside the code it is
-  re-read and corrected with it:**
-  1. `docs/design/stabilization-1.0.0/` — the gap registry and per-lot notes of
-     the 1.0.0 stabilization programme (anonymized; see that directory's README).
-  2. `bridge/protocol/contrib/registry.json` — the upstream-contribution ledger:
-     every issue/PR Atrium opens against a provider (OpenClaw, Hermes), its state,
-     and the frames/lots it is tied to. Machine-readable, validated by a bridge
-     test, synchronized via `gh` (see `.claude/skills/upstream-contrib/`). Public
-     upstream URLs only — never client data, tokens, or conversational content.
+  and contributors. Plans, decision logs, retros, per-lot notes, gap registries,
+  dated bench records and "what we built" write-ups belong in the maintainer's
+  private notes, never here — whatever their subject and however useful they are
+  to the person writing them.
 
-  These exceptions do not generalize: new plans and retros still belong in
-  private notes.
+  **One exception, and it is not a document.** `bridge/protocol/contrib/registry.json`
+  is the upstream-contribution ledger: every issue/PR Atrium opens against a
+  provider (OpenClaw, Hermes), its state, and the frames it is tied to. It stays
+  because it is *machine-readable state that code consumes* — validated by a
+  bridge test, synchronized via `gh` (see `.claude/skills/upstream-contrib/`) —
+  not prose about the work. Public upstream URLs only; never client data, tokens,
+  or conversational content.
+
+  A registry kept outside the repo does drift, and that argument once earned the
+  1.0.0 gap registry a place here. It was answered the wrong way. The registry
+  drifted anyway — the private copy and the in-repo copy diverged for a month
+  before anyone compared them — because there were *two*, not because one was
+  outside. There is now one, in the private notes. Design and protocol
+  specifications that code cites live in `docs/` under their own names
+  (`PROTOCOL_CONTRACT.md`, `UPSTREAM_INTERPRETATION.md`, …), where a contributor
+  can find them; if a document only makes sense to someone tracking the work, it
+  is a work document, and it goes to the notes.
 
 ## Map
 
@@ -38,8 +45,8 @@ before making changes; read the per-area notes below before touching an area.
 | `convex/` | Self-hosted Convex backend: schema, queries, mutations, actions, HTTP routes (`/api/v1`, `/bridge/ingest`), auth, crons. `convex/_generated/` is committed on purpose. |
 | `bridge/` | Standalone Node/TypeScript package: holds the connection to an agent gateway (OpenClaw, or Hermes over its WebSocket or REST transport), normalizes the version-specific event stream, relays turns to/from Convex. One adapter per provider under `bridge/src/providers/`. Its own `package.json` + tests. |
 | `mcp/` | MCP server exposing the metadata-only observability API to agents/CLIs. |
-| `deploy/` | The deployment surface: `compose/` (Docker Compose + `bootstrap-env.sh`) and `helm/`. **The canonical deploy guide is `deploy/README.md`.** |
-| `docs/` | User/contributor documentation. `docs/design/stabilization-1.0.0/` is the 1.0.0 gap registry and its per-lot notes — a named work-tracking exception, explained above. |
+| `deploy/` | The deployment artifacts: `compose/` (Docker Compose + `bootstrap-env.sh`) and `helm/` (the chart). `deploy/README.md` holds what applies to every method — pre-flight, gotchas, hardening, media, image versioning. **The ordered procedures live in `docs/installation/`, one per method.** |
+| `docs/` | User/contributor documentation only: install, configuration, architecture, and the protocol/design specifications the code cites by name. No work tracking — see the rule above. |
 | `messages/` + `project.inlang/` | i18n source (Paraglide). Compiled to the git-ignored `src/paraglide/`. |
 | `.github/` | CI (`build-and-push.yml`, `ci.yml`), issue/PR templates. |
 | `.claude/skills/` | Repo-owned, hand-authored process skills (checked in; installable `convex-*` skills stay git-ignored). `frame-discovery` instructs one protocol frame end to end; `upstream-contrib` gates and tracks contributions to the providers; `release-notes` drafts the CHANGELOG entry. Process definitions, not work-tracking docs. |

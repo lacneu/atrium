@@ -1,5 +1,5 @@
 import { BASE_LOCALE, type Locale } from "./locales";
-// Hybrid rehydration — the PURE composition half (see docs/design/hybrid-rehydration.md).
+// Hybrid rehydration — the PURE composition half (see docs/HYBRID_REHYDRATION.md).
 //
 // A fresh gateway session is re-grounded from Atrium's message store by prepending a
 // bounded history block to the outgoing turn. This module owns HOW that block is

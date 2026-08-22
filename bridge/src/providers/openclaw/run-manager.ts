@@ -392,7 +392,7 @@ export class RunManager {
       // policy (upstream steers/queues by design) but by the emergent
       // session-file takeover — the announce run trips the prompt-lock fence
       // on the dispatch's session write and its final NEVER comes (see
-      // docs/design/upstream-interpretation-comparison.md §2): left alone the
+      // docs/UPSTREAM_INTERPRETATION.md §2): left alone the
       // reopened bubble strands `streaming`, the busy gate stalls the queue
       // drain, and the 12-min watchdog errors it as stream_orphaned (live
       // 2026-07-19, "Génération…" stuck + last queued card never dispatched).

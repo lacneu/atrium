@@ -1190,7 +1190,7 @@ export const consumeForkRehydration = internalMutation({
  * v2026.7.1 steers/queues by design) but by the emergent session-file
  * takeover, timing-dependent (live 2026-07-19: the report froze on
  * "Génération…" and the rest never arrived; see
- * docs/design/upstream-interpretation-comparison.md §2). Re-park the row as
+ * docs/UPSTREAM_INTERPRETATION.md §2). Re-park the row as
  * `queued` instead; the announce's own finalize re-drains the queue FIFO.
  */
 export const reparkIfBusy = internalMutation({

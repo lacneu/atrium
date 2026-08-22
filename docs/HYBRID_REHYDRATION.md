@@ -1,44 +1,31 @@
 # Hybrid rehydration — rolling summary + verbatim tail
 
-## Problem
+## The constraint
 
 Atrium is the source of truth for conversations; gateway sessions are ephemeral
-(daily/idle resets, per-turn re-keying for multi-agent chats). On every fresh
-session the bridge re-injects the conversation as ONE text block prepended to the
-user's message (`internal.stream.rehydrationContext`). Today that block is a
-purely VERBATIM tail budgeted at ~50% of the model's context window:
+— they reset daily and on idle, and a multi-agent chat re-keys its session per
+turn. So on every fresh session the bridge has to re-establish the conversation
+by prepending one text block to the user's message
+(`internal.stream.rehydrationContext`).
 
-- **Token waste that scales with the window.** A 200k-token model re-ingests up
-  to ~300k characters of history on EVERY cold start — daily, and on every
-  agent switch in a per-turn-routed chat.
-- **Everything beyond the budget is silently dropped.** Long conversations lose
-  their beginning entirely (`[…début omis…]`); the agent has no idea what was
-  agreed weeks ago.
-- **The gateway cannot compensate.** OpenClaw's own compaction is inert on
-  codex-style providers (`ownsCompaction=true` skips the safeguard — upstream
-  issues #7477/#15669/#71325, closed stale; see
-  `openclaw-notes/docs/runbook-context-overflow.md`). Oversized contexts crash
-  the agent ("Context overflow", event-loop saturation).
+That block competes with the turn itself for the model's context window, and
+three properties follow:
 
-## Prior art considered
+- **A purely verbatim tail costs tokens in proportion to the window.** A
+  200k-token model would re-ingest hundreds of thousands of characters of
+  history on every cold start — daily, and on every agent switch in a
+  per-turn-routed chat.
+- **Anything past the budget is gone.** A tail alone loses the beginning of a
+  long conversation entirely, so what was agreed early is unavailable.
+- **The gateway cannot compensate.** A provider whose context engine owns
+  compaction skips the gateway's own safeguard, and an oversized context fails
+  the turn outright. Rehydration must therefore fit the budget before the
+  request is sent, not rely on anything downstream trimming it.
 
-- **lossless-claw (LCM plugin)** — chunk summaries condensed into a DAG +
-  verbatim fresh tail + retrieval tools, stored in SQLite on the gateway.
-  Excellent for the gateway's OWN long-running sessions, but it does not solve
-  Atrium's problem: our rehydration payload is assembled ATRIUM-side and injected
-  into a *fresh* session — LCM never sees the history it would need to compact,
-  and a giant first message still burns the tokens. It also couples every
-  instance to a plugin install + version floor (2026.5.12+) and does not exist
-  for Hermes. It remains a fine OPTIONAL gateway-side complement for in-session
-  growth between resets.
-- **OpenClaw Dreaming** — background consolidation (cron, off-hours) of session
-  transcripts into durable memory. Philosophically the model we adopt:
-  consolidate ASYNCHRONOUSLY, off the hot path, so the hot path stays instant.
+## How the context is composed
 
-## Solution
-
-Two independent layers, both provider-agnostic (no gateway feature used beyond
-ordinary `chat.send`):
+Two independent layers, both provider-agnostic — nothing beyond an ordinary
+`chat.send` is required of the gateway.
 
 ### 1. Budget-capped hybrid composer (hot path, instant)
 
@@ -135,11 +122,12 @@ Trace events `chat.summary` — op `dispatch` (chunkChars, coveredCount),
 `correlate` (summaryChars, watermark advance), `fail` (reason). The bridge's
 existing `rehydrate` trace gains `summaryUsed` + `summaryChars` counts.
 
-## Non-goals (v1)
+## Deliberate limits
 
-- No retrieval tools over compacted history (lcm_grep-style) — the Sources
-  panel + the agent's own tools cover targeted recall; revisit if needed.
-- No re-summarization hierarchy (DAG): ONE rolling summary per chat, updated
-  incrementally, is sufficient at chat scale (vs LCM's agent-lifetime scale).
-- No UI surface: invisible infrastructure. The context meter already shows
-  session usage.
+- **No retrieval tools over compacted history.** The Sources panel and the
+  agent's own tools cover targeted recall.
+- **One rolling summary per chat, updated incrementally** — no
+  re-summarization hierarchy. A chat's history is bounded enough that a flat
+  summary holds.
+- **No UI surface.** This is invisible infrastructure; the context meter
+  already shows session usage.

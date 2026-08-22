@@ -103,3 +103,58 @@ For a LIVE per-delta overhead comparison (recording ON vs OFF) you must start a 
 first (Settings▸Traces, or MCP `start_delivery_record`) so a session is active, then drive
 this harness; an untagged `run.mjs` delta is not recorded, so the recorder path is only
 exercised while a session is active and the bridge is tagging real turns.
+
+## Streaming latency — the two O(n²) costs and how to measure them
+
+A reply latency that **grows with reply length** is an O(n²) signature, not WAN
+or model latency (those are constant per token). Two independent O(n²) costs
+exist, both rooted in re-processing the whole growing reply on every token:
+
+1. **Client markdown re-parse (dominant, user-visible).** Re-parsing the entire
+   growing string on every streamed token is O(n²) parse. Plain text does not
+   have it — which is how the two are told apart.
+2. **Convex reactive re-push (network).** The live-text query returns the full
+   text, and Convex re-sends the whole result on every change: a reply streamed
+   in K deltas pushes ~K/2× its own size over the socket.
+
+`run.mjs` carries the two metrics that separate these causes:
+
+- **appendDelta write latency, early vs late** — flat (×~1.0) means the
+  per-delta write is not the problem; growth would implicate the write path.
+- **push amplification** = Σ(live-text bytes received) / final length — ≈1 means
+  incremental delivery; ~K/2 means the full text is re-sent per delta. It
+  UNDERCOUNTS under concurrency (Convex may coalesce rapid writes into one
+  re-run), so treat it as a floor. The write-latency split is RTT-dominated at
+  small sizes: it ranks causes, it does not prove the rewrite O(1).
+
+`drive-one.mjs` drives ONE synthetic turn on an existing chat
+(`<chatId> [deltas] [deltaChars] [deltaMs] [plain|md]`) — the companion for
+browser-side measurement.
+
+### Measuring the client render
+
+Use an rAF inter-frame-gap probe, **not** a `longtask` probe: per-token renders
+grow smoothly through the 2–40 ms range and stay under the 50 ms longtask
+threshold, so longtask counts under-report the jank.
+
+1. Start the dev stack, open a chat, copy its `/chat/<id>`. Use a FRESH empty
+   chat per run — prior replies inflate the DOM baseline.
+2. Install the probe in the DevTools console:
+   ```js
+   window.__fm = { frames: [] };
+   let last = performance.now();
+   (function tick(now){ const g = now - last; last = now;
+     if (window.__fm.frames.length < 5000) window.__fm.frames.push({ ts: Date.now(), gap: Math.round(g) });
+     requestAnimationFrame(tick); })(performance.now());
+   ```
+3. Drive a turn (it prints `START=`/`END=` epochs on stderr):
+   `node scripts/loadtest/drive-one.mjs <chatId> 220 0 25 md`
+4. Split the gaps by thirds of the [START, END] window; a late third that grows
+   while the early third stays flat is the markdown-parse signature:
+   ```js
+   const start=START, end=END, f=window.__fm.frames.filter(x=>x.ts>=start&&x.ts<=end), d=end-start;
+   const seg=(a,b)=>f.filter(x=>x.ts>=start+d*a&&x.ts<start+d*b).map(x=>x.gap);
+   const st=a=>a.length?{n:a.length,avg:Math.round(a.reduce((p,c)=>p+c)/a.length),jank32:a.filter(g=>g>32).length}:{n:0};
+   ({early:st(seg(0,.33)), mid:st(seg(.33,.66)), late:st(seg(.66,1))});
+   ```
+5. Compare with `... 220 18 25 plain` — markdown grows late, plain stays flat.

@@ -23,11 +23,8 @@
  * `/frame-discovery contextBudgetStatus` is the open question.
  *
  * The way to settle it is the LOCAL bench (`bridge/local-openclaw/up.sh`), not
- * production: boot the pinned gateway and read a real `sessions.describe`. That
- * attempt was made on 2026-08-08 and is BLOCKED on this host, not for lack of a
- * method — the 2026.7.1 image is amd64-only and its HTTP listener refuses
- * connections under emulation on arm64 (reset by peer, from inside the container
- * too). An arm64 image, or any amd64 host, answers this in one call.
+ * production: boot the pinned gateway and read a real `sessions.describe`. One
+ * observed row answers which shape — if either — the build emits.
  *
  * The guard's own suite could not catch any of it: every fixture there hands it a
  * describe carrying the flat shape. Green tests over a shape production may never

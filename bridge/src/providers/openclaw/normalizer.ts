@@ -147,7 +147,8 @@ export const APPROVAL_WAIT = 600.0;
 // The turn ended while still waiting for an approval Atrium has no way to grant.
 // A NAMED terminal, so the per-cause anomaly chain reports it instead of the turn
 // reading as an unexplained timeout. See the `gap` entry in
-// docs/design/protocol-schema-coverage.md: the resolution path is NOT implemented,
+// Classified in bridge/protocol/openclaw/coverage/<version>.json: the resolution
+// path is NOT implemented,
 // and inventing an automatic approval would be a security decision nobody made.
 export const APPROVAL_PENDING_CODE = "awaiting_approval";
 
@@ -922,7 +923,7 @@ export class Normalizer {
       // other synthetic terminal here: we stop waiting, we do not kill work the
       // user may still receive, and cancelling *because we gave up* would also
       // kill a command a human is about to approve in the Control UI. Declared,
-      // with its consequences, in docs/design/protocol-schema-coverage.md.
+      // with its consequences, in bridge/protocol/openclaw/coverage/<version>.json.
       this.clearWait("approval_wait");
       this.approvalPending = false;
       // The CODE is persisted as the error string too (codex P2): the UI shows
@@ -2589,7 +2590,7 @@ export class Normalizer {
       // delivery), so content-present + this error ⇒ close COMPLETE (live
       // prod 2026-07-21: an announce delivery streamed its full report, then
       // the follow-up turn tripped the lock — the complete reply wore an
-      // error badge; see docs/design/upstream-interpretation-comparison.md
+      // error badge; see docs/UPSTREAM_INTERPRETATION.md
       // §3). The class survives on the trace-only channel. The INIT flavor
       // ("reply session initialization conflicted") is thrown PRE-generation
       // — with content it keeps the honest error card (the content cannot be

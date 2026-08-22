@@ -129,9 +129,14 @@ docker compose up -d          # convex backend + dashboard + frontend + bridge
 ./bootstrap-env.sh            # push the Convex-scoped vars (auth, bridge wiring)
 ```
 
-Open the app at your frontend origin and sign in. See
-[`deploy/README.md`](deploy/README.md) for the full guide, including the
-two-environment-scope gotcha and the stateful/stateless lifecycle.
+Open the app at your frontend origin and sign in.
+
+That is the abridged form. The **ordered procedure** — every step with its
+precondition, its exact command and how you verify it — is
+[`docs/installation/COMPOSE.md`](docs/installation/COMPOSE.md), and
+[`docs/installation/HELM.md`](docs/installation/HELM.md) is its Kubernetes peer.
+What applies to both, including the two-environment-scope gotcha, is
+[`deploy/README.md`](deploy/README.md).
 
 For local development (no Docker), see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -161,20 +166,25 @@ next to the bundle, so one artifact serves any deployment.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — components, data flow, auth.
-- [Development](docs/DEVELOPMENT.md) — local dev workflow, tests, Convex, Vite.
-- [Configuration](docs/CONFIGURATION.md) — environment variable reference.
-- [Bridge protocol](docs/BRIDGE_PROTOCOL.md) — bridge ↔ Convex ↔ gateway contract.
-- [Deployment](docs/DEPLOYMENT.md) → points to [`deploy/`](deploy/).
-- [Deployment troubleshooting](deploy/TROUBLESHOOTING.md) — first-deploy problems
-  with diagnosis + fix (private images, sign-in/JWT, agent discovery, …).
-- [OpenClaw version compatibility](docs/OPENCLAW_VERSION_COMPAT.md).
-- [Compliance / Trust Center](compliance/) — SOC 2 control mapping (incl. the
-  metadata-only `/api/v1` surface) + the software-vs-operator
-  shared-responsibility model.
-- [Vision](VISION.md) · [Changelog](CHANGELOG.md) ·
-  [Third-party notices](THIRD_PARTY_NOTICES.md) ·
-  [Contributing & agent guide](AGENTS.md).
+**[`docs/`](docs/README.md) is the index** — every page, grouped by what you are
+trying to do, with what each one is for. The three entry points:
+
+- **[Installation](docs/installation/) — start here.** Which profile fits you —
+  evaluating Atrium, or running it for a team — what each one gives you and what it
+  does not, plus an ordered procedure per method —
+  [Compose](docs/installation/COMPOSE.md) or [Helm](docs/installation/HELM.md) —
+  every step states its precondition, its command and how to verify it, written to
+  be followed literally by a person or by an agent.
+- [Development](docs/DEVELOPMENT.md) — the local workflow if you want to work on
+  Atrium rather than run it.
+- [Deployment](deploy/README.md) — the canonical deploy guide (Compose and Helm),
+  with [troubleshooting](deploy/TROUBLESHOOTING.md) for first-deploy problems.
+
+Also: [Compliance / Trust Center](compliance/) — SOC 2 control mapping (incl. the
+metadata-only `/api/v1` surface) and the software-vs-operator shared-responsibility
+model · [Changelog](CHANGELOG.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.md) ·
+[Contributing & agent guide](AGENTS.md).
 
 ## Security
 

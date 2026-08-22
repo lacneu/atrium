@@ -74,6 +74,12 @@ when you see it.
 ## Pre-flight
 
 - Tag format is `vMAJOR.MINOR.PATCH` (the stamp script rejects anything else).
+- The source commit consumed by production automation must be GitHub-verified.
+  Merge through a GitHub-signed pull request or sign the commit with a signing
+  key registered on GitHub before downstream deployer qualification. The tag
+  workflow's version commit is not signed automatically and must not be used as
+  a production source reference until a later verified commit contains that
+  tree.
 - npm refuses to republish an existing version, so each tag must be a new version.
   `@lacneu/atrium` **0.1.0 and 0.1.1 are already published**, so the first tag under
   this model must be **`v0.1.2` or higher** (the committed baseline is `0.1.2`).

@@ -13,7 +13,7 @@
 // takeover (EmbeddedAttemptSessionTakeoverError: whichever run detects the
 // other's session-file write on prompt-lock reacquire dies, so the loser is
 // timing-dependent — both directions occur; see
-// docs/design/upstream-interpretation-comparison.md §2). Queueing a message
+// docs/UPSTREAM_INTERPRETATION.md §2). Queueing a message
 // mid-turn is a SUPPORTED feature: the system, not the user, owns the
 // recovery.
 //

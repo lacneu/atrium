@@ -4,7 +4,7 @@
 # is the CI-shaped half of bootstrap-env.sh: run it AFTER `npx convex deploy`.
 #
 # Requires (export them, or rely on the convex CLI's own config):
-#   CONVEX_SELF_HOSTED_URL        e.g. https://convex.lacneu.com
+#   CONVEX_SELF_HOSTED_URL        e.g. https://convex.example.com
 #   CONVEX_SELF_HOSTED_ADMIN_KEY  the admin key minted on the backend
 # Reads `.env` next to THIS script (multiline JWT/JWKS via <KEY>_FILE paths,
 # relative to this dir). The `convex` CLI is invoked from the REPO ROOT (where
@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 [[ -f "$ENV_FILE" ]] || { echo "FATAL: .env not found next to this script ($ENV_FILE)"; exit 1; }
 [[ -f "$REPO_ROOT/package.json" ]] || { echo "FATAL: package.json not at repo root ($REPO_ROOT) — run from a full checkout"; exit 1; }
-: "${CONVEX_SELF_HOSTED_URL:?export CONVEX_SELF_HOSTED_URL (e.g. https://convex.lacneu.com)}"
+: "${CONVEX_SELF_HOSTED_URL:?export CONVEX_SELF_HOSTED_URL (e.g. https://convex.example.com)}"
 : "${CONVEX_SELF_HOSTED_ADMIN_KEY:?export CONVEX_SELF_HOSTED_ADMIN_KEY}"
 export CONVEX_SELF_HOSTED_URL CONVEX_SELF_HOSTED_ADMIN_KEY
 cd "$REPO_ROOT"   # the convex CLI needs package.json in CWD

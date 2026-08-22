@@ -1,4 +1,4 @@
-// Hybrid rehydration — the ROLLING-SUMMARY engine (docs/design/hybrid-rehydration.md).
+// Hybrid rehydration — the ROLLING-SUMMARY engine (docs/HYBRID_REHYDRATION.md).
 //
 // Maintains ONE rolling summary per conversational chat so rehydration can inject
 // "summary of the older conversation + verbatim recent tail" instead of a purely

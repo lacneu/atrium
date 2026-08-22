@@ -5,9 +5,9 @@ client in the upstream repo) and the **gateway source** interpret the
 WebSocket protocol, versus the Atrium bridge normalizer
 (`bridge/src/providers/openclaw/normalizer.ts`) and turn-sink
 (`bridge/src/core/turn-sink.ts`). Companion to
-[protocol-schema-coverage.md](protocol-schema-coverage.md) (schema-surface
-coverage) and [protocol-contract.md](protocol-contract.md) (vendored-schema
-ratchet).
+[PROTOCOL_CONTRACT.md](PROTOCOL_CONTRACT.md), which describes the vendored-schema
+ratchet; the per-field classification lives in the coverage manifests under
+`bridge/protocol/openclaw/coverage/`.
 
 Reference source: `github.com/openclaw/openclaw` at tag **`v2026.7.1`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`. Upstream
@@ -360,7 +360,7 @@ a durable surface the Control UI does not have.
 
 ---
 
-## Summary of findings
+## Conformance summary
 
 | Zone | Verdict |
 |---|---|

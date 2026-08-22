@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.75.0] — Taking a conversation with you
+
+A conversation, or a whole folder of them, can now be exported as a single file
+and read back into another Atrium — or into the same one, as a copy. The file
+carries the exchanges, the attachments, the delegations and the documents, and
+opens in any unzip program.
+
+**What the file does not contain is deliberate, and it says so.** A manifest
+inside every archive lists what was left behind and why, because an export
+silent about its omissions reads as complete: months later, nothing would
+distinguish a conversation that carried no attachments from one whose
+attachments were dropped. It also lists what an import rewrites — a turn that
+was still live becomes finished, display order is re-based, attachments are
+re-uploaded — so a reader is never left believing they are looking at an
+untouched original.
+
+**Provider sessions stay behind.** A conversation's live link to the gateway
+that served it is not part of its history, and replaying one elsewhere would
+present a key that gateway never issued — on an instance that merely shares a
+name, which is the common case rather than the exotic one.
+
+**An import trusts nothing in the file.** Everything belongs to whoever performs
+the import, never to whoever the archive names. Attachments are stored afresh
+from bytes that import uploaded itself. And an import that fails partway undoes
+itself, including the attachments it had already sent, rather than leaving a
+folder of conversations nobody can name.
+
+**Agents are reattached only where that means something.** An archive from this
+same deployment can restore which agent answered — if that agent still exists
+and the person importing may use it. From anywhere else it cannot, so the
+conversation arrives unattached and each reply keeps the NAME of the agent that
+wrote it. Without that name a reply would silently read as coming from whichever
+agent the conversation is later bound to.
+
+**Where it appears.** Export sits in the menu a conversation or a folder already
+has. An archive dropped on the sidebar lands at the root; chosen from a folder's
+own menu, it lands inside it. A transfer says what it is doing and counts the
+attachments as they move, because a folder of them takes long enough that a bare
+spinner reads as stuck.
+
+Two limits worth knowing. An archive is assembled in the browser, so a very
+large one is refused rather than allowed to exhaust the tab. And on a
+conversation of more than two hundred messages, a follow-up that was queued
+mid-turn can keep its old place relative to the reply it came after; the
+manifest says so, and settling it needs a change of its own.
+
 ## [0.74.4] — Refusing to say a rotation is safe unless it is
 
 Before an operator rotates the shared credential a gateway was enrolled with, a
@@ -316,8 +362,8 @@ what fills a window.
   build.
 
 Not fixed here, and stated plainly: **we still do not know where the gateway puts
-that figure** — answering it needs the pinned gateway on a local bench, which this
-machine cannot currently run — nor when it declines to produce one at all — its own notes say it
+that figure** — answering it needs one observed reply from the pinned gateway on a
+local bench — nor when it declines to produce one at all — its own notes say it
 stays silent when another component owns compaction, and after a compaction or a
 model change. When it is silent the safeguard still falls back to the blind count.
 It is better than before only in that it now says so. Settling this is the next
@@ -1105,7 +1151,7 @@ observability MCP servers to pick up the new tool.
 - **The 0.68.5 recovery chain is now validated against the upstream
   source.** A systematic comparison of the official Control UI and gateway
   source at the supported version (documented in
-  `docs/design/upstream-interpretation-comparison.md`) confirmed the
+  `docs/UPSTREAM_INTERPRETATION.md`) confirmed the
   send-idempotency handling (the re-dispatch's fresh key is provably
   *necessary*: an aborted run poisons the original key for ~an hour
   gateway-side), re-grounded the "complete reply after a session-lock

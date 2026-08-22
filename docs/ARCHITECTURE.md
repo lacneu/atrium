@@ -10,6 +10,20 @@ surfaces.
 
 ![A calm, light-filled hall where users chat with their agents. The gateway's raw event churn — tangled cables, shifting version numbers — stays behind the threshold in the machine room, smoothed into one clean stream by the bridge before it ever reaches the hall.](assets/atrium-overview.png)
 
+## Scope
+
+Atrium is a chat front end, not an agent runtime: it never runs a model. The
+gateway does that, and provider specifics stay inside the bridge normalizer.
+
+A deployment serves one tenant. Isolation between tenants is achieved by giving
+each its own Convex deployment — separate auth and separate secrets — rather than
+by partitioning one shared backend, so the codebase carries no adversarial
+tenant-isolation layer.
+
+The product is a chat surface for AI agent gateways; it is not a general-purpose
+messaging platform, and features that only make sense outside that frame have no
+home in it.
+
 ## Components
 
 ```text
@@ -180,7 +194,7 @@ finished sub-agent result cards — and opens on a fresh gateway session that th
 rehydration re-grounds on the first send. The user stays in the original
 conversation; the new row pulses in the sidebar. A branch never contains
 anything said after its branch point (the rolling summary only rides when its
-coverage stops at or before it). See `docs/design/` for the deeper mechanics.
+coverage stops at or before it). See `PROTOCOL_CONTRACT.md` and `UPSTREAM_INTERPRETATION.md` for the deeper mechanics.
 
 ## Document viewer and renditions
 

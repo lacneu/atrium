@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 //
-// Hybrid rehydration — engine tests (docs/design/hybrid-rehydration.md):
+// Hybrid rehydration — engine tests (docs/HYBRID_REHYDRATION.md):
 // the rolling-summary scheduler (guards + dispatch effects), the correlate/failure
 // paths, invalidation on deletion, and the rehydrationContext integration (summary
 // + verbatim-after-watermark). The PURE composer is covered separately in

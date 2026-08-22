@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bring up the SECOND local OpenClaw gateway (instance B), codex-harness, and pair
 # bridge B's device. Mirror of up.sh for docker-compose.b.yml. Run AFTER ./up.sh.
-#   OPENCLAW_IMAGE=neuolivier/openclaw-docker OPENCLAW_VERSION=2026.6.5 \
+#   OPENCLAW_IMAGE=your-registry/openclaw-docker OPENCLAW_VERSION=2026.6.5 \
 #     OPENCLAW_CODEX_HARNESS=1 ./up-b.sh
 set -euo pipefail
 cd "$(dirname "$0")"

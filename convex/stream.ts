@@ -2926,7 +2926,7 @@ export const rehydrationContext = internalQuery({
     // Budget: the legacy window-derived formula (50% of the window, ~3 chars/token)
     // BOUNDED by the hard ceiling — a large-window model must not re-ingest hundreds
     // of kilochars of raw history on every cold start. The rolling summary (below)
-    // carries the older conversation instead (docs/design/hybrid-rehydration.md).
+    // carries the older conversation instead (docs/HYBRID_REHYDRATION.md).
     const windowTokens = chat.sessionMeta?.contextTokens ?? 32_000;
     const budgetChars = rehydrationBudgetChars(windowTokens);
 

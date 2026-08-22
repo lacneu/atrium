@@ -3,8 +3,8 @@
 // Deterministic unit test for the observability/RBAC spine (increment 1).
 //
 // This test exercises the DETERMINISTIC core only — it does NOT depend on
-// @convex-dev/auth session simulation. The key-authed HTTP path (curl) is
-// live-verified separately by the lead. Here we:
+// @convex-dev/auth session simulation. The key-authed HTTP path is out of this
+// suite's scope — the live bench covers it. Here we:
 //   1. seed the built-in roles,
 //   2. insert a service account + an apiKey whose hashedKey is the SHA-256 of a
 //      known plaintext,

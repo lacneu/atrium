@@ -1,40 +1,47 @@
 # Protocol Contract — schema-driven, per-version bridge compatibility
 
-Status: ALL THREE increments SHIPPED. Inc 1 = vendored schema @2026.6.11 +
-coverage manifest + CI ratchet (`bridge/protocol/openclaw/` +
-`bridge/test/protocol-coverage.test.ts`). Inc 2 = runtime drift detector
-(`bridge/src/providers/openclaw/protocol-drift.ts`, observe-only, wired into
-RunManager.feed; exposed as the additive `protocol` section of /capabilities —
-version + COVERAGE_SUMMARY matrix + drift; runtime sets bijection-tested
-against the manifest). Inc 3 = the compat poller picks + bounds + persists the
-section (drift UNIONED across multi-bridge deployments) and Settings ▸ Bridge
-renders it per provider: "aligned"/drift badge, vendored version, coverage
-counts, collapsed declared-gap list. Companion to the factual audit in
-[protocol-schema-coverage.md](protocol-schema-coverage.md).
+Per-version compatibility is enforced by three mechanisms that work together.
 
-## Problem
+1. **A vendored schema and a CI ratchet.** Each supported gateway version has its
+   schemas checked in under `bridge/protocol/<provider>/<version>/` beside a
+   coverage manifest that classifies every exported schema and field as handled,
+   ignored or a declared gap. `bridge/test/protocol-coverage.test.ts` walks the
+   vendored schemas and fails on anything unclassified, so raising the supported
+   ceiling stays red until a human triages the new surface.
+2. **A runtime drift detector.** `bridge/src/providers/openclaw/protocol-drift.ts`
+   observes the live stream against the vendored shape. It is observe-only by
+   design — an unknown frame must never break a turn — and its runtime sets are
+   bijection-tested against the manifest.
+3. **An honest report.** Both surface on `/capabilities` as an additive
+   `protocol` section (vendored version, coverage summary, observed drift). The
+   compat poller bounds and persists it, unioning drift across a multi-bridge
+   deployment, and Settings ▸ Bridge renders it per provider: aligned-or-drifted
+   badge, vendored version, coverage counts, and the declared gaps.
 
-The bridge converts Atrium ↔ gateway wire protocols (OpenClaw today, Hermes
-next). Today the answer to "which protocol features does the bridge support,
-against WHICH exact gateway version, and what changed?" lives in three places
-that drift independently:
+The versions actually vendored are the directories under `bridge/protocol/`;
+the ceiling the bridge claims is `maxValidated` in `bridge/src/compat.ts`.
+Neither is restated here — a version written into prose is a version that goes
+stale.
 
-- the hand-maintained capability manifest (`bridge/src/compat.ts`, VCOMPAT:
-  capability → minVersion) — feature-level, coarse;
-- the normalizer/observer code itself — the de-facto truth, readable only by
-  audit (the coverage report above took a dedicated pass);
-- tribal memory of what each validated OpenClaw version emits (fixtures pin
-  individual shapes, not the full surface).
+## Where the wire contract comes from
 
-Meanwhile OpenClaw publishes the authoritative wire contract as TypeBox
-schemas (`packages/gateway-protocol/src/schema/*.ts`), generated to JSON
-Schema, versioned by git tag. The gateway validates inbound frames against it.
-Nothing on our side consumes that artifact — every protocol evolution reaches
-us as a runtime surprise (e.g. the announce runs this week).
+The bridge converts Atrium ↔ gateway wire protocols (OpenClaw and Hermes).
+OpenClaw publishes its authoritative wire contract as TypeBox schemas
+(`packages/gateway-protocol/src/schema/*.ts`), generated to JSON Schema and
+versioned by git tag; the gateway validates inbound frames against it. Atrium
+consumes that artifact directly rather than inferring the contract from the
+normalizer, so what the bridge supports is a checked fact rather than something
+a reader has to reconstruct by audit.
 
-## Solution — three increments, strongest-determinism first
+Three artefacts carry it, and each has one job:
 
-### Increment 1 — Vendored per-version schema + coverage manifest (CI ratchet)
+| Artefact | Holds |
+|---|---|
+| `bridge/protocol/<provider>/<version>/` | The vendored upstream schemas, verbatim, plus a provenance record |
+| `bridge/protocol/openclaw/coverage/<version>.json` | One classification per leaf field: handled, ignored, or a declared gap |
+| `bridge/src/compat.ts` | The capability manifest and the supported ceiling (`maxValidated`) |
+
+## Vendored schemas and the coverage manifest
 
 **Vendor the contract.** For each gateway version in the validated range
 (the same range VCOMPAT names), vendor the protocol schema into the repo:
@@ -83,7 +90,7 @@ always one production incident behind. The vendoring refuses to run against a
 modified or unidentifiable checkout, and the integrity test re-derives the
 artifact and compares it field by field.
 
-**Author the coverage manifest once** (seeded from the audit): every leaf
+**The coverage manifest.** Every leaf
 field of the event/params surface gets exactly one classification:
 
 ```json
@@ -103,10 +110,10 @@ stays RED until a human classifies each one (handled / ignored-with-reason /
 gap-with-note). A protocol evolution can no longer arrive silently: **the
 diff between two vendored versions IS the migration checklist.**
 
-Outputs: a generated, human-readable support matrix (doc or /compat payload)
-— the factual "voici ce qu'Atrium supporte, voici ce qu'il ne supporte pas".
+The output is a support matrix carried by the `/compat` payload: what this
+bridge build supports, and what it does not.
 
-### Increment 2 — Runtime drift detector (observe-only, never gating)
+## The runtime drift detector
 
 The bridge already tallies inbound frame shapes per turn (`tallyFrame`).
 Extend it: classify each shape against the vendored schema matching the
@@ -118,12 +125,11 @@ CONNECTED gateway's hello version.
   (robustness first — the gateway may legitimately be newer than the bridge).
 - Deterministic: same frame → same classification; counters reset per process.
 
-This is the early-warning for the operational reality: the NAS updates
-OpenClaw before the bridge image. Today that surfaces as user-visible
-weirdness; with drift detection it surfaces as an admin-visible counter the
-day it starts.
+This is the early warning for a common operational case: the host updates its
+gateway before the bridge image. Drift surfaces as an admin-visible counter the
+day it starts, instead of as unexplained behaviour in a chat.
 
-### Increment 3 — Surface it: /compat → Convex → Bridge tab
+## How it surfaces: /compat → Convex → Bridge tab
 
 `/compat` (already polled by the `bridgeCompat` cron every 5 min) grows a
 `protocol` section:
@@ -148,37 +154,11 @@ build supports vs what the connected gateway emits.
 its `protocol` section reports `"schema": "none-published"` — an honest,
 visible statement instead of implied parity.
 
-## What this buys (mapped to the ask)
+## Deliberate limits
 
-| Ask | Mechanism |
-|---|---|
-| "features supportées par Atrium / pas supportées" | coverage manifest → generated matrix |
-| "supporté par le bridge pour une version EXACTE" | vendored schema per validated version + hello-version match |
-| "les différences à prendre en compte" | CI ratchet lists every unclassified new field on version bump |
-| "forte robustesse" | drift detector is observe-only; frames never rejected |
-| "plus déterministe" | classification is static (CI) + pure (runtime); no guesswork left in code review |
-
-## Non-goals
-
-- Runtime schema VALIDATION as a gate (reject frames) — explicitly rejected:
-  the normalizer's tolerance is a feature; the contract layer observes.
-- Auto-generating the normalizer from the schema — the normalizer encodes
-  BEHAVIOR (graces, dedup, isolation), not just shapes.
-
-## Seed backlog (from the audit, ranked)
-
-1. ~~`chat.error.errorKind`~~ — DONE: `handleChat` terminalizes main-lane
-   `chat:error`/`chat:aborted`, allowlists `errorKind`, persists it as the
-   message's `errorCode` (actionable localized headline in the error card) and
-   flags `context_length` on the `chat.gateway_pressure` trace.
-2. ~~`usage` on main-lane final~~ — RESOLVED at the source that actually
-   exists: the real gateway never emits `usage` on chat events (0 occurrences
-   across live captures — the manifest note documents it); main-turn cost rides
-   `sessions.describe` instead (SessionPanel cumulative + `chat.gateway_pressure`
-   `costUsd`, per-turn = delta between consecutive traces).
-3. `replace=true` on bare `deltaText` — honor replacement (one-line fix +
-   fixture).
-4. ~~Main-lane `chat:error`/`aborted` terminalization~~ — DONE (same code
-   path as item 1; the 180s recv-timeout hang on an unpaired chat:error is gone).
-5. `AgentInternalEventSchema` — the formal announce input contract; future
-   source for structured announce results (status/statsLine/attachments).
+- **Schema validation never gates a frame.** The normalizer's tolerance is a
+  property of the design, not an omission: the contract layer observes and
+  reports, it does not reject. A gateway may legitimately be newer than the
+  bridge.
+- **The normalizer is not generated from the schema.** It encodes behaviour —
+  graces, dedup, isolation — and not only shapes.

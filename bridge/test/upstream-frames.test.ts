@@ -4,7 +4,7 @@
  * Each scenario in fixtures/openclaw_upstream_frames.json is a wire shape the
  * upstream gateway's OWN unit tests guarantee (source file:line cited in the
  * fixture). Replaying them here pins the bridge's interpretation contracts
- * documented in docs/design/upstream-interpretation-comparison.md:
+ * documented in docs/UPSTREAM_INTERPRETATION.md:
  *  - `state` alone decides the terminal class (stopReason is consumed by the
  *    gateway before emission; the Control UI reads neither stopReason nor
  *    errorKind),

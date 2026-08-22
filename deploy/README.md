@@ -2,13 +2,13 @@
 
 Everything is **env-driven**: fill environment variables, bring your own agent
 gateway (OpenClaw or Hermes), and run. No code changes, no hard-coded hosts. Three
-modes:
+ways to run it:
 
-| Mode | Path | Status |
-|------|------|--------|
-| Docker Compose | [`compose/`](./compose/) | ✅ recommended |
-| Helm (Kubernetes) | [`helm/`](./helm/) | base chart (+ AKS example), provider-portable |
-| Plain Docker | run the two images manually | documented below |
+| Mode | Artifacts | Procedure |
+|------|-----------|-----------|
+| Docker Compose | [`compose/`](./compose/) | [COMPOSE.md](../docs/installation/COMPOSE.md) |
+| Helm (Kubernetes) | [`helm/`](./helm/) | [HELM.md](../docs/installation/HELM.md) |
+| Plain Docker | the same images, by hand | [COMPOSE.md § Without Compose](../docs/installation/COMPOSE.md) |
 
 The stack has four parts: **Convex** (self-hosted backend + SQLite, *stateful*),
 **Convex dashboard**, the **frontend** (static), and the **bridge** (connects to
@@ -182,95 +182,20 @@ full setup, the four-path model, the per-instance mount convention, a worked
 one-bridge-two-instances example and a deterministic install procedure are in
 **[SHARED_FS_MEDIA.md](./SHARED_FS_MEDIA.md)**.
 
-## Docker Compose
+## The installation procedures
 
-Run from a **full repo checkout** (the bootstrap step bundles the Convex
-functions from `../convex`; Node is required):
+The ordered, step-by-step procedure for each method lives in
+[`docs/installation/`](../docs/installation/README.md), so there is one copy of
+each:
 
-```bash
-cd compose
-cp .env.example .env          # fill EVERY required value (see comments inside)
-node generate-auth-keys.mjs   # writes jwt_private_key.pem + jwks.json (the @convex-dev/auth pair)
-docker compose up -d          # convex backend+dashboard + frontend + bridge
-./bootstrap-env.sh            # push Convex env, THEN deploy the Convex functions
-```
+| Method | Procedure |
+|---|---|
+| **Docker Compose** | [`docs/installation/COMPOSE.md`](../docs/installation/COMPOSE.md) — nine ordered steps, plus the CI path, the lifecycle rules, and running the same containers without Compose |
+| **Helm (Kubernetes)** | [`docs/installation/HELM.md`](../docs/installation/HELM.md) — what the chart creates, the secret sources, the three public origins, and the post-install step the chart does not perform |
 
-The `JWT_PRIVATE_KEY` / `JWKS` pair is **multiline**, so `.env.example` exposes
-only the `*_FILE` form (a dotenv line can't hold a multiline PEM — pasting one
-inline is the usual cause of the `pkcs8` sign-in error). `generate-auth-keys.mjs`
-writes a valid matching pair with no dependencies; the default `*_FILE` paths in
-`.env.example` already point at its output.
-
-`bootstrap-env.sh` does both halves of "make the empty backend usable": it pushes
-the Convex deployment env **and** runs `npx convex deploy` (installing repo deps
-on first run). Re-run it after each release.
-
-Open the app at your frontend origin. **The first sign-in from an allowed email
-domain becomes the admin** — so set `AUTH_ALLOWED_EMAIL_DOMAINS` (the bootstrap
-sets it first) **before** anyone signs in.
-
-> **No Node on the host (e.g. CI)?** Only minting the admin key needs the host;
-> the env push + function deploy run from **any** machine with Node + a checkout,
-> against the backend over the network:
-> ```bash
-> docker exec <project>-convex-backend ./generate_admin_key.sh   # on the host — copy the key
-> export CONVEX_SELF_HOSTED_URL=https://convex.example.com CONVEX_SELF_HOSTED_ADMIN_KEY=<key>
-> npx convex deploy                       # functions (run from the repo root)
-> deploy/compose/convex-env-push.sh       # push the Convex deployment env from .env (no docker)
-> ```
-> In a pipeline these two commands are the deploy job; the URL + admin key are CI
-> secrets. (`convex-env-push.sh` is the docker-free half of `bootstrap-env.sh`.)
-
-### Stateful vs stateless lifecycle
-
-Convex data lives in the named volume `convex-data` and survives container
-recreation. Redeploy just the app/bridge without touching the backend:
-
-```bash
-docker compose up -d --no-deps --force-recreate frontend bridge
-```
-
-(Plain `docker compose up -d` brings up all four services — none declare a
-profile.) **Never `docker compose down -v`** unless you intend to wipe the
-database (back up first: `npx convex export`). On **Synology Container Manager**,
-CM and a shell can disagree on the compose project name, so a CLI `down -v` may
-remove the **wrong** volume (leaving your data intact under another name) — verify
-the real one first:
-`docker inspect <project>-convex-backend --format '{{range .Mounts}}{{.Name}} {{.Destination}}{{"\n"}}{{end}}'`
-(details in [TROUBLESHOOTING.md](../deploy/TROUBLESHOOTING.md)).
-
-## Helm (Kubernetes)
-
-Convex is modeled as a **single-replica StatefulSet with a PVC** (it is not
-horizontally scalable); the frontend and bridge are Deployments; the env
-bootstrap runs as an ordered `post-install`/`post-upgrade` Job. Secrets come from
-a Kubernetes `Secret`. `ingressClassName`, `storageClassName` and the secret
-source are `values` — portable across providers. See [`helm/`](./helm/) and the
-AKS example values there.
-
-> **Deploy the Convex functions (required).** The post-install Job sets the
-> Convex deployment env **only** — it does **not** push this repo's functions
-> (the cluster Job has no access to the `convex/` source). After `helm install`,
-> deploy the functions from your checkout against the in-cluster backend (or do
-> it from CI):
->
-> ```bash
-> kubectl port-forward svc/<release>-convex-backend 3210:3210 &
-> ADMIN_KEY=$(kubectl exec <release>-convex-backend-0 -- ./generate_admin_key.sh | tr -d '\r' | tail -n1)
-> CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3210 \
-> CONVEX_SELF_HOSTED_ADMIN_KEY="$ADMIN_KEY" \
->   npx convex deploy          # from the repo root, re-run each release
-> ```
-
-## Plain Docker (manual)
-
-Run `ghcr.io/get-convex/convex-backend` + the two app images
-(`${WEBCHAT_IMAGE}`, `${BRIDGE_IMAGE}`) with the same env as `compose/.env.example`,
-on one network so the bridge reaches Convex by name, then run the equivalent of
-`bootstrap-env.sh` — i.e. mint the admin key, `npx convex env set` the
-deployment vars, **and `npx convex deploy` the functions** (from a repo checkout,
-with `CONVEX_SELF_HOSTED_URL` + `CONVEX_SELF_HOSTED_ADMIN_KEY`). The Compose file
-and `bootstrap-env.sh` are the reference for the exact wiring.
+This page holds what applies to **both**: the pre-flight, the gotchas, how gateway
+credentials reach the bridge, hardening, media, and image versioning. The
+artifacts themselves are [`compose/`](./compose/) and [`helm/`](./helm/).
 
 ## Images & versions
 

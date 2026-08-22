@@ -1,4 +1,4 @@
-// Protocol-coverage RATCHET (Inc 1 of docs/design/protocol-contract.md).
+// Protocol-coverage RATCHET (Inc 1 of docs/PROTOCOL_CONTRACT.md).
 //
 // The vendored files under protocol/openclaw/<version>/ are the OFFICIAL
 // gateway wire contract (TypeBox schemas, verbatim from the openclaw repo at

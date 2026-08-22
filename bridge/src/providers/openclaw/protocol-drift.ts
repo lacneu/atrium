@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-// Protocol DRIFT detector (Inc 2 of docs/design/protocol-contract.md).
+// Protocol DRIFT detector (Inc 2 of docs/PROTOCOL_CONTRACT.md).
 //
 // Observe-only: classifies inbound chat/agent event frames against the KNOWN
 // per-version protocol surface and counts unknown payload fields — the

@@ -1,75 +1,75 @@
 {
- "$comment": "Upstream-contribution ledger. Every issue/PR Atrium opens against a provider (openclaw/openclaw, NousResearch/hermes-agent) lives here with its state, the protocol frames it is tied to, and the Atrium lots it originated from — so 'which upstream items caused or resulted from our work, and where do they stand' is one read, not an archaeology. Validated by bridge/test/contrib-registry.test.ts; synchronized by bridge/scripts/contrib-sync.mjs (gh, read-only); the process that writes entries is .claude/skills/upstream-contrib/. Rules: public upstream URLs only — never client data, tokens, private paths, or conversational content. States mirror GitHub (open/closed/merged) with `resolution` carrying the human verdict (accepted/rejected/fixed/wontfix/superseded) once known; `origin` says whether the item came from an Atrium finding or from an upstream change Atrium had to adapt to.",
- "version": 1,
- "entries": [
-  {
-   "id": "oc-1",
-   "repo": "openclaw/openclaw",
-   "kind": "issue",
-   "url": "https://github.com/openclaw/openclaw/issues/49380",
-   "title": "Plugin context engines cannot increment /status compaction count",
-   "origin": "upstream-change",
-   "frames": [],
-   "atriumLots": [
-    "0.71.7",
-    "0.71.8"
-   ],
-   "openedAt": "2026-08-08",
-   "state": "open",
-   "resolution": null,
-   "why": "NOT opened by Atrium — recorded because it directly falsified one of our own diagnoses. Reading a chat's compaction history showed only `manual` checkpoints, and we concluded no automatic compaction had protected the conversation. This item says a plugin context engine cannot increment that counter at all, so the absence of automatic checkpoints is not evidence of absent compaction. Any future reasoning off that history must carry the caveat until this closes.",
-   "lastSyncAt": "2026-08-11T03:58:15.898Z"
-  },
-  {
-   "id": "lc-1",
-   "repo": "Martian-Engineering/lossless-claw",
-   "kind": "issue",
-   "url": "https://github.com/Martian-Engineering/lossless-claw/issues/746",
-   "title": "Feature request: background-only deferred compaction drain to avoid mid-turn/tool-loop stalls",
-   "origin": "upstream-change",
-   "frames": [],
-   "atriumLots": [
-    "0.71.7"
-   ],
-   "openedAt": "2026-08-08",
-   "state": "open",
-   "resolution": null,
-   "why": "NOT ours, and it corrected us. This item states from production that the host calls the context engine's assemble() PER TOOL-LOOP ITERATION. We had concluded the opposite from the plugin bundle (no tool_result hook) and were about to file an issue on that false premise — the duplicate search stopped it. It also explains a mid-turn overflow better than our own reading did: with the default deferred threshold mode, crossing the threshold inside a tool loop records debt instead of compacting, so the next model call can still go out oversized.",
-   "lastSyncAt": "2026-08-11T03:58:16.193Z"
-  },
-  {
-   "id": "lc-2",
-   "repo": "Martian-Engineering/lossless-claw",
-   "kind": "issue",
-   "url": "https://github.com/Martian-Engineering/lossless-claw/issues/490",
-   "title": "Assembly can target ~100% of tokenBudget and still trigger provider context_length_exceeded",
-   "origin": "upstream-change",
-   "frames": [],
-   "atriumLots": [
-    "0.71.7"
-   ],
-   "openedAt": "2026-08-08",
-   "state": "open",
-   "resolution": null,
-   "why": "The neighbouring failure mode, kept apart on purpose: there the assembly fills the budget to ~99.9% and the provider still rejects it. Not the same as a turn that starts well below the threshold and grows past it — recorded so the two are not conflated the next time a context overflow is triaged.",
-   "lastSyncAt": "2026-08-11T03:58:16.528Z"
-  },
-  {
-   "id": "lc-3",
-   "repo": "Martian-Engineering/lossless-claw",
-   "kind": "issue",
-   "url": "https://github.com/Martian-Engineering/lossless-claw/issues/963",
-   "title": "Ignored sessions get no compaction from any layer: global ownsCompaction claim + estimatedTokens: 0 self-report",
-   "origin": "upstream-change",
-   "frames": [],
-   "atriumLots": [
-    "0.71.7"
-   ],
-   "openedAt": "2026-08-08",
-   "state": "open",
-   "resolution": null,
-   "why": "Confirms independently that excluding sessions from the engine leaves them with NO compaction from any layer, because the ownsCompaction claim stays global. Recorded because it is the one operational trap we correctly warned against: it must never be recommended as a way to scope the engine per agent.",
-   "lastSyncAt": "2026-08-11T03:58:16.862Z"
-  }
- ]
+  "$comment": "Upstream-contribution ledger. Every issue/PR Atrium opens against a provider (openclaw/openclaw, NousResearch/hermes-agent) lives here with its state, the protocol frames it is tied to, and the Atrium lots it originated from — so 'which upstream items caused or resulted from our work, and where do they stand' is one read, not an archaeology. Validated by bridge/test/contrib-registry.test.ts; synchronized by bridge/scripts/contrib-sync.mjs (gh, read-only); the process that writes entries is .claude/skills/upstream-contrib/. Rules: public upstream URLs only — never client data, tokens, private paths, or conversational content. States mirror GitHub (open/closed/merged) with `resolution` carrying the human verdict (accepted/rejected/fixed/wontfix/superseded) once known; `origin` says whether the item came from an Atrium finding or from an upstream change Atrium had to adapt to.",
+  "version": 1,
+  "entries": [
+    {
+      "id": "oc-1",
+      "repo": "openclaw/openclaw",
+      "kind": "issue",
+      "url": "https://github.com/openclaw/openclaw/issues/49380",
+      "title": "Plugin context engines cannot increment /status compaction count",
+      "origin": "upstream-change",
+      "frames": [],
+      "atriumLots": [
+        "0.71.7",
+        "0.71.8"
+      ],
+      "openedAt": "2026-08-08",
+      "state": "open",
+      "resolution": null,
+      "why": "NOT opened by Atrium — recorded because it falsifies a tempting diagnosis: a chat whose compaction history shows only `manual` checkpoints has NOT necessarily gone unprotected, since a plugin context engine cannot increment that counter at all. Any reasoning built on that history must carry this caveat until the issue closes.",
+      "lastSyncAt": "2026-08-11T03:58:15.898Z"
+    },
+    {
+      "id": "lc-1",
+      "repo": "Martian-Engineering/lossless-claw",
+      "kind": "issue",
+      "url": "https://github.com/Martian-Engineering/lossless-claw/issues/746",
+      "title": "Feature request: background-only deferred compaction drain to avoid mid-turn/tool-loop stalls",
+      "origin": "upstream-change",
+      "frames": [],
+      "atriumLots": [
+        "0.71.7"
+      ],
+      "openedAt": "2026-08-08",
+      "state": "open",
+      "resolution": null,
+      "why": "Recorded because it establishes, from production observation, that the host calls the context engine's assemble() PER TOOL-LOOP ITERATION — the fact that decides how a mid-turn overflow under a context engine is triaged (the plugin bundle alone suggests the opposite: it registers no tool_result lifecycle hook). It also names the operative mechanism: under the default deferred threshold mode, crossing the threshold inside a tool loop records debt instead of compacting, so the next model call can still go out oversized.",
+      "lastSyncAt": "2026-08-11T03:58:16.193Z"
+    },
+    {
+      "id": "lc-2",
+      "repo": "Martian-Engineering/lossless-claw",
+      "kind": "issue",
+      "url": "https://github.com/Martian-Engineering/lossless-claw/issues/490",
+      "title": "Assembly can target ~100% of tokenBudget and still trigger provider context_length_exceeded",
+      "origin": "upstream-change",
+      "frames": [],
+      "atriumLots": [
+        "0.71.7"
+      ],
+      "openedAt": "2026-08-08",
+      "state": "open",
+      "resolution": null,
+      "why": "The neighbouring failure mode, kept apart on purpose: there the assembly fills the budget to ~99.9% and the provider still rejects it. Not the same as a turn that starts well below the threshold and grows past it — recorded so the two are not conflated the next time a context overflow is triaged.",
+      "lastSyncAt": "2026-08-11T03:58:16.528Z"
+    },
+    {
+      "id": "lc-3",
+      "repo": "Martian-Engineering/lossless-claw",
+      "kind": "issue",
+      "url": "https://github.com/Martian-Engineering/lossless-claw/issues/963",
+      "title": "Ignored sessions get no compaction from any layer: global ownsCompaction claim + estimatedTokens: 0 self-report",
+      "origin": "upstream-change",
+      "frames": [],
+      "atriumLots": [
+        "0.71.7"
+      ],
+      "openedAt": "2026-08-08",
+      "state": "open",
+      "resolution": null,
+      "why": "Confirms independently that excluding sessions from the engine leaves them with NO compaction from any layer, because the ownsCompaction claim stays global. Recorded so that ignoreSessionPatterns is never recommended as a way to scope the engine per agent.",
+      "lastSyncAt": "2026-08-11T03:58:16.862Z"
+    }
+  ]
 }

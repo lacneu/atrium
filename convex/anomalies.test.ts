@@ -3,7 +3,8 @@
 // Deterministic unit test for anomaly detection + heartbeat (increment 6).
 //
 // Exercises the DETERMINISTIC core only — no @convex-dev/auth session
-// simulation (the key-authed HTTP path is live-verified by the lead). We:
+// simulation (the key-authed HTTP path is the live bench's scope, not this
+// suite's). We:
 //   1. seed traceEvents that should trip the error-ratio AND dispatch-failure
 //      detectors (inside the detector's recent window),
 //   2. run detectAnomalies and assert OPEN anomalies are created,
