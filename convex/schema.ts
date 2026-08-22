@@ -791,6 +791,55 @@ export default defineSchema({
   // `adminAssigned === false` claims admin AND flips the flag in one
   // transaction; concurrent first sign-ins collide on THIS doc (OCC) and the
   // loser retries, sees the flag set, and becomes "pending".
+  // One archive being imported.
+  //
+  // An import is not a request: an archive holds more rows than a single Convex
+  // transaction may write, so it is applied in batches and this row is what the
+  // batches agree on. It also makes ABANDONING possible — a half-applied import
+  // that could not be identified afterwards would leave a folder of orphaned
+  // conversations nobody could name, let alone remove.
+  archiveImports: defineTable({
+    // Everything imported belongs to whoever performed the import. The owner
+    // recorded IN the archive is never honoured: it is a value from a file.
+    userId: v.id("users"),
+    status: v.union(
+      v.literal("applying"),
+      v.literal("done"),
+      v.literal("abandoned"),
+    ),
+    formatVersion: v.number(),
+    // What the archive SAYS about where it came from. Compared against this
+    // deployment's own identity to decide whether agents may be reattached —
+    // never used to decide whether the caller may do anything.
+    origin: v.union(v.string(), v.null()),
+    // Whether that origin matched, resolved ONCE at the start so every batch
+    // applies the same rule even if the identity were to change mid-import.
+    fromThisDeployment: v.boolean(),
+    // Where the imported conversations land. Null = at the root.
+    targetProjectId: v.union(v.id("projects"), v.null()),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_status", ["userId", "status"]),
+
+  // What an archive-local identifier became here.
+  //
+  // An archive references its own rows by the identifiers of the deployment it
+  // came from. None of them mean anything here, so each is re-minted and the
+  // mapping recorded — batches span calls, so the mapping cannot live in memory.
+  archiveImportIds: defineTable({
+    importId: v.id("archiveImports"),
+    /** The table the identifier belonged to, so two tables cannot collide. */
+    kind: v.string(),
+    /** The identifier as written in the archive. Opaque; never used as an id. */
+    archiveId: v.string(),
+    /** What it became here. */
+    mappedId: v.string(),
+  })
+    .index("by_import_kind_archive", ["importId", "kind", "archiveId"])
+    .index("by_import", ["importId"]),
+
   // This deployment's identity, in a table OF ITS OWN.
   //
   // Deliberately not a field on `appMeta`: that row also carries `adminAssigned`,
@@ -1038,7 +1087,7 @@ export default defineSchema({
     //  - "documentary": hosts L2 document-fetch turns (own gateway session so the
     //    conversational chats are never re-keyed);
     //  - "summarizer": hosts hybrid-rehydration rolling-summary turns (same hidden
-    //    pattern; see docs/design/hybrid-rehydration.md).
+    //    pattern; see docs/HYBRID_REHYDRATION.md).
     // Both are excluded from the sidebar/search.
     kind: v.optional(
       v.union(
@@ -1348,6 +1397,14 @@ export default defineSchema({
     // (deterministic reply-to-send correlation for the summarize engine); never
     // projected to clients.
     turnSessionKey: v.optional(v.string()),
+    // The agent an IMPORTED message was answered by, as a name only.
+    //
+    // Inert by construction: no routing path reads it. It exists because absence
+    // of `routedAgentId` already MEANS something — "inherit the turn's agent, else
+    // the chat's" — so leaving an imported message unrouted would attribute it to
+    // whichever agent the reader later binds the conversation to. The archive
+    // would appear to say something it does not.
+    importedAgentLabel: v.optional(v.string()),
     chatId: v.id("chats"),
     userId: v.id("users"), // owner (denormalized for cheap access checks)
     role: v.union(
@@ -3082,7 +3139,7 @@ export default defineSchema({
     fetchedAt: v.number(), // last poll time (success OR failure)
   }).index("by_key", ["key"]),
 
-  // Hybrid rehydration (docs/design/hybrid-rehydration.md): ONE rolling summary per
+  // Hybrid rehydration (docs/HYBRID_REHYDRATION.md): ONE rolling summary per
   // conversational chat, maintained asynchronously by convex/chatSummaries.ts and
   // consumed by internal.stream.rehydrationContext. The summary is USER CHAT CONTENT
   // (same sensitivity class as messages — it never leaves the chat's own agent);

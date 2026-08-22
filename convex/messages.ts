@@ -359,6 +359,11 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // defaults the composer to the last-used agent.
           routedInstanceName: message.routedInstanceName,
           routedAgentId: message.routedAgentId,
+          // IMPORTED history: the agent that answered, as a name only. Absence of
+          // `routedAgentId` already means "inherit the turn's agent, else the
+          // chat's", so without this the reader would see an imported reply
+          // attributed to whichever agent they later bind.
+          importedAgentLabel: message.importedAgentLabel,
           // QUOTE-REPLY: the block this user turn replies to (collapsed header
           // in the bubble). The stored excerpt is the display truth even if the
           // quoted message is later deleted.

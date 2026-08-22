@@ -138,6 +138,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // No outbox row yet at echo time (the mutation creates it on commit); the real
         // message that replaces this echo carries the queued/pending/sent status.
         outbox: null,
+        // Never set on a message this session just wrote: the label only exists on
+        // imported history.
+        importedAgentLabel: undefined,
       } satisfies (typeof base)[number];
       localStore.setQuery(api.messages.listByChat, key, [...base, optimistic]);
     },
