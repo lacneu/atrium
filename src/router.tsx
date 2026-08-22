@@ -100,6 +100,7 @@ import {
   usersSearchSchema,
 } from "./lib/routing/searchSchemas";
 import { Button } from "@/components/ui/button";
+import { ArchiveTransferProvider } from "./chat/ArchiveTransferProvider";
 import { ToastProvider } from "@/components/ui/toast";
 import { AtriumMark } from "@/components/AtriumMark";
 import { m } from "@/paraglide/messages.js";
@@ -251,7 +252,9 @@ function RootShell() {
             for the whole authenticated tree — the settings layout no longer
             mounts its own (a nested provider would shadow this one). */}
         <ToastProvider>
-          <RoleGate />
+          <ArchiveTransferProvider>
+            <RoleGate />
+  </ArchiveTransferProvider>
         </ToastProvider>
       </Authenticated>
     </>

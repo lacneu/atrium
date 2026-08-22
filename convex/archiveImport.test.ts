@@ -1302,6 +1302,34 @@ describe("archive import", () => {
     expect(message.orderTime).toBeLessThan(QUEUED_ORDER_SENTINEL);
   });
 
+  test("uploading attachments keeps the import ALIVE", async () => {
+    // Every blob goes up before the first batch, so a large archive spends its
+    // longest stretch here. Without a heartbeat, another tab sees a session
+    // untouched since it began, takes it for one a closed tab left behind, and
+    // undoes it mid-transfer.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    const storageId = await t.run(async (ctx) => {
+      const id = await ctx.storage.store(new Blob(["x"]));
+      await ctx.db.insert("uploads", { storageId: id, userId: importer });
+      // Backdated well past any staleness window.
+      await ctx.db.patch(importId, { updatedAt: 1 });
+      return id;
+    });
+
+    await as.mutation(api.archiveImport.registerImportBlob, {
+      importId,
+      storageId,
+    });
+
+    const session = (await t.run((ctx) => ctx.db.get(importId)))!;
+    expect(session.updatedAt).toBeGreaterThan(1);
+  });
+
   test("another user's import cannot be written to", async () => {
     const t = convexTest(schema, modules);
     const owner = await user(t);

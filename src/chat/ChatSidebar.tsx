@@ -5,6 +5,10 @@ import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useToast } from "@/components/ui/toast";
+import {
+  transferLabel,
+  useArchiveActions,
+} from "./ArchiveTransferProvider";
 import { formatChatReference } from "../../convex/lib/envLabel";
 import { rootAncestorOf, rootsOf } from "../../convex/lib/folderTree";
 import {
@@ -49,6 +53,8 @@ import {
   FolderPlus,
   Lock,
   Plus,
+  Download,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -529,10 +535,53 @@ export function ChatSidebar({
     }
   }
 
+  const archive = useArchiveActions();
+  // Reported in words, not as a bare spinner: the two phases that take the time
+  // are counted, so a large folder does not look stuck.
+  const archiveBusy = archive ? transferLabel(archive.state) : null;
+  const [archiveDropActive, setArchiveDropActive] = useState(false);
+
   const activeChat = activeDragId ? findChat(activeDragId) : null;
 
   return (
-    <aside className="oc-sidebar">
+    <aside
+      className={
+        "oc-sidebar" + (archiveDropActive ? " oc-sidebar--archivedrop" : "")
+      }
+      onDragOver={(e) => {
+        // ONLY a file drag. The sidebar already drags chats and folders inside
+        // itself, and claiming those would break reordering.
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setArchiveDropActive(true);
+      }}
+      onDragLeave={(e) => {
+        // Leaving for a child is not leaving.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setArchiveDropActive(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setArchiveDropActive(false);
+        const file = e.dataTransfer.files[0];
+        // Dropped on the sidebar itself: the conversations land at the root.
+        // A folder's own menu is where "into this folder" lives.
+        if (file !== undefined) archive?.importArchive(file, null);
+      }}
+    >
+      {archiveDropActive ? (
+        <div className="oc-sidebar__droparchive" aria-hidden>
+          <Upload className="size-4" />
+          <span>{m.archive_drop_here()}</span>
+        </div>
+      ) : null}
+      {archiveBusy !== null ? (
+        <div className="oc-sidebar__transfer" role="status" aria-live="polite">
+          <span className="oc-sidebar__transfer-spin" aria-hidden />
+          <span className="oc-sidebar__transfer-label">{archiveBusy}</span>
+        </div>
+      ) : null}
       <div className="oc-sidebar__top" ref={topRef}>
         <Button
           className={
@@ -817,6 +866,7 @@ function Section({
   onOpen?: () => void;
   children: React.ReactNode;
 }) {
+  const archive = useArchiveActions();
   const deleteProject = useMutation(api.projects.deleteProject);
   const renameProject = useMutation(api.projects.renameProject);
   const setProjectColor = useMutation(api.projects.setProjectColor);
@@ -1024,6 +1074,22 @@ function Section({
               <DropdownMenuItem onSelect={() => setMoveOpen(true)}>
                 <FolderPlus /> {m.sidebar_move_folder_to()}
               </DropdownMenuItem>
+              {archive && project ? (
+                <>
+                  <DropdownMenuItem
+                    disabled={archive.state.running}
+                    onSelect={() => archive.exportFolder(project._id, label)}
+                  >
+                    <Download /> {m.archive_export_folder()}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={archive.state.running}
+                    onSelect={() => archive.pickAndImport(project._id)}
+                  >
+                    <Upload /> {m.archive_import()}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuLabel>{m.sidebar_color()}</DropdownMenuLabel>
               <div className="oc-colorgrid" onClick={(e) => e.stopPropagation()}>
                 <button
@@ -1170,6 +1236,7 @@ const ChatItem = memo(function ChatItem({
   suppressClick: React.MutableRefObject<boolean>;
   onSelect: (id: Id<"chats">) => void;
 }) {
+  const archive = useArchiveActions();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: chat._id });
   // GRAB-ANYWHERE: pointer listeners cover the whole row; the keyboard
@@ -1367,6 +1434,16 @@ const ChatItem = memo(function ChatItem({
             >
               <Pencil /> {m.sidebar_rename()}
             </DropdownMenuItem>
+            {archive ? (
+              <DropdownMenuItem
+                disabled={archive.state.running}
+                onSelect={() =>
+                  archive.exportChat(chat._id, chat.title ?? m.sidebar_chats())
+                }
+              >
+                <Download /> {m.archive_export()}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem
               onSelect={() => void pinChat({ chatId: chat._id, pinned: !chat.pinned })}
             >

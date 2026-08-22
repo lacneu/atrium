@@ -32,6 +32,30 @@ export const MAX_SECTION_PAGES = 10_000;
  *  header (30) and a central directory entry (46). */
 const ZIP_ENTRY_OVERHEAD = 76;
 
+/**
+ * How long an open import may go untouched before it counts as abandoned.
+ *
+ * A live import writes on every batch, so it stays fresh. The window matters
+ * because another TAB may be running one: sweeping every open import on mount
+ * would tear down a transfer that is working perfectly, in a window the person
+ * cannot see.
+ */
+export const STALE_IMPORT_MS = 10 * 60 * 1000;
+
+/**
+ * Which open imports are leftovers rather than live.
+ *
+ * A tab closed mid-import cannot run its own undo, so its rows, its mappings and
+ * its bytes stay behind an `applying` session nobody can name afterwards. This is
+ * what names them.
+ */
+export function staleImports<T extends { importId: string; updatedAt: number }>(
+  open: ReadonlyArray<T>,
+  now: number,
+): T[] {
+  return open.filter((row) => now - row.updatedAt > STALE_IMPORT_MS);
+}
+
 export class ArchiveTooLarge extends Error {
   constructor(readonly bytes: number) {
     super(`archive exceeds ${MAX_ARCHIVE_BYTES} bytes`);
@@ -52,6 +76,23 @@ export interface SectionPage {
   blobs: { key: string; url: string | null; filename: string; mimeType: string }[];
   cursor: string | null;
 }
+
+/**
+ * What a transfer is doing right now.
+ *
+ * Reported rather than guessed: a spinner over a folder of attachments says
+ * nothing, and the two phases that take the time — fetching bytes out, pushing
+ * them back in — are exactly the ones a reader wants counted.
+ */
+export interface TransferProgress {
+  phase: "sections" | "blobs" | "packing" | "reading" | "uploading" | "writing";
+  /** Units finished. */
+  done: number;
+  /** Units expected, when that is knowable — it is not while paging. */
+  total: number | null;
+}
+
+export type ProgressReporter = (progress: TransferProgress) => void;
 
 export interface ExportSource {
   manifest(): Promise<ExportManifest>;
@@ -76,6 +117,7 @@ export interface ExportSource {
 export async function buildArchive(
   source: ExportSource,
   chatIds: ReadonlyArray<string>,
+  onProgress?: ProgressReporter,
 ): Promise<{
   archive: Uint8Array;
   manifest: ExportManifest;
@@ -89,6 +131,7 @@ export async function buildArchive(
   const entries: ZipEntry[] = [];
   let total = 0;
   let blobCount = 0;
+  let sectionPages = 0;
   const seenBlobs = new Set<string>();
 
   const add = (name: string, bytes: Uint8Array): void => {
@@ -136,9 +179,12 @@ export async function buildArchive(
           seenBlobs.add(blob.key);
           add(`${BLOB_PREFIX}${blob.key}`, await source.blob(blob.url));
           blobCount += 1;
+          onProgress?.({ phase: "blobs", done: blobCount, total: null });
         }
         cursor = result.cursor;
         page += 1;
+        sectionPages += 1;
+        onProgress?.({ phase: "sections", done: sectionPages, total: null });
       } while (cursor !== null && page < MAX_SECTION_PAGES);
       if (cursor !== null) {
         // A cursor that never ends means the page contract is not being kept.
@@ -152,6 +198,7 @@ export async function buildArchive(
 
   // LAST, so it can state what turned out to be missing. Order inside a zip is
   // not meaningful; being able to say what was lost is.
+  onProgress?.({ phase: "packing", done: entries.length, total: entries.length });
   entries.unshift({
     name: MANIFEST_ENTRY,
     bytes: encoder.encode(JSON.stringify({ ...manifest, missingBlobs })),
@@ -199,9 +246,11 @@ export async function applyArchive(
   target: ImportTarget,
   archive: Uint8Array,
   targetProjectId: string | null,
+  onProgress?: ProgressReporter,
 ): Promise<{ importId: string; written: number; purged: boolean }> {
   const decoder = new TextDecoder();
   const entries = readZip(archive);
+  onProgress?.({ phase: "reading", done: entries.length, total: entries.length });
   const byName = new Map(entries.map((entry) => [entry.name, entry.bytes]));
 
   const manifestBytes = byName.get(MANIFEST_ENTRY);
@@ -227,6 +276,9 @@ export async function applyArchive(
   try {
     // Bytes first: a row naming an attachment cannot be written before the
     // attachment exists here.
+    const blobTotal = entries.filter((entry) =>
+      entry.name.startsWith(BLOB_PREFIX),
+    ).length;
     for (const entry of entries) {
       if (!entry.name.startsWith(BLOB_PREFIX)) continue;
       const key = entry.name.slice(BLOB_PREFIX.length);
@@ -239,6 +291,7 @@ export async function applyArchive(
       const storageId = await target.upload(entry.bytes, key);
       await target.registerBlob(importId, storageId);
       uploaded.set(key, storageId);
+      onProgress?.({ phase: "uploading", done: uploaded.size, total: blobTotal });
     }
 
     const chatEntries = entries.filter((entry) =>
@@ -280,6 +333,7 @@ export async function applyArchive(
           blobsForRows(rows, uploaded),
         );
         written += result.written;
+        onProgress?.({ phase: "writing", done: written, total: null });
         // USED means WRITTEN. A row skipped for want of a reference names its
         // bytes just the same, and counting that as used left an orphan behind a
         // successful import.

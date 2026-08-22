@@ -23,6 +23,9 @@
 :root {
   --oc-layer-sidebar-backdrop: 40;
   --oc-layer-sidebar-drawer: 50;
+  /* The archive drop hint: covers the sidebar's own rows while a file is over
+     it, and never an open menu or dialog above it. */
+  --oc-layer-archive-drop: 51;
   --oc-layer-dev-fab: 60;
   --oc-layer-focus-backdrop: 60;
   --oc-layer-focus-panel: 61;
@@ -9523,5 +9526,69 @@ button.oc-bmk-rail__count:hover {
   .oc-composer__input,
   .oc-composer__voiceslot {
     transition: none;
+  }
+}
+
+/* ── Archive transfer: the drop target and the progress strip ─────────────────
+   The sidebar already drags chats and folders inside itself, so the drop state
+   is armed only for a FILE drag — claiming the others would break reordering. */
+/* The overlay is absolutely positioned against the sidebar, which needs to be a
+   containing block for it — it is not one by default. */
+.oc-sidebar {
+  position: relative;
+}
+.oc-sidebar--archivedrop {
+  outline: 2px dashed var(--primary);
+  outline-offset: -4px;
+}
+.oc-sidebar__droparchive {
+  position: absolute;
+  inset: 0;
+  z-index: var(--oc-layer-archive-drop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--background) 88%, transparent);
+  /* The overlay must not swallow the drop it is announcing. */
+  pointer-events: none;
+}
+/* A transfer is one-at-a-time and can be long, so it says what it is doing
+   rather than spinning: a folder of attachments would otherwise look stuck. */
+.oc-sidebar__transfer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+.oc-sidebar__transfer-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-sidebar__transfer-spin {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: oc-transfer-spin 900ms linear infinite;
+}
+@keyframes oc-transfer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-sidebar__transfer-spin {
+    animation: none;
   }
 }

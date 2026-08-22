@@ -7,6 +7,8 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   ArchiveTooLarge,
+  STALE_IMPORT_MS,
+  staleImports,
   BLOB_PREFIX,
   MANIFEST_ENTRY,
   applyArchive,
@@ -198,6 +200,28 @@ describe("building an archive", () => {
         ["chat1"],
       ),
     ).rejects.toThrow(/did not finish/);
+  });
+});
+
+describe("finding the imports a closed tab left behind", () => {
+  test("a LIVE import in another tab is left alone", () => {
+    // It writes on every batch, so it stays fresh. Tearing it down would break a
+    // transfer that is working, in a window this person cannot see.
+    const now = 1_000_000_000;
+
+    expect(
+      staleImports(
+        [
+          { importId: "live", updatedAt: now - 1_000 },
+          { importId: "stale", updatedAt: now - STALE_IMPORT_MS - 1 },
+        ],
+        now,
+      ).map((row) => row.importId),
+    ).toEqual(["stale"]);
+  });
+
+  test("nothing open means nothing to sweep", () => {
+    expect(staleImports([], Date.now())).toEqual([]);
   });
 });
 
@@ -526,6 +550,59 @@ describe("applying an archive", () => {
     await expect(applyArchive(target(), archive, null)).rejects.toThrow(
       /same blob twice/,
     );
+  });
+
+  test("progress counts the two phases that actually take the time", async () => {
+    // A spinner over a folder of attachments says nothing. What a reader wants
+    // counted is the bytes going out and the bytes coming back.
+    const steps: string[] = [];
+    const archive = await archiveOf({
+      files: [
+        {
+          rows: [{ _id: "f1", archiveBlobKey: "k1" }],
+          blobs: [{ key: "k1", url: "https://x/1", filename: "a", mimeType: "m" }],
+          cursor: null,
+        },
+      ],
+    });
+
+    await applyArchive(target(), archive, null, (progress) => {
+      steps.push(progress.phase);
+    });
+
+    expect(steps).toContain("reading");
+    expect(steps).toContain("uploading");
+    expect(steps).toContain("writing");
+  });
+
+  test("the upload phase knows how many there are, so it can be a fraction", async () => {
+    const archive = await archiveOf({
+      files: [
+        {
+          rows: [
+            { _id: "f1", archiveBlobKey: "k1" },
+            { _id: "f2", archiveBlobKey: "k2" },
+          ],
+          blobs: [
+            { key: "k1", url: "https://x/1", filename: "a", mimeType: "m" },
+            { key: "k2", url: "https://x/2", filename: "b", mimeType: "m" },
+          ],
+          cursor: null,
+        },
+      ],
+    });
+    const uploads: { done: number; total: number | null }[] = [];
+
+    await applyArchive(target(), archive, null, (progress) => {
+      if (progress.phase === "uploading") {
+        uploads.push({ done: progress.done, total: progress.total });
+      }
+    });
+
+    expect(uploads).toEqual([
+      { done: 1, total: 2 },
+      { done: 2, total: 2 },
+    ]);
   });
 
   test("an archive with no manifest is refused", async () => {

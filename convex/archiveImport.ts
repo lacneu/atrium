@@ -322,6 +322,11 @@ export const registerImportBlob = mutation({
     if (already === null) {
       await recordMapping(ctx, importId, IMPORT_BLOB, storageId, storageId);
     }
+    // A HEARTBEAT, written where the work happens. Every blob is uploaded before
+    // the first batch, so a large archive can spend a long time here — and
+    // another tab, seeing a session untouched since it began, would take it for
+    // one a closed tab left behind and undo it mid-transfer.
+    await ctx.db.patch(importId, { updatedAt: Date.now() });
   },
 });
 
