@@ -584,6 +584,11 @@ async function prepareRow(
     // its own documentary or summarizer chat. An import restores conversations.
     delete out.kind;
     if (typeof out.updatedAt !== "number") out.updatedAt = Date.now();
+    // Stamped so a copy is never mistaken for its original — which is exactly
+    // what a same-deployment import produces: same title, same content, same
+    // agent, and nothing else to tell them apart.
+    out.importedAt = session.startedAt;
+    out.importedFromOrigin = session.origin;
   }
 
   // The join that holds sub-agent rows together, re-minted so it cannot be routed.

@@ -1006,6 +1006,99 @@ describe("archive import", () => {
     );
   });
 
+  test("a SAME-DEPLOYMENT import never touches the conversation it copies", async () => {
+    // Here the archive's identifiers ARE valid identifiers of this deployment.
+    // A single path that used one as it stands would write into — or link to —
+    // the original conversation instead of the copy.
+    const t = convexTest(schema, modules);
+    const importer = await user(t, true);
+    const as = t.withIdentity({ subject: importer });
+    const here = await t.run(async (ctx) => {
+      const id = "atr_" + "1".repeat(32);
+      await ctx.db.insert("deploymentIdentity", {
+        deploymentId: id,
+        mintedForOrigin: null,
+        mintedAt: 1,
+      });
+      return id;
+    });
+
+    // A REAL conversation, whose real identifiers the archive will carry.
+    const { originalChat, originalMessage } = await t.run(async (ctx) => {
+      const originalChat = await ctx.db.insert("chats", {
+        userId: importer,
+        title: "originale",
+        updatedAt: 7,
+        instanceName: "primary",
+        agentId: "alice",
+        pinned: true,
+      });
+      const originalMessage = await ctx.db.insert("messages", {
+        chatId: originalChat,
+        userId: importer,
+        role: "user",
+        status: "complete",
+        text: "texte d origine",
+        updatedAt: 7,
+      });
+      return { originalChat, originalMessage };
+    });
+
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: { formatVersion: ARCHIVE_FORMAT_VERSION, origin: here },
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [
+        {
+          _id: originalChat,
+          title: "originale",
+          updatedAt: 7,
+          instanceName: "primary",
+          agentId: "alice",
+          pinned: true,
+        },
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        {
+          _id: originalMessage,
+          chatId: originalChat,
+          role: "user",
+          status: "complete",
+          text: "texte d origine",
+          updatedAt: 7,
+        },
+      ],
+    });
+
+    const chats = await t.run((ctx) => ctx.db.query("chats").collect());
+    expect(chats).toHaveLength(2);
+    const copy = chats.find((c) => c._id !== originalChat)!;
+    const original = chats.find((c) => c._id === originalChat)!;
+
+    // The original is untouched, down to its pin and its timestamp.
+    expect(original.pinned).toBe(true);
+    expect(original.updatedAt).toBe(7);
+    // The copy is a copy: reattached (it IS this deployment), but not pinned —
+    // an import must not rearrange the sidebar — and stamped so the two can be
+    // told apart at all, having the same title, content and agent.
+    expect(copy.agentId).toBe("alice");
+    expect(copy.pinned).toBeUndefined();
+    expect(copy.importedFromOrigin).toBe(here);
+    expect(copy.importedAt).toBeGreaterThan(0);
+
+    // And the copied message belongs to the COPY, never to the original.
+    const messages = await t.run((ctx) => ctx.db.query("messages").collect());
+    expect(messages).toHaveLength(2);
+    const copied = messages.find((m) => m._id !== originalMessage)!;
+    expect(copied.chatId).toBe(copy._id);
+  });
+
   test("another user's import cannot be written to", async () => {
     const t = convexTest(schema, modules);
     const owner = await user(t);

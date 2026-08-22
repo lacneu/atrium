@@ -1149,6 +1149,14 @@ export default defineSchema({
     updatedAt: v.number(),
     // Sidebar organization (all optional — additive on existing rows):
     projectId: v.optional(v.id("projects")), // 0-or-1 project membership
+    // When this conversation was imported, and from which deployment.
+    //
+    // A copy imported back into the deployment it came from is otherwise
+    // indistinguishable from its original — same title, same content, same
+    // agent. Recording it is what lets a reader tell them apart, and what makes
+    // a mistaken import findable afterwards.
+    importedAt: v.optional(v.number()),
+    importedFromOrigin: v.optional(v.union(v.string(), v.null())),
     // IMPORTED history: the agent this conversation was bound to elsewhere, as a
     // name only. DISTINCT from the per-message label: a message's own label is
     // the agent that answered THAT turn, and a conversation-wide fallback stored

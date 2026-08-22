@@ -151,6 +151,10 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "userId",
   "sortKey",
   "sidebarHidden",
+  // Workspace ORGANISATION, not conversation. Importing a folder of twenty
+  // pinned conversations would rearrange the sidebar of whoever imported it —
+  // and on a same-deployment copy, pin the copy beside its original.
+  "pinned",
   // Queue and lifecycle state, meaningless once exported.
   "pendingFetch",
   "pendingSummarize",
