@@ -3801,15 +3801,92 @@ button.oc-bmk-rail__count:hover {
   color: var(--primary);
   animation: oc-spin 1s linear infinite;
 }
+/* ── The composer's action bar ────────────────────────────────────────────────
+   A flex item's default `min-width: auto` refuses to shrink below its content,
+   so the labelled controls on the left (tools, agent name) pushed the SEND
+   button out of the composer entirely once the right-hand panel took enough
+   width. Two rules stop that, and they are independent on purpose: the send
+   group can never yield, and the left group always can. */
 .oc-composer__bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.4rem;
+  /* The bar measures ITSELF — the composer's width, not the window's. What has
+     to collapse depends on the space this bar actually has, which a viewport
+     breakpoint cannot know: the same window holds a wide composer or a narrow
+     one depending on the side panel. */
+  container-type: inline-size;
+  container-name: composerbar;
 }
 .oc-composer__group {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  /* Below `auto`, so a long agent name yields instead of overflowing. */
+  min-width: 0;
+}
+/* The LEFT group absorbs the pressure; the right one never does. Losing the
+   send button is not a degradation, it is a broken composer. */
+.oc-composer__bar > .oc-composer__group:first-child {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.oc-composer__bar > .oc-composer__group:last-child {
+  flex: 0 0 auto;
+}
+/* Last resort, so nothing spills even at absurd widths: the labels clip rather
+   than push. Above this the container query drops them cleanly instead. */
+.oc-composer__group > * {
+  min-width: 0;
+}
+.oc-composer__tools,
+.oc-composer__agent,
+.oc-composer__agent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Iconify before clipping: a truncated "Ou…" says less than the icon alone. The
+   controls stay in place and keep their accessible names — only the visible text
+   goes. */
+@container composerbar (max-width: 30rem) {
+  .oc-composer__bar .oc-composer__tools .oc-composer__tools-label {
+    display: none;
+  }
+  /* SCOPED so it outranks the base `.oc-composer__tools` padding, which is
+     declared further down at the same specificity and would otherwise win by
+     order alone — leaving the button its full width in exactly the state where
+     the bar needs the room back. */
+  .oc-composer__bar .oc-composer__tools {
+    padding: 0 0.55rem;
+  }
+}
+/* Narrower still: the agent's NAME goes and its avatar stays. Past this the row
+   is icons only, and the picker still opens on the same control — which is why
+   the name can leave without the affordance leaving with it. */
+@container composerbar (max-width: 20rem) {
+  .oc-composer__agent-name {
+    display: none;
+  }
+}
+/* THE FLOOR. Past this the four right-hand controls alone need more room than
+   the bar has, and the left group is already at zero — so something must go, and
+   the choice is between losing the auxiliary controls or losing SEND. Losing send
+   is not a degradation, it is a composer that cannot send, which is the whole
+   defect this rule exists to prevent. The auxiliaries stand down; send stays.
+   Reachable only on a composer narrower than a phone, so the trade is rare and
+   the alternative is a broken frame. */
+@container composerbar (max-width: 11rem) {
+  /* NOT the one that is recording. Dictation keeps the microphone open, and this
+     button is the only built-in way to stop it — hiding it would leave a live
+     microphone with no visible control, which is worse than any layout defect
+     this rule exists to fix. */
+  .oc-composer__bar
+    > .oc-composer__group:last-child
+    > .oc-composer__icon:not(.oc-composer__icon--rec) {
+    display: none;
+  }
 }
 /* Round icon button (the "+" attach). */
 .oc-composer__icon {

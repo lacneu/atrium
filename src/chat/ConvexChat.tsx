@@ -5042,7 +5042,11 @@ function Composer({
               title={showTools ? m.chat_tools_hide() : m.chat_tools_show()}
             >
               <SlidersHorizontal size={15} aria-hidden />
-              {m.chat_tools()}
+              {/* WRAPPED so the label alone can go when the bar is narrow. The
+                  button keeps its `title` and `aria-pressed`, so hiding the text
+                  costs the sighted reader an icon they already know and costs a
+                  screen-reader user nothing at all. */}
+              <span className="oc-composer__tools-label">{m.chat_tools()}</span>
             </button>
           )}
           {/* MULTI-AGENT: per-turn agent selector (self-hides for a single-agent

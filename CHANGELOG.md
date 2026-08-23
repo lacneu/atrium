@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.75.2] — Keeping the send button inside the composer
+
+Widening the side panel pushed the composer's send button out of its own frame:
+the control that sends the message ended up drawn on, and past, the border. The
+labelled controls on the left — the tools toggle, the agent name — refused to
+give up any width, so everything to their right was shoved out of the box.
+
+Two rules now hold, and they are deliberately independent. The left side always
+yields; the send side never does. Losing that button is not a cramped layout, it
+is a composer that cannot send, so it is the one thing that never moves.
+
+What gives way does so in order, and only as far as needed: first the word
+"Tools", then the agent's name beside its avatar, and — only on a composer
+narrower than a phone — the auxiliary icons. Each control keeps its position,
+its tooltip and its accessible name; only the visible text steps aside, so a
+screen-reader user loses nothing at all. The microphone is excluded from that
+last step while it is recording: it is the only built-in way to stop a dictation,
+and a live microphone with no visible control would be worse than any layout
+defect.
+
+The collapse is decided by the composer's own width, not the window's. The same
+window holds a wide composer or a narrow one depending on what the side panel
+takes, so a window-based rule could not tell the difference — which is precisely
+how the defect was reached.
+
 ## [0.75.1] — Exporting a conversation that has actually been used
 
 Exporting failed on any conversation carrying more than two hundred tool calls,
