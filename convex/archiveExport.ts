@@ -41,27 +41,35 @@ const MERGED_ROW_SCAN = 16;
  *  One per conversation that shares those bytes — forks, in practice. */
 const BLOB_OWNER_SCAN = 32;
 
-/** Where a parts walk resumes: which message page, how far into it, and how far
- *  into the current message's own parts. */
+/**
+ * Where a two-level walk resumes: which message, and how far into its own rows.
+ *
+ * BOTH levels advance on creation time rather than on a paginated cursor. Convex
+ * allows exactly ONE paginated query per function call, and walking messages and
+ * their parts is two — the composite cursor that replaced a silent truncation
+ * failed outright at runtime, which no test could see because the harness does
+ * not enforce that limit. Every index carries `_creationTime`, so a bound on it
+ * is a cursor that costs nothing and cannot collide with the rule.
+ */
 interface PartsCursor {
-  messages: string | null;
-  skip: number;
-  parts: string | null;
+  /** Creation time of the message being walked, or of the last one finished. */
+  at: number | null;
+  /** Creation time of the last child row emitted for that message. */
+  childAt: number | null;
 }
 
 function parsePartsCursor(raw: string | null): PartsCursor {
-  if (raw === null) return { messages: null, skip: 0, parts: null };
+  if (raw === null) return { at: null, childAt: null };
   try {
     const parsed = JSON.parse(raw) as Partial<PartsCursor>;
     return {
-      messages: typeof parsed.messages === "string" ? parsed.messages : null,
-      skip: typeof parsed.skip === "number" && parsed.skip >= 0 ? parsed.skip : 0,
-      parts: typeof parsed.parts === "string" ? parsed.parts : null,
+      at: typeof parsed.at === "number" ? parsed.at : null,
+      childAt: typeof parsed.childAt === "number" ? parsed.childAt : null,
     };
   } catch {
     // A cursor we cannot read restarts the section rather than skipping rows: a
     // silently shortened export is worse than a repeated page.
-    return { messages: null, skip: 0, parts: null };
+    return { at: null, childAt: null };
   }
 }
 
@@ -276,65 +284,64 @@ export const exportChatSection = query({
     }
 
     if (section === "messageParts") {
-      // Parts hang off messages, not off the chat. Reading a fixed slice of each
-      // message's parts DROPPED everything past it: the cursor advanced to the
-      // next messages and those parts were never exported, while the export still
-      // claimed to cover the conversation. So the cursor is composite — which
-      // message page, how far into it, and how far into that message's parts.
+      // Parts hang off messages, not off the chat, so this walks two levels —
+      // and Convex allows only ONE paginated query per call. Both levels advance
+      // on creation time instead: every index carries it, so it is a cursor that
+      // costs nothing and cannot run into that rule.
       const state = parsePartsCursor(at);
-      const messagePage = await ctx.db
-        .query("messages")
-        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-        .paginate({ numItems: PARTS_MESSAGE_BATCH, cursor: state.messages });
       const rows: Record<string, unknown>[] = [];
-      let partCursor = state.parts;
+      let messageAt = state.at;
+      let childAt = state.childAt;
+      // PARENTS ARE BOUNDED TOO. Returning only once enough CHILD rows had been
+      // gathered meant a long conversation whose messages carry few parts walked
+      // every one of them in a single call — two reads each, past Convex's limit
+      // on how many a function may make. A page that found nothing still ends.
+      let visited = 0;
 
-      for (let i = state.skip; i < messagePage.page.length; i += 1) {
-        const message = messagePage.page[i]!;
-        for (;;) {
-          const parts = await ctx.db
-            .query("messageParts")
-            .withIndex("by_message", (q) => q.eq("messageId", message._id))
-            .paginate({ numItems: EXPORT_PAGE_SIZE, cursor: partCursor });
-          for (const part of parts.page) {
-            rows.push(await exportPart(ctx, chatId, part));
-          }
-          partCursor = parts.isDone ? null : parts.continueCursor;
-          if (partCursor === null) break;
-          if (rows.length >= EXPORT_PAGE_SIZE) {
-            return {
-              rows,
-              blobs: [],
-              cursor: encodePartsCursor({
-                messages: state.messages,
-                skip: i,
-                parts: partCursor,
-              }),
-            };
-          }
+      while (rows.length < EXPORT_PAGE_SIZE && visited < PARTS_MESSAGE_BATCH) {
+        const [message] = await ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) =>
+            childAt === null
+              ? q.eq("chatId", chatId).gt("_creationTime", messageAt ?? -1)
+              : q.eq("chatId", chatId).gte("_creationTime", messageAt ?? -1),
+          )
+          .take(1);
+        if (message === undefined) {
+          return { rows, blobs: [], cursor: null };
         }
-        if (rows.length >= EXPORT_PAGE_SIZE && i + 1 < messagePage.page.length) {
-          return {
-            rows,
-            blobs: [],
-            cursor: encodePartsCursor({
-              messages: state.messages,
-              skip: i + 1,
-              parts: null,
-            }),
-          };
+        visited += 1;
+        // ONLY WHAT IS LEFT OF THE PAGE. Reading a whole page per message meant
+        // a page that already held 199 rows could come back with 399 — and the
+        // page is handed to the import unchanged, which refuses more than it
+        // reads. The export would have produced archives its own import rejects.
+        const remaining = EXPORT_PAGE_SIZE - rows.length;
+        const parts = await ctx.db
+          .query("messageParts")
+          // THE BOUND IS IN THE INDEX, not a filter. A filter runs after the scan,
+          // so every resume re-read all the parts already exported before
+          // discarding them — a later page could exceed the read limits while
+          // returning a normal number of rows. Every index carries `_creationTime`.
+          .withIndex("by_message", (q) =>
+            q.eq("messageId", message._id).gt("_creationTime", childAt ?? -1),
+          )
+          .take(remaining);
+        for (const part of parts) {
+          rows.push(await exportPart(ctx, chatId, part));
         }
+        if (parts.length === remaining) {
+          // This message may have more; resume ON it rather than moving past.
+          messageAt = message._creationTime;
+          childAt = parts[parts.length - 1]!._creationTime;
+          continue;
+        }
+        messageAt = message._creationTime;
+        childAt = null;
       }
       return {
         rows,
         blobs: [],
-        cursor: messagePage.isDone
-          ? null
-          : encodePartsCursor({
-              messages: messagePage.continueCursor,
-              skip: 0,
-              parts: null,
-            }),
+        cursor: encodePartsCursor({ at: messageAt, childAt }),
       };
     }
 
@@ -407,13 +414,9 @@ export const exportChatSection = query({
     if (section === "documentAttachments") {
       // Kept by SOURCE MESSAGE, not by chat: a message that used "attach the
       // documents" stores its ready file here rather than in the chat's own
-      // `files`. Omitting it left the archive carrying `attachedDocCount` with
-      // nothing behind it — a count of attachments that were silently dropped.
+      // `files`. Same two-level walk as the parts above, and the same reason for
+      // avoiding a paginated cursor on either level.
       const state = parsePartsCursor(at);
-      const messagePage = await ctx.db
-        .query("messages")
-        .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-        .paginate({ numItems: PARTS_MESSAGE_BATCH, cursor: state.messages });
       const rows: Record<string, unknown>[] = [];
       const blobs: {
         key: string;
@@ -421,22 +424,32 @@ export const exportChatSection = query({
         filename: string;
         mimeType: string;
       }[] = [];
-      let attachmentCursor = state.parts;
-      for (let i = state.skip; i < messagePage.page.length; i += 1) {
-        const message = messagePage.page[i]!;
-        // A CURSOR, like every other section. A flat `take` dropped everything
-        // past it on a message with many attachments — the one place this module
-        // still did what it says nowhere else may be done.
-        const attachmentPage = await ctx.db
+      let messageAt = state.at;
+      let childAt = state.childAt;
+      let visited = 0;
+
+      while (rows.length < EXPORT_PAGE_SIZE && visited < PARTS_MESSAGE_BATCH) {
+        const [message] = await ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) =>
+            childAt === null
+              ? q.eq("chatId", chatId).gt("_creationTime", messageAt ?? -1)
+              : q.eq("chatId", chatId).gte("_creationTime", messageAt ?? -1),
+          )
+          .take(1);
+        if (message === undefined) return { rows, blobs, cursor: null };
+        visited += 1;
+        // Only what is left of the page — see the parts walk above.
+        const remaining = EXPORT_PAGE_SIZE - rows.length;
+        const attachments = await ctx.db
           .query("documentAttachments")
           .withIndex("by_source_message", (q) =>
-            q.eq("sourceMessageId", message._id),
+            q
+              .eq("sourceMessageId", message._id)
+              .gt("_creationTime", childAt ?? -1),
           )
-          .paginate({ numItems: EXPORT_PAGE_SIZE, cursor: attachmentCursor });
-        attachmentCursor = attachmentPage.isDone
-          ? null
-          : attachmentPage.continueCursor;
-        for (const attachment of attachmentPage.page) {
+          .take(remaining);
+        for (const attachment of attachments) {
           const { storageId } = attachment;
           const hasBytes = storageId !== undefined && storageId !== null;
           rows.push({
@@ -455,40 +468,18 @@ export const exportChatSection = query({
             });
           }
         }
-        if (attachmentCursor !== null) {
-          // This message has more; resume on it rather than moving on.
-          return {
-            rows,
-            blobs,
-            cursor: encodePartsCursor({
-              messages: state.messages,
-              skip: i,
-              parts: attachmentCursor,
-            }),
-          };
+        if (attachments.length === remaining) {
+          messageAt = message._creationTime;
+          childAt = attachments[attachments.length - 1]!._creationTime;
+          continue;
         }
-        if (rows.length >= EXPORT_PAGE_SIZE && i + 1 < messagePage.page.length) {
-          return {
-            rows,
-            blobs,
-            cursor: encodePartsCursor({
-              messages: state.messages,
-              skip: i + 1,
-              parts: null,
-            }),
-          };
-        }
+        messageAt = message._creationTime;
+        childAt = null;
       }
       return {
         rows,
         blobs,
-        cursor: messagePage.isDone
-          ? null
-          : encodePartsCursor({
-              messages: messagePage.continueCursor,
-              skip: 0,
-              parts: null,
-            }),
+        cursor: encodePartsCursor({ at: messageAt, childAt }),
       };
     }
 

@@ -23,6 +23,20 @@
     width="820">
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/atrium-screenshot-dark.webp">
+    <img
+      alt="Atrium showing a business conversation: a sidebar of four chats routed to different agents (accounting, projects, logistics); a header carrying the model, the reasoning level and a context gauge; an assistant reply preceded by its two expanded tool calls with their arguments and completion state; and a composer with attachment, tools, agent picker, dictation and realtime-voice controls."
+      src="docs/assets/atrium-screenshot-light.webp"
+      width="900">
+  </picture>
+</p>
+
+<p align="center">
+  <sub>A local instance. The conversation content is fictional.</sub>
+</p>
+
 An open-source, self-hostable web chat UI for **AI agent gateways**. It gives a
 team a clean multi-user chat front end across one or more gateways, with streaming
 replies, file exchange, per-user agent routing, voice read-aloud and dictation,

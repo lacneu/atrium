@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.75.1] — Exporting a conversation that has actually been used
+
+Exporting failed on any conversation carrying more than two hundred tool calls,
+reasoning blocks or attachments on a single message — which is most of them once
+an agent has done any real work. The archive introduced in 0.75.0 therefore only
+succeeded on conversations that were nearly empty.
+
+The cause was a limit the platform enforces and the test harness does not: a
+single function may run only one paginated read. Walking a conversation's
+messages and then each message's own rows is two, so every export of a real
+conversation threw — while the tests stayed green. Both walks now advance
+without pagination at all, so the limit cannot be reached rather than merely
+being avoided.
+
+Nothing was lost quietly in the process: a conversation of two hundred and fifty
+parts exports as two pages of two hundred and fifty-four rows between them, the
+boundary falling inside a single message and resuming exactly where it stopped.
+Had the fix traded the error for a silent truncation, the export would have
+succeeded while dropping the overflow — the worse of the two failures.
+
+A check now refuses any paginated read placed inside a loop, since that is the
+one shape the platform cannot accept and the harness cannot see. It found two
+older places doing the same thing — the anomaly heartbeat's tally and the
+feedback report listing — which are recorded rather than fixed here; each will
+fail the same way once one page stops being enough, and each needs its own
+change.
+
 ## [0.75.0] — Taking a conversation with you
 
 A conversation, or a whole folder of them, can now be exported as a single file

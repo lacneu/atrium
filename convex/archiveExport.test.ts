@@ -687,6 +687,108 @@ describe("archive export", () => {
     expect([...orders].sort((a, b) => a - b)).toEqual(orders);
   });
 
+  test("a conversation of many EMPTY messages still ends its page", async () => {
+    // Returning only once enough CHILD rows had been gathered meant a long
+    // conversation whose messages carry few parts walked every one of them in a
+    // single call — two reads each, past the limit on how many a function may
+    // make. A page that finds nothing must still end.
+    const t = convexTest(schema, modules);
+    const userId = await user(t);
+    const chatId = await chatFor(t, userId);
+    const total = 60;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < total; i += 1) {
+        await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: `m${i}`,
+          updatedAt: i + 1,
+        });
+      }
+    });
+    const asUser = t.withIdentity({ subject: userId });
+
+    const first: SectionPage = await asUser.query(
+      api.archiveExport.exportChatSection,
+      { chatId, section: "messageParts" },
+    );
+
+    // No parts anywhere, and yet the call comes back with somewhere to resume.
+    expect(first.rows).toHaveLength(0);
+    expect(first.cursor).not.toBe(null);
+
+    // ...and following it terminates.
+    let cursor = first.cursor;
+    let pages = 1;
+    while (cursor !== null && pages < 20) {
+      const page: SectionPage = await asUser.query(
+        api.archiveExport.exportChatSection,
+        { chatId, section: "messageParts", cursor },
+      );
+      cursor = page.cursor;
+      pages += 1;
+    }
+    expect(cursor).toBe(null);
+  });
+
+  test("no page is ever LARGER than the import will accept", async () => {
+    // Reading a whole page per message meant a page already holding 199 rows
+    // could come back with 399 — and it is handed to the import unchanged, which
+    // refuses more than it reads. The export would have produced archives its own
+    // import rejects.
+    const t = convexTest(schema, modules);
+    const userId = await user(t);
+    const chatId = await chatFor(t, userId);
+    const perMessage = 150;
+    const messages = 3;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < messages; i += 1) {
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "assistant",
+          status: "complete",
+          text: `m${i}`,
+          updatedAt: i + 1,
+        });
+        for (let p = 0; p < perMessage; p += 1) {
+          await ctx.db.insert("messageParts", {
+            messageId,
+            order: p,
+            part: { kind: "tool", name: `t-${i}-${p}`, phase: "result" },
+          });
+        }
+      }
+    });
+    const asUser = t.withIdentity({ subject: userId });
+
+    const seen = new Set<string>();
+    const sizes: number[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page: SectionPage = await asUser.query(
+        api.archiveExport.exportChatSection,
+        { chatId, section: "messageParts", cursor },
+      );
+      sizes.push(page.rows.length);
+      for (const row of page.rows) {
+        seen.add((row.part as { name: string }).name);
+      }
+      cursor = page.cursor;
+      pages += 1;
+    } while (cursor !== null && pages < 40);
+
+    // Every page fits what the import accepts...
+    for (const size of sizes) {
+      expect(size).toBeLessThanOrEqual(EXPORT_PAGE_SIZE);
+    }
+    // ...and nothing was lost across the boundaries that produced.
+    expect(seen.size).toBe(perMessage * messages);
+  });
+
   test("a folder CYCLE does not hang the walk", async () => {
     // `projects.parentId` is a plain reference and nothing in the schema forbids
     // a cycle. A walk that trusted it would not terminate.
