@@ -3828,12 +3828,41 @@ button.oc-bmk-rail__count:hover {
 }
 /* The LEFT group absorbs the pressure; the right one never does. Losing the
    send button is not a degradation, it is a broken composer. */
+/* IT YIELDS FIRST, and by a wide margin. Once the right group was allowed to
+   shrink too, flexbox reduced BOTH in proportion — so the left still held eighty
+   pixels while the right was squeezed past its own controls. A far larger shrink
+   factor makes the order explicit: the left gives up everything it has before
+   the right gives up anything. */
 .oc-composer__bar > .oc-composer__group:first-child {
-  flex: 1 1 auto;
+  flex: 1 1000 auto;
   overflow: hidden;
 }
+/* IT MAY SHRINK — that is what puts its children under pressure. Left at
+   `flex: 0 0 auto` the group kept its full content width and simply overflowed
+   the bar, taking SEND out with it: the compressible children were never asked
+   to give anything up. What guarantees send now is not the group refusing to
+   yield, but send itself refusing (`flex: none` below), so the group's smallest
+   possible width is exactly the controls that must survive. */
 .oc-composer__bar > .oc-composer__group:last-child {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* NOTHING HERE SHRINKS — it is either shown whole or stepped out below.
+   Letting the auxiliaries compress produced two problems at once: a control
+   squeezed to a sliver stayed in the tab order, so a keyboard user reached a
+   button they could neither see nor hit; and a shrunken container clipped its
+   own right edge, which on the talk control is the hang-up. Stepping out is
+   honest in a way that squeezing is not: the control is gone, or it works. */
+.oc-composer__bar > .oc-composer__group:last-child > * {
+  flex: none;
+}
+/* The talk control loses its TEXT by a step, not by compression — see below.
+   Compressing it meant either clipping its hang-up or reserving a minimum that
+   included the label anyway, since the label cannot wrap. A step removes the
+   text outright and leaves the dot and the buttons, which is what the control is
+   for once a call is running. */
+.oc-talk__btn {
+  flex: none;
 }
 /* Last resort, so nothing spills even at absurd widths: the labels clip rather
    than push. Above this the container query drops them cleanly instead. */
@@ -3877,6 +3906,22 @@ button.oc-bmk-rail__count:hover {
    defect this rule exists to prevent. The auxiliaries stand down; send stays.
    Reachable only on a composer narrower than a phone, so the trade is rare and
    the alternative is a broken frame. */
+/* The auxiliaries step out here, well before the bar runs out — early enough
+   that nothing is ever half-visible, and late enough that they are present at
+   every width a window actually produces. */
+@container composerbar (max-width: 17rem) {
+  /* THE SLOT, not its contents. The held chip and the hold button live inside
+     `.oc-composer__voiceslot`, so naming them directly matched nothing and the
+     slot kept its full width — with every child now refusing to shrink, that was
+     enough to push send back out. */
+  .oc-composer__bar > .oc-composer__group:last-child > .oc-composer__voiceslot {
+    display: none;
+  }
+  /* The call keeps its dot and its buttons; only the wording goes. */
+  .oc-talk__label {
+    display: none;
+  }
+}
 @container composerbar (max-width: 11rem) {
   /* NOT the one that is recording. Dictation keeps the microphone open, and this
      button is the only built-in way to stop it — hiding it would leave a live
@@ -3884,7 +3929,7 @@ button.oc-bmk-rail__count:hover {
      this rule exists to fix. */
   .oc-composer__bar
     > .oc-composer__group:last-child
-    > .oc-composer__icon:not(.oc-composer__icon--rec) {
+    > *:not(.oc-composer__send):not(.oc-composer__icon--rec):not(.oc-talk) {
     display: none;
   }
 }

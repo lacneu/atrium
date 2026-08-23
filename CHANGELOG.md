@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.75.3] — The send button also survives the voice controls
+
+0.75.2 kept the send button inside the composer, but only counted the controls
+that are always there. The dictation button, the talk pill and the held-input
+chip sit in the same row and appear as they are used, and with them mounted the
+right-hand side could still grow past the frame and push send out — the very
+defect, in the state where it is hardest to notice.
+
+The rule no longer lists what to hide. Everything on that side may compress to
+nothing, and only what must survive refuses to: the send button, and the
+microphone while it is recording. A control added there later is covered without
+anyone having to remember this.
+
+One ordering detail turned out to matter. Once the right side was allowed to
+give way at all, the layout reduced both sides in proportion — so the left still
+held its labels while the right was squeezed past its own controls. The order is
+now explicit: the left gives up everything it has before the right gives up
+anything.
+
+Nothing on that side compresses any more. A control is shown whole or stepped
+out — squeezing produced two quieter problems at once: a control reduced to a
+sliver stayed reachable by keyboard while being impossible to see or hit, and a
+shrunken container clipped its own right edge, which on the talk control is the
+hang-up button. The voice controls step out together, and a running call keeps
+its indicator and its buttons while only the wording goes.
+
+Measured with the voice controls in place, the send button stays inside the
+frame down to widths no real window produces.
+
 ## [0.75.2] — Keeping the send button inside the composer
 
 Widening the side panel pushed the composer's send button out of its own frame:
