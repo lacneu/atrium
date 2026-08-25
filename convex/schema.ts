@@ -1052,6 +1052,15 @@ export default defineSchema({
     // server-side (lib/folderTree.canNest) — readers stay defensive anyway
     // (a dangling parent behaves as a root, never loops).
     parentId: v.optional(v.id("projects")),
+    // WORKING-SET opt-out for a ROOT folder: true = the user took it out of the
+    // left sidebar. It is not hidden anywhere else — it keeps its conversations,
+    // still opens by its own page, and is still a destination when moving
+    // something. Absent/false = visible (retro-compatible default).
+    //
+    // ROOT ONLY, deliberately: a nested folder already disappears when its
+    // parent is collapsed, and one whose parent is hidden would be reachable
+    // from nowhere.
+    sidebarHidden: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_parent", ["parentId"]),

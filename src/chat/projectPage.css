@@ -603,3 +603,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* A ROOT folder taken out of the left sidebar still opens by its own page —
+   which is then the place that says so, and the second way back in (the first
+   being the sidebar's restore list). Nested folders never carry this state. */
+.oc-projpage__hiddenbadge {
+  gap: 0.375rem;
+  color: var(--oc-muted-fg);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}

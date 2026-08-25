@@ -32,6 +32,8 @@ import {
   ChevronDown,
   ChevronRight,
   Columns3,
+  Eye,
+  EyeOff,
   Folder,
   FolderInput,
   FolderPlus,
@@ -90,6 +92,9 @@ type PageData = {
     name: string;
     color: string | null;
     parentId: Id<"projects"> | null;
+    // Root-folder working-set state, mirrored from the server so the page can
+    // both say it and undo it.
+    sidebarHidden: boolean;
   };
   breadcrumb: { _id: Id<"projects">; name: string }[];
   children: {
@@ -195,6 +200,7 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
   const deleteProject = useMutation(api.projects.deleteProject);
   const createProject = useMutation(api.projects.createProject);
   const moveProject = useMutation(api.projects.moveProject);
+  const setProjectSidebar = useMutation(api.projects.setProjectSidebar);
   const moveChatToProject = useMutation(api.chats.moveChatToProject);
   const reorderChat = useMutation(api.chats.reorderChat);
   const reorderProject = useMutation(api.projects.reorderProject);
@@ -542,6 +548,24 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
       <header className="oc-projpage__head">
         <span className="oc-projpage__dot" aria-hidden />
         <h1 className="oc-projpage__title">{page.project.name}</h1>
+        {page.project.sidebarHidden ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="oc-projpage__hiddenbadge"
+            title={m.sidebar_restore_folder()}
+            onClick={() => {
+              void setProjectSidebar({
+                projectId: page.project._id,
+                hidden: false,
+              });
+            }}
+          >
+            <EyeOff aria-hidden />
+            <span>{m.project_page_out_of_sidebar()}</span>
+            <Eye aria-hidden />
+          </Button>
+        ) : null}
         <div className="oc-projpage__actions">
           <div
             className="oc-projpage__viewtoggle"

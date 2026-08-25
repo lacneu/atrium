@@ -76,7 +76,45 @@ export const listProjects = query({
       collapsed: p.collapsed ?? false,
       sortKey: p.sortKey ?? 0,
       parentId: p.parentId ?? null,
+      // Returned, NOT filtered out here. This query also feeds the move picker
+      // and the folder pages, where a folder taken out of the sidebar must still
+      // appear — it left one view, not the workspace.
+      sidebarHidden: p.sidebarHidden === true,
     }));
+  },
+});
+
+/**
+ * Whether a chat shows in the LEFT SIDEBAR.
+ *
+ * Two opt-outs, and either one is enough to take it out: the chat's own, and the
+ * one its root folder carries. Computing it from the chat alone made a folder
+ * page offer "remove from the sidebar" for a conversation that was already gone
+ * from it — and taking that action hid the chat INDIVIDUALLY, so it stayed
+ * missing after the folder came back.
+ *
+ * Pinning still wins over the chat's own opt-out, as it always has. It does not
+ * win over the folder's: the folder is not there to pin a row into.
+ */
+/**
+ * WORKING-SET toggle for a ROOT folder: hidden=true takes it out of the left
+ * sidebar; hidden=false puts it back.
+ *
+ * Root only. A nested folder already vanishes when its parent is collapsed, and
+ * one whose parent is hidden would be reachable from nowhere — so that state is
+ * refused rather than allowed to strand a folder.
+ */
+export const setProjectSidebar = mutation({
+  args: { projectId: v.id("projects"), hidden: v.boolean() },
+  handler: async (ctx, { projectId, hidden }) => {
+    const { userId } = await requireActive(ctx);
+    const project = await requireOwnedProject(ctx, userId, projectId);
+    if (project.parentId !== undefined) {
+      throw new Error("Conflict: only a root folder can leave the sidebar");
+    }
+    await ctx.db.patch(projectId, {
+      sidebarHidden: hidden ? true : undefined,
+    });
   },
 });
 
@@ -125,6 +163,12 @@ export const moveProject = mutation({
     }
     await ctx.db.patch(projectId, {
       parentId: parentId ?? undefined,
+      // CLEARED on any move. "Removed from the sidebar" is a root-only state, and
+      // a hidden folder nested under another would be exactly the state
+      // `setProjectSidebar` refuses to touch — leaving it silently absent even
+      // after being moved back to the root. Reorganising a folder puts it back in
+      // view, which is also what the person doing the moving expects to see.
+      sidebarHidden: undefined,
       // Drop at the TOP of the destination's children (same model as
       // moveChatToProject).
       sortKey: minSiblingKey(rows, parentId) - 1,
@@ -334,6 +378,11 @@ export const projectPage = query({
         name: project.name,
         color: project.color ?? null,
         parentId: project.parentId ?? null,
+        // WORKING-SET state of the FOLDER itself (root folders only). The page
+        // is the one place a hidden folder is still reachable by name, so it
+        // says so and offers the way back — the chats' own inSidebar above is
+        // untouched by it.
+        sidebarHidden: project.sidebarHidden === true,
       },
       breadcrumb: pathOf(rows, id).map((n) => ({
         _id: n._id as Id<"projects">,

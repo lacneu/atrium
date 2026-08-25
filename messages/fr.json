@@ -2175,5 +2175,8 @@
   "archive_import_failed": "Import échoué — rien n'a été conservé",
   "archive_export_failed": "Export échoué",
   "archive_not_a_zip": "Ce fichier n'est pas une archive Atrium",
-  "archive_too_large": "Cette archive est trop volumineuse pour être ouverte dans le navigateur"
+  "archive_too_large": "Cette archive est trop volumineuse pour être ouverte dans le navigateur",
+  "sidebar_hidden_folders": "{count} dossier(s) retiré(s) de la barre",
+  "sidebar_restore_folder": "Remettre dans la barre latérale",
+  "project_page_out_of_sidebar": "Ce dossier est retiré de la barre latérale"
 }

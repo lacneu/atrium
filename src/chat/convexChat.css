@@ -9714,3 +9714,30 @@ button.oc-bmk-rail__count:hover {
     animation: none;
   }
 }
+
+/* The folders taken out of the sidebar, and the way back to them. Rendered only
+   when there is at least one, so an untouched workspace never sees it. */
+.oc-sidebar__hiddenfolders {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.3rem 0.5rem 0.3rem 1.5rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+.oc-sidebar__hiddenfolders:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.oc-sidebar__hiddenfolders:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

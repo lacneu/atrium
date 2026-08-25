@@ -55,6 +55,7 @@ import {
   Plus,
   Download,
   Upload,
+  EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -119,6 +120,9 @@ type Project = {
   // Folder nesting (null = root). The sidebar renders ROOT folders only —
   // sub-folders (and their chats) live on the folder PAGE (/project/$id).
   parentId: Id<"projects"> | null;
+  // ROOT opt-out: the user took this folder out of the sidebar. It is not hidden
+  // anywhere else — the folder page, the move picker and search still hold it.
+  sidebarHidden: boolean;
 };
 
 // Skeleton rows shown in place of the chat list while it first loads, so the
@@ -218,6 +222,7 @@ export function ChatSidebar({
   }, [showAgePref]);
   const createProject = useMutation(api.projects.createProject);
   const setProjectCollapsed = useMutation(api.projects.setProjectCollapsed);
+  const setProjectSidebar = useMutation(api.projects.setProjectSidebar);
   const reorderChat = useMutation(api.chats.reorderChat);
   const reorderProject = useMutation(api.projects.reorderProject);
   const moveToProject = useMutation(api.chats.moveChatToProject);
@@ -366,7 +371,21 @@ export function ChatSidebar({
   // (and their chats) live on the folder page. Chats of sub-folders still ride
   // listChats, so the root header can aggregate their busy/unread signals.
   const navigate = useNavigate();
-  const roots = useMemo(() => rootsOf(projects ?? []), [projects]);
+  const allRoots = useMemo(() => rootsOf(projects ?? []), [projects]);
+  // Filtered HERE, not in `rootsOf` — that helper is shared with the server, and
+  // a folder taken out of the sidebar is still a move destination and still
+  // opens by its own page.
+  const roots = useMemo(
+    () => allRoots.filter((p) => !p.sidebarHidden),
+    [allRoots],
+  );
+  // What can be put back. Without this the action would remove its own undo: a
+  // hidden root folder appears nowhere else in the sidebar, and search does not
+  // match folder names.
+  const hiddenRoots = useMemo(
+    () => allRoots.filter((p) => p.sidebarHidden),
+    [allRoots],
+  );
   // folderId -> its root ancestor's id (identity for roots).
   const rootMap = useMemo(() => {
     const list = projects ?? [];
@@ -755,6 +774,38 @@ export function ChatSidebar({
           })}
           </SortableContext>
 
+          {/* THE WAY BACK. A root folder removed from here appears nowhere else
+              in the sidebar, and search does not match folder names — so without
+              this the action would delete its own undo. Shown only when there is
+              something to put back, so it costs nothing the rest of the time. */}
+          {hiddenRoots.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="oc-sidebar__hiddenfolders">
+                  <EyeOff className="size-3.5" aria-hidden />
+                  <span>
+                    {m.sidebar_hidden_folders({ count: hiddenRoots.length })}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
+                {hiddenRoots.map((p) => (
+                  <DropdownMenuItem
+                    key={p._id}
+                    onSelect={() =>
+                      void setProjectSidebar({
+                        projectId: p._id,
+                        hidden: false,
+                      })
+                    }
+                  >
+                    <FolderOpen /> {p.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+
           <Section
             label={m.sidebar_chats()}
             dropId={NO_PROJECT}
@@ -866,6 +917,7 @@ function Section({
   onOpen?: () => void;
   children: React.ReactNode;
 }) {
+  const setProjectSidebar = useMutation(api.projects.setProjectSidebar);
   const archive = useArchiveActions();
   const deleteProject = useMutation(api.projects.deleteProject);
   const renameProject = useMutation(api.projects.renameProject);
@@ -1074,6 +1126,21 @@ function Section({
               <DropdownMenuItem onSelect={() => setMoveOpen(true)}>
                 <FolderPlus /> {m.sidebar_move_folder_to()}
               </DropdownMenuItem>
+              {project !== undefined && project.parentId === null ? (
+                /* ROOT ONLY. A sub-folder already disappears when its parent is
+                   collapsed, and one whose parent is hidden would be reachable
+                   from nowhere — the server refuses that state too. */
+                <DropdownMenuItem
+                  onSelect={() =>
+                    void setProjectSidebar({
+                      projectId: project._id,
+                      hidden: true,
+                    })
+                  }
+                >
+                  <EyeOff /> {m.sidebar_remove_from_bar()}
+                </DropdownMenuItem>
+              ) : null}
               {archive && project ? (
                 <>
                   <DropdownMenuItem
