@@ -12,9 +12,15 @@ import { ARCHIVE_FORMAT_VERSION } from "./exportArchive";
  * Version 1 is still readable: it simply carries no `archiveOrder`, and the
  * import falls back to its own sequence — which orders the conversation
  * correctly except where the source itself had an inversion.
+ *
+ * Version 2 likewise: it carries at most the SINGULAR quote fields, which the
+ * derivation reads as one passage. Reading OLDER archives costs nothing; what
+ * the number buys is an older deployment refusing a NEWER one at the manifest
+ * instead of failing partway through the insert.
  */
 export const SUPPORTED_FORMAT_VERSIONS: ReadonlyArray<number> = [
   1,
+  2,
   ARCHIVE_FORMAT_VERSION,
 ];
 

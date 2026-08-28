@@ -36,7 +36,12 @@ import {
   startDictation,
   type DictationHandle,
 } from "./speech";
-import { clearPendingQuote, usePendingQuote } from "./pendingQuote";
+import {
+  clearPendingQuotes,
+  pendingQuoteKey,
+  removePendingQuote,
+  usePendingQuotes,
+} from "./pendingQuote";
 import { focusAnchor } from "./Bookmarks";
 import { getLocale } from "@/paraglide/runtime.js";
 import { createPortal } from "react-dom";
@@ -172,11 +177,11 @@ export function HeldDictationDock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity stable
   }, [toast]);
 
-  // QUOTE-REPLY: the TARGET chat's staged quote must stay visible (and
-  // cancellable) while its composer lives here — it rides the deferred send
-  // (the target composer consumes the keyed store), so hiding it would attach
+  // QUOTE-REPLY: the TARGET chat's staged passages must stay visible (and each
+  // cancellable) while its composer lives here — they ride the deferred send
+  // (the target composer consumes the keyed store), so hiding one would attach
   // an invisible quote. Hook before the null return (Rules of Hooks).
-  const pendingQuote = usePendingQuote(held?.targetChatId ?? null);
+  const pendingQuotes = usePendingQuotes(held?.targetChatId ?? null);
 
   if (held === null) return null;
 
@@ -231,10 +236,10 @@ export function HeldDictationDock() {
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => {
             // DISCARD throws away everything the panel shows — the staged
-            // quote included, or it would silently ride the chat's next,
+            // quotes included, or they would silently ride the chat's next,
             // unrelated send (codex P2). The non-destructive un-pin keeps
-            // it: the inline composer surfaces it again.
-            clearPendingQuote(held.targetChatId);
+            // them: the inline composer surfaces them again.
+            clearPendingQuotes(held.targetChatId);
             releaseHeldDictation();
           }}
         >
@@ -242,8 +247,11 @@ export function HeldDictationDock() {
         </button>
       </div>
 
-      {pendingQuote !== null ? (
+      {pendingQuotes.length > 0 ? (
+        <div className="oc-detach__quotes">
+          {pendingQuotes.map((pendingQuote) => (
         <div
+          key={pendingQuoteKey(pendingQuote)}
           className="oc-detach__quote"
           role="group"
           aria-label={m.quote_reply_chip_aria()}
@@ -274,10 +282,17 @@ export function HeldDictationDock() {
             type="button"
             className="oc-detach__quote-x"
             aria-label={m.quote_reply_cancel()}
-            onClick={() => clearPendingQuote(held.targetChatId)}
+            onClick={() =>
+              removePendingQuote(
+                held.targetChatId,
+                pendingQuoteKey(pendingQuote),
+              )
+            }
           >
             <X size={12} aria-hidden />
           </button>
+            </div>
+          ))}
         </div>
       ) : null}
       <textarea

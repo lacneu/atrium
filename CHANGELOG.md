@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.76.0] — Reply to several passages, and choose what the sidebar carries
+
+Two things the interface would not let you do, both of them small refusals you
+had to work around.
+
+**A reply can now quote more than one passage.** Picking a second passage used to
+replace the first, so a message could only ever point at one thing — the answer
+came back about a passage you had abandoned. Each passage now waits in the
+composer as its own chip, in the order you picked them, and each is removed on
+its own. The agent is told it is answering several passages rather than one, with
+the excerpts kept apart so two of them are never read as a single quoted
+paragraph. A message quoting one passage is composed exactly as before, down to
+the byte.
+
+**A passage that vanished no longer costs you the rest.** If one of the answers
+you quoted was deleted or regenerated while you were writing, the message is
+refused — sending fewer passages than you chose would answer a question you did
+not ask — but only that chip is dropped, the others come back, and the composer
+says which went and why. Every stale passage is named at once, so the selection
+clears in one attempt rather than one per passage.
+
+**The composer refuses a quote it knows the send will reject.** The limits on how
+many passages a message may carry, and how much text they may total, are now the
+same on both sides. Before, the composer accepted a selection the server would
+turn away — and the turn failed with the whole selection lost.
+
+**Root folders can be taken out of the left sidebar.** Conversations already had
+this; folders at the root did not, so every one of them was permanently in the
+bar. A folder removed from it is not removed from anything else: it keeps its
+conversations, opens by its own page, and is still somewhere you can move things
+to. Only root folders can be, deliberately — a folder inside another already
+disappears when its parent is collapsed.
+
+**There is always a way back, without a trick.** Remove every root folder and the
+bar still lists them, ready to be put back. The folder's own page says it is out
+of the bar and offers the same, so arriving there from a link or a breadcrumb is
+enough. Neither route depends on the other, and neither depends on creating a
+new folder to reach the settings.
+
+Two notes for operators. Archives now declare **format version 3**: an older
+Atrium refuses one at the manifest instead of failing partway through an import,
+and this version still reads archives from versions 1 and 2. And an instance
+that customized the *quote reply* prompt keeps its own wording at any number of
+passages — the settings page now says so, because the wording it replaces exists
+in two forms.
+
 ## [0.75.3] — The send button also survives the voice controls
 
 0.75.2 kept the send button inside the composer, but only counted the controls

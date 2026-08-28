@@ -2178,5 +2178,10 @@
   "archive_too_large": "This archive is too large to open in the browser",
   "sidebar_hidden_folders": "{count} folder(s) hidden from the bar",
   "sidebar_restore_folder": "Put back in the sidebar",
-  "project_page_out_of_sidebar": "This folder is out of the sidebar"
+  "project_page_out_of_sidebar": "This folder is out of the sidebar",
+  "quote_reply_max_reached": "At most {count} quotes per message",
+  "quote_reply_budget_reached": "These quotes are too long for a single message",
+  "injection_plural_note": "A plural variant applies when several passages are quoted. Customizing this text applies it to every case.",
+  "quote_reply_target_dropped": "{count} quote(s) removed: the quoted passage no longer exists",
+  "quote_reply_restore_dropped": "{count} quote(s) could not be put back"
 }

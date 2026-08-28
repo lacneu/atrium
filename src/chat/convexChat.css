@@ -3658,9 +3658,17 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.8rem;
 }
 .oc-composer__pinnedgoto:hover { filter: brightness(1.08); }
-/* QUOTE-REPLY composer chip: the staged "replying to" excerpt awaiting the next
-   send — one row inside the composer card, cancellable, text jumps back to the
-   quoted block. */
+/* QUOTE-REPLY composer chips: the staged "replying to" excerpts awaiting the
+   next send — one row EACH inside the composer card, individually cancellable,
+   text jumps back to that block. The stack is bounded (10 passages) but scrolls
+   anyway, so a heavily-quoted turn never pushes the input off screen. */
+.oc-composer__quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 9rem;
+  overflow-y: auto;
+}
 .oc-composer__quote {
   display: flex;
   align-items: center;
@@ -3712,6 +3720,14 @@ button.oc-bmk-rail__count:hover {
 }
 /* QUOTE-REPLY chip in the DETACHED composer (HeldDictationDock): the target
    chat's staged quote stays visible + cancellable while its composer floats. */
+/* The staged passages inside the DETACHED dock. The dock is a small clamped
+   panel, so the stack scrolls rather than pushing the textarea off it — the
+   same rule the composer's own stack follows. */
+.oc-detach__quotes {
+  flex: none;
+  max-height: 6rem;
+  overflow-y: auto;
+}
 .oc-detach__quote {
   display: flex;
   align-items: center;

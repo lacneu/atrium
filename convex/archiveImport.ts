@@ -42,6 +42,12 @@ import {
   validateManifest,
 } from "./lib/importArchive";
 import { assertOwnsUpload } from "./uploads";
+import {
+  normalizeQuoteRefs,
+  quoteFieldsFor,
+  quotedRefsOf,
+  type QuoteRef,
+} from "./lib/quoteReply";
 
 /** Identity rows read; mirrors the identity module's own bound. */
 const MERGED_ROW_SCAN = 16;
@@ -82,6 +88,22 @@ const SECTION_REFS: Record<
   ],
   documentAttachments: [
     { field: "sourceMessageId", kind: "messages", required: true },
+  ],
+};
+
+/** References that live INSIDE an array of objects rather than on the row.
+ *
+ *  Same danger, same table-driven discipline: `messages.quotedRefs[].messageId`
+ *  names another message, and left unmapped it would name whatever that
+ *  identifier happens to name in THIS database. An item whose target did not
+ *  come along keeps its excerpt and loses only its anchor — never a link to
+ *  something else. */
+const SECTION_ARRAY_REFS: Record<
+  string,
+  ReadonlyArray<{ field: string; itemField: string; kind: string }>
+> = {
+  messages: [
+    { field: "quotedRefs", itemField: "messageId", kind: "messages" },
   ],
 };
 
@@ -656,6 +678,97 @@ async function prepareRow(
       continue;
     }
     out[ref.field] = mapped;
+  }
+
+  // BOUND BEFORE READING. The remap below does one indexed read per element, so
+  // an oversized list would run thousands of reads inside a single mutation —
+  // past the transaction limits, failing every import attempt atomically — only
+  // for the surplus to be discarded afterwards. Capping the raw shape first
+  // keeps the reads bounded by QUOTE_MAX_PER_TURN per row.
+  if (section === "messages" && out.quotedRefs !== undefined) {
+    const { refs } = normalizeQuoteRefs(out.quotedRefs);
+    out.quotedRefs = refs;
+  }
+
+  for (const ref of SECTION_ARRAY_REFS[section] ?? []) {
+    // `out`, not `row`: the cap above rewrote `out[ref.field]`, and remapping
+    // the RAW array would run one indexed read per raw element — the very cost
+    // the cap exists to bound.
+    const items = out[ref.field];
+    if (items === undefined || items === null) continue;
+    if (!Array.isArray(items)) throw new ArchiveRejected("bad_archive_id");
+    const remapped: unknown[] = [];
+    for (const item of items) {
+      if (typeof item !== "object" || item === null) {
+        throw new ArchiveRejected("bad_archive_id");
+      }
+      const copy = { ...(item as Record<string, unknown>) };
+      const archiveRef = copy[ref.itemField];
+      if (archiveRef === undefined || archiveRef === null) {
+        delete copy[ref.itemField];
+      } else {
+        if (!isArchiveId(archiveRef)) throw new ArchiveRejected("bad_archive_id");
+        const mapped = await mappedId(ctx, session._id, ref.kind, archiveRef);
+        if (mapped === null) delete copy[ref.itemField];
+        else copy[ref.itemField] = mapped;
+      }
+      remapped.push(copy);
+    }
+    out[ref.field] = remapped;
+  }
+
+  // QUOTE BOUNDS on the import path. `sendMessage` alone enforcing them left an
+  // archive free to persist thousands of passages, or excerpts of any length,
+  // which the rehydration and the summaries then concatenate into every
+  // outgoing prompt. Same rules, same implementation — the archive is a value
+  // in a file, so the remainder is KEPT rather than the row refused.
+  //
+  // BOTH VINTAGES, through the same derivation. Guarding only `quotedRefs` left
+  // an archive free to carry the singular `quotedExcerpt`/`quotedMessageId`
+  // instead and skip every bound and every check — the older shape is still
+  // accepted, so it is still a way in. Whatever came in, ONE vintage is written.
+  // ANY quote field present, not just a non-empty one. `quotedRefs: []` beside a
+  // stale singular mirror makes `hasQuotes` answer NO, so the canonicalisation
+  // was skipped entirely and the mirror stayed on the row — masked by today's
+  // derivation, resurrected by an older reader after a rollback.
+  if (
+    section === "messages" &&
+    (out.quotedRefs !== undefined ||
+      out.quotedExcerpt !== undefined ||
+      out.quotedMessageId !== undefined ||
+      out.quotedBlockIndex !== undefined)
+  ) {
+    // Run AGAIN after the remap: an anchor that could not be mapped was dropped,
+    // which changes the de-duplication key of that passage (an anchor-less one
+    // is identified by its excerpt). This pass also covers the SINGULAR vintage,
+    // which never went through the array remap above.
+    const { refs } = normalizeQuoteRefs(quotedRefsOf(out));
+    delete out.quotedMessageId;
+    delete out.quotedBlockIndex;
+    delete out.quotedExcerpt;
+    // An anchor that survived the remap must still name an ASSISTANT message of
+    // THIS conversation — the passage stands either way, only the jump goes.
+    const checked: Record<string, unknown>[] = [];
+    for (const r of refs) {
+      let keepAnchor = r.messageId !== undefined;
+      if (keepAnchor) {
+        const target = await ctx.db.get(r.messageId as Id<"messages">);
+        keepAnchor =
+          target !== null &&
+          target.role === "assistant" &&
+          target.chatId === (out.chatId as Id<"chats">);
+      }
+      checked.push({
+        ...(keepAnchor ? { messageId: r.messageId } : {}),
+        blockIndex: r.blockIndex,
+        excerpt: r.excerpt,
+      });
+    }
+    // BOTH vintages, like every other writer: an import that stored only the
+    // array would see its quotes vanish from the thread, the summaries and the
+    // rehydration the moment the deploy is rolled back.
+    delete out.quotedRefs;
+    Object.assign(out, quoteFieldsFor(checked as QuoteRef<string>[]));
   }
 
   if (section === "chats") {

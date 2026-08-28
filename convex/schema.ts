@@ -1561,6 +1561,22 @@ export default defineSchema({
     quotedMessageId: v.optional(v.id("messages")),
     quotedBlockIndex: v.optional(v.number()),
     quotedExcerpt: v.optional(v.string()),
+    // SEVERAL passages in one turn. New rows write ONLY this array and leave the
+    // three singular fields above absent; rows predating it keep them. Nothing
+    // is backfilled — `quotedRefsOf` (convex/lib/quoteReply.ts) is the single
+    // place that reads either vintage, so no caller has to know which it holds.
+    quotedRefs: v.optional(
+      v.array(
+        v.object({
+          // OPTIONAL like the singular anchor: a fork or an import can carry a
+          // passage whose quoted message did not come along. The excerpt is the
+          // display truth; the anchor only adds the jump-to-source.
+          messageId: v.optional(v.id("messages")),
+          blockIndex: v.union(v.number(), v.null()),
+          excerpt: v.string(),
+        }),
+      ),
+    ),
     error: v.optional(v.string()),
     // The STABLE, curated dispatch error CODE (non-PHI: AGENT_NOT_FOUND,
     // ATTACHMENT_TOO_LARGE, …), stored alongside the user-facing `error` text so a
@@ -2271,6 +2287,10 @@ export default defineSchema({
     // the dispatch (and any REDO re-dispatch) prefixes the outgoing text with
     // the resolved quote_reply injection. Display anchors live on the message.
     quotedExcerpt: v.optional(v.string()),
+    // The SEVERAL excerpts of a multi-quote turn, same widening as `messages`.
+    // The dispatch and any REDO read this through `quotedRefsOf`; widening only
+    // `messages` would drop every quote but the first on a re-dispatch.
+    quotedExcerpts: v.optional(v.array(v.string())),
     attachmentIds: v.array(v.id("_storage")),
     // Inbound attachments WITH the browser-supplied filename + mimeType (the
     // dispatch needs both to build OpenClaw's chat.send.attachment shape — the

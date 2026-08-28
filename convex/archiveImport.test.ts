@@ -13,8 +13,17 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { ARCHIVE_FORMAT_VERSION } from "./lib/exportArchive";
-import { MAX_FILENAME_LENGTH, sanitizeFilename } from "./lib/importArchive";
+import {
+  MAX_FILENAME_LENGTH,
+  SUPPORTED_FORMAT_VERSIONS,
+  sanitizeFilename,
+} from "./lib/importArchive";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
+import {
+  QUOTE_EXCERPT_CAP,
+  QUOTE_MAX_PER_TURN,
+  QUOTE_TOTAL_EXCERPT_CAP,
+} from "./lib/quoteReply";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -557,6 +566,376 @@ describe("archive import", () => {
 
     expect(result.written).toBe(0);
     expect(await t.run((ctx) => ctx.db.query("messages").collect())).toHaveLength(0);
+  });
+
+  test("a quote anchor INSIDE an array is remapped, or dropped — never left as-is", async () => {
+    // `messages.quotedRefs[].messageId` names another message. Left unmapped it
+    // would name whatever that identifier happens to name HERE — a passage of
+    // someone else's conversation, presented as the one the user replied to.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", {
+          chatId: "c1",
+          role: "assistant",
+          status: "complete",
+          text: "la réponse citée",
+          updatedAt: 1,
+        }),
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige ces deux points",
+          quotedRefs: [
+            { messageId: "m1", blockIndex: 0, excerpt: "le premier" },
+            // NEVER part of this archive.
+            { messageId: "jamais-importee", blockIndex: 1, excerpt: "l'orphelin" },
+          ],
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const quoting = rows.find((r) => r.text === "corrige ces deux points")!;
+    const quoted = rows.find((r) => r.text === "la réponse citée")!;
+    const refs = quoting.quotedRefs!;
+    expect(refs.map((r) => r.excerpt)).toEqual(["le premier", "l'orphelin"]);
+    // Remapped to the COPY that came along...
+    expect(refs[0]!.messageId).toBe(quoted._id);
+    // ...and the unmappable one keeps its passage while losing only the link.
+    expect(refs[1]!.messageId).toBeUndefined();
+  });
+
+  test("an archive cannot persist MORE quotes than a send may carry", async () => {
+    // The bounds were on the send path only. An archive is a value in a FILE:
+    // left unbounded it could persist thousands of passages, which the
+    // rehydration and the summaries then concatenate into every outgoing
+    // prompt — a context_length failure delivered by an import.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          // Under the archive's own MAX_FIELDS_PER_ROW (which already refuses
+          // an absurd row), and far over the quote bounds — so it is THESE
+          // bounds the test exercises, not the format's.
+          quotedRefs: Array.from({ length: 60 }, (_, i) => ({
+            messageId: "m1",
+            blockIndex: i,
+            excerpt: "y".repeat(900),
+          })),
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const refs = rows.find((r) => r.text === "corrige")!.quotedRefs!;
+    expect(refs.length).toBeLessThanOrEqual(QUOTE_MAX_PER_TURN);
+    expect(refs.reduce((n, r) => n + r.excerpt.length, 0)).toBeLessThanOrEqual(
+      QUOTE_TOTAL_EXCERPT_CAP,
+    );
+    for (const r of refs) {
+      expect(r.excerpt.length).toBeLessThanOrEqual(QUOTE_EXCERPT_CAP);
+    }
+  });
+
+  test("the OLD single-quote shape gets the SAME bounds and the SAME checks", async () => {
+    // The singular fields are still accepted, so they are still a way in. An
+    // archive carrying them was skipping every bound and every check: a
+    // 200 000-character excerpt, and an anchor pointing at a user message.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("u1", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "une question",
+          updatedAt: 1,
+        }),
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          quotedMessageId: "u1",
+          quotedBlockIndex: 0,
+          quotedExcerpt: "z".repeat(200_000),
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const written = rows.find((r) => r.text === "corrige")!;
+    const refs = written.quotedRefs!;
+    expect(refs).toHaveLength(1);
+    expect(refs[0]!.excerpt.length).toBe(QUOTE_EXCERPT_CAP);
+    // The anchor named a USER message: the passage stands, the link does not.
+    expect(refs[0]!.messageId).toBeUndefined();
+    // The singular MIRROR is written too (rollback safety) — and it is the
+    // CAPPED value, not the 200 000 characters the archive asked for.
+    expect(written.quotedExcerpt!.length).toBe(QUOTE_EXCERPT_CAP);
+    expect(written.quotedMessageId).toBeUndefined();
+  });
+
+  test("an imported quote ALSO survives a rollback", async () => {
+    // Storing only the array is fine until the deploy is rolled back: the
+    // previous revision reads only the singular fields, and the imported
+    // conversation would then look as if nobody had quoted anything.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m1", {
+          chatId: "c1",
+          role: "assistant",
+          status: "complete",
+          text: "la réponse citée",
+          updatedAt: 1,
+        }),
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          quotedRefs: [
+            { messageId: "m1", blockIndex: 0, excerpt: "le premier" },
+            { messageId: "m1", blockIndex: 1, excerpt: "le second" },
+          ],
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const written = rows.find((r) => r.text === "corrige")!;
+    const quoted = rows.find((r) => r.text === "la réponse citée")!;
+    expect(written.quotedRefs).toHaveLength(2);
+    // The mirror an older revision reads: the FIRST passage, anchor included.
+    expect(written.quotedExcerpt).toBe("le premier");
+    expect(written.quotedMessageId).toBe(quoted._id);
+    expect(written.quotedBlockIndex).toBe(0);
+  });
+
+  test("an EMPTY array wipes the stale singular mirror it came with", async () => {
+    // `quotedRefs: []` beside an old `quotedExcerpt` says "quotes nothing".
+    // Today's derivation masks the mirror; storing it anyway means an older
+    // reader resurrects the passage after a rollback.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          quotedRefs: [],
+          quotedExcerpt: "un fantôme",
+          quotedBlockIndex: 0,
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const written = rows.find((r) => r.text === "corrige")!;
+    expect(written.quotedExcerpt).toBeUndefined();
+    expect(written.quotedBlockIndex).toBeUndefined();
+    expect(written.quotedRefs).toBeUndefined();
+  });
+
+  test("a NEWER archive format is refused at the manifest, not mid-import", async () => {
+    // A reader that accepts a shape it cannot remap inserts an unknown field
+    // into its own schema and fails partway — half a conversation written.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    await expect(
+      t.withIdentity({ subject: importer }).mutation(
+        api.archiveImport.beginImport,
+        {
+          manifest: {
+            formatVersion: ARCHIVE_FORMAT_VERSION + 1,
+            origin: null,
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
+
+  test("EVERY older format this version claims to read is still accepted", () => {
+    // Reading older archives costs nothing; what the number buys is the refusal
+    // above. Losing an old version by accident would strand real archives.
+    expect([...SUPPORTED_FORMAT_VERSIONS].sort()).toEqual([1, 2, 3]);
+  });
+
+  test("two anchor-less passages of the SAME block stay two passages", async () => {
+    // De-duplicating on `(messageId, blockIndex)` collapses them to one
+    // `undefined:0` — a different excerpt lost for good, after import.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          quotedRefs: [
+            { messageId: "jamais-a", blockIndex: 0, excerpt: "le premier" },
+            { messageId: "jamais-b", blockIndex: 0, excerpt: "le second" },
+          ],
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const refs = rows.find((r) => r.text === "corrige")!.quotedRefs!;
+    expect(refs.map((r) => r.excerpt)).toEqual(["le premier", "le second"]);
+  });
+
+  test("an anchor that survives the remap must still be an assistant reply HERE", async () => {
+    // The remap makes the identifier valid; it does not make it right. Pointed
+    // at a USER message, the interface would offer a jump to a passage nobody
+    // ever answered with.
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, {
+      manifest: MANIFEST,
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "chats",
+      rows: [archived("c1", { updatedAt: 1 })],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("u1", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "une question",
+          updatedAt: 1,
+        }),
+      ],
+    });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [
+        archived("m2", {
+          chatId: "c1",
+          role: "user",
+          status: "complete",
+          text: "corrige",
+          quotedRefs: [{ messageId: "u1", blockIndex: 0, excerpt: "citation" }],
+          updatedAt: 2,
+        }),
+      ],
+    });
+
+    const rows = await t.run((ctx) => ctx.db.query("messages").collect());
+    const refs = rows.find((r) => r.text === "corrige")!.quotedRefs!;
+    // The passage stands; only the link is gone.
+    expect(refs).toEqual([{ blockIndex: 0, excerpt: "citation" }]);
   });
 
   test("a RETRIED batch does not duplicate what it already wrote", async () => {

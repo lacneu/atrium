@@ -45,9 +45,13 @@ import { TalkControl } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import {
   QUOTE_EXCERPT_CLIENT_MAX,
-  clearPendingQuote,
-  setPendingQuote,
-  usePendingQuote,
+  QUOTE_MAX_PER_TURN,
+  addPendingQuote,
+  clearPendingQuotes,
+  pendingQuoteKey,
+  removePendingQuote,
+  usePendingQuotes,
+  type PendingQuote,
 } from "./pendingQuote";
 import { previewFromText } from "./bookmarkView";
 import { AtriumMark } from "@/components/AtriumMark";
@@ -2100,8 +2104,8 @@ function ExportMenu({
           ? (liveByMsg.get(m._id as string) ?? m.text)
           : m.text,
       createdAt: m.updatedAt ?? m._creationTime,
-      ...(m.quotedExcerpt !== undefined
-        ? { quotedExcerpt: m.quotedExcerpt }
+      ...(m.quotedRefs !== undefined && m.quotedRefs.length > 0
+        ? { quotedExcerpts: m.quotedRefs.map((q) => q.excerpt) }
         : {}),
       parts: m.parts.map((p) => ({
         kind: p.kind,
@@ -3012,19 +3016,24 @@ function UserMessage() {
       true,
   );
   const messageId = useMessage((msg) => msg.id);
-  // QUOTE-REPLY: this turn replied to a block of a previous answer — show the
-  // collapsed excerpt above the bubble; clicking it scrolls to (and flashes)
-  // the quoted block. A deleted quoted message keeps the stored excerpt (the
-  // click then quietly gives up — focusAnchor's own retry budget).
-  const quoted = useMessage(
+  // QUOTE-REPLY: this turn replied to one or more blocks of previous answers —
+  // show each collapsed excerpt above the bubble, in the order the user picked
+  // them; clicking one scrolls to (and flashes) that block. A deleted quoted
+  // message keeps the stored excerpt (the click then quietly gives up —
+  // focusAnchor's own retry budget) and an anchor-less passage is not clickable.
+  const quotedRefs = useMessage(
     (msg) =>
-      (msg.metadata?.custom as
-        | {
-            quotedMessageId?: string;
-            quotedBlockIndex?: number | null;
-            quotedExcerpt?: string;
-          }
-        | undefined) ?? undefined,
+      (
+        msg.metadata?.custom as
+          | {
+              quotedRefs?: ReadonlyArray<{
+                messageId?: string;
+                blockIndex: number | null;
+                excerpt: string;
+              }> | null;
+            }
+          | undefined
+      )?.quotedRefs ?? null,
   );
   const quoteJumpToast = useToast();
   return (
@@ -3036,26 +3045,27 @@ function UserMessage() {
     >
       <div className="oc-msg__col oc-msg__col--user">
         <BookmarkGutter />
-        {quoted?.quotedExcerpt ? (
+        {quotedRefs?.map((q, i) => (
           <button
+            key={`${q.messageId ?? "orphan"}:${q.blockIndex ?? "all"}:${i}`}
             type="button"
             className="oc-msg__quote"
             title={m.quote_reply_header()}
             onClick={
-              quoted.quotedMessageId
+              q.messageId
                 ? () =>
                     jumpToQuotedAnchor(
-                      quoted.quotedMessageId!,
-                      quoted.quotedBlockIndex ?? null,
+                      q.messageId!,
+                      q.blockIndex,
                       quoteJumpToast,
                     )
                 : undefined
             }
           >
             <Reply size={12} aria-hidden className="oc-msg__quote-ico" />
-            <span className="oc-msg__quote-text">{quoted.quotedExcerpt}</span>
+            <span className="oc-msg__quote-text">{q.excerpt}</span>
           </button>
-        ) : null}
+        )) ?? null}
         <div className="oc-msg__bubble">
           {showSource ? (
             <MessageSource />
@@ -3363,6 +3373,22 @@ function AssistantMessage() {
   const messageId = useMessage((msg) => msg.id);
   // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
   const quoteChatId = useContext(QuoteChatIdContext);
+  const quoteAddToast = useToast();
+  // Stage one more passage, or SAY why not. The bound is the server's, mirrored
+  // client-side: refusing the click is honest, letting the send fail is not.
+  const stageQuote = useCallback(
+    (chatId: string, quote: PendingQuote) => {
+      const refusal = addPendingQuote(chatId, quote);
+      if (refusal === "too-many") {
+        quoteAddToast.error(
+          m.quote_reply_max_reached({ count: QUOTE_MAX_PER_TURN }),
+        );
+      } else if (refusal === "too-long") {
+        quoteAddToast.error(m.quote_reply_budget_reached());
+      }
+    },
+    [quoteAddToast],
+  );
   // Whole-message quote source (header ↩ next to the agent name — same two
   // levels as bookmarks: header = message, gutter = block). The STORED final
   // text, not the streaming DOM.
@@ -3537,7 +3563,7 @@ function AssistantMessage() {
                   QUOTE_EXCERPT_CLIENT_MAX,
                 );
                 if (excerpt !== "")
-                  setPendingQuote(quoteChatId, {
+                  stageQuote(quoteChatId, {
                     messageId,
                     blockIndex: null,
                     excerpt,
@@ -3624,7 +3650,7 @@ function AssistantMessage() {
           onReplyToBlock={
             quoteChatId !== null && !messageId.startsWith("optimistic-")
               ? (blockIndex, excerpt) =>
-                  setPendingQuote(quoteChatId, {
+                  stageQuote(quoteChatId, {
                     messageId,
                     blockIndex,
                     excerpt,
@@ -3712,32 +3738,36 @@ function jumpToQuotedAnchor(
   focusAnchor(messageId, blockIndex, "smooth");
 }
 
-// QUOTE-REPLY composer chip: the staged "replying to" excerpt, cancellable,
-// clicking the text scrolls back to the quoted block. Reads the per-chat
-// store — a quote staged in another chat never shows here.
+// QUOTE-REPLY composer chips: the staged "replying to" excerpts, each
+// cancellable ON ITS OWN, clicking a text scrolls back to that block. Reads the
+// per-chat store — a quote staged in another chat never shows here.
 function QuoteChip({ chatId }: { chatId: ConvexId<"chats"> }) {
-  const quote = usePendingQuote(chatId);
+  const quotes = usePendingQuotes(chatId);
   const toast = useToast();
-  if (quote === null) return null;
+  if (quotes.length === 0) return null;
   return (
-    <div className="oc-composer__quote" role="group" aria-label={m.quote_reply_chip_aria()}>
-      <Reply size={13} aria-hidden className="oc-composer__quote-ico" />
-      <button
-        type="button"
-        className="oc-composer__quote-text"
-        title={m.quote_reply_header()}
-        onClick={() => jumpToQuotedAnchor(quote.messageId, quote.blockIndex, toast)}
-      >
-        {quote.excerpt}
-      </button>
-      <button
-        type="button"
-        className="oc-composer__quote-x"
-        aria-label={m.quote_reply_cancel()}
-        onClick={() => clearPendingQuote(chatId)}
-      >
-        <X size={13} aria-hidden />
-      </button>
+    <div className="oc-composer__quotes" role="group" aria-label={m.quote_reply_chip_aria()}>
+      {quotes.map((quote) => (
+        <div className="oc-composer__quote" key={pendingQuoteKey(quote)}>
+          <Reply size={13} aria-hidden className="oc-composer__quote-ico" />
+          <button
+            type="button"
+            className="oc-composer__quote-text"
+            title={m.quote_reply_header()}
+            onClick={() => jumpToQuotedAnchor(quote.messageId, quote.blockIndex, toast)}
+          >
+            {quote.excerpt}
+          </button>
+          <button
+            type="button"
+            className="oc-composer__quote-x"
+            aria-label={m.quote_reply_cancel()}
+            onClick={() => removePendingQuote(chatId, pendingQuoteKey(quote))}
+          >
+            <X size={13} aria-hidden />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

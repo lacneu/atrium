@@ -106,7 +106,12 @@ import {
   composeRehydration,
   rehydrationBudgetChars,
 } from "./lib/rehydration";
-import { composeQuotedText, quotePreamble } from "./lib/quoteReply";
+import {
+  composeQuotedText,
+  hasQuotes,
+  quotedRefsOf,
+  quotesPreamble,
+} from "./lib/quoteReply";
 import { providerSessionClearPatch } from "./lib/providerSession";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
@@ -3003,7 +3008,7 @@ export const rehydrationContext = internalQuery({
           // A quoted excerpt IS content: an attachment-only quoted turn has an
           // empty text but its dispatched prompt carried the quote (codex P2).
           (m.text.trim().length > 0 ||
-            m.quotedExcerpt !== undefined ||
+            hasQuotes(m) ||
             (childResults.byMsg.get(m._id as string)?.length ?? 0) > 0),
       )
       .filter((m) => effectiveOrder(m) > watermark) // summary-covered turns stay summarized
@@ -3029,10 +3034,10 @@ export const rehydrationContext = internalQuery({
           // the original prompt. NOTE: a template edited since the original
           // send recomposes with the NEW wording (accepted, documented).
           text:
-            m.role === "user" && m.quotedExcerpt
+            m.role === "user" && hasQuotes(m)
               ? composeQuotedText(
-                  quotePreamble(
-                    m.quotedExcerpt,
+                  quotesPreamble(
+                    quotedRefsOf(m).map((q) => q.excerpt),
                     rehydInstance?.config?.promptInjections,
                     contentLocale,
                   ),

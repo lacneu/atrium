@@ -42,6 +42,12 @@ export interface PromptInjectionDef {
    *  admin defaultLocale -> base) — an admin override remains a single text that
    *  wins regardless of locale. Keys pinned to SUPPORTED_LOCALES by tests. */
   readonly defaultTemplate: Readonly<Record<Locale, string>>;
+  /** The default text used when the injection is filled with SEVERAL values at
+   *  once (quote_reply: the user replied to more than one passage). Undefined =>
+   *  `defaultTemplate` is used whatever the count. Only consulted when the admin
+   *  has NOT overridden the template — an override IS the instance's chosen
+   *  wording and stays the wording, filled with the joined list. */
+  readonly pluralDefaultTemplate?: Readonly<Record<Locale, string>>;
   /** What is applied when the injection is DISABLED. Undefined => nothing is injected (the
    *  add-ons just disappear). A CORE prompt that still needs a minimum sets it: documentary
    *  _fetch falls back to the bare `{references}` list. THE single source of truth for the
@@ -173,6 +179,24 @@ export const PROMPT_INJECTIONS = {
         "assistant answer:\n" +
         "> {excerpt}\n" +
         "Treat their instruction as targeting that passage specifically.",
+    },
+    // Several passages at once: the SAME framing in the plural, and crucially the
+    // SAME `> {excerpt}` shape as the singular and the disabled fallback — the
+    // fill value carries the inner separators (`a\n>\n> b`), so ONE rendering
+    // feeds all three templates and an admin override keeps working untouched.
+    pluralDefaultTemplate: {
+      fr:
+        "[EN RÉPONSE À]\n" +
+        "L'utilisateur répond à ces passages précis de réponses précédentes " +
+        "de l'assistant :\n" +
+        "> {excerpt}\n" +
+        "Traite sa consigne comme portant spécifiquement sur ces passages.",
+      en:
+        "[IN REPLY TO]\n" +
+        "The user is replying to these specific passages of previous " +
+        "assistant answers:\n" +
+        "> {excerpt}\n" +
+        "Treat their instruction as targeting those passages specifically.",
     },
     // Disabled → the bare markdown quote (anchor preserved, framing removed).
     disabledTemplate: { fr: "> {excerpt}", en: "> {excerpt}" },

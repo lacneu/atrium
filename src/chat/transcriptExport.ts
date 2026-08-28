@@ -24,9 +24,10 @@ export interface ExportMessage {
   /** epoch ms */
   createdAt: number;
   parts?: ExportPart[];
-  /** Quote-reply: the assistant excerpt this user turn replies to — exported
-   *  so "corrige ceci" stays unambiguous in the transcript. */
-  quotedExcerpt?: string;
+  /** Quote-reply: the assistant excerpts this user turn replies to, in the order
+   *  the user picked them — exported so "corrige ceci" stays unambiguous in the
+   *  transcript, and so a turn quoting three passages exports all three. */
+  quotedExcerpts?: readonly string[];
 }
 
 export interface ExportOpts {
@@ -80,9 +81,10 @@ export function transcriptToMarkdown(
   for (const msg of messages) {
     lines.push("");
     lines.push(`## ${ROLE_LABEL[msg.role]} · ${formatTs(msg.createdAt)}`);
-    if (msg.quotedExcerpt !== undefined && msg.quotedExcerpt !== "") {
+    for (const excerpt of msg.quotedExcerpts ?? []) {
+      if (excerpt === "") continue;
       lines.push("");
-      lines.push(`> ${m.quote_reply_header()} : ${msg.quotedExcerpt}`);
+      lines.push(`> ${m.quote_reply_header()} : ${excerpt}`);
     }
     const text = msg.text.trim();
     if (text.length > 0) {
@@ -110,8 +112,8 @@ export function transcriptToJson(
       role: m.role,
       createdAt: m.createdAt,
       text: m.text,
-      ...(m.quotedExcerpt !== undefined && m.quotedExcerpt !== ""
-        ? { quotedExcerpt: m.quotedExcerpt }
+      ...(m.quotedExcerpts !== undefined && m.quotedExcerpts.length > 0
+        ? { quotedExcerpts: m.quotedExcerpts.filter((e) => e !== "") }
         : {}),
       attachments: attachmentNames(m.parts),
     })),

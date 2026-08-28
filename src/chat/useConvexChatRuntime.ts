@@ -14,9 +14,9 @@ import {
   createConvexAttachmentAdapter,
 } from "./attachmentAdapter";
 import {
-  peekPendingQuote,
-  setPendingQuote,
-  takePendingQuote,
+  restorePendingQuotesExcept,
+  takePendingQuotes,
+  type PendingQuote,
 } from "./pendingQuote";
 import { useToast } from "@/components/ui/toast";
 import {
@@ -61,6 +61,30 @@ export interface UseConvexChatRuntimeArgs {
 export interface TurnGate {
   begin: () => void;
   cancel: () => void;
+}
+
+/** Anchors the server just named as GONE, parsed out of its rejection.
+ *
+ *  `sendMessage` refuses a turn ATOMICALLY — quoting fewer passages than the
+ *  user picked would answer a question they did not ask — but it names the
+ *  stale anchor, so the composer can drop THAT chip and hand the rest back.
+ *  Throwing the whole selection away because one target was regenerated is how
+ *  a user silently loses work they deliberately assembled. */
+export function goneQuoteTargets(error: unknown): Set<string> {
+  const message = error instanceof Error ? error.message : "";
+  return new Set(
+    [...message.matchAll(/Invalid: quote target gone \[([^\]]+)\]/g)].map(
+      (found) => found[1]!,
+    ),
+  );
+}
+
+/** Whether the rejection is one that RE-SENDING the same passages would hit
+ *  again. Restaging those would wedge every retry behind the same refusal. */
+export function quotesRejectedOutright(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  if (goneQuoteTargets(error).size > 0) return false;
+  return /Invalid:.*quote/i.test(message);
 }
 
 export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
@@ -119,11 +143,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // undefined on an unrouted send) to match the query's inferred shape.
         routedInstanceName: args.routedAgent?.instanceName,
         routedAgentId: args.routedAgent?.agentId,
-        // Quote-reply echo: the collapsed header renders this frame (keys
-        // always present to match the query's inferred shape).
-        quotedMessageId: args.quote?.messageId,
-        quotedBlockIndex: args.quote?.blockIndex ?? undefined,
-        quotedExcerpt: args.quote?.excerpt,
+        // Quote-reply echo: the collapsed headers render this frame (key always
+        // present to match the query's inferred shape).
+        quotedRefs: args.quotes,
         // A user echo is never a merged bubble; key present to match the
         // query's inferred shape.
         hasMergedRuns: false,
@@ -622,10 +644,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // normal chat / the very first turn). Authorized + stamped server-side.
         const routedAgent = computeRoutedAgent();
 
-        // QUOTE-REPLY: consume THIS chat's staged quote exactly once — the
+        // QUOTE-REPLY: consume THIS chat's staged passages exactly once — the
         // per-chat keying means a quote staged in another chat can never ride
         // this send.
-        const quote = takePendingQuote(chatId);
+        const quotes = takePendingQuotes(chatId);
 
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send
@@ -644,26 +666,41 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             clientMessageId: crypto.randomUUID(),
             attachments,
             ...(routedAgent ? { routedAgent } : {}),
-            ...(quote
+            ...(quotes.length > 0
               ? {
-                  quote: {
-                    messageId: quote.messageId as Id<"messages">,
-                    blockIndex: quote.blockIndex,
-                    excerpt: quote.excerpt,
-                  },
+                  quotes: quotes.map((q) => ({
+                    messageId: q.messageId as Id<"messages">,
+                    blockIndex: q.blockIndex,
+                    excerpt: q.excerpt,
+                  })),
                 }
               : {}),
           });
         } catch (e) {
-          // Restage the quote so a failed send does not silently drop the
-          // user's "replying to" reference — but never clobber a NEWER quote
-          // staged while this send was in flight, and never restage a quote
-          // the SERVER rejected as invalid (deleted/regenerated target): that
-          // would wedge every retry behind the same rejection (codex P2).
-          const quoteRejected =
-            e instanceof Error && /Invalid:.*quote/i.test(e.message);
-          if (quote && !quoteRejected && peekPendingQuote(chatId) === null)
-            setPendingQuote(chatId, quote);
+          // Restage the passages so a failed send does not silently drop the
+          // user's "replying to" references — but never clobber quotes staged
+          // while this send was in flight (restoring on top would REORDER them,
+          // and could exceed the bound), and never restage quotes the SERVER
+          // rejected as invalid (deleted target, over budget): that would wedge
+          // every retry behind the same rejection (codex P2).
+          // A stale anchor is NOT a reason to lose the whole selection: drop
+          // the passages the server named as gone, give the rest back, and say
+          // what changed. Anything the merge could not fit is reported too —
+          // never dropped quietly.
+          if (!quotesRejectedOutright(e)) {
+            const gone = goneQuoteTargets(e);
+            const outcome = restorePendingQuotesExcept(chatId, quotes, gone);
+            if (outcome.gone > 0) {
+              toast.error(
+                m.quote_reply_target_dropped({ count: outcome.gone }),
+              );
+            }
+            if (outcome.dropped > 0) {
+              toast.error(
+                m.quote_reply_restore_dropped({ count: outcome.dropped }),
+              );
+            }
+          }
           // The mutation rejected BEFORE the server accepted the turn (validation,
           // auth, transient client failure). No assistant reply will arrive, so
           // the reactive clear can't fire — release the in-flight gate now instead
@@ -721,7 +758,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // MULTI-AGENT: a queued follow-up routes by the SAME rule (the chat already
       // has a turn in flight, so it is never the first turn).
       const routedAgent = computeRoutedAgent();
-      const quote = takePendingQuote(chatId);
+      const quotes = takePendingQuotes(chatId);
       const clientMessageId = crypto.randomUUID();
       // Route the optimistic echo to the QUEUE DOCK (not the thread): the echo
       // id is deterministic (optimistic-<clientMessageId>).
@@ -732,13 +769,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           text,
           clientMessageId,
           ...(routedAgent ? { routedAgent } : {}),
-          ...(quote
+          ...(quotes.length > 0
             ? {
-                quote: {
-                  messageId: quote.messageId as Id<"messages">,
-                  blockIndex: quote.blockIndex,
-                  excerpt: quote.excerpt,
-                },
+                quotes: quotes.map((q) => ({
+                  messageId: q.messageId as Id<"messages">,
+                  blockIndex: q.blockIndex,
+                  excerpt: q.excerpt,
+                })),
               }
             : {}),
         });
@@ -746,10 +783,24 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       } catch (e) {
         // Same restage rules as onNew: never clobber a newer staged quote,
         // never restage a server-rejected (invalid-target) one.
-        const quoteRejected =
-          e instanceof Error && /Invalid:.*quote/i.test(e.message);
-        if (quote && !quoteRejected && peekPendingQuote(chatId) === null)
-          setPendingQuote(chatId, quote);
+        // A stale anchor is NOT a reason to lose the whole selection: drop
+        // the passages the server named as gone, give the rest back, and say
+        // what changed. Anything the merge could not fit is reported too —
+        // never dropped quietly.
+        if (!quotesRejectedOutright(e)) {
+          const gone = goneQuoteTargets(e);
+          const outcome = restorePendingQuotesExcept(chatId, quotes, gone);
+          if (outcome.gone > 0) {
+            toast.error(
+              m.quote_reply_target_dropped({ count: outcome.gone }),
+            );
+          }
+          if (outcome.dropped > 0) {
+            toast.error(
+              m.quote_reply_restore_dropped({ count: outcome.dropped }),
+            );
+          }
+        }
         toast.error(
           (e as Error)?.message?.includes("QUEUE_FULL")
             ? m.chat_queue_full()

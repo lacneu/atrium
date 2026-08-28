@@ -13,8 +13,14 @@
  * version-1 reader would accept such an archive and ignore the field, silently
  * keeping an inversion that crosses a page boundary; refusing what it cannot
  * read is the point of the number.
+ *
+ * 3 — messages carry `quotedRefs`, the SEVERAL passages a turn replies to. The
+ * field holds a NESTED reference (`messageId`) that a version-2 reader does not
+ * know to remap: it would accept the manifest as compatible, then try to insert
+ * an unknown field into its own schema and fail partway through the import.
+ * Refusing at the manifest is the whole point of the number.
  */
-export const ARCHIVE_FORMAT_VERSION = 2;
+export const ARCHIVE_FORMAT_VERSION = 3;
 
 /** Rows read per bounded page. Small enough that any single call stays well
  *  inside a Convex read, large enough that a long conversation does not take

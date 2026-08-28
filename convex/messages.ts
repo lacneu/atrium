@@ -16,6 +16,13 @@
 // reactive query; a full-history/scrollback view should paginate (see
 // `listByChatPaginated`) rather than widen this window.
 
+import {
+  hasQuotes,
+  outboxQuoteFieldsFor,
+  quoteFieldsFor,
+  quotedRefsOf,
+  type QuoteRef,
+} from "./lib/quoteReply";
 import { v } from "convex/values";
 import { purgeBookmarksForMessages } from "./chatBookmarks";
 import { query, mutation, internalQuery, type QueryCtx } from "./_generated/server";
@@ -50,6 +57,14 @@ import {
 // to cover a typical visible conversation while keeping the query (and the
 // per-message part fan-out below) cheap and bounded. Older history must be
 // reached via pagination, not by raising this.
+/** The quote fields a thread row carries: the ARRAY, plus the singular mirror
+ *  the previous bundle reads during the deployment window (quoteFieldsFor). */
+function quoteProjection(
+  message: Doc<"messages">,
+): ReturnType<typeof quoteFieldsFor<Id<"messages">>> {
+  return quoteFieldsFor(quotedRefsOf(message) as QuoteRef<Id<"messages">>[]);
+}
+
 export const MESSAGE_WINDOW = 200;
 
 // Bounded caps for the key-authed chat-state diagnostic reads (NEVER the
@@ -375,9 +390,18 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // QUOTE-REPLY: the block this user turn replies to (collapsed header
           // in the bubble). The stored excerpt is the display truth even if the
           // quoted message is later deleted.
-          quotedMessageId: message.quotedMessageId,
-          quotedBlockIndex: message.quotedBlockIndex,
-          quotedExcerpt: message.quotedExcerpt,
+          // Sent as the ARRAY whatever the row's vintage — the thread renders
+          // one chip per passage and never has to know which fields were used.
+          // Omitted entirely when the turn quotes nothing: this view is the hot
+          // per-message path and an empty array on every row is pure weight.
+          //
+          // The three SINGULAR fields ride alongside during the deployment
+          // window: a tab still running the previous bundle reads only those,
+          // and dropping them would make every quote header vanish from it —
+          // including on rows that tab had just written. They mirror the FIRST
+          // passage, which is exactly what that bundle could display anyway.
+          // Remove them once no old bundle is served.
+          ...quoteProjection(message),
           // The live streaming tokens of a CURRENT-version turn live in the
           // `streamingText` table (read by the cheap getStreamingText), so this heavy
           // view does not re-run per delta — the frontend overlays them by id. The
@@ -1552,9 +1576,9 @@ export const deleteMessage = mutation({
           ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
           // Quote-reply: the regenerated dispatch must re-carry the excerpt,
           // or the re-sent instruction loses its targeted passage.
-          ...(lastUser.quotedExcerpt
-            ? { quotedExcerpt: lastUser.quotedExcerpt }
-            : {}),
+          ...outboxQuoteFieldsFor(
+            quotedRefsOf(lastUser).map((q) => q.excerpt),
+          ),
         });
       }
     }

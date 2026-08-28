@@ -72,6 +72,7 @@ const MESSAGE_FIELDS_KEPT: ReadonlyArray<string> = [
   "quotedMessageId",
   "quotedBlockIndex",
   "quotedExcerpt",
+  "quotedRefs",
   "error",
   "errorCode",
   "attachedDocCount",

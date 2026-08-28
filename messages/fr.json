@@ -2178,5 +2178,10 @@
   "archive_too_large": "Cette archive est trop volumineuse pour être ouverte dans le navigateur",
   "sidebar_hidden_folders": "{count} dossier(s) retiré(s) de la barre",
   "sidebar_restore_folder": "Remettre dans la barre latérale",
-  "project_page_out_of_sidebar": "Ce dossier est retiré de la barre latérale"
+  "project_page_out_of_sidebar": "Ce dossier est retiré de la barre latérale",
+  "quote_reply_max_reached": "Maximum {count} citations par message",
+  "quote_reply_budget_reached": "Ces citations sont trop longues pour un seul message",
+  "injection_plural_note": "Une variante au pluriel est utilisée quand plusieurs passages sont cités. Personnaliser ce texte l'applique à tous les cas.",
+  "quote_reply_target_dropped": "{count} citation(s) retirée(s) : le passage cité n'existe plus",
+  "quote_reply_restore_dropped": "{count} citation(s) n'ont pas pu être remises"
 }

@@ -127,8 +127,12 @@ export function nearestBookmarkId(
  */
 export function previewFromText(raw: string, max = 48): string {
   const text = raw.replace(/\s+/g, " ").trim();
-  if (text.length <= max) return text;
-  const cut = text.slice(0, max);
+  // CODE POINTS, not UTF-16 units: cutting between a surrogate pair leaves a
+  // lone surrogate, which is not valid Unicode — the backend refuses to store
+  // it, so a preview ending on an emoji would fail the write it feeds.
+  const points = Array.from(text);
+  if (points.length <= max) return text;
+  const cut = points.slice(0, max).join("");
   const lastSpace = cut.lastIndexOf(" ");
   return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut) + "\u2026";
 }

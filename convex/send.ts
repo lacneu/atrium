@@ -26,7 +26,12 @@ import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
 import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
-import { QUOTE_EXCERPT_CAP } from "./lib/quoteReply";
+import {
+  assertQuoteRefs,
+  outboxQuoteFieldsFor,
+  quoteFieldsFor,
+  type QuoteRef,
+} from "./lib/quoteReply";
 import { requireAgentMembership } from "./chats";
 import { resolveTargetForTurn } from "./routing";
 
@@ -74,6 +79,18 @@ export const sendMessage = mutation({
         blockIndex: v.union(v.number(), v.null()),
         excerpt: v.string(),
       }),
+    ),
+    // SEVERAL passages in one turn. Supersedes `quote` when both are sent (an
+    // older client sends only `quote`); the guards below are the same, applied
+    // per passage, plus a count and a TOTAL excerpt budget.
+    quotes: v.optional(
+      v.array(
+        v.object({
+          messageId: v.id("messages"),
+          blockIndex: v.union(v.number(), v.null()),
+          excerpt: v.string(),
+        }),
+      ),
     ),
   },
   handler: async (ctx, args) => {
@@ -170,11 +187,31 @@ export const sendMessage = mutation({
     //     excerpt is server-bounded, and the block index must be a small
     //     non-negative integer. A deleted quoted message rejects cleanly (the
     //     UI cannot offer a quote on a message it no longer renders).
-    let quote: { messageId: Id<"messages">; blockIndex: number | null; excerpt: string } | null =
-      null;
-    if (args.quote !== undefined) {
-      const quoted = await ctx.db.get(args.quote.messageId);
-      if (quoted === null || quoted.chatId !== chat._id) {
+    // SHAPE + BOUNDS first, shared with the archive import (lib/quoteReply):
+    // count, per-excerpt cap, total budget, block index, de-duplication. The
+    // send REFUSES rather than clamps — the user chose these passages, and a
+    // turn quoting fewer than they picked answers a question they did not ask.
+    const requested = assertQuoteRefs(
+      args.quotes !== undefined
+        ? args.quotes
+        : args.quote !== undefined
+          ? [args.quote]
+          : [],
+    );
+    const quotes: QuoteRef<Id<"messages">>[] = [];
+    // GONE, not forbidden: a target deleted or regenerated between the click and
+    // the send. ALL of them are collected before refusing — stopping at the
+    // first would make the composer drop one chip per attempt, so a selection of
+    // ten stale anchors would need ten failed sends to clear.
+    const gone: Id<"messages">[] = [];
+    for (const one of requested) {
+      const messageId = one.messageId as Id<"messages">;
+      const quoted = await ctx.db.get(messageId);
+      if (quoted === null) {
+        gone.push(messageId);
+        continue;
+      }
+      if (quoted.chatId !== chat._id) {
         throw new Error("Invalid: quoted message not in this chat");
       }
       // Only an ASSISTANT answer can be quoted (the feature's contract: "here
@@ -183,16 +220,15 @@ export const sendMessage = mutation({
       if (quoted.role !== "assistant") {
         throw new Error("Invalid: quoted message is not an assistant reply");
       }
-      const excerpt = args.quote.excerpt.trim().slice(0, QUOTE_EXCERPT_CAP);
-      if (excerpt.length === 0) throw new Error("Invalid: empty quote excerpt");
-      const blockIndex = args.quote.blockIndex;
-      if (
-        blockIndex !== null &&
-        (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex > 10_000)
-      ) {
-        throw new Error("Invalid: quote block index");
-      }
-      quote = { messageId: args.quote.messageId, blockIndex, excerpt };
+      quotes.push({ messageId, blockIndex: one.blockIndex, excerpt: one.excerpt });
+    }
+    if (gone.length > 0) {
+      // Named so the composer drops exactly those chips and hands the rest
+      // back. Still refused ATOMICALLY: sending fewer passages than the user
+      // picked would answer a question they did not ask.
+      throw new Error(
+        gone.map((id) => `Invalid: quote target gone [${id}]`).join("; "),
+      );
     }
 
     // 4. Optimistic user message (immediately visible & reactive). A QUEUED follow-up
@@ -217,15 +253,10 @@ export const sendMessage = mutation({
         : {}),
       // Quote-reply anchor + display excerpt (the prompt preamble is composed
       // at dispatch/rehydration — `text` stays the user's clean instruction).
-      ...(quote
-        ? {
-            quotedMessageId: quote.messageId,
-            ...(quote.blockIndex !== null
-              ? { quotedBlockIndex: quote.blockIndex }
-              : {}),
-            quotedExcerpt: quote.excerpt,
-          }
-        : {}),
+      // BOTH vintages (see quoteFieldsFor): the array is the truth, the singular
+      // fields mirror the first passage so a rolled-back revision still shows a
+      // quote instead of none.
+      ...quoteFieldsFor(quotes),
     });
 
     // Attach uploaded files as ordered parts on the user message so they render
@@ -282,7 +313,7 @@ export const sendMessage = mutation({
       ...(args.routedAgent ? { routedAgent: args.routedAgent } : {}),
       // Quote-reply: the dispatch (and any redo) prefixes the text with the
       // resolved quote_reply injection filled with this excerpt.
-      ...(quote ? { quotedExcerpt: quote.excerpt } : {}),
+      ...outboxQuoteFieldsFor(quotes.map((q) => q.excerpt)),
     });
 
     // 6. Schedule the dispatch ONLY for an idle chat. A queued row is dispatched

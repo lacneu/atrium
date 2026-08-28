@@ -48,6 +48,27 @@ describe("transcriptToMarkdown", () => {
     expect(transcriptToMarkdown([], { title: "   " })).toContain("# Conversation");
   });
 
+  it("renders ONE line per quoted passage, in the order picked", () => {
+    const md = transcriptToMarkdown(
+      [
+        {
+          role: "user",
+          text: "Corrige ces deux points",
+          createdAt: T0,
+          quotedExcerpts: ["le premier passage", "le second passage"],
+        },
+      ],
+      {},
+    );
+    // A transcript that kept only the first passage would misrepresent what the
+    // user actually pointed at.
+    const iFirst = md.indexOf("> En réponse à : le premier passage");
+    const iSecond = md.indexOf("> En réponse à : le second passage");
+    expect(iFirst).toBeGreaterThan(-1);
+    expect(iSecond).toBeGreaterThan(iFirst);
+    expect(md.indexOf("Corrige ces deux points")).toBeGreaterThan(iSecond);
+  });
+
   it("renders the quote-reply line above a quoted user turn", () => {
     const md = transcriptToMarkdown(
       [
@@ -55,7 +76,7 @@ describe("transcriptToMarkdown", () => {
           role: "user",
           text: "Corrige ce point",
           createdAt: T0,
-          quotedExcerpt: "le passage cité",
+          quotedExcerpts: ["le passage cité"],
         },
       ],
       {},
@@ -99,15 +120,15 @@ describe("transcriptToJson", () => {
             role: "user",
             text: "Corrige ce point",
             createdAt: T0,
-            quotedExcerpt: "le passage cité",
+            quotedExcerpts: ["le passage cité"],
           },
           { role: "assistant", text: "Fait.", createdAt: T0 + 1 },
         ],
         {},
       ),
     );
-    expect(json.messages[0].quotedExcerpt).toBe("le passage cité");
-    expect("quotedExcerpt" in json.messages[1]).toBe(false);
+    expect(json.messages[0].quotedExcerpts).toEqual(["le passage cité"]);
+    expect("quotedExcerpts" in json.messages[1]).toBe(false);
   });
 });
 

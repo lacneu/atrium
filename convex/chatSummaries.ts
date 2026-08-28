@@ -44,7 +44,12 @@ import {
   resolveInjection,
   type PromptInjectionConfig,
 } from "./lib/promptInjections";
-import { composeQuotedText, quotePreamble } from "./lib/quoteReply";
+import {
+  composeQuotedText,
+  hasQuotes,
+  quotedRefsOf,
+  quotesPreamble,
+} from "./lib/quoteReply";
 import {
   summarizeSessionNonce,
   CHUNK_MAX_CHARS,
@@ -338,7 +343,7 @@ function usableTurnsDesc(
         // A quoted excerpt IS content (attachment-only quoted turn) — it must
         // reach the summary or the quote link is lost for good (codex P2).
         (m.text.trim().length > 0 ||
-          m.quotedExcerpt !== undefined ||
+          hasQuotes(m) ||
           (children.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
         effectiveOrder(m) > watermark,
     )
@@ -360,8 +365,15 @@ export function composedTurnBody(
   // composition as dispatch/rehydration) — without it the summarizer reads
   // "corrige ceci" with nothing to bind "ceci" to, and the link is lost for
   // good once the turn passes under the watermark.
-  return m.role === "user" && m.quotedExcerpt !== undefined
-    ? composeQuotedText(quotePreamble(m.quotedExcerpt, injections, locale), base)
+  return m.role === "user" && hasQuotes(m)
+    ? composeQuotedText(
+        quotesPreamble(
+          quotedRefsOf(m).map((q) => q.excerpt),
+          injections,
+          locale,
+        ),
+        base,
+      )
     : base;
 }
 
@@ -581,7 +593,7 @@ async function scheduleSummarizeJob(
       !(
         (m.role === "user" || m.role === "assistant") &&
         (m.text.trim().length > 0 ||
-          m.quotedExcerpt !== undefined ||
+          hasQuotes(m) ||
           (idx.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
         m.status === "complete" &&
         effectiveOrder(m) > watermark
@@ -613,7 +625,7 @@ async function scheduleSummarizeJob(
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
           (m.text.trim().length > 0 ||
-            m.quotedExcerpt !== undefined ||
+            hasQuotes(m) ||
             (pageChildren.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
           effectiveOrder(m) > watermark &&
           effectiveOrder(m) < cutoffOrder,
@@ -1161,7 +1173,7 @@ export const getChatSummary = query({
           m.status === "complete" &&
           (m.role === "user" || m.role === "assistant") &&
           (m.text.trim().length > 0 ||
-            m.quotedExcerpt !== undefined ||
+            hasQuotes(m) ||
             (gaugeChildren.byMsg.get(m._id as string)?.length ?? 0) > 0) &&
           effectiveOrder(m) > watermark,
       )

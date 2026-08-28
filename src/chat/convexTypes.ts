@@ -216,12 +216,17 @@ export interface ConvexMessageView {
   /** IMPORTED history: the agent the CONVERSATION was bound to elsewhere. Used
    *  only where neither the message nor the turn it answers names one. */
   chatImportedAgentLabel?: string;
-  /** QUOTE-REPLY: the assistant block this user turn replies to. The stored
-   *  excerpt is the display truth (kept even if the quoted message is deleted);
-   *  messageId+blockIndex drive the scroll+flash jump. */
-  quotedMessageId?: string;
-  quotedBlockIndex?: number;
-  quotedExcerpt?: string;
+  /** QUOTE-REPLY: the assistant passages this user turn replies to, in the order
+   *  the user picked them. The stored excerpt is the display truth (kept even if
+   *  the quoted message is deleted); messageId+blockIndex drive the scroll+flash
+   *  jump, and messageId is absent when the quoted message did not survive a
+   *  fork or an import. Absent = this turn quotes nothing. The server derives it
+   *  from either storage vintage, so the client never sees the singular fields. */
+  quotedRefs?: ReadonlyArray<{
+    messageId?: string;
+    blockIndex: number | null;
+    excerpt: string;
+  }>;
   /** L2: count of ready downloadable document attachments (Sources-chip badge). */
   attachedDocCount?: number;
   /** Dispatch lifecycle (from loadChatView): the outbox row + its status

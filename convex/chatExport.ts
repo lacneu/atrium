@@ -10,6 +10,7 @@
 // reference resolves to null (no existence leak) and the composer falls back
 // to pasting plain text.
 
+import { hasQuotes, quotedRefsOf } from "./lib/quoteReply";
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
@@ -319,8 +320,11 @@ export const exportByReference = query({
       // Quote-reply context: without it "corrige ceci" is ambiguous to the
       // reading agent (codex P2). One blockquote line; the excerpt is
       // single-line by construction (previewFromText, server-capped).
-      if (msg.role === "user" && msg.quotedExcerpt !== undefined) {
-        text = `> ${L.inReplyTo} : ${msg.quotedExcerpt}\n\n${text}`;
+      if (msg.role === "user" && hasQuotes(msg)) {
+        const lines = quotedRefsOf(msg)
+          .map((q) => `> ${L.inReplyTo} : ${q.excerpt}`)
+          .join("\n");
+        text = `${lines}\n\n${text}`;
       }
       const head = `### ${whoByIndex[i]} — ${new Date(msg.updatedAt).toISOString()}\n\n`;
       const cost = utf8Len(head) + utf8Len(text) + 2;

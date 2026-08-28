@@ -28,6 +28,11 @@
 //   - the chain is bounded by MAX_TURN_RETRIES via the outbox row's
 //     autoRetryAttempt stamp — a persistent conflict ends in the honest error
 //     card (labeled session_init_conflict → actionable UI copy), never a loop.
+import {
+  hasQuotes,
+  outboxQuoteFieldsFor,
+  quotedRefsOf,
+} from "./lib/quoteReply";
 import { v } from "convex/values";
 import { purgeBookmarksForMessages } from "./chatBookmarks";
 import { internalMutation } from "./_generated/server";
@@ -569,9 +574,7 @@ export const autoRetryTurn = internalMutation({
       ...(routedAgent ? { routedAgent } : {}),
       // Quote-reply: the auto-retried dispatch must re-carry the excerpt,
       // or the re-sent instruction loses its targeted passage.
-      ...(lastUser.quotedExcerpt
-        ? { quotedExcerpt: lastUser.quotedExcerpt }
-        : {}),
+      ...outboxQuoteFieldsFor(quotedRefsOf(lastUser).map((q) => q.excerpt)),
       autoRetryAttempt: attempt,
     });
     // 3. Ride the regenerate chain: gateway session reset (clears the conflicted

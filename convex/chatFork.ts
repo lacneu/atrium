@@ -24,6 +24,7 @@
 //   - correlation fields (runId, turnSessionKey, attachedDocCount) are NOT
 //     copied — they belong to the source's live sessions.
 
+import { quoteFieldsFor, quotedRefsOf } from "./lib/quoteReply";
 import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
@@ -254,16 +255,15 @@ export const forkChat = mutation({
         // was copied earlier in this chronological loop); a miss keeps the
         // excerpt without an anchor — same semantics as a deleted quoted
         // message (header shows, click quietly gives up).
-        ...(msg.quotedExcerpt !== undefined
-          ? { quotedExcerpt: msg.quotedExcerpt }
-          : {}),
-        ...(msg.quotedBlockIndex !== undefined
-          ? { quotedBlockIndex: msg.quotedBlockIndex }
-          : {}),
-        ...(msg.quotedMessageId !== undefined &&
-        idMap.has(msg.quotedMessageId)
-          ? { quotedMessageId: idMap.get(msg.quotedMessageId)! }
-          : {}),
+        ...quoteFieldsFor(
+          quotedRefsOf(msg).map((q) => ({
+            ...(q.messageId !== undefined && idMap.has(q.messageId)
+              ? { messageId: idMap.get(q.messageId)! }
+              : {}),
+            blockIndex: q.blockIndex,
+            excerpt: q.excerpt,
+          })),
+        ),
         // Preserve the SOURCE logical order exactly. Safe w.r.t. the windowing
         // invariant: these rows have a fresh _creationTime (inside the newest-N
         // window) and an orderTime strictly in the past (before any future send

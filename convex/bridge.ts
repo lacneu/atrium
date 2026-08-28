@@ -42,7 +42,14 @@ import {
   fillTemplate,
   resolveInjection,
 } from "./lib/promptInjections";
-import { composeQuotedText } from "./lib/quoteReply";
+import {
+  composeQuotedText,
+  fillQuoteTemplate,
+  outboxExcerpts,
+  pickQuoteTemplate,
+  quotedRefsOf,
+  resolveQuoteTemplates,
+} from "./lib/quoteReply";
 import { classifyAttachment } from "./lib/mediaTransport";
 import {
   chatHasActivityBlockers,
@@ -636,13 +643,8 @@ export const getChatRouting = internalQuery({
       // entry `quote_reply`, admin-customizable/disable-able). The dispatch
       // fills {excerpt} when the outbox row carries one — resolved HERE so
       // dispatch needs no extra read and follows the instance content locale.
-      quoteReplyTemplate: effectiveTemplate(
-        "quote_reply",
-        resolveInjection(
-          "quote_reply",
-          instance?.config?.promptInjections,
-          contentLocale,
-        ),
+      quoteReplyTemplates: resolveQuoteTemplates(
+        instance?.config?.promptInjections,
         contentLocale,
       ),
       // Per-instance bridge URL (Model M) + NON-secret config (hot, in-band).
@@ -1533,14 +1535,24 @@ export const dispatch = internalAction({
             // QUOTE-REPLY: a turn replying to a block ships the resolved
             // preamble AHEAD of the user's clean text — plain prompt text, so
             // OpenClaw and Hermes are covered identically (single send path).
-            text: row.quotedExcerpt
-              ? composeQuotedText(
-                  fillTemplate(routing.quoteReplyTemplate ?? "", {
-                    excerpt: row.quotedExcerpt,
-                  }),
-                  row.text,
-                )
-              : row.text,
+            text: (() => {
+              // The outbox carries the excerpts of THIS turn (one row = one
+              // dispatch), so the count is read here and the singular/plural
+              // template picked from it — one composition point, both providers.
+              const excerpts = outboxExcerpts(row);
+              return excerpts.length === 0
+                ? row.text
+                : composeQuotedText(
+                    fillQuoteTemplate(
+                      pickQuoteTemplate(
+                        routing.quoteReplyTemplates ?? { one: "", many: "" },
+                        excerpts.length,
+                      ),
+                      excerpts,
+                    ),
+                    row.text,
+                  );
+            })(),
             // The GATEWAY idempotency source: the re-park flip mints a fresh
             // `dispatchKey` alias (the killed dispatch consumed the original
             // key) while the browser's own clientMessageId stays intact for

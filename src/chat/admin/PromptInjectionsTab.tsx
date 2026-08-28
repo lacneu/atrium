@@ -369,6 +369,14 @@ function InjectionCard({
               <span className="oc-injection__ph">
                 {m.injection_preview_note()}
               </span>
+              {/* An injection with a plural default has a SECOND wording the
+                  preview above does not show. Saying so is what keeps an admin
+                  from replacing both with one singular phrasing unknowingly. */}
+              {def.pluralDefaultTemplate !== undefined && !disabled ? (
+                <span className="oc-injection__ph">
+                  {m.injection_plural_note()}
+                </span>
+              ) : null}
             </>
           ) : (
             <span className="oc-injection__ph">
