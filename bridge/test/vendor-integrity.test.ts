@@ -40,7 +40,7 @@ import { describe, expect, it } from "vitest";
 
 import { vendoredVersions } from "./helpers/vendored.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { deriveSnapshotFields } from "../scripts/lib/derive-snapshot.mjs";
+import { SNAPSHOT_SITES, deriveSnapshotFields } from "../scripts/lib/derive-snapshot.mjs";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { deriveEventCatalogue } from "../scripts/lib/derive-event-catalogue.mjs";
 
@@ -96,7 +96,9 @@ function stripHeader(text: string): string {
   // The header is OUR block; upstream's own first line is also a comment, so stop at
   // the marker line the script always writes last.
   const end = lines.findIndex((l) =>
-    l.startsWith("// (Only change vs upstream:"),
+    // The last header line names the substitutions applied to THIS file: none,
+    // one, or several — three exact spellings, all ours (vendor-protocol.mjs).
+    /^\/\/ \((Only changes? vs upstream: |No change vs upstream\.)/.test(l),
   );
   if (end === -1) throw new Error("vendored file has no provenance header");
   return lines.slice(end + 1).join("\n");
@@ -217,6 +219,12 @@ describe("vendored protocol integrity", () => {
         // edit fails, whatever the hashes say.
         if (prov === null) return;
         const REWRITE = /from "\.\.?\/(?:[^"]*\/)?([^/"]+\.js)"/g;
+        // The vendorer also collapses WORKSPACE PACKAGE specifiers, introduced at
+        // 2026.8.1 by `protocol-value-normalization.ts` re-exporting from
+        // `@openclaw/normalization-core`. Both substitutions must be known here or
+        // a legitimate rewrite reads as "not an import line" — the gate failing on
+        // the vendorer doing exactly what it documents.
+        const REWRITE_PKG = /from "@openclaw\/[a-z0-9-]+\/([a-z0-9-]+)"/g;
         const suspicious: string[] = [];
         for (const [file, hashes] of Object.entries(prov.files)) {
           if (hashes.rewrites.length === 0) continue;
@@ -224,7 +232,9 @@ describe("vendored protocol integrity", () => {
             readFileSync(new URL(`${version}/${file}`, PROTOCOL), "utf-8"),
           ).split("\n");
           for (const r of hashes.rewrites) {
-            const expected = r.upstream.replace(REWRITE, 'from "./$1"');
+            const expected = r.upstream
+              .replace(REWRITE_PKG, 'from "./$1.js"')
+              .replace(REWRITE, 'from "./$1"');
             if (expected === r.upstream) {
               suspicious.push(`${file}:${r.line} not an import line: ${r.upstream.trim()}`);
               continue;
@@ -371,7 +381,27 @@ describe("vendored protocol integrity", () => {
           let rederived: string[];
           let stored: string[];
           if (name === "session-event-snapshot.json") {
-            rederived = (deriveSnapshotFields as (s: string) => string[])(raw);
+            // The FUNCTION to derive from follows the artifact's declared source,
+            // not one hardcoded name: v2026.8.1 moved the shape from
+            // server-chat.ts/buildSessionEventSnapshot to
+            // session-event-payload.ts/buildGatewaySessionSnapshot, and deriving
+            // with the old name over the new file reported "not found" — which
+            // reads as an upstream removal and is nothing of the sort.
+            const site = (
+              SNAPSHOT_SITES as { source: string; fn: string }[]
+            ).find((c) => c.source === rec.upstreamPath);
+            if (site === undefined) {
+              wrong.push(
+                `${name}: derivedFrom ${rec.upstreamPath} is not a known snapshot site`,
+              );
+              continue;
+            }
+            rederived = (
+              deriveSnapshotFields as (
+                s: string,
+                o?: { fnName?: string; sourceLabel?: string },
+              ) => string[]
+            )(raw, { fnName: site.fn, sourceLabel: site.source });
             stored = body.fields ?? [];
           } else if (name === "event-catalogue.json") {
             const constantsAt = `${root}/${rec.constantsPath ?? ""}`;

@@ -905,3 +905,100 @@ describe("the fill reading carries the figure it came from", () => {
     expect(p?.fillPct).toBe(97);
   });
 });
+
+describe("the outbound delivery instruction is WITHHELD on a poisoning gateway", () => {
+  // Proving the FUNCTION returns a reason proves nothing about the send path: the
+  // question is whether the message actually loses the instruction. Asserted on the
+  // `chat.send` body the fake gateway received.
+  const sentMessage = (gw: FakeGateway): string =>
+    String(
+      (gw.calls.find(([m]) => m === "chat.send")?.[1] as { message?: unknown })
+        ?.message ?? "",
+    );
+  const DIR = "/srv/media/outbound";
+
+  it("a healthy version still gets it", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
+      "2026.9.1";
+    await performSend(session, body, writer, null, DIR);
+    expect(sentMessage(gw)).toContain(DIR);
+  });
+
+  it("2026.8.1 does NOT: a delivered file would poison the session", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
+      "2026.8.1";
+    await performSend(session, body, writer, null, DIR);
+    expect(gw.countOf("chat.send"), "the turn still goes through").toBe(1);
+    expect(sentMessage(gw), "the agent is not asked to deliver a file").not.toContain(DIR);
+  });
+
+  it("…unless THIS instance's image is attested to carry the fix", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
+      "2026.8.1";
+    await performSend(session, body, writer, null, DIR, {
+      attachmentFixAttested: true,
+    });
+    expect(sentMessage(gw)).toContain(DIR);
+  });
+
+  it("a hello with NO version still quarantines when the config names the version", async () => {
+    // A degraded handshake leaves `gatewayVersion` null. Reading only the live field
+    // disarmed the quarantine on a gateway the operator had configured as 2026.8.x.
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string | null }).gatewayVersion =
+      null;
+    await performSend(session, body, writer, null, DIR, {
+      gatewayVersionFallback: "2026.8.2",
+    });
+    expect(sentMessage(gw)).not.toContain(DIR);
+  });
+
+  it("a MALFORMED live version does not outrank the configured one", async () => {
+    // A hello announcing `dev` is not evidence: it parses to nothing, so the operator's
+    // configured version decides (codex).
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string }).gatewayVersion = "dev";
+    await performSend(session, body, writer, null, DIR, {
+      gatewayVersionFallback: "2026.8.2",
+    });
+    expect(sentMessage(gw)).not.toContain(DIR);
+  });
+
+  it("NO version at all fails CLOSED: unidentified is not the same as safe", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string | null }).gatewayVersion =
+      null;
+    await performSend(session, body, writer, null, DIR, null);
+    expect(gw.countOf("chat.send"), "the turn still goes through").toBe(1);
+    expect(sentMessage(gw)).not.toContain(DIR);
+  });
+
+  it("a HEALTHY-looking fallback cannot lift the quarantine on a mute hello (codex)", async () => {
+    // After a rollback to 2026.8.x with a degraded handshake, the configured version may
+    // still read 2026.9.1. Treating it as proof answered "safe" for a gateway that
+    // poisons. The fallback may CONFIRM a quarantine, never lift one.
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string | null }).gatewayVersion =
+      null;
+    await performSend(session, body, writer, null, DIR, {
+      gatewayVersionFallback: "2026.9.1",
+    });
+    expect(gw.countOf("chat.send"), "the turn still goes through").toBe(1);
+    expect(sentMessage(gw)).not.toContain(DIR);
+  });
+
+  it("an instance attested elsewhere does NOT re-arm this one", async () => {
+    // One bridge serves several gateways. The attestation is per instance, so a
+    // patched image next door cannot speak for a stock one.
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
+      "2026.8.1";
+    await performSend(session, body, writer, null, DIR, {
+      attachmentFixAttested: false,
+    });
+    expect(sentMessage(gw)).not.toContain(DIR);
+  });
+});

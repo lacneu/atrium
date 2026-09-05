@@ -34,6 +34,7 @@ import { bridgeCompatTarget } from "./schema";
 import {
   capabilitiesForInstance,
   foldProtocolInfo,
+  mergeDefectAwareness,
   normalizeCapabilitiesBody,
   summarizeCompat,
   type CompatSummary,
@@ -44,7 +45,7 @@ import { resolveHealthPollTargets } from "./lib/bridgeRouting";
 
 const COMPAT_KEY = "singleton";
 
-async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeCompat"> | null> {
+export async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeCompat"> | null> {
   return await ctx.db
     .query("bridgeCompat")
     .withIndex("by_key", (q) => q.eq("key", COMPAT_KEY))
@@ -116,7 +117,10 @@ export const pollBridgeCompat = internalAction({
           rehydrationDefault = n.rehydrationDefault;
         if (turnSessionEcho === null) turnSessionEcho = n.turnSessionEcho;
         if (protocolVersion === null) protocolVersion = n.protocolVersion;
-        if (compat === null) compat = n.compat;
+        // NOT simply "first wins": a rollout can poll the OLD bridge first, and its
+        // manifest predates the defect window — every target would then be judged
+        // without it, decided by URL order (codex). Defect knowledge merges forward.
+        compat = compat === null ? n.compat : mergeDefectAwareness(compat, n.compat);
         protocolParts.push(n.protocol);
         // PER BRIDGE, and before the fold. The fold merges every reachable bridge into one
         // value and drops the nulls, so a single modern bridge used to vouch for a legacy

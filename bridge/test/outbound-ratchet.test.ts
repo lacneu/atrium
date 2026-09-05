@@ -206,7 +206,7 @@ async function captureDiscoveryBodies(): Promise<
   const models = recorder(() => ({ models: [{ id: "opus", name: "Opus" }] }));
   await ensureAvailableModels({
     ...models.conn,
-    availableModels: null,
+    modelsByOwner: new Map(),
   } as never);
   out.push(...models.calls);
 

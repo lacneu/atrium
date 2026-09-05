@@ -97,8 +97,8 @@ export type ConvexMessagePartView =
   | PlanPartView
   | ProvenancePartView;
 
-/** A work-plan update (update_plan): the newest part in a message is the
- *  plan's current state. Rendered by PlanActivity. */
+/** A work-plan update (update_plan). WHICH part is current is decided by cause
+ *  order, not position — see convex/lib/planOrder.ts. Rendered by PlanActivity. */
 export type PlanPartView = {
   kind: "plan";
   steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
@@ -106,6 +106,9 @@ export type PlanPartView = {
   /** TRUE = inferred progression (a delivery run's update_plan carries no
    *  plan content on the wire — the server advanced the last known plan). */
   estimated?: boolean;
+  /** When the BRIDGE received the frame that caused this update. Orders the
+   *  parts by cause rather than by arrival — see planView.resolveCurrentPlan. */
+  stamp?: number;
 };
 
 /** A cron job the agent created/updated/removed this turn (bridge-parsed

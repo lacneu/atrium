@@ -1,0 +1,89 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 2,
+  "gatewayVersion": "2026.9.1",
+  "openclawRuns": [
+    {
+      "id": "basic-turn",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "tool-exec",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "update-plan",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "media-outbound",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "spawn-announce-merge",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "spawn-chain-merge",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "spawn-parallel-merge",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "async-task",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    },
+    {
+      "id": "cron-tool",
+      "ok": true,
+      "chat": "c133b4a4693f9d8b"
+    }
+  ],
+  "verdict": "GO",
+  "at": "2026-09-05T15:52:00.764Z",
+  "scenarios": [
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "hermes-basic-turn",
+    "hermes-cron-list",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "tool-exec",
+    "update-plan"
+  ],
+  "providers": {
+    "basic-turn": "openclaw",
+    "tool-exec": "openclaw",
+    "update-plan": "openclaw",
+    "media-outbound": "openclaw",
+    "spawn-announce-merge": "openclaw",
+    "spawn-chain-merge": "openclaw",
+    "spawn-parallel-merge": "openclaw",
+    "async-task": "openclaw",
+    "cron-tool": "openclaw",
+    "hermes-basic-turn": "hermes",
+    "hermes-cron-list": "hermes"
+  },
+  "flags": [],
+  "atriumSha": "82c8dca5f947e03d3aad79c7d2926d310f026c0a",
+  "worktree": {
+    "dirty": true,
+    "deltaSha256": "71e64cbcf72ac2cd23b4f7d22b1fffc2ab32aaaf136c20745cdf723b2413a1a0"
+  },
+  "supportDigest": "1f1dd9565ed8191184805734a19f11e24cbcd6a8b5aa66c92ae023f53982c8b2",
+  "bridgeVersion": "0.76.0",
+  "vendoredSha256": "179c1be0a5246b974338b359baac0cee8db1461a662993957398de2e3959a1e2"
+}

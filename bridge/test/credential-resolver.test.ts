@@ -29,6 +29,7 @@ const SHARED: SharedConfig = {
   inboundAgentMount: "/home/node/.openclaw/media/inbound",
   mediaOutboundDirOverride: null,
   inboundMediaDirOverride: null,
+  attachmentFixAttestedInstances: [],
   bridgeInstanceSecrets: [],
   credentialRetryMs: 30_000,
 };

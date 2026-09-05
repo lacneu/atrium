@@ -88,10 +88,18 @@ export interface InstanceBundle {
   outboundScan?: OutboundScan;
 }
 
-/** A monotonic clock in SECONDS (matches the normalizer's time unit). */
+/** The bridge's clock, in SECONDS (matches the normalizer's time unit).
+ *
+ *  NOT monotonic: the default reads the WALL clock, so an NTP correction can
+ *  move it backwards. Everything that only measures elapsed time tolerates
+ *  that; the one consumer that ORDERS by it — the plan stamp
+ *  (convex/lib/planOrder.ts) — states the inversion as a limit rather than
+ *  claiming a guarantee this does not give. */
 export type Clock = () => number;
 
-const defaultClock: Clock = () => Date.now() / 1000;
+/** Exported so the unit (seconds, not milliseconds) can be pinned by a test:
+ *  a stamp written in milliseconds would outrank every real one forever. */
+export const defaultClock: Clock = () => Date.now() / 1000;
 
 /**
  * Per-turn routing the registry needs to build the gateway session key. `agentId`
@@ -1173,6 +1181,8 @@ export const IDLE_SESSION_TTL_SECONDS = 15 * 60;
  * (and connecting) it on first use. Routing uses `openclawChatId` to build the
  * gateway session key; when absent we fall back to the Convex chatId.
  */
+const MAX_RECENT_CHAT_KEYS = 4;
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
@@ -1181,6 +1191,11 @@ export class SessionRegistry {
   // instantly — but a background chain started on it can still produce
   // invisible links for a while, and the task discovery must keep matching
   // that registry session. Cap 4 keys / 30 min TTL per chat.
+  /** How many recent session keys a chat keeps for discovery. The task probe must ask
+   *  for ALL of them — asking fewer left the oldest retained key unqueried, which is
+   *  where a chain still producing invisible links lives after a re-key (codex). */
+  static readonly MAX_RECENT_CHAT_KEYS = MAX_RECENT_CHAT_KEYS;
+
   private readonly recentChatKeys = new Map<
     string,
     { key: string; at: number }[]
@@ -1438,7 +1453,7 @@ export class SessionRegistry {
       const hist = this.recentChatKeys.get(chatId) ?? [];
       if (!hist.some((h) => h.key === session.sessionKey)) {
         hist.push({ key: session.sessionKey, at: this.clock() });
-        if (hist.length > 4) hist.shift();
+        if (hist.length > MAX_RECENT_CHAT_KEYS) hist.shift();
       }
       this.recentChatKeys.set(chatId, hist);
     }

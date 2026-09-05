@@ -82,6 +82,55 @@ function statuses(part: { kind: string; steps?: { status: string }[] }) {
   return part.steps.map((s) => s.status);
 }
 
+describe("stream.advancePlanPart follows the READER's plan, not the last row", () => {
+  test("a retried clear parked after the visible plan does not freeze its progress", async () => {
+    // A clear whose write was lost lands its tombstone AFTER the plan it was
+    // caused before. The reader keeps that plan (lib/planOrder.ts) — so the
+    // advance must act on it too. Taking the LAST row would advance the empty
+    // tombstone, whose step list compares equal, and the visible checklist
+    // would silently stop progressing (codex).
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedPlanMessage(t, { withPlan: false });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: { kind: "plan" as const, steps: STEPS, stamp: 2_000 },
+      });
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 1,
+        part: { kind: "plan" as const, steps: [], stamp: 1_000 },
+      });
+    });
+    await t.mutation(internal.stream.advancePlanPart, {
+      messageId,
+      count: 1,
+      stamp: 3_000,
+    });
+    const parts = await planParts(t, messageId);
+    expect(parts).toHaveLength(3);
+    expect(statuses(parts[2] as never)).toEqual([
+      "completed",
+      "completed",
+      "in_progress",
+      "pending",
+    ]);
+  });
+
+  test("the inferred part carries the stamp of the advance that caused it", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedPlanMessage(t, { withRunningChild: true });
+    await t.mutation(internal.stream.advancePlanPart, {
+      messageId,
+      count: 1,
+      stamp: 7_777,
+    });
+    const parts = await planParts(t, messageId);
+    expect((parts[1] as { stamp?: number }).stamp).toBe(7_777);
+  });
+});
+
 describe("stream.advancePlanPart", () => {
   test("one call advances one step: current completed, next in_progress, stamped estimated", async () => {
     const t = convexTest(schema, modules);

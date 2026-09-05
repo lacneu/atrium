@@ -21,6 +21,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { taskDeliveryRunFromRunId } from "../src/core/async-task.js";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,7 +171,10 @@ function family(runId: string | null): string {
   if (runId === null) return "none";
   if (runId.startsWith("announce:")) return "announce";
   if (runId.startsWith("inject-")) return "inject";
-  if (/:.+:ok$/.test(runId)) return "task-delivery";
+  // The SHARED reader, never a private regex: this helper carried its own
+  // `/:.+:ok$/`, which stopped matching when 2026.8.1 appended the delivery lane
+  // (`…:ok:agent-loop`) — a fourth copy of the same grammar, drifting on its own.
+  if (taskDeliveryRunFromRunId(runId) !== null) return "task-delivery";
   return "turn";
 }
 

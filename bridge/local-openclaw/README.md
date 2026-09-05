@@ -35,6 +35,9 @@ overrides to run the bridge (the repo root, `..`) against this local gateway.
 `up.sh` makes the agent work for FREE on your local codex login (no OpenAI API
 auth, no pay-per-token). It auto-injects, if `~/.codex/auth.json` exists:
 - `seed/openclaw.json` — a minimal known-good gateway config → generic agents
+  (legacy shape, <= 2026.7.x). `seed/openclaw.2026.8.json` is the same seed
+  migrated for 2026.8.x (`agents.ownership: "explicit"`, dead keys removed —
+  each generation refuses the other's shape); `up.sh` picks by `OPENCLAW_VERSION`.
   **`alice`**/**`bob`** (the bridge routes the agent per-turn from the request
   body, so any discovered agent id works), model `openai/gpt-5.5`,
   **codex runtime (harness)**. To use your own agents/auth profile, drop a

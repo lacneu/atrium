@@ -113,8 +113,13 @@ describe("planPartFromPlanStream (native plan stream)", () => {
     });
   });
 
-  it("an empty or malformed payload yields nothing (never an empty plan card)", () => {
-    expect(planPartFromPlanStream({ phase: "update", steps: [] })).toBeNull();
+  it("a malformed payload yields nothing; ZERO steps is a cleared plan", () => {
+    // Gateway 2026.8.1+ emits `steps: []` for a markdown-only / clearing
+    // `progress_card` put (the card is REPLACED, its checklist dropped): that is a
+    // statement about the plan, materialized as an empty part so the stale
+    // checklist is hidden — see progress-card-plan.test.ts. Missing or malformed
+    // steps remain "nothing was said".
+    expect(planPartFromPlanStream({ phase: "update", steps: [] })).toEqual({ kind: "plan", steps: [] });
     expect(planPartFromPlanStream({ phase: "update" })).toBeNull();
     expect(planPartFromPlanStream(null)).toBeNull();
     expect(planPartFromPlanStream({ steps: [{ nope: 1 }] })).toBeNull();

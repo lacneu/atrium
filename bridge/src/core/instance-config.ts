@@ -20,6 +20,14 @@ const INBOUND_MEDIA_MODES: readonly InboundMediaMode[] = ["inline", "shared-fs"]
  */
 export interface InboundInstanceConfig {
   mediaMode?: MediaMode;
+  /** WIRE-ONLY (never set on the parsed result): the media mode Convex actually wants,
+   *  sent ALONGSIDE `mediaMode: "off"` when it cannot know which bridge generation will
+   *  serve this POST — behind one Service, its /capabilities poll can reach a new pod
+   *  while the /send reaches an old one mid rollout (codex). A bridge that predates the
+   *  field ignores it and stays disabled, which is the safe reading; this build folds it
+   *  INTO `mediaMode` at parse time and then applies its own quarantine against the
+   *  version it reads LIVE on the connection. */
+  mediaModeIfGuarded?: never;
   inboundMediaMode?: InboundMediaMode;
   rehydration?: boolean;
   /** Set by Convex ONLY for a per-turn ROUTED dispatch (the multi-agent switch path) —
@@ -74,6 +82,23 @@ export function parseInboundConfig(raw: unknown): InboundInstanceConfig | null {
     (MEDIA_MODES as readonly string[]).includes(o.mediaMode)
   ) {
     out.mediaMode = o.mediaMode as MediaMode;
+  }
+  // The envelope is resolved HERE, once, so every consumer of `mediaMode` sees the same
+  // answer. Resolving it only where the delivery instruction is composed left the rest
+  // of the outbound pipeline reading "off" — the live bench caught it: the file was
+  // never delivered at all.
+  //
+  // `"inherit"` means Convex has NO stored override, so the fail-closed `mediaMode:
+  // "off"` beside it is dropped entirely and this bridge falls back to its own env
+  // default — an env-configured shared-fs or off bridge must not be switched by a
+  // quarantine envelope (codex).
+  if (o.mediaModeIfGuarded === "inherit") {
+    delete out.mediaMode;
+  } else if (
+    typeof o.mediaModeIfGuarded === "string" &&
+    (MEDIA_MODES as readonly string[]).includes(o.mediaModeIfGuarded)
+  ) {
+    out.mediaMode = o.mediaModeIfGuarded as MediaMode;
   }
   if (
     typeof o.inboundMediaMode === "string" &&

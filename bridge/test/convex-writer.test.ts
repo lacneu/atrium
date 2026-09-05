@@ -1163,6 +1163,59 @@ describe("the session-state clear is retried too (idempotent by construction)", 
   });
 });
 
+describe("the PLAN clear is retried too (idempotent by construction)", () => {
+  test("a transient failure is retried: a lost clear strands the superseded checklist", async () => {
+    // The mutation writes a run-keyed TOMBSTONE, so a replay whose first write landed
+    // changes nothing. Without the retry, one flaky POST at a silent delivery's
+    // terminal left the OLD checklist on screen with only a non-fatal log (codex) —
+    // and no later frame is guaranteed to try again.
+    let attempts = 0;
+    const fetchImpl = (async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("network");
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    await w.clearPlanPart("chat-1", "announce:v1:agent:files:subagent:c1:r1");
+
+    expect(attempts).toBe(2);
+  });
+
+  test("the retry re-posts the ORIGINAL stamp — that is what makes it lose to a newer plan", async () => {
+    // The retry is the window: if it were re-stamped on the way out, it would read
+    // as the newest cause and hide a plan published while the first POST was failing
+    // (convex/stream.ts `clearPlanPart`, src/chat/planView.ts).
+    const stamps: (number | undefined)[] = [];
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { op: string; stamp?: number };
+      if (body.op === "clearPlan") stamps.push(body.stamp);
+      attempts += 1;
+      if (attempts === 1) throw new Error("network");
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    await w.clearPlanPart("chat-1", "announce:v1:agent:files:subagent:c1:r1", 1_234);
+
+    expect(stamps).toEqual([1_234, 1_234]);
+  });
+
+  test("no stamp posted when the sink has none — the op stays as it was", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    await w.clearPlanPart("chat-1", "announce:v1:agent:files:subagent:c1:r1");
+
+    expect(bodies[0]).not.toHaveProperty("stamp");
+  });
+});
+
 describe("finalize is retried when the POST fails transiently (G-30)", () => {
   test("a complete reply is not left 'streaming' by one flaky POST", async () => {
     // The reply is WRITTEN; only its terminal POST failed. Without a retry the row

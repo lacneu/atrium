@@ -36,6 +36,22 @@ import ts from "typescript";
 export const SNAPSHOT_SOURCE = "src/gateway/server-chat.ts";
 export const SNAPSHOT_FN = "buildSessionEventSnapshot";
 
+/**
+ * Where the session-event snapshot shape is BUILT, newest layout first.
+ *
+ * v2026.8.1 moved it: `buildSessionEventSnapshot` in server-chat.ts stopped
+ * building the object and now returns `buildGatewaySessionSnapshot({…})` from
+ * session-event-payload.ts, so deriving from the old site refused with "no
+ * `return {…}` at the function's own level" — correctly, since the fields were
+ * no longer there. The list is ordered, not guessed: the first candidate whose
+ * file exists AND whose function is present wins, and if none matches the
+ * caller still refuses. Older tags keep vendoring from their own layout.
+ */
+export const SNAPSHOT_SITES = [
+  { source: "src/gateway/session-event-payload.ts", fn: "buildGatewaySessionSnapshot" },
+  { source: SNAPSHOT_SOURCE, fn: SNAPSHOT_FN },
+];
+
 /** Does this node open a new function scope?
  *
  *  ONE predicate, used by both walks. They each listed the node kinds by hand and the list
@@ -65,10 +81,10 @@ function propertyName(node) {
 }
 
 /** Collect the keys of one object literal into `fields`, REFUSING what it cannot read. */
-function collectObjectKeys(object, fields, resolveIdentifier, where) {
+function collectObjectKeys(object, fields, resolveIdentifier, where, ctx) {
   for (const member of object.properties) {
     if (ts.isSpreadAssignment(member)) {
-      collectSpread(member.expression, fields, resolveIdentifier, where);
+      collectSpread(member.expression, fields, resolveIdentifier, where, ctx);
       continue;
     }
     if (
@@ -95,20 +111,20 @@ function collectObjectKeys(object, fields, resolveIdentifier, where) {
 }
 
 /** Collect the keys a spread contributes. */
-function collectSpread(expression, fields, resolveIdentifier, where) {
+function collectSpread(expression, fields, resolveIdentifier, where, ctx) {
   if (ts.isObjectLiteralExpression(expression)) {
-    collectObjectKeys(expression, fields, resolveIdentifier, where);
+    collectObjectKeys(expression, fields, resolveIdentifier, where, ctx);
     return;
   }
   // `...(cond ? {…} : {…})` — BOTH branches: a key present in only one branch is still a
   // key on the wire.
   if (ts.isConditionalExpression(expression)) {
-    collectSpread(expression.whenTrue, fields, resolveIdentifier, where);
-    collectSpread(expression.whenFalse, fields, resolveIdentifier, where);
+    collectSpread(expression.whenTrue, fields, resolveIdentifier, where, ctx);
+    collectSpread(expression.whenFalse, fields, resolveIdentifier, where, ctx);
     return;
   }
   if (ts.isParenthesizedExpression(expression)) {
-    collectSpread(expression.expression, fields, resolveIdentifier, where);
+    collectSpread(expression.expression, fields, resolveIdentifier, where, ctx);
     return;
   }
   // `...activeRunFields` — resolved from its binding in the function's OWN scope, and only
@@ -116,13 +132,42 @@ function collectSpread(expression, fields, resolveIdentifier, where) {
   if (ts.isIdentifier(expression)) {
     const bound = resolveIdentifier(expression.text);
     if (bound === undefined) {
+      // Not readable as a shape. LAST resort, and only this one: if the binding
+      // is initialised by a call to a local function, derive from that
+      // function's own returns instead of from the binding.
+      const init = ctx?.initialiserOf?.(expression.text);
+      if (init !== undefined && ts.isCallExpression(init)) {
+        collectSpread(init, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
+        return;
+      }
       throw new Error(
         `${SNAPSHOT_FN}: spread \`...${expression.text}\` has no readable declaration in ` +
           `the function's own scope — resolve it here deliberately rather than losing ` +
           `its fields`,
       );
     }
-    collectSpread(bound, fields, resolveIdentifier, `spread ...${expression.text}`);
+    collectSpread(bound, fields, resolveIdentifier, `spread ...${expression.text}`, ctx);
+    return;
+  }
+  // `...eventFields` where `eventFields` is the result of calling a function
+  // declared in this same file (v2026.8.1 splits the shape across
+  // buildGatewaySessionSnapshot -> buildGatewaySessionEventFields). Following
+  // ONE such call is what keeps the derivation honest: refusing here would lose
+  // every field of the callee, and inlining the list by hand is exactly the
+  // hand-maintained list this module exists to replace. Only a call to a
+  // top-level function of the same file is followed — nothing imported, nothing
+  // computed — and the callee is subject to the same rules, so an unreadable
+  // callee still refuses.
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const callee = ctx?.resolveLocalFunction?.(expression.expression.text);
+    if (callee === undefined) {
+      throw new Error(
+        `${SNAPSHOT_FN}: spread of call \`${expression.expression.text}(…)\` in ${where} ` +
+          `has no top-level function declaration in the same file — resolve it here ` +
+          `deliberately rather than losing its fields`,
+      );
+    }
+    ctx.collectFunctionReturnKeys(callee, fields, `${expression.expression.text}()`);
     return;
   }
   throw new Error(
@@ -138,9 +183,11 @@ function collectSpread(expression, fields, resolveIdentifier, where) {
  * emitted by an early `if (…) return {…}` reaches the wire exactly like the others, and
  * keeping only the final return dropped it in silence.
  */
-export function deriveSnapshotFields(source) {
+export function deriveSnapshotFields(source, options = {}) {
+  const FN = options.fnName ?? SNAPSHOT_FN;
+  const SRC = options.sourceLabel ?? SNAPSHOT_SOURCE;
   const sf = ts.createSourceFile(
-    "server-chat.ts",
+    options.fileName ?? "server-chat.ts",
     source,
     ts.ScriptTarget.Latest,
     /* setParentNodes */ true,
@@ -157,7 +204,7 @@ export function deriveSnapshotFields(source) {
   if (diagnostics.length > 0) {
     const first = diagnostics[0];
     throw new Error(
-      `${SNAPSHOT_SOURCE}: does not parse (${ts.flattenDiagnosticMessageText(
+      `${SRC}: does not parse (${ts.flattenDiagnosticMessageText(
         first.messageText,
         " ",
       )}) — refusing to derive a field list from a tree the parser itself doubts`,
@@ -173,39 +220,114 @@ export function deriveSnapshotFields(source) {
   // closure, so requiring top level would be wrong; requiring uniqueness is not.
   const found = [];
   const findFn = (node) => {
+    // `const fn = (…) => …` (the pre-2026.8.1 layout, declared inside a closure)
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
-      node.name.text === SNAPSHOT_FN &&
+      node.name.text === FN &&
       node.initializer !== undefined
     ) {
       found.push(node.initializer);
+    }
+    // `export function fn(…) {…}` — the 2026.8.1 layout. Accepting only the
+    // variable form made a real declaration invisible and reported "not found",
+    // which reads as "upstream removed it" when upstream merely declared it the
+    // other way.
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name !== undefined &&
+      node.name.text === FN
+    ) {
+      found.push(node);
     }
     ts.forEachChild(node, findFn);
   };
   ts.forEachChild(sf, findFn);
   if (found.length > 1) {
     throw new Error(
-      `${SNAPSHOT_SOURCE}: ${found.length} declarations named ${SNAPSHOT_FN} — which one ` +
+      `${SRC}: ${found.length} declarations named ${FN} — which one ` +
         `the gateway broadcasts is not decidable from the name; resolve it here deliberately`,
     );
   }
   const fn = found[0] ?? null;
   if (fn === null) {
     throw new Error(
-      `${SNAPSHOT_SOURCE}: ${SNAPSHOT_FN} not found — upstream renamed or moved it, so ` +
+      `${SRC}: ${FN} not found — upstream renamed or moved it, so ` +
         `the derived known-field set cannot be trusted`,
     );
   }
-  if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) {
-    throw new Error(`${SNAPSHOT_FN}: not a function expression`);
+  if (
+    !ts.isArrowFunction(fn) &&
+    !ts.isFunctionExpression(fn) &&
+    !ts.isFunctionDeclaration(fn)
+  ) {
+    throw new Error(`${FN}: not a function`);
   }
   const body = fn.body;
+  if (body === undefined) {
+    throw new Error(`${FN}: declaration has no body (overload signature?)`);
+  }
+
+  /** Top-level `function name(…) {…}` of THIS file, by name and unique. Used to
+   *  follow ONE spread of a local call — see collectSpread. Uniqueness is
+   *  required for the same reason as the entry function: "the first one" would
+   *  be a guess about file order. */
+  const resolveLocalFunction = (name) => {
+    const hits = sf.statements.filter(
+      (st) => ts.isFunctionDeclaration(st) && st.name?.text === name && st.body !== undefined,
+    );
+    if (hits.length !== 1) return undefined;
+    return hits[0];
+  };
+
+  /** The keys of every `return {…}` at a callee's OWN level, under the same
+   *  rules as the entry function: a return of anything else is opaque and
+   *  refuses, because its fields would be lost in silence. */
+  const collectFunctionReturnKeys = (callee, fields, where) => {
+    const rets = [];
+    const walkRet = (node) => {
+      if (isFunctionScope(node) && node !== callee) return;
+      if (ts.isReturnStatement(node)) rets.push(node);
+      ts.forEachChild(node, walkRet);
+    };
+    ts.forEachChild(callee.body, walkRet);
+    const literals = rets.filter(
+      (r) => r.expression !== undefined && ts.isObjectLiteralExpression(r.expression),
+    );
+    if (literals.length === 0) {
+      throw new Error(
+        `${FN}: ${where} has no \`return {…}\` of its own — its fields cannot be read ` +
+          `from source; resolve this here deliberately`,
+      );
+    }
+    const opaqueRets = rets.filter(
+      (r) => r.expression !== undefined && !ts.isObjectLiteralExpression(r.expression),
+    );
+    if (opaqueRets.length > 0) {
+      throw new Error(
+        `${FN}: ${where} also returns a non-literal — part of its shape is invisible ` +
+          `here; resolve this deliberately rather than deriving a partial field list`,
+      );
+    }
+    for (const r of literals) {
+      collectObjectKeys(r.expression, fields, () => undefined, where, undefined);
+    }
+  };
+  const ctx = {
+    resolveLocalFunction,
+    collectFunctionReturnKeys,
+    initialiserOf: (name) => bindings.get(name),
+  };
 
   /** Bindings declared directly in the function's OWN body. A helper's shadowing
    *  declaration lives in a nested scope and must not win. */
   const bindings = new Map();
   const reassigned = new Set();
+  /** Names read in argument position — see countOccurrences. Such a name is NOT
+   *  resolvable as a literal; it only becomes eligible for following its
+   *  initialiser's call. Declared at the same level as `reassigned` because
+   *  `resolveIdentifier` reads it from outside the block that fills it. */
+  const argumentReads = new Set();
   if (ts.isBlock(body)) {
     for (const statement of body.statements) {
       if (!ts.isVariableStatement(statement)) continue;
@@ -289,7 +411,45 @@ export function deriveSnapshotFields(source) {
           parent.name === node;
         const isSpreadRead =
           parent !== undefined && ts.isSpreadAssignment(parent);
-        if (!isDeclarationName && !isSpreadRead) {
+        // A READ in argument position: `Object.entries(eventFields)`.
+        //
+        // v2026.8.1 builds the shape in two steps and reads the intermediate
+        // binding once more to project it, which the two categories above
+        // refuse. This third one is deliberately NARROW: the identifier must be
+        // an ARGUMENT of a call — never the callee, never the object of a
+        // member access (`x.push(…)`, `x.foo = 1` stay refusals) — and never the
+        // first argument of the mutating Object built-ins. Everything else
+        // still falls through to a refusal, so the rule stays fail-closed by
+        // construction rather than by enumerating ways to mutate.
+        //
+        // LIMIT, stated rather than hidden: a helper that MUTATES the object it
+        // receives (`fill(eventFields)`) is an argument read by this rule and
+        // would not be caught. What such a read unlocks is only the right to
+        // FOLLOW the initialiser's call (see collectSpread) — never to read the
+        // initialiser as a literal — so the derived list comes from the callee's
+        // own `return {…}`, and a mutation could make it short. That residual
+        // case is the price of this option, agreed 2026-08-31.
+        // Only a CLOSED list of native, non-mutating readers counts — never an
+        // arbitrary call. `helper(fields)` stays an unaccounted occurrence,
+        // because a function taking the object can fill it and this module
+        // cannot know; that case is one of the mutations the test above pins.
+        // The list is closed by construction (four `Object` statics whose
+        // contract is to read), unlike "ways to mutate an object", which is
+        // open-ended — the distinction that made the inverted rule necessary.
+        const NON_MUTATING_OBJECT_READERS = ["entries", "keys", "values", "fromEntries"];
+        let isArgumentRead = false;
+        if (parent !== undefined && ts.isCallExpression(parent)) {
+          const callee = parent.expression;
+          isArgumentRead =
+            parent.arguments.indexOf(node) === 0 &&
+            parent.arguments.length === 1 &&
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Object" &&
+            NON_MUTATING_OBJECT_READERS.includes(callee.name.text);
+          if (isArgumentRead) argumentReads.add(node.text);
+        }
+        if (!isDeclarationName && !isSpreadRead && !isArgumentRead) {
           occurrences.set(node.text, (occurrences.get(node.text) ?? 0) + 1);
         }
       }
@@ -301,6 +461,14 @@ export function deriveSnapshotFields(source) {
     }
   }
   const resolveIdentifier = (name) => {
+    // Read somewhere else, in a position this module accepts but cannot prove
+    // harmless: refuse to read the initialiser as a shape. `collectSpread` may
+    // still follow it if — and only if — that initialiser is a call to a local
+    // function whose own returns are literal.
+    // Order matters: a binding that is BOTH read through an accepted reader
+    // (`Object.entries(x)`) and used somewhere unproven (`mutate(x)`) must be
+    // refused, not quietly downgraded to "unresolved" — the unresolved path can
+    // still follow a local initialiser and derive a PARTIAL list without error.
     if (reassigned.has(name)) {
       throw new Error(
         `${SNAPSHOT_FN}: spread \`...${name}\` refers to a binding that is not a stable ` +
@@ -310,6 +478,7 @@ export function deriveSnapshotFields(source) {
           `declaration; resolve it here deliberately`,
       );
     }
+    if (argumentReads.has(name)) return undefined;
     return bindings.get(name);
   };
 
@@ -321,7 +490,7 @@ export function deriveSnapshotFields(source) {
     if (!ts.isObjectLiteralExpression(expr)) {
       throw new Error(`${SNAPSHOT_FN}: concise body is not an object literal`);
     }
-    collectObjectKeys(expr, fields, resolveIdentifier, "the returned object");
+    collectObjectKeys(expr, fields, resolveIdentifier, "the returned object", ctx);
     return [...fields].sort();
   }
 
@@ -355,7 +524,7 @@ export function deriveSnapshotFields(source) {
     );
   }
   for (const r of objectReturns) {
-    collectObjectKeys(r.expression, fields, resolveIdentifier, "a returned object");
+    collectObjectKeys(r.expression, fields, resolveIdentifier, "a returned object", ctx);
   }
   return [...fields].sort();
 }

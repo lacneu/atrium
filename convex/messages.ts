@@ -111,12 +111,15 @@ type ClientPart =
   // Gateway context-compaction marker (content-free: phase + timestamp).
   | { kind: "compaction"; phase: string; at: number }
   // A work-plan update (update_plan): ordered steps + status. Bounded at
-  // write time; the newest part is the plan's current state.
+  // write time. WHICH part is current is decided by `stamp` — when the bridge
+  // received the frame behind it — not by its position (lib/planOrder.ts), so
+  // the field has to reach the client with the part.
   | {
       kind: "plan";
       steps: { step: string; status: "pending" | "in_progress" | "completed" }[];
       explanation?: string;
       estimated?: boolean;
+      stamp?: number;
     }
   // A cron job the agent created/updated/removed this turn (compact snapshot;
   // bounded at write time by the bridge — passes through untouched).

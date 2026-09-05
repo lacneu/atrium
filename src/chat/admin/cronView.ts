@@ -20,12 +20,39 @@ export function cronResultKind(status: string | null | undefined): CronResultKin
 }
 
 /** The job's ENABLED state, independent of the last result. */
-export type CronStateKind = "active" | "paused" | "unknown";
+export type CronStateKind = "active" | "paused" | "auto-disabled" | "unknown";
 
 export function cronStateKind(enabled: boolean | null | undefined): CronStateKind {
   if (enabled === true) return "active";
   if (enabled === false) return "paused";
   return "unknown";
+}
+
+/** The state a job row shows. Gateway 2026.8.1+ can AUTO-DISABLE a job (e.g.
+ *  after consecutive failures) while still reporting `enabled: true` — the
+ *  scheduler will not run it, so "Active" would be a lie. The auto-disable
+ *  fact wins over the flag; a `null` reason means "not auto-disabled / unsaid"
+ *  and falls back to the flag exactly as before. */
+export function cronJobStateKind(job: {
+  enabled: boolean | null | undefined;
+  autoDisabledReason?: string | null;
+}): CronStateKind {
+  if (typeof job.autoDisabledReason === "string" && job.autoDisabledReason !== "") {
+    return "auto-disabled";
+  }
+  return cronStateKind(job.enabled);
+}
+/** The one action a job row offers. Only an ACTIVE job is paused; a paused OR
+ *  auto-disabled job is resumed — and resuming means sending `enabled: true`
+ *  even when the flag already reads true: that explicit patch is what makes the
+ *  gateway drop `state.autoDisabled` and reset its failure counters (upstream
+ *  cron/service/jobs.ts, `if (patch.enabled === true)`). Deciding on the flag
+ *  alone offered "Pause" on an auto-disabled job and sent `enabled: false`. */
+export function cronJobAction(job: {
+  enabled: boolean | null | undefined;
+  autoDisabledReason?: string | null;
+}): "pause" | "resume" {
+  return cronJobStateKind(job) === "active" ? "pause" : "resume";
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +82,7 @@ export function cronJobMatches(
     agentId: string;
     enabled: boolean | null;
     lastRunStatus: string | null;
+    autoDisabledReason?: string | null;
   },
   f: CronFilter,
 ): boolean {
@@ -63,7 +91,7 @@ export function cronJobMatches(
     const hay = `${job.name ?? ""} ${job.agentId}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (f.state !== "all" && cronStateKind(job.enabled) !== f.state) return false;
+  if (f.state !== "all" && cronJobStateKind(job) !== f.state) return false;
   if (f.result !== "all" && cronResultKind(job.lastRunStatus) !== f.result) {
     return false;
   }

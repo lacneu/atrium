@@ -56,6 +56,18 @@ describe("cronPartFromTool (real captured shapes)", () => {
     });
   });
 
+  it("reads the 2026.8.x wire name `automations` exactly like `cron` (captured 2026-09-02)", () => {
+    // Same args, same job JSON result — only the tool name changed at 2026.8.1.
+    expect(cronPartFromTool("automations", "completed", ADD_INPUT, ADD_OUTPUT)).toEqual(
+      cronPartFromTool("cron", "completed", ADD_INPUT, ADD_OUTPUT),
+    );
+    expect(cronPartFromTool("automations", "completed", ADD_INPUT, ADD_OUTPUT)?.op).toBe(
+      "created",
+    );
+    // Fail closed: no other spelling is the scheduler tool.
+    expect(cronPartFromTool("automation", "completed", ADD_INPUT, ADD_OUTPUT)).toBeNull();
+    expect(cronPartFromTool("cron_add", "completed", ADD_INPUT, ADD_OUTPUT)).toBeNull();
+  });
   it("update -> updated, jobId from the input when the result lacks it", () => {
     const p = cronPartFromTool(
       "cron",

@@ -84,7 +84,9 @@ describe("deriveSnapshotFields", () => {
         source(`      kind: row?.kind,
       ...mysteryFields,`),
       ),
-    ).toThrow(/cannot be read from source|no readable declaration/i);
+    ).toThrow(
+      /cannot be read from source|no readable declaration|no top-level function declaration/i,
+    );
   });
 
   it("REFUSES a HOMONYMOUS second declaration instead of picking the first", () => {
@@ -134,6 +136,18 @@ describe("deriveSnapshotFields", () => {
         mutation,
       ).toThrow(/not a stable const|only uses are its declaration/i);
     }
+  });
+
+  it("REFUSES a binding that is BOTH read through Object.* AND used elsewhere (codex P2)", () => {
+    // `Object.entries(x)` is an accepted read, `mutate(x)` is not: the second
+    // must win. Before, the accepted read short-circuited to "unresolved" and the
+    // initialiser was still followed — a PARTIAL list, no error, invisible to the
+    // ratchet if the snapshot ever mutates `x` after reading it.
+    expect(() =>
+      derive(
+        `const ${SNAPSHOT_FN} = () => { const fields = { a: 1 }; Object.entries(fields); mutate(fields); return { ...fields }; };`,
+      ),
+    ).toThrow(/not a stable const|only uses are its declaration/i);
   });
 
   it("does not take a nested ACCESSOR's return as its own", () => {
@@ -355,6 +369,63 @@ describe("deriveSnapshotFields", () => {
     ).toEqual(["a", "b", "c"]);
   });
 
+  // ---- Following ONE local call (2026.8.1). Upstream split the shape into
+  // buildGatewaySessionSnapshot -> buildGatewaySessionEventFields, so a spread of a
+  // LOCAL function's result is derived from that function's own `return {…}`. These
+  // pin the boundary: what it may follow, and everything it still refuses.
+  it("follows a spread of a LOCAL function and derives ITS return keys", () => {
+    const src = `
+  function makeFields(params) {
+    return { fromCallee: params.x, alsoFromCallee: 1 };
+  }
+  const ${SNAPSHOT_FN} = () => {
+    const eventFields = makeFields({ argumentOnly: true });
+    const session = Object.fromEntries(Object.entries(eventFields));
+    return {
+      kind: row?.kind,
+      ...eventFields,
+      ...(session ? { session } : {}),
+    };
+  };
+`;
+    const fields = derive(src);
+    expect(fields).toContain("fromCallee");
+    expect(fields).toContain("alsoFromCallee");
+    expect(fields).toContain("session");
+    // THE trap this whole family exists for: an ARGUMENT key is not a result key.
+    expect(fields).not.toContain("argumentOnly");
+  });
+
+  it("still REFUSES when the callee's own return is not a literal", () => {
+    const src = `
+  function makeFields(params) {
+    return somethingElse(params);
+  }
+  const ${SNAPSHOT_FN} = () => {
+    const eventFields = makeFields({ a: 1 });
+    return { kind: row?.kind, ...eventFields };
+  };
+`;
+    expect(() => derive(src)).toThrow(/has no `return \{…\}` of its own/i);
+  });
+
+  it("an arbitrary call on the binding is NOT a read — it still disqualifies it", () => {
+    // `helper(eventFields)` can FILL the object; only a closed list of native
+    // Object readers counts as a read. Without this the follow-the-call path
+    // would have re-opened the mutation hole the inverted rule closed.
+    const src = `
+  function makeFields(params) {
+    return { fromCallee: 1 };
+  }
+  const ${SNAPSHOT_FN} = () => {
+    const eventFields = makeFields({ a: 1 });
+    helper(eventFields);
+    return { kind: row?.kind, ...eventFields };
+  };
+`;
+    expect(() => derive(src)).toThrow(/not a stable const|only uses are its declaration/i);
+  });
+
   it("REFUSES a call ANYWHERE in a spread, not just at its start", () => {
     // `...(x ? makeFields({a: 1}) : {})` took the inline-brace branch and derived `a` — an
     // ARGUMENT presented as a result key. A refusal that only covers the spelling I thought
@@ -362,7 +433,7 @@ describe("deriveSnapshotFields", () => {
     expect(() =>
       derive(source(`      kind: row?.kind,
       ...(enabled ? makeFields({ argumentOnly: true }) : {}),`)),
-    ).toThrow(/spread of CallExpression/i);
+    ).toThrow(/no top-level function declaration in the same file/i);
   });
 
   it("REFUSES a spread that is a CALL", () => {
@@ -371,7 +442,7 @@ describe("deriveSnapshotFields", () => {
     expect(() =>
       derive(source(`      kind: row?.kind,
       ...makeFields({ flag: true }),`)),
-    ).toThrow(/spread of CallExpression/i);
+    ).toThrow(/no top-level function declaration in the same file/i);
   });
 
   it("REFUSES an identifier spread declared from a call", () => {
@@ -384,7 +455,9 @@ describe("deriveSnapshotFields", () => {
     };
   };
 `;
-    expect(() => derive(bare)).toThrow(/cannot be read from source|no readable declaration/i);
+    expect(() => derive(bare)).toThrow(
+      /cannot be read from source|no readable declaration|no top-level function declaration/i,
+    );
     // …including a call that HAS a brace in its argument: "contains a brace" is not "is an
     // object literal", and this used to derive `argumentOnly` — an argument key mistaken
     // for a result key, one indirection around the call refusal.
@@ -397,7 +470,7 @@ describe("deriveSnapshotFields", () => {
     };
   };
 `;
-    expect(() => derive(withArg)).toThrow(/spread of CallExpression/i);
+    expect(() => derive(withArg)).toThrow(/no top-level function declaration in the same file/i);
   });
 
   it("does not read braces INSIDE a string as syntax", () => {

@@ -83,8 +83,9 @@ export const messagePart = v.union(
   }),
   // A work-plan update (the builtin `update_plan` tool of GPT-5-family runs):
   // the model's ordered step list with per-step status. One part PER update —
-  // the newest part is the plan's current state, and the sequence lets the UI
-  // stream progress live. Compact + bounded at write time (core/plan-part.ts).
+  // the CURRENT one is the part of greatest `stamp` (lib/planOrder.ts), not the
+  // last row written, and the sequence lets the UI stream progress live.
+  // Compact + bounded at write time (core/plan-part.ts).
   v.object({
     kind: v.literal("plan"),
     steps: v.array(
@@ -104,6 +105,17 @@ export const messagePart = v.union(
     // the last known plan one step per call (stream.advancePlanPart) and the
     // UI labels the progression as estimated.
     estimated: v.optional(v.boolean()),
+    // WHEN THE CAUSE HAPPENED: the bridge's clock (SECONDS, wall clock — bridge
+    // session.ts `Clock`) at the moment it received the gateway frame behind
+    // this update, NOT when the write landed. A retried write re-posts its
+    // original stamp, so a clear whose first POST was lost and which replays
+    // after a newer run posted a plan arrives last while being older, and the
+    // reader keeps the newer plan (lib/planOrder.ts). Ordering only compares two
+    // of them; `usablePlanStamp` is the one place it is read as a Unix time, to
+    // catch a stamp posted in the wrong unit. Absent on rows written before this
+    // existed, and on an older bridge's — on their own those order by arrival,
+    // and mixed with stamped rows they inherit the greatest stamp before them.
+    stamp: v.optional(v.number()),
   }),
   // A gateway cron job the agent CREATED/UPDATED/REMOVED during this turn (a
   // successful `cron` tool mutation, parsed by the bridge — core/cron-part.ts).
@@ -237,6 +249,10 @@ export const bridgeCompatTarget = v.object({
   gatewayVersion: v.union(v.string(), v.null()),
   capabilities: v.record(v.string(), v.boolean()), // capability -> enabled
   versionBeyondValidated: v.boolean(), // gateway newer than the validated max
+  // The operator attests THIS instance's gateway image carries the attachment fix
+  // (2026.8.x). Absent on a pre-this-release bridge, which reads as NOT attested —
+  // the media quarantine then applies, which is the safe reading (codex).
+  attachmentFixAttested: v.optional(v.boolean()),
   // The SERVING bridge's env-level rehydration default, stamped per target at
   // poll time (multi-bridge: each instance follows ITS OWN bridge's kill-switch,
   // not the first-reachable one). Optional/null = pre-feature.

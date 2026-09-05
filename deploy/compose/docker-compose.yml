@@ -144,6 +144,13 @@ services:
       # Full guide + worked one-bridge-two-instances example: deploy/SHARED_FS_MEDIA.md.
       # [shared-fs] Reap staged inbound files older than this (> the longest turn).
       - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
+      # On gateway 2026.8.1/2026.8.2 a DELIVERED FILE poisons the session: every later
+      # turn of that session fails. The bridge therefore stops telling the agent how to
+      # deliver one there, and on any gateway whose version it cannot identify. List the
+      # instance names whose image carries the fix (or `*`) to restore it — empty means
+      # nothing is attested. See docs/CONFIGURATION.md.
+      - OPENCLAW_ATTACHMENT_FIX_ATTESTED=${OPENCLAW_ATTACHMENT_FIX_ATTESTED:-}
+
       # [gateway-http mode] Connection timeout (ms): bounds the media meta-probe +
       # response headers so a non-responsive gateway can't stall a turn (the body
       # then streams at the upload's pace). Default 60s.

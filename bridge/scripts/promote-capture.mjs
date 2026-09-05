@@ -94,6 +94,15 @@ const BUILT_IN_TOOL_NAMES = new Set([
   // went red — the corpus catching a regression in its own promoter, which is the best
   // evidence that a missing entry here fails loudly rather than silently.
   "cron",
+  // The SAME tool, renamed upstream at 2026.8.1 (`automations-tool-name.ts`; `cron`
+  // stays an accepted alias inbound). `cronPartFromTool` reads both, so both must be
+  // verbatim here — the corpus caught the omission the same way it caught `cron`:
+  // the promoted cron scenario produced no cron card (2026-09-04).
+  "automations",
+  // Renamed with it: the plan tool `update_plan` became `progress_card` at 2026.8.1.
+  // The plan reader accepts both names, and the normalizer keys the delivery-run plan
+  // signal on the literal — a masked name silently drops the plan card.
+  "progress_card",
   "exec",
   "read",
   "write",

@@ -9,7 +9,7 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.7.1`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.1`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`. Upstream
 references below (`$UP/…`) are paths inside that tag. The Control UI is a
 **reference interpretation, not a spec**: where Atrium diverges on purpose
@@ -17,10 +17,19 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.7.1` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
-the validated ceiling. An unknown-field warning against a 2026.7.x gateway is
+`2026.9.1` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-09-03 (v2026.8.2 → v2026.9.1).** Re-verified zone by zone
+against the upstream tag (report:
+`openclaw-notes/atrium/bench-runs/upstream-diff-2026.8.2-vs-2026.9.1/`), then
+proved live: full catalogue GO 11/11, attestation
+`bridge/protocol/openclaw/2026.9.1/BENCH.json`. What moved between 2026.7.1 and
+2026.9.1 is called out inline below under **Changed since 2026.7.1**; nothing
+Atrium reads regressed, and one latent break — dead since 2026.8.1 — was found
+and fixed (§3). Sections without such a note were re-checked and still hold.
 
 ---
 
@@ -54,11 +63,41 @@ stale-generation `restart` frames are suppressed entirely —
 `server-chat.agent-events.test.ts:2966-2989`).
 
 `errorKind` is a closed enum `refusal | timeout | rate_limit | context_length
-| unknown` (`$UP/src/infra/errors.ts:150`; wire mirror
-`ChatEventErrorKindSchema`). It is populated from a structured kind on the
-lifecycle event or by **regex detection on the error text**
-(`detectErrorKind`, `errors.ts:152-187`); in practice the fallback never
-yields `"unknown"`.
+| unknown` (wire mirror `ChatEventErrorKindSchema`,
+`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:282-288`). It is
+populated from a structured kind on the lifecycle event, then from the
+`FailoverReason` (`server-chat.ts:240-288`), then from a timeout probe; in
+practice the fallback never yields `"unknown"`, and a generic 5xx is
+deliberately left unbadged.
+
+**Changed since 2026.7.1** (re-verified at v2026.9.1, no impact on what the
+bridge reads):
+
+- **`message` is no longer emitted on `state:"error"`** (since 2026.8.1):
+  `emitChatTerminal` omits it and the upstream tests assert its absence
+  (`server-chat.agent-events.test.ts:5120`). The `"Error: …"` prefix is now
+  built by the Control UI (`chat-gateway.ts:174-179`). Atrium reads
+  `errorMessage` first, so nothing changed for it — but the `message` fallback
+  in its coverage manifest is dead code against a ≥2026.8.1 gateway.
+- **`detectErrorKind` is gone from the core** (deprecated shim in
+  `plugin-sdk/infra-runtime.ts:34-77`); the derivation above replaced it. The
+  enum and its five values are unchanged.
+- **NEW `errorDetail` on `state:"error"`** (2026.9.1,
+  `logs-chat.ts:337-391`): a bounded, redacted record — `provider`, `model`,
+  `failoverReason`, `providerRuntimeFailureKind`, `providerErrorType`,
+  `httpStatus`, `providerErrorMessagePreview`. Purely additive: `errorMessage`
+  is still emitted. The Control UI reads exactly one thing from it
+  (`providerRuntimeFailureKind === "auth_refresh"`, `chat-gateway.ts:156-168`).
+  Atrium does not read it yet — the failure classifier still works from the
+  text; the structured field is the better source and is queued
+  (`ChatErrorEvent.errorDetail`, gap).
+- **A fifth chat state exists**: `state:"status"` (`ChatStatusEventSchema`,
+  since 2026.8.1) carries the run's startup phase before any delta. Atrium does
+  not read it; it is declared in `KNOWN_CHAT_FIELDS_BY_STATE` so a declared
+  state is not reported as drift.
+- **`executionSettled`** on the lifecycle terminal (2026.9.1) short-circuits
+  the 15 s retry grace: a settled failure reaches the wire immediately instead
+  of after the grace. Atrium finalizes on the lifecycle itself — no impact.
 
 ### Control UI interpretation
 
@@ -99,7 +138,7 @@ banner *next to* the kept text.
 
 ### Upstream policy — there is no kill policy
 
-At v2026.7.1 upstream has **no deliberate preemption** in the
+At v2026.9.1 upstream still has **no deliberate preemption** in the
 announce×send race. Contention is resolved by:
 
 - **Steering**: a `chat.send` arriving while a run is active on the session
@@ -181,48 +220,71 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   has been generated or streamed; the whole inbound turn dies.** Upstream
   channels treat it as transient and retry with backoff (Telegram/Slack/
   WhatsApp handlers).
-- **`session file changed while embedded prompt lock was released`**
-  (`EmbeddedAttemptSessionTakeoverError`,
-  `attempt.session-lock.ts:1147-1152`): the runner releases the file lock
-  *for the duration of generation* (fence = file fingerprint), re-acquires
-  and re-checks in the `finally` after the model call settles. The error is
-  thrown only when a foreign modification cannot be explained (owned-write
-  reconciliation, benign ctime drift, and benign appended-line
-  classification all run first).
-  - At the canonical throw site (post-`finally`), **generation is complete**
-    and assistant messages have been persisted incrementally during the
-    stream.
-  - **But the same error can also fire mid-turn**: transcript writes between
-    steps of a multi-tool turn re-take the lock and re-check the fence
-    (`withSessionWriteLock`); a takeover there aborts the rest of the turn
-    with partial streamed text.
-  - Upstream never regenerates on this error: the model-fallback chain is
-    aborted (`isNonProviderRuntimeCoordinationError`), and the announce path
-    marks it **permanent as soon as there is "send evidence"**
-    (`visibleReplySent` / `sentBeforeError` / delivery results,
-    `subagent-announce-delivery.ts:383-397`) — retrying would duplicate the
-    delivery.
+- **`session file changed while embedded prompt lock was released`** —
+  **GONE since 2026.8.1.** `attempt.session-lock.ts` and
+  `EmbeddedAttemptSessionTakeoverError` do not exist in 2026.8.1, 2026.8.2 or
+  2026.9.1: transcripts moved to SQLite and the file lock went with them. The
+  paragraph that described the release/re-acquire fence applied to 2026.7.x
+  only. Atrium's regex for that sentence was therefore **dead against every
+  gateway ≥ 2026.8.1**, and with it the "downgrade to complete after streamed
+  content" it guarded (found 2026-09-03, fixed — see the verdict below).
+- **`session writer claim changed before transcript persistence`**
+  (`SessionTranscriptWriterClaimReboundError`,
+  `$UP/src/config/sessions/transcript-write-context.ts:239`, identical
+  2026.8.1 → 2026.9.1): the SQLite replacement. Every transcript commit
+  re-validates the session row's writer claim and lifecycle revision inside
+  the transaction (`session-accessor.sqlite-transcript-write.ts:366-417`);
+  a rebound refuses the write. **Always mid-turn** — it fires at a commit, not
+  at a post-generation re-acquire — so streamed content may already exist.
+  Upstream treats it as a runtime COORDINATION error (no model fallback,
+  `failover-error.ts:719-723`) but, unlike the 2026.7.x lock, **retries it** on
+  the announce path (`subagent-announce-delivery-retry.ts:70` classifies it
+  transitory). Refusal codes are redacted (`session-rebound`,
+  `session-entry-missing`) — no filesystem path reaches the message.
+- **`Session <id> already has an active turn claim`** (`ActiveTurnClaimError`,
+  `$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`): joins the
+  coordination family at 2026.9.1 (`failover-error.ts:46-52`), so a busy
+  session no longer cycles the whole provider fallback chain.
+- The init conflict's OCC now also reads the **parent/main** session rows
+  (`relatedSessionKeys`, `session.ts:590-601`): same message, but a write on a
+  parent session can now trigger it. Upstream retries up to **5 times** with
+  250 ms → 4 s backoff (`SESSION_INIT_CONFLICT_MAX_ATTEMPTS`), not the single
+  internal retry described above.
 
-Neither message receives special handling in the Control UI: both arrive as
-`state:"error"` with the raw text in `errorMessage`, **no `errorKind`**
-(`detectErrorKind` matches neither), no retry. The UI keeps already-streamed
-text as messages next to the error.
+None of these messages receives special handling in the Control UI: they arrive
+as `state:"error"` with the raw text in `errorMessage`, **no `errorKind`**, no
+retry. The UI keeps already-streamed text as messages next to the error.
 
 ### Atrium behavior and verdict
 
-- The embedded-flavor **downgrade-to-complete** (`normalizer.ts:1512-1540`,
-  gated on `hasRealContent()`) is **sound, but for a better reason than its
-  comment states**. "The embedded lock is post-generation" is too strong —
-  mid-turn takeovers exist. What makes the downgrade correct is the
-  `hasRealContent()` gate itself: it is the exact homologue of upstream's
-  "send evidence" criterion, and upstream likewise refuses any retry once
-  content has been emitted. Edge case shared with upstream: a mid-turn
-  takeover in a multi-step turn closes truncated text as complete — upstream
-  has no more-correct behavior to imitate (it also refuses the retry).
+- The embedded-flavor **downgrade-to-complete** (gated on `hasRealContent()`)
+  was sound for 2026.7.x, where upstream refused any retry once content had
+  been emitted ("send evidence"). It is **unreachable on ≥ 2026.8.1**: the
+  message it keys on no longer exists. It is kept for the 7.x rows of the
+  support matrix and NOT extended to the SQLite successor — deliberately: that
+  one is retried by upstream itself, so closing the bubble `complete` could
+  present a reply that a retry then supersedes.
+- **Fixed 2026-09-03** (`bridge/src/core/failure-classifier.ts`): the three
+  ≥ 2026.8.1 coordination messages — the writer-claim rebound, the active turn
+  claim, and the `was deleted while starting work` sibling — are classified
+  instead of falling into the generic bucket, which was the exact failure mode
+  of the 2026-08-04 production incident, latent again since 2026.8.1.
+  They do NOT share one class. The active turn claim and the
+  `while starting work` sibling are pre-generation, so they join
+  `session_init_conflict`, the transient class the bounded auto-retry keys on.
+  The **writer-claim rebound is mid-turn** — it fires "before transcript
+  persistence", after the model ran and after tools may have had external
+  effects — so it has its own `session_write_conflict`, which is deliberately
+  NOT in `RETRYABLE_KINDS`: the retry's zero-content gate cannot see work that
+  left no visible part, and re-dispatching would repeat it. Pinned by
+  `failure-classifier.test.ts`, `convex/turnRetry.test.ts` and by the golden
+  frame `writer-claim-rebound-after-content` (which also proves the bubble
+  stays an honest error, with content preserved).
 - The init-flavor handling (transient `session_init_conflict` + bounded
-  auto-retry) matches upstream's own channel-side retries. Refusing the
-  downgrade for init is correct: the error is pre-generation, so no content
-  can have come from that turn.
+  auto-retry) matches upstream's own retries — which are up to five attempts
+  with backoff at 2026.9.1, not one. Refusing the downgrade for init is
+  correct: the error is pre-generation, so no content can have come from that
+  turn.
 
 ---
 
@@ -371,6 +433,6 @@ a durable surface the Control UI does not have.
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
 | chat.send idempotency | **Conformant**; the preempt `dispatchKey` alias is necessary (abort markers poison the original key for ~60 min) and timing-independent |
 
-Fixtures extracted from upstream unit tests at `v2026.7.1` are vendored in
+Fixtures extracted from upstream unit tests at `v2026.9.1` are vendored in
 `bridge/test/fixtures/openclaw_upstream_frames.json` and replayed by
 `bridge/test/upstream-frames.test.ts`.

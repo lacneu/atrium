@@ -142,6 +142,24 @@ describe("cross-tab passthrough (shared instance.config blob)", () => {
     expect(out.summarizeThresholdChars).toBe(12_000);
   });
 
+  test("a Bridge-form save PRESERVES the media-quarantine attestation (codex)", () => {
+    // It has no control on this form on purpose — it disarms a protection against a
+    // defect that destroys sessions. But erasing it on save silently re-quarantined a
+    // gateway the operator had already vouched for, with no way to see why.
+    const stored = {
+      mediaMode: "gateway-http",
+      attachmentFixAttested: true,
+    } as unknown as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
+    expect(out.attachmentFixAttested).toBe(true);
+  });
+
+  test("no attestation stored -> none resurrected", () => {
+    const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
+    const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
+    expect("attachmentFixAttested" in out).toBe(false);
+  });
+
   test("no threshold stored -> none resurrected", () => {
     const stored = { mediaMode: "shared-fs" } as Partial<ConfigForm>;
     const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");

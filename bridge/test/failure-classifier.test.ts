@@ -34,6 +34,34 @@ describe("classifyFailureText", () => {
     ).toBe("session_init_conflict");
   });
 
+  it("the MID-TURN writer rebound gets its OWN class, not the retryable one", () => {
+    // It rebounds "before transcript persistence": the model has RUN and tools may
+    // already have had external effects. Sharing `session_init_conflict` put it in
+    // RETRYABLE_KINDS, whose whole justification is that nothing has happened yet, so a
+    // completed turn could be re-dispatched (codex). Different moment, different class.
+    expect(
+      classifyFailureText(
+        "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence <- session-rebound",
+      ),
+    ).toBe("session_write_conflict");
+  });
+
+  it("pins the 2026.8.1+ / 2026.9.1 session COORDINATION errors to the same transient class", () => {
+    // The file lock of 7.x is gone; these are what the SQLite generation says
+    // instead (upstream anchors in failure-classifier.ts). Wire forms carry the
+    // error class as a prefix.
+    expect(classifyFailureText("Session 7f3a already has an active turn claim")).toBe(
+      "session_init_conflict",
+    );
+    expect(
+      classifyFailureText('SessionWorkStartChangedError: Session "agent:alice:atrium:chat:u-1" was deleted while starting work. Retry.'),
+    ).toBe("session_init_conflict");
+    expect(
+      classifyFailureText('Session "agent:alice:atrium:chat:u-1" changed while starting work. Retry.'),
+    ).toBe("session_init_conflict");
+    // The sessions.files variant is a different API and must NOT match.
+    expect(classifyFailureText("session file changed since it was read")).toBeNull();
+  });
   it("pins transient provider failures to provider_internal", () => {
     for (const t of [
       "The AI service returned an internal error. Please try again.",

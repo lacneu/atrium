@@ -131,6 +131,8 @@ export const listMyCrons = action({
         lastDelivered: boolean | null;
         lastDeliveryError: string | null;
         agentId: string;
+        autoDisabledReason: string | null;
+        autoDisabledAtMs: number | null;
       }[];
     }[]
   > => {
@@ -195,6 +197,8 @@ export const listMyCrons = action({
               lastDelivered: j.lastDelivered,
               lastDeliveryError: j.lastDeliveryError,
               agentId: j.effectiveAgentId,
+              autoDisabledReason: j.autoDisabledReason,
+              autoDisabledAtMs: j.autoDisabledAtMs,
             })),
           };
         } catch {

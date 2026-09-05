@@ -1,11 +1,13 @@
 // Per-message work-plan card (the model's `update_plan` tool, GPT-5-family
-// runs). The bridge appends one kind:"plan" part per update; the NEWEST part
-// is the plan's current state and arrives live while the turn streams — the
+// runs). The bridge appends one kind:"plan" part per update; the CURRENT one
+// (decided by cause order — convex/lib/planOrder.ts, not by position) is the
+// plan's state and arrives live while the turn streams — the
 // user literally watches steps flip pending → in progress → completed and can
 // judge the planned vs done work at a glance. Always visible (like the cron
 // section): a plan is conversation-level information, not tool-call detail.
 
 import { useState } from "react";
+import { resolveCurrentPlan } from "./planView";
 import { useMessage } from "@assistant-ui/react";
 import { Check, Circle, ListTodo, LoaderCircle } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
@@ -52,10 +54,11 @@ export function PlanActivity() {
   // Expanded by default while work is in flight; the finished plan folds to
   // its one-line summary so a settled reply stays compact.
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
-  if (planParts.length === 0) return null;
-
-  // The newest update is the plan's current truth.
-  const plan = planParts[planParts.length - 1] as PlanPartView;
+  // The current update is the one whose CAUSE is newest (convex/lib/planOrder.ts),
+  // not the last row written; an EMPTY one (a cleared or steps-less progress
+  // card) hides the checklist instead of showing 0/0.
+  const plan = resolveCurrentPlan(planParts) as PlanPartView | null;
+  if (plan === null) return null;
   const total = plan.steps.length;
   const done = plan.steps.filter((s) => s.status === "completed").length;
   const allDone = done === total;

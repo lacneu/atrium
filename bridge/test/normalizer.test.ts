@@ -760,7 +760,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, status: "running", phase: "startup" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "running", phase: "startup", recvAt: expect.any(Number) },
     ]);
     expect(ev.some((e) => String(e.type).startsWith("message."))).toBe(false);
   });
@@ -781,7 +781,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "ZULU_DELTA_777" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "ZULU_DELTA_777", recvAt: expect.any(Number) },
     ]);
   });
 
@@ -811,6 +811,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
         status: "error",
         done: true,
         errorMessage: "codex app-server turn idle timed out waiting for turn/completed",
+        recvAt: expect.any(Number),
       },
     ]);
   });
@@ -831,7 +832,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, status: "error", phase: "error", done: true, errorMessage: "boom" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "error", phase: "error", done: true, errorMessage: "boom", recvAt: expect.any(Number) },
     ]);
   });
 
@@ -851,7 +852,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, status: "aborted", done: true, errorMessage: "" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "aborted", done: true, errorMessage: "", recvAt: expect.any(Number) },
     ]);
   });
 
@@ -931,7 +932,7 @@ describe("sub-agent observation (spawnedBy admission)", () => {
       clock.tick(),
     );
     expect(ev.filter((e) => e.type === "agent.activity")).toEqual([
-      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "STRING_RESULT" },
+      { type: "agent.activity", childSessionKey: CHILD_SK, status: "done", done: true, text: "STRING_RESULT", recvAt: expect.any(Number) },
     ]);
   });
 
@@ -2995,6 +2996,41 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     n.feed(lifecycle({ phase: "end", yielded: true, livenessState: "working" }), clock.tick());
     const final = n.tick(clock.now + 11).find((e) => e.type === "message.final");
     expect(final).toMatchObject({ gatewayYielded: true });
+  });
+
+  it("`yielded` on the TERMINAL itself is believed, with no lifecycle frame (codex)", () => {
+    // 2026.9.1 puts the hand-off signal on `ChatFinalEvent` too. Reading it only off the
+    // lifecycle meant that losing that one frame turned a legitimate hand-off into an
+    // EMPTY response — and the empty-response guard retries, repeating the sub-agent's
+    // work and any external effect it had.
+    const { n, clock } = startTurn();
+    // The terminal carries the signal; the lifecycle that follows does NOT (it is the
+    // frame that went missing).
+    const emitted = n.feed(
+      {
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "final",
+          yielded: true,
+          message: { role: "assistant", content: [] },
+        },
+      },
+      clock.tick(),
+    );
+    // NO lifecycle at all — that frame is the one that went missing. The previous
+    // version of this test fed one anyway, so it proved nothing about the case its own
+    // title claimed, and hid that an empty terminal then waited out the 90s empty-final
+    // grace with the turn still showing as active (codex).
+    const final =
+      emitted.find((e) => e.type === "message.final") ??
+      n.tick(clock.now + 1).find((e) => e.type === "message.final");
+    expect(final, "the hand-off must finalize at once, not after the grace").toBeDefined();
+    expect(final).toMatchObject({ gatewayYielded: true });
+    expect((final as { diagnosticFinalizeCause?: string }).diagnosticFinalizeCause).not.toBe(
+      "empty_final",
+    );
   });
 
   it("codex P2: a compaction REPLAY does not inherit the abandoned attempt's terminal metadata", () => {

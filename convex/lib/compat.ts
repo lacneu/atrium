@@ -18,6 +18,9 @@ export type CompatTarget = {
   gatewayVersion: string | null;
   capabilities: Record<string, boolean>;
   versionBeyondValidated: boolean;
+  /** The operator attests THIS instance's gateway image carries the attachment fix.
+   *  Absent on a pre-this-release bridge, read as NOT attested (fail closed). */
+  attachmentFixAttested?: boolean;
   /** The serving bridge's env rehydration default (stamped by the poller). */
   rehydrationDefault?: boolean | null;
   turnSessionEcho?: boolean | null;
@@ -68,6 +71,13 @@ export type BridgeProtocolInfo = {
 export type ProviderSupport = {
   range: { min: string; maxValidated: string } | null;
   validatedVersions: string[];
+  /** Versions inside the range the manifest marks DEFECTIVE, mapped to the reason
+   *  (bridge/src/compat.ts `knownBrokenVersions`). Absent on a legacy manifest. */
+  knownBrokenVersions?: Record<string, string>;
+  /** The CONTINUOUS defect window `[from, fixedIn)` the bridge quarantines on. The
+   *  named list above is the published releases; this is what makes the verdict agree
+   *  with the bridge for the pre-releases and the versions between them (codex). */
+  brokenVersionWindow?: { from: string; fixedIn: string; why: string };
 };
 
 /** The /api/v1/compat response payload (minus the `ok` envelope). */
@@ -175,6 +185,243 @@ export function compareVersions(a: string, b: string): number | null {
  *  range (e.g. hermes today) is NOT "within support". Versions ABOVE
  *  maxValidated are still within support (supported-but-unvalidated — that
  *  nuance rides on the separate `versionBeyondValidated` flag). */
+/** The support verdict for ONE version: inside the range AND not a version the
+ *  manifest marks defective. Raising the ceiling over a broken release put it back
+ *  inside the interval, and the interval alone then answered "supported" on the API
+ *  and the MCP while the admin badge said "defective" — two surfaces, two verdicts
+ *  (codex P2). One function now answers for both. */
+export function supportedVersion(
+  support: Pick<ProviderSupport, "range" | "knownBrokenVersions" | "brokenVersionWindow">,
+  version: string | null | undefined,
+): boolean {
+  if (typeof version === "string" && brokenVersionReason(support, version) !== null) {
+    return false;
+  }
+  return withinSupport(support.range, version ?? null);
+}
+
+/** WHY this version is defective, or null. The named releases first (their own wording
+ *  reaches the operator), then the CONTINUOUS window — which is the predicate the bridge
+ *  enforces, so an exact list here answered "supported" for `2026.9.1-beta.1` while the
+ *  bridge was withholding file delivery on it (codex). Same bounds as
+ *  `mediaDeliveryPoisonReason`: numeric triple at the low end so a pre-release of the
+ *  first affected version counts, full comparison at the high end so pre-releases of the
+ *  fixed version do too. */
+/** Fold a second bridge's manifest into the first: defects UNION, range NEWEST.
+ *
+ *  The poller keeps the first non-null manifest it meets. During a rollout that can be
+ *  the OLD bridge, whose manifest predates `brokenVersionWindow` — and every target,
+ *  including those reported by the NEW bridge, is then judged without it: the API says
+ *  "supported" for a version the new bridge is quarantining, decided by nothing but the
+ *  order the URLs were polled (codex). Merging is one-directional on purpose: a defect
+ *  ANY reachable bridge knows about is kept, never dropped, and nothing else is copied.
+ *  Two things merge, for the same reason — the answer must not depend on which URL
+ *  answered first. Defect knowledge is UNIONED (a defect any bridge knows about is
+ *  kept), and `supportedRange` takes the HIGHEST `maxValidated`: keeping the first
+ *  bridge's ceiling meant an old one polled first badged a 2026.9.1 target "beyond
+ *  validated" while the API called it validated — the same target, two verdicts
+ *  (codex). Nothing else is copied. */
+/** Must the media-delivery instruction be WITHHELD for this instance?
+ *
+ *  The bridge already refuses it, but only a bridge carrying that guard. During a
+ *  rollout the dispatch can still land on an older one, which would inject the contract
+ *  on a stock 2026.8.x gateway and destroy the session (codex). Deciding here — before
+ *  the endpoint is chosen — closes that: the dispatch config goes out with
+ *  `mediaMode: "off"`, which EVERY bridge generation already honours.
+ *
+ *  Fail closed on absence: a target with no version, or from a bridge too old to
+ *  publish the attestation, is quarantined rather than assumed safe. */
+export function mediaQuarantineReason(
+  compat: unknown,
+  provider: string,
+  target: { gatewayVersion: string | null } | null,
+  /** From the INSTANCE row (`config.attachmentFixAttested`), never from the poll: the
+   *  attestation is an AUTHORIZATION, and /capabilities is unauthenticated. */
+  attested?: boolean,
+): string | null {
+  if (provider !== "openclaw") return null;
+  // The admin's own decision, first.
+  if (attested === true) return null;
+  // Everything else is quarantined — and the answer is an ENVELOPE, not a refusal
+  // (`withMediaQuarantine`): `mediaMode: "off"` for whoever cannot check, plus the real
+  // mode for a bridge that can. Convex therefore never has to know which generation, or
+  // which POD behind a Service, will answer this POST; it also never has to trust a
+  // version reading from the previous poll, which a rollback invalidates instantly
+  // (codex). The bridge that CAN check does so against the live connection.
+  return (
+    "the serving bridge is asked to prove, at send time, that its gateway is not one " +
+    "where a delivered file poisons the session"
+  );
+}
+
+/** The releases on which a DELIVERED FILE poisons the session, as `[from, fixedIn)`.
+ *
+ *  Mirrors `ATTACHMENT_POISON_WINDOW` in bridge/src/compat.ts, and `compat.test.ts`
+ *  pins the two together by reading that file — Convex must be able to answer without a
+ *  manifest at all (before the first poll, or from a bridge that predates the field),
+ *  and a value it cannot state itself is a value it cannot fail closed on. */
+export const ATTACHMENT_POISON_WINDOW = {
+  from: "2026.8.1",
+  fixedIn: "2026.9.1",
+  why: "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+} as const;
+
+/** Does `next` validate FURTHER than `base`? Unparseable or missing ceilings never
+ *  win — an unreadable range must not raise the bar. */
+/** The union of two `validatedVersions` lists, sorted, or undefined when neither is a
+ *  list. A version benched by ANY reachable bridge was benched. */
+function unionValidated(
+  a: unknown,
+  b: unknown,
+): { validatedVersions: string[] } | undefined {
+  const list = (x: unknown) =>
+    Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : null;
+  const la = list(a);
+  const lb = list(b);
+  if (la === null && lb === null) return undefined;
+  const merged = [...new Set([...(la ?? []), ...(lb ?? [])])].sort(
+    (x, y) => compareVersions(x, y) ?? x.localeCompare(y),
+  );
+  return { validatedVersions: merged };
+}
+
+/** The UNION of two defect windows: lowest `from`, highest `fixedIn`.
+ *
+ *  Copying the incoming one only when the base had none left the FIRST polled bridge
+ *  deciding between two windows that both exist — a narrower one could then hide a
+ *  wider one, and 2026.9.1 kept its media because of URL order (codex). A window is a
+ *  claim about which releases are broken; two claims merge by taking the widest, and an
+ *  unparseable bound never narrows anything. */
+function unionWindow(
+  a: unknown,
+  b: unknown,
+): { from: string; fixedIn: string; why: string } | undefined {
+  const norm = (w: unknown) => {
+    const o = w as { from?: unknown; fixedIn?: unknown; why?: unknown } | undefined;
+    return typeof o?.from === "string" &&
+      typeof o.fixedIn === "string" &&
+      typeof o.why === "string" &&
+      parseVersion(o.from) !== null &&
+      parseVersion(o.fixedIn) !== null
+      ? { from: o.from, fixedIn: o.fixedIn, why: o.why }
+      : undefined;
+  };
+  const x = norm(a);
+  const y = norm(b);
+  if (x === undefined) return y;
+  if (y === undefined) return x;
+  const from = (compareVersions(y.from, x.from) ?? 0) < 0 ? y.from : x.from;
+  const fixedIn = (compareVersions(y.fixedIn, x.fixedIn) ?? 0) > 0 ? y.fixedIn : x.fixedIn;
+  return { from, fixedIn, why: x.why };
+}
+
+function higherCeiling(base: unknown, next: unknown): boolean {
+  const b = (base as { maxValidated?: unknown } | undefined)?.maxValidated;
+  const n = (next as { maxValidated?: unknown } | undefined)?.maxValidated;
+  // PARSE both before choosing. Testing only the type let an unreadable ceiling win
+  // over a missing one, and made a valid ceiling lose to an unreadable base — the
+  // outcome then depended on polling order again, on input that comes off the network
+  // (codex). A readable ceiling always beats an unreadable or absent one; an unreadable
+  // one never wins; two readable ones compare.
+  const pn = typeof n === "string" ? parseVersion(n) : null;
+  if (pn === null) return false;
+  const pb = typeof b === "string" ? parseVersion(b) : null;
+  if (pb === null) return true;
+  const cmp = compareVersions(n as string, b as string);
+  return cmp !== null && cmp > 0;
+}
+
+export function mergeDefectAwareness(base: unknown, next: unknown): unknown {
+  if (typeof base !== "object" || base === null) return next;
+  if (typeof next !== "object" || next === null) return base;
+  const bp = (base as { providers?: unknown }).providers;
+  const np = (next as { providers?: unknown }).providers;
+  if (typeof bp !== "object" || bp === null || typeof np !== "object" || np === null) {
+    return base;
+  }
+  const providers: Record<string, unknown> = { ...(bp as Record<string, unknown>) };
+  for (const [name, entry] of Object.entries(np as Record<string, unknown>)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry as { knownBrokenVersions?: unknown; brokenVersionWindow?: unknown };
+    const existing = providers[name];
+    const b = (typeof existing === "object" && existing !== null ? existing : {}) as {
+      knownBrokenVersions?: Record<string, unknown>;
+      brokenVersionWindow?: unknown;
+    };
+    const mergedNames = {
+      ...(typeof e.knownBrokenVersions === "object" && e.knownBrokenVersions !== null
+        ? (e.knownBrokenVersions as Record<string, unknown>)
+        : {}),
+      // The base wins on a version BOTH name: same defect, its own wording.
+      ...(typeof b.knownBrokenVersions === "object" && b.knownBrokenVersions !== null
+        ? b.knownBrokenVersions
+        : {}),
+    };
+    const baseRange = (b as { supportedRange?: unknown }).supportedRange;
+    const nextRange = (entry as { supportedRange?: unknown }).supportedRange;
+    // A provider absent from the base is copied WHOLE: dropping it lost its
+    // capabilities entirely when it appeared only on the second-polled bridge (codex).
+    if (typeof existing !== "object" || existing === null) {
+      providers[name] = entry;
+      continue;
+    }
+    const window = unionWindow(b.brokenVersionWindow, e.brokenVersionWindow);
+    // When the incoming bridge validates FURTHER, its range AND the evidence that goes
+    // with it win together: keeping the old `validatedVersions` and `capabilities`
+    // beside a raised ceiling announced support the old reading never earned.
+    const takeNext = higherCeiling(baseRange, nextRange);
+    providers[name] = {
+      ...existing,
+      ...(takeNext
+        ? {
+            supportedRange: nextRange,
+            ...((entry as { capabilities?: unknown }).capabilities !== undefined
+              ? { capabilities: (entry as { capabilities?: unknown }).capabilities }
+              : {}),
+          }
+        : {}),
+      // `validatedVersions` is evidence, so it UNIONS: every version either bridge
+      // benched really was benched, whichever answered the poll first.
+      ...(unionValidated(
+        (b as { validatedVersions?: unknown }).validatedVersions,
+        (entry as { validatedVersions?: unknown }).validatedVersions,
+      ) ?? {}),
+      ...(Object.keys(mergedNames).length > 0
+        ? { knownBrokenVersions: mergedNames }
+        : {}),
+      ...(window !== undefined ? { brokenVersionWindow: window } : {}),
+    };
+  }
+  return { ...(base as Record<string, unknown>), providers };
+}
+
+export function brokenVersionReason(
+  support: Pick<ProviderSupport, "knownBrokenVersions" | "brokenVersionWindow">,
+  version: string,
+): string | null {
+  const named = support.knownBrokenVersions?.[version];
+  if (named !== undefined) return named;
+  const w = support.brokenVersionWindow;
+  if (w === undefined) return null;
+  const v = parseVersion(version);
+  const from = parseVersion(w.from);
+  if (v === null || from === null) return null;
+  // Low end on the numeric triple ONLY, so a pre-release of the first affected version
+  // counts as inside; high end on the full comparison, so pre-releases of the fixed
+  // version do too. Identical bounds to the bridge's `mediaDeliveryPoisonReason`.
+  let belowWindow = false;
+  for (let i = 0; i < 3; i++) {
+    const d = (v.nums[i] as number) - (from.nums[i] as number);
+    if (d !== 0) {
+      belowWindow = d < 0;
+      break;
+    }
+  }
+  const high = compareVersions(version, w.fixedIn);
+  if (high === null || belowWindow || high >= 0) return null;
+  return w.why;
+}
+
 export function withinSupport(
   range: { min: string; maxValidated: string } | null,
   gatewayVersion: string | null,
@@ -216,6 +463,7 @@ export function normalizeCompatTarget(raw: unknown): CompatTarget | null {
     gatewayVersion: str(o.gatewayVersion),
     capabilities,
     versionBeyondValidated: o.versionBeyondValidated === true,
+    ...(o.attachmentFixAttested === true ? { attachmentFixAttested: true } : {}),
   };
 }
 
@@ -661,7 +909,11 @@ export function providerSupport(
   compat: unknown,
   provider: string,
 ): ProviderSupport {
-  const none: ProviderSupport = { range: null, validatedVersions: [] };
+  const none: ProviderSupport = {
+    range: null,
+    validatedVersions: [],
+    knownBrokenVersions: {},
+  };
   if (typeof compat !== "object" || compat === null) return none;
   const providers = (compat as Record<string, unknown>).providers;
   if (typeof providers !== "object" || providers === null) return none;
@@ -678,7 +930,21 @@ export function providerSupport(
   const validatedVersions = Array.isArray(e.validatedVersions)
     ? e.validatedVersions.filter((x): x is string => typeof x === "string")
     : [];
-  return { range, validatedVersions };
+  // Versions the manifest marks defective INSIDE the range (see ProviderCompat).
+  const knownBrokenVersions: Record<string, string> = {};
+  if (typeof e.knownBrokenVersions === "object" && e.knownBrokenVersions !== null) {
+    for (const [v, why] of Object.entries(e.knownBrokenVersions as Record<string, unknown>)) {
+      if (typeof why === "string" && why !== "") knownBrokenVersions[v] = why;
+    }
+  }
+  const w = e.brokenVersionWindow as
+    | { from?: unknown; fixedIn?: unknown; why?: unknown }
+    | undefined;
+  const brokenVersionWindow =
+    typeof w?.from === "string" && typeof w.fixedIn === "string" && typeof w.why === "string"
+      ? { from: w.from, fixedIn: w.fixedIn, why: w.why }
+      : undefined;
+  return { range, validatedVersions, knownBrokenVersions, brokenVersionWindow };
 }
 
 /** Read a provider's capability->minVersion table out of a stored CompatManifest.
@@ -787,8 +1053,8 @@ export function summarizeCompat(
       instanceName: t.instanceName,
       provider: t.provider,
       gatewayVersion: t.gatewayVersion,
-      withinSupport: withinSupport(
-        providerSupport(doc.compat, t.provider).range,
+      withinSupport: supportedVersion(
+        providerSupport(doc.compat, t.provider),
         t.gatewayVersion,
       ),
       versionBeyondValidated: t.versionBeyondValidated,
@@ -810,6 +1076,7 @@ export function capabilitiesForInstance(
   gatewayVersion: string | null;
   capabilities: Record<string, boolean> | null;
   versionBeyondValidated: boolean;
+  attachmentFixAttested?: boolean;
 } | null {
   const t = targets.find((x) => x.instanceName === instanceName);
   if (t === undefined) return null;
@@ -818,5 +1085,6 @@ export function capabilitiesForInstance(
     gatewayVersion: t.gatewayVersion,
     capabilities: t.capabilities,
     versionBeyondValidated: t.versionBeyondValidated,
+    ...(t.attachmentFixAttested === true ? { attachmentFixAttested: true } : {}),
   };
 }

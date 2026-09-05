@@ -14,7 +14,15 @@
 // sub-agent announce runs).
 
 const UUID_RE = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const DELIVERY_RE = new RegExp(`^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)$`);
+// Gateway 2026.8.x appends the delivery LANE to that id: the announce delivery
+// keys its message/idempotency as `${announceId}:agent-loop` and the delivery
+// run inherits it (upstream src/agents/subagents/announce/
+// subagent-announce-delivery.ts:219,230 — absent from 2026.7.1). Pinned live on
+// 2026.8.2 (2026-09-02): `image_generate:85dce36f-…:error:agent-loop`. Only that
+// documented lane is accepted, still anchored: an unknown suffix stays a non-match.
+const DELIVERY_RE = new RegExp(
+  `^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)(?::agent-loop)?$`,
+);
 
 export interface AsyncTaskStart {
   taskId: string;
@@ -111,5 +119,8 @@ export function taskDeliveryRunFromRunId(
 export function isDeliveryRunId(runId: string | null | undefined): boolean {
   if (typeof runId !== "string") return false;
   if (taskDeliveryRunFromRunId(runId) !== null) return true;
+  // 2026.8.1+ requester-settle wake (see convex/lib/deliveryRuns.ts): a
+  // gateway-initiated synthetic turn on the parent session, no child key.
+  if (runId.startsWith("announce:requester-settle:")) return true;
   return runId.startsWith("announce:v1:") && runId.split(":").length >= 4;
 }

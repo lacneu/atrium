@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { convexTest, type TestConvex } from "convex-test";
+import { withMediaQuarantine } from "./lib/instanceConfig";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -23,6 +24,11 @@ import {
   parseVersion,
   providerCapabilityTable,
   providerSupport,
+  brokenVersionReason,
+  ATTACHMENT_POISON_WINDOW,
+  mediaQuarantineReason,
+  mergeDefectAwareness,
+  supportedVersion,
   resolveCapabilitiesFromManifest,
   summarizeCompat,
   withinSupport,
@@ -409,16 +415,51 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         "2026.7.1-beta.5",
         "2026.7.1",
       ],
+      // The fixture declares none; the projection always answers with the map so a
+      // consumer never has to distinguish "absent" from "empty" (codex P1).
+      knownBrokenVersions: {},
     });
     expect(providerSupport(MANIFEST, "hermes")).toEqual({
       range: { min: "0.18.0", maxValidated: "0.18.2" },
       validatedVersions: ["0.18.0", "0.18.2"],
+      knownBrokenVersions: {},
     });
     expect(providerSupport(MANIFEST, "nosuchprovider")).toEqual({
       range: null,
       validatedVersions: [],
+      knownBrokenVersions: {},
     });
+    // A manifest that DOES declare defective versions carries them through.
+    expect(
+      providerSupport(
+        {
+          providers: {
+            openclaw: {
+              supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+              validatedVersions: [],
+              knownBrokenVersions: { "2026.8.1": "a delivered file poisons the session" },
+            },
+          },
+        },
+        "openclaw",
+      ).knownBrokenVersions,
+    ).toEqual({ "2026.8.1": "a delivered file poisons the session" });
     expect(providerSupport(null, "openclaw").range).toBeNull();
+  });
+
+  test("a DEFECTIVE version is not withinSupport on the API/MCP summary (codex P2)", () => {
+    // The admin badge and the API must answer the same thing: one verdict function.
+    const support = {
+      range: { min: "2026.5.19", maxValidated: "2026.9.1" },
+      validatedVersions: [],
+      knownBrokenVersions: { "2026.8.2": "a delivered file poisons the session" },
+    };
+    expect(supportedVersion(support, "2026.8.2")).toBe(false);
+    expect(supportedVersion(support, "2026.9.1")).toBe(true);
+    expect(supportedVersion(support, "2026.7.1")).toBe(true);
+    // Below the floor stays out, and an absent list changes nothing.
+    expect(supportedVersion(support, "2026.1.1")).toBe(false);
+    expect(supportedVersion({ range: support.range }, "2026.8.2")).toBe(true);
   });
 
   test("summary computes withinSupport per instance from the manifest", () => {
@@ -1517,5 +1558,257 @@ describe("the poller keeps an ANNOUNCED shape as a triable name", () => {
     expect(isKnownShapeGrammar("«unanticipated-event».../../etc/passwd")).toBe(false);
     expect(isKnownShapeGrammar("«unanticipated-event».")).toBe(false);
     expect(isKnownShapeGrammar(`«unanticipated-event».${"a".repeat(200)}`)).toBe(false);
+  });
+});
+
+describe("the defect verdict is the SAME predicate on every surface", () => {
+  // The bridge quarantines file delivery over a continuous window; the API, the MCP and
+  // the admin badge read `supportedVersion`. Reading only the named releases here made
+  // `2026.9.1-beta.1` "supported" while the bridge was withholding delivery on it — two
+  // verdicts about one gateway (codex). Same window, both directions.
+  const support = {
+    range: { min: "2026.5.19", maxValidated: "2026.9.1" },
+    knownBrokenVersions: { "2026.8.1": "named", "2026.8.2": "named" },
+    brokenVersionWindow: {
+      from: "2026.8.1",
+      fixedIn: "2026.9.1",
+      why: "a delivered file poisons the session",
+    },
+  };
+  test("every version INSIDE the window is defective, named or not", () => {
+    for (const v of ["2026.8.1", "2026.8.2", "2026.8.1-beta.4", "2026.8.3", "2026.9.1-beta.1"]) {
+      expect(brokenVersionReason(support, v), `${v} must be defective`).not.toBeNull();
+      expect(supportedVersion(support, v), `${v} must not read as supported`).toBe(false);
+    }
+  });
+  test("and nothing OUTSIDE it is", () => {
+    for (const v of ["2026.7.1", "2026.8.0", "2026.9.1", "2026.9.2"]) {
+      expect(brokenVersionReason(support, v), `${v} must not be defective`).toBeNull();
+    }
+    expect(supportedVersion(support, "2026.9.1")).toBe(true);
+  });
+  test("a manifest with NO window still honours the named list", () => {
+    const legacy = { range: support.range, knownBrokenVersions: { "2026.8.1": "named" } };
+    expect(supportedVersion(legacy, "2026.8.1")).toBe(false);
+    expect(supportedVersion(legacy, "2026.9.1-beta.1")).toBe(true);
+  });
+});
+
+describe("a rollout cannot forget a defect, whichever bridge answers first", () => {
+  // The poller keeps the first non-null manifest. Polled in the other order, an OLD
+  // bridge's manifest (no window) judged targets the NEW bridge was quarantining — the
+  // verdict decided by URL order, exactly during the version skew it matters most
+  // (codex). Both orders, same answer.
+  const OLD = {
+    providers: {
+      openclaw: { supportedRange: { min: "2026.5.19", maxValidated: "2026.8.2" } },
+    },
+  };
+  const NEW = {
+    providers: {
+      openclaw: {
+        supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+        knownBrokenVersions: { "2026.8.1": "named" },
+        brokenVersionWindow: {
+          from: "2026.8.1",
+          fixedIn: "2026.9.1",
+          why: "a delivered file poisons the session",
+        },
+      },
+    },
+  };
+  for (const [label, a, b] of [
+    ["old first", OLD, NEW],
+    ["new first", NEW, OLD],
+  ] as const) {
+    test(`${label}: 2026.8.3 stays defective`, () => {
+      const merged = mergeDefectAwareness(a, b);
+      const support = providerSupport(merged, "openclaw");
+      expect(brokenVersionReason(support, "2026.8.3")).not.toBeNull();
+      expect(supportedVersion(support, "2026.8.3")).toBe(false);
+      // …and the CEILING is the highest of the two, whichever answered first: keeping
+      // the first bridge's meant a 2026.9.1 target read "beyond validated" here and
+      // "validated" on the API, decided by URL order (codex).
+      expect(support.range?.maxValidated).toBe("2026.9.1");
+      expect(supportedVersion(support, "2026.9.1")).toBe(true);
+    });
+  }
+  test("a raised ceiling brings ITS evidence, and a new provider is not lost (codex)", () => {
+    // Keeping the old `validatedVersions`/`capabilities` beside a raised ceiling
+    // announced support that the old reading never earned; and a provider present only
+    // on the second-polled bridge disappeared entirely.
+    const OLD_FULL = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.5.19", maxValidated: "2026.7.1" },
+          validatedVersions: ["2026.7.1"],
+          capabilities: { mediaOutbound: "2026.5.19" },
+        },
+      },
+    };
+    const NEW_FULL = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+          validatedVersions: ["2026.9.1"],
+          capabilities: { mediaOutbound: "2026.5.19", automations: "2026.8.1" },
+        },
+        hermes: { supportedRange: { min: "0.18.0", maxValidated: "0.19.0" } },
+      },
+    };
+    for (const [label, a, b] of [
+      ["old first", OLD_FULL, NEW_FULL],
+      ["new first", NEW_FULL, OLD_FULL],
+    ] as const) {
+      const merged = mergeDefectAwareness(a, b) as {
+        providers: Record<string, Record<string, unknown>>;
+      };
+      const oc = merged.providers.openclaw!;
+      expect((oc.supportedRange as { maxValidated: string }).maxValidated, label).toBe(
+        "2026.9.1",
+      );
+      // The evidence UNIONS: both were really benched.
+      expect(oc.validatedVersions, label).toEqual(["2026.7.1", "2026.9.1"]);
+      // …and the capability table is the one that goes with the higher ceiling.
+      expect(oc.capabilities, label).toMatchObject({ automations: "2026.8.1" });
+      // A provider only one side knows about survives whole.
+      expect(merged.providers.hermes, label).toBeDefined();
+    }
+  });
+
+  test("two competing windows UNION, in either order (codex)", () => {
+    // Both bridges publish a window: copying the incoming one only when the base had
+    // none let the first-polled URL decide, and a narrower window then hid a wider one.
+    const wide = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.5.19", maxValidated: "2026.9.2" },
+          brokenVersionWindow: { from: "2026.8.1", fixedIn: "2026.9.2", why: "wider" },
+        },
+      },
+    };
+    for (const [label, a, b] of [
+      ["narrow first", NEW, wide],
+      ["wide first", wide, NEW],
+    ] as const) {
+      const support = providerSupport(mergeDefectAwareness(a, b), "openclaw");
+      expect(brokenVersionReason(support, "2026.9.1"), label).not.toBeNull();
+      expect(brokenVersionReason(support, "2026.9.2"), label).toBeNull();
+    }
+    // A LOWER `from` widens the other way too.
+    const earlier = {
+      providers: {
+        openclaw: {
+          supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+          brokenVersionWindow: { from: "2026.7.9", fixedIn: "2026.9.1", why: "earlier" },
+        },
+      },
+    };
+    const support = providerSupport(mergeDefectAwareness(NEW, earlier), "openclaw");
+    expect(brokenVersionReason(support, "2026.8.0")).not.toBeNull();
+    // …and an unparseable bound narrows nothing.
+    const junkWindow = {
+      providers: {
+        openclaw: { brokenVersionWindow: { from: "x", fixedIn: "y", why: "junk" } },
+      },
+    };
+    expect(
+      brokenVersionReason(
+        providerSupport(mergeDefectAwareness(NEW, junkWindow), "openclaw"),
+        "2026.8.2",
+      ),
+    ).not.toBeNull();
+  });
+
+  test("an unreadable ceiling never wins, in EITHER order (codex)", () => {
+    const junk = { providers: { openclaw: { supportedRange: { min: "x", maxValidated: "nope" } } } };
+    const noRange = { providers: { openclaw: {} } };
+    // A readable ceiling survives an unreadable or absent one beside it…
+    expect(providerSupport(mergeDefectAwareness(NEW, junk), "openclaw").range?.maxValidated)
+      .toBe("2026.9.1");
+    expect(providerSupport(mergeDefectAwareness(NEW, noRange), "openclaw").range?.maxValidated)
+      .toBe("2026.9.1");
+    // …and REPLACES one, rather than losing to it: testing only the type meant a valid
+    // ceiling could not repair an accumulator poisoned by a junk manifest.
+    expect(providerSupport(mergeDefectAwareness(junk, NEW), "openclaw").range?.maxValidated)
+      .toBe("2026.9.1");
+    expect(providerSupport(mergeDefectAwareness(noRange, NEW), "openclaw").range?.maxValidated)
+      .toBe("2026.9.1");
+    // Junk never wins over junk-less absence either.
+    expect(providerSupport(mergeDefectAwareness(noRange, junk), "openclaw").range).toBeNull();
+  });
+  test("merging two manifests that know nothing invents no defect", () => {
+    const support = providerSupport(mergeDefectAwareness(OLD, OLD), "openclaw");
+    expect(brokenVersionReason(support, "2026.8.3")).toBeNull();
+  });
+});
+
+describe("the media quarantine is a fail-closed ENVELOPE, not a version guess", () => {
+  // Convex cannot know which bridge generation — or which POD behind one Service —
+  // will answer a POST it has not sent yet. So it stops guessing: unless an admin has
+  // attested the instance, the dispatch carries `mediaMode: "off"` PLUS the real mode
+  // in a field only a bridge that re-checks the live version knows how to read (codex).
+  const t = (over: Record<string, unknown> = {}) => ({
+    instanceName: "alpha",
+    provider: "openclaw",
+    gatewayVersion: "2026.9.1",
+    capabilities: {},
+    versionBeyondValidated: false,
+    ...over,
+  });
+
+  test("without an admin attestation, every OpenClaw target is quarantined", () => {
+    // Including one the last poll called healthy: it may have rolled back one second
+    // later, which no snapshot can express.
+    for (const target of [t(), t({ gatewayVersion: "2026.8.2" }), t({ gatewayVersion: null }), null]) {
+      expect(mediaQuarantineReason(null, "openclaw", target)).not.toBeNull();
+    }
+  });
+
+  test("the admin's attestation is the ONE thing that lifts it", () => {
+    expect(mediaQuarantineReason(null, "openclaw", t(), true)).toBeNull();
+    expect(mediaQuarantineReason(null, "openclaw", null, true)).toBeNull();
+  });
+
+  test("a target CLAIMING the attestation does not lift it", () => {
+    // /capabilities is unauthenticated: it describes, it does not authorize.
+    expect(
+      mediaQuarantineReason(null, "openclaw", {
+        ...t(),
+        attachmentFixAttested: true,
+      } as never),
+    ).not.toBeNull();
+  });
+
+  test("Hermes is not subject to an OpenClaw defect", () => {
+    expect(mediaQuarantineReason(null, "hermes", t({ gatewayVersion: null }))).toBeNull();
+  });
+
+  test("the envelope carries BOTH modes: off for anyone, the real one for a guard", () => {
+    expect(
+      withMediaQuarantine({ mediaMode: "shared-fs" as const }, "because"),
+    ).toEqual({ mediaMode: "off", mediaModeIfGuarded: "shared-fs" });
+    // NO stored override -> "inherit", never a Convex default: `configOverrides` is the
+    // RAW stored partial precisely so an unset field lets the bridge keep its OWN env
+    // default. Sending `gateway-http` here switched an env-configured shared-fs or off
+    // bridge (codex).
+    expect(withMediaQuarantine({}, "because")).toEqual({
+      mediaMode: "off",
+      mediaModeIfGuarded: "inherit",
+    });
+    // No reason -> untouched, no envelope.
+    expect(withMediaQuarantine({ mediaMode: "shared-fs" as const }, null)).toEqual({
+      mediaMode: "shared-fs",
+    });
+  });
+
+  test("Convex's window is the SAME as the bridge's, not a second truth", () => {
+    // The window still decides the admin BADGE on both sides; this pins the two
+    // declarations together by reading the bridge's source.
+    const src = readFileSync(new URL("../bridge/src/compat.ts", import.meta.url), "utf8");
+    for (const [field, value] of Object.entries(ATTACHMENT_POISON_WINDOW)) {
+      if (field === "why") continue;
+      expect(src, `bridge window ${field}`).toContain(`${field}: "${value}"`);
+    }
   });
 });

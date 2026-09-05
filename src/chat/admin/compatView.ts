@@ -1,6 +1,7 @@
 import { m } from "@/paraglide/messages.js";
 import {
   compareVersions,
+  brokenVersionReason,
   providerSupport,
   withinSupport,
   type ProviderSupport,
@@ -18,7 +19,14 @@ import {
 export { providerSupport, type ProviderSupport };
 
 /** Per-connection verdict badge: in support / beyond validated / unknown. */
-export type TargetBadgeState = "supported" | "beyond" | "unknown";
+export type TargetBadgeState =
+  | "supported"
+  | "beyond"
+  /** Inside the support range, but a version the manifest marks DEFECTIVE
+   *  (`knownBrokenVersions`): raising the ceiling over a broken release must not
+   *  re-badge it "within support" (codex P1). */
+  | "defective"
+  | "unknown";
 
 /**
  * Classify one compat target against the manifest:
@@ -39,7 +47,12 @@ export function targetBadgeState(
 ): TargetBadgeState {
   if (target.gatewayVersion === null) return "unknown";
   if (target.versionBeyondValidated) return "beyond";
-  const { range } = providerSupport(compat, target.provider);
+  const support = providerSupport(compat, target.provider);
+  const { range } = support;
+  // The same predicate the bridge and the API use — named releases OR the continuous
+  // window. Reading only the named list showed "supported" for a pre-release the bridge
+  // was quarantining (codex).
+  if (brokenVersionReason(support, target.gatewayVersion) !== null) return "defective";
   return withinSupport(range, target.gatewayVersion) ? "supported" : "unknown";
 }
 
@@ -57,11 +70,33 @@ export function badgeStateFromVersion(
   compat: unknown,
 ): TargetBadgeState {
   if (version === null) return "unknown";
-  const { range } = providerSupport(compat, provider);
+  const support = providerSupport(compat, provider);
+  const { range } = support;
+  // The SAME predicate as targetBadgeState — and this is the entry point the provider
+  // card actually calls. Fixing only the other one left the card badging a pre-release
+  // "supported" while the API refused it and the bridge quarantined it: one rule, two
+  // doors, and the second one silently open (codex).
+  if (brokenVersionReason(support, version) !== null) return "defective";
   if (!withinSupport(range, version)) return "unknown";
   const beyond =
     range !== null && (compareVersions(version, range.maxValidated) ?? 0) > 0;
   return beyond ? "beyond" : "supported";
+}
+
+/** The provider card's HEADER verdict, from its instance rows.
+ *
+ *  Ordered by urgency, not by convenience: `defective` first (a version the
+ *  manifest says breaks sessions), then `beyond`. The card's connections are
+ *  collapsed by default, so a header that ignored `defective` hid the most urgent
+ *  state behind a disclosure (codex P2). `supported` only when EVERY row is; an
+ *  unknown row yields no badge rather than a ✓ the manifest does not back. */
+export function aggregateBadgeState(
+  states: readonly TargetBadgeState[],
+): TargetBadgeState | null {
+  if (states.includes("defective")) return "defective";
+  if (states.includes("beyond")) return "beyond";
+  if (states.length > 0 && states.every((s) => s === "supported")) return "supported";
+  return null;
 }
 
 export function targetBadgeLabel(state: TargetBadgeState): string {
@@ -69,7 +104,9 @@ export function targetBadgeLabel(state: TargetBadgeState): string {
     ? m.compat_badge_supported()
     : state === "beyond"
       ? m.compat_badge_beyond()
-      : m.compat_badge_unknown();
+      : state === "defective"
+        ? m.compat_badge_defective()
+        : m.compat_badge_unknown();
 }
 
 /** A version for display — null degrades to the localized "unknown". */

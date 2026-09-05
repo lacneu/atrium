@@ -113,3 +113,30 @@ export type NormalizedEvent = Record<string, unknown> & { type: string };
 
 /** Back-compat alias: the OpenClaw normalizer + driver historically used this name. */
 export type BridgeEvent = NormalizedEvent;
+
+/**
+ * WHEN THE FRAME ARRIVED, carried on every event a normalizer produces from it.
+ *
+ * Anything the sink derives from a frame and writes as a PLAN is ordered by its
+ * cause, not by the moment the write lands (src/chat/planView.ts). The cause is
+ * this instant, and it must be the normalizer's `now`, not the sink's clock: an
+ * announce frame can be STASHED while another run holds the pipeline and replayed
+ * later with its ORIGINAL `now` (run-manager `pendingAnnounce`), so a stamp taken
+ * where the sink applies it would date a frame by its replay.
+ *
+ * Applied by the OpenClaw normalizer on every path that produces events. Hermes
+ * carries no plan stream and writes no plan part, so it stamps nothing — and an
+ * unstamped event gets NO substitute clock (turn-sink `recvStamp`): the part is
+ * written without a stamp and orders by arrival, the behavior that predates this.
+ * Substituting `Date.now()` there would mix milliseconds into a field written in
+ * SECONDS and pin that part ahead of every real one.
+ */
+export function stampReceived(
+  events: BridgeEvent[],
+  now: number,
+): BridgeEvent[] {
+  for (const event of events) {
+    if (event.recvAt === undefined) event.recvAt = now;
+  }
+  return events;
+}

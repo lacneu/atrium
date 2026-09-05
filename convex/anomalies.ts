@@ -207,6 +207,7 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   response_timeout: "assistant.cause.response_timeout",
   stream_orphaned: "assistant.cause.stream_orphaned",
   session_init_conflict: "assistant.cause.session_init_conflict",
+  session_write_conflict: "assistant.cause.session_write_conflict",
   empty_response_silent: "assistant.cause.empty_response_silent",
   provider_internal: "assistant.cause.provider_internal",
   empty_response: "assistant.cause.empty_response",

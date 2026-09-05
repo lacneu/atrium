@@ -84,6 +84,7 @@ export const KNOWN_ERROR_CODES = [
   // never raise a named cause (codex P1).
   "provider_internal",
   "session_init_conflict",
+  "session_write_conflict",
   "empty_response_silent",
   // The dispatch never reported back and the reconciler settled the row to unlock
   // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose

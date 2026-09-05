@@ -117,7 +117,7 @@ function convexSources(): { file: string; source: string }[] {
  * not the `.paginate(` further down it.
  */
 const KNOWN_OFFENDERS: ReadonlyArray<string> = [
-  "anomalies.ts:1638",
+  "anomalies.ts:1639",
   "feedback.ts:922",
 ];
 

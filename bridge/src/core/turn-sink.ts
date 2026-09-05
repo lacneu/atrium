@@ -428,11 +428,42 @@ export class TurnSink {
   // (chain continues -> one step per call) or left the pipeline idle (the
   // model closed its plan -> settle it), which is only known at finalize.
   private planAdvancesThisTurn = 0;
+  /** Whether the LAST native plan of this turn was EMPTY (a cleared /
+   *  markdown-only progress card, 2026.8.1+). Not visible work, so on a silent
+   *  delivery run no bubble opens and the deferred event would be discarded at
+   *  the terminal — while the stale checklist stays on the anchored parent.
+   *  Applied run-keyed at that terminal (writer.clearPlanPart), carrying the
+   *  receive stamp of the frame that caused it (see lastPlanStamp). Tracks the
+   *  latest plan event, not "an empty one was seen": a run that clears and
+   *  then posts a real plan ends with a plan, not a clear (codex P2). */
+  private lastPlanEmptyThisTurn = false;
+  /** The receive stamp a normalizer put on this event (core/events.ts
+   *  `stampReceived`), or undefined when its producer carries none.
+   *
+   *  DELIBERATELY NO FALLBACK CLOCK. The normalizer's `now` is a clock in SECONDS
+   *  (session.ts `Clock`), so substituting `Date.now()` here would mix
+   *  a millisecond value into the same field and put that part ~1000x ahead of
+   *  every real one, permanently. An unstamped part orders by arrival instead
+   *  (convex/lib/planOrder.ts) — the behavior that predates this. */
+  private static recvStamp(event: NormalizedEvent): number | undefined {
+    const at = (event as { recvAt?: unknown }).recvAt;
+    return typeof at === "number" && Number.isFinite(at) && at > 0
+      ? at
+      : undefined;
+  }
+  /** The stamp of the LAST plan frame of this turn — the instant the sink
+   *  received it. Carried on the clear so a retry, which re-posts this same
+   *  instant, is ordered by its CAUSE and cannot hide a plan published after
+   *  it (src/chat/planView.ts `resolveCurrentPlan`). */
+  private lastPlanStamp: number | undefined;
   // Non-update_plan tool calls this turn: a delivery run may keep the chain
   // going through ANY tool (an async generation's item carries no taskId, a
   // spawn's item no childSessionKey) — settling the plan is only safe when
   // update_plan was the turn's ONLY tool activity (codex P2).
   private otherToolCallsThisTurn = 0;
+  /** Receive stamp of the LAST plan.advance of this turn — the cause of the
+   *  inferred part Convex writes at the terminal (see planAdvancesThisTurn). */
+  private lastPlanAdvanceStamp: number | undefined;
   // Everything the TURN itself said or touched (tool args/outputs + the
   // final reply text), flattened to strings and bounded: the outbound scan's
   // correlation source. A shared-dir file the turn never NAMED is another
@@ -578,6 +609,9 @@ export class TurnSink {
     this.toolCallCount = 0;
     this.framesLostThisTurn = 0;
     this.planAdvancesThisTurn = 0;
+    this.lastPlanEmptyThisTurn = false;
+    this.lastPlanStamp = undefined;
+    this.lastPlanAdvanceStamp = undefined;
     this.otherToolCallsThisTurn = 0;
     this.userAbortThisTurn = false;
     this.turnArtifactChunks = [];
@@ -698,6 +732,30 @@ export class TurnSink {
   }
 
   private async settleTaskDeliveryEngagement(): Promise<void> {
+    // A cleared checklist on a silent delivery run (see lastPlanEmptyThisTurn):
+    // no bubble carried the empty plan, so hand it to the anchored parent
+    // run-keyed — FIRST, before either family's own settle returns. Best-effort.
+    {
+      const silentRun = this.turnRunId;
+      if (
+        this.lastPlanEmptyThisTurn &&
+        typeof silentRun === "string" &&
+        isDeliveryRunId(silentRun)
+      ) {
+        try {
+          await this.writer.clearPlanPart?.(
+            this.chatId,
+            silentRun,
+            this.lastPlanStamp,
+          );
+        } catch (err) {
+          console.error(
+            "plan clear on silent delivery failed (non-fatal):",
+            (err as Error)?.message ?? err,
+          );
+        }
+      }
+    }
     const delivery = taskDeliveryRunFromRunId(this.turnRunId);
     if (delivery !== null) {
       try {
@@ -741,6 +799,24 @@ export class TurnSink {
   /** Apply a batch of normalized events to the writer, strictly in order. */
   async apply(events: NormalizedEvent[]): Promise<void> {
     for (const event of events) {
+      if (event.type === "plan") {
+        // STAMPED AT THE CAUSE, not at the write. The stamp is the instant the
+        // FRAME arrived (the normalizer's `now`, preserved across an announce
+        // stash), never the moment this write leaves: the write may be DEFERRED
+        // (a silent turn buffers its events until it opens) or RETRIED later,
+        // and both must carry that same instant — that is what lets the reader
+        // order a replayed clear behind a plan published after it
+        // (src/chat/planView.ts). Set once, so a buffered event replayed through
+        // applyOne keeps the stamp it arrived with.
+        const plan = (event as {
+          plan?: { steps?: unknown[]; stamp?: number };
+        }).plan;
+        if (plan !== undefined && plan.stamp === undefined) {
+          plan.stamp = TurnSink.recvStamp(event);
+        }
+        this.lastPlanEmptyThisTurn = (plan?.steps?.length ?? 0) === 0;
+        this.lastPlanStamp = plan?.stamp;
+      }
       // CHAT-scoped, message-independent: the compaction verdict describes the
       // SESSION, not this turn's bubble. Applied before the deferred gate (codex
       // P2): a silent announce turn buffers its events and then discards the
@@ -1039,7 +1115,12 @@ export class TurnSink {
             ) {
               this.toolCallCount++;
               const nm = asString(event.name);
-              if (nm !== "update_plan" && nm !== "message") {
+              // The plan tool is not "other tool activity": a turn whose ONLY
+              // calls are plan updates must still count as plan-only (codex P2).
+              // `progress_card` REPLACED `update_plan` at gateway 2026.8.1, so
+              // both names are exempt — reading one name would have made every
+              // 2026.8.1 plan-only turn look like it had done other work.
+              if (nm !== "update_plan" && nm !== "progress_card" && nm !== "message") {
                 this.otherToolCallsThisTurn++;
               }
             }
@@ -1179,6 +1260,14 @@ export class TurnSink {
               event.output,
             );
             if (planPart !== null) {
+              // The tool path writes the SAME part as the native stream, so it
+              // carries the same receive stamp. Without one it would be dated by
+              // the greatest stamp already written (convex/lib/planOrder.ts) —
+              // enough to win by position today, but it would carry no cause of
+              // its own, so a clear caused BEFORE it and written after would
+              // still outrank it. The stamp is what settles that pair.
+              const at = TurnSink.recvStamp(event);
+              if (at !== undefined) planPart.stamp = at;
               await this.writer.addPlanPart?.(messageId, planPart);
             }
           }
@@ -1529,6 +1618,10 @@ export class TurnSink {
           // once at flushFinal: only the turn's END knows whether the chain
           // continued (a further spawn) or the pipeline settled.
           this.planAdvancesThisTurn++;
+          // The inferred part is written at the terminal, but it is CAUSED here.
+          // Stamping it at the finalize would let it outrank a clear received in
+          // between, which is the ordering this exists to get right.
+          this.lastPlanAdvanceStamp = TurnSink.recvStamp(event);
           break;
         }
         case "context.compaction": {
@@ -1972,6 +2065,10 @@ export class TurnSink {
           // never mark the whole plan done (codex P2). The one-step advances
           // themselves stand: their update_plan calls DID complete.
           this.otherToolCallsThisTurn === 0 && effectiveStatus === "complete",
+          // The stamp of the advance that CAUSED it — not this terminal. An
+          // advance received before a clear must not outrank that clear just
+          // because it is applied after it (src/chat/planView.ts).
+          this.lastPlanAdvanceStamp,
         );
       } catch (e) {
         console.error(
@@ -2230,7 +2327,12 @@ function eventIsVisible(event: NormalizedEvent): boolean {
       // `tool.status`. Without this a spontaneous run whose only output is a
       // plan update has its event buffered and then discarded at the terminal,
       // so the plan never reaches the thread (codex P2).
-      return true;
+      // An EMPTY plan is the opposite case: it exists to hide a stale checklist
+      // (a cleared / markdown-only progress card, 2026.8.1+) and the UI shows
+      // nothing for it — opening a bubble on it alone would yield a reply that
+      // reads "no reply" for a mere checklist removal (codex P2). It still
+      // rides along, and merges, when something else opens the bubble.
+      return ((event as { plan?: { steps?: unknown[] } }).plan?.steps?.length ?? 0) > 0;
     default:
       return false;
   }

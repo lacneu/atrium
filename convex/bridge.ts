@@ -27,6 +27,8 @@ import { maybeScheduleTurnRetry } from "./turnRetry";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
+import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
+import { readDoc as readCompatDoc } from "./compat";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
 import {
@@ -36,7 +38,11 @@ import {
 } from "./lib/attachmentLimits";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
-import { bridgeDispatchConfig, resolveInstanceConfig } from "./lib/instanceConfig";
+import {
+  bridgeDispatchConfig,
+  resolveInstanceConfig,
+  withMediaQuarantine,
+} from "./lib/instanceConfig";
 import {
   effectiveTemplate,
   fillTemplate,
@@ -484,6 +490,11 @@ export const failDispatch = internalMutation({
 // thread id) PLUS the resolved instance/agent target from the valves. The
 // bridge maps instanceName -> token/deviceIdentity from its env; only names
 // cross this boundary, never secrets.
+/** How long a compat snapshot stays evidence for the media quarantine. Three poll
+ *  intervals: long enough that a single missed poll changes nothing, short enough that
+ *  a gateway swapped during an outage is not vouched for by yesterday's reading. */
+const COMPAT_SNAPSHOT_MAX_AGE_MS = 15 * 60_000;
+
 export const getChatRouting = internalQuery({
   args: {
     chatId: v.id("chats"),
@@ -533,6 +544,47 @@ export const getChatRouting = internalQuery({
             .query("instances")
             .withIndex("by_name", (q) => q.eq("name", target.instanceName))
             .first()
+        : null;
+    // Does THIS instance's gateway make a delivered file destroy the session? Read
+    // once here, before the endpoint is chosen, so the answer holds whichever bridge
+    // generation answers the POST (see `withMediaQuarantine`).
+    const compatDoc = target !== null ? await readCompatDoc(ctx) : null;
+    // A snapshot is evidence only while it is FRESH and came from a reachable poll.
+    // The poller deliberately KEEPS the last good targets when a poll fails, so a
+    // gateway swapped or rolled back during an outage would still be vouched for by a
+    // stale healthy row — and the media quarantine would lift on a version that now
+    // poisons sessions (codex). Stale or unreachable reads as unknown, which fails
+    // closed. This applies to the QUARANTINE only; nothing else changes.
+    const compatUsable =
+      compatDoc !== null &&
+      compatDoc.reachable === true &&
+      Date.now() - compatDoc.fetchedAt < COMPAT_SNAPSHOT_MAX_AGE_MS;
+    // The provider is what the INSTANCE is, never what a polled snapshot says it was.
+    // Preferring the snapshot let a stale row still marked "hermes" — an instance
+    // switched to OpenClaw within the freshness window, or a divergent /capabilities
+    // answer — return "not my defect" without ever looking at the version (codex). When
+    // the two disagree, the snapshot describes a different gateway: it is not evidence.
+    const provider = instance?.kind ?? "openclaw";
+    const snapshotTarget =
+      compatUsable && compatDoc !== null && target !== null
+        ? capabilitiesForInstance(compatDoc.targets, target.instanceName)
+        : null;
+    const compatTarget =
+      snapshotTarget !== null && snapshotTarget.provider === provider
+        ? snapshotTarget
+        : null;
+    // ALWAYS asked, including before the first successful poll — `compatDoc === null` is
+    // the normal shape of a fresh deployment, and skipping the question there left the
+    // media mode untouched for the whole first poll interval (codex).
+    const mediaQuarantine =
+      target !== null
+        ? mediaQuarantineReason(
+            compatDoc?.compat ?? null,
+            provider,
+            compatTarget,
+            // The operator's own row, edited through the authenticated admin surface.
+            instance?.config?.attachmentFixAttested === true,
+          )
         : null;
     // A GRANT CAN OUTLIVE ITS INSTANCE. Deletion removes the instance row (and its
     // credentials) immediately, then sweeps the name-bound grants in scheduled
@@ -695,7 +747,13 @@ export const getChatRouting = internalQuery({
       // branch above, which forces the knob for EVERY routed dispatch — the
       // router's own pre-existing contract, fork or not: context carry across
       // agent switches is unusable without it.)
-      configOverrides:
+      // MEDIA QUARANTINE, decided HERE and not only in the bridge. The bridge refuses
+      // the delivery instruction on a poisoning gateway, but only a bridge carrying that
+      // guard: during a rollout this dispatch can still reach an older one, which would
+      // inject the contract and let a delivered file destroy the session (codex). Forcing
+      // `mediaMode: "off"` is honoured by EVERY bridge generation, so the decision holds
+      // whichever endpoint answers.
+      configOverrides: withMediaQuarantine(
         chat.kind === "documentary" ||
         chat.kind === "summarizer" ||
         chat.kind === "curator" ||
@@ -715,6 +773,8 @@ export const getChatRouting = internalQuery({
                   routedSwitch: true,
                 }
               : bridgeDispatchConfig(instance?.config, contentLocale),
+        mediaQuarantine,
+      ),
     };
   },
 });

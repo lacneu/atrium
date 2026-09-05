@@ -25,7 +25,12 @@ echo "✅ gateway B healthy on :${PORT_B}"
 
 # 2) Codex harness (SAME ~/.codex as gateway A — user-approved for this bench).
 CODEX_AUTH="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
+# Same per-generation seed selection as up.sh (2026.8.1+ refuses the legacy
+# shape; earlier AgentsSchemas refuse `agents.ownership`).
 SEED_FILE="seed/openclaw.json"
+if [[ "$(printf '%s\n' "2026.8" "${OPENCLAW_VERSION:-2026.5.19}" | sort -V | head -n1)" == "2026.8" ]]; then
+  SEED_FILE="seed/openclaw.2026.8.json"
+fi
 [[ -f seed/openclaw.local.json ]] && SEED_FILE="seed/openclaw.local.json"
 if [[ "${OPENCLAW_CODEX_HARNESS:-0}" == "1" && -f "$CODEX_AUTH" && -f "$SEED_FILE" ]]; then
   echo "▶ enabling codex harness on gateway B (reusing $CODEX_AUTH) …"

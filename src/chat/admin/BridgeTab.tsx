@@ -67,6 +67,7 @@ import { m } from "@/paraglide/messages.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usageBadgeView } from "../usageView";
 import {
+  aggregateBadgeState,
   badgeStateFromVersion,
   hasProvider,
   providerSupport,
@@ -431,14 +432,9 @@ function ProviderCard({
       state: badgeStateFromVersion(version, providerKey, manifest),
     });
   }
-  // Aggregate header verdict: red if any instance is beyond support, "supported"
-  // when all are, else nothing (legacy / unknown → no badge).
-  const states = instanceRows.map((r) => r.state);
-  const verdict = states.includes("beyond")
-    ? "beyond"
-    : states.length > 0 && states.every((s) => s === "supported")
-      ? "supported"
-      : null;
+  // Aggregate header verdict — the branch itself lives in compatView so it is unit
+  // tested without a DOM harness (the same reason every other verdict here is).
+  const verdict = aggregateBadgeState(instanceRows.map((r) => r.state));
 
   // Connexions are a diagnostic detail → collapsed by default (the card is read
   // mostly to CHECK compatibility, drilled into connections occasionally).
@@ -449,7 +445,13 @@ function ProviderCard({
         <Server size={15} aria-hidden className="oc-bridge-provider__icon" />
         <span className="oc-bridge-provider__name">{providerLabel(providerKey)}</span>
         {verdict ? (
-          <Badge variant={verdict === "beyond" ? "destructive" : "secondary"}>
+          <Badge
+            variant={
+              verdict === "beyond" || verdict === "defective"
+                ? "destructive"
+                : "secondary"
+            }
+          >
             {targetBadgeLabel(verdict)}
           </Badge>
         ) : null}
@@ -669,7 +671,7 @@ function ProviderCompat({
                 variant={
                   r.state === "supported"
                     ? "secondary"
-                    : r.state === "beyond"
+                    : r.state === "beyond" || r.state === "defective"
                       ? "destructive"
                       : "outline"
                 }

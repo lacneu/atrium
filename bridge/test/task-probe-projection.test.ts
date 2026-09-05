@@ -11,7 +11,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { projectTaskProbe } from "../src/server.js";
+import { MAX_DISCOVERY_KEYS, projectTaskProbe } from "../src/server.js";
+import { SessionRegistry } from "../src/session.js";
 
 describe("projectTaskProbe — the probe's projection of one gateway task", () => {
   it("keeps the running task's progress line", () => {
@@ -45,9 +46,48 @@ describe("projectTaskProbe — the probe's projection of one gateway task", () =
     expect(projectTaskProbe({ progressSummary: 42 }).progressSummary).toBeNull();
     expect(projectTaskProbe(undefined)).toEqual({
       status: null,
+      ledgerDimensions: true,
+      terminalOutcome: null,
+      deliveryStatus: null,
       summary: null,
       progressSummary: null,
       error: null,
     });
+  });
+
+  it("the probe asks about EVERY session key the registry keeps (codex)", () => {
+    // The registry retains N recent keys per chat so a chain that outlived a re-key can
+    // still be found. Asking for fewer left the OLDEST retained key unqueried — exactly
+    // where such a chain lives — so its next link was never adopted and the delivery
+    // lost its anchor. Pinned to ONE number so the two cannot drift apart again.
+    expect(MAX_DISCOVERY_KEYS).toBe(SessionRegistry.MAX_RECENT_CHAT_KEYS);
+    expect(MAX_DISCOVERY_KEYS).toBeGreaterThan(0);
+  });
+
+  it("carries the OTHER TWO dimensions of a finished task (codex)", () => {
+    // `status` alone says a task ended; it does not say whether the work SUCCEEDED
+    // (`terminalOutcome`) nor whether its report reached the chat (`deliveryStatus`).
+    // Dropping them made Convex read every `completed` as a delivered success —
+    // settling a blocked task as done, and draining the next queued message while the
+    // report was still in flight.
+    const projected = projectTaskProbe({
+      status: "completed",
+      terminalOutcome: "blocked",
+      deliveryStatus: "session_queued",
+    });
+    // …and the FLAG that says this bridge knows about them at all: Convex reads its
+    // absence as "an older bridge answered", not as "the registry said nothing".
+    expect(projected.ledgerDimensions).toBe(true);
+    expect(projectTaskProbe(undefined).ledgerDimensions).toBe(true);
+    expect(projected.terminalOutcome).toBe("blocked");
+    expect(projected.deliveryStatus).toBe("session_queued");
+    // Non-strings project to null like every other field here, never to a lie.
+    expect(
+      projectTaskProbe({ status: "completed", terminalOutcome: 7, deliveryStatus: {} })
+        .terminalOutcome,
+    ).toBeNull();
+    expect(
+      projectTaskProbe({ status: "completed", deliveryStatus: {} }).deliveryStatus,
+    ).toBeNull();
   });
 });

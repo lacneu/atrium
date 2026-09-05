@@ -23,10 +23,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveVendorEntries, since } from "./lib/vendor-files.mjs";
 import process from "node:process";
 
 import {
   SNAPSHOT_FN,
+  SNAPSHOT_SITES,
   SNAPSHOT_SOURCE,
   deriveSnapshotFields,
 } from "./lib/derive-snapshot.mjs";
@@ -102,7 +104,59 @@ const FILES = [
   "schema/sessions-row.ts",
   "schema/sessions-sharing-values.ts",
   "schema/snapshot.ts",
-  "session-icon.ts",
+  // RENAMED at v2026.8.1: `session-icon.ts` became `session-agent-status.ts`,
+  // still exporting `SESSION_AGENT_ATTENTION_ICON_IDS`. An entry may therefore
+  // be a list of candidate paths, newest first — the first that EXISTS wins, and
+  // a version where none exists still refuses. Vendoring by a single hardcoded
+  // path turned an upstream rename into "module renamed?" with no way forward
+  // but editing this list on every tag.
+  ["session-agent-status.ts", "session-icon.ts"],
+  // New transitive imports as of 2026.8.1: upstream split the session and worker
+  // schemas much further (participants, classification, patch/list/goal/delete/
+  // recover, worker admission/computer, failover reasons, history constants…).
+  // This list is the TRANSITIVE CLOSURE of the roots above, computed against the
+  // checkout rather than discovered one "module renamed?" at a time: a vendored
+  // tree that does not typecheck is not a contract anyone can read, and each of
+  // these is classified in the coverage manifest like every other module.
+  ...since("2026.8.1", [
+  "failover-reasons.ts",
+  "protocol-value-normalization.ts",
+  "server-capabilities.ts",
+  "schema/chat-history-constants.ts",
+  "schema/environments.ts",
+  "schema/failover-reason.ts",
+  "schema/plugin-declared-surface-groups.ts",
+  "schema/secrets.ts",
+  "schema/session-classification.ts",
+  "schema/session-github-publication.ts",
+  "schema/session-participant.ts",
+  "schema/sessions-delete.ts",
+  "schema/sessions-goal.ts",
+  "schema/sessions-list.ts",
+  "schema/sessions-patch.ts",
+  "schema/sessions-recover.ts",
+  "schema/since.ts",
+  "schema/worker-admission.ts",
+  "schema/worker-computer.ts",
+  "schema/worker-protocol-primitives.ts",
+  ]),
+  // From ANOTHER package of the monorepo (see the rewrite below): re-exported by
+  // protocol-value-normalization.ts, so the flat tree needs it to typecheck.
+  ...since("2026.8.1", ["../../normalization-core/src/record-coerce.ts"]),
+
+  // New transitive imports as of 2026.9.1 (1230 commits after 2026.8.2): the
+  // cron schema split its shared pieces out, sessions gained a title schema,
+  // the snapshot a gateway-suspend one, GitHub publication a users schema (which
+  // pulls appearance preferences), and logs-chat a UTF-16 slicer from
+  // normalization-core. Same closure rule as the 2026.8.1 block.
+  ...since("2026.9.1", [
+    "schema/cron-shared.ts",
+    "schema/sessions-title.ts",
+    "schema/gateway-suspend.ts",
+    "schema/users.ts",
+    "schema/ui-appearance-preferences.ts",
+    "../../normalization-core/src/utf16-slice.ts",
+  ]),
 ];
 
 /** The one repository these bytes may be attributed to. */
@@ -262,13 +316,26 @@ if (!fs.existsSync(srcRoot)) {
   throw new Error(`no gateway-protocol source at ${srcRoot} — upstream layout changed`);
 }
 
-const header = (rel) =>
+// The header names EXACTLY the substitutions applied to THAT file — nothing more
+// (a rewrite the file never needed is not "a change vs upstream"), nothing less
+// (raised in review: the `@openclaw/<pkg>/<module>` collapse introduced at
+// v2026.8.1 was applied while the header still announced the `../` rebase as the
+// only change — a provenance statement false precisely where it mattered).
+const REWRITE_KINDS = {
+  rebased: "../ imports rebased to ./ for the flat layout",
+  packageCollapsed:
+    "@openclaw/<pkg>/<module> workspace specifiers collapsed to ./<module>.js",
+};
+const header = (rel, applied) =>
   `// VENDORED VERBATIM from openclaw/openclaw @ v${version} — ` +
   `packages/gateway-protocol/src/${rel}.\n` +
   `// Source of truth for the wire protocol; used ONLY by the protocol-coverage\n` +
   `// ratchet test (never imported by runtime bridge code). Do not edit by hand:\n` +
   `// re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.\n` +
-  `// (Only change vs upstream: ../ imports rebased to ./ for the flat layout.)\n`;
+  (applied.length === 0
+    ? `// (No change vs upstream.)\n`
+    : `// (Only change${applied.length > 1 ? "s" : ""} vs upstream: ` +
+      `${applied.map((k) => REWRITE_KINDS[k]).join("; ")}.)\n`);
 
 // DERIVED BEFORE ANYTHING IS WRITTEN.
 //
@@ -277,12 +344,42 @@ const header = (rel) =>
 // so a refusal left a half-vendored directory whose files no longer matched the
 // PROVENANCE.json beside them (raised in review). It depends only on the checkout, so
 // there is no reason for it to happen late: fail before the first byte is written.
-const snapshotPath = path.join(src, SNAPSHOT_SOURCE);
-if (!fs.existsSync(snapshotPath)) {
-  throw new Error(`upstream has no ${SNAPSHOT_SOURCE} at v${version}`);
+// WHICH site builds the snapshot depends on the tag, so it is RESOLVED against
+// the checkout instead of assumed: v2026.8.1 moved the shape out of
+// server-chat.ts into session-event-payload.ts. The candidates are ordered
+// (newest first) and the first whose file exists AND whose function derives
+// wins; if none does, the LAST failure is raised rather than a vague "not
+// found", so the message still names what upstream changed.
+let snapshotFields;
+let snapshotSource;
+let snapshotRaw;
+const snapshotErrors = [];
+for (const site of SNAPSHOT_SITES) {
+  const candidate = path.join(src, site.source);
+  if (!fs.existsSync(candidate)) continue;
+  const candidateRaw = fs.readFileSync(candidate, "utf-8");
+  try {
+    snapshotFields = deriveSnapshotFields(candidateRaw, {
+      fnName: site.fn,
+      sourceLabel: site.source,
+      fileName: path.basename(site.source),
+    });
+    snapshotSource = site.source;
+    snapshotRaw = candidateRaw;
+    break;
+  } catch (error) {
+    snapshotErrors.push(`${site.source} :: ${site.fn} — ${error.message}`);
+  }
 }
-const snapshotRaw = fs.readFileSync(snapshotPath, "utf-8");
-const snapshotFields = deriveSnapshotFields(snapshotRaw);
+if (snapshotFields === undefined) {
+  // EVERY candidate's refusal, not just the last one: reporting only the last
+  // named the OLD layout while the failure that mattered was the new one.
+  throw new Error(
+    snapshotErrors.length > 0
+      ? `no snapshot site derives at v${version}:\n  - ${snapshotErrors.join("\n  - ")}`
+      : `upstream has none of ${SNAPSHOT_SITES.map((x) => x.source).join(", ")} at v${version}`,
+  );
+}
 
 // Same rule for the announced event catalogue (G-70): derive it BEFORE anything is
 // written, and let an unresolvable entry abort the whole vendoring. A catalogue that
@@ -303,11 +400,22 @@ const catalogueEvents = deriveEventCatalogue(catalogueRaw, catalogueConstRaw);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
-for (const rel of FILES) {
-  const from = path.join(srcRoot, rel);
-  if (!fs.existsSync(from)) {
-    throw new Error(`upstream has no ${rel} at v${version} — module renamed?`);
+const { entries: vendorEntries, skipped: vendorSkipped } = resolveVendorEntries(FILES, version);
+for (const { candidates, since: from } of vendorSkipped) {
+  console.error(`[vendor] ${candidates.join(" | ")}: not before v${from}, skipped for v${version}`);
+}
+for (const { candidates } of vendorEntries) {
+  // A candidate starting with "../" leaves gateway-protocol for another package
+  // of the monorepo — v2026.8.1 made `protocol-value-normalization.ts` re-export
+  // from `@openclaw/normalization-core`, so the vendored tree cannot typecheck
+  // without that module. Resolution stays anchored on srcRoot either way.
+  const rel = candidates.find((c) => fs.existsSync(path.join(srcRoot, c)));
+  if (rel === undefined) {
+    throw new Error(
+      `upstream has none of ${candidates.join(", ")} at v${version} — module renamed?`,
+    );
   }
+  const from = path.join(srcRoot, rel);
   const name = path.basename(rel);
   const raw = fs.readFileSync(from, "utf-8");
   // The ONLY transformation, stated in the header: the flat vendored layout has no
@@ -316,6 +424,7 @@ for (const rel of FILES) {
   // Applied LINE BY LINE and only to import/export declarations (raised in review):
   // a comment or a string literal containing `from "../foo.js"` was being rewritten
   // too, which made the file non-verbatim outside the one change the header announces.
+  const applied = new Set();
   const flattened = raw
     .split("\n")
     .map((line) => {
@@ -329,12 +438,28 @@ for (const rel of FILES) {
       // another path (`import … from "../a.js"; // moved from "../b.js"`) was being
       // rewritten too, which is precisely the "verbatim except the specifier" promise
       // broken (raised in review). Note the non-global regex.
-      return isDeclaration
-        ? line.replace(/from "\.\.?\/(?:[^"]*\/)?([^/"]+\.js)"/, 'from "./$1"')
-        : line;
+      if (!isDeclaration) return line;
+      // Workspace package specifiers resolve to nothing in the flat vendored
+      // layout. v2026.8.1 introduced exactly one
+      // (`@openclaw/normalization-core/record-coerce`), and leaving it made every
+      // consumer of the vendored tree fail to load — the coverage ratchet
+      // included, which is how it surfaced. The module it names is vendored
+      // alongside, so the specifier collapses the same way a relative one does.
+      // Recorded in PROVENANCE.json like every other rewrite.
+      const packageRewritten = line.replace(
+        /from "@openclaw\/[a-z0-9-]+\/([a-z0-9-]+)"/,
+        'from "./$1.js"',
+      );
+      if (packageRewritten !== line) applied.add("packageCollapsed");
+      const rebased = packageRewritten.replace(
+        /from "\.\.?\/(?:[^"]*\/)?([^/"]+\.js)"/,
+        'from "./$1"',
+      );
+      if (rebased !== packageRewritten) applied.add("rebased");
+      return rebased;
     })
     .join("\n");
-  const body = header(rel) + flattened;
+  const body = header(rel, [...applied].sort()) + flattened;
   fs.writeFileSync(path.join(OUT_DIR, name), body);
   // TWO hashes, and the second is the one that matters.
   //
@@ -393,11 +518,11 @@ fs.writeFileSync(
     {
       _about:
         `Field names of ${SNAPSHOT_FN}'s return shape, DERIVED from ` +
-        `${SNAPSHOT_SOURCE} at v${version}. The gateway flattens these onto agent ` +
+        `${snapshotSource} at v${version}. The gateway flattens these onto agent ` +
         `events, so the drift detector's known-field set is asserted against this ` +
         `instead of against production observations. Do not edit by hand: re-run ` +
         `scripts/vendor-protocol.mjs.`,
-      derivedFrom: SNAPSHOT_SOURCE,
+      derivedFrom: snapshotSource,
       derivedFromSha256: createHash("sha256").update(snapshotRaw).digest("hex"),
       fields: snapshotFields,
     },
@@ -451,7 +576,7 @@ fs.writeFileSync(
       // file it was read from, so "this list came from that source" is checkable.
       derived: {
         "session-event-snapshot.json": {
-          upstreamPath: SNAPSHOT_SOURCE,
+          upstreamPath: snapshotSource,
           upstream: createHash("sha256").update(snapshotRaw).digest("hex"),
           fields: snapshotFields.length,
         },

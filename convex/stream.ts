@@ -36,6 +36,7 @@ import { drainNextQueued } from "./lib/outboxQueue";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
+import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
 
 // ── ATOMIC ingest authorization (cross-gateway barrier) ──────────────────────
 // Runs INSIDE the write transaction (no authorize→write TOCTOU): when the
@@ -284,7 +285,7 @@ export const startAssistant = internalMutation({
         const refusedRow = await ctx.db
           .query("subAgents")
           .withIndex("by_child", (q) =>
-            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+            q.eq("childSessionKey", deliveryChildKey(runId) ?? "" /* requester-settle names no child: match nothing */),
           )
           .filter((q) => q.eq(q.field("chatId"), chatId))
           .first();
@@ -306,7 +307,7 @@ export const startAssistant = internalMutation({
         const engagement = await ctx.db
           .query("subAgents")
           .withIndex("by_child", (q) =>
-            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+            q.eq("childSessionKey", deliveryChildKey(runId) ?? "" /* requester-settle names no child: match nothing */),
           )
           .filter((q) => q.eq(q.field("chatId"), chatId))
           .first();
@@ -329,7 +330,7 @@ export const startAssistant = internalMutation({
         const row = await ctx.db
           .query("subAgents")
           .withIndex("by_child", (q) =>
-            q.eq("childSessionKey", deliveryChildKey(runId) as string),
+            q.eq("childSessionKey", deliveryChildKey(runId) ?? "" /* requester-settle names no child: match nothing */),
           )
           .filter((q) => q.eq(q.field("chatId"), chatId))
           .first();
@@ -479,6 +480,28 @@ async function latestChatMessage(
   return recent.reduce((a, b) => (effectiveOrder(b) > effectiveOrder(a) ? b : a));
 }
 
+/** The engagement row of the run a child was BORN INSIDE.
+ *
+ *  A child spawned inside a task-delivery run that never opened a message of its
+ *  own (NO_REPLY) has no `parentMessageId`: the anchor lives on the engagement row
+ *  of that run — the bubble of the turn that started the background task. Shared by
+ *  the announce reopen and the silent plan clear, which used to resolve anchors
+ *  differently (codex P2): two resolvers, one of them poorer, is how a delivery
+ *  lands in one place and its plan clear in none. */
+async function bornOfRunEngagement(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  bornOfRun: string,
+): Promise<Doc<"subAgents"> | null> {
+  const engagementKey = deliveryChildKey(bornOfRun);
+  if (engagementKey === null) return null;
+  return await ctx.db
+    .query("subAgents")
+    .withIndex("by_child", (q) => q.eq("childSessionKey", engagementKey))
+    .filter((q) => q.eq(q.field("chatId"), chatId))
+    .first();
+}
+
 async function reopenParentForAnnounce(
   ctx: MutationCtx,
   chatId: Id<"chats">,
@@ -514,17 +537,9 @@ async function reopenParentForAnnounce(
     // message of its own (NO_REPLY): resolve the anchor through the
     // ENGAGEMENT row of that run — the bubble of the turn that STARTED the
     // background task is where the user expects the result.
-    const engagementKey = deliveryChildKey(sub.bornOfRun);
-    if (engagementKey !== null) {
-      const engagement = await ctx.db
-        .query("subAgents")
-        .withIndex("by_child", (q) => q.eq("childSessionKey", engagementKey))
-        .filter((q) => q.eq(q.field("chatId"), chatId))
-        .first();
-      parentId = engagement?.parentMessageId ?? undefined;
-      anchoredResolution =
-        parentId !== undefined && engagement?.anchorExact === true;
-    }
+    const engagement = await bornOfRunEngagement(ctx, chatId, sub.bornOfRun);
+    parentId = engagement?.parentMessageId ?? undefined;
+    anchoredResolution = parentId !== undefined && engagement?.anchorExact === true;
   }
   // Set by the CHAIN fallback below; consumed just before the successful
   // reopen return — the synthetic engagement row must only be anchored to a
@@ -1278,6 +1293,21 @@ export const addPart = internalMutation({
     // otherwise attach assistant prose to a USER message, where it renders inside the
     // user's own bubble as if they had written it (raised in review). Dropped rather than
     // thrown: a badly addressed part must not fail the ingest, only fail to land.
+    // NETWORK INPUT, at the point of writing. The ingest route screens the stamp
+    // ARGUMENT of `clearPlan`/`advancePlan` (bridge_ingest.ts), but the plans the
+    // bridge posts normally arrive INSIDE `part`, which it forwards verbatim —
+    // so the check for those lives here. A divergent bridge could send a zero,
+    // negative or non-finite stamp, which would order that plan behind every
+    // real one and hide a checklist that had just arrived. Dropped rather than
+    // rejected — the plan is still true, only its ordering claim is not.
+    if (
+      part.kind === "plan" &&
+      part.stamp !== undefined &&
+      usablePlanStamp(part.stamp, Date.now()) === undefined
+    ) {
+      const { stamp: _dropped, ...rest } = part;
+      part = rest;
+    }
     if (part.kind === "reasoning" && message.role !== "assistant") {
       console.log(
         `[stream] addPart dropped: reasoning part addressed to a ${message.role} message`,
@@ -1364,6 +1394,27 @@ export const addPart = internalMutation({
             kind: pt.kind,
             filename: pt.filename,
             mimeType: pt.mimeType,
+          });
+        }
+        if (pt.kind === "plan") {
+          // `stamp` is ORDERING metadata, not content: a rebroadcast re-arrives
+          // with a fresh receive stamp, so keying on it would defeat the dedup
+          // and re-insert a plan a later run had already cleared — resurrecting
+          // the checklist (codex).
+          //
+          // WHAT THIS COSTS, stated because it is a choice: inside an armed
+          // window, a run that genuinely re-publishes a plan IDENTICAL to one it
+          // already sent is indistinguishable from a rebroadcast of it — nothing
+          // in the data separates them — so that update is swallowed and, if a
+          // clear landed in between, the checklist stays hidden until the next
+          // DIFFERENT update. That is the pre-existing contract of this window
+          // (content dedup), and the lesser harm: keying on the stamp instead
+          // brings back a checklist the user was shown to be done with.
+          return JSON.stringify({
+            kind: pt.kind,
+            steps: pt.steps,
+            explanation: pt.explanation,
+            estimated: pt.estimated,
           });
         }
         return JSON.stringify(pt);
@@ -1469,7 +1520,8 @@ export const addPart = internalMutation({
   },
 });
 
-// Advance the message's LAST plan part from item-derived update_plan calls.
+// Advance the message's CURRENT plan part (the one the reader shows — greatest
+// stamp, lib/planOrder.ts; NOT the last row) from item-derived update_plan calls.
 // DELIVERY runs (sub-agent announce / task delivery) carry no tool frames —
 // an update_plan there surfaces as a bare item whose meta only names the
 // plan's FIRST step (gateway progress-line builder, verified in the 2026.7.1
@@ -1489,11 +1541,22 @@ export const advancePlanPart = internalMutation({
     // Generation guard (see addPart): a stale run must not advance a plan on
     // a message another run has since re-owned.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    // When the sink decided this advance (its own clock). Carried onto the
+    // part so a clear replayed afterwards, with an OLDER stamp, cannot hide
+    // it (src/chat/planView.ts `resolveCurrentPlan`).
+    stamp: v.optional(v.number()),
     ...boundArg,
   },
   handler: async (
     ctx,
-    { messageId, count, settleIfIdle, expectedRunId, boundInstanceName },
+    {
+      messageId,
+      count,
+      settleIfIdle,
+      expectedRunId,
+      stamp,
+      boundInstanceName,
+    },
   ) => {
     if (count <= 0) return;
     const message = await ctx.db.get(messageId);
@@ -1541,7 +1604,17 @@ export const advancePlanPart = internalMutation({
         return;
       }
     }
-    const lastPlan = planRows[planRows.length - 1];
+    // The plan to advance is the one the READER is showing, which is not
+    // necessarily the last row: a retried clear lands after the plan it was
+    // caused before, and taking the last row would advance that TOMBSTONE —
+    // whose empty step list then compares equal, so the visible plan would
+    // silently stop progressing (codex). One rule, shared: lib/planOrder.ts.
+    const lastPlan =
+      planRows[
+        currentPlanIndex(
+          planRows.map((e) => (e.part.kind === "plan" ? e.part : {})),
+        )
+      ];
     if (lastPlan === undefined || lastPlan.part.kind !== "plan") return;
     const prevSteps = lastPlan.part.steps;
     const steps = prevSteps.map((st) => ({ ...st }));
@@ -1591,10 +1664,157 @@ export const advancePlanPart = internalMutation({
     await ctx.db.insert("messageParts", {
       messageId,
       order: existing.length,
-      part: { kind: "plan", steps, estimated: true },
+      part: {
+        kind: "plan",
+        steps,
+        estimated: true,
+        ...(stamp !== undefined ? { stamp } : {}),
+      },
       ...(announceRun !== undefined ? { announceRun } : {}),
     });
     await ctx.db.patch(messageId, { updatedAt: Date.now() });
+  },
+});
+
+/** An EMPTY plan from a SILENT delivery run: gateway 2026.8.1+ emits the plan
+ *  stream with `steps: []` when a progress card is cleared or replaced by a
+ *  markdown-only put. The run opened no bubble (an empty plan is not visible
+ *  work), so the bridge hands it over run-keyed: the run's engagement row
+ *  (deliveryChildKey → subAgents) names the anchored parent, whose last plan
+ *  part is superseded by an empty one so the stale checklist is hidden
+ *  (src/chat/planView.ts). It writes its empty row even when there is nothing to
+ *  supersede — that row is also this run's tombstone; see the note below. */
+export const clearPlanPart = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    // When the BRIDGE received the empty plan frame — the clear's cause, not
+    // its arrival. See the ordering note below the dedup.
+    stamp: v.optional(v.number()),
+    boundInstanceName: v.optional(v.string()),
+  },
+  handler: async (ctx, { chatId, runId, stamp, boundInstanceName }) => {
+    if ((await ctx.db.get(chatId)) === null) return;
+    if (
+      boundInstanceName !== undefined &&
+      !(await chatAllowsInstance(ctx, chatId, boundInstanceName))
+    ) {
+      throw new Error("forbidden: cross-instance plan target");
+    }
+    const childKey = deliveryChildKey(runId);
+    if (childKey === null) return;
+    const row = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", childKey))
+      .filter((q) => q.eq(q.field("chatId"), chatId))
+      .first();
+    // Same anchor resolution as the announce reopen, one hop deep: a child born
+    // inside a NO_REPLY delivery carries only `bornOfRun` (codex P2).
+    //
+    // …but ONLY a CORRELATED anchor. When no sighting tied the child to its parent
+    // turn, the observer still fills `parentMessageId` with the session's last-known
+    // message — a plausible guess, marked by the ABSENCE of `anchorExact`. Its own
+    // comment states the safety argument for that guess: a stale anchor "only
+    // fail-closes the announce merge to two bubbles, never merges into a wrong one".
+    // That argument is about ADDING content. A clear REMOVES it, and the reopen's
+    // positional gates do not run here, so a guess would hide the checklist of an
+    // unrelated turn. The clear takes exact anchors only.
+    let parentId: Id<"messages"> | null | undefined;
+    if (row?.anchorExact === true) parentId = row.parentMessageId;
+    if (parentId === undefined && row?.bornOfRun !== undefined) {
+      const carrier = await bornOfRunEngagement(ctx, chatId, row.bornOfRun);
+      if (carrier?.anchorExact === true) parentId = carrier.parentMessageId;
+    }
+    // The reopen path has a THIRD resolution — the heuristic CHAIN fallback (guess
+    // the bubble from the newest same-tool engagement / the last message). It is
+    // deliberately NOT used here. That fallback exists to attach CONTENT, where a
+    // wrong guess costs an extra bubble; a clear REMOVES content, and a wrong guess
+    // would erase a checklist that belongs to another turn. Failing closed leaves a
+    // stale checklist until the next plan — the lesser harm, stated so the omission
+    // reads as a decision.
+    if (parentId === undefined || parentId === null) return;
+    const message = await ctx.db.get(parentId);
+    if (message === null || message.chatId !== chatId) return;
+    // ATOMIC per-MESSAGE barrier, like every other mutation that edits a message's
+    // parts. `chatAllowsInstance` above deliberately admits every instance already
+    // used in a per-turn-routed chat, which does NOT prove the caller owns THIS
+    // message: without this, a bridge authenticated for instance A could clear the
+    // plan on a bubble bound to B by naming an engagement anchored there (codex P1).
+    await assertMessageBound(ctx, message, boundInstanceName);
+    const existing = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", parentId))
+      .collect();
+    const planRows = existing
+      .filter((e) => e.part.kind === "plan")
+      .sort((a, b) => a.order - b.order);
+    // Replay dedup: a rebroadcast of this run after a bridge restart must not
+    // re-clear a plan a NEWER run has posted since. Only an EMPTY row stamped by
+    // THIS run proves the clear already landed — a NON-empty row from the same run
+    // is its earlier plan, and treating that as proof abandoned a clear whose write
+    // had failed, leaving the stale checklist up (codex P2).
+    if (
+      planRows.some(
+        (e) => e.announceRun === runId && e.part.kind === "plan" && e.part.steps.length === 0,
+      )
+    ) {
+      return;
+    }
+    // ORDER OF CAUSE, NOT OF ARRIVAL — and NOTHING IS REFUSED HERE.
+    //
+    // The tombstone above only deduplicates a replay whose FIRST clear landed. When
+    // that write FAILS, `clearPlan` is retried (bridge convex-writer IDEMPOTENT_OPS);
+    // if another run posted a plan in between, the retry's empty row lands AFTER that
+    // plan. While the thread simply showed the newest ROW, that hid a checklist this
+    // clear never owned, and no barrier here could tell the two apart: five were
+    // tried during 2026.9.1 — by
+    // plan ownership, by arrival order in `mergedAnnounceRuns`, by an untruncated
+    // merge counter, by the run's own traces, by the engagement row's last sign of
+    // life — and review broke each, because Convex sees no causal clock: a silent
+    // delivery opens no message and merges into no list, `deliveryChildKey` collapses
+    // the engagement row to the CHILD key so sibling runs share it, and the clear is
+    // dispatched BEFORE the terminal that would refresh it (core/turn-sink.ts).
+    //
+    // The clock exists one tier out: the bridge receives a chat's plan frames in
+    // order, on one connection. So every plan write now carries the instant its frame
+    // was RECEIVED (`stamp`), a retry re-posts that same instant unchanged, and the
+    // reader takes the plan of greatest stamp instead of the last row inserted
+    // (src/chat/planView.ts `resolveCurrentPlan`). A replayed clear is inert by
+    // arithmetic — which is why this mutation still writes unconditionally: every
+    // barrier that refused instead FROZE a checklist a later run had to clear, the
+    // failure mode proven live, and refusing is what this design no longer needs.
+    //
+    // HONEST LIMITS — what closes is the RETRY's window, not every replay.
+    //   - A gateway REBROADCAST after a bridge restart is a NEW arrival and is
+    //     stamped afresh, so it still reads as the newest cause. The run-keyed
+    //     tombstone covers it only when the first clear LANDED; when that write was
+    //     lost, a rebroadcast can still hide a newer plan. Unchanged by this, and
+    //     not claimed to be fixed.
+    //   - The stamp has MILLISECOND resolution: two causes inside one millisecond
+    //     compare equal and fall back to insertion order — the very ordering this
+    //     replaces. Narrow, and stated rather than implied.
+    //   - It is the clock of the bridge that saw the frame, and a WALL clock at
+    //     that: two instances serving one chat hold two of them, so writes closer
+    //     than their skew can invert — and an NTP correction on one bridge can
+    //     invert two causes around the jump.
+    //   - A bridge too old to send a stamp, and every row written before this
+    //     existed, carry none: on their own they read as arrival order, the
+    //     behavior that preceded this — though mixed with stamped rows they are
+    //     dated by the greatest stamp before them (lib/planOrder.ts), so an
+    //     inversion above can still reach them.
+    //
+    // The empty row is written even when there is nothing to supersede (no plan at
+    // all, or a plan already cleared): it is the run's TOMBSTONE, and without it a
+    // replay of this run would not be deduplicated (codex P2). An empty plan renders
+    // as nothing (src/chat/planView.ts), so an inert tombstone costs a row, not a
+    // visible part.
+    await ctx.db.insert("messageParts", {
+      messageId: parentId,
+      order: existing.length,
+      part: { kind: "plan", steps: [], ...(stamp !== undefined ? { stamp } : {}) },
+      announceRun: runId,
+    });
+    await ctx.db.patch(parentId, { updatedAt: Date.now() });
   },
 });
 

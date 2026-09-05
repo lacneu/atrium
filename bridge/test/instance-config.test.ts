@@ -63,3 +63,58 @@ describe("parseInboundConfig", () => {
     ).toEqual({ mediaMode: "off" });
   });
 });
+
+describe("Convex's fail-closed media envelope is folded into mediaMode (codex)", () => {
+  // Convex cannot know which bridge generation — or which pod behind one Service —
+  // will answer a POST it has not sent yet, so it sends `mediaMode: "off"` plus the
+  // mode it wants. A bridge predating the field ignores it and stays disabled; this one
+  // resolves it HERE, once, so every consumer of `mediaMode` agrees. Resolving it only
+  // where the delivery instruction is composed left the rest of the outbound pipeline
+  // reading "off", and the live bench caught it: the file was never delivered.
+  it("the guarded mode WINS over the fail-closed one", () => {
+    expect(
+      parseInboundConfig({ mediaMode: "off", mediaModeIfGuarded: "gateway-http" })
+        ?.mediaMode,
+    ).toBe("gateway-http");
+    expect(
+      parseInboundConfig({ mediaMode: "off", mediaModeIfGuarded: "shared-fs" })?.mediaMode,
+    ).toBe("shared-fs");
+  });
+
+  it("…and the parsed result never carries the wire-only field onward", () => {
+    const out = parseInboundConfig({
+      mediaMode: "off",
+      mediaModeIfGuarded: "gateway-http",
+    }) as Record<string, unknown>;
+    expect("mediaModeIfGuarded" in out).toBe(false);
+  });
+
+  it('"inherit" DROPS the fail-closed mode: the bridge keeps its own env default', () => {
+    // Convex stores no override for this instance, so it has no opinion to restore.
+    // Keeping `off` here would switch an env-configured shared-fs or off bridge, which
+    // is exactly the invariant `configOverrides` exists to protect (codex).
+    const out = parseInboundConfig({
+      mediaMode: "off",
+      mediaModeIfGuarded: "inherit",
+    }) as Record<string, unknown>;
+    expect("mediaMode" in out).toBe(false);
+    // …and the rest of the body still parses normally.
+    const withOthers = parseInboundConfig({
+      mediaMode: "off",
+      mediaModeIfGuarded: "inherit",
+      inboundMediaMode: "shared-fs",
+    });
+    expect(withOthers?.inboundMediaMode).toBe("shared-fs");
+    expect(withOthers?.mediaMode).toBeUndefined();
+  });
+
+  it("no envelope -> the sent mode stands, junk in it is ignored", () => {
+    expect(parseInboundConfig({ mediaMode: "off" })?.mediaMode).toBe("off");
+    expect(
+      parseInboundConfig({ mediaMode: "off", mediaModeIfGuarded: "nonsense" })?.mediaMode,
+    ).toBe("off");
+    expect(
+      parseInboundConfig({ mediaMode: "off", mediaModeIfGuarded: null })?.mediaMode,
+    ).toBe("off");
+  });
+});

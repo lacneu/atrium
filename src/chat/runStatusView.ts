@@ -248,6 +248,7 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // turn (turnRetry.ts); this card shows during the short backoff window and, if
   // the bounded retries exhaust, stays as the honest final state.
   session_init_conflict: m.runstatus_error_session_init_conflict,
+  session_write_conflict: m.runstatus_error_session_write_conflict,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
   // reader's language — formerly pre-rendered French sentences).
   not_configured: m.runstatus_error_not_configured,

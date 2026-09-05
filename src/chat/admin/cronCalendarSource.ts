@@ -3,6 +3,7 @@
 // groups in; future sources (user calendar, Twenty) will sit beside this one.
 
 import type { CalendarEvent } from "./calendarData";
+import { cronJobStateKind } from "./cronView";
 import { occurrencesInWindow, parseScheduleSpec } from "./cronCalendar";
 
 export const CRON_SOURCE_ID = "crons";
@@ -15,6 +16,9 @@ export type CronCalendarJob = {
     id: string | null;
     name: string | null;
     enabled: boolean | null;
+    /** Gateway 2026.8.1+: auto-disabled by the scheduler while `enabled` may
+     *  still read `true` — no future occurrence exists (cronView.ts). */
+    autoDisabledReason?: string | null;
     schedule: string | null;
     nextRunAtMs: number | null;
     lastRunStatus: string | null;
@@ -42,7 +46,11 @@ export function cronEventsInWindow(
     byItemId.set(itemId, entry);
     // A PAUSED job will not fire: never extrapolate its schedule — only the
     // gateway's own nextRunAtMs (rare on paused jobs) is worth showing.
-    const spec = job.enabled === false ? null : parseScheduleSpec(job.schedule);
+    // Only an ACTIVE job has future occurrences: paused OR auto-disabled jobs
+    // are not run by the scheduler, so projecting them would draw runs that
+    // will never happen (codex P2).
+    const inactive = cronJobStateKind(job) !== "active";
+    const spec = inactive ? null : parseScheduleSpec(job.schedule);
     const occurrences = occurrencesInWindow(
       spec,
       job.nextRunAtMs,
@@ -56,7 +64,7 @@ export function cronEventsInWindow(
         itemId,
         atMs: occ.atMs,
         title: job.name ?? job.id,
-        muted: job.enabled === false,
+        muted: inactive,
         exact: occ.exact,
       });
     }

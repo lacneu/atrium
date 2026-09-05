@@ -295,8 +295,8 @@ export class RunManager {
     this.replayArmed = false;
     this.pendingFrames = [];
     if (this.pendingAnnounce.length > 0) {
-      // `now` MUST be the session's monotonic clock (the normalizer arms its
-      // recv deadlines against it — an epoch value would park them forever).
+      // `now` MUST be the session's own clock (the normalizer arms its recv
+      // deadlines against it — an epoch value would park them forever).
       // `onFlushed` fires AFTER the flush settles (the spontaneous turn's
       // deadlines are armed by then) — a caller's wake() issued synchronously
       // would race the async open and could leave the consume loop parked on a

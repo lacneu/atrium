@@ -151,7 +151,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
       min: "2026.5.19",
-      maxValidated: "2026.7.1",
+      maxValidated: "2026.9.1",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
       "2026.5.19",
@@ -162,6 +162,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.7.1-beta.2",
       "2026.7.1-beta.5",
       "2026.7.1",
+      "2026.9.1",
     ]);
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.19.0" },
@@ -204,6 +205,36 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.protocolVersion).toBe(2);
     // No live session for this target -> the version is honestly unknown.
     expect(target.gatewayVersion).toBeNull();
+  });
+});
+
+describe("the attachment attestation reaches Convex on BOTH branches", () => {
+  // Convex decides the media quarantine from these targets. The synthetic branch — the
+  // one used when no chat session is open at the poll — omitted the flag, so a patched,
+  // explicitly attested image published as unattested and had its media quarantined
+  // until a session happened to be live (codex).
+  const live = [
+    {
+      canonical: "u-1",
+      instanceName: "alpha",
+      agentId: "a",
+      gatewayVersion: "2026.8.2",
+    },
+  ] as Parameters<typeof buildCapabilityTargets>[0];
+
+  test("live target: attested when the instance is", () => {
+    const [t] = buildCapabilityTargets(live, "alpha", null, "openclaw", "ws", true);
+    expect(t?.attachmentFixAttested).toBe(true);
+    const [plain] = buildCapabilityTargets(live, "alpha", null, "openclaw", "ws", false);
+    expect(plain?.attachmentFixAttested).toBeUndefined();
+  });
+
+  test("SYNTHETIC target (no live session): attested too", () => {
+    const [t] = buildCapabilityTargets([], "alpha", "2026.8.2", "openclaw", "ws", true);
+    expect(t, "the synthetic target must exist").toBeDefined();
+    expect(t?.attachmentFixAttested).toBe(true);
+    const [plain] = buildCapabilityTargets([], "alpha", "2026.8.2", "openclaw", "ws", false);
+    expect(plain?.attachmentFixAttested).toBeUndefined();
   });
 });
 

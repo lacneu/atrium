@@ -53,6 +53,17 @@ export const instanceConfigValidator = v.object({
   ),
   rehydration: v.optional(v.boolean()),
   mediaMaxMb: v.optional(v.number()),
+  // The operator ATTESTS this instance's gateway image carries the fix for the
+  // 2026.8.x attachment defect, lifting the media-delivery quarantine for it.
+  //
+  // It lives HERE, in a row an authenticated admin edits, and NOT in what the bridge
+  // publishes on /capabilities: that endpoint is unauthenticated by design (non-secret
+  // names and version strings), and while trusting it to DESCRIBE a gateway is fine,
+  // trusting it to AUTHORIZE the removal of a protection is not — a divergent or wrong
+  // answer would re-arm the instruction that destroys a session (codex). The bridge
+  // keeps its own env-level attestation for its own local guard; this is the one Convex
+  // decides on.
+  attachmentFixAttested: v.optional(v.boolean()),
   // Hybrid rehydration: unsummarized-content size (chars) that triggers an
   // AUTOMATIC summarize job (the manual trigger ignores it). Bounds below.
   summarizeThresholdChars: v.optional(v.number()),
@@ -141,6 +152,7 @@ export type InstanceConfig = {
   mediaMode?: MediaMode;
   inboundMediaMode?: InboundMediaMode;
   rehydration?: boolean;
+  attachmentFixAttested?: boolean;
   mediaMaxMb?: number;
   summarizeThresholdChars?: number;
   curationEnabled?: boolean;
@@ -196,6 +208,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "mediaMode",
+    "attachmentFixAttested",
     "inboundMediaMode",
     "rehydration",
     "mediaMaxMb",
@@ -237,6 +250,10 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.rehydration !== undefined) {
     if (typeof o.rehydration !== "boolean") return "invalid";
     out.rehydration = o.rehydration;
+  }
+  if (o.attachmentFixAttested !== undefined) {
+    if (typeof o.attachmentFixAttested !== "boolean") return "invalid";
+    out.attachmentFixAttested = o.attachmentFixAttested;
   }
   if (o.summarizeThresholdChars !== undefined) {
     const n = o.summarizeThresholdChars;
@@ -446,6 +463,36 @@ export function bridgeDispatchConfig(
   const { promptInjections, converterAgentId: _converter, ...transport } =
     cfg ?? {};
   return { ...transport, injections: resolveBridgeInjections(promptInjections, contentLocale) };
+}
+
+/** Force the media mode OFF when the target gateway must not be asked to deliver a
+ *  file. `mediaMode: "off"` makes the bridge skip the delivery instruction — every
+ *  generation honours it, including one predating the bridge-side guard, which is the
+ *  point: the decision must survive a rollout (codex). Nothing else is touched, and the
+ *  turn itself still goes through. */
+export function withMediaQuarantine<
+  T extends { mediaMode?: MediaMode; mediaModeIfGuarded?: MediaMode | "inherit" },
+>(cfg: T, reason: string | null): T {
+  if (reason === null) return cfg;
+  // A FAIL-CLOSED ENVELOPE, not a plain override. Convex cannot know which bridge
+  // generation will answer this POST — behind one Service, its /capabilities poll can
+  // reach a new pod while the /send reaches an old one mid rollout (codex). So it sends
+  // BOTH: `off`, which every generation honours, and the mode it actually wants, which
+  // only a bridge carrying the live-version guard knows how to read. An older bridge
+  // ignores the second field and stays disabled — the safe reading is the default for
+  // whoever cannot make the check.
+  //
+  // `"inherit"` when the admin stored NO override: `configOverrides` is deliberately the
+  // RAW stored partial, so that an unset field lets the bridge keep its OWN env default
+  // (an env-configured shared-fs or off bridge must not be forced back to Convex's
+  // gateway-http). Sending a concrete default here would have broken exactly that
+  // invariant — the envelope must carry "no opinion" as faithfully as it carries a
+  // mode (codex).
+  return {
+    ...cfg,
+    mediaMode: "off" as MediaMode,
+    mediaModeIfGuarded: cfg.mediaMode ?? "inherit",
+  };
 }
 
 /** Stable signature (fixed key order) — for "did the applied config change?". */

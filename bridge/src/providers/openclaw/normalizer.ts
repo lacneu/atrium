@@ -59,6 +59,7 @@ import {
   EVENT_TURN_PHASE,
   EVENT_SESSION_OVERFULL,
   EVENT_COMPACTION_CAUSE,
+  stampReceived,
   type BridgeEvent,
 } from "../../core/events.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
@@ -872,11 +873,18 @@ export class Normalizer {
     // reported a generic `gateway_error` for an end we had just identified.
     errorKind: string | null = null,
   ): BridgeEvent[] {
-    return this.finalize(now, status, error, errorKind, cause);
+    return stampReceived(
+      this.finalize(now, status, error, errorKind, cause),
+      now,
+    );
   }
 
   /** Finalize the active turn as failed after a per-message upstream error. */
   failTurn(now: number, message: string): BridgeEvent[] {
+    return stampReceived(this.failTurnAt(now, message), now);
+  }
+
+  private failTurnAt(now: number, message: string): BridgeEvent[] {
     return this.finalize(now, "error", message, null, "upstream_error");
   }
 
@@ -893,6 +901,10 @@ export class Normalizer {
 
   /** Resolve expired deadlines. Guarantees an armed wait always finalizes. */
   tick(now: number): BridgeEvent[] {
+    return stampReceived(this.tickAt(now), now);
+  }
+
+  private tickAt(now: number): BridgeEvent[] {
     if (this.finalized) {
       this.deadlines = new Map();
       return [];
@@ -999,7 +1011,14 @@ export class Normalizer {
   // -- main transducer ------------------------------------------------------
 
   /** Transduce one raw gateway frame into stable bridge events. */
+  /** Every produced event carries the instant this frame ARRIVED (see
+   *  core/events.ts `stampReceived`) — including a replayed announce frame,
+   *  which the run manager re-feeds with its original `now`. */
   feed(frame: Json, now: number): BridgeEvent[] {
+    return stampReceived(this.feedFrame(frame, now), now);
+  }
+
+  private feedFrame(frame: Json, now: number): BridgeEvent[] {
     if (!isObject(frame)) {
       return [];
     }
@@ -1361,6 +1380,13 @@ export class Normalizer {
   private handleChat(payload: JsonObject, _data: JsonObject, now: number, events: BridgeEvent[]): void {
     const state = payload.state;
     const isFinal = state === "final";
+    // The hand-off signal ALSO rides the terminal itself since 2026.9.1
+    // (`ChatFinalEvent.yielded`, protocol/openclaw/2026.9.1/logs-chat.ts). Reading it
+    // only off the lifecycle event meant that losing that one frame turned a legitimate
+    // hand-off into an EMPTY response — and the empty-response guard retries, which can
+    // repeat a sub-agent's work and its external effects (codex). Two carriers, one
+    // meaning: whichever arrives is believed.
+    if (isFinal && payload.yielded === true) this.sawYielded = true;
     const message = payload.message;
     const deltaText = payload.deltaText;
     // Dedup key includes the message-content fingerprint: an exact re-broadcast
@@ -1556,6 +1582,12 @@ export class Normalizer {
     if (isFinal && !this.finalized) {
       if (this.hasRealContent()) {
         events.push(...this.finalize(now, "final", null, null, "gateway_final"));
+      } else if (this.sawYielded) {
+        // A HAND-OFF, not a silence. The gateway said this turn passed the work on, so
+        // there is no follow-on content to wait for: arming the 90s empty-final grace
+        // left the turn showing as active for a minute and a half, which is exactly the
+        // frame-loss case `ChatFinalEvent.yielded` exists to cover (codex).
+        events.push(...this.finalize(now, "final", null, null, "gateway_final"));
       } else {
         this.arm("empty_final", now + EMPTY_FINAL_GRACE);
       }
@@ -1740,16 +1772,36 @@ export class Normalizer {
         data.phase === "end"
       ) {
         const itemStatus = isString(data.status) ? data.status : null;
-        events.push({
-          type: EVENT_TOOL_STATUS,
-          name: data.name,
-          phase: itemStatus === "completed" ? "completed" : "error",
-          runId: this.currentRunId,
-        });
+        // `progress_card` (2026.8.1+) is NOT a tool card here: the gateway
+        // already emits the native `plan` stream for every successful call, on
+        // delivery runs too (measured 2026-09-02), so the card would only
+        // duplicate it — and, worse, make a card-clearing call (plan stream
+        // `steps: []`, deliberately invisible) reopen the bubble with a bare
+        // tool card (codex P2). `update_plan` (<= 2026.7.x) keeps its card: on
+        // that generation the card IS the only visible trace of the plan work.
+        // Only a SUCCESSFUL progress_card is represented by a plan: the gateway
+        // emits the plan stream under `!isToolError`, so a failed call has this
+        // item as its only telemetry — its error card must surface (codex P2).
+        if (!(data.name === "progress_card" && itemStatus === "completed")) {
+          events.push({
+            type: EVENT_TOOL_STATUS,
+            name: data.name,
+            phase: itemStatus === "completed" ? "completed" : "error",
+            runId: this.currentRunId,
+          });
+        }
         // update_plan: the plan CONTENT never reaches a delivery run's wire
         // (the item meta only names the plan's first step) — emit the bare
         // "plan moved" signal; the sink counts them and Convex advances the
         // last known plan at turn end.
+        // `update_plan` ONLY (<= 2026.7.x). Its successor `progress_card`
+        // (2026.8.1+) also accepts markdown-only and clearing calls, which an
+        // item frame — no args — cannot tell from a checklist update, so an
+        // inferred advance could fake progress; and on 2026.8.x the gateway
+        // emits the native `plan` stream on delivery runs too (measured live,
+        // bench 2026-09-02: `stream:"plan"` on announce runs), so the real plan
+        // reaches the wire through planPartFromPlanStream — inferring here
+        // would advance it twice (codex P2).
         if (data.name === "update_plan" && itemStatus === "completed") {
           events.push({
             type: EVENT_PLAN_ADVANCE,
@@ -1820,6 +1872,10 @@ export class Normalizer {
    * No-op once finalized (the grace may have flushed the ack meanwhile).
    */
   recoverVisibleText(text: string, now: number): BridgeEvent[] {
+    return stampReceived(this.recoverVisibleTextAt(text, now), now);
+  }
+
+  private recoverVisibleTextAt(text: string, now: number): BridgeEvent[] {
     if (this.finalized || !text) {
       return [];
     }

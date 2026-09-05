@@ -112,7 +112,7 @@ function capturedFields(): string[] {
       "function contextBudgetFields",
       // The projector's OWN end. Anchoring on the next exported function swept
       // 40 further lines and attributed their `o.` reads to the describe.
-      "Fetch `models.list` ONCE per connection",
+      "Fetch `models.list` once per OWNER",
       /\bo\.([A-Za-z_][A-Za-z0-9_]*)/g,
     ],
   ];

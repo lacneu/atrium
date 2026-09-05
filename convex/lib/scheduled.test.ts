@@ -20,6 +20,8 @@ function job(over: Partial<CronJobSummary>): CronJobSummary {
     lastRunStatus: "ok",
     lastDelivered: null,
     lastDeliveryError: null,
+    autoDisabledReason: null,
+    autoDisabledAtMs: null,
     agentId: null,
     ...over,
   };
@@ -89,6 +91,8 @@ describe("parseCronListResponse", () => {
         lastRunStatus: "ok",
         lastDelivered: null,
         lastDeliveryError: null,
+    autoDisabledReason: null,
+    autoDisabledAtMs: null,
         agentId: "alice",
       },
     ]);
@@ -108,6 +112,8 @@ describe("parseCronListResponse", () => {
         lastRunStatus: null,
         lastDelivered: null,
         lastDeliveryError: null,
+    autoDisabledReason: null,
+    autoDisabledAtMs: null,
         agentId: null,
       },
     ]);
@@ -177,5 +183,42 @@ describe("parseCronListResponse — the delivery verdict survives", () => {
     });
     expect(out?.[0]?.lastDelivered).toBeNull();
     expect(out?.[1]?.lastDelivered, "a string is not a verdict").toBeNull();
+  });
+});
+
+describe("parseCronListResponse — the auto-disable verdict survives (codex P1)", () => {
+  // Gateway 2026.8.1+ can auto-disable a job while leaving `enabled: true`; the
+  // bridge surfaces `{autoDisabledReason, autoDisabledAtMs}`. This parser re-types
+  // and drops what it does not name — the very hop that swallowed the delivery
+  // verdict before — so the two facts must cross it verbatim.
+  test("keeps reason and moment", () => {
+    const out = parseCronListResponse({
+      ok: true,
+      jobs: [
+        {
+          id: "x",
+          name: "weekly",
+          enabled: true,
+          agentId: "alice",
+          autoDisabledReason: "consecutive-failures",
+          autoDisabledAtMs: 1788300000000,
+        },
+      ],
+    });
+    expect(out?.[0]?.autoDisabledReason).toBe("consecutive-failures");
+    expect(out?.[0]?.autoDisabledAtMs).toBe(1788300000000);
+  });
+  test("silence and malformed values stay null — never an invented auto-disable", () => {
+    const out = parseCronListResponse({
+      ok: true,
+      jobs: [
+        { id: "a", enabled: true, agentId: "alice" },
+        { id: "b", enabled: true, agentId: "alice", autoDisabledReason: 42, autoDisabledAtMs: "soon" },
+      ],
+    });
+    expect(out?.map((j) => [j.autoDisabledReason, j.autoDisabledAtMs])).toEqual([
+      [null, null],
+      [null, null],
+    ]);
   });
 });

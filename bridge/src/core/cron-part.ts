@@ -108,13 +108,23 @@ function jobFromOutput(output: unknown): Record<string, unknown> | null {
  * call is not a successful cron mutation. `phase` must be the coalesced
  * "completed" (an errored call changed nothing worth surfacing).
  */
+/** The scheduler tool's wire name per gateway generation: `cron` up to
+ *  2026.7.x, `automations` from 2026.8.1 (upstream
+ *  src/agents/tools/automations-tool-name.ts — `cron` stays a permanently
+ *  accepted alias on inbound calls, RFC 0026, so both must be read). Live on
+ *  2026.8.2 (2026-09-02): the agent calls `automations` with the same
+ *  `{action, job}` args and the same job JSON result. */
+export function isCronTool(name: string | null): boolean {
+  return name === "cron" || name === "automations";
+}
+
 export function cronPartFromTool(
   name: string | null,
   phase: string | null,
   input: unknown,
   output: unknown,
 ): CronPart | null {
-  if (name !== "cron" || phase !== "completed") return null;
+  if (!isCronTool(name) || phase !== "completed") return null;
   if (!isRecord(input)) return null;
   const action = typeof input.action === "string" ? input.action : null;
   const op = action !== null ? MUTATING_ACTIONS[action] : undefined;

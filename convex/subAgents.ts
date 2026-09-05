@@ -1507,11 +1507,90 @@ export const settleTaskEngagement = internalMutation({
   },
 });
 
+/** Gateway task-ledger `status` -> the engagement state it settles to.
+ *
+ *  The success value is `completed`. `succeeded` belongs to a DIFFERENT field —
+ *  `terminalOutcome` (succeeded | blocked) — and mapping it here while omitting the real
+ *  one meant a finished task took the "still running" branch: the reconcile refreshed
+ *  its engagement instead of settling it, so a lost delivery announce left the spinner
+ *  up and later messages queued until the declared deadline or the 24 h reaper (codex).
+ *  The vocabulary is `queued | running | completed | failed | cancelled | timed_out`,
+ *  unchanged from 2026.7.1 through 2026.9.1 (each vendored tasks.ts says so).
+ *
+ *  `succeeded` and `lost` are kept as TOLERATED aliases — the first for a gateway that
+ *  ever answers with the outcome word, the second for Atrium's own bookkeeping — never
+ *  as a claim that either is a ledger status. */
+/** The engagement state a ledger row settles to, or undefined to KEEP IT ACTIVE.
+ *
+ *  Undefined is not "unknown": it means the task is still doing something the thread
+ *  should keep waiting for — running, queued, or finished with its report still on the
+ *  way. Settling early is what drains the next message too soon.
+ *
+ *  A bridge too old to publish `terminalOutcome` / `deliveryStatus` sends null for both,
+ *  and the decision falls back to the status alone — the behaviour before this chain
+ *  existed, stated rather than assumed. */
+export function settleFromLedger(
+  status: string,
+  terminalOutcome: string | null,
+  deliveryStatus: string | null,
+  /** The answering bridge PUBLISHES the two dimensions above. False on one that
+   *  predates them, where a null means "not asked", not "not set". */
+  ledgerDimensions = false,
+): "done" | "error" | undefined {
+  const base = TERMINAL_TASK_STATUSES[status];
+  if (base === undefined) return undefined; // queued / running: still ours to wait on
+  // A bridge too old to report the outcome and the delivery cannot tell a SUCCESS from
+  // a blocked task or one whose report is still travelling. During a rolling upgrade it
+  // was closing both as done and releasing the next queued message (codex). An error is
+  // still an error — the status alone carries that — but a success has to be earned.
+  if (!ledgerDimensions && base === "done") return undefined;
+  // EVERY declared delivery state, because the coverage manifest already says what they
+  // mean: of `pending | delivered | session_queued | failed | dismissed |
+  // parent_missing | not_applicable`, THREE mean the report will never arrive. Handling
+  // only `failed` settled `dismissed` and `parent_missing` as successes, hiding a lost
+  // result and releasing the next queued message (codex).
+  switch (deliveryStatus) {
+    case "pending":
+    case "session_queued":
+      // Still travelling: the announce that follows settles this row.
+      return undefined;
+    case "failed":
+    case "dismissed":
+    case "parent_missing":
+      // It will never arrive. Say so rather than show a success.
+      return "error";
+    case "delivered":
+    case "not_applicable":
+    case null:
+      break; // the terminal outcome decides
+    default:
+      // An unknown delivery state is not evidence of arrival. Keep waiting rather than
+      // invent an outcome; the stale reaper remains the backstop.
+      return undefined;
+  }
+  // The outcome, treated as exhaustively as the delivery state above — the asymmetry
+  // was itself the defect: an unrecognised `deliveryStatus` kept waiting while an
+  // unrecognised `terminalOutcome` silently meant success, so a divergent or future
+  // gateway answering `completed + delivered + partial` settled DONE and released the
+  // next queued message (codex). The support policy explicitly serves versions beyond
+  // the validated ceiling, so "a value we do not know" is a case that happens.
+  switch (terminalOutcome) {
+    case "blocked":
+      return "error";
+    case "succeeded":
+    case null:
+      return base;
+    default:
+      return undefined; // unknown outcome: keep waiting rather than declare success
+  }
+}
+
 const TERMINAL_TASK_STATUSES: Record<string, "done" | "error"> = {
-  succeeded: "done",
+  completed: "done",
   failed: "error",
   timed_out: "error",
   cancelled: "error",
+  succeeded: "done",
   lost: "error",
 };
 
@@ -1587,7 +1666,19 @@ export async function runTaskReconcile(
         });
         continue;
       }
-      const mapped = TERMINAL_TASK_STATUSES[status];
+      // A finished task is described by THREE fields, not one. `status: completed` says
+      // the run ended; `terminalOutcome` says whether it succeeded or was BLOCKED; and
+      // `deliveryStatus` says whether its report has reached the chat. Settling on
+      // `status` alone showed a blocked task as a success and drained the next queued
+      // message while the report was still in flight (codex).
+      const outcome = typeof r.terminalOutcome === "string" ? r.terminalOutcome : null;
+      const delivery = typeof r.deliveryStatus === "string" ? r.deliveryStatus : null;
+      const mapped = settleFromLedger(
+        status,
+        outcome,
+        delivery,
+        r.ledgerDimensions === true,
+      );
       if (mapped === undefined) {
         // queued/running CONFIRMED by the registry: refresh the row so the
         // stale-reaper never falsely errors a long legitimate task.

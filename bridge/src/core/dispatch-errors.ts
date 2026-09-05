@@ -12,6 +12,7 @@
 
 import { ContextBlockedError } from "./presend-guard.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
+import { isSessionInitConflictText } from "./failure-classifier.js";
 
 export type DispatchErrorCode =
   | "AGENT_NOT_FOUND" // configured agentId no longer exists on the gateway
@@ -31,6 +32,7 @@ export type DispatchErrorCode =
   // auto-retry on this exact string, so minting a bridge-only spelling would
   // classify it correctly and still let the turn die.
   | "session_init_conflict"
+  | "session_write_conflict"
   // A Hermes surface that is NOT DEPLOYED on this instance, as opposed to one that failed.
   // The managed-files API lives only in the dashboard web server, which upstream starts
   // when HERMES_DASHBOARD is set; `hermes serve` alone answers every turn and 404s every
@@ -220,7 +222,12 @@ export function classifyGatewayError(
   // to do with it. But an EXPLICIT attachment marker in the same message
   // (`invalid base64`, `attachment parse/stage`) states a real file failure and
   // must still win: retrying it would loop on a payload that cannot be staged.
-  if (/session .* changed while starting work/.test(msg)) {
+  // All THREE 2026.8.1+ coordination forms, not just the one production happened to
+  // show us: an exception thrown by `chat.send` lands here rather than on the frame
+  // classifier, and the two forms missing from this door became INVALID_REQUEST — an
+  // error upstream itself declares transient, made terminal, with no bounded retry
+  // (codex). One rule, and it had two doors again.
+  if (isSessionInitConflictText(msg)) {
     return "session_init_conflict";
   }
   // GENERIC attachment fallback: no marker named the file, we only know the

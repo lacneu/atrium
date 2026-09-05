@@ -82,6 +82,9 @@ function fakeConn(sent: string[]) {
     close() {
       closed = true;
     },
+    // The real connection caches `models.list` per owner here; `ensureAvailableModels`
+    // reads it on the send path, inside the rehydration try block.
+    modelsByOwner: new Map(),
     async *frames() {
       await new Promise<void>(() => {}); // never yields; the test never awaits it
     },

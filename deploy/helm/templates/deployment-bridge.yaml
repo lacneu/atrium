@@ -88,6 +88,14 @@ spec:
             - name: OPENCLAW_MEDIA_OUTBOUND_DIR
               value: {{ .Values.bridge.media.mountPath | quote }}
             {{- end }}
+            {{- if .Values.bridge.attachmentFixAttested }}
+            # Instances whose gateway image carries the fix for the 2026.8.1/2026.8.2
+            # attachment defect (or `*`). Without it the bridge withholds the outbound
+            # delivery instruction on those versions — and on any gateway whose version
+            # it cannot identify. See docs/CONFIGURATION.md.
+            - name: OPENCLAW_ATTACHMENT_FIX_ATTESTED
+              value: {{ .Values.bridge.attachmentFixAttested | quote }}
+            {{- end }}
           {{- if .Values.bridge.media.enabled }}
           volumeMounts:
             - name: media-outbound

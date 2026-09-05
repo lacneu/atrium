@@ -30,6 +30,7 @@ import { v } from "convex/values";
 import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
+import { usablePlanStamp } from "./lib/planOrder";
 import {
   rehydrateTraceMeta,
   shouldReportRehydrateMissed,
@@ -240,11 +241,18 @@ type IngestOp =
       count: number;
       settleIfIdle: boolean;
       runId?: string | null;
+      stamp?: number;
     }
   | {
       op: "settleAnnouncedChild";
       chatId: string;
       childSessionKey: string;
+    }
+  | {
+      op: "clearPlan";
+      chatId: string;
+      runId: string;
+      stamp?: number;
     }
   // Outbound media (base64-free, no size ceiling): the bridge asks for an upload
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
@@ -795,6 +803,27 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ ok: true });
     }
+    case "clearPlan": {
+      // An empty plan from a silent delivery run: supersede the anchored
+      // parent's checklist without a bubble (stream.clearPlanPart).
+      await ctx.runMutation(internal.stream.clearPlanPart, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        boundInstanceName,
+        // Network input: see the advancePlan case — an unusable stamp is
+        // dropped, which degrades this clear to arrival order, never to a
+        // stamp that would outrank or underrank every real one.
+        ...(() => {
+          const at = usablePlanStamp(body.stamp, Date.now());
+          return at !== undefined ? { stamp: at } : {};
+        })(),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        meta: { op: body.op, ok: true },
+      });
+      return json({ ok: true });
+    }
     case "settleAnnouncedChild": {
       // A silent (NO_REPLY) sub-agent announce still proves the child ended —
       // flip its stuck `running` row without waiting for the reaper.
@@ -821,6 +850,14 @@ export const ingest = httpAction(async (ctx, request) => {
         settleIfIdle: body.settleIfIdle === true,
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
+        // Network input: screened, never coerced (lib/planOrder.ts
+        // `usablePlanStamp` — the same screen `addPart` applies to the stamp
+        // that arrives inside a part). An unusable one is DROPPED, which
+        // degrades cleanly to arrival order.
+        ...(() => {
+          const at = usablePlanStamp(body.stamp, Date.now());
+          return at !== undefined ? { stamp: at } : {};
+        })(),
       });
       await traceIngest(ctx, {
         kind: "openclaw.ingest",

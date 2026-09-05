@@ -79,6 +79,8 @@ export interface BridgeConfig {
    * version this instance runs.
    */
   gatewayVersionFallback?: string;
+  /** THIS instance's gateway image is attested to carry the attachment fix. */
+  attachmentFixAttested?: boolean;
   /**
    * The dir the BRIDGE reads agent-produced outbound files from (its own mount of
    * the shared volume). OPENCLAW_MEDIA_OUTBOUND_DIR; defaults to the instance-keyed
@@ -474,6 +476,13 @@ export interface SharedConfig {
    *  and rely on the per-instance derived dirs (a single override can't fit N instances). */
   mediaOutboundDirOverride: string | null;
   inboundMediaDirOverride: string | null;
+  /** Instances whose gateway image the operator ATTESTS carries the attachment fix
+   *  (OPENCLAW_ATTACHMENT_FIX_ATTESTED): a comma-separated list of instance names, or
+   *  `*` for every served instance. A LIST, not a boolean, because one bridge serves
+   *  several gateways and attesting a patched image must not re-arm the poisoning
+   *  instruction on a stock one beside it (codex). Empty = nothing attested, which is
+   *  also what a stray `0` or `false` means here: neither names an instance. */
+  attachmentFixAttestedInstances: string[];
   /** Per-bridge secrets, one per served instance (the irreducible env anchor). */
   bridgeInstanceSecrets: string[];
   /** Interval (ms) the boot self-heal loop waits between retries of the per-bridge
@@ -518,6 +527,29 @@ function parseSecretsList(listName: string): string[] {
 /** Load the gateway-agnostic shared config + the per-bridge secret list. Throws on a
  *  missing shared requirement (Convex URL / ingest+shared secrets). Does NOT read any
  *  gateway env (D1 hard break). */
+/** The instances an operator ATTESTS run a gateway image carrying the attachment fix.
+ *
+ *  A comma-separated list of instance names, or `*` for all of them. Never a boolean:
+ *  one bridge serves several gateways, and `0` / `false` are truthy strings that would
+ *  have re-armed the poisoning instruction everywhere (codex). A value naming no
+ *  instance attests nothing, which is exactly what those two strings then mean. */
+const NEGATIVE_BOOLEANS = new Set(["false", "0", "no", "off", "none", "disabled"]);
+
+export function parseAttestedInstances(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((n) => n.trim())
+    .filter((n) => n.length > 0)
+    // An operator writing `false` means "off", and an instance may legitimately be
+    // NAMED `false` — so the negative words never attest, whatever an instance is
+    // called. Turning the feature off is what an empty value is for (codex).
+    .filter((n) => !NEGATIVE_BOOLEANS.has(n.toLowerCase()));
+}
+
+export function instanceIsAttested(attested: string[], instanceName: string): boolean {
+  return attested.includes("*") || attested.includes(instanceName);
+}
+
 export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedConfig {
   const prev = process.env;
   process.env = env;
@@ -543,6 +575,9 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
       ),
       mediaOutboundDirOverride: optionalEnvOrNull("OPENCLAW_MEDIA_OUTBOUND_DIR"),
       inboundMediaDirOverride: optionalEnvOrNull("OPENCLAW_INBOUND_DIR"),
+      attachmentFixAttestedInstances: parseAttestedInstances(
+        process.env.OPENCLAW_ATTACHMENT_FIX_ATTESTED,
+      ),
       bridgeInstanceSecrets: parseSecretsList("BRIDGE_INSTANCE_SECRETS"),
       // Floor the retry below which a slow Convex would be hammered. The bridge boots
       // regardless; this only paces the self-heal of not-yet-resolved instances.
@@ -599,6 +634,10 @@ export function buildInstanceConfig(
     bridgeInstanceSecret: inst.bridgeInstanceSecret ?? null,
     instanceName: inst.instanceName,
     gatewayVersionFallback: version,
+    attachmentFixAttested: instanceIsAttested(
+      shared.attachmentFixAttestedInstances,
+      inst.instanceName,
+    ),
     mediaOutboundDir: outboundDir,
     mediaOutboundAgentMount: shared.mediaOutboundAgentMount,
     mediaMaxBytes: shared.mediaMaxBytesDefault,

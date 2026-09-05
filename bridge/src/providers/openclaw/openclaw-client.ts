@@ -207,10 +207,22 @@ export class OpenClawConnection {
   // track it so chat.send does not re-patch every turn.
   verboseFullApplied = false;
 
-  // Cached `models.list` (deduped {id,label}), fetched once per connection and
-  // mirrored into sessionMeta so the header's model picker has a stable list.
-  // `null` = not yet fetched; `[]` = fetched, none available.
-  availableModels: { id: string; label: string }[] | null = null;
+  // Cached `models.list` (deduped {id,label}), mirrored into sessionMeta so the
+  // header's model picker has a stable list.
+  //
+  // Keyed by OWNER, not per connection: from 2026.8.1 the request carries an
+  // `agentId` and the answer is that agent's VISIBILITY scope, so one cache for a
+  // multi-agent connection served the first agent's catalogue to every other chat
+  // (codex). The key is the agent id, or `""` on the generations whose answer is
+  // connection-wide.
+  //
+  // A FAILURE is cached too, but with an expiry: caching it forever left an empty
+  // model picker with no message until the bridge restarted (the 2026-08-04 symptom),
+  // while not caching it at all would pay an 8s timeout on every turn.
+  modelsByOwner = new Map<
+    string,
+    { models: { id: string; label: string }[]; failedAt: number | null }
+  >();
 
   // Gateway server version captured from the connect hello-ok payload
   // (`payload.server.version`, verified live — the same field the harness'

@@ -269,6 +269,24 @@ describe("a session that moved under a starting run is retriable, not malformed"
     expect(classifyGatewayError(new Error(raw))).not.toBe("INVALID_REQUEST");
   });
 
+  test("the OTHER two 2026.9.1 forms are the same conflict, on this door too (codex)", () => {
+    // The frame classifier learned all three; this one — the door an exception thrown
+    // by `chat.send` comes through — knew only the first, so the two others became
+    // terminal errors with no bounded retry. Both doors now share one predicate.
+    const deleted =
+      'INVALID_REQUEST: Error: Session "agent:alice:atrium:chat:u-1" was deleted while starting work. Retry.';
+    const claimed =
+      "INVALID_REQUEST: Error: Session 7f3a already has an active turn claim";
+    for (const raw2 of [deleted, claimed]) {
+      expect(classifyGatewayError(new Error(raw2)), raw2).toBe("session_init_conflict");
+      expect(classifyGatewayError(new Error(raw2)), raw2).not.toBe("INVALID_REQUEST");
+    }
+    // …and with an attachment on the send, the file is still not blamed.
+    expect(
+      classifyGatewayError(new Error(deleted), { hasAttachments: true }),
+    ).toBe("session_init_conflict");
+  });
+
   // The same conflict on a send that CARRIES a file: the attachment fallback
   // fires on `hasAttachments && /invalid request/`, so this was classified
   // ATTACHMENT_REJECTED — terminal, and blaming a file that had nothing to do

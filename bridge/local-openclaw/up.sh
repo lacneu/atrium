@@ -36,7 +36,16 @@ echo "✅ gateway healthy on :${OPENCLAW_LOCAL_PORT:-18789}"
 # Seed: seed/openclaw.local.json (gitignored, your own agents/auth profile)
 # wins over the generic committed seed/openclaw.json.
 CODEX_AUTH="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
+# The committed seed exists per gateway GENERATION: `seed/openclaw.json` is the
+# legacy shape (<= 2026.7.x — 2026.8.1 refuses its dead keys), and
+# `seed/openclaw.2026.8.json` is the 2026.8.x migration (`agents.ownership`,
+# which every earlier AgentsSchema is strict against). Picking by version keeps
+# `./up.sh` (default 2026.5.19) and `OPENCLAW_VERSION=2026.8.2 ./up.sh` both
+# bootable from the same checkout; the gitignored local seed still wins.
 SEED_FILE="seed/openclaw.json"
+if [[ "$(printf '%s\n' "2026.8" "${OPENCLAW_VERSION:-2026.5.19}" | sort -V | head -n1)" == "2026.8" ]]; then
+  SEED_FILE="seed/openclaw.2026.8.json"
+fi
 [[ -f seed/openclaw.local.json ]] && SEED_FILE="seed/openclaw.local.json"
 if [[ "${OPENCLAW_CODEX_HARNESS:-0}" != "1" ]]; then
   echo "ℹ codex harness DISABLED (default). Gateway stays unconfigured: discovery,"

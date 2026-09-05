@@ -3,8 +3,9 @@
 // GPT-5-family runs on OpenClaw expose the builtin `update_plan` tool: the
 // model maintains an ordered step list ({step, status}) it re-sends on every
 // progress change. Each successful call becomes a compact kind:"plan" part;
-// the UI renders the LAST part as the plan's current state and streams the
-// progression live as parts arrive. Shapes pinned LIVE against the
+// the UI renders the CURRENT one — the part of greatest `stamp`, not the last
+// row written (convex/lib/planOrder.ts) — and streams the progression live as
+// parts arrive. Shapes pinned LIVE against the
 // 2026.7.1-beta.2 bench (capture 2026-07-12):
 //   input  = { explanation?, plan: [{step, status}] }
 //   output = { content: [], details: { status:"updated", explanation?, plan } }
@@ -16,6 +17,10 @@ export interface PlanPart {
   steps: { step: string; status: PlanStepStatus }[];
   /** The model's short "what changed" note for THIS update. */
   explanation?: string;
+  /** Set by the sink when it RECEIVES the frame (core/turn-sink.ts), never by
+   *  the readers below: it orders plan writes by cause instead of by arrival
+   *  (src/chat/planView.ts). */
+  stamp?: number;
 }
 
 const STEP_CAP = 300;
@@ -73,7 +78,14 @@ function readPlan(v: unknown): PlanPart["steps"] | null {
 export function planPartFromPlanStream(data: unknown): PlanPart | null {
   if (!isRecord(data)) return null;
   const raw = data.steps;
-  if (!Array.isArray(raw) || raw.length === 0) return null;
+  if (!Array.isArray(raw)) return null;
+  // ZERO steps is a statement, not silence: gateway 2026.8.1+ emits the plan
+  // stream for every `progress_card` put with `steps: normalize(input).steps ?? []`
+  // (embedded-agent-subscribe.handlers.tools.results.ts), so a markdown-only or
+  // clearing call — which REPLACES the card and drops its checklist — arrives as
+  // an empty update, on delivery runs too where no tool frame exists. It is
+  // materialized as an empty plan so the stale checklist is hidden (codex P2).
+  if (raw.length === 0) return { kind: "plan", steps: [] };
   // Normalize the string shape into the structured one, then use the SHARED
   // reader for everything else (caps, status allowlist, malformed entries).
   const normalized = raw.map((entry) =>
@@ -93,13 +105,36 @@ export function planPartFromPlanStream(data: unknown): PlanPart | null {
   };
 }
 
+/** The tool names that carry a work plan, ACROSS gateway versions.
+ *
+ *  `update_plan` (<= 2026.7.x) became `progress_card` at 2026.8.1 (upstream
+ *  `ProgressCardStepSchema`: the same `plan: [{step, status}]` argument and the
+ *  same three statuses `pending` | `in_progress` | `completed`). The two are
+ *  read from DIFFERENT places, though: `update_plan` from the tool call
+ *  (planPartFromTool), `progress_card` from the native `plan` stream the gateway
+ *  emits for every successful call (planPartFromPlanStream) — its RESULT
+ *  carries only a {completed, total} count. This predicate only names the
+ *  family (turn-sink's tool-activity exemption); it does not decide where a
+ *  plan is read from. */
+export function isPlanTool(name: string | null): boolean {
+  return name === "update_plan" || name === "progress_card";
+}
+
 export function planPartFromTool(
   name: string | null,
   phase: string | null,
   input: unknown,
   output: unknown,
 ): PlanPart | null {
-  if (name !== "update_plan" || phase !== "completed") return null;
+  if (!isPlanTool(name) || phase !== "completed") return null;
+  // `progress_card` (2026.8.1+) is served by the NATIVE plan stream: the gateway
+  // emits it, normalized (invisible/bidi characters stripped), for every
+  // successful call — with `steps: []` for a markdown-only or clearing put
+  // (readProgressCardPlanInput: `steps ?? []`) — BEFORE the tool result, which
+  // carries only counts. Reading the raw `input.plan` here again appended a
+  // second, unnormalized plan that became the UI's truth (codex P2). The tool
+  // path reads `update_plan` only (<= 2026.7.x, no plan stream on its runs).
+  if (name === "progress_card") return null;
   const details =
     isRecord(output) && isRecord(output.details) ? output.details : null;
   const inputObj = isRecord(input) ? input : null;

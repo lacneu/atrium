@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  cronJobAction,
+  cronJobStateKind,
   cronFilterActive,
   cronJobMatches,
   cronResultKind,
@@ -103,5 +105,39 @@ describe("monthGrid + datetime-local round-trip", () => {
       minute: 5,
     });
     expect(parseDatetimeLocal("garbage")).toBeNull();
+  });
+});
+
+describe("cronJobStateKind (auto-disable wins over the enabled flag — codex P1)", () => {
+  test("a reason turns an enabled job into auto-disabled", () => {
+    expect(cronJobStateKind({ enabled: true, autoDisabledReason: "consecutive-failures" })).toBe(
+      "auto-disabled",
+    );
+  });
+  test("no reason = the flag, exactly as before", () => {
+    expect(cronJobStateKind({ enabled: true, autoDisabledReason: null })).toBe("active");
+    expect(cronJobStateKind({ enabled: false })).toBe("paused");
+    expect(cronJobStateKind({ enabled: null, autoDisabledReason: "" })).toBe("unknown");
+  });
+  test("the state filter sees the auto-disabled state", () => {
+    const job = {
+      name: "weekly",
+      agentId: "alice",
+      enabled: true,
+      lastRunStatus: "ok",
+      autoDisabledReason: "consecutive-failures",
+    };
+    expect(cronJobMatches(job, { q: "", state: "auto-disabled", result: "all" })).toBe(true);
+    expect(cronJobMatches(job, { q: "", state: "active", result: "all" })).toBe(false);
+  });
+});
+
+describe("cronJobAction (an auto-disabled job is RESUMED, never paused — codex P2)", () => {
+  test("active → pause; paused → resume", () => {
+    expect(cronJobAction({ enabled: true })).toBe("pause");
+    expect(cronJobAction({ enabled: false })).toBe("resume");
+  });
+  test("auto-disabled with enabled:true → resume (the explicit enable clears the auto-disable upstream)", () => {
+    expect(cronJobAction({ enabled: true, autoDisabledReason: "consecutive-failures" })).toBe("resume");
   });
 });

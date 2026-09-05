@@ -265,17 +265,34 @@ export interface ConvexWriter {
   addPlanPart?(messageId: string, part: PlanPart): Promise<void>;
   /** plan.advance -> internal.stream.advancePlanPart: update_plan calls on a
    *  DELIVERY run (no tool frames on the wire) only prove the plan moved.
-   *  Convex advances the message's last plan part one step per call — or
-   *  settles it when the turn left the pipeline idle (settleIfIdle + no
-   *  running child). */
+   *  Convex advances the message's CURRENT plan part (greatest stamp — see
+   *  convex/lib/planOrder.ts, not the last row) one step per call, or settles
+   *  it when the turn left the pipeline idle (settleIfIdle + no running
+   *  child). */
   advancePlanPart?(
     messageId: string,
     count: number,
     settleIfIdle: boolean,
+    /** When the sink decided the advance — the part it writes must be
+     *  orderable against a replayed clear (src/chat/planView.ts). */
+    stamp?: number,
   ): Promise<void>;
   /** Silent (NO_REPLY) sub-agent announce -> flip the child's stuck running
    *  row (startAssistant's settle only runs on the visible path). */
   settleAnnouncedChild?(chatId: string, childSessionKey: string): Promise<void>;
+  /** An EMPTY native plan on a SILENT delivery run -> internal.stream.clearPlanPart:
+   *  the run opened no bubble (an empty plan is not visible work), yet the
+   *  checklist it replaces is still shown on the anchored parent. Keyed by
+   *  (chat, runId) like settleAnnouncedChild: Convex resolves the anchored
+   *  message through the run's engagement row and appends the empty plan. */
+  clearPlanPart?(
+    chatId: string,
+    runId: string,
+    /** When the sink RECEIVED the empty plan frame. Re-posted unchanged by a
+     *  retry, which is what makes the clear lose to a plan published after it
+     *  (src/chat/planView.ts `resolveCurrentPlan`). */
+    stamp?: number,
+  ): Promise<void>;
   /** context.compaction -> internal.stream.addPart(kind:compaction): the
    *  gateway summarized older context during this turn (user-facing marker). */
   addCompactionPart(messageId: string, part: CompactionPart): Promise<void>;
@@ -628,11 +645,18 @@ type IngestOp =
       count: number;
       settleIfIdle: boolean;
       runId?: string | null;
+      stamp?: number;
     }
   | {
       op: "settleAnnouncedChild";
       chatId: string;
       childSessionKey: string;
+    }
+  | {
+      op: "clearPlan";
+      chatId: string;
+      runId: string;
+      stamp?: number;
     }
   | {
       op: "addPart";
@@ -1055,6 +1079,18 @@ export class HttpConvexWriter implements ConvexWriter {
     // during a rollover leaves the OLD session's counters and overfull verdict
     // on the new one, and no later send is "fresh" again to try once more.
     "clearSessionState",
+    // Retried, with its precondition stated rather than implied (codex): the mutation
+    // deduplicates a rebroadcast through its run-keyed TOMBSTONE, so a replay whose
+    // first write LANDED changes nothing. The other case — first write LOST, another
+    // run's plan posted meanwhile, then this retry — used to hide that plan, because
+    // the thread showed the last row written. It no longer does: the op carries the
+    // instant the frame was RECEIVED and a retry re-posts that same instant, so the
+    // replayed clear is older than the plan it lands after and the reader keeps the
+    // plan (convex/lib/planOrder.ts). Two causes inside ONE millisecond still compare
+    // equal and fall back to insertion order — the residual, stated in full at
+    // convex/stream.ts `clearPlanPart`. Retrying is therefore no longer a trade: not
+    // retrying simply left the superseded checklist on screen for good.
+    "clearPlan",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -1603,10 +1639,24 @@ export class HttpConvexWriter implements ConvexWriter {
     await this.post({ op: "settleAnnouncedChild", chatId, childSessionKey });
   }
 
+  async clearPlanPart(
+    chatId: string,
+    runId: string,
+    stamp?: number,
+  ): Promise<void> {
+    await this.post({
+      op: "clearPlan",
+      chatId,
+      runId,
+      ...(stamp !== undefined ? { stamp } : {}),
+    });
+  }
+
   async advancePlanPart(
     messageId: string,
     count: number,
     settleIfIdle: boolean,
+    stamp?: number,
   ): Promise<void> {
     await this.flushDelta(messageId);
     await this.post({
@@ -1614,6 +1664,7 @@ export class HttpConvexWriter implements ConvexWriter {
       messageId,
       count,
       settleIfIdle,
+      ...(stamp !== undefined ? { stamp } : {}),
       ...this.genTag(messageId),
     });
   }

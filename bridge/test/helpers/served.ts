@@ -45,7 +45,8 @@ export function sharedFromConfig(config: BridgeConfig): SharedConfig {
     inboundAgentMount: config.inboundAgentMount,
     mediaOutboundDirOverride: null,
     inboundMediaDirOverride: null,
-    bridgeInstanceSecrets: [],
+    attachmentFixAttestedInstances: [],
+  bridgeInstanceSecrets: [],
     credentialRetryMs: 30_000,
   };
 }

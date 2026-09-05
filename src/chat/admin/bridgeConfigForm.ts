@@ -129,6 +129,7 @@ export type ConfigOverride = Partial<
   curationBudgetChars?: number;
   contentLocale?: string;
   converterAgentId?: string;
+  attachmentFixAttested?: boolean;
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -137,6 +138,12 @@ export type ConfigOverride = Partial<
  *  silently erase them (codex P2). Explicit list — never a blind spread (the
  *  closed server validator rejects unknown keys; stale junk must not resurrect). */
 const PASSTHROUGH_KEYS = [
+  // The media-quarantine attestation. It has no control on this form ON PURPOSE — it
+  // disarms a protection against a defect that destroys sessions, so it is set
+  // deliberately through the admin API, not clicked. But it MUST ride through: a
+  // Bridge or Injections save was erasing it, and the next dispatch silently forced
+  // `mediaMode: "off"` on a gateway the operator had already vouched for (codex).
+  "attachmentFixAttested",
   "summarizeThresholdChars",
   "curationEnabled",
   "curationBudgetChars",

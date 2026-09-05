@@ -11,7 +11,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { promisedVersion } from "./helpers/vendored.js";
-import * as vendoredChatSchemas from "../protocol/openclaw/2026.7.1/logs-chat.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.1/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -219,13 +219,14 @@ describe("protocol drift detector", () => {
       { properties?: Record<string, unknown> }
     >;
     expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
-      "2026.7.1",
+      "2026.9.1",
     );
     const bySchema: Record<string, string> = {
       delta: "ChatDeltaEventSchema",
       final: "ChatFinalEventSchema",
       aborted: "ChatAbortedEventSchema",
       error: "ChatErrorEventSchema",
+      status: "ChatStatusEventSchema",
     };
     expect(Object.keys(KNOWN_CHAT_FIELDS_BY_STATE).sort()).toEqual(
       Object.keys(bySchema).sort(),
@@ -336,6 +337,8 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "ChatFinalEvent",
       "ChatAbortedEvent",
       "ChatErrorEvent",
+      // The fifth state, declared since 2026.8.1 (see KNOWN_CHAT_FIELDS_BY_STATE).
+      "ChatStatusEvent",
     ]) {
       for (const f of Object.keys(MANIFEST.schemas[name]?.fields ?? {})) {
         union.add(f);

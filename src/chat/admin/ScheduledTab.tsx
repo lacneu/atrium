@@ -68,7 +68,8 @@ import {
   cronFilterActive,
   cronJobMatches,
   cronResultKind,
-  cronStateKind,
+  cronJobAction,
+  cronJobStateKind,
   EMPTY_CRON_FILTER,
   type CronFilter,
 } from "./cronView";
@@ -95,6 +96,10 @@ type CronJob = {
   lastDelivered: boolean | null;
   lastDeliveryError: string | null;
   agentId: string;
+  /** Gateway 2026.8.1+: auto-disabled by the scheduler while `enabled` may still
+   *  read `true` (cronView.ts `cronJobStateKind`). `null` = not auto-disabled. */
+  autoDisabledReason: string | null;
+  autoDisabledAtMs: number | null;
 };
 type CronGroup = {
   instanceName: string;
@@ -595,6 +600,9 @@ export function ScheduledTab() {
               <SelectItem value="all">{m.cron_filter_state_all()}</SelectItem>
               <SelectItem value="active">{m.scheduled_active()}</SelectItem>
               <SelectItem value="paused">{m.scheduled_paused()}</SelectItem>
+              <SelectItem value="auto-disabled">
+                {m.scheduled_auto_disabled()}
+              </SelectItem>
             </SelectContent>
           </Select>
           <Select
@@ -749,11 +757,24 @@ export function ScheduledTab() {
                             : "—"}
                         </TableCell>
                         <TableCell>
-                          {cronStateKind(j.enabled) === "active" ? (
+                          {cronJobStateKind(j) === "auto-disabled" ? (
+                            // The scheduler stopped this job itself; the flag may
+                            // still say enabled. Reason + moment on hover.
+                            <Badge
+                              variant="destructive"
+                              title={`${j.autoDisabledReason ?? ""}${
+                                j.autoDisabledAtMs !== null
+                                  ? ` · ${dateFmt.format(j.autoDisabledAtMs)}`
+                                  : ""
+                              }`}
+                            >
+                              {m.scheduled_auto_disabled()}
+                            </Badge>
+                          ) : cronJobStateKind(j) === "active" ? (
                             <Badge variant="secondary">
                               {m.scheduled_active()}
                             </Badge>
-                          ) : cronStateKind(j.enabled) === "paused" ? (
+                          ) : cronJobStateKind(j) === "paused" ? (
                             <Badge variant="outline">
                               {m.scheduled_paused()}
                             </Badge>
@@ -832,12 +853,12 @@ export function ScheduledTab() {
                                   variant="ghost"
                                   size="icon-sm"
                                   title={
-                                    j.enabled
+                                    cronJobAction(j) === "pause"
                                       ? m.cron_action_pause()
                                       : m.cron_action_resume()
                                   }
                                   aria-label={
-                                    j.enabled
+                                    cronJobAction(j) === "pause"
                                       ? m.cron_action_pause()
                                       : m.cron_action_resume()
                                   }
@@ -849,15 +870,15 @@ export function ScheduledTab() {
                                         updateCron({
                                           instanceName: g.instanceName,
                                           jobId: j.id as string,
-                                          patch: { enabled: !j.enabled },
+                                          patch: { enabled: cronJobAction(j) === "resume" },
                                         }),
-                                      j.enabled
+                                      cronJobAction(j) === "pause"
                                         ? m.cron_paused_toast()
                                         : m.cron_resumed_toast(),
                                     )
                                   }
                                 >
-                                  {j.enabled ? (
+                                  {cronJobAction(j) === "pause" ? (
                                     <Pause size={14} aria-hidden />
                                   ) : (
                                     <Play size={14} aria-hidden />

@@ -337,7 +337,9 @@ export function convertConvexMessage(
         // CronActivity as the dedicated "Crons" section next to Tools/Sources.
         cronParts,
         // Work-plan updates (update_plan) in part order — PlanActivity renders
-        // the NEWEST as the live plan (steps + progress).
+        // the CURRENT one as the live plan (steps + progress). Order matters:
+        // planOrder.ts reads this sequence positionally for the parts that
+        // carry no stamp, so it must stay in `order`.
         planParts,
         // Which instance answered this turn (per-turn routing, INHERITED
         // attribution included); null = the chat's primary. The cron detail

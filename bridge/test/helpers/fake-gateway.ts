@@ -61,6 +61,8 @@ export interface FakeGatewayScript {
 }
 
 export interface FakeGateway {
+  /** Per-owner `models.list` cache, like the real connection: the send path reads it. */
+  modelsByOwner: Map<string, { models: { id: string; label: string }[]; failedAt: number | null }>;
   /** Session sets this after applying `verboseLevel:"full"` once. */
   verboseFullApplied?: boolean;
   /** Frame cap (null = unknown). Only read on an attachment send. */
@@ -104,6 +106,9 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
 
   return {
     verboseFullApplied: false,
+    // Per-OWNER models cache, like the real connection: `ensureAvailableModels`
+    // reads it on every dispatch, so a fake without it fails the whole path.
+    modelsByOwner: new Map(),
     maxPayload: null,
     calls,
     timeouts,

@@ -11,11 +11,27 @@
 
 const UUID_RE =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const TASK_DELIVERY_RE = new RegExp(`^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)$`);
+// 2026.8.x suffixes the delivery LANE (`…:ok:agent-loop`, see
+// bridge/src/core/async-task.ts DELIVERY_RE for the upstream anchor); only that
+// documented lane is accepted, the anchor stays.
+const TASK_DELIVERY_RE = new RegExp(
+  `^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)(?::agent-loop)?$`,
+);
 
 /** The subAgents row key a delivery run correlates to, or null when the runId
  *  is not a delivery run (ordinary webchat-… turns). */
+/** Gateway 2026.8.1+ wakes the REQUESTER session after a direct completion
+ *  delivery with a synthetic turn, `announce:requester-settle:<agentId>:
+ *  <requesterSessionKey>:<childRunIds>[:yield-N]` (upstream
+ *  subagent-announce.requester-settle-wake.ts:389; absent from 2026.7.1). It is
+ *  gateway-initiated but names NO child key — its 3rd+ segments are the parent's
+ *  own session key — so it must never correlate to a subAgents row. Captured
+ *  live on 2026.8.2 (2026-09-02): lifecycle + usage frames, no assistant text. */
+export function isRequesterSettleRun(runId: string | null | undefined): boolean {
+  return typeof runId === "string" && runId.startsWith("announce:requester-settle:");
+}
 export function deliveryChildKey(runId: string): string | null {
+  if (isRequesterSettleRun(runId)) return null;
   if (runId.startsWith("announce:")) {
     const seg = runId.split(":");
     if (seg.length < 4) return null;
@@ -55,5 +71,6 @@ export function taskDeliveryIdentity(
  *  Fails CLOSED: an absent or unrecognised run reads as a user turn, so a shape
  *  we do not know is never quietly demoted out of the alarm that matters most. */
 export function isDeliveryRun(runId: string | null | undefined): boolean {
+  if (isRequesterSettleRun(runId)) return true;
   return typeof runId === "string" && deliveryChildKey(runId) !== null;
 }

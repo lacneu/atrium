@@ -18,7 +18,10 @@ import { compareVersions, parseVersion } from "../src/compat.ts";
 
 const dir = path.join(import.meta.dirname, "..", "protocol", "openclaw");
 const versions = readdirSync(dir, { withFileTypes: true })
-  .filter((e) => e.isDirectory() && e.name !== "coverage")
+  // Only VERSION-shaped directories are vendored contracts: `coverage/` and
+  // `events/` (manifests) live beside them and sorted as "the newest vendored
+  // contract" (upstream-diff.sh then tried to clone `vevents`).
+  .filter((e) => e.isDirectory() && parseVersion(e.name) !== null)
   .map((e) => e.name)
   .sort((a, b) => {
     const pa = parseVersion(a);

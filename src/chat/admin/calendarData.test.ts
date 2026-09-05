@@ -87,6 +87,32 @@ describe("cron calendar source", () => {
     expect(events[0]!.title).toBe("Release Watch");
     expect(byItemId.get(cronItemId("prod", "j1"))!.canEdit).toBe(true);
   });
+  test("an AUTO-DISABLED job (enabled still true) is never extrapolated either (codex P2)", () => {
+    // Gateway 2026.8.1+ auto-disables a job after consecutive failures while
+    // leaving `enabled: true`; the scheduler will not run it — no future runs.
+    const base = {
+      instanceName: "prod",
+      canEdit: true,
+      job: {
+        id: "j3",
+        name: "Auto-disabled",
+        enabled: true,
+        autoDisabledReason: "consecutive-failures",
+        schedule: "cron 0 8 * * * (UTC)",
+        nextRunAtMs: null as number | null,
+        lastRunStatus: "error",
+        agentId: "olivier",
+      },
+    };
+    expect(cronEventsInWindow([base], window.startMs, window.endMs).events).toEqual([]);
+    const withNext = {
+      ...base,
+      job: { ...base.job, nextRunAtMs: Date.UTC(2026, 6, 2, 8) },
+    };
+    const { events } = cronEventsInWindow([withNext], window.startMs, window.endMs);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.muted).toBe(true);
+  });
   test("a PAUSED job is never extrapolated (only its own nextRun, muted)", () => {
     const base = {
       instanceName: "prod",

@@ -18,6 +18,12 @@ export interface CronJobSummary {
   lastDelivered: boolean | null;
   lastDeliveryError: string | null;
   agentId: string | null;
+  /** Gateway 2026.8.1+ can auto-disable a job (`CronJobState.autoDisabled`,
+   *  e.g. after consecutive failures) while leaving `enabled: true`. The bridge
+   *  surfaces the two facts an operator acts on; `null` = not auto-disabled or
+   *  unsaid — never invented. */
+  autoDisabledReason: string | null;
+  autoDisabledAtMs: number | null;
 }
 
 /** Which of an instance's jobs belong to the user's agents on that instance.
@@ -103,6 +109,8 @@ export function parseCronListResponse(data: unknown): CronJobSummary[] | null {
         typeof job.lastDelivered === "boolean" ? job.lastDelivered : null,
       lastDeliveryError: str(job.lastDeliveryError),
       agentId,
+      autoDisabledReason: str(job.autoDisabledReason),
+      autoDisabledAtMs: num(job.autoDisabledAtMs),
     });
   }
   return out;

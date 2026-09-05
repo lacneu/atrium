@@ -100,6 +100,7 @@ import type * as lib_mediaTransport from "../lib/mediaTransport.js";
 import type * as lib_messageOrder from "../lib/messageOrder.js";
 import type * as lib_openclawThread from "../lib/openclawThread.js";
 import type * as lib_outboxQueue from "../lib/outboxQueue.js";
+import type * as lib_planOrder from "../lib/planOrder.js";
 import type * as lib_promptInjections from "../lib/promptInjections.js";
 import type * as lib_provenance from "../lib/provenance.js";
 import type * as lib_providerSession from "../lib/providerSession.js";
@@ -242,6 +243,7 @@ declare const fullApi: ApiFromModules<{
   "lib/messageOrder": typeof lib_messageOrder;
   "lib/openclawThread": typeof lib_openclawThread;
   "lib/outboxQueue": typeof lib_outboxQueue;
+  "lib/planOrder": typeof lib_planOrder;
   "lib/promptInjections": typeof lib_promptInjections;
   "lib/provenance": typeof lib_provenance;
   "lib/providerSession": typeof lib_providerSession;

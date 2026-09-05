@@ -71,6 +71,25 @@ function anonymize(frame: unknown, toolNames: string[] = []): unknown {
 }
 
 describe("capture anonymiser — nothing content-bearing survives", () => {
+
+  it("keeps the 2026.8.1+ delivery LANE inside a task run id (found by the fidelity gate, 2026-09-04)", () => {
+    // 2026.8.1 appends the delivery lane (`…:ok:agent-loop`, upstream
+    // subagent-announce-delivery.ts:219,230). The rule stopped at ok|error, so the
+    // whole run id fell through to `opaque()`: the promoted capture lost the
+    // delivery family and read DIFFERENTLY from the raw one, which is exactly what
+    // the fidelity gate refused. Only the documented lane is kept.
+    const p = createPseudonymiser(["image_generate"]);
+    expect(
+      p.identifier("image_generate:3ad339f9-e04a-4ee8-8b3b-641c6479d32f:ok:agent-loop"),
+    ).toMatch(/^image_generate:[0-9a-f-]{36}:ok:agent-loop$/);
+    expect(
+      p.identifier("image_generate:3ad339f9-e04a-4ee8-8b3b-641c6479d32f:ok"),
+    ).toMatch(/^image_generate:[0-9a-f-]{36}:ok$/);
+    expect(
+      p.identifier("image_generate:3ad339f9-e04a-4ee8-8b3b-641c6479d32f:ok:other-lane"),
+    ).not.toMatch(/^image_generate:/);
+  });
+
   it("a marker in EVERY position is gone from the output", () => {
     const frame = {
       type: "event",

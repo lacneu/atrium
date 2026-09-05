@@ -1679,3 +1679,120 @@ describe("a task's declared deadline survives the ingest boundary", () => {
     ).toBe(300_000);
   });
 });
+
+// The plan stamp orders what the reader sees (convex/lib/planOrder.ts). It arrives
+// three ways — inside `part` on addPart, and as an ARGUMENT of clearPlan and
+// advancePlan — and each way is network input. `addPart`'s screen is tested at the
+// mutation (convex/clearPlan.test.ts); these two live only on this route, so they
+// are tested on the route.
+describe("bridge_ingest httpAction: the plan stamp is screened on every op", () => {
+  test("advancePlan: a non-positive stamp is dropped, a usable one is kept", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await t.run((ctx) =>
+      ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "plan" as const,
+          steps: [
+            { step: "un", status: "completed" as const },
+            { step: "deux", status: "in_progress" as const },
+            { step: "trois", status: "pending" as const },
+            { step: "quatre", status: "pending" as const },
+          ],
+        },
+      }),
+    );
+
+    expect(
+      (await post(t, { op: "advancePlan", messageId, count: 1, stamp: -1 }))
+        .status,
+    ).toBe(200);
+    const dropped = (await partsOf(t, messageId)).find((p) => p.order === 1);
+    expect(dropped?.part).not.toHaveProperty("stamp");
+
+    expect(
+      (await post(t, { op: "advancePlan", messageId, count: 1, stamp: 7 }))
+        .status,
+    ).toBe(200);
+    const kept = (await partsOf(t, messageId)).find((p) => p.order === 2);
+    expect(kept?.part).toMatchObject({ stamp: 7 });
+  });
+
+  test("advancePlan: a stamp posted in MILLISECONDS is dropped (the unit regression)", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await t.run((ctx) =>
+      ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "plan" as const,
+          steps: [
+            { step: "un", status: "completed" as const },
+            { step: "deux", status: "in_progress" as const },
+            { step: "trois", status: "pending" as const },
+          ],
+        },
+      }),
+    );
+    expect(
+      (
+        await post(t, {
+          op: "advancePlan",
+          messageId,
+          count: 1,
+          stamp: Date.now(),
+        })
+      ).status,
+    ).toBe(200);
+    const written = (await partsOf(t, messageId)).find((p) => p.order === 1);
+    expect(written?.part).not.toHaveProperty("stamp");
+  });
+
+  test("clearPlan: an unusable stamp is dropped, a usable one is kept", async () => {
+    const CHILD = "agent:files:subagent:aaaaaaaa-0000-4000-8000-000000000001";
+    const RUN = `announce:v1:${CHILD}:bbbbbbbb-0000-4000-8000-000000000002`;
+    // Each op carries its OWN screen: covering the millisecond regression on
+    // advancePlan alone would leave clearPlan free to reintroduce it (codex).
+    const MILLISECONDS = Date.now();
+    const SKEWED_SECONDS = Date.now() / 1000 + 3_600;
+    for (const [stamp, expected] of [
+      [0, undefined],
+      [-1, undefined],
+      [MILLISECONDS, undefined],
+      [SKEWED_SECONDS, SKEWED_SECONDS],
+      [9, 9],
+    ] as const) {
+      const t = convexTest(schema, modules);
+      const { chatId, messageId } = await seedAssistantMessage(t);
+      await t.run(async (ctx) => {
+        await ctx.db.insert("messageParts", {
+          messageId,
+          order: 0,
+          part: {
+            kind: "plan" as const,
+            steps: [{ step: "un", status: "completed" as const }],
+          },
+        });
+        await ctx.db.insert("subAgents", {
+          chatId,
+          childSessionKey: CHILD,
+          status: "done" as const,
+          parentMessageId: messageId,
+          anchorExact: true,
+          createdAt: 900,
+          updatedAt: 950,
+        });
+      });
+
+      const res = await post(t, { op: "clearPlan", chatId, runId: RUN, stamp });
+      expect(res.status).toBe(200);
+      const tombstone = (await partsOf(t, messageId)).find((p) => p.order === 1);
+      expect((tombstone?.part as { stamp?: number } | undefined)?.stamp).toBe(
+        expected,
+      );
+    }
+  });
+});

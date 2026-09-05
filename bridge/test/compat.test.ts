@@ -148,6 +148,30 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
   },
+  // 2026.9.1 — live GO 11/11 (2026-09-03). It adds NO capability gate: the new
+  // surface (gateway suspension, user profiles, errorDetail) is vendored and
+  // classified, not adopted. Same profile as the previous ceiling, pinned here so a
+  // future capability lands as a visible diff.
+  "2026.9.1": {
+    knobThinkingLevel: true,
+    knobModel: true,
+    knobFastMode: true,
+    knobUnset: true,
+    agentFiles: true,
+    sessionCompact: true,
+    configDefaults: true,
+    messageToolRecovery: true,
+    agentsDiscovery: true,
+    abort: true,
+    mediaOutbound: true,
+    inboundAttachments: true,
+    subagents: true,
+    cronList: true,
+    cronManage: true,
+    // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
+    // on the 2026.7.1 bench (2026-07-16).
+    talk: true,
+  },
 };
 
 describe("COMPAT_MANIFEST shape", () => {
@@ -163,7 +187,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.7.1" });
+    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.1" });
     expect(oc.validatedVersions).toEqual([
       "2026.5.19",
       "2026.6.1",
@@ -173,8 +197,24 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.7.1-beta.2",
       "2026.7.1-beta.5",
       "2026.7.1",
+      "2026.9.1",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
+    // The two releases inside the range that a STOCK gateway cannot be trusted on:
+    // a delivered file poisons the session (upstream #135747). Raising the ceiling
+    // to 2026.9.1 put them back inside the interval, so the manifest must name them
+    // (codex P1) — the bench could only exercise them because the custom image
+    // carries a build-time guard.
+    expect(Object.keys(oc.knownBrokenVersions ?? {}).sort()).toEqual([
+      "2026.8.1",
+      "2026.8.2",
+    ]);
+    for (const why of Object.values(oc.knownBrokenVersions ?? {})) {
+      expect(why).toMatch(/poisons the session/);
+    }
+    // …and they are NOT claimed as validated.
+    expect(oc.validatedVersions).not.toContain("2026.8.1");
+    expect(oc.validatedVersions).not.toContain("2026.8.2");
   });
 
   test("hermes is a validated provider (0.18.x) with its small real surface", () => {
@@ -310,11 +350,11 @@ describe("resolveCapabilities — beyond maxValidated", () => {
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.7.2", "2026.8.0", "2027.1.1"])(
+  test.each(["2026.9.2", "2026.10.0", "2027.1.1"])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
+      expect(resolved.capabilities).toEqual(MATRIX["2026.9.1"]);
       expect(resolved.versionBeyondValidated).toBe(true);
     },
   );
@@ -345,7 +385,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("the 2026.7.1 RELEASE resolves within range, no flag (prepared support)", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1");
-    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
+    expect(resolved.capabilities).toEqual(MATRIX["2026.9.1"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 });

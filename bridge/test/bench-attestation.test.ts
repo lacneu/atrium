@@ -29,6 +29,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+// A plain .mjs helper, shared VERBATIM with the live-bench harness so the number the
+// bench writes and the number this test re-computes cannot drift.
+// @ts-expect-error -- untyped .mjs
+import * as supportDigest from "../scripts/lib/support-digest.mjs";
+
+const { canonicalize, computeSupportDigest, listSupportFiles } = supportDigest as {
+  canonicalize: (rel: string, bytes: Buffer) => Buffer;
+  computeSupportDigest: (repoRoot: string) => string | null;
+  listSupportFiles: (repoRoot: string) => string[];
+};
 import {
   BENCH_GRANDFATHERED,
   COMPAT_MANIFEST,
@@ -52,6 +62,9 @@ interface Attestation {
   atriumSha: string | null;
   bridgeVersion: string | null;
   vendoredSha256: string;
+  worktree?: { dirty: boolean | null; deltaSha256: string | null };
+  openclawRuns?: { id: string; ok: boolean; chat: string }[];
+  supportDigest?: string | null;
 }
 
 /** The same hash the bench computes, RE-COMPUTED from the directory. A number an artifact
@@ -113,6 +126,72 @@ const FROZEN_GRANDFATHER = [
   "2026.7.1-beta.2",
   "2026.7.1-beta.5",
 ];
+
+describe("the support digest covers what a version claim depends on", () => {
+  // The first cut of this list was hand-picked and MISSED the two files this very lot
+  // edits for 2026.8.1+ (codex). Named here one by one so a future narrowing of
+  // SUPPORT_ROOTS fails loudly instead of quietly shrinking what a GO is about.
+  const MUST_COVER = [
+    "bridge/package-lock.json", // the resolved dependency tree the artifact loads
+    "bridge/tsconfig.build.json", // how the sources become that artifact
+    "bridge/src/compat.ts", // the support window and capability table
+    "bridge/src/server.ts", // per-version request shapes (models.list owner)
+    "bridge/src/convex-writer.ts", // every write the wire produces, plan clear included
+    "bridge/src/session.ts", // session lifecycle across gateway generations
+    "bridge/src/providers/openclaw/normalizer.ts", // the wire dialect itself
+    "bridge/src/providers/openclaw/protocol-drift.ts", // the known-surface ledger
+    "bridge/src/core/turn-sink.ts", // the turn state machine the frames drive
+    "bridge/src/core/failure-classifier.ts", // failure text -> stable codes
+  ];
+  const covered = listSupportFiles(resolve(BRIDGE, "..")) as string[];
+  for (const file of MUST_COVER) {
+    it(`covers ${file}`, () => {
+      expect(covered, `${file} is outside the digest: an edit there cannot go red`).toContain(file);
+    });
+  }
+  it("SURVIVES the version stamping release CI performs before `npm test`", () => {
+    // `scripts/set-version.mjs` rewrites bridge/package.json and its lockfile on every
+    // tagged build, BEFORE the suite runs. A byte-for-byte digest went red there while
+    // nothing the bench exercised had changed (codex).
+    //
+    // Exercised on BUFFERS, never on the real manifests: an earlier version of this
+    // test rewrote them in place, which a parallel worker reading `package.json` at
+    // import time could observe half-written — and an interrupted run left the checkout
+    // stamped `9.9.9` (codex).
+    const pkg = (version: string, extra: Record<string, unknown> = {}) =>
+      Buffer.from(
+        JSON.stringify({ name: "bridge", version, dependencies: { ws: "8.18.0" }, ...extra }),
+      );
+    const digest = (b: Buffer) =>
+      createHash("sha256").update(canonicalize("bridge/package.json", b)).digest("hex");
+    expect(digest(pkg("0.76.0")), "stamping a version must not move it").toBe(
+      digest(pkg("9.9.9-dev.1.gdeadbee")),
+    );
+    expect(
+      digest(pkg("0.76.0", { dependencies: { ws: "9.0.0" } })),
+      "a dependency change MUST move it",
+    ).not.toBe(digest(pkg("0.76.0")));
+
+    // The lockfile's nested copy of the version is dropped too.
+    const lock = (version: string) =>
+      Buffer.from(
+        JSON.stringify({ name: "bridge", version, packages: { "": { version, deps: 1 } } }),
+      );
+    const lockDigest = (b: Buffer) =>
+      createHash("sha256")
+        .update(canonicalize("bridge/package-lock.json", b))
+        .digest("hex");
+    expect(lockDigest(lock("0.76.0"))).toBe(lockDigest(lock("9.9.9-dev.1.gdeadbee")));
+
+    // A file that is not a manifest is hashed verbatim, version-looking or not.
+    const src = Buffer.from('export const version = "0.76.0";');
+    expect(canonicalize("bridge/src/compat.ts", src)).toEqual(src);
+  });
+
+  it("excludes tests, which do not change what the bridge reads at runtime", () => {
+    expect(covered.some((f) => f.endsWith(".test.ts"))).toBe(false);
+  });
+});
 
 describe("the exemption is finite and CANNOT grow", () => {
   it("is exactly the list frozen when the rule was introduced", () => {
@@ -208,6 +287,143 @@ describe("the attestation agrees with the repository", () => {
       for (const scenario of corpusScenarios(version)) {
         expect(ran, `${scenario} is in the corpus but not in the run`).toContain(scenario);
       }
+    });
+
+    it(`${version}: the commit is not alone — the TREE it ran on is named`, () => {
+      // `atriumSha` is HEAD, and a bench necessarily runs BEFORE the commit it earns:
+      // the attested support is in the working tree, absent from that commit. Schema 2
+      // records `worktree` so the GO names something reconstructible, and a dirty run
+      // hashes its delta. Enforced on `maxValidated` only — the earlier attestations
+      // predate the field and cannot be re-earned without re-running their gateway, so
+      // the debt is bounded to history instead of being waived forever (codex).
+      const att = readAttestation(version);
+      expect(att).not.toBeNull();
+      if (version !== OPENCLAW.supportedRange?.maxValidated) return;
+      expect(att!.version, "the newest claim must use the current schema").toBeGreaterThanOrEqual(2);
+      const wt = att!.worktree;
+      expect(wt, "schema 2 must record the worktree state").toBeDefined();
+      expect([true, false, null]).toContain(wt!.dirty);
+      if (wt!.dirty === true) {
+        expect(wt!.deltaSha256, "a dirty run must hash its delta").toMatch(/^[0-9a-f]{64}$/);
+      } else {
+        expect(wt!.deltaSha256, "a clean or unknown run hashes nothing").toBeNull();
+      }
+    });
+
+    it(`${version}: the support digest is RE-COMPUTED, not trusted`, () => {
+      // `worktree` records provenance but cannot be re-derived — it hashes a diff
+      // against a HEAD that moves. This one can, and it is the only thing tying the GO
+      // to OUR side of the contract: the manifest, the frame readers and the
+      // normalizer. Edit them after the bench and the claim goes red until a new run
+      // earns it, which is what "a version claim rests on a live run" has to mean
+      // (codex: the worktree hash alone is self-attested).
+      // WHY ONLY THE CEILING, asked in review and answered here so it is not re-asked:
+      // an older enforced version is protected by a DIFFERENT net, and a better one for
+      // this purpose. `golden-replay.test.ts` replays that version's real captures
+      // through the whole reading stack on every test run, in milliseconds — so a
+      // regression in an old dialect goes red at once, with no gateway and no model.
+      // The two enforced versions each have such a corpus, and the test above
+      // ("a corpus EXISTS for it") keeps that true. Requiring a fresh live GO per
+      // version on every bridge edit would demand N live runs per commit; the gate
+      // would be removed, not honoured. The live digest pins the ceiling; the corpus
+      // pins the rest (codex).
+      const att = readAttestation(version);
+      expect(att).not.toBeNull();
+      if (version !== OPENCLAW.supportedRange?.maxValidated) return;
+      const here = computeSupportDigest(resolve(BRIDGE, ".."));
+      expect(here, "no support file found — the digest cannot mean anything").not.toBeNull();
+      expect(
+        att!.supportDigest,
+        "the newest claim must carry a support digest",
+      ).toMatch(/^[0-9a-f]{64}$/);
+      expect(
+        att!.supportDigest,
+        "the gateway-reading code changed since the run that attested it: re-run the bench",
+      ).toBe(here);
+    });
+
+    it(`${version}: the GO proves the session SURVIVES a delivered file`, () => {
+      // The defect this version claims to fix does not show on the delivery — it shows
+      // on the NEXT turn, when transcript-transform meets the persisted attachment
+      // block. The bench proves it structurally: every OpenClaw scenario shares ONE
+      // chat, so the runs after `media-outbound` are turns on a session that has a
+      // delivered file in its history. That is exactly how 2026.8.1's poison was found —
+      // every scenario after the delivery failed.
+      //
+      // RE-DERIVED here, not taken on trust: a bare count was a claim the repository
+      // could not check, and an edited number would have kept this green with no
+      // post-delivery turn at all (codex). The ordered records carry the evidence.
+      const att = readAttestation(version);
+      expect(att).not.toBeNull();
+      if (version !== OPENCLAW.supportedRange?.maxValidated) return;
+      const runs = att!.openclawRuns;
+      expect(runs, "the attestation must carry the ordered OpenClaw runs").toBeDefined();
+      // VALIDATE the records before reading them. A cast is not a check: with every
+      // `chat` absent the Set below still held one value and the "one session" proof
+      // passed on nothing at all (codex).
+      for (const [i, r] of runs!.entries()) {
+        expect(typeof r, `run ${i} is not an object`).toBe("object");
+        expect(typeof r?.id, `run ${i} has no id`).toBe("string");
+        expect(typeof r?.ok, `run ${i} has no outcome`).toBe("boolean");
+        expect(r?.chat, `run ${i} carries no chat identity`).toMatch(/^[0-9a-f]{16}$/);
+      }
+      expect(new Set(runs!.map((r) => r.id)).size, "duplicate run ids").toBe(runs!.length);
+      // A GO means EVERY OpenClaw scenario was clean, not merely the ones after the
+      // delivery: a failure before it would say the run itself was not a GO.
+      expect(
+        runs!.every((r) => r.ok),
+        "an OpenClaw scenario failed, yet the verdict claims GO",
+      ).toBe(true);
+      const at = runs!.findIndex((r) => r.id === "media-outbound");
+      expect(at, "no file delivery in the run").toBeGreaterThanOrEqual(0);
+      expect(
+        runs!.length - at - 1,
+        "nothing ran after the delivery: the run proves nothing about the NEXT turn",
+      ).toBeGreaterThan(0);
+      // One session throughout, or the later turns say nothing about this one.
+      expect(new Set(runs!.map((r) => r.chat)).size, "runs must share ONE chat").toBe(1);
+      // And the ordered records must agree with the scenario list the run attests.
+      expect(runs!.map((r) => r.id).sort()).toEqual(
+        att!.scenarios.filter((id) => att!.providers[id] !== "hermes").sort(),
+      );
+    });
+
+    it(`${version}: the post-delivery proof REJECTS a hollow record set`, () => {
+      // The checks above are only worth their words if they fail on a record set that
+      // looks fine and proves nothing. Exercised on synthetic inputs, so a real
+      // attestation is never rewritten to test its own guard (codex).
+      const validate = (
+        runs: { id: string; ok: boolean; chat?: string }[],
+      ): string | null => {
+        for (const r of runs) {
+          if (typeof r?.id !== "string" || typeof r?.ok !== "boolean") return "shape";
+          if (!/^[0-9a-f]{16}$/.test(r.chat ?? "")) return "chat";
+        }
+        if (new Set(runs.map((r) => r.id)).size !== runs.length) return "duplicate";
+        if (!runs.every((r) => r.ok)) return "failed";
+        const at = runs.findIndex((r) => r.id === "media-outbound");
+        if (at < 0) return "no-delivery";
+        if (runs.length - at - 1 <= 0) return "nothing-after";
+        if (new Set(runs.map((r) => r.chat)).size !== 1) return "many-chats";
+        return null;
+      };
+      const CHAT = "0123456789abcdef";
+      const ok = [
+        { id: "basic-turn", ok: true, chat: CHAT },
+        { id: "media-outbound", ok: true, chat: CHAT },
+        { id: "cron-tool", ok: true, chat: CHAT },
+      ];
+      expect(validate(ok)).toBeNull();
+      // …and each way it can be hollow:
+      expect(validate(ok.map((r) => ({ ...r, chat: undefined })))).toBe("chat");
+      expect(validate(ok.map((r) => ({ ...r, chat: "" })))).toBe("chat");
+      expect(validate([{ ...ok[0]!, ok: false }, ...ok.slice(1)])).toBe("failed");
+      expect(validate(ok.slice(0, 2))).toBe("nothing-after");
+      expect(validate([ok[0]!, ok[2]!])).toBe("no-delivery");
+      expect(
+        validate([ok[0]!, ok[1]!, { ...ok[2]!, chat: "fedcba9876543210" }]),
+      ).toBe("many-chats");
+      expect(validate([ok[0]!, ok[0]!, ok[1]!, ok[2]!])).toBe("duplicate");
     });
 
     it(`${version}: the Atrium commit is well-formed, and real when knowable`, () => {

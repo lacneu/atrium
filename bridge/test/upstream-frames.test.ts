@@ -69,7 +69,7 @@ const statusOf = (events: BridgeEvent[]) =>
 const finalOf = (events: BridgeEvent[]) =>
   events.find((e) => e.type === "message.final");
 
-describe("upstream v2026.7.1 frame contracts", () => {
+describe("upstream v2026.9.1 frame contracts", () => {
   it("aborted with free-form stopReason ('user') finalizes aborted on state alone, partial text kept", () => {
     const { events, normalizer } = drive("aborted-user-stop-partial-text");
     expect(statusOf(events)?.status).toBe("aborted");
@@ -94,6 +94,8 @@ describe("upstream v2026.7.1 frame contracts", () => {
     expect(statusOf(events)?.status).toBe("error");
     expect(normalizer.finalized).toBe(true);
     expect(finalOf(events)?.error).toContain("agent provider timeout");
+    // NEW at 2026.8.x: the gateway also badges the class it recorded.
+    expect(finalOf(events)?.errorKind).toBe("timeout");
   });
 
   it("allowlisted wire errorKind (rate_limit) survives as the message errorKind", () => {
@@ -102,15 +104,20 @@ describe("upstream v2026.7.1 frame contracts", () => {
     expect(finalOf(events)?.errorKind).toBe("rate_limit");
   });
 
-  it("embedded-lock takeover AFTER streamed content downgrades to complete (trace-only class)", () => {
-    const { events, normalizer } = drive("embedded-takeover-after-content");
-    expect(statusOf(events)?.status).toBe("complete");
+  it("writer-claim rebound AFTER streamed content stays an ERROR, classified MID-TURN", () => {
+    // The 7.1 embedded prompt-lock flavour downgraded to complete because upstream
+    // refused any retry once content had streamed. Its 2026.8.1+ successor does NOT
+    // carry that guarantee — upstream retries the rebound itself
+    // (subagent-announce-delivery-retry.ts:70) — so the honest error card stands and
+    // only the CLASS is transient (what the bounded auto-retry keys on).
+    const { events, normalizer } = drive("writer-claim-rebound-after-content");
+    expect(statusOf(events)?.status).toBe("error");
     expect(normalizer.finalized).toBe(true);
-    const final = finalOf(events) as
-      | (BridgeEvent & { diagnosticErrorKind?: string | null })
-      | undefined;
-    expect(final?.error ?? null).toBeNull();
-    expect(final?.diagnosticErrorKind).toBe("session_init_conflict");
+    const final = finalOf(events);
+    expect(final?.error).toContain("session writer claim changed");
+    // Its OWN class, not the retryable init one: this fires after the model ran, so an
+    // automatic re-dispatch could repeat work the zero-content gate cannot see (codex).
+    expect(final?.errorKind).toBe("session_write_conflict");
     expect(final?.text).toContain("rapport complet");
   });
 

@@ -141,6 +141,15 @@ bridge:
   pullPolicy: IfNotPresent
   replicas: 1
   port: 8787
+  # -- Instance names whose OpenClaw image carries the fix for the 2026.8.1/2026.8.2
+  #    attachment defect, comma separated, or "*" for all. On those two versions a
+  #    DELIVERED FILE poisons the session: every later turn of it fails. The bridge
+  #    therefore stops telling the agent how to deliver one — there, and on any gateway
+  #    whose version it cannot identify. Empty attests nothing, which is the safe
+  #    default. A patched image reports the SAME version string as a stock one, which is
+  #    why this is an operator statement rather than a version check.
+  attachmentFixAttested: ""
+
   # -- The instance name pushed into the Convex deployment env as BRIDGE_INSTANCE_NAME
   #    by the bootstrap Job (must match a Convex instances.name). The bridge container
   #    no longer takes an instance name in env — it resolves each served instance from

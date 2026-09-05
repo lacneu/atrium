@@ -15,9 +15,10 @@
 // a bare spinner twice a minute, which is worse than never having shown anything.
 
 import { convexTest, type TestConvex } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
+import { settleFromLedger } from "./subAgents";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -170,5 +171,186 @@ describe("what the line may not do", () => {
     // `t.run` serialises `undefined` to `null` on the way back, so the assertion is
     // "no line at all" rather than a specific absent-value spelling.
     expect(stored ?? null).toBeNull();
+  });
+});
+
+describe("the ledger's own terminal status settles the engagement (codex)", () => {
+  // `completed` is the gateway's success status; `succeeded` belongs to the SEPARATE
+  // `terminalOutcome` field. Mapping the latter while omitting the former sent a
+  // finished task down the "still running" branch: reconcile refreshed the engagement
+  // instead of settling it, so a lost delivery announce left the spinner up and later
+  // messages queued until the declared deadline or the 24 h reaper.
+  const answerWith = (
+    status: string,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const fetchSpy = vi.fn(async (url: string) => {
+      if (String(url).includes("/tasks-probe")) {
+        return new Response(
+          // `ledgerDimensions` is what a CURRENT bridge publishes; the old-bridge case
+          // is covered on its own below.
+          JSON.stringify({
+            ok: true,
+            tasks: [{ taskId: "T1", status, ledgerDimensions: true, ...extra }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    return fetchSpy;
+  };
+
+  const reconcileWith = async (
+    status: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<string | undefined> => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedRunningTask(t, "T1");
+    const userId = await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "primary", gatewayUrl: "ws://gw" });
+      const chat = await ctx.db.get(chatId);
+      // The probe is per INSTANCE: without one on the chat there is nothing to ask.
+      await ctx.db.patch(chatId, { instanceName: "primary", agentId: "main" });
+      await ctx.db.insert("profiles", {
+        userId: chat!.userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      return chat!.userId;
+    });
+    const asUser = t.withIdentity({ subject: `${userId}|session` });
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://bridge:8787";
+    process.env.BRIDGE_SHARED_SECRET = "s";
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = answerWith(status, extra) as unknown as typeof fetch;
+    try {
+      await asUser.action(api.subAgents.reconcileTaskEngagements, { chatId });
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+    return await t.run(async (ctx) => {
+      const rows = await ctx.db.query("subAgents").collect();
+      return rows.find((r) => r.childSessionKey === "task:T1")?.status;
+    });
+  };
+
+  test("`completed` settles the engagement DONE, it does not refresh it as running", async () => {
+    expect(await reconcileWith("completed")).toBe("done");
+  });
+
+  test("`running` still refreshes rather than settles", async () => {
+    expect(await reconcileWith("running")).toBe("running");
+  });
+
+  test("a failing status still settles as an error", async () => {
+    expect(await reconcileWith("failed")).toBe("error");
+  });
+
+  test("completed + delivery STILL IN FLIGHT keeps the engagement active (codex)", async () => {
+    // `status` says the run ended; `deliveryStatus` says the report has not landed.
+    // Settling here drains the next queued message before the answer arrives.
+    for (const deliveryStatus of ["pending", "session_queued"]) {
+      expect(
+        await reconcileWith("completed", { deliveryStatus }),
+        deliveryStatus,
+      ).toBe("running");
+    }
+  });
+
+  test("completed + BLOCKED outcome is an error, not a success", async () => {
+    expect(
+      await reconcileWith("completed", {
+        terminalOutcome: "blocked",
+        deliveryStatus: "delivered",
+      }),
+    ).toBe("error");
+  });
+
+  test("completed + delivery FAILED is an error: the report will never arrive", async () => {
+    expect(
+      await reconcileWith("completed", { deliveryStatus: "failed" }),
+    ).toBe("error");
+  });
+
+  test("the report will NEVER arrive: dismissed and parent_missing are errors (codex)", async () => {
+    // The coverage manifest already said three delivery states mean the report never
+    // arrives. Handling only `failed` settled the other two as successes — hiding a lost
+    // result and releasing the next queued message.
+    for (const deliveryStatus of ["failed", "dismissed", "parent_missing"]) {
+      expect(await reconcileWith("completed", { deliveryStatus }), deliveryStatus).toBe(
+        "error",
+      );
+    }
+  });
+
+  test("an UNKNOWN delivery state keeps waiting rather than inventing an outcome", async () => {
+    expect(
+      await reconcileWith("completed", { deliveryStatus: "teleported" }),
+    ).toBe("running");
+  });
+
+  test("not_applicable defers to the terminal outcome, like delivered", async () => {
+    expect(
+      await reconcileWith("completed", {
+        deliveryStatus: "not_applicable",
+        terminalOutcome: "succeeded",
+      }),
+    ).toBe("done");
+    expect(
+      await reconcileWith("completed", {
+        deliveryStatus: "not_applicable",
+        terminalOutcome: "blocked",
+      }),
+    ).toBe("error");
+  });
+
+  test("an UNKNOWN terminal outcome keeps waiting too, like an unknown delivery (codex)", async () => {
+    // The asymmetry WAS the defect: an unrecognised delivery state kept waiting while
+    // an unrecognised outcome silently meant success. A gateway beyond the validated
+    // ceiling — which the support policy explicitly serves — can answer either.
+    expect(
+      await reconcileWith("completed", {
+        deliveryStatus: "delivered",
+        terminalOutcome: "partial",
+      }),
+    ).toBe("running");
+  });
+
+  test("an OLD bridge cannot close a task as a success (codex)", async () => {
+    // It omits `ledgerDimensions`, so its nulls mean "not asked", not "not set". During
+    // a rolling upgrade this closed blocked and still-delivering tasks as done.
+    const t = convexTest(schema, modules);
+    // Same probe answer, minus the flag this build publishes.
+    expect(
+      settleFromLedger("completed", null, null, false),
+      "no dimensions: a success must not be inferred",
+    ).toBeUndefined();
+    expect(
+      settleFromLedger("completed", null, null, true),
+      "with dimensions, a plain completed is done",
+    ).toBe("done");
+    // An ERROR is still an error: the status alone carries that much.
+    expect(settleFromLedger("failed", null, null, false)).toBe("error");
+    expect(settleFromLedger("timed_out", null, null, false)).toBe("error");
+    void t;
+  });
+
+  test("completed + succeeded + delivered settles DONE", async () => {
+    expect(
+      await reconcileWith("completed", {
+        terminalOutcome: "succeeded",
+        deliveryStatus: "delivered",
+      }),
+    ).toBe("done");
   });
 });

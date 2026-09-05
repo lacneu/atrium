@@ -485,9 +485,18 @@ export function createPseudonymiser(literals = [], renamed = new Map()) {
           : `announce:${opaque(m[1])}`;
       }
 
-      // `<tool>:<uuid>:<ok|error>` — a background-task delivery.
-      m = /^([A-Za-z][A-Za-z0-9_.-]*):([0-9a-fA-F-]{36}):(ok|error)$/.exec(value);
-      if (m && UUID_RE.test(m[2])) return `${tool(m[1])}:${uuid(m[2])}:${m[3]}`;
+      // `<tool>:<uuid>:<ok|error>[:agent-loop]` — a background-task delivery.
+      // The trailing LANE is what 2026.8.1+ appends (upstream
+      // subagent-announce-delivery.ts:219,230). Without it here the whole run id
+      // fell through to `opaque()`, the delivery family was destroyed by the
+      // promotion, and the fidelity gate refused the capture — the same lane
+      // blindness the bridge and Convex readers carried (found by that gate,
+      // 2026-09-04). Only the documented lane is kept; anything else stays opaque.
+      m = /^([A-Za-z][A-Za-z0-9_.-]*):([0-9a-fA-F-]{36}):(ok|error)(:agent-loop)?$/.exec(
+        value,
+      );
+      if (m && UUID_RE.test(m[2]))
+        return `${tool(m[1])}:${uuid(m[2])}:${m[3]}${m[4] ?? ""}`;
 
       // `inject-<messageId>` / `webchat-<hex>` / `talk-<callId>-…`
       m = /^(inject|webchat|talk)-(.+)$/.exec(value);

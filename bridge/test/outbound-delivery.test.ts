@@ -7,6 +7,7 @@ import {
   applyMediaDeliveryInjection,
   buildDeliveryInstruction,
 } from "../src/core/outbound-delivery.js";
+import { COMPAT_MANIFEST, mediaDeliveryPoisonReason } from "../src/compat.js";
 
 describe("buildDeliveryInstruction", () => {
   it("names the outbound dir and the exact MEDIA: convention", () => {
@@ -22,6 +23,42 @@ describe("buildDeliveryInstruction", () => {
     const out = buildDeliveryInstruction("/out/");
     expect(out).toContain("/out/");
     expect(out).not.toContain("/out//");
+  });
+});
+
+describe("a gateway that a delivered file POISONS is never asked to deliver one", () => {
+  // The instruction Atrium injects on every message is what talks the agent into
+  // writing a file and emitting `MEDIA:`. On a stock 2026.8.1/8.2 that move poisons the
+  // session for good (upstream #135747), so the ask is withheld — the one action the
+  // known-broken list can take without guessing at capabilities (codex, three passes).
+  it("names the reason for a version known to poison, and only for those", () => {
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.8.1")).toMatch(/poisons the session/);
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.8.2")).toMatch(/poisons the session/);
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.9.1")).toBeNull();
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.7.1")).toBeNull();
+    expect(mediaDeliveryPoisonReason("openclaw", null)).toBeNull();
+    expect(mediaDeliveryPoisonReason("hermes", "2026.8.1")).toBeNull();
+    // A RANGE, because the defect rides the pre-releases too: upstream's bot found
+    // v2026.9.1-beta.1 still unguarded, and an exact list let it through (codex).
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.9.1-beta.1")).toMatch(/poisons/);
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.8.3")).toMatch(/poisons/);
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.8.1-beta.4")).toMatch(/poisons/);
+    // …and it ENDS at the release that carries the fix.
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.9.2")).toBeNull();
+    expect(mediaDeliveryPoisonReason("openclaw", "2026.8.0")).toBeNull();
+  });
+
+  it("every NAMED broken release falls inside the window it is named for", () => {
+    // Two statements of the same fact drift. This pins them together: the badge list
+    // and the runtime guard cannot disagree about which releases are affected.
+    const named = Object.keys(
+      COMPAT_MANIFEST.providers.openclaw?.knownBrokenVersions ?? {},
+    );
+    expect(named.length).toBeGreaterThan(0);
+    for (const v of named) {
+      expect(mediaDeliveryPoisonReason("openclaw", v), `${v} is named but not guarded`)
+        .not.toBeNull();
+    }
   });
 });
 

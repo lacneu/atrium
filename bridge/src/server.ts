@@ -98,6 +98,7 @@ import { base64FitsFrame } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
   type InboundInstanceConfig,
+  type MediaMode,
 } from "./core/instance-config.js";
 import {
   buildFilesReceivedBlock,
@@ -152,9 +153,12 @@ import {
   BRIDGE_VERSION,
   COMPAT_MANIFEST,
   PROTOCOL_VERSION,
+  mediaDeliveryPoisonReason,
   resolveCapabilities,
   resolveCapabilitiesFor,
   HERMES_RANGE,
+  compareVersions,
+  parseVersion,
 } from "./compat.js";
 import {
   COVERAGE_SUMMARY,
@@ -163,13 +167,8 @@ import {
 } from "./providers/openclaw/protocol-drift.js";
 import type { ConvexWriter, SessionMetaReport } from "./convex-writer.js";
 import type { ConfigIssue } from "./core/credential-resolver.js";
-import type {
-  SessionRegistry,
-  BridgeSession,
-  SessionRouting,
-  LiveTarget,
-  InstanceBundle,
-} from "./session.js";
+import type { BridgeSession, SessionRouting, LiveTarget, InstanceBundle } from "./session.js";
+import { SessionRegistry } from "./session.js";
 import {
   AGENT_FILE_NAMES,
   defaultsApplied,
@@ -511,14 +510,45 @@ export function parseReferenceAttachments(raw: unknown): InboundReference[] {
  *  than two. Extracted from the probe's connection closure so the projection — the
  *  bridge hop of this field's chain — is testable without a gateway.
  */
+/** How many session keys the task probe asks about.
+ *
+ *  Tied to `SessionRegistry.MAX_RECENT_CHAT_KEYS`, and a test pins the two together:
+ *  asking for fewer than the registry keeps left the OLDEST retained key unqueried, and
+ *  after that many re-keys it is exactly where a chain still producing invisible links
+ *  lives — its next link was never adopted, the indicator went dark, and the delivery
+ *  lost its anchor (codex). */
+export const MAX_DISCOVERY_KEYS = SessionRegistry.MAX_RECENT_CHAT_KEYS;
+
 export function projectTaskProbe(task: Record<string, unknown> | undefined): {
   status: string | null;
+  /** This bridge KNOWS about the two dimensions below. A bridge that predates them
+   *  omits the flag entirely, which is how Convex tells "the registry said nothing"
+   *  from "nobody asked" — without it, a rolling upgrade closed a blocked or still
+   *  delivering task as a success (codex). */
+  ledgerDimensions: true;
+  terminalOutcome: string | null;
+  deliveryStatus: string | null;
   summary: string | null;
   progressSummary: string | null;
   error: string | null;
 } {
   return {
     status: typeof task?.status === "string" ? task.status.slice(0, 40) : null,
+    ledgerDimensions: true,
+    // The ledger says THREE things about a finished task, and `status` is only the
+    // first: `terminalOutcome` (succeeded | blocked) is whether the work succeeded, and
+    // `deliveryStatus` says whether its report has reached the chat yet. Dropping them
+    // left Convex to read `completed` as "done, delivered, fine" — settling a BLOCKED
+    // task as a success, and draining the next queued message while the report was
+    // still on its way (codex).
+    terminalOutcome:
+      typeof task?.terminalOutcome === "string"
+        ? task.terminalOutcome.slice(0, 40)
+        : null,
+    deliveryStatus:
+      typeof task?.deliveryStatus === "string"
+        ? task.deliveryStatus.slice(0, 40)
+        : null,
     summary:
       typeof task?.terminalSummary === "string"
         ? task.terminalSummary.slice(0, 600)
@@ -925,7 +955,7 @@ function selectBudgetAssessment(
 }
 
 /**
- * Fetch `models.list` ONCE per connection (cached on `conn.availableModels`) and
+ * Fetch `models.list` once per OWNER (cached on `conn.modelsByOwner`) and
  * return the deduped {id,label} list for the header's model picker. The gateway
  * may list the same id under several providers (e.g. gpt-5.5 under openai AND
  * openai-codex) — we dedupe by id (first label wins). Non-fatal: any failure
@@ -964,22 +994,102 @@ export function dedupeModels(list: unknown): { id: string; label: string }[] {
   return out;
 }
 
+/** The model roster, cached per connection.
+ *
+ *  `agentId` is REQUIRED on a multi-agent gateway since 2026.8.1: upstream
+ *  refuses an ownerless request with
+ *  `INVALID_REQUEST: Multiple agents are configured, but this Gateway request has
+ *  no explicit owner`. Observed live on the 2026.8.1 bench — and the failure is
+ *  SILENT here: the catch below logs "non-fatal" and caches an EMPTY roster, so
+ *  the symptom is an empty model picker, never an error. Optional on purpose: a
+ *  single-agent gateway (and every version before 2026.8.1) accepts the call
+ *  without it, and passing an agent it does not know must not be invented. */
+/** The owner `models.list` must name on a multi-agent gateway. The live session
+ *  is authoritative, but `sessions.describe` may omit its OPTIONAL `agentId`
+ *  (SessionRow.agentId is optional in 2026.8.x); the turn's routed `agentId`
+ *  is mandatory in every request body and already known — never send an
+ *  ownerless request when the owner is in hand (2026.8.1 refuses it and
+ *  ensureAvailableModels would cache `[]` for the connection). */
+export function resolveModelsOwner(
+  sess: { agentId?: unknown } | null | undefined,
+  routedAgentId: string | null | undefined,
+): string | null {
+  if (sess && typeof sess.agentId === "string" && sess.agentId !== "") return sess.agentId;
+  return typeof routedAgentId === "string" && routedAgentId !== "" ? routedAgentId : null;
+}
+
+/** Whether `models.list` takes (and, on a multi-agent roster, REQUIRES) an
+ *  `agentId` owner on this gateway. Two generations, two opposite contracts:
+ *  `ModelsListParamsSchema` is a CLOSED object without `agentId` up to 2026.7.x
+ *  (vendored 2026.6.11 and 2026.7.1: `additionalProperties: false`) — sending
+ *  one is refused — and declares it from 2026.8.1, where an ownerless request is
+ *  refused on a multi-agent roster. This is decided on the RAW gateway version,
+ *  not the capability table: `resolveCapabilitiesFor` deliberately caps a
+ *  version beyond `maxValidated` to the last validated one, which would answer
+ *  "no owner" on 2026.8.2 exactly where the owner is mandatory. `null` (the
+ *  handshake did not say) = unknown: the caller tries the owner form first and
+ *  falls back once. */
+export function modelsListTakesOwner(gatewayVersion: string | null): boolean | null {
+  const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
+  const min = parseVersion("2026.8.1");
+  if (parsed === null || min === null) return null;
+  return compareVersions(parsed, min) >= 0;
+}
+
+/** How long a `models.list` failure stays cached. Long enough that a dead gateway
+ *  does not cost an 8s timeout per turn, short enough that a transient one does not
+ *  leave an empty model picker until the bridge restarts. */
+const MODELS_FAILURE_TTL_MS = 60_000;
+
 export async function ensureAvailableModels(
   conn: BridgeSession["connection"],
+  agentId?: string | null,
 ): Promise<{ id: string; label: string }[]> {
-  if (conn.availableModels !== null) return conn.availableModels;
+  const takesOwner = modelsListTakesOwner(conn.gatewayVersion ?? null);
+  // KNOWN version: send the form that generation declares. UNKNOWN version: send the
+  // form EVERY supported generation accepts — the ownerless one — and keep the owned
+  // form for the retry. Guessing the owned form first put `agentId` on the wire for a
+  // gateway whose schema forbids additional properties, which the outbound ratchet
+  // refuses (it was invisible until a test fake gained the models cache and the call
+  // actually ran). One extra round trip on an unversioned 2026.8.1+ handshake is the
+  // price of never sending a body a supported version rejects.
+  const withOwner = Boolean(agentId) && takesOwner === true;
+  // The cache key is the POSSIBLE SCOPE of the answer, which is NOT the same question
+  // as which form to send first. On an unknown version the ownerless form goes out
+  // first, yet its retry may answer for one agent — keying on the form sent would have
+  // filed Alice's catalogue under the connection-wide key and served it to Bob (codex,
+  // a defect introduced by the previous fix). `""` is used only where the answer really
+  // is connection-wide: a generation that declares it, or a call with no agent at all.
+  const ownerKey = agentId && takesOwner !== false ? agentId : "";
+  const cached = conn.modelsByOwner.get(ownerKey);
+  if (cached !== undefined) {
+    if (cached.failedAt === null) return cached.models;
+    if (Date.now() - cached.failedAt < MODELS_FAILURE_TTL_MS) return cached.models;
+    conn.modelsByOwner.delete(ownerKey); // the failure expired: try again
+  }
+  const paramsFor = (owned: boolean) => (owned && agentId ? { agentId } : {});
   try {
-    const resp = await conn.request("models.list", {}, 8_000);
+    let resp;
+    try {
+      resp = await conn.request("models.list", paramsFor(withOwner), 8_000);
+    } catch (err) {
+      // Version unknown and the ownerless form refused: the owner-scoped form gets
+      // ONE try — a wrong guess must not cost the model picker.
+      if (takesOwner !== null || !agentId) throw err;
+      resp = await conn.request("models.list", paramsFor(!withOwner), 8_000);
+    }
     const list = (resp.payload as { models?: unknown } | undefined)?.models;
-    conn.availableModels = dedupeModels(list);
+    const models = dedupeModels(list);
+    conn.modelsByOwner.set(ownerKey, { models, failedAt: null });
+    return models;
   } catch (err) {
     console.error(
-      "[models.list] skipped (non-fatal):",
+      `[models.list] skipped (non-fatal, owner=${ownerKey || "<connection>"}):`,
       (err as Error)?.message ?? err,
     );
-    conn.availableModels = [];
+    conn.modelsByOwner.set(ownerKey, { models: [], failedAt: Date.now() });
+    return [];
   }
-  return conn.availableModels;
 }
 
 /**
@@ -1118,6 +1228,16 @@ export function lcmSendParams(
  * `sessions.describe` answer, and "a successful compaction lets the send through"
  * is only expressible against the real send path.
  */
+/** One line per distinct condition, not one per turn: a withheld instruction repeats on
+ *  every message of every chat, and a log that scrolls is a log nobody reads. */
+const WARNED_ONCE = new Set<string>();
+function warnOnce(key: string, message: string): void {
+  if (WARNED_ONCE.has(key)) return;
+  WARNED_ONCE.add(key);
+  console.warn(message);
+}
+
+
 export async function performSend(
   session: BridgeSession,
   body: SendBody,
@@ -1127,6 +1247,15 @@ export async function performSend(
   // generated file downloadable: write it here + emit `MEDIA:<path>`). Null when
   // outbound media is disabled (mode "off") — then no instruction is injected.
   deliveryDir: string | null,
+  /** The instance's own view of its gateway, for the media quarantine: the configured
+   *  version fallback when the handshake carried none, and whether THIS instance's
+   *  image is attested to carry the attachment fix. Optional so the many tests that
+   *  drive `performSend` directly keep working; absent means "no fallback, nothing
+   *  attested", which is the safe reading. */
+  mediaGuard: {
+    gatewayVersionFallback?: string | null;
+    attachmentFixAttested?: boolean;
+  } | null = null,
   /** When the /send HTTP handler received the request (its own entry, NOT this
    *  call): the pre-send deadline is measured from there so time lost acquiring
    *  the session counts too. */
@@ -1455,7 +1584,10 @@ export async function performSend(
     // reflects the session as of the LAST COMPLETED turn (a one-turn lag). A v2
     // could re-describe after finalize for during-turn accuracy.
     if (sess) {
-      const models = await ensureAvailableModels(conn);
+      const models = await ensureAvailableModels(
+        conn,
+        resolveModelsOwner(sess, body.agentId),
+      );
       void writer
         .reportSessionMeta(body.chatId, {
           ...parseSessionMeta(sess, models),
@@ -1674,13 +1806,61 @@ export async function performSend(
   // `MEDIA:<path>`). Without it the agent writes a markdown link to a local path
   // that the webchat can't host → "I couldn't attach it" (the reported bug). Mirror
   // of the proven OpenWebUI pipe. Skipped when outbound media is off.
-  if (deliveryDir !== null) {
+  // A gateway generation on which a DELIVERED FILE poisons the session is never asked
+  // to deliver one. The instruction below is what talks the agent into it, and Atrium
+  // owns that instruction — so this is the one place the known-broken list can act
+  // without guessing at capabilities (see `mediaDeliveryPoisonReason`). An operator
+  // running a patched image re-enables it with OPENCLAW_ATTACHMENT_FIX_ATTESTED.
+  // The EFFECTIVE version, not just the live one: a degraded hello leaves
+  // `gatewayVersion` null on a gateway the operator has configured as 2026.8.x, and
+  // reading only the live field silently disarmed the quarantine (codex). The
+  // attestation is PER INSTANCE for the same reason — one bridge serves several
+  // gateways, and attesting a patched image must not re-arm the instruction beside it.
+  // "openclaw" is not a guess: `performSend` takes a session whose connection is an
+  // OpenClawConnection, and the Hermes leg returns before reaching it.
+  // The LIVE version, or nothing. A configured fallback may only ever CONFIRM the
+  // quarantine, never lift it: after a rollback to 2026.8.x with a degraded hello, a
+  // config still reading 2026.9.1 was answering "safe" for a gateway that poisons —
+  // exactly the skew this guard exists for (codex). An unreadable live version is an
+  // unidentified gateway, and the fallback cannot make it identified.
+  const liveVersion = session.connection.gatewayVersion;
+  const liveParsed =
+    liveVersion !== null && liveVersion !== undefined && parseVersion(liveVersion) !== null
+      ? liveVersion
+      : null;
+  const configured = mediaGuard?.gatewayVersionFallback ?? null;
+  const effectiveGatewayVersion = liveParsed ?? configured;
+  const unidentified = liveParsed === null;
+  const poisonReason = mediaGuard?.attachmentFixAttested
+    ? null
+    : unidentified
+      ? // FAIL CLOSED on an unidentified gateway. The instruction is the one thing that
+        // can destroy a session outright, and "no version" is not evidence of safety —
+        // a degraded hello on a stock 2026.8.x reaches exactly this branch. The way out
+        // is positive: attest the instance. The turn still goes through either way.
+        "the gateway version is unknown, so a delivered file cannot be proven safe"
+      : mediaDeliveryPoisonReason("openclaw", effectiveGatewayVersion);
+  if (deliveryDir !== null && poisonReason === null) {
     // `media_delivery` injection: the admin's resolved text, the bridge's own default
     // (pre-feature Convex), or NOTHING when the admin disabled it. See the function.
     message = applyMediaDeliveryInjection(
       message,
       deliveryDir,
       body.config?.injections?.media_delivery,
+    );
+  } else if (deliveryDir !== null) {
+    warnOnce(
+      // PER INSTANCE, because the attestation and the fix are per instance: one bridge
+      // serving several instances of the same version logged the first one only, and
+      // the message never said which target was quarantined (codex).
+      `media-delivery-poison:${body.instanceName ?? "<none>"}:${effectiveGatewayVersion}`,
+      `[media] outbound delivery instruction WITHHELD for instance ` +
+        `${body.instanceName ?? "<unnamed>"} on gateway ` +
+        `${effectiveGatewayVersion ?? "<unknown>"}: ${poisonReason}. A session that ` +
+        "already ran a " +
+        "turn BEFORE this bridge version still carries the old instruction in its " +
+        "gateway history — open a new chat there. Set OPENCLAW_ATTACHMENT_FIX_ATTESTED " +
+        "to this instance name (or *) if the image carries the fix.",
     );
   }
 
@@ -1843,7 +2023,10 @@ async function performPatch(
       desc.payload as { session?: Record<string, unknown> } | undefined
     )?.session;
     if (sess) {
-      const models = await ensureAvailableModels(conn);
+      const models = await ensureAvailableModels(
+        conn,
+        resolveModelsOwner(sess, body.agentId),
+      );
       await writer.reportSessionMeta(
         body.chatId,
         parseSessionMeta(sess, models),
@@ -1922,6 +2105,18 @@ export async function fetchCompactionHistory(
     reason: string | null;
     tokensBefore: number | null;
     tokensAfter: number | null;
+    /** Are `tokensBefore`/`tokensAfter` TRUSTWORTHY for this checkpoint?
+     *
+     *  `true` only when the gateway stamped `tokensVersion: 1` (new at
+     *  2026.8.1). Upstream itself gates on exactly that
+     *  (`checkpointTokensTrusted = checkpoint.tokensVersion === SESSION_TOTAL_TOKENS_VERSION`,
+     *  session-compaction-checkpoints.ts), so a checkpoint without it carries
+     *  counts upstream does NOT trust — written before the accounting was fixed.
+     *  `null`, never `false`, when the field is absent: on a pre-2026.8.1
+     *  gateway nothing is stamped, and reporting "untrusted" there would be a
+     *  claim about a gateway that never made one. Consumers must render an
+     *  unknown as unknown rather than as a fact. */
+    tokensTrusted: boolean | null;
   }[];
 }> {
   const res = await conn.request(
@@ -1958,6 +2153,7 @@ export async function fetchCompactionHistory(
       reason: bucketCompactionReason(c.reason),
       tokensBefore: num(c.tokensBefore),
       tokensAfter: num(c.tokensAfter),
+      tokensTrusted: c.tokensVersion === 1 ? true : null,
     }));
   return { count: checkpoints.length, checkpoints };
 }
@@ -1979,6 +2175,19 @@ export interface CronJobSummary {
   /** The job's pinned agent id; null = the gateway's default agent (OpenClaw)
    *  or the instance's single agent (Hermes). Convex applies the policy. */
   agentId: string | null;
+  /** Did the SCHEDULER disable this job by itself, and why?
+   *
+   *  NEW at gateway 2026.8.1 (`CronJobState.autoDisabled`: `consecutive-failures`
+   *  or `schedule-errors`). Before that version the gateway never disabled a job
+   *  on its own, so `enabled` alone told the whole story. It no longer does:
+   *  `enabled` is the CONFIGURED flag and stays `true` after an auto-disable, so a
+   *  job that will never run again would render as running — the same class of
+   *  silent failure as `lastRunStatus: "ok"` with the report delivered nowhere.
+   *  `null` = the gateway said nothing (a pre-2026.8.1 gateway says nothing at
+   *  all), never "it is fine". */
+  autoDisabledReason: string | null;
+  /** When the scheduler auto-disabled it. Paired with the reason; null alone. */
+  autoDisabledAtMs: number | null;
 }
 
 /** OpenClaw `cron.list` → normalized summaries. FULL (non-compact) response so
@@ -2048,6 +2257,11 @@ export async function fetchCronJobs(
       typeof job.state === "object" && job.state !== null
         ? (job.state as Record<string, unknown>)
         : {};
+    const rawAutoDisabled = state.autoDisabled ?? job.autoDisabled;
+    const autoDisabled =
+      typeof rawAutoDisabled === "object" && rawAutoDisabled !== null
+        ? (rawAutoDisabled as Record<string, unknown>)
+        : undefined;
     jobs.push({
       id: str(job.id) ?? str(job.jobId),
       name: str(job.name),
@@ -2074,6 +2288,12 @@ export async function fetchCronJobs(
       lastDeliveryError:
         str(state.lastDeliveryError) ?? str(job.lastDeliveryError),
       agentId,
+      // Same state->job fallback as the fields above. The gateway nests it as
+      // `{reason, atMs, consecutiveErrors}`; only the two facts an operator acts
+      // on cross this API, and a malformed shape stays null rather than
+      // inventing an auto-disable that did not happen.
+      autoDisabledReason: str(autoDisabled?.reason),
+      autoDisabledAtMs: num(autoDisabled?.atMs),
     });
   }
   return jobs;
@@ -2427,6 +2647,10 @@ export interface CapabilityTarget {
   gatewayVersion: string | null;
   capabilities: Record<string, boolean>;
   versionBeyondValidated?: true;
+  /** THIS instance's operator attests its gateway image carries the attachment fix.
+   *  Descriptive only: Convex reads its own attestation from the instance row, because
+   *  /capabilities is unauthenticated and cannot AUTHORIZE lifting a protection. */
+  attachmentFixAttested?: true;
 }
 
 /**
@@ -2486,6 +2710,7 @@ export function buildCapabilityTargets(
   fallbackVersion: string | null = null,
   provider: "openclaw" | "hermes" = "openclaw",
   transport: "ws" | "rest" = "ws",
+  attachmentFixAttested = false,
 ): CapabilityTarget[] {
   const byKey = new Map<string, LiveTarget>();
   for (const t of live) byKey.set(t.canonical, t);
@@ -2514,6 +2739,7 @@ export function buildCapabilityTargets(
       capabilities: resolved.capabilities,
     };
     if (resolved.versionBeyondValidated) target.versionBeyondValidated = true;
+    if (attachmentFixAttested) target.attachmentFixAttested = true;
     return target;
   });
   // ALWAYS surface the SERVED instance, even with NO live chat session (BUG-1):
@@ -2546,6 +2772,10 @@ export function buildCapabilityTargets(
     };
     if (resolved.versionBeyondValidated)
       synthetic.versionBeyondValidated = true;
+    // …and the attestation, exactly as on the live branch. Omitting it here published a
+    // PATCHED, explicitly attested image as unattested during an idle poll, and Convex
+    // then quarantined its media until a session opened (codex).
+    if (attachmentFixAttested) synthetic.attachmentFixAttested = true;
     targets.push(synthetic);
   }
   return targets;
@@ -2900,6 +3130,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           versionForInstance(name, bundle),
           bundle.config.kind ?? "openclaw",
           bundle.config.transport ?? "ws",
+          bundle.config.attachmentFixAttested === true,
         ),
       );
       const names = [...served.keys()];
@@ -3899,13 +4130,29 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                   // One request per live session key (normally exactly one).
                   let listedTotal = 0;
                   const records: Record<string, unknown>[] = [];
-                  for (const key of discoverKeys.slice(0, 3)) {
-                    const r = await conn.request(
-                      "tasks.list",
-                      taskListParams(key),
-                      10_000,
-                    );
-                    const payload = r.payload as { tasks?: unknown[] } | null;
+                  // FOUR, matching what the registry keeps (`recentChatKeys`, capped
+                  // at 4 in session.ts): asking three left the oldest retained key
+                  // unqueried, and after four re-keys that is exactly where a chain
+                  // still producing invisible links can live — its next link was never
+                  // adopted, so the indicator went dark and the delivery lost its
+                  // anchor (codex). The cap belongs to the registry; this only has to
+                  // agree with it.
+                  // IN PARALLEL, each key isolated. Sequentially, four 10s lookups
+                  // plus the connect and the per-task gets could exceed the 50s budget
+                  // Convex gives this probe — and one failing key aborted the loop, so
+                  // the very key this widening was for was never asked (codex).
+                  const settled = await Promise.allSettled(
+                    discoverKeys
+                      .slice(0, MAX_DISCOVERY_KEYS)
+                      .map((key) =>
+                        conn.request("tasks.list", taskListParams(key), 10_000),
+                      ),
+                  );
+                  for (const outcome of settled) {
+                    if (outcome.status !== "fulfilled") continue; // one key's failure is its own
+                    const payload = outcome.value.payload as
+                      | { tasks?: unknown[] }
+                      | null;
                     const list = Array.isArray(payload?.tasks)
                       ? payload.tasks
                       : [];
@@ -4794,6 +5041,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // per-instance config, else this instance's default. The delivery path is the
       // AGENT-visible outbound mount (where the agent WRITES) — NOT the bridge's read
       // dir (which may be a host path the container can't write).
+      // `parseInboundConfig` already folded Convex's fail-closed envelope into
+      // `mediaMode`, so every consumer — this one included — reads one resolved value.
       const effectiveMediaMode = body.config?.mediaMode ?? cfg.mediaMode;
       const deliveryDir =
         effectiveMediaMode === "off"
@@ -4868,6 +5117,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         bundle.writer,
         inboundCfg,
         deliveryDir,
+        {
+          gatewayVersionFallback: bundle.config.gatewayVersionFallback ?? null,
+          attachmentFixAttested: bundle.config.attachmentFixAttested === true,
+        },
         sendReceivedMs,
       );
       // A real send proves connection + the ROUTED agent answered.

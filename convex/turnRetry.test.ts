@@ -7,6 +7,7 @@ import {
   retryDecision,
   MAX_TURN_RETRIES,
   RETRY_DELAY_MS,
+  RETRYABLE_KINDS,
   SESSION_INIT_CONFLICT_CODE,
   CONTEXT_LENGTH_COMPACTED_CODE,
 } from "./turnRetry";
@@ -56,6 +57,16 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     // The guard already decided this one cannot fit. Re-dispatching it would walk
     // straight back into the same measurement.
     expect(retryDecision(at("context_length_presend"))).toBeNull();
+  });
+
+  test("a MID-TURN writer rebound is never retried, zero content or not", () => {
+    // `session_write_conflict` rebounds AFTER the model ran and after tools may have
+    // had external effects. The zero-content gate cannot see that work, so the class
+    // stays out of RETRYABLE_KINDS entirely — re-dispatching could repeat it (codex).
+    expect(retryDecision(at("session_write_conflict"))).toBeNull();
+    expect(RETRYABLE_KINDS.has("session_write_conflict")).toBe(false);
+    // …while the INIT conflict, which throws before any generation, still retries.
+    expect(retryDecision(at(SESSION_INIT_CONFLICT_CODE))).not.toBeNull();
   });
 
   test("visible content on the failed turn cancels the retry", () => {

@@ -690,6 +690,230 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     });
   }
 
+  /** A compat snapshot for `primary`. The dispatch now ASKS it whether this gateway
+   *  may be sent a delivery instruction, so a test that omits it is testing a fresh
+   *  deployment — which fails closed. Most tests want a healthy, polled instance. */
+  async function seedCompat(
+    t: ReturnType<typeof convexTest>,
+    gatewayVersion: string | null,
+    instanceNames: string[] = ["primary"],
+    snapshot: {
+      reachable?: boolean;
+      ageMs?: number;
+      provider?: string;
+    } = {},
+  ): Promise<void> {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("bridgeCompat", {
+        key: "singleton",
+        reachable: snapshot.reachable ?? true,
+        bridgeVersion: "0.76.0",
+        protocolVersion: 2,
+        compat: null,
+        fetchedAt: Date.now() - (snapshot.ageMs ?? 0),
+        targets: instanceNames.map((instanceName) => ({
+          instanceName,
+          provider: snapshot.provider ?? "openclaw",
+          gatewayVersion,
+          capabilities: {},
+          versionBeyondValidated: false,
+        })),
+      });
+    });
+  }
+
+  async function dispatchBody(
+    t: ReturnType<typeof convexTest>,
+    outboxId: Id<"outbox">,
+  ): Promise<Record<string, unknown>> {
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await t.action(internal.bridge.dispatch, { outboxId });
+      const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+      return JSON.parse(init.body as string) as Record<string, unknown>;
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  test("media goes out OFF for a bridge that cannot guard itself — REAL dispatch", async () => {
+    // The unit tests pin `mediaQuarantineReason`; this one pins the thing that matters:
+    // the body the bridge receives. `mediaMode: "off"` is what makes a bridge WITHOUT
+    // the local guard — an older one, reached mid-rollout — skip the delivery
+    // instruction that destroys the session (codex). A CURRENT bridge re-checks the
+    // live version on every send and needs no such help.
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http" },
+      });
+      // The gateway reads HEALTHY here — the point is precisely that a snapshot's
+      // version cannot be trusted for a POST that has not happened yet, nor can Convex
+      // know which pod behind the Service will answer it.
+      await seedCompat(t, "2026.9.1");
+      expect((await dispatchBody(t, outboxId)).config).toMatchObject({
+        mediaMode: "off",
+        mediaModeIfGuarded: "gateway-http",
+      });
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("…and with NO compat snapshot at all, which is a fresh deployment", async () => {
+    // `bridgeCompat` is empty before the first successful poll. Skipping the question
+    // there left the configured media mode in place for the whole poll interval.
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http" },
+      });
+      expect((await dispatchBody(t, outboxId)).config).toMatchObject({
+        mediaMode: "off",
+      });
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a STALE or UNREACHABLE snapshot is not evidence of safety (codex)", async () => {
+    // A failed poll KEEPS the last good targets. A gateway swapped or rolled back during
+    // that outage would otherwise be vouched for by yesterday's healthy reading.
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      for (const snapshot of [{ reachable: false }, { ageMs: 60 * 60_000 }]) {
+        const t = convexTest(schema, modules);
+        const outboxId = await seedRouted(t, {
+          bridgeUrl: "http://instance-host:9999",
+          config: { mediaMode: "gateway-http" },
+        });
+        await seedCompat(t, "2026.9.1", ["primary"], snapshot);
+        expect(
+          (await dispatchBody(t, outboxId)).config,
+          JSON.stringify(snapshot),
+        ).toMatchObject({ mediaMode: "off" });
+      }
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a snapshot CLAIMING the attestation does not lift the quarantine (codex)", async () => {
+    // /capabilities is unauthenticated. A row there saying "I carry the fix" describes
+    // the bridge's env; it does not authorize removing the protection. Only the
+    // instance's own config — edited through the authenticated admin surface — does.
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http" },
+      });
+      await t.run(async (ctx) => {
+        await ctx.db.insert("bridgeCompat", {
+          key: "singleton",
+          reachable: true,
+          bridgeVersion: "0.76.0",
+          protocolVersion: 2,
+          compat: null,
+          fetchedAt: Date.now(),
+          targets: [
+            {
+              instanceName: "primary",
+              provider: "openclaw",
+              gatewayVersion: "2026.8.2",
+              capabilities: {},
+              versionBeyondValidated: false,
+              attachmentFixAttested: true, // self-declared: not an authorization
+            },
+          ],
+        });
+      });
+      expect((await dispatchBody(t, outboxId)).config).toMatchObject({
+        mediaMode: "off",
+      });
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("…and the INSTANCE row attesting it does lift it", async () => {
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http", attachmentFixAttested: true },
+      });
+      await seedCompat(t, "2026.8.2");
+      expect((await dispatchBody(t, outboxId)).config).toMatchObject({
+        mediaMode: "gateway-http",
+      });
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a snapshot naming ANOTHER provider is not evidence (codex)", async () => {
+    // An instance switched to OpenClaw keeps a fresh row still marked "hermes" for the
+    // whole freshness window. Reading the provider off that row answered "not my
+    // defect" without ever looking at the version.
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http" },
+      });
+      // The instance IS OpenClaw (kind unset defaults to it); the snapshot says Hermes.
+      await seedCompat(t, "2026.9.1", ["primary"], { provider: "hermes" });
+      expect((await dispatchBody(t, outboxId)).config).toMatchObject({
+        mediaMode: "off",
+      });
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("an ATTESTED instance keeps its media mode, with NO envelope", async () => {
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    try {
+      const t = convexTest(schema, modules);
+      const outboxId = await seedRouted(t, {
+        bridgeUrl: "http://instance-host:9999",
+        config: { mediaMode: "gateway-http", attachmentFixAttested: true },
+      });
+      await seedCompat(t, "2026.9.1");
+      const cfg = (await dispatchBody(t, outboxId)).config as Record<string, unknown>;
+      expect(cfg).toMatchObject({ mediaMode: "gateway-http" });
+      expect("mediaModeIfGuarded" in cfg, "an attested instance needs no envelope").toBe(
+        false,
+      );
+    } finally {
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
   test("POSTs to the instance's OWN bridgeUrl (wins over env BRIDGE_URL) with ONLY the stored overrides", async () => {
     const t = convexTest(schema, modules);
     const prevUrl = process.env.BRIDGE_URL;
@@ -700,6 +924,10 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     const origFetch = globalThis.fetch;
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     try {
+      // A POLLED, healthy instance: the dispatch now asks the compat snapshot whether
+      // this gateway may be asked to deliver a file, and an instance with NO snapshot
+      // is a fresh deployment, which fails closed (covered by its own test above).
+      await seedCompat(t, "2026.9.1");
       const outboxId = await seedRouted(t, {
         bridgeUrl: "http://instance-host:9999",
         config: { mediaMode: "shared-fs", inboundMediaMode: "shared-fs" },
@@ -717,8 +945,12 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       // bridge keeps its own env default. `injections` is the exception: it is always sent
       // RESOLVED (the bridge can't resolve it without the registry).
       const { injections, ...transport } = body.config;
+      // The stored overrides ride through — PLUS the media quarantine envelope, which
+      // every non-attested dispatch now carries: `off` for a bridge that cannot verify
+      // its gateway at send time, and the real mode for one that can.
       expect(transport).toEqual({
-        mediaMode: "shared-fs",
+        mediaMode: "off",
+        mediaModeIfGuarded: "shared-fs",
         inboundMediaMode: "shared-fs",
       });
       expect(Object.keys(injections).sort()).toEqual([
@@ -852,6 +1084,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     const origFetch = globalThis.fetch;
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     try {
+      await seedCompat(t, "2026.9.1"); // polled + healthy: no media quarantine
       const outboxId = await seedRouted(t, {}); // no bridgeUrl, no config
       await t.action(internal.bridge.dispatch, { outboxId });
 
@@ -864,7 +1097,13 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       // it carries the registry defaults, which match the bridge's own behavior.
       const body = JSON.parse(init.body as string);
       const { injections, ...transport } = body.config;
-      expect(transport).toEqual({}); // no transport overrides
+      // No stored transport overrides — only the quarantine envelope, and its second
+      // field says "inherit": Convex has no opinion to restore, so a guarded bridge
+      // falls back to its OWN env default instead of being switched to a Convex one.
+      expect(transport).toEqual({
+        mediaMode: "off",
+        mediaModeIfGuarded: "inherit",
+      });
       expect(Object.keys(injections).sort()).toEqual([
         "inbound_files",
         "media_delivery",
@@ -1037,11 +1276,16 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
         });
 
       // Two fully-separate instances: different bridge URLs AND different configs.
+      // Both instances ATTESTED, so the media quarantine envelope stays out of the way
+      // and `mediaMode` still carries the per-instance intent this test is about.
+      await seedCompat(t, "2026.9.1", ["primary", "beta"]);
       const outA = await seedInstance("primary", "alice", "http://bridge-primary:8787", {
         mediaMode: "shared-fs",
+        attachmentFixAttested: true,
       });
       const outB = await seedInstance("beta", "bob", "http://bridge-beta:8787", {
         mediaMode: "off",
+        attachmentFixAttested: true,
       });
 
       await t.action(internal.bridge.dispatch, { outboxId: outA });

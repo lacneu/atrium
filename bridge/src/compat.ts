@@ -44,6 +44,17 @@ export interface VersionRange {
 export interface ProviderCompat {
   /** null = structural placeholder, no adapter validated yet. */
   supportedRange: VersionRange | null;
+  /** Versions INSIDE the range that a bench run proved DEFECTIVE, mapped to the
+   *  reason. Raising `maxValidated` over a broken release would otherwise silently
+   *  re-admit it: the range is an interval, and an interval cannot say "every
+   *  version up to 2026.9.1 EXCEPT these two" (codex P1). A version listed here is
+   *  reported `defective`, never `supported`. */
+  knownBrokenVersions?: Record<string, string>;
+  /** The CONTINUOUS window the same defect spans, pre-releases included, as
+   *  `[from, fixedIn)`. `knownBrokenVersions` names the published releases for the
+   *  admin badge; this is the predicate every surface must agree on, because an exact
+   *  list called `2026.9.1-beta.1` supported while the bridge quarantined it (codex). */
+  brokenVersionWindow?: { from: string; fixedIn: string; why: string };
   /** Every gateway version exercised on the validation bench. */
   validatedVersions: string[];
   /** capability key -> the FIRST validated gateway version that supports it. */
@@ -255,6 +266,13 @@ export function isHermesVersionScheme(version: string): boolean {
   return (parsed[0] as number) <= (ceiling[0] as number) + 1;
 }
 
+export const ATTACHMENT_POISON_WINDOW = {
+  /** First release that persists `attachment` blocks into the assistant message. */
+  from: "2026.8.1",
+  /** First release that carries the producer-side fix (upstream #135185). */
+  fixedIn: "2026.9.1",
+} as const;
+
 export const COMPAT_MANIFEST: CompatManifest = {
   bridgeVersion: BRIDGE_VERSION,
   protocolVersion: PROTOCOL_VERSION,
@@ -268,7 +286,36 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.7.1" },
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+      // Inside the range, and BROKEN on a stock gateway: a managed-media
+      // `attachment` block persisted by the gateway's own path crashes
+      // `transcript-transform` on every later turn of that session (upstream
+      // #135747; our PR openclaw/openclaw#137446). 2026.9.1 ships the producer
+      // fix, 2026.7.x never had the defect — only these two are affected. The
+      // custom image carries a build-time guard, which is why the bench could
+      // exercise them at all; a STOCK gateway on these versions is not supported.
+      //
+      // This list informs — it does NOT withhold capabilities, and review has asked
+      // twice why. Because the version string cannot tell a patched gateway from a
+      // stock one: the guarded image reports `"version": "2026.8.2"`, the same string
+      // a stock one reports, so gating `mediaOutbound` off it would disable file
+      // delivery on a gateway where the bench PROVED it works. That is the same
+      // measured refusal `resolveCapabilities` documents below — restricting on
+      // observed drift is defensible, restricting on a version number is not. What
+      // this list does instead is decide the SUPPORT verdict (`supportedVersion`,
+      // convex/lib/compat.ts), which surfaces as the "defective" badge: the operator
+      // is told, and nothing that works is taken away.
+      brokenVersionWindow: {
+        from: ATTACHMENT_POISON_WINDOW.from,
+        fixedIn: ATTACHMENT_POISON_WINDOW.fixedIn,
+        why: "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+      },
+      knownBrokenVersions: {
+        "2026.8.1":
+          "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+        "2026.8.2":
+          "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+      },
       validatedVersions: [
         "2026.5.19",
         "2026.6.1",
@@ -285,6 +332,22 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // Shipped release, re-validated directly (GO 9/9, 2026-07-13) after
         // the beta.2-proxy declaration. Standing bench.
         "2026.7.1",
+        // 2026.8.1 / 2026.8.2 were NOT validated: both refused the catalogue on a
+        // gateway defect (an `attachment` block persisted by the gateway's own
+        // managed-media path crashes `transcript-transform` on every later turn of
+        // that session — upstream #135747, our PR openclaw/openclaw#137446). The
+        // custom image carries a build-time guard, and 2026.9.1 ships the producer
+        // fix (#135185) as well.
+        // 2026.9.1: full live suite GO 11/11 (2026-09-03, attestation
+        // protocol/openclaw/2026.9.1/BENCH.json) — wire contracts, SSE, plan,
+        // media, spawn/announce (incl. the file-carrying announce that 2026.8.2
+        // left mute), async tasks, cron, Hermes co-run on 0.19.0.
+        // Upgrade notes: `agents.ownership: "explicit"` and
+        // `agents.defaults.systemAgent.agentId` are REQUIRED on a multi-agent
+        // roster since 2026.8.1; the scheduler tool is now `automations` and the
+        // plan tool `progress_card`; one boot of 9.1 over migrated 8.2 state was
+        // refused once with a SQLite worker temp-dir error and started on retry.
+        "2026.9.1",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },
@@ -414,6 +477,57 @@ export interface ResolvedCapabilities {
  * vanishing from a client who upgraded. Restricting on OBSERVED drift is defensible;
  * restricting on a version number is not.
  */
+/** WHY this gateway must not be ASKED to deliver a file, or null when it may be.
+ *
+ *  A `knownBrokenVersions` entry is not a capability question — it is one destructive
+ *  ACTION on one generation, and Atrium is the one that asks for it: every message
+ *  carries the outbound delivery contract ("write the file here and emit `MEDIA:`").
+ *  On a stock 2026.8.1/8.2 that contract talks the agent into the exact move that
+ *  poisons the session for good, so the honest thing is to stop asking, not to strip a
+ *  capability the version string cannot decide (an image carrying the build-time guard
+ *  reports the same string). Review raised this three times and was right; the earlier
+ *  refusal rested on "Atrium is not on that path", which the injection disproves.
+ *
+ *  An operator who runs a patched image says so with `OPENCLAW_ATTACHMENT_FIX_ATTESTED`
+ *  (a LIST of instance names, or `*`) and the instruction is injected again — a positive
+ *  signal, scoped to one instance, not a version guess.
+ *
+ *  STATED LIMIT: this stops Atrium from ASKING. A session that already ran a turn on an
+ *  older bridge still carries the old instruction in its gateway history, and an agent
+ *  may act on it there. Resetting other people's live sessions to scrub it is a
+ *  destructive move nobody asked for, so the withheld-instruction warning tells the
+ *  operator to open a new chat on that instance instead (raised in review). */
+export function mediaDeliveryPoisonReason(
+  provider: string,
+  gatewayVersion: string | null,
+): string | null {
+  if (provider !== "openclaw" || gatewayVersion === null) return null;
+  const v = parseVersion(gatewayVersion);
+  const from = parseVersion(ATTACHMENT_POISON_WINDOW.from);
+  const fixedIn = parseVersion(ATTACHMENT_POISON_WINDOW.fixedIn);
+  if (v === null || from === null || fixedIn === null) return null;
+  // A RANGE, not the exact list. `knownBrokenVersions` names the two RELEASES; the
+  // defect also rides every pre-release between them — upstream's own bot confirmed
+  // v2026.9.1-beta.1 was still unguarded (contrib registry oc-2), and a pre-release
+  // parses fine, so an exact list handed it the poisoning instruction (codex).
+  // The LOW bound compares the numeric triple only, so `2026.8.1-beta.4` counts as
+  // inside: a pre-release of the first affected version is where the defect was being
+  // introduced, and nothing proves it safe. The HIGH bound uses the full comparison, so
+  // every pre-release of the fixed version stays inside. Closed at both ends, because
+  // the cost of being wrong is a session destroyed for good.
+  const belowWindow =
+    v[0] < from[0] ||
+    (v[0] === from[0] && v[1] < from[1]) ||
+    (v[0] === from[0] && v[1] === from[1] && v[2] < from[2]);
+  if (belowWindow || compareVersions(v, fixedIn) >= 0) return null;
+  const named = COMPAT_MANIFEST.providers[provider]?.knownBrokenVersions?.[gatewayVersion];
+  return (
+    named ??
+    "a delivered file poisons the session on this pre-release: every later turn fails " +
+      `in transcript-transform (fixed in ${ATTACHMENT_POISON_WINDOW.fixedIn})`
+  );
+}
+
 export function resolveCapabilities(
   provider: string,
   gatewayVersion: string | null,
