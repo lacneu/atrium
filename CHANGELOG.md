@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.77.0] — Newer gateways, and a file delivery that no longer breaks the chat
+
+Atrium now runs against OpenClaw gateways up to 2026.9.1. Most of this release is
+what that upgrade path turned up on the way.
+
+**Gateways from 2026.8.1 to 2026.9.1 are supported.** The validated ceiling was
+2026.7.1, so anything newer ran with version-gated features switched off and its
+capabilities reported as unknown. Those instances now get the full set. A version
+is only declared supported once a live bench run has exercised it end to end, and
+the record of that run names the exact bridge code it covered — so raising the
+ceiling can no longer rest on a run of something else.
+
+**On 2026.8.1 and 2026.8.2, Atrium stops asking the agent to deliver files.** On
+those two gateway versions a delivered file is written into the conversation in a
+form the gateway itself cannot read back: every later turn in that session fails,
+permanently, and only a new chat recovers it. Atrium was the one asking for the
+delivery, so it no longer does — the turn still runs and still answers, it simply
+does not carry the instruction that breaks the session. An instance whose image
+carries the upstream fix can be attested by its operator, which restores delivery
+for that instance alone. The admin panel marks such a gateway with a **defective
+version** badge instead of showing it as supported.
+
+**A scheduled job the gateway switched off now says so.** Gateways from 2026.8.1
+can auto-disable a job after repeated failures while it still reads as enabled.
+The list showed it as active and the calendar kept drawing future occurrences for
+a job that would never run again. It now has its own **auto-disabled** state, and
+the calendar stops promising runs that are not coming.
+
+**A turn whose ending the gateway lost is explained, not silently retried.** When
+another write takes the session mid-answer, the gateway cannot record the end of
+the turn. Atrium used to treat that like a conflict from before the work started
+and replay it — repeating whatever the turn had already done. It now says what
+happened and leaves the decision to you, because the turn had already begun
+acting.
+
+**A background task no longer keeps the chat busy after it has finished.** The
+gateway's own word for a completed task was not recognised, so a finished task
+went on looking active: the indicator stayed up and later messages queued behind
+it until a deadline expired. A task that ended is settled — unless its report is
+still on its way, in which case the chat rightly keeps waiting.
+
+**Handing work to a sub-agent no longer costs a minute and a half.** When the
+gateway declared a hand-off and said nothing more, Atrium waited out the delay it
+keeps for an answer that never came, then treated the turn as empty and retried
+it — repeating the sub-agent's work. The hand-off is now recognised for what it
+is, and the turn ends when it ends.
+
+**The checklist on screen is the current one.** Plan updates carry the moment the
+gateway produced them, so a write that had to be retried can no longer bury a
+newer checklist under an older one.
+
+For operators: a new `OPENCLAW_ATTACHMENT_FIX_ATTESTED` setting (Compose and Helm)
+declares which instances run a patched 2026.8.x image, and the same attestation
+exists per instance in the admin panel — both are needed to restore file delivery
+there. Nothing else in this release requires action.
+
 ## [0.76.0] — Reply to several passages, and choose what the sidebar carries
 
 Two things the interface would not let you do, both of them small refusals you
