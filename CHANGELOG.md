@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.78.0] — A model you add to the gateway shows up on its own
+
+Reliability release for the model picker. No breaking changes.
+
+**A model added to the gateway's configuration now appears without a restart.**
+Atrium asked the gateway for its model catalogue once, when a conversation opened
+its connection, and kept that answer for the life of the connection — which
+outlives the conversation by fifteen minutes and, on a busy instance, means until
+the bridge was restarted. A model added to the configuration afterwards was simply
+not there to choose. Atrium now follows the gateway's own notice that its
+configuration changed, and the picker of every open conversation catches up within
+a second or two, with nothing sent and nothing restarted. A notice the gateway had
+to drop because the connection was slow is caught as well, on the next thing that
+conversation does.
+
+**A momentary failure no longer empties the model list.** When the catalogue could
+not be read — the gateway reloading right after a configuration change is the
+ordinary case — the picker went blank, said nothing, and stayed that way until the
+bridge restarted. The last list that worked is now kept and offered while the
+request is retried. An answer that offers no model at all is treated the same way,
+because that is what a provider still warming up looks like: a list from a minute
+ago that you can still choose from beats an empty one.
+
+**A conversation routed to another agent no longer shows the previous agent's
+models.** Each agent's catalogue is now recorded with the agent it belongs to, so
+a conversation that moves starts from the new agent's list — and shows no list at
+all, rather than a misleading one, if that agent's catalogue cannot be read yet.
+An answer that arrives late, after the conversation has moved on, is ignored
+instead of overwriting what is on screen.
+
+**The model picker keeps one shape.** It was a row of buttons up to four models and
+a drop-down beyond, so adding a fifth model changed the control under your hand. It
+is a list now, at every size. The reasoning and speed controls stay button rows,
+and fall back to a list if a gateway ever offers more levels than a row can hold.
+
+**Gateway messages Atrium has never seen are now named.** The gateway sends a
+second family of messages that it never declares when a client connects — the
+configuration notice above is one of them. Atrium now vendors that second list for
+every supported gateway version, records what it does with each family, and reports
+by name anything arriving that neither list covers. An operator reading the
+compatibility panel sees a gateway that has outgrown this build, instead of silence.
+
 ## [0.77.0] — Newer gateways, and a file delivery that no longer breaks the chat
 
 Atrium now runs against OpenClaw gateways up to 2026.9.1. Most of this release is
